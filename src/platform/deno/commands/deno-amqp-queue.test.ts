@@ -9,10 +9,7 @@ import {
   COMMAND_AMQP_QUEUE,
   COMMAND_AMQP_ROUTING_KEY,
 } from '../../../features/commands/command-amqp-topology.ts'
-import {
-  createDenoAmqpCommandQueue,
-  probeCommandAmqpBrokerReachable,
-} from './deno-amqp-queue.ts'
+import { createDenoAmqpCommandQueue, probeCommandAmqpBrokerReachable } from './deno-amqp-queue.ts'
 import type { CommandEnvelope } from '../../../features/commands/envelope.ts'
 
 /**
@@ -43,7 +40,7 @@ function createRecordingChannel() {
       routingKey: string,
       content: Uint8Array,
       options: unknown,
-      cb: (error?: Error) => void,
+      cb: (error?: Error) => void
     ) => {
       calls.push({
         method: 'publish',
@@ -120,22 +117,14 @@ test('createDenoAmqpCommandQueue publishes persistent mandatory envelopes', asyn
     assertEquals(decoded, envelope)
     // Production path wraps with Buffer.from for amqplib; recording channel
     // still receives a byte view we can decode.
-    assertEquals(
-      typeof Buffer !== 'undefined' &&
-        Buffer.isBuffer(publishCall?.args[2]),
-      true,
-    )
+    assertEquals(typeof Buffer !== 'undefined' && Buffer.isBuffer(publishCall?.args[2]), true)
   } finally {
     connectStub.restore()
   }
 })
 
 test('createDenoAmqpCommandQueue rejects when broker connection fails', async () => {
-  const connectStub = stub(
-    amqplib,
-    'connect',
-    () => Promise.reject(new Error('ECONNREFUSED')),
-  )
+  const connectStub = stub(amqplib, 'connect', () => Promise.reject(new Error('ECONNREFUSED')))
 
   const envelope: CommandEnvelope = {
     commandId: 'cmd-3',
@@ -147,11 +136,7 @@ test('createDenoAmqpCommandQueue rejects when broker connection fails', async ()
 
   try {
     const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://down' })
-    await assertRejects(
-      () => queue.enqueue(envelope),
-      Error,
-      'Command queue unavailable',
-    )
+    await assertRejects(() => queue.enqueue(envelope), Error, 'Command queue unavailable')
   } finally {
     connectStub.restore()
   }
@@ -218,11 +203,7 @@ test('createDenoAmqpCommandQueue close swallows channel and connection errors', 
 })
 
 test('probeCommandAmqpBrokerReachable returns false when connect fails', async () => {
-  const connectStub = stub(
-    amqplib,
-    'connect',
-    () => Promise.reject(new Error('down')),
-  )
+  const connectStub = stub(amqplib, 'connect', () => Promise.reject(new Error('down')))
   try {
     assertEquals(await probeCommandAmqpBrokerReachable('amqp://down'), false)
   } finally {
@@ -232,7 +213,8 @@ test('probeCommandAmqpBrokerReachable returns false when connect fails', async (
 
 test('probeCommandAmqpBrokerReachable returns true when connect succeeds', async () => {
   const connectStub = stub(amqplib, 'connect', () =>
-    Promise.resolve({ close: async () => undefined } as never))
+    Promise.resolve({ close: async () => undefined } as never)
+  )
   try {
     assertEquals(await probeCommandAmqpBrokerReachable('amqp://ok'), true)
   } finally {
@@ -247,7 +229,7 @@ test('createDenoAmqpCommandQueue rejects when confirm callback fails', async () 
     _routingKey: string,
     _content: Uint8Array,
     _options: unknown,
-    cb: (error?: Error) => void,
+    cb: (error?: Error) => void
   ) => {
     cb(new Error('publish failed'))
   }
@@ -268,11 +250,86 @@ test('createDenoAmqpCommandQueue rejects when confirm callback fails', async () 
 
   try {
     const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://test' })
-    await assertRejects(
-      () => queue.enqueue(envelope),
-      Error,
-      'publish failed',
-    )
+    await assertRejects(() => queue.enqueue(envelope), Error, 'publish failed')
+  } finally {
+    connectStub.restore()
+  }
+})
+
+function createEmitter() {
+  const listeners = new Map<string, Array<(arg?: unknown) => void>>()
+  return {
+    on(event: string, listener: (arg?: unknown) => void) {
+      listeners.set(event, [...(listeners.get(event) ?? []), listener])
+    },
+    emit(event: string, arg?: unknown) {
+      const bucket = listeners.get(event)
+      // Mirrors EventEmitter: an 'error' with no listener is a thrown exception.
+      if (event === 'error' && !bucket?.length) throw arg
+      for (const listener of bucket ?? []) listener(arg)
+    },
+  }
+}
+
+const LOSS_ENVELOPE: CommandEnvelope = {
+  commandId: 'cmd-loss',
+  serverId: 'srv-1',
+  type: 'daemon.ping',
+  attempt: 1,
+  queuedAt: '2020-01-01T00:00:00.000Z',
+}
+
+test('createDenoAmqpCommandQueue survives the broker dropping the connection and reconnects', async () => {
+  const sessions: Array<{
+    events: ReturnType<typeof createEmitter>
+    channel: ReturnType<typeof createRecordingChannel>
+  }> = []
+  const connectStub = stub(amqplib, 'connect', () => {
+    const events = createEmitter()
+    const channel = createRecordingChannel()
+    sessions.push({ events, channel })
+    return Promise.resolve({
+      on: events.on,
+      createConfirmChannel: async () => channel,
+      close: async () => undefined,
+    } as never)
+  })
+  try {
+    const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://test' })
+    await queue.enqueue(LOSS_ENVELOPE)
+    // The broker goes away: this used to be an unhandled 'error' event,
+    // which exits the process.
+    sessions[0].events.emit('error', new Error('Unexpected close'))
+    sessions[0].events.emit('close')
+    await queue.enqueue(LOSS_ENVELOPE)
+    assertEquals(sessions.length, 2)
+    assertEquals(sessions[1].channel.calls.filter((call) => call.method === 'publish').length, 1)
+    await queue.close?.()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('createDenoAmqpCommandQueue drops a channel that throws on publish and reconnects next time', async () => {
+  let connects = 0
+  const connectStub = stub(amqplib, 'connect', () => {
+    connects += 1
+    const channel = createRecordingChannel()
+    if (connects === 1) {
+      channel.publish = () => {
+        throw new Error('Channel closed')
+      }
+    }
+    return Promise.resolve({
+      createConfirmChannel: async () => channel,
+      close: async () => undefined,
+    } as never)
+  })
+  try {
+    const queue = createDenoAmqpCommandQueue({ amqpUrl: 'amqp://test' })
+    await assertRejects(() => queue.enqueue(LOSS_ENVELOPE), Error, 'Channel closed')
+    await queue.enqueue(LOSS_ENVELOPE)
+    assertEquals(connects, 2)
   } finally {
     connectStub.restore()
   }

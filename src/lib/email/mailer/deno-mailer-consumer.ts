@@ -281,6 +281,10 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
     // `close` and `error` both fire for the same loss, and a replaced session
     // can still emit late; one rebuild per loss.
     if (closed || reconnecting || session !== from) return
+    await rebuild(reason)
+  }
+
+  async function rebuild(reason: string): Promise<void> {
     reconnecting = true
     session = undefined
     logWarn('mailer', `AMQP ${reason} — reconnecting`)
@@ -507,8 +511,18 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
     disposeSafely(owner, msg, disposition)
   }
 
-  session = await openSession()
-  if (session.lost) {
+  try {
+    session = await openSession()
+  } catch (error) {
+    // The broker is not up yet. Keep trying in the background like after a
+    // loss instead of leaving mail undelivered until the next restart.
+    logError(
+      'mailer',
+      `AMQP broker unreachable at start: ${errorMessage(error)} — retrying in the background`
+    )
+    void rebuild('broker unreachable at start')
+  }
+  if (session?.lost) {
     // The broker went away while the first session was being set up. Its
     // listeners fired before it was the live session, so nothing else will
     // rebuild it. `reopen` marks the rebuild in progress before its first

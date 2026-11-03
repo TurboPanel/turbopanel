@@ -4,7 +4,7 @@
  */
 
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
-import { assertEquals, assertRejects } from '@std/assert'
+import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import amqplib from 'amqplib'
 import type { Db } from '../../db/connection.ts'
@@ -379,25 +379,59 @@ test('startCommandConsumer retries AMQP connect once then succeeds', async () =>
   }
 })
 
-test('startCommandConsumer rejects when the first connect succeeds but channel setup fails', async () => {
-  const connectStub = stub(amqplib, 'connect', () =>
-    Promise.resolve({
+test('startCommandConsumer keeps retrying in the background when the broker is not ready at start', async () => {
+  const broker = createStubBroker()
+  let attempts = 0
+  const connectStub = stub(amqplib, 'connect', () => {
+    attempts += 1
+    if (attempts === 1) {
+      return Promise.resolve({
+        createConfirmChannel: () => Promise.reject(new Error('channel down')),
+        close: async () => undefined,
+      } as never)
+    }
+    return Promise.resolve(broker.connection as never)
+  })
+  try {
+    // Start does not fail: the control plane keeps serving and the consumer
+    // comes up once the broker answers.
+    const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://bad-channel',
+    })
+    for (let i = 0; i < 200 && broker.consumeCount() === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    assertEquals(broker.consumeCount(), 1)
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('startCommandConsumer close stops the background retry when the broker never comes up', async () => {
+  let attempts = 0
+  const connectStub = stub(amqplib, 'connect', () => {
+    attempts += 1
+    return Promise.resolve({
       createConfirmChannel: () => Promise.reject(new Error('channel down')),
       close: async () => undefined,
     } as never)
-  )
+  })
   try {
-    await assertRejects(
-      () =>
-        startCommandConsumer({
-          firewallApplyGate: DENY_FIREWALL_APPLY,
-          db: missingRowDb(),
-          registry: emptyRegistry(),
-          amqpUrl: 'amqp://bad-channel',
-        }),
-      Error,
-      'channel down'
-    )
+    const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://never',
+    })
+    await handle.close()
+    const afterClose = attempts
+    // The retry sleeps one second, then sees `closed` and stops.
+    await new Promise((resolve) => setTimeout(resolve, 1_500))
+    assertEquals(attempts <= afterClose + 1, true)
   } finally {
     connectStub.restore()
   }

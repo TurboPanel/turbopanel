@@ -243,6 +243,10 @@ export async function startCommandConsumer(
     // `close` and `error` both fire for the same loss, and a session that has
     // already been replaced can still emit late; one rebuild per loss.
     if (closed || reconnecting || session !== from) return
+    await rebuild(reason)
+  }
+
+  async function rebuild(reason: string): Promise<void> {
     reconnecting = true
     session = undefined
     compatLogWarn('command-consumer', `AMQP ${reason} — reconnecting`)
@@ -353,8 +357,20 @@ export async function startCommandConsumer(
     disposeSafely(channel, msg, disposition)
   }
 
-  session = await openSession()
-  if (session.lost) {
+  try {
+    session = await openSession()
+  } catch (error) {
+    // The broker is not up yet (a cold start can take longer than the first
+    // connect's retries). Keep trying in the background like after a loss:
+    // giving up here would leave the control plane accepting commands that
+    // nothing ever runs, until someone restarts it.
+    compatLogError(
+      'command-consumer',
+      `AMQP broker unreachable at start: ${errorMessage(error)} — retrying in the background`
+    )
+    void rebuild('broker unreachable at start')
+  }
+  if (session?.lost) {
     // The broker went away while the first session was being set up. Its
     // listeners fired before it was the live session, so nothing else will
     // rebuild it — hand it to the reconnect loop instead of keeping it.
