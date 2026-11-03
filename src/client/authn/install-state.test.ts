@@ -325,7 +325,7 @@ it('install produces System workspace then Default Workspace', async () => {
   }
 })
 
-it("createOrganizationForUser starts the organization with Let's Encrypt allowed", async () => {
+it("createOrganizationForUser starts the organization with Let's Encrypt off", async () => {
   if (!dbUrl) {
     skipWithoutDatabase('new organization options test')
     return
