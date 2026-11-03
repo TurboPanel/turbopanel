@@ -618,6 +618,16 @@ test("applyTlsSettingsPatch needs a contact and accepted terms for Let's Encrypt
   }
   // Clearing the contact while on is refused; turning off keeps both.
   assertEquals(refusal({ acmeContactEmail: null }, on), 'acme_contact_email_required')
+  // An organization already on before the terms step can still save a contact.
+  const legacy: TlsSettingsState = {
+    acmeEnabled: true,
+    acmeContactEmail: null,
+    acmeTermsAcceptedAt: null,
+  }
+  assertEquals(applyTlsSettingsPatch(legacy, { acmeContactEmail: 'ops@example.com' }, now), {
+    ok: true,
+    next: { ...legacy, acmeContactEmail: 'ops@example.com' },
+  })
   assertEquals(applyTlsSettingsPatch(on, { acmeEnabled: false }, now), {
     ok: true,
     next: { ...on, acmeEnabled: false },

@@ -704,6 +704,9 @@ test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a con
     assertEquals(onBody.acmeEnabled, true)
     assertEquals(onBody.acmeContactEmail, 'ops@example.com')
     assertEquals(typeof onBody.acmeTermsAcceptedAt, 'string')
+    // GET answers the acceptance time in the same ISO form the PUT did.
+    const read = await app.request(url, { headers })
+    assertEquals((await read.json()).acmeTermsAcceptedAt, onBody.acmeTermsAcceptedAt)
     const afterOn = await stored()
     assertEquals(afterOn.isAcmeEnabled, true)
     assertEquals(parseOrganizationOptions(afterOn.options).acmeEnabled, true)

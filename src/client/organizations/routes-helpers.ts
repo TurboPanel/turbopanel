@@ -82,10 +82,11 @@ export type TlsSettingsState = {
 }
 
 /**
- * The settings after `patch`, or why they are refused. Let's Encrypt can only
- * be on with a contact address and accepted terms: each organization is
+ * The settings after `patch`, or why they are refused. Turning Let's Encrypt
+ * on needs a contact address and accepted terms: each organization is
  * responsible for its own servers, so it agrees to the authority's terms
- * itself. Turning it off keeps the address and the acceptance.
+ * itself. While it is on the contact cannot be removed. Turning it off keeps
+ * the address and the acceptance.
  */
 export function applyTlsSettingsPatch(
   before: TlsSettingsState,
@@ -98,7 +99,19 @@ export function applyTlsSettingsPatch(
       patch.acmeContactEmail === undefined ? before.acmeContactEmail : patch.acmeContactEmail,
     acmeTermsAcceptedAt: patch.acmeTermsAccepted ? now : before.acmeTermsAcceptedAt,
   }
-  if (next.acmeEnabled && next.acmeContactEmail === null) {
+  // Checked when it is being turned on. An organization that was already on
+  // before the terms step existed may still save its contact.
+  const turningOn = next.acmeEnabled && !before.acmeEnabled
+  if (next.acmeEnabled && before.acmeEnabled && next.acmeContactEmail === null) {
+    return {
+      ok: false,
+      refusal: {
+        error: "Turn off Let's Encrypt before removing its contact email",
+        code: ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+      },
+    }
+  }
+  if (turningOn && next.acmeContactEmail === null) {
     return {
       ok: false,
       refusal: {
@@ -107,7 +120,7 @@ export function applyTlsSettingsPatch(
       },
     }
   }
-  if (next.acmeEnabled && next.acmeTermsAcceptedAt === null) {
+  if (turningOn && next.acmeTermsAcceptedAt === null) {
     return {
       ok: false,
       refusal: {

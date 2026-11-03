@@ -211,7 +211,9 @@ async function loadOrgTlsSettings(
   return {
     acmeEnabled: row.isAcmeEnabled,
     acmeContactEmail: row.acmeContactEmail,
-    acmeTermsAcceptedAt: row.acmeTermsAcceptedAt,
+    // Same ISO form as the time a PUT records, whatever text the driver returns.
+    acmeTermsAcceptedAt:
+      row.acmeTermsAcceptedAt === null ? null : new Date(row.acmeTermsAcceptedAt).toISOString(),
   }
 }
 
@@ -234,7 +236,8 @@ export function tlsSettingsGetRoute(
  * settings and the patch into the new settings or a refusal, then the columns
  * are written. A change to `acmeEnabled` is also merged into options, which
  * keeps the old `options.acmeEnabled` copy in step for one release so an older
- * build rolled back onto this database still reads the right switch.
+ * build rolled back onto this database still reads the right switch. The old
+ * `options.acmeContactEmail` copy is deliberately not kept in step.
  */
 export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
   params: Readonly<{
