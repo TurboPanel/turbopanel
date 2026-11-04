@@ -98,8 +98,11 @@ High Availability (Workers) must not contain any of it.
   404 (a remotely managed tunnel that never had one) is an empty configuration
   (`CloudflareClient.getConfiguration`), for apply, remove and the edge view. Every tunnel name on the account is rebuilt into
   the ingress list on each apply and remove, all to `https://127.0.0.1:8443`
-  with `originServerName`, `httpHostHeader` and `noTLSVerify` on the loopback
-  hop (`caPool` is a later step). `noTLSVerify` drops for a name whose ACME
+  with `originServerName` and `noTLSVerify` on the loopback hop, and no
+  `httpHostHeader`: the visitor's Host (with its port) must reach Caddy, whose
+  edge-port redirect reads the port from it (a forced bare name looped it).
+  A locally managed tunnel is refused with cause `tunnel-locally-managed`;
+  verifying the loopback hop with `caPool` is a later step. `noTLSVerify` drops for a name whose ACME
   pair (DNS-01 or HTTP-01) is issued and unexpired (`originCertVerifiable`);
   the ingress tick re-applies a name whose stored `originVerified` no longer
   matches, so issue, expiry and fallback rebuild the rules. The CNAME is proxied; another record on the

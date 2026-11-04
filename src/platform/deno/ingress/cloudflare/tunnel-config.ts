@@ -92,7 +92,9 @@ export function buildPanelIngress(
     service: PANEL_ORIGIN_DIAL,
     originRequest: {
       originServerName: hostname,
-      httpHostHeader: hostname,
+      // No httpHostHeader: the visitor's own Host (with :8443 when they used
+      // it) must reach Caddy, whose edge-port redirect reads the port from it.
+      // A forced bare name looks like port 443 and loops the redirect.
       noTLSVerify: !verified.has(hostname),
     },
   }))

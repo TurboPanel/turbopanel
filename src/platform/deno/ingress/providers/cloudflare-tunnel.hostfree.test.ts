@@ -124,7 +124,6 @@ test('buildPanelIngress sends every name to the loopback listener with a catch-a
       service: 'https://127.0.0.1:8443',
       originRequest: {
         originServerName: 'a.example.com',
-        httpHostHeader: 'a.example.com',
         noTLSVerify: true,
       },
     },
@@ -133,7 +132,6 @@ test('buildPanelIngress sends every name to the loopback listener with a catch-a
       service: 'https://127.0.0.1:8443',
       originRequest: {
         originServerName: 'b.example.com',
-        httpHostHeader: 'b.example.com',
         noTLSVerify: true,
       },
     },
@@ -474,9 +472,9 @@ test('a locally managed tunnel is refused before anything is written', async () 
     dashboardTunnel(h, id, extra)
     const result = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
     assertEquals(result.ok ? null : { cause: result.cause, detail: result.detail }, {
-      cause: 'provider-error',
+      cause: 'tunnel-locally-managed',
       detail:
-        'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. Switch it to dashboard management in Cloudflare, or let the control plane create its own tunnel.',
+        "This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. In Cloudflare, open Zero Trust › Networks › Tunnels › this tunnel and choose Migrate, or delete this hostname's DNS record there so the control plane creates its own tunnel.",
     })
     assertEquals(
       h.cf.log.filter((line) => !line.startsWith('GET ')),
@@ -496,7 +494,7 @@ test('an applied tunnel is read again on each apply and refused once it turns lo
   h.cf.tunnels[0]!.config_src = 'local'
   const writes = h.cf.log.filter((line) => !line.startsWith('GET ')).length
   const again = await applyHostname(h.ctx(row))
-  assertEquals(again.ok ? '' : again.cause, 'provider-error')
+  assertEquals(again.ok ? '' : again.cause, 'tunnel-locally-managed')
   assertEquals(h.cf.log.filter((line) => !line.startsWith('GET ')).length, writes)
 })
 

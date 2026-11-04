@@ -40,7 +40,7 @@ const ALLOWED_PORTS = [443, 8443] as const
 const SELF_CHECK_TIMEOUT_MS = 10_000
 const IDENTITY_PATH = '/api/daemon/v1/instance/identity'
 const LOCALLY_MANAGED =
-  'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. Switch it to dashboard management in Cloudflare, or let the control plane create its own tunnel.'
+  "This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. In Cloudflare, open Zero Trust › Networks › Tunnels › this tunnel and choose Migrate, or delete this hostname's DNS record there so the control plane creates its own tunnel."
 
 type Ready = { deps: IngressDeps; name: string; zoneId: string; accountId: string; token: string }
 
@@ -282,7 +282,9 @@ async function applyWith(
   ctx: IngressContext
 ): Promise<ApplyResult> {
   const tunnel = await ensureTunnel(api, ready, ctx)
-  if (await locallyManaged(api, ready, tunnel)) return refused('provider-error', LOCALLY_MANAGED)
+  if (await locallyManaged(api, ready, tunnel)) {
+    return refused('tunnel-locally-managed', LOCALLY_MANAGED)
+  }
   const { ingress: existing, ...rest } = await step('Reading the tunnel routes', () =>
     api.getConfiguration(ready.accountId, tunnel.id)
   )
