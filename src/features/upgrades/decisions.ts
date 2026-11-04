@@ -192,13 +192,13 @@ export type ServerUpdateBlockedCode = 'colocated_with_instance'
 
 /**
  * Machine code for every retired manual-update route (HTTP 410), admin and
- * client alike. Updates are automatic; the only control is Pause All Updates
- * in Admin > Updates.
+ * client alike. Updates are automatic; in Admin > Updates a superadmin can
+ * start one at once with Update Now, and an administrator can Pause All Updates.
  */
 export const UPDATES_AUTOMATIC_ERROR = 'updates_automatic'
 
 export const UPDATES_AUTOMATIC_MESSAGE =
-  'Updates are automatic and cannot be started, retried or cancelled by hand. An administrator can use Pause All Updates in Admin > Updates.'
+  'Updates are automatic and cannot be retried or cancelled by hand. In Admin > Updates a superadmin can start one at once with Update Now, and an administrator can use Pause All Updates.'
 
 /** The body every retired manual-update route answers with HTTP 410. */
 export function updatesAutomaticBody(): { ok: false; error: string; message: string } {

@@ -100,8 +100,10 @@ co-located dev the daemon runs the `instance-dev-install` playbook (see
 **managed upgrades** (`src/features/upgrades/`): the maintenance tick resolves
 the channel manifests, records the latest available build, and drives
 fleet-aware upgrade runs. Updates are always automatic on both runtimes: each
-install checks once an hour at its own minute; nobody starts one by hand, and
-the only control is Pause all updates in Admin > Updates. The exception is a
+install checks once an hour at its own minute, and a superadmin can run that
+check at once with **Update Now** in Admin > Updates (owner decision
+2026-11-03: it starts the update right away through the same path, order and
+gates). The other control is Pause all updates. The exception is a
 development install (control plane from source), which never checks and
 updates only by the manual Build and Push Daemon action. Order is
 co-located daemon → control plane → fleet, with the fleet phase hard-gated on

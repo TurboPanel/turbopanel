@@ -13,7 +13,11 @@
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { setting } from '../../db/schema.ts'
-import { pickUpgradeCheckMinute, type UpgradeCheckSchedule } from '../upgrades/schedule.ts'
+import {
+  type ManualPressField,
+  pickUpgradeCheckMinute,
+  type UpgradeCheckSchedule,
+} from '../upgrades/schedule.ts'
 
 export const UPGRADE_PAUSE_KEY = 'UPGRADE_PAUSE'
 
@@ -78,6 +82,7 @@ export function parseUpgradeCheckSchedule(value: unknown): UpgradeCheckSchedule 
     createdAt,
     lastCheckAt: stringOrNull(value.lastCheckAt),
     lastManualCheckAt: stringOrNull(value.lastManualCheckAt),
+    lastUpdateNowAt: stringOrNull(value.lastUpdateNowAt),
   }
 }
 
@@ -175,21 +180,30 @@ export async function ensureUpgradeCheckSchedule(
 }
 
 /**
- * Record a Check Now press at `at` if the last one was at least `gapMs` ago.
- * One conditional statement on the one field, so two presses (or a press and
- * the scheduled check) never overwrite each other. False when too soon.
+ * Record a Check Now press (or, with `field` `lastUpdateNowAt`, an Update Now
+ * press) at `at` if the last one was at least `gapMs` ago. One conditional
+ * statement on the one field, so two presses (or a press and the scheduled
+ * check) never overwrite each other. False when too soon.
  */
-export async function claimManualUpgradeCheck(db: Db, at: string, gapMs: number): Promise<boolean> {
+export async function claimManualUpgradeCheck(
+  db: Db,
+  at: string,
+  gapMs: number,
+  field: ManualPressField = 'lastManualCheckAt'
+): Promise<boolean> {
+  // `field` is one of two literals, never input, so it is safe as raw SQL.
+  const path = sql.raw(`'{${field}}'`)
+  const key = sql.raw(`'${field}'`)
   const rows = await db
     .update(setting)
     .set({
-      value: sql`jsonb_set(${setting.value}, '{lastManualCheckAt}', to_jsonb(${at}::text))`,
+      value: sql`jsonb_set(${setting.value}, ${path}, to_jsonb(${at}::text))`,
       updatedAt: at,
     })
     .where(
       and(
         eq(setting.key, UPGRADE_CHECK_KEY),
-        sql`(${setting.value}->>'lastManualCheckAt' is null or (${setting.value}->>'lastManualCheckAt')::timestamptz <= ${at}::timestamptz - make_interval(secs => ${gapMs / 1000}))`
+        sql`(${setting.value}->>${key} is null or (${setting.value}->>${key})::timestamptz <= ${at}::timestamptz - make_interval(secs => ${gapMs / 1000}))`
       )
     )
     .returning({ key: setting.key })

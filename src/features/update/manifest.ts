@@ -240,7 +240,9 @@ export function seedUpdateManifestCacheForTests(
 /**
  * The channel manifest for `kind`, cached for {@link MANIFEST_CACHE_MS}.
  * `fresh` skips the cached answer and asks the release server now (Check Now
- * in Admin > Updates, rate-limited by its route); the answer refills the cache.
+ * and Update Now in Admin > Updates, rate-limited by their routes); a build it
+ * finds refills the cache, and an empty answer (release server unreachable)
+ * leaves the cached one alone instead of caching the miss.
  *
  * While the dev overlay provider is installed, the daemon kind comes from the
  * local daemon checkout, so it still drives the fleet-update view. Instance
@@ -269,21 +271,19 @@ export async function resolveUpdateManifest(
     return pending
   }
 
+  const remember = (manifest: UpdateManifestTarget | null) => {
+    if (manifest === null && options.fresh) return
+    cache.set(key, { manifest, expiresAt: Date.now() + MANIFEST_CACHE_MS })
+  }
   const lookup = fetchManifestUncached(channel, kind)
     .then((manifest) => {
-      cache.set(key, {
-        manifest,
-        expiresAt: Date.now() + MANIFEST_CACHE_MS,
-      })
+      remember(manifest)
       inflight.delete(key)
       return manifest
     })
     .catch(() => {
       inflight.delete(key)
-      cache.set(key, {
-        manifest: null,
-        expiresAt: Date.now() + MANIFEST_CACHE_MS,
-      })
+      remember(null)
       return null
     })
   inflight.set(key, lookup)

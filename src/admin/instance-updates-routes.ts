@@ -1,5 +1,5 @@
 import { eq, inArray } from 'drizzle-orm'
-import type { Context, Hono } from 'hono'
+import type { Context, Hono, MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { resolveBuildLabel, resolveInstanceRevision } from '../app/build-info.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
@@ -10,7 +10,17 @@ import { upgrade, user } from '../db/schema.ts'
 import { recordAudit } from '../features/audit/audit-records.ts'
 import { resolveUpdateManifest } from '../features/update/manifest.ts'
 import { isExplicitDevelopmentMode } from '../lib/dev-mode.ts'
-import { createUpgradeCoordinator, ensureReservedRunId } from '../features/upgrades/coordinator.ts'
+import {
+  createUpgradeCoordinator,
+  ensureReservedRunId,
+  UPGRADE_TOO_SOON,
+  type UpgradeTargetResolver,
+} from '../features/upgrades/coordinator.ts'
+import {
+  UPDATE_NOW_DEVELOPMENT_MESSAGE,
+  UPDATE_NOW_ERRORS,
+  updateNowAnswer,
+} from '../features/upgrades/update-now.ts'
 import { unitsForPlannedRun } from '../features/upgrades/planner.ts'
 import {
   channelHasInstancePackage,
@@ -114,15 +124,18 @@ async function readColocatedDaemon(c: Context<AppEnv>): Promise<ColocatedDaemon>
 
 /**
  * Installed versions, channel targets, the read-only run and history API, the
- * batch size setting, and Pause / Resume. Updates start on their own (the
- * hourly check); the routes that started, retried or cancelled one by hand
- * answer 410 `updates_automatic`. The control-plane row is `INSTANCE_VERSION`.
+ * batch size setting, Pause / Resume and Update Now. Updates start on their
+ * own (the hourly check) or at once with Update Now; the routes that started,
+ * retried or cancelled one by hand answer 410 `updates_automatic`. The
+ * control-plane row is `INSTANCE_VERSION`.
  */
 export function registerInstanceUpdatesAdminRoutes(
   admin: Hono<AppEnv>,
   opts: {
     runtime: 'deno' | 'workers'
     getEnv?: () => Record<string, string | undefined>
+    /** Superadmin gate for Update Now (`createRootOnlyMiddleware`). */
+    rootOnly: MiddlewareHandler<AppEnv>
   }
 ): void {
   admin.get('/instance/updates', async (c) => c.json(await readUpdatesStatus(c, opts)))
@@ -156,6 +169,69 @@ export function registerInstanceUpdatesAdminRoutes(
     )
     await setLatestAvailableBuild(db, target)
     return c.json(await readUpdatesStatus(c, opts))
+  })
+
+  // Update Now (superadmin): the hourly check, run at once. It asks the
+  // release servers for the newest build (skipping the cache) and, when
+  // something is behind, starts the run through the coordinator's `start()`:
+  // the same preflight, order and fleet gate as the hourly check. A second
+  // press, or the hourly check at the same moment, loses at the run insert
+  // (`uniq_upgrade_active`) and answers 409 `run_active`. Once a minute per
+  // install (429 `check_too_soon`); an unreachable release server is 503
+  // `release_unreachable`, never "up to date".
+  admin.post('/instance/updates/now', opts.rootOnly, async (c) => {
+    if (opts.runtime === 'deno' && isExplicitDevelopmentMode()) {
+      return c.json(
+        {
+          ok: false,
+          error: UPDATE_NOW_ERRORS.development,
+          message: UPDATE_NOW_DEVELOPMENT_MESSAGE,
+        },
+        403
+      )
+    }
+    const db = getDb(c)
+    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    const channel = resolveInstanceUpdateChannel(resolvePlatformEnv(c, opts))
+    const coordinator = await coordinatorFrom(c, opts, () =>
+      resolveUpgradeTarget(channel, (kind) => resolveUpdateManifest(channel, kind, { fresh: true }))
+    )
+    if (coordinator instanceof Response) return coordinator
+    const session = c.get('session')
+    const now = new Date()
+    const result = await coordinator.updateNow({
+      startedBy: session?.userId ?? null,
+      // Once a minute per install, on its own field (a Check Now just before
+      // does not make it wait): repeated presses cannot hammer the release
+      // servers. One conditional write, so two presses cannot both pass.
+      claimPress: async () => {
+        await ensureUpgradeCheckSchedule(db, now.toISOString())
+        return await claimManualUpgradeCheck(
+          db,
+          now.toISOString(),
+          UPGRADE_MANUAL_CHECK_MIN_GAP_MS,
+          'lastUpdateNowAt'
+        )
+      },
+    })
+    const schedule =
+      !result.ok && result.error === UPGRADE_TOO_SOON ? await readUpgradeCheckSchedule(db) : null
+    const answer = updateNowAnswer(
+      result,
+      schedule ? manualCheckWaitSeconds(schedule, now, 'lastUpdateNowAt') : undefined
+    )
+    if (answer.status === 429) c.header('Retry-After', String(answer.body.retryAfterSeconds))
+    if (result.ok && 'runId' in result) {
+      await recordAudit(db, {
+        organizationId: null,
+        actorUserId: session?.userId ?? null,
+        actorEmail: session?.email ?? null,
+        action: 'upgrade.start_now',
+        targetType: 'instance_updates',
+        context: { runId: result.runId },
+      })
+    }
+    return c.json(answer.body, answer.status)
   })
 
   for (const path of RETIRED_UPDATE_ROUTES) {
@@ -269,7 +345,8 @@ async function coordinatorFrom(
   opts: {
     runtime: 'deno' | 'workers'
     getEnv?: () => Record<string, string | undefined>
-  }
+  },
+  resolveTarget?: UpgradeTargetResolver
 ): Promise<ReturnType<typeof createUpgradeCoordinator> | Response> {
   const db = getDb(c)
   if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
@@ -295,6 +372,7 @@ async function coordinatorFrom(
     instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
     buildLabel: resolveBuildLabel(env),
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
+    ...(resolveTarget ? { resolveTarget } : {}),
   })
 }
 

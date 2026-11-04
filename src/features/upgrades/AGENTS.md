@@ -45,15 +45,18 @@ manifests and may start one. Hello, heartbeat, and
 
 ## Updates are always automatic (2026-10-27)
 
-There is no on/off switch and no manual start, retry or cancel. The routes that
-did those (`POST /instance/updates/instance`, `/daemon`, `/preflight`, `/runs`,
+There is no on/off switch and no manual retry or cancel. The one manual start
+is **Update Now** (below, owner decision 2026-11-03): the hourly check, run at
+once. The routes that did the old manual starts, retries and cancels
+(`POST /instance/updates/instance`, `/daemon`, `/preflight`, `/runs`,
 `/steps/:id/retry`, `/runs/:id/cancel`, client `POST /servers/updates`
 and `POST /servers/:id/update`) answer **410** `updates_automatic`
 (`updatesAutomaticBody` in `decisions.ts`, one body for admin and client). The
 legacy per-server updater and the client update gate are gone. The developer
 surface's own daemon update route (`../../developer/update-routes.ts`) stays.
 `UPGRADE_SOURCES` keeps `manual` and
-`server` because older history rows carry them; new runs are `auto`.
+`server` because older history rows carry them; new runs are `auto`, or
+`manual` when Update Now started them.
 
 - **Development is the exception.** With `TURBOPANEL_DEV_SURFACE=1`
   (`isExplicitDevelopmentMode()`, the coordinator's `development`) there is no
@@ -110,6 +113,40 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   of the two. The press is claimed with one conditional `jsonb_set` on that
   field, and the scheduled check writes only `lastCheckAt`, so neither
   overwrites the other.
+- **Update Now** (`POST /instance/updates/now`, superadmin, audited as
+  `upgrade.start_now`, no step-up like Pause / Resume, release installs on both
+  runtimes): the hourly check, run at once. `coordinator.updateNow()` refuses
+  first, before any manifest fetch: `upgrade_run_active` (409 `run_active`
+  with `activeRunId`) while a run is open, `upgrade_paused` (409 `paused`)
+  while paused, `upgrade_development` on a development install (the route
+  answers 403 `development` before that). Otherwise it runs `checkForUpdates`
+  with a fresh target (`resolveUpdateManifest(…, { fresh: true })`), which
+  saves it as the latest build and, when something is behind, calls
+  `start({ source: 'manual', startedBy, updateNow: true })`: the same
+  preflight, order and fleet hard gate as the hourly check, plus the automatic
+  start's no-op rule and retry backoff. Answers: 202 `{ ok, runId }`, 200
+  `{ ok, upToDate: true }` (nothing behind, or every step already done), 409
+  `update_blocked` with `blockers` (a preflight blocker or `retry_later`), 429
+  `check_too_soon`, 503 `release_unreachable` (below).
+  `update-now.ts` maps the result to HTTP. Single-flight: a second press, or
+  the hourly check at the same moment, loses at the run insert (the
+  transaction's active-run read, `uniq_upgrade_active` and the reserved run
+  id's primary key) and answers `run_active`; each step is claimed with a
+  conditional `saveStep` before it is enqueued, so no server gets it twice.
+  It does not move the schedule; Check Now's minute stays its own.
+  Update Now refuses while any run is open, including one waiting only on
+  offline servers (the same as the hourly tick; only a direct `start()`
+  settles such a run first).
+  It is rate-limited like Check Now: once a minute per install, claimed with
+  `claimManualUpgradeCheck(…, 'lastUpdateNowAt')` (its own field, so a Check
+  Now just before does not make it wait) after the open-run and pause
+  refusals and before any manifest fetch; sooner answers 429
+  `check_too_soon` with `retryAfterSeconds` and `Retry-After`. When every
+  manifest the channel publishes comes back empty (`releaseServerUnreachable`
+  in `target-resolve.ts`: the release server was not reached) it answers 503
+  `release_unreachable` and keeps the saved build, instead of "up to date".
+  A `fresh` manifest read never caches an empty answer, so the next read asks
+  again instead of serving the miss for `MANIFEST_CACHE_MS`.
 - **Pause** (`UPGRADE_PAUSE` row, `../settings/upgrade-control.ts`): `POST
 /instance/updates/pause` / `resume`, admins only, recorded in the activity log
   (`upgrade.pause` / `upgrade.resume`). It snapshots who paused and when, so the
@@ -165,8 +202,9 @@ kind (a development install never runs this check; see above). Store the latest 
 
 ## Runs
 
-- **Starting a run** (`start()`, called by the check with `source: 'auto'`;
-  the manual sources remain for tests and history only) — pre-flight first; 409 when a run is already active
+- **Starting a run** (`start()`, called by the check with `source: 'auto'`
+  and by Update Now with `source: 'manual'`; `server` remains for tests and
+  history only) — pre-flight first; 409 when a run is already active
   (`uniq_upgrade_active`), except a run whose only open steps are fleet
   `waiting` rows (never dispatched) for servers that are not connected:
   `start()` settles those as `skipped` (`server_offline`) and opens the new
@@ -317,7 +355,8 @@ working.
 - A run whose last open step settles this tick finishes this tick (the
   recount covers the whole run, not just the page the tick read).
 - No endpoint retries a step or cancels a run: a failed server is retried by a
-  later automatic run (see **Automatic retry with backoff**) and Pause stops a run.
+  later automatic run or Update Now, after its backoff (see **Automatic retry
+  with backoff**), and Pause stops a run.
 - A control-plane (`instance`) step is never settled by the commit alone once it
   was dispatched: the new binary answers as soon as it restarts, while the
   daemon is still verifying it (and may roll it back). Only the daemon's `done`
@@ -397,7 +436,8 @@ grouped `count(*)`, not a materialised server or step list.
   (`ServerUpdateBlockedCode` in `decisions.ts`). Clients branch on the code,
   never the sentence.
 - Admin API (`../../admin/instance-updates-routes.ts` + `openapi/`): status,
-  pause, resume, runs, history, servers list, batch settings; the retired
+  Check Now, Update Now, pause, resume, runs, history, servers list, batch
+  settings; the retired
   manual routes answer 410. `GET /instance/updates/run` answers
   `{ run, lastRun }`: when nothing is active, `lastRun` is the most recent
   finished run (steps, `error`, each step's `errorCode` / `errorMessage`) if it
