@@ -151,7 +151,10 @@ in the execution-log store — there is no Postgres column for them. See
 - **Busy checks are cheap.** A busy server is the common answer, so it is
   found with one unlocked read; the lock is taken only when nothing seems to
   block (and the check runs again under it). The waiting command is stamped at
-  most every 30 s (`WAITING_STAMP_INTERVAL_MS`), its dispatch payload is read
+  most every 30 s (`WAITING_STAMP_INTERVAL_MS`), and each stamp keeps its
+  expiry at least `WAITING_EXPIRY_FLOOR_MS` away (the longest wait plus a
+  minute, so a two-minute command looking every two minutes never expires
+  while it waits); its dispatch payload is read
   only after it wins its turn, and it looks again less often the longer it
   waits (`serverBusyDelaySeconds`: 10 s for the first minute, 30 s up to five
   minutes, then 120 s). The claim only succeeds against the row exactly as the

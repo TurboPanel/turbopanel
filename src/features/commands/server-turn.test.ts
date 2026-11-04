@@ -106,6 +106,24 @@ test('a quick command skips the line and never holds it', async () => {
   })
 })
 
+test('a waiting command with a short lifetime is kept alive until its next look', async () => {
+  await withServers(async ({ db, serverId }) => {
+    const running = await newCommand(db, serverId, 'server.hostname.set')
+    await transitionCommand(db, running.id, { status: 'sent' })
+    const waiting = await newCommand(db, serverId, 'server.hostname.set')
+    // Seen 40 s ago, about to expire: the credit alone would leave 45 s, less
+    // than the two minutes until it looks again.
+    await db.execute(
+      sql`update command set updated_at = now() - interval '40 seconds', expires_at = now() + interval '5 seconds' where id = ${waiting.id}`
+    )
+    assertEquals(await claim(db, waiting), 'busy')
+    const [row] = await db.execute<{ seconds: number }>(
+      sql`select extract(epoch from (expires_at - now())) as seconds from command where id = ${waiting.id}`
+    )
+    assertEquals(Number(row?.seconds) > 170, true)
+  })
+})
+
 test('a command waiting its turn gets the time it waited back on its expiry', async () => {
   await withServers(async ({ db, serverId }) => {
     const running = await newCommand(db, serverId, 'server.hostname.set')

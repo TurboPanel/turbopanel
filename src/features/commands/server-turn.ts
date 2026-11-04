@@ -27,6 +27,7 @@ import { and, eq, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, server } from '../../db/schema.ts'
 import { DEPLOY_SIGNAL_GRACE_MS } from './deploy-wait.ts'
+import { SERVER_BUSY_LONGEST_DELAY_SECONDS } from './delivery-retry.ts'
 import { nowIso } from './ids.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
@@ -131,6 +132,13 @@ export type ServerTurnInput = {
 export const WAITING_STAMP_INTERVAL_MS = 30_000
 
 /**
+ * A waiting command's expiry is never set closer than this after a stamp: the
+ * longest wait before its next look plus a margin, so its next look always
+ * finds it alive and stamps it again.
+ */
+export const WAITING_EXPIRY_FLOOR_MS = (SERVER_BUSY_LONGEST_DELAY_SECONDS + 60) * 1000
+
+/**
  * Mark the command `dispatching` (stamping `dispatch_started_at` and counting
  * the attempt), but only if it is still exactly as the consumer read it: a
  * second delivery of the same command (an at-least-once queue can hand one
@@ -173,7 +181,13 @@ async function stampWaiting(db: Db, commandId: string, now: string): Promise<voi
     .update(command)
     .set({
       updatedAt: now,
-      expiresAt: sql`${command.expiresAt} + (${now}::timestamptz - ${command.updatedAt})`,
+      // Never closer than the longest wait to its next look plus a margin: a
+      // command with a two-minute lifetime that looks every two minutes would
+      // otherwise expire just before it looks again. No expiry stays none.
+      expiresAt: sql`case when ${command.expiresAt} is null then null else greatest(
+        ${command.expiresAt} + (${now}::timestamptz - ${command.updatedAt}),
+        ${now}::timestamptz + ${WAITING_EXPIRY_FLOOR_MS} * interval '1 millisecond'
+      ) end`,
     })
     .where(
       and(
