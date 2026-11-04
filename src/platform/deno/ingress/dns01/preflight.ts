@@ -224,7 +224,11 @@ function withTimeout(): { signal: AbortSignal } {
   return { signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) }
 }
 
-/** The real lookups. Straight to the DNS, not the system resolver: authoritative answers are the point. */
+/**
+ * The real lookups. CAA, NS and addresses go through this host's resolver,
+ * which split DNS may answer locally; `txtAt` asks one authoritative server
+ * directly by address, because authoritative answers are the point there.
+ */
 export const denoDnsLookup: DnsLookup = {
   caa: async (name) =>
     ((await Deno.resolveDns(name, 'CAA', withTimeout())) as DenoCaa[]).map((record) => ({
