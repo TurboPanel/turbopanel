@@ -147,8 +147,27 @@ in the execution-log store — there is no Postgres column for them. See
   and only then marks this one `dispatching`. A deploy stops counting once the
   server has taken it over (`deployMayLeaveLane`). Nothing is held while the
   command runs; a run that dies leaves its row live until the stale sweep ends
-  it. Busy: the envelope goes back on the queue `SERVER_BUSY_DELAY_SECONDS`
-  later and the attempt is not counted.
+  it. Busy: the envelope goes back on the queue and the attempt is not counted.
+- **Busy checks are cheap.** A busy server is the common answer, so one
+  unlocked statement finds it and stamps the waiting command in the same round
+  trip (`blockedAndStamped`, a data-modifying CTE); the lock is taken only when
+  nothing seems to block (and the check runs again under it; a "busy" found
+  there, or a lock timeout, stamps too). The waiting command is stamped at most
+  every 30 s (`WAITING_STAMP_INTERVAL_MS`), and each stamp keeps its expiry at
+  least `WAITING_EXPIRY_FLOOR_MS` away (the longest wait plus a minute), so a
+  waiting command never expires before its next look. Its dispatch payload is
+  read, and a superseded re-seed refused, only after it wins its turn. It looks
+  again after 10 s for the first minute, then every 30 s
+  (`serverBusyDelaySeconds`, `SERVER_BUSY_LONGEST_DELAY_SECONDS`), so the next
+  command starts at most 30 s after the one ahead of it ends. The owner chose
+  this cap over waking the next command on finish (2026-11-04): a wake-up needs
+  a second copy of the message, and two copies of one command could both run
+  it without an ownership token on every message. The claim only succeeds
+  against the row exactly as the consumer read it (`status` and
+  `dispatch_started_at`), so a second delivery of the same command that read
+  the row before the claim loses and does nothing. A load review on 2026-11-04
+  put the old cost at about 960 database round trips a minute for 20 commands
+  behind one 30-minute backup; now about 2 per look and 64 looks per waiter.
 - **Waiting never counts.** A busy check also moves the command's
   `expires_at` on by the time it waited since it was last seen, and the stale
   sweep times a `queued` command from its last stamp (`updated_at`), so a short

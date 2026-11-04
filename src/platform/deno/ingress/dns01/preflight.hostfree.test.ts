@@ -3,6 +3,7 @@ import type { DnsChallengeProvider } from '../../../../features/tls/dns-certific
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
 import {
   caaWalk,
+  denoDnsLookup,
   type DnsLookup,
   preflightDns01,
   txtNotVisibleDetail,
@@ -77,6 +78,94 @@ test("CAA on the apex allowing Let's Encrypt passes and the nameservers are reso
   const result = await preflightDns01({ provider, dns, zones: ZONES, host: 'panel.example.com' })
   assertEquals(result.ok, true)
   assertEquals(result.nameservers, ['192.0.2.53', '198.51.100.53'])
+})
+
+/** A resolver behind split DNS: the zone is answered locally, so it has no NS records. */
+function splitDns(): DnsLookup {
+  return {
+    ...fakeDns(),
+    ns: () => Promise.reject(new Error('no records found for NS query')),
+  }
+}
+
+function withNameservers(
+  provider: DnsChallengeProvider,
+  nameservers: DnsChallengeProvider['nameservers']
+): DnsChallengeProvider {
+  return { ...provider, nameservers }
+}
+
+test("the provider's nameservers are used when this host's resolver lists none", async () => {
+  const { provider } = fakeProvider()
+  const listed = withNameservers(provider, (zoneId) =>
+    Promise.resolve(zoneId === 'zone-1' ? ['ns1.example.net', 'ns2.example.net'] : [])
+  )
+  const result = await preflightDns01({
+    provider: listed,
+    dns: splitDns(),
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.ok, true)
+  assertEquals(result.nameservers, ['192.0.2.53', '198.51.100.53'])
+})
+
+test("the provider's nameservers win over the resolver's", async () => {
+  const { provider } = fakeProvider()
+  const listed = withNameservers(provider, () => Promise.resolve(['ns1.example.net']))
+  const result = await preflightDns01({
+    provider: listed,
+    dns: fakeDns(),
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.nameservers, ['192.0.2.53'])
+})
+
+test('a provider that refuses the nameserver read falls back to the resolver', async () => {
+  const { provider } = fakeProvider()
+  const refusing = withNameservers(provider, () =>
+    Promise.reject(new TunnelProviderError('forbidden', 'refused', 403))
+  )
+  const result = await preflightDns01({
+    provider: refusing,
+    dns: fakeDns(),
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.ok, true)
+  assertEquals(result.nameservers, ['192.0.2.53', '198.51.100.53'])
+})
+
+test('no nameservers from the provider or the resolver fails and says where it looked', async () => {
+  const { provider } = fakeProvider()
+  const result = await preflightDns01({
+    provider: withNameservers(provider, () => Promise.resolve([])),
+    dns: splitDns(),
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.ok, false)
+  assertEquals(result.failure, {
+    cause: 'dns-lookup',
+    detail:
+      "No nameservers found for example.com: the DNS provider listed none, and this server's resolver returned no NS records.",
+  })
+})
+
+test('nameserver names with no address fail as a lookup problem and name them', async () => {
+  const { provider } = fakeProvider()
+  const result = await preflightDns01({
+    provider: withNameservers(provider, () => Promise.resolve(['ns1.example.net'])),
+    dns: { ...fakeDns(), addresses: () => Promise.reject(new Error('lookup timed out')) },
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.failure, {
+    cause: 'dns-lookup',
+    detail:
+      "Could not look up the addresses of the example.com nameservers (ns1.example.net) through this server's resolver.",
+  })
 })
 
 test('txtVisibleOnAll names the servers that do not answer yet', async () => {
@@ -165,5 +254,46 @@ test('caaWalk goes from the name up to the zone apex', () => {
     'a.b.example.com',
     'b.example.com',
     'example.com',
+  ])
+})
+
+type Resolve = (name: string, type: string, options?: Deno.ResolveDnsOptions) => Promise<unknown>
+
+/** Swap `Deno.resolveDns` while `fn` runs, so no real lookup leaves this host. */
+async function withResolveDns(resolve: Resolve, fn: () => Promise<void>): Promise<void> {
+  const original = Object.getOwnPropertyDescriptor(Deno, 'resolveDns')
+  Object.defineProperty(Deno, 'resolveDns', { value: resolve, configurable: true, writable: true })
+  try {
+    await fn()
+  } finally {
+    if (original) Object.defineProperty(Deno, 'resolveDns', original)
+  }
+}
+
+test("the real lookups ask only this host's resolver, with a timeout", async () => {
+  const asked: string[] = []
+  const answers: Record<string, string[]> = {
+    'NS example.com': ['ns1.example.net.'],
+    'A ns1.example.net': ['192.0.2.53'],
+  }
+  await withResolveDns(
+    (name, type, options) => {
+      asked.push(`${type} ${name} ${options?.nameServer ? 'other' : 'system'}`)
+      assertEquals(options?.signal instanceof AbortSignal, true)
+      const answer = answers[`${type} ${name}`]
+      return answer ? Promise.resolve(answer) : Promise.reject(new Error('no records'))
+    },
+    async () => {
+      assertEquals(await denoDnsLookup.ns('example.com'), ['ns1.example.net.'])
+      assertEquals(await denoDnsLookup.addresses('ns1.example.net'), ['192.0.2.53'])
+      assertEquals(await denoDnsLookup.addresses('ns2.example.net'), [])
+    }
+  )
+  assertEquals(asked, [
+    'NS example.com system',
+    'A ns1.example.net system',
+    'AAAA ns1.example.net system',
+    'A ns2.example.net system',
+    'AAAA ns2.example.net system',
   ])
 })

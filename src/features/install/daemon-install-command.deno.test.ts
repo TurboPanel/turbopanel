@@ -119,7 +119,7 @@ test('buildLicenseInstallCommand Workers omits host on production URL', () => {
 test("composed pipeline omits insecure TLS for a Let's Encrypt hostname", () => {
   const instanceUrl = 'https://panel.example.com:8443'
   const insecureTls = installOriginNeedsInsecureTls(instanceUrl, {
-    source: 'lets-encrypt',
+    source: 'acme-http-01',
   })
   const command = buildLicenseInstallCommand({
     runtime: 'deno',

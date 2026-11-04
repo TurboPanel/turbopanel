@@ -8,7 +8,7 @@ import type { AppEnv } from '../../../../app/app.ts'
 import { auditInstance, type IngressAdminDeps, routeServices } from '../route-context.ts'
 import { loadDns01Row, type Dns01Row, startOrder } from './order.ts'
 import { buildDns01Deps } from './runtime.ts'
-import { inProgress, withStage } from './state.ts'
+import { clearedForRetry, inProgress } from './state.ts'
 
 function describe(row: Dns01Row) {
   const { state } = row
@@ -29,7 +29,7 @@ function missing(c: Context<AppEnv>): Response {
   return c.json({ ok: false, error: 'No DNS-01 hostname with that id' }, 404)
 }
 
-/** Start an order now; `reset` (Retry) also clears the failure count. */
+/** Start an order now; `reset` (Retry) also clears the failure counts and the daily order cap. */
 async function orderNow(
   c: Context<AppEnv>,
   deps: IngressAdminDeps,
@@ -49,9 +49,7 @@ async function orderNow(
     env: ready.service.env,
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
   })
-  const target = reset
-    ? { ...row, state: withStage(row.state, row.state.stage, { attempts: 0 }) }
-    : row
+  const target = reset ? { ...row, state: clearedForRetry(row.state) } : row
   const result = await startOrder(dns01, target)
   if ('ok' in result) return c.json(result, 422)
   await auditInstance(c, ready.db, 'instance.dns01.ordered', row.id, {

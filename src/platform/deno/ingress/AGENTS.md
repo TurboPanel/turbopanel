@@ -72,7 +72,10 @@ High Availability (Workers) must not contain any of it.
   passes `token-policies` with a note naming the optional permission, and the
   scopes come from read probes instead (list tunnels on the account, one DNS
   read per zone, up to 25); Connect then confirms Tunnel Edit and names the
-  failing step. A refused probe is a no, a transient one throws. Cloudflare Tunnel Edit counts only in a policy whose
+  failing step. On that path DNS-01 is offered for every zone the token can
+  read: DNS Edit is confirmed at the first certificate (its preflight writes a
+  probe TXT record), and a zone it cannot read fails the DNS line with
+  "cannot read". A refused probe is a no, a transient one throws. Cloudflare Tunnel Edit counts only in a policy whose
   resources cover the account; in a zone-only policy it does not (read
   probes passed such a token and Connect then failed with a bare 403). DNS
   Edit counts per zone (zone, all-zones wildcard, the account, or the nested
@@ -135,29 +138,65 @@ High Availability (Workers) must not contain any of it.
   the existing ACME client with its own account (`INSTANCE_ACME_ACCOUNT`
   setting, sealed, swept by the re-encrypt `identity` stage; contact, terms and
   directory from `INSTANCE_ACME_SETTINGS`). One step per tick: preflight
-  (zone on the account, a probe TXT write, CAA, nameservers), order and publish
-  the TXT record, wait until every authoritative nameserver address that
+  (zone on the account, a probe TXT write, CAA, nameservers: the provider's
+  own list first (`DnsChallengeProvider.nameservers`, Cloudflare's zone
+  `name_servers`), this host's resolver only as the fallback, because a
+  resolver behind split DNS answers the zone locally with no NS records; no
+  other resolver is asked), order and publish the TXT record, wait until every authoritative nameserver address that
   answers has it (up to 10 minutes; `txtVisibleOnAll`: an address this host
   cannot reach, such as IPv6 on an IPv4-only host, is left out, a NotFound
   answer counts as an answer without the record, and at least one address must
   confirm), answer, then finalize with a key made inside that step (never
   stored before the pair), store the pair sealed in `certificate` with
-  `kind='dns-01'`, point `origin.uploaded_cert_id` at it, remove the record and
+  `kind='acme-dns-01'`, point `origin.uploaded_cert_id` at it, remove the record and
   push the hostname list to the daemon. Renewal time is a random moment in the
   ARI window, else a third of the lifetime before expiry (at least 7 days);
   renewals send `replaces`. Every issued name is public in certificate
   transparency logs.
-- **Wire mapping.** The daemon never sees `dns-01`: `effectiveCertificateSource`
+- **Wire mapping.** The daemon never sees `acme-dns-01`: `effectiveCertificateSource`
   (`features/install/instance-hostnames.ts`) turns a row with a live pair into
   `uploaded` and one without (or expired) into `platform-ca`, in the apply
   payload, the install trust and the `/instance/ca` decision alike. Derived,
-  never stored.
+  never stored. The apply payload then passes it through
+  `wireCertificateSource`, which sends `acme-http-01` under the daemon's
+  original name `lets-encrypt`; the stored and API names never reach the wire.
 - **Failure handling.** Each failure maps to one cause (`dns01/state.ts`
   `DNS01_CAUSES`). Retries back off with full jitter from 5 minutes, capped at
   an hour, never more than 4 starts in a rolling hour; the weekly duplicate
   limit and the hourly failed-validation limit set `stopUntil`, which a manual
   Retry also honours (422 with the time). After 6 failed orders the name waits
-  for Retry. The last valid certificate keeps serving until it expires; at
+  for Retry; every cause counts toward that except `dns-lookup`. `dns-lookup`
+  (no nameserver address found in preflight, or no authoritative server
+  reachable while waiting for the record) is this host's problem, not the
+  authority's refusal: it backs off 1, 5, 15, 60 minutes, then hourly
+  (`DNS01_LOOKUP_BACKOFF_MS`, counted in `lookupFailures`), never reaches
+  `failed` and alerts only from the third in a row. A preflight lookup
+  failure asked the authority nothing, so it does not use the hourly start
+  budget; one while waiting for the record came after an order was opened, so
+  that start stays in `attemptTimes` and counts. Retry clears both counts
+  and the daily order cap (`clearedForRetry`).
+- **Abandoned orders.** Every open order holds a pending authorization at the
+  authority, which limits pending authorizations and new orders per account,
+  so an order is never just dropped. A `dns-lookup` while waiting for the
+  record (and a preflight `dns-lookup` after it) keeps the order and its
+  record in `acme_state` (`OrderFate` `keep` in `dns01/order.ts`); the next
+  start runs the preflight and picks it up again (`resumeKept`) while its
+  authorization is still pending, its challenge unanswered and it has more
+  than `DNS01_RESUME_MARGIN_MS` (2 hours) left (`canResume`), restarting the
+  record wait with the lookup count kept. Any other way an unanswered order
+  ends (record not visible after `TXT_WAIT_MS`, a failed challenge answer, an
+  error after `newOrder`, a non-lookup preflight failure with a kept order, a
+  kept order that cannot be picked up, the validation timeout) deactivates its
+  authorization (RFC 8555 §7.5.2, `AcmeClient.deactivateAuthorization`) and
+  adds the time to `abandonedTimes`. Deactivation is best effort: a failure is
+  logged without detail and the stored cause stays. An `account-error` skips
+  it (the account is gone, and a new client would register another). After
+  `DNS01_MAX_ABANDONED_PER_DAY` (10) in a rolling day the name opens no new
+  order: the preflight still runs hourly and `lastError` says when the cap
+  frees; Retry clears it. `abandonedTimes` is additive JSON (missing reads as
+  empty). A kept order on a hostname that is removed lapses at the authority
+  on its own.
+- **After failures.** The last valid certificate keeps serving until it expires; at
   expiry the tick pushes the Platform CA fallback once. Alerts use the one
   instance event `certificate.expiring`: `kind: failed` once per cause, then a
   countdown at 14, 7, 3 and 1 days (`certificate.renewal_failed` is

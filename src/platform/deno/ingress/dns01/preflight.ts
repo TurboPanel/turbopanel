@@ -102,12 +102,41 @@ export async function caaAllows(
   return { ok: true, name: null }
 }
 
-async function nameserverAddresses(dns: DnsLookup, zoneName: string): Promise<string[]> {
-  const servers = await dns.ns(zoneName).catch(() => [])
+/**
+ * The zone's nameserver names: the provider's own list first, then this
+ * host's resolver. A resolver behind split DNS answers the zone locally and
+ * lists no nameservers (or its own), so it is only the fallback. A provider
+ * that cannot say, or refuses the read, leaves the resolver to answer.
+ */
+async function nameserverNames(
+  provider: DnsChallengeProvider,
+  dns: DnsLookup,
+  zone: ProviderZone
+): Promise<string[]> {
+  const listed = provider.nameservers ? await provider.nameservers(zone.id).catch(() => []) : []
+  if (listed.length > 0) return listed
+  return await dns.ns(zone.name).catch(() => [])
+}
+
+/** Every address of every nameserver, through this host's resolver. */
+async function nameserverAddresses(dns: DnsLookup, servers: readonly string[]): Promise<string[]> {
   const addresses = await Promise.all(
     servers.map((server) => dns.addresses(server.replace(/\.$/, '')).catch(() => []))
   )
   return [...new Set(addresses.flat())]
+}
+
+/**
+ * Why no nameserver address was found. This is a lookup problem on this side
+ * (`dns-lookup`), never a refusal by the authority, so it backs off on its own
+ * schedule and does not count toward the failed-order limit.
+ */
+function lookupFailure(zone: ProviderZone, names: readonly string[]): Dns01Failure {
+  const detail =
+    names.length === 0
+      ? `No nameservers found for ${zone.name}: the DNS provider listed none, and this server's resolver returned no NS records.`
+      : `Could not look up the addresses of the ${zone.name} nameservers (${names.join(', ')}) through this server's resolver.`
+  return { cause: 'dns-lookup', detail }
 }
 
 export async function preflightDns01(input: {
@@ -138,14 +167,9 @@ export async function preflightDns01(input: {
     return stop(checks, { cause: 'caa-forbids', detail }, zone)
   }
   checks.push(check('caa', true, 'CAA records allow this certificate authority.'))
-  const nameservers = await nameserverAddresses(dns, zone.name)
-  if (nameservers.length === 0) {
-    return stop(
-      checks,
-      { cause: 'provider-error', detail: "Could not read the zone's nameservers." },
-      zone
-    )
-  }
+  const names = await nameserverNames(input.provider, dns, zone)
+  const nameservers = await nameserverAddresses(dns, names)
+  if (nameservers.length === 0) return stop(checks, lookupFailure(zone, names), zone)
   checks.push(check('nameservers', true, `Found ${nameservers.length} nameserver addresses.`))
   return { ok: true, checks, failure: null, zone, nameservers }
 }
@@ -207,7 +231,11 @@ function withTimeout(): { signal: AbortSignal } {
   return { signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) }
 }
 
-/** The real lookups. Straight to the DNS, not the system resolver: authoritative answers are the point. */
+/**
+ * The real lookups. CAA, NS and addresses go through this host's resolver,
+ * which split DNS may answer locally; `txtAt` asks one authoritative server
+ * directly by address, because authoritative answers are the point there.
+ */
 export const denoDnsLookup: DnsLookup = {
   caa: async (name) =>
     ((await Deno.resolveDns(name, 'CAA', withTimeout())) as DenoCaa[]).map((record) => ({

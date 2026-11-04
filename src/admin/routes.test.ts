@@ -1031,7 +1031,7 @@ test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          hostnames: [{ host: '10.1.2.3', source: 'lets-encrypt' }],
+          hostnames: [{ host: '10.1.2.3', source: 'acme-http-01' }],
         }),
       })
       assertEquals(rejectedAcme.status, 422)
@@ -1779,7 +1779,7 @@ async function withLetsEncryptColocated(
     const seeded = await replaceInstanceHostnames(db, [
       {
         host: 'https://acme-env.example.com',
-        source: 'lets-encrypt',
+        source: 'acme-http-01',
         uploadedCertId: null,
       },
     ])
@@ -1854,7 +1854,7 @@ test("PUT /instance/hostnames refuses to store a Let's Encrypt row while the ter
       headers: { Cookie: cookie, 'content-type': 'application/json' },
       body: JSON.stringify({
         hostnames: [
-          { host: 'https://acme-env.example.com', source: 'lets-encrypt' },
+          { host: 'https://acme-env.example.com', source: 'acme-http-01' },
           { host: 'https://other.example.com', source: 'platform-ca' },
         ],
       }),

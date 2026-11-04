@@ -1484,6 +1484,15 @@ export const command = pgTable(
     index('idx_command_open')
       .using('btree', table.status.asc(), table.updatedAt.asc())
       .where(sql`${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running')`),
+    /**
+     * Open commands of one server, oldest first: the server-turn check
+     * (`features/commands/server-turn.ts`) asks "is anything of this server
+     * still running, or older and still waiting" on every look of a waiting
+     * command. Only open rows are in it, so it stays small.
+     */
+    index('idx_command_server_open')
+      .using('btree', table.serverId.asc(), table.createdAt.asc(), table.id.asc())
+      .where(sql`${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running')`),
     /** Open commands of one managed cluster (failover, destroy, TLS rotation lookups). */
     index('idx_command_managed')
       .using('btree', table.managedId.asc())
@@ -6525,10 +6534,10 @@ export const instanceUploadedCertificate = pgTable(
       withTimezone: true,
       mode: 'string',
     }).notNull(),
-    /** `uploaded` (an operator's pair) or `dns-01` (issued by the control plane for its own name). */
+    /** `uploaded` (an operator's pair) or `acme-dns-01` (issued by the control plane for its own name). */
     kind: text().default('uploaded').notNull(),
   },
-  () => [check('certificate_kind_check', sql`kind IN ('uploaded', 'dns-01')`)]
+  () => [check('certificate_kind_check', sql`kind IN ('uploaded', 'acme-dns-01')`)]
 )
 /**
  * Install-level provider account for the panel's own hostnames (tunnel, DNS,
@@ -6613,7 +6622,7 @@ export const instanceHostname = pgTable(
       .notNull(),
     /** Normalized public URL entry (`parsePublicUrlEntries` form). */
     host: text().notNull(),
-    /** `platform-ca` | `uploaded` | `lets-encrypt` | `dns-01` */
+    /** `platform-ca` | `uploaded` | `acme-http-01` | `acme-dns-01` */
     source: text().notNull(),
     uploadedCertId: uuid('uploaded_cert_id'),
     acmeLastAttemptAt: timestamp('acme_last_attempt_at', {
@@ -6636,7 +6645,7 @@ export const instanceHostname = pgTable(
     /** Provider account an edge mode uses; NULL for `direct` and `lan-only`. */
     ingressId: uuid('ingress_id'),
     ingressState: jsonb('ingress_state'),
-    /** DNS-01 order and renewal progress for a `dns-01` name; holds no key or token. */
+    /** DNS-01 order and renewal progress for an `acme-dns-01` name; holds no key or token. */
     acmeState: jsonb('acme_state'),
   },
   (table) => [
@@ -6666,7 +6675,7 @@ export const instanceHostname = pgTable(
       .where(sql`is_primary`),
     check(
       'origin_source_check',
-      sql`source IN ('platform-ca', 'uploaded', 'lets-encrypt', 'dns-01')`
+      sql`source IN ('platform-ca', 'uploaded', 'acme-http-01', 'acme-dns-01')`
     ),
     check(
       'origin_uploaded_cert_check',

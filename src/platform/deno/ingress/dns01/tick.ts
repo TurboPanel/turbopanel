@@ -1,5 +1,5 @@
 /**
- * The once-a-minute DNS-01 pass over `dns-01` hostnames: move open orders
+ * The once-a-minute DNS-01 pass over `acme-dns-01` hostnames: move open orders
  * on, start orders that are due (first order, back-off elapsed, renewal
  * time), send the expiry countdown, and push the Platform CA fallback to the
  * daemon once a certificate has expired. Bounded per tick.
@@ -64,7 +64,7 @@ export async function runDns01Tick(deps: Dns01Deps): Promise<void> {
   const ids = await deps.db
     .select({ id: instanceHostname.id })
     .from(instanceHostname)
-    .where(eq(instanceHostname.source, 'dns-01'))
+    .where(eq(instanceHostname.source, 'acme-dns-01'))
   let worked = 0
   await forEachSequential(ids, async ({ id }) => {
     const row = await loadDns01Row(deps.db, id)
@@ -81,7 +81,7 @@ export async function anyDns01Hostname(db: Db): Promise<boolean> {
   const rows = await db
     .select({ id: instanceHostname.id })
     .from(instanceHostname)
-    .where(eq(instanceHostname.source, 'dns-01'))
+    .where(eq(instanceHostname.source, 'acme-dns-01'))
     .limit(1)
   return rows.length > 0
 }

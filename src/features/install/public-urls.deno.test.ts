@@ -125,7 +125,7 @@ async function hostnameRows(db: ReturnType<typeof createDenoDb>) {
 test("writing the flat list keeps each existing hostname's certificate source", async () => {
   await withPublicUrlsFixture(async (db) => {
     await db.delete(instanceHostname)
-    const upserted = await upsertInstanceHostname(db, 'panel.example.com', 'lets-encrypt')
+    const upserted = await upsertInstanceHostname(db, 'panel.example.com', 'acme-http-01')
     assertEquals(upserted.ok, true)
 
     // The legacy flat editor only knows the names; it must not reset sources.
@@ -138,7 +138,7 @@ test("writing the flat list keeps each existing hostname's certificate source", 
       },
       {
         host: 'https://panel.example.com:8443',
-        source: 'lets-encrypt',
+        source: 'acme-http-01',
         uploadedCertId: null,
       },
     ])

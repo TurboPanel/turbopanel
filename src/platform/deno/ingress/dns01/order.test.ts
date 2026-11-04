@@ -12,13 +12,20 @@ import {
   type ResolvedInstanceAcmeSettings,
 } from '../../../../features/install/instance-acme-settings.ts'
 import type { DnsChallengeProvider } from '../../../../features/tls/dns-certificates/dns-provider.ts'
-import { createFakeCa, FAKE_CA_DIRECTORY } from '../../../../lib/acme/fake-ca.test.support.ts'
+import {
+  createFakeCa,
+  type FakeCa,
+  type FakeCaOptions,
+  FAKE_CA_DIRECTORY,
+} from '../../../../lib/acme/fake-ca.test.support.ts'
 import { decryptSecret, encryptSecret } from '../../../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../../../lib/secrets/secrets.ts'
 import type { NotificationContext } from '../../../../features/notifications/events.ts'
 import { skipWithoutDatabase } from '../../../../test-fixtures/require-service.test.support.ts'
 import { parseTestSecretsConfig } from '../../../../test-fixtures/secrets.ts'
-import { advanceOrder, type Dns01Deps, loadDns01Row, startOrder } from './order.ts'
+import { DNS01_MAX_ABANDONED_PER_DAY } from './backoff.ts'
+import { advanceOrder, type Dns01Deps, loadDns01Row, startOrder, TXT_WAIT_MS } from './order.ts'
+import { clearedForRetry } from './state.ts'
 import { runDns01Tick } from './tick.ts'
 
 const test = Deno.test.bind(Deno)
@@ -33,6 +40,7 @@ type World = {
   records: Map<string, string[]>
   sent: NotificationContext[]
   pushes: number[]
+  ca: FakeCa
 }
 
 async function seed(
@@ -62,14 +70,18 @@ async function seed(
     .returning({ id: ingressAccount.id })
   const [row] = await db
     .insert(instanceHostname)
-    .values({ host: `https://${host}:8443`, source: 'dns-01' })
+    .values({ host: `https://${host}:8443`, source: 'acme-dns-01' })
     .returning({ id: instanceHostname.id })
   return { hostnameId: row!.id, accountId: account!.id }
 }
 
-async function world(db: Db, host: string): Promise<World> {
+async function world(
+  db: Db,
+  host: string,
+  caOptions: Omit<FakeCaOptions, 'txt'> = {}
+): Promise<World> {
   const records = new Map<string, string[]>()
-  const ca = createFakeCa({ txt: (name) => records.get(name) ?? [] })
+  const ca = createFakeCa({ ...caOptions, txt: (name) => records.get(name) ?? [] })
   const provider: DnsChallengeProvider = {
     lookupCname: () => Promise.resolve(null),
     present: (input) => {
@@ -115,7 +127,7 @@ async function world(db: Db, host: string): Promise<World> {
     applyToDaemon: () => Promise.resolve(void pushes.push(1)),
     sleep: () => Promise.resolve(),
   }
-  return { deps, hostnameId, records, sent, pushes }
+  return { deps, hostnameId, records, sent, pushes, ca }
 }
 
 async function cleanup(db: Db, hostnameId: string): Promise<void> {
@@ -130,7 +142,7 @@ async function cleanup(db: Db, hostnameId: string): Promise<void> {
   await db.delete(setting).where(eq(setting.key, INSTANCE_ACME_ACCOUNT_SETTING_KEY))
 }
 
-test('a DNS-01 order goes from idle to issued and stores a sealed dns-01 pair', async () => {
+test('a DNS-01 order goes from idle to issued and stores a sealed acme-dns-01 pair', async () => {
   if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
   const db = createDenoDb()
   const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
@@ -152,7 +164,7 @@ test('a DNS-01 order goes from idle to issued and stores a sealed dns-01 pair', 
       .select()
       .from(instanceUploadedCertificate)
       .where(eq(instanceUploadedCertificate.id, row.uploadedCertId))
-    assertEquals(cert?.kind, 'dns-01')
+    assertEquals(cert?.kind, 'acme-dns-01')
     assertEquals(cert?.dnsNames, [host])
     assert((await decryptSecret(w.deps.dataEncryption, cert!.keyPem)).includes('PRIVATE KEY'))
     assertEquals(w.records.get(`_acme-challenge.${host}`), [])
@@ -209,7 +221,59 @@ test('an order is refused while the authority limit pauses the name', async () =
   }
 })
 
-test('the tick drives a new dns-01 name to issued and pushes the fallback once at expiry', async () => {
+test('a preflight lookup failure backs off without using the hourly start budget', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const w = await world(db, `panel-${crypto.randomUUID().slice(0, 8)}.example.com`)
+  try {
+    const deps = { ...w.deps, dns: { ...w.deps.dns, addresses: () => Promise.resolve([]) } }
+    const prior = [10, 20].map((min) => new Date(NOW.getTime() - min * 60_000).toISOString())
+    const row = (await loadDns01Row(db, w.hostnameId))!
+    const failed = await startOrder(deps, { ...row, state: { ...row.state, attemptTimes: prior } })
+    assert(!('ok' in failed))
+    assertEquals(failed.stage, 'backoff')
+    assertEquals(failed.lastError?.cause, 'dns-lookup')
+    assertEquals(failed.attemptTimes, prior)
+    assertEquals([failed.attempts, failed.lookupFailures], [0, 1])
+    assertEquals((await loadDns01Row(db, w.hostnameId))!.state.attemptTimes, prior)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('waiting for the record records dns-lookup when no authoritative server answers', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host)
+  try {
+    const started = await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    assert(!('ok' in started))
+    assertEquals(started.stage, 'waiting-dns')
+    const later = new Date(NOW.getTime() + TXT_WAIT_MS + 60_000)
+    const unreachable: Dns01Deps = {
+      ...w.deps,
+      now: () => later,
+      dns: { ...w.deps.dns, txtAt: () => Promise.reject(new Error('network unreachable')) },
+    }
+    const failed = await advanceOrder(unreachable, (await loadDns01Row(db, w.hostnameId))!)
+    assertEquals(failed.stage, 'backoff')
+    assertEquals(failed.lastError?.cause, 'dns-lookup')
+    assertEquals([failed.attempts, failed.lookupFailures], [0, 1])
+    // An order was opened, so its start still counts against the hourly budget.
+    assertEquals(failed.attemptTimes, [NOW.toISOString()])
+    // The order and its record are kept for the next start; nothing was given up.
+    assertEquals(failed.order?.url, started.order?.url)
+    assertEquals(w.records.get(`_acme-challenge.${host}`)?.length, 1)
+    assertEquals(w.ca.deactivated, [])
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('the tick drives a new acme-dns-01 name to issued and pushes the fallback once at expiry', async () => {
   if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
   const db = createDenoDb()
   const w = await world(db, `panel-${crypto.randomUUID().slice(0, 8)}.example.com`)
@@ -224,6 +288,212 @@ test('the tick drives a new dns-01 name to issued and pushes the fallback once a
     await runDns01Tick(expired)
     await runDns01Tick(expired)
     assertEquals((await loadDns01Row(db, w.hostnameId))!.state.expiryApplied, true)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+/** The deps a minute after the record wait ran out, with no authoritative server reachable. */
+function unreachableLater(deps: Dns01Deps): Dns01Deps {
+  const later = new Date(NOW.getTime() + TXT_WAIT_MS + 60_000)
+  return {
+    ...deps,
+    now: () => later,
+    dns: { ...deps.dns, txtAt: () => Promise.reject(new Error('network unreachable')) },
+  }
+}
+
+/** The deps a minute after the record wait ran out, with every server answering without the record. */
+function invisibleLater(deps: Dns01Deps): Dns01Deps {
+  const later = new Date(NOW.getTime() + TXT_WAIT_MS + 60_000)
+  return { ...deps, now: () => later, dns: { ...deps.dns, txtAt: () => Promise.resolve([]) } }
+}
+
+test('an order dropped without its record being seen has its authorization deactivated', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host)
+  try {
+    await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    const invisible = invisibleLater(w.deps)
+    const failed = await advanceOrder(invisible, (await loadDns01Row(db, w.hostnameId))!)
+    assertEquals(failed.lastError?.cause, 'txt-not-visible')
+    assertEquals(failed.order, null)
+    assertEquals(w.ca.deactivated.length, 1)
+    assertEquals(failed.abandonedTimes, [invisible.now().toISOString()])
+    assertEquals(w.records.get(`_acme-challenge.${host}`), [])
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('a refused deactivation is tolerated and keeps the stored cause', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host, { refuseDeactivation: true })
+  try {
+    await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    const invisible = invisibleLater(w.deps)
+    const failed = await advanceOrder(invisible, (await loadDns01Row(db, w.hostnameId))!)
+    assertEquals(failed.stage, 'backoff')
+    assertEquals(failed.lastError?.cause, 'txt-not-visible')
+    assertEquals(w.ca.deactivated, [])
+    assertEquals(failed.abandonedTimes.length, 1)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('a record that fails to publish abandons the order it opened', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const w = await world(db, `panel-${crypto.randomUUID().slice(0, 8)}.example.com`)
+  try {
+    const provider = await w.deps.challengeProvider({} as never)
+    let probes = 0
+    const failing: Dns01Deps = {
+      ...w.deps,
+      // The preflight probe write passes; the challenge record write fails.
+      challengeProvider: () =>
+        Promise.resolve({
+          ...provider,
+          present: (input) =>
+            ++probes === 1 ? provider.present(input) : Promise.reject(new Error('write failed')),
+        }),
+    }
+    const failed = await startOrder(failing, (await loadDns01Row(db, w.hostnameId))!)
+    assert(!('ok' in failed))
+    assertEquals(failed.stage, 'backoff')
+    assertEquals(w.ca.orders.length, 1)
+    assertEquals(w.ca.deactivated.length, 1)
+    assertEquals(failed.abandonedTimes.length, 1)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('an unreachable nameserver keeps the order, and the next start picks it up again', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host)
+  try {
+    const started = await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    assert(!('ok' in started))
+    const kept = await advanceOrder(
+      unreachableLater(w.deps),
+      (await loadDns01Row(db, w.hostnameId))!
+    )
+    assertEquals(kept.stage, 'backoff')
+    assertEquals(kept.lastError?.cause, 'dns-lookup')
+    assertEquals(kept.order?.url, started.order?.url)
+    assertEquals(w.records.get(`_acme-challenge.${host}`)?.length, 1)
+    assertEquals(w.ca.deactivated, [])
+
+    const resumedAt = new Date(NOW.getTime() + 2 * 60 * 60_000)
+    const resumed = await startOrder(
+      { ...w.deps, now: () => resumedAt },
+      (await loadDns01Row(db, w.hostnameId))!
+    )
+    assert(!('ok' in resumed))
+    assertEquals(resumed.stage, 'waiting-dns')
+    assertEquals(resumed.order?.url, started.order?.url)
+    assertEquals(resumed.order?.startedAt, resumedAt.toISOString())
+    assertEquals(w.ca.orders.length, 1)
+
+    const later = { ...w.deps, now: () => resumedAt }
+    const validating = await advanceOrder(later, (await loadDns01Row(db, w.hostnameId))!)
+    assertEquals(validating.stage, 'validating')
+    const issued = await advanceOrder(later, (await loadDns01Row(db, w.hostnameId))!)
+    assertEquals(issued.stage, 'issued')
+    assertEquals(w.ca.issued.length, 1)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('a kept order past its time is deactivated and a new order opens', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host, { authzExpires: '2026-11-01T01:00:00Z' })
+  try {
+    await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    await advanceOrder(unreachableLater(w.deps), (await loadDns01Row(db, w.hostnameId))!)
+    const again = await startOrder(
+      { ...w.deps, now: () => new Date(NOW.getTime() + 2 * 60 * 60_000) },
+      (await loadDns01Row(db, w.hostnameId))!
+    )
+    assert(!('ok' in again))
+    assertEquals(again.stage, 'waiting-dns')
+    assertEquals(w.ca.orders.length, 2)
+    assertEquals(w.ca.deactivated.length, 1)
+    assertEquals(again.abandonedTimes.length, 1)
+    // Only the new order's record is left.
+    assertEquals(w.records.get(`_acme-challenge.${host}`)?.length, 1)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('the daily cap stops new orders but still runs the preflight, and Retry lifts it', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const w = await world(db, `panel-${crypto.randomUUID().slice(0, 8)}.example.com`)
+  try {
+    const abandonedTimes = Array.from({ length: DNS01_MAX_ABANDONED_PER_DAY }, (_, i) =>
+      new Date(NOW.getTime() - (i + 1) * 60 * 60_000).toISOString()
+    )
+    const row = (await loadDns01Row(db, w.hostnameId))!
+    const full = { ...row, state: { ...row.state, abandonedTimes } }
+    const capped = await startOrder(w.deps, full)
+    assert(!('ok' in capped))
+    assertEquals(capped.stage, 'backoff')
+    assertEquals(capped.order, null)
+    assertEquals(capped.attemptTimes, [])
+    assertEquals(capped.nextAttemptAt, new Date(NOW.getTime() + 60 * 60_000).toISOString())
+    assert(capped.lastError?.detail.includes('Retry'))
+    assertEquals(w.ca.orders.length, 0)
+
+    // The preflight still runs while capped: a lookup failure is recorded as such.
+    const noAddresses = { ...w.deps, dns: { ...w.deps.dns, addresses: () => Promise.resolve([]) } }
+    const lookup = await startOrder(noAddresses, (await loadDns01Row(db, w.hostnameId))!)
+    assert(!('ok' in lookup))
+    assertEquals(lookup.lastError?.cause, 'dns-lookup')
+    assertEquals(w.ca.orders.length, 0)
+
+    const stored = (await loadDns01Row(db, w.hostnameId))!
+    const retried = await startOrder(w.deps, { ...stored, state: clearedForRetry(stored.state) })
+    assert(!('ok' in retried))
+    assertEquals(retried.stage, 'waiting-dns')
+    assertEquals(w.ca.orders.length, 1)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('a refused order is mapped as before and deactivates nothing', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const w = await world(db, `panel-${crypto.randomUUID().slice(0, 8)}.example.com`, {
+    rateLimitOrders: true,
+  })
+  try {
+    const failed = await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    assert(!('ok' in failed))
+    assertEquals(failed.lastError?.cause, 'acme-error')
+    assert(failed.stopUntil)
+    assertEquals(w.ca.deactivated, [])
+    assertEquals(failed.abandonedTimes, [])
   } finally {
     await cleanup(db, w.hostnameId)
     await endDbConnection(db)

@@ -29,6 +29,8 @@ export const DNS01_CAUSES = [
   'provider-rate-limited',
   'acme-error',
   'account-error',
+  /** This host could not look up the zone's nameservers; a local problem, retried without limit. */
+  'dns-lookup',
 ] as const
 export type Dns01Cause = (typeof DNS01_CAUSES)[number]
 
@@ -54,8 +56,18 @@ export type Dns01State = {
   stage: Dns01Stage
   order: Dns01Order | null
   attempts: number
+  /**
+   * Lookup failures (`dns-lookup`) in a row. They back off on their own
+   * schedule and never count toward `attempts`.
+   */
+  lookupFailures: number
   /** Start times of recent orders, to stay under the authority's hourly failure limit. */
   attemptTimes: string[]
+  /**
+   * When recent orders were given up before validation (their authorization
+   * deactivated), to cap how many a name opens in a day. Missing reads as none.
+   */
+  abandonedTimes: string[]
   nextAttemptAt: string | null
   /** Set by an authority limit: no order (manual or not) starts before it. */
   stopUntil: string | null
@@ -79,7 +91,9 @@ export const IDLE_STATE: Dns01State = {
   stage: 'idle',
   order: null,
   attempts: 0,
+  lookupFailures: 0,
   attemptTimes: [],
+  abandonedTimes: [],
   nextAttemptAt: null,
   stopUntil: null,
   lastError: null,
@@ -150,7 +164,9 @@ export function readDns01State(raw: unknown): Dns01State {
     stage,
     order: readOrder(raw.order),
     attempts: typeof raw.attempts === 'number' ? raw.attempts : 0,
+    lookupFailures: typeof raw.lookupFailures === 'number' ? raw.lookupFailures : 0,
     attemptTimes: strings(raw.attemptTimes),
+    abandonedTimes: strings(raw.abandonedTimes),
     nextAttemptAt: text(raw.nextAttemptAt),
     stopUntil: text(raw.stopUntil),
     lastError: readError(raw.lastError),
@@ -174,6 +190,11 @@ export function withStage(
   patch: Partial<Dns01State> = {}
 ): Dns01State {
   return { ...state, ...patch, stage }
+}
+
+/** The state a manual Retry starts from: the failure counts and the daily order cap cleared, the stage kept. */
+export function clearedForRetry(state: Dns01State): Dns01State {
+  return withStage(state, state.stage, { attempts: 0, lookupFailures: 0, abandonedTimes: [] })
 }
 
 /** Stages in which an order is open and the tick should move it on. */

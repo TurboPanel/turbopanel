@@ -1,13 +1,30 @@
 import { assert, assertEquals } from '@std/assert'
 import { AcmeError } from '../../../../lib/acme/client.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
+import type { AcmeAuthorization } from '../../../../lib/acme/client.ts'
 import {
+  abandonedInLastDay,
+  alertsFor,
+  canResume,
+  cappedState,
   DNS01_BACKOFF_BASE_MS,
   DNS01_BACKOFF_CAP_MS,
+  DNS01_MAX_ABANDONED_PER_DAY,
+  DNS01_MAX_ATTEMPTS,
+  DNS01_RESUME_MARGIN_MS,
   Dns01AccountError,
+  failureState,
   mapAcmeFailure,
   nextAttemptAt,
+  orderCapReached,
 } from './backoff.ts'
+import {
+  clearedForRetry,
+  type Dns01Failure,
+  type Dns01State,
+  IDLE_STATE,
+  readDns01State,
+} from './state.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -80,4 +97,163 @@ test('each failure kind maps to one plain cause', () => {
     'provider-rate-limited'
   )
   assertEquals(mapAcmeFailure(new Error('x'.repeat(500)), NOW).detail.length, 200)
+})
+
+const LOOKUP: Dns01Failure = { cause: 'dns-lookup', detail: 'No nameservers found.' }
+const MINUTE = 60_000
+
+function fail(state: Dns01State, failure: Dns01Failure, now = NOW): Dns01State {
+  return failureState(state, failure, { now, random: () => 0, stopUntil: null })
+}
+
+test('a nameserver lookup failure backs off 1, 5, 15, 60 minutes, then hourly, and never stops', () => {
+  let state: Dns01State = { ...IDLE_STATE, stage: 'preflight' }
+  const delays: number[] = []
+  for (let n = 0; n < DNS01_MAX_ATTEMPTS + 3; n++) {
+    state = fail(state, LOOKUP)
+    delays.push((Date.parse(state.nextAttemptAt ?? '') - NOW.getTime()) / MINUTE)
+    assertEquals(state.stage, 'backoff')
+  }
+  assertEquals(delays, [1, 5, 15, 60, 60, 60, 60, 60, 60])
+  assertEquals(state.attempts, 0)
+  assertEquals(state.lookupFailures, DNS01_MAX_ATTEMPTS + 3)
+  assertEquals(state.lastError, { ...LOOKUP, at: NOW.toISOString() })
+})
+
+test('a lookup failure leaves the failed-order count alone, and an order failure still stops at the limit', () => {
+  const nearLimit: Dns01State = {
+    ...IDLE_STATE,
+    stage: 'backoff',
+    attempts: DNS01_MAX_ATTEMPTS - 1,
+  }
+  const looked = fail(nearLimit, LOOKUP)
+  assertEquals(looked.stage, 'backoff')
+  assertEquals(looked.attempts, DNS01_MAX_ATTEMPTS - 1)
+  const refused = fail(looked, { cause: 'caa-forbids', detail: 'CAA forbids' })
+  assertEquals(refused.stage, 'failed')
+  assertEquals(refused.attempts, DNS01_MAX_ATTEMPTS)
+  assertEquals(refused.nextAttemptAt, null)
+  assertEquals(refused.lookupFailures, 0)
+})
+
+test('authority refusals still count toward the limit as before', () => {
+  const causes = ['caa-forbids', 'txt-not-visible', 'acme-error', 'scope-missing'] as const
+  for (const cause of causes) {
+    let state: Dns01State = { ...IDLE_STATE }
+    for (let n = 1; n <= DNS01_MAX_ATTEMPTS; n++) {
+      state = fail(state, { cause, detail: cause })
+      assertEquals(state.attempts, n)
+      assertEquals(state.stage, n === DNS01_MAX_ATTEMPTS ? 'failed' : 'backoff', cause)
+    }
+  }
+})
+
+test('a lookup failure keeps the start times it is given and honours a stop time', () => {
+  const kept = failureState({ ...IDLE_STATE, attemptTimes: ['a', 'b'] }, LOOKUP, {
+    now: NOW,
+    random: () => 0,
+    stopUntil: new Date(NOW.getTime() + 30 * MINUTE),
+    attemptTimes: ['a'],
+  })
+  assertEquals(kept.attemptTimes, ['a'])
+  assertEquals(kept.nextAttemptAt, new Date(NOW.getTime() + 30 * MINUTE).toISOString())
+})
+
+test('a lookup failure alerts only once it repeats', () => {
+  const first = fail({ ...IDLE_STATE }, LOOKUP)
+  const second = fail(first, LOOKUP)
+  const third = fail(second, LOOKUP)
+  assertEquals(
+    [first, second, third].map((state) => alertsFor(state, LOOKUP)),
+    [false, false, true]
+  )
+  assertEquals(alertsFor(first, { cause: 'caa-forbids', detail: '' }), true)
+})
+
+test('Retry clears both failure counts and keeps the rest of the state', () => {
+  let state = fail({ ...IDLE_STATE }, { cause: 'acme-error', detail: 'refused' })
+  state = fail(fail(state, LOOKUP), LOOKUP)
+  assertEquals([state.attempts, state.lookupFailures], [1, 2])
+  const cleared = clearedForRetry(state)
+  assertEquals([cleared.attempts, cleared.lookupFailures], [0, 0])
+  assertEquals(cleared, { ...state, attempts: 0, lookupFailures: 0 })
+})
+
+const HOUR = 60 * MINUTE
+
+function hoursAgo(hours: number[]): string[] {
+  return hours.map((h) => new Date(NOW.getTime() - h * HOUR).toISOString())
+}
+
+test('the daily order cap counts only orders given up in the last day', () => {
+  const nine = hoursAgo([1, 2, 3, 4, 5, 6, 7, 8, 9])
+  assertEquals(orderCapReached({ ...IDLE_STATE, abandonedTimes: nine }, NOW), false)
+  const ten = [...nine, ...hoursAgo([23])]
+  assertEquals(DNS01_MAX_ABANDONED_PER_DAY, 10)
+  assertEquals(orderCapReached({ ...IDLE_STATE, abandonedTimes: ten }, NOW), true)
+  const aged = [...nine, ...hoursAgo([25])]
+  assertEquals(orderCapReached({ ...IDLE_STATE, abandonedTimes: aged }, NOW), false)
+  assertEquals(abandonedInLastDay(aged, NOW), nine)
+})
+
+test('a capped start opens nothing, keeps the counts and runs the preflight again in an hour', () => {
+  const abandonedTimes = [...hoursAgo([1, 2, 3, 4, 5, 6, 7, 8, 9, 20]), ...hoursAgo([30])]
+  const before: Dns01State = {
+    ...IDLE_STATE,
+    stage: 'preflight',
+    attempts: 2,
+    lookupFailures: 3,
+    abandonedTimes,
+    lastError: { cause: 'dns-lookup', detail: 'no server answered', at: NOW.toISOString() },
+  }
+  const capped = cappedState(before, NOW, ['prior'])
+  assertEquals(capped.stage, 'backoff')
+  assertEquals(capped.order, null)
+  assertEquals([capped.attempts, capped.lookupFailures], [2, 3])
+  assertEquals(capped.attemptTimes, ['prior'])
+  assertEquals(capped.abandonedTimes.length, 10)
+  assertEquals(capped.nextAttemptAt, new Date(NOW.getTime() + HOUR).toISOString())
+  assertEquals(capped.lastError?.cause, 'dns-lookup')
+  // The oldest of the ten (20 hours ago) frees the cap four hours from now.
+  const freeAt = new Date(NOW.getTime() + 4 * HOUR).toISOString()
+  assert(capped.lastError?.detail.includes(freeAt), capped.lastError?.detail)
+  assert(capped.lastError?.detail.includes('Retry'))
+})
+
+test('Retry clears the daily order cap', () => {
+  const state = { ...IDLE_STATE, abandonedTimes: hoursAgo([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) }
+  assertEquals(orderCapReached(state, NOW), true)
+  assertEquals(orderCapReached(clearedForRetry(state), NOW), false)
+})
+
+test('a state stored before the cap reads with no abandoned orders', () => {
+  const stored = { ...IDLE_STATE } as Record<string, unknown>
+  delete stored.abandonedTimes
+  assertEquals(readDns01State(stored).abandonedTimes, [])
+  assertEquals(readDns01State({ ...stored, abandonedTimes: ['a', 3] }).abandonedTimes, ['a'])
+})
+
+function authz(patch: Partial<AcmeAuthorization> = {}, challenge = 'pending'): AcmeAuthorization {
+  return {
+    url: 'https://ca.test/authz/z1',
+    status: 'pending',
+    identifier: { type: 'dns', value: 'panel.example.com' },
+    wildcard: false,
+    expires: new Date(NOW.getTime() + 7 * 24 * HOUR).toISOString(),
+    challenges: [
+      { type: 'dns-01', url: 'https://ca.test/chall/z1', token: 't', status: challenge },
+    ],
+    ...patch,
+  }
+}
+
+test('a kept order is picked up only while its authorization is pending with time left', () => {
+  assertEquals(canResume(authz(), NOW), true)
+  assertEquals(canResume(authz({ status: 'deactivated' }), NOW), false)
+  assertEquals(canResume(authz({ status: 'valid' }), NOW), false)
+  assertEquals(canResume(authz({}, 'processing'), NOW), false)
+  assertEquals(canResume(authz({ expires: undefined }), NOW), false)
+  const soon = new Date(NOW.getTime() + DNS01_RESUME_MARGIN_MS - 1).toISOString()
+  assertEquals(canResume(authz({ expires: soon }), NOW), false)
+  assertEquals(canResume(authz({ challenges: [] }), NOW), false)
 })

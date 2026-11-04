@@ -43,9 +43,9 @@ test('direct refuses another port', () => {
 })
 
 test("direct refuses Let's Encrypt for a private name, lan-only refuses it for any name", async () => {
-  const direct = await preflightHostname(ctx({ host: 'panel.lan', source: 'lets-encrypt' }))
+  const direct = await preflightHostname(ctx({ host: 'panel.lan', source: 'acme-http-01' }))
   assertEquals(direct.checks.find((c) => !c.ok)?.id, 'certificate-issuable')
-  const lan = await preflightHostname(ctx({ mode: 'lan-only', source: 'lets-encrypt' }))
+  const lan = await preflightHostname(ctx({ mode: 'lan-only', source: 'acme-http-01' }))
   assertEquals(lan.checks.find((c) => !c.ok)?.id, 'certificate-source')
 })
 
