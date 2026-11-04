@@ -11,7 +11,11 @@ import {
   dialedInstallHostname,
   shouldServePlatformCaBundle,
 } from '../features/install/install-tls.ts'
-import { eraseLicenseToken, lookupActiveLicense } from '../features/licenses/license.ts'
+import {
+  eraseBoundLicenseTokenForKey,
+  eraseLicenseToken,
+  lookupActiveLicense,
+} from '../features/licenses/license.ts'
 import {
   clearLicenseEnrollAttempt,
   recordLicenseEnrollAttempt,
@@ -27,6 +31,7 @@ import {
 } from '../lib/secrets/data-encryption.ts'
 import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
+import { compatLogInfo, compatLogWarn } from '../lib/log-compat.ts'
 import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
 import { resolveIssuedPrivateKey } from './issued-private-key.ts'
@@ -866,13 +871,22 @@ async function loadActiveDaemonKeyState(
 async function checkServerLicenseEntitlement(
   db: Db,
   serverId: string,
-  deployment: MetricsDeploymentKind
+  deployment: MetricsDeploymentKind,
+  provedKeyId: string
 ): Promise<{ ok: true } | { ok: false; status: 400; error: string }> {
   const binding = await getServerLicenseBinding(db, serverId)
   if (binding?.licenseId) {
     const activeLicense = await lookupActiveLicense(db, binding.licenseId)
     if (!activeLicense) {
       return { ok: false, status: 400, error: 'License is inactive' }
+    }
+    if (activeLicense.token !== null && activeLicense.serverId === serverId) {
+      await eraseLeftoverBoundToken(db, {
+        licenseId: binding.licenseId,
+        serverId,
+        keyId: provedKeyId,
+        tokenHash: activeLicense.token,
+      })
     }
     // Deliberately unguarded: a database error must surface as a 500 the
     // daemon retries rather than as a permanent refusal.
@@ -885,6 +899,31 @@ async function checkServerLicenseEntitlement(
     }
   }
   return { ok: true }
+}
+
+/**
+ * A bound key that still carries a token hash (a co-located Repair Connection
+ * re-issued it and kept the daemon's key) loses it on the daemon's next
+ * session: the daemon just proved its key, so it no longer needs the token,
+ * and a copy of the token must not stay usable. Read from the license row the
+ * entitlement check loads anyway, so a key with no hash (every other session)
+ * costs no extra query. Best effort: a failure is logged, never refuses the
+ * session, and the next session tries again.
+ */
+async function eraseLeftoverBoundToken(
+  db: Db,
+  params: { licenseId: string; serverId: string; keyId: string; tokenHash: string }
+): Promise<void> {
+  try {
+    if (await eraseBoundLicenseTokenForKey(db, params)) {
+      compatLogInfo('daemon-auth', `erased the leftover token of bound license ${params.licenseId}`)
+    }
+  } catch (err) {
+    compatLogWarn(
+      'daemon-auth',
+      `could not erase the leftover token of bound license ${params.licenseId}: ${describeError(err)}`
+    )
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -2031,7 +2070,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     // After the signature, not before: on self-hosted this check writes the
     // grant and fills an empty tier, and anyone who knows a server id and its
     // key id could otherwise trigger those writes without holding the key.
-    const licenseState = await checkServerLicenseEntitlement(db, serverId, deployment)
+    const licenseState = await checkServerLicenseEntitlement(db, serverId, deployment, keyId)
     if (!licenseState.ok) {
       return c.json({ ok: false, error: licenseState.error }, licenseState.status)
     }

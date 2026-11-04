@@ -1,7 +1,7 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm'
+import { and, eq, exists, inArray, isNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { revokeBoundDaemonKey } from './revoke-bound-daemon-key.ts'
-import { license, server, tier } from '../../db/schema.ts'
+import { key, license, server, tier } from '../../db/schema.ts'
 import { isUnusedKeyExpired } from './key-expiry.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import { hashPassword, verifyPassword } from '../../lib/secrets/password.ts'
@@ -85,6 +85,44 @@ export async function createLicense(
  */
 export async function eraseLicenseToken(db: Db, licenseId: string): Promise<void> {
   await db.update(license).set({ token: null, updatedAt: nowTs() }).where(eq(license.id, licenseId))
+}
+
+/**
+ * Erase the token hash a bound key still carries, once the daemon of the
+ * server it is bound to has proved its key on a session (`POST
+ * /auth/session`). A bound key keeps no token hash; the one way it gets one
+ * back is a co-located Repair Connection that re-issues the token and keeps
+ * the stored daemon key, and a daemon that never parks never re-enrolls to
+ * erase it.
+ *
+ * One conditional write, compare-and-swap on the hash the caller read: a
+ * repair that re-issued the token after that read is left alone. It also
+ * requires the proved key to still be the server's active key, checked in the
+ * same statement, so a repair that removed the key (the daemon must then
+ * re-enroll with the new token) keeps its token. True when it erased.
+ */
+export async function eraseBoundLicenseTokenForKey(
+  db: Db,
+  params: { licenseId: string; serverId: string; keyId: string; tokenHash: string }
+): Promise<boolean> {
+  const heldKey = db
+    .select({ id: key.id })
+    .from(key)
+    .where(and(eq(key.id, params.keyId), eq(key.serverId, params.serverId), isNull(key.revokedAt)))
+  const rows = await db
+    .update(license)
+    .set({ token: null, updatedAt: nowTs() })
+    .where(
+      and(
+        eq(license.id, params.licenseId),
+        eq(license.serverId, params.serverId),
+        eq(license.token, params.tokenHash),
+        isNull(license.revokedAt),
+        exists(heldKey)
+      )
+    )
+    .returning({ id: license.id })
+  return rows.length > 0
 }
 
 /**
