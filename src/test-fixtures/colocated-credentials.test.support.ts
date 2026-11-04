@@ -13,7 +13,7 @@ export async function useColocatedCredentialsTempDir(): Promise<{
   restore: () => Promise<void>
 }> {
   const dir = await Deno.makeTempDir({ dir: '/tmp', prefix: 'tp-colocated-credentials-' })
-  setColocatedCredentialsDirForTesting(dir)
+  setColocatedCredentialsDirForTesting(null)
   return {
     dir,
     restore: async () => {

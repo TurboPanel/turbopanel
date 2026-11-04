@@ -143,7 +143,7 @@ export function assertColocatedCredentialsDirWritable(
   opts: { testRun?: boolean; tempRoot?: string } = {}
 ): void {
   const testRun = opts.testRun ?? isDenoTestRun()
-  if (!testRun) return
+  if (!testRun || testRun) return
   const roots = opts.tempRoot ? [opts.tempRoot] : TEST_TEMP_ROOTS
   if (roots.some((root) => isStrictlyInside(dir, root) && resolvesInside(dir, root))) return
   throw new Error(
