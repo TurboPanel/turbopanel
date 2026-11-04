@@ -1,4 +1,4 @@
-import { resourceErrorResponses } from './shared.ts'
+import { clientErrorJson, resourceErrorResponses } from './shared.ts'
 
 /**
  * OpenAPI for certificates the panel ordered itself and proved by a DNS
@@ -8,6 +8,10 @@ import { resourceErrorResponses } from './shared.ts'
  */
 
 const ORDERING_OFF = {
+  '401': {
+    description: 'Unauthorized: no session.',
+    content: { 'application/json': { schema: clientErrorJson } },
+  },
   '422': {
     description:
       'Ordering certificates from the control plane is turned off (`certificate_ordering_off`, with a plain `message`). Certificates will be ordered by the server that runs the site in a coming release.',
@@ -143,8 +147,7 @@ export const dnsCertificatePaths: Record<string, unknown> = {
     post: {
       tags: ['Organizations'],
       summary: 'Order a certificate by DNS challenge (turned off)',
-      description:
-        'Always refused: the control plane no longer orders certificates. 401 without a session.',
+      description: 'Always refused: the control plane no longer orders certificates.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM],
       requestBody: {
@@ -160,8 +163,7 @@ export const dnsCertificatePaths: Record<string, unknown> = {
     post: {
       tags: ['Organizations'],
       summary: 'Move an order on now (turned off)',
-      description:
-        'Always refused: the control plane no longer orders certificates. 401 without a session.',
+      description: 'Always refused: the control plane no longer orders certificates.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TLS_ID_PARAM],
       responses: { ...ORDERING_OFF },
@@ -171,8 +173,7 @@ export const dnsCertificatePaths: Record<string, unknown> = {
     post: {
       tags: ['Organizations'],
       summary: 'Try a failed order again (turned off)',
-      description:
-        'Always refused: the control plane no longer orders certificates. 401 without a session.',
+      description: 'Always refused: the control plane no longer orders certificates.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TLS_ID_PARAM],
       responses: { ...ORDERING_OFF },

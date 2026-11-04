@@ -3,7 +3,7 @@
  * provider only: the DNS host for one zone, and removing the records the panel
  * made, by the id the provider gave. Nothing here talks to the certificate
  * authority, so the leftover-record cleanup (`cleanup.ts`) can run with
- * ordering turned off. `records.hostfree.test.ts` pins that.
+ * ordering turned off. `ordering-off.hostfree.test.ts` pins that.
  */
 import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
