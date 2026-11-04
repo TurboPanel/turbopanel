@@ -3,6 +3,7 @@ import type { DnsChallengeProvider } from '../../../../features/tls/dns-certific
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
 import {
   caaWalk,
+  denoDnsLookup,
   type DnsLookup,
   preflightDns01,
   txtNotVisibleDetail,
@@ -253,5 +254,46 @@ test('caaWalk goes from the name up to the zone apex', () => {
     'a.b.example.com',
     'b.example.com',
     'example.com',
+  ])
+})
+
+type Resolve = (name: string, type: string, options?: Deno.ResolveDnsOptions) => Promise<unknown>
+
+/** Swap `Deno.resolveDns` while `fn` runs, so no real lookup leaves this host. */
+async function withResolveDns(resolve: Resolve, fn: () => Promise<void>): Promise<void> {
+  const original = Object.getOwnPropertyDescriptor(Deno, 'resolveDns')
+  Object.defineProperty(Deno, 'resolveDns', { value: resolve, configurable: true, writable: true })
+  try {
+    await fn()
+  } finally {
+    if (original) Object.defineProperty(Deno, 'resolveDns', original)
+  }
+}
+
+test("the real lookups ask only this host's resolver, with a timeout", async () => {
+  const asked: string[] = []
+  const answers: Record<string, string[]> = {
+    'NS example.com': ['ns1.example.net.'],
+    'A ns1.example.net': ['192.0.2.53'],
+  }
+  await withResolveDns(
+    (name, type, options) => {
+      asked.push(`${type} ${name} ${options?.nameServer ? 'other' : 'system'}`)
+      assertEquals(options?.signal instanceof AbortSignal, true)
+      const answer = answers[`${type} ${name}`]
+      return answer ? Promise.resolve(answer) : Promise.reject(new Error('no records'))
+    },
+    async () => {
+      assertEquals(await denoDnsLookup.ns('example.com'), ['ns1.example.net.'])
+      assertEquals(await denoDnsLookup.addresses('ns1.example.net'), ['192.0.2.53'])
+      assertEquals(await denoDnsLookup.addresses('ns2.example.net'), [])
+    }
+  )
+  assertEquals(asked, [
+    'NS example.com system',
+    'A ns1.example.net system',
+    'AAAA ns1.example.net system',
+    'A ns2.example.net system',
+    'AAAA ns2.example.net system',
   ])
 })
