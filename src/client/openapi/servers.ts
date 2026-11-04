@@ -1849,8 +1849,8 @@ const serverBasePaths: Record<string, unknown> = {
       summary: 'Retired: start a daemon update by hand',
       description:
         'Servers update automatically (the control plane checks once an hour). Always answers ' +
-        '410 `updates_automatic` with a `message`; an administrator can pause all updates in ' +
-        'Admin > Updates.',
+        '410 `updates_automatic` with a `message`; in Admin > Updates a superadmin can start ' +
+        'an update at once with Update Now, and an administrator can pause all updates.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

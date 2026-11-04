@@ -15,10 +15,16 @@
   installed control-plane version (`INSTANCE_VERSION` plus `resolveInstanceRevision`)
   and the co-located daemon's `daemonBuild` beside each channel manifest target,
   plus `development` (true only on a Deno development install, from
-  `isExplicitDevelopmentMode()`; always false on Workers). The manual
+  `isExplicitDevelopmentMode()`; always false on Workers).
+  `POST /instance/updates/now` is Update Now (superadmin through `rootOnly`,
+  audited as `upgrade.start_now`, no step-up, like Pause / Resume): it runs
+  the hourly check at once and starts the update through the coordinator
+  (202 `{ ok, runId }`, 200 `{ ok, upToDate }`, 409 `run_active` / `paused` /
+  `update_blocked`, 429 `check_too_soon` (once a minute), 503
+  `release_unreachable`, 403 `development` on a development install; contract in
+  `src/features/upgrades/AGENTS.md`). The old manual
   `POST /instance/updates/instance`, `/daemon` and the other start, retry and
-  cancel routes are retired and answer 410 `updates_automatic`
-  (`src/features/upgrades/AGENTS.md`). Development installs only:
+  cancel routes stay retired and answer 410 `updates_automatic`. Development installs only:
   `GET /instance/updates/development` and
   `POST /instance/updates/development/push` (`{ force?: boolean }`, 202 with the
   job, 409 `job_running` while one is active), superadmin, audited as

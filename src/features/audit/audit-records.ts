@@ -64,6 +64,7 @@ export const AUDIT_ACTIONS = [
   'instance.primary_hostname_changed',
   'upgrade.pause',
   'upgrade.resume',
+  'upgrade.start_now',
   'upgrade.dev_push',
   'upgrade.dev_host_update',
   'upgrade.dev_host_restart',
