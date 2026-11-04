@@ -3944,8 +3944,9 @@ export async function failCommandAfterRetries(
 
 /**
  * A command already sent: resume waiting on it (rare, so the payload is read
- * up front). `done` when it was handled here; otherwise the loaded record,
- * or `null` when there is nothing to run, for the normal path to send again.
+ * up front). `done` when it was handled here (or its payload is missing);
+ * the loaded record when its request is gone, so the normal path sends it
+ * again; `null` when it is not a sent command, so the normal path runs it.
  */
 async function resumeIfSent(
   db: Db,
@@ -3980,14 +3981,15 @@ export async function processCommandEnvelope(
   const open = await loadOpenCommand(db, envelope)
   if (!open) return
 
-  if (await failSupersededReseed(db, open)) return
-
   const resumed = await resumeIfSent(db, registry, open, envelope, deps)
   if (resumed === 'done') return
 
   // Take the server's turn before reading the payload: a command whose server
   // is busy is checked often and only needs the row.
   if (!(await markDispatching(db, open, envelope))) return
+  // A re-seed overtaken by a later switchover is refused before it is sent;
+  // checked once the command has its turn, not on every busy look.
+  if (await failSupersededReseed(db, open)) return
   const record = resumed ?? (await attachDispatchPayload(db, open, envelope))
   if (!record) return
 

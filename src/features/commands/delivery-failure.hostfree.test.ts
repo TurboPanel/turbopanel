@@ -80,7 +80,7 @@ test('a command waiting longer looks again less often', () => {
   assertEquals(serverBusyDelaySeconds(queuedAt, at(0)), 10)
   assertEquals(serverBusyDelaySeconds(queuedAt, at(59_000)), 10)
   assertEquals(serverBusyDelaySeconds(queuedAt, at(2 * 60_000)), 30)
-  assertEquals(serverBusyDelaySeconds(queuedAt, at(6 * 60_000)), 120)
+  assertEquals(serverBusyDelaySeconds(queuedAt, at(60 * 60_000)), 30)
   assertEquals(serverBusyDelaySeconds('not a time', at(60 * 60_000)), 10)
 })
 

@@ -182,8 +182,8 @@ async function stampWaiting(db: Db, commandId: string, now: string): Promise<voi
     .set({
       updatedAt: now,
       // Never closer than the longest wait to its next look plus a margin: a
-      // command with a two-minute lifetime that looks every two minutes would
-      // otherwise expire just before it looks again. No expiry stays none.
+      // command with a short lifetime could otherwise expire just before it
+      // looks again. No expiry stays none.
       expiresAt: sql`case when ${command.expiresAt} is null then null else greatest(
         ${command.expiresAt} + (${now}::timestamptz - ${command.updatedAt}),
         ${now}::timestamptz + ${WAITING_EXPIRY_FLOOR_MS} * interval '1 millisecond'
@@ -199,28 +199,50 @@ async function stampWaiting(db: Db, commandId: string, now: string): Promise<voi
 }
 
 /**
+ * The unlocked turn check and, when the command is blocked, its stamp, in one
+ * statement: a data-modifying CTE always runs, and its UPDATE only fires when
+ * the check found something ahead (and the stamp is due). One round trip for
+ * the common answer, "busy". The expiry expression is the same as
+ * {@link stampWaiting}'s.
+ */
+async function blockedAndStamped(db: Db, input: ServerTurnInput, now: string): Promise<boolean> {
+  const [row] = await db.execute<{ blocked: boolean }>(sql`
+    with turn as (select ${blockingCommandExists(input)} as blocked),
+    stamped as (
+      update ${command}
+      set updated_at = ${now}::timestamptz,
+        expires_at = case when expires_at is null then null else greatest(
+          expires_at + (${now}::timestamptz - updated_at),
+          ${now}::timestamptz + ${WAITING_EXPIRY_FLOOR_MS} * interval '1 millisecond'
+        ) end
+      where id = ${input.commandId}
+        and status = 'queued'
+        and updated_at < ${now}::timestamptz - ${WAITING_STAMP_INTERVAL_MS} * interval '1 millisecond'
+        and (select blocked from turn)
+      returning 1
+    )
+    select blocked from turn`)
+  return row?.blocked === true
+}
+
+/**
  * Take the server's turn for `commandId` and mark it `dispatching`, or say why
- * not. A busy server is the common answer and the cheap one: one unlocked read
- * says so, and the waiting command is stamped at most every 30 seconds
- * (often enough that a command with a two-minute expiry is credited before it
+ * not. A busy server is the common answer and the cheap one: one unlocked
+ * statement says so and stamps the waiting command (at most every 30 seconds,
+ * often enough that a command with a two-minute expiry is credited before it
  * runs out). Only when nothing seems to block does it take the server row's
- * lock and check again
- * before claiming (a false "busy" from the unlocked read only means trying
- * again a little later).
+ * lock and check again before claiming (a false "busy" from the unlocked read
+ * only means trying again a little later). A "busy" found under the lock, or a
+ * lock timeout, stamps too, so no path leaves a waiting command unstamped.
  */
 export async function claimServerTurn(db: Db, input: ServerTurnInput): Promise<ServerTurn> {
   if (QUICK_COMMAND_TYPES.has(input.type)) {
     return (await markClaimed(db, input, nowIso())) ? 'claimed' : 'finished'
   }
-  const [seen] = await db.execute<{ blocked: boolean }>(
-    sql`select ${blockingCommandExists(input)} as blocked`
-  )
-  if (seen?.blocked === true) {
-    await stampWaiting(db, input.commandId, nowIso())
-    return 'busy'
-  }
+  if (await blockedAndStamped(db, input, nowIso())) return 'busy'
+  let turn: ServerTurn
   try {
-    return await db.transaction(async (tx) => {
+    turn = await db.transaction(async (tx) => {
       await tx.execute(sql.raw(`set local lock_timeout = '${SERVER_TURN_LOCK_TIMEOUT_MS}ms'`))
       // A server that is gone has no row to lock; the consumer fails the command next.
       // `no key update` serializes claims just as well, and unlike `update` it does
@@ -238,7 +260,9 @@ export async function claimServerTurn(db: Db, input: ServerTurnInput): Promise<S
       return (await markClaimed(tx, input, nowIso())) ? 'claimed' : 'finished'
     })
   } catch (error) {
-    if (isLockTimeout(error)) return 'busy'
-    throw error
+    if (!isLockTimeout(error)) throw error
+    turn = 'busy'
   }
+  if (turn === 'busy') await stampWaiting(db, input.commandId, nowIso())
+  return turn
 }

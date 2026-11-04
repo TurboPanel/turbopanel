@@ -111,8 +111,8 @@ test('a waiting command with a short lifetime is kept alive until its next look'
     const running = await newCommand(db, serverId, 'server.hostname.set')
     await transitionCommand(db, running.id, { status: 'sent' })
     const waiting = await newCommand(db, serverId, 'server.hostname.set')
-    // Seen 40 s ago, about to expire: the credit alone would leave 45 s, less
-    // than the two minutes until it looks again.
+    // Seen 40 s ago, about to expire: the stamp keeps it at least the longest
+    // wait plus a minute (90 s) away, so its next look finds it alive.
     await db.execute(
       sql`update command set updated_at = now() - interval '40 seconds', expires_at = now() + interval '5 seconds' where id = ${waiting.id}`
     )
@@ -120,7 +120,7 @@ test('a waiting command with a short lifetime is kept alive until its next look'
     const [row] = await db.execute<{ seconds: number }>(
       sql`select extract(epoch from (expires_at - now())) as seconds from command where id = ${waiting.id}`
     )
-    assertEquals(Number(row?.seconds) > 170, true)
+    assertEquals(Number(row?.seconds) > 80, true)
   })
 })
 

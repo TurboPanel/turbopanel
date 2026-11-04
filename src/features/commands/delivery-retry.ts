@@ -16,23 +16,26 @@ export const COMMAND_RETRY_DELAYS_SECONDS = [5, 30, 120, 600] as const
 /** How long a command first waits before it looks again when its server is busy. */
 export const SERVER_BUSY_DELAY_SECONDS = 10
 
-/** The longest wait between two looks of a command whose server is busy. */
-export const SERVER_BUSY_LONGEST_DELAY_SECONDS = 120
+/**
+ * The longest wait between two looks of a command whose server is busy, and
+ * so the most a command can start late after the one ahead of it ends (owner
+ * decision 2026-11-04: a 30 s cap instead of a wake-up, which would need a
+ * second copy of the message and an ownership token to keep two copies of one
+ * command from both running it).
+ */
+export const SERVER_BUSY_LONGEST_DELAY_SECONDS = 30
 
 /**
  * The wait before the next look, from how long the command has been waiting
- * so far: 10 s for the first minute, 30 s up to five minutes, then 120 s.
- * Every look is a database read (and a queue round trip), so a command stuck
- * behind a 30-minute backup looks about 27 times instead of 180. The longest
- * wait stays well under the 15 minutes a waiting command keeps its place
- * (`OLDER_QUEUED_WAIT_MS`), and every step is a self-hosted delay tier.
+ * so far: 10 s for the first minute, then 30 s. Every look is a database read
+ * (and a queue round trip), so a command behind a 30-minute backup looks
+ * about 64 times instead of 180, each look one statement. Both steps are
+ * self-hosted delay tiers.
  */
 export function serverBusyDelaySeconds(queuedAt: string, nowMs = Date.now()): number {
   const queuedMs = Date.parse(queuedAt)
   const waitedMs = Number.isFinite(queuedMs) ? Math.max(0, nowMs - queuedMs) : 0
-  if (waitedMs < 60_000) return SERVER_BUSY_DELAY_SECONDS
-  if (waitedMs < 5 * 60_000) return 30
-  return SERVER_BUSY_LONGEST_DELAY_SECONDS
+  return waitedMs < 60_000 ? SERVER_BUSY_DELAY_SECONDS : SERVER_BUSY_LONGEST_DELAY_SECONDS
 }
 
 /** `command.error_code` of a command given up on after its retries. */
