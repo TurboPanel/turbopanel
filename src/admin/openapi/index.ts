@@ -140,7 +140,7 @@ export function getAdminOpenApiSpec(
                   type: 'integer',
                   nullable: true,
                   description:
-                    'Mail jobs waiting in the dead-letter queue; null where this edition cannot count them (High Availability) or the broker cannot be reached.',
+                    'Mail that gave up after every retry. Self-hosted: jobs waiting in the dead-letter queue. High Availability: jobs the mail consumer dead-lettered in the last four days (replays do not lower it). Null when the count cannot be read.',
                 },
               },
             },

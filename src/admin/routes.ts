@@ -165,13 +165,17 @@ async function reconcilePlatformCaTrustAfterApply(
   await enqueuePlatformCaTrustReconcileBestEffort({ db, commandQueue, actorId, readBundle })
 }
 
-/** Mail jobs waiting in the dead-letter queue, or `null` when this edition cannot tell. */
+/**
+ * Mail that gave up: self-hosted, the jobs waiting in the dead-letter queue;
+ * High Availability, the jobs the mail consumer dead-lettered in the last
+ * four days (replays do not lower it). `null` when this edition cannot tell.
+ */
 async function readDeadLetterCount(
   store: MailDeadLetterStore | undefined,
   runtime: 'deno' | 'workers',
   db: NonNullable<ReturnType<typeof getDb>>
 ): Promise<number | null> {
-  if (store) return (await store.list(1).catch(() => null))?.total ?? null
+  if (store) return await store.count().catch(() => null)
   if (runtime === 'workers') return await countEmailDeadLetters(db).catch(() => null)
   return null
 }
@@ -468,16 +472,22 @@ export function registerAdminRoutes(
       dataEncryptionSecrets
     )
     const runtime = c.get('runtime') === 'workers' ? 'workers' : 'deno'
+    const state = emailDeliveryState({
+      settings: resolved,
+      runtime,
+      queueUnavailable: isNoopEmailQueue(getEmailQueue(c)),
+    })
     const delivery: EmailDeliveryStatus = {
-      state: emailDeliveryState({
-        settings: resolved,
-        runtime,
-        queueUnavailable: isNoopEmailQueue(getEmailQueue(c)),
-      }),
-      // Self-hosted counts its broker's dead-letter queue; High Availability
-      // reads the tally its mail consumer keeps (`dead-letter-tally.ts`). A
-      // count that cannot be read is unknown rather than failing the page.
-      deadLetters: await readDeadLetterCount(opts.mailDeadLetters, runtime, db),
+      state,
+      // Self-hosted reads its broker's dead-letter queue depth; High
+      // Availability reads the tally its mail consumer keeps
+      // (`dead-letter-tally.ts`). A count that cannot be read is unknown
+      // rather than failing the page, and a queue already known to be down is
+      // not dialled (that would hold the page for the connect timeout).
+      deadLetters:
+        state === 'queue_unavailable'
+          ? null
+          : await readDeadLetterCount(opts.mailDeadLetters, runtime, db),
     }
     return c.json({ settings: emailSettingsToApiShape(resolved), delivery })
   })
