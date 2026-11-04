@@ -12,9 +12,6 @@ import {
 const test = Deno.test.bind(Deno)
 
 const ZONES = [{ id: 'zone-1', name: 'example.com' }]
-/** Stand-ins for the public resolvers' addresses (RFC 5737). */
-const PUBLIC_A = '203.0.113.1'
-const PUBLIC_B = '203.0.113.8'
 
 function fakeDns(caa: Record<string, { tag: string; value: string }[]> = {}): DnsLookup {
   return {
@@ -22,7 +19,6 @@ function fakeDns(caa: Record<string, { tag: string; value: string }[]> = {}): Dn
     ns: () => Promise.resolve(['ns1.example.net.', 'ns2.example.net.']),
     addresses: (name) =>
       Promise.resolve(name === 'ns1.example.net' ? ['192.0.2.53'] : ['198.51.100.53']),
-    publicResolvers: () => Promise.resolve([PUBLIC_A, PUBLIC_B]),
     txtAt: (_name, server) => Promise.resolve(server === '192.0.2.53' ? ['token-value'] : []),
   }
 }
@@ -152,71 +148,22 @@ test('no nameservers from the provider or the resolver fails and says where it l
   assertEquals(result.failure, {
     cause: 'dns-lookup',
     detail:
-      "No nameservers found for example.com: the DNS provider listed none, and neither this server's resolver nor the public resolvers returned NS records.",
+      "No nameservers found for example.com: the DNS provider listed none, and this server's resolver returned no NS records.",
   })
 })
 
-/** Records which resolver each lookup asked (`system` for this host's own). */
-function answeringOnly(answering: string, asked: string[]): DnsLookup {
-  return {
-    ...fakeDns(),
-    ns: (name, resolver) => {
-      asked.push(`ns ${name} ${resolver ?? 'system'}`)
-      return resolver === answering
-        ? Promise.resolve(['ns1.example.net.'])
-        : Promise.reject(new Error('lookup timed out'))
-    },
-    addresses: (name, resolver) => {
-      asked.push(`a ${name} ${resolver ?? 'system'}`)
-      return Promise.resolve(resolver === answering ? ['192.0.2.53'] : [])
-    },
-  }
-}
-
-test("nameserver addresses this host's resolver cannot find are asked of a public resolver", async () => {
-  const { provider } = fakeProvider()
-  const asked: string[] = []
-  const result = await preflightDns01({
-    provider: withNameservers(provider, () => Promise.resolve(['ns1.example.net'])),
-    dns: answeringOnly(PUBLIC_A, asked),
-    zones: ZONES,
-    host: 'panel.example.com',
-  })
-  assertEquals(result.ok, true)
-  assertEquals(result.nameservers, ['192.0.2.53'])
-  assertEquals(asked, ['a ns1.example.net system', `a ns1.example.net ${PUBLIC_A}`])
-})
-
-test('with no provider list, a failed NS lookup moves on through the public resolvers', async () => {
-  const { provider } = fakeProvider()
-  const asked: string[] = []
-  const result = await preflightDns01({
-    provider,
-    dns: answeringOnly(PUBLIC_B, asked),
-    zones: ZONES,
-    host: 'panel.example.com',
-  })
-  assertEquals(result.ok, true)
-  assertEquals(result.nameservers, ['192.0.2.53'])
-  assertEquals(asked.slice(0, 3), [
-    'ns example.com system',
-    `ns example.com ${PUBLIC_A}`,
-    `ns example.com ${PUBLIC_B}`,
-  ])
-})
-
-test('nameserver names with no address anywhere fail as a lookup problem and name them', async () => {
+test('nameserver names with no address fail as a lookup problem and name them', async () => {
   const { provider } = fakeProvider()
   const result = await preflightDns01({
     provider: withNameservers(provider, () => Promise.resolve(['ns1.example.net'])),
-    dns: answeringOnly('192.0.2.1', []),
+    dns: { ...fakeDns(), addresses: () => Promise.reject(new Error('lookup timed out')) },
     zones: ZONES,
     host: 'panel.example.com',
   })
   assertEquals(result.failure, {
     cause: 'dns-lookup',
     detail:
-      "Could not look up the addresses of the example.com nameservers (ns1.example.net) through this server's resolver or the public resolvers.",
+      "Could not look up the addresses of the example.com nameservers (ns1.example.net) through this server's resolver.",
   })
 })
 

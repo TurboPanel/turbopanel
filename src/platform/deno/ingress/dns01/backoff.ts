@@ -17,7 +17,10 @@ export const DNS01_MAX_ATTEMPTS = 6
 /**
  * A nameserver lookup that failed on this host (`dns-lookup`) retries after
  * 1, 5, 15 and 60 minutes, then hourly, and never counts toward
- * `DNS01_MAX_ATTEMPTS`: no authority was asked, so nothing was refused.
+ * `DNS01_MAX_ATTEMPTS`: the authority refused nothing. In preflight no order
+ * was opened, so that start leaves the hourly budget alone; while waiting for
+ * the record an order was already open, so that start stays in `attemptTimes`
+ * and counts against the hourly budget.
  */
 export const DNS01_LOOKUP_BACKOFF_MS = [1, 5, 15, 60].map((minutes) => minutes * 60_000)
 /** A lookup failure alerts only once it has happened this many times in a row. */

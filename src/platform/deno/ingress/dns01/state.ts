@@ -185,6 +185,11 @@ export function withStage(
   return { ...state, ...patch, stage }
 }
 
+/** The state a manual Retry starts from: both failure counts cleared, the stage kept. */
+export function clearedForRetry(state: Dns01State): Dns01State {
+  return withStage(state, state.stage, { attempts: 0, lookupFailures: 0 })
+}
+
 /** Stages in which an order is open and the tick should move it on. */
 export function inProgress(stage: Dns01Stage): boolean {
   return stage === 'waiting-dns' || stage === 'validating'

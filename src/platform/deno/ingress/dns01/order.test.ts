@@ -18,7 +18,7 @@ import { deriveEncryptionSecretsConfig } from '../../../../lib/secrets/secrets.t
 import type { NotificationContext } from '../../../../features/notifications/events.ts'
 import { skipWithoutDatabase } from '../../../../test-fixtures/require-service.test.support.ts'
 import { parseTestSecretsConfig } from '../../../../test-fixtures/secrets.ts'
-import { advanceOrder, type Dns01Deps, loadDns01Row, startOrder } from './order.ts'
+import { advanceOrder, type Dns01Deps, loadDns01Row, startOrder, TXT_WAIT_MS } from './order.ts'
 import { runDns01Tick } from './tick.ts'
 
 const test = Deno.test.bind(Deno)
@@ -103,7 +103,6 @@ async function world(db: Db, host: string): Promise<World> {
       caa: () => Promise.resolve([]),
       ns: () => Promise.resolve(['ns1.example.net']),
       addresses: () => Promise.resolve([SERVER]),
-      publicResolvers: () => Promise.resolve([]),
       txtAt: (name) => Promise.resolve(records.get(name) ?? []),
     },
     dataEncryption: await deriveEncryptionSecretsConfig(
@@ -204,6 +203,55 @@ test('an order is refused while the authority limit pauses the name', async () =
     const busy = await startOrder(w.deps, { ...row, state: { ...row.state, attemptTimes: recent } })
     assert('ok' in busy)
     assert(busy.error.includes('last hour'))
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('a preflight lookup failure backs off without using the hourly start budget', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const w = await world(db, `panel-${crypto.randomUUID().slice(0, 8)}.example.com`)
+  try {
+    const deps = { ...w.deps, dns: { ...w.deps.dns, addresses: () => Promise.resolve([]) } }
+    const prior = [10, 20].map((min) => new Date(NOW.getTime() - min * 60_000).toISOString())
+    const row = (await loadDns01Row(db, w.hostnameId))!
+    const failed = await startOrder(deps, { ...row, state: { ...row.state, attemptTimes: prior } })
+    assert(!('ok' in failed))
+    assertEquals(failed.stage, 'backoff')
+    assertEquals(failed.lastError?.cause, 'dns-lookup')
+    assertEquals(failed.attemptTimes, prior)
+    assertEquals([failed.attempts, failed.lookupFailures], [0, 1])
+    assertEquals((await loadDns01Row(db, w.hostnameId))!.state.attemptTimes, prior)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('waiting for the record records dns-lookup when no authoritative server answers', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host)
+  try {
+    const started = await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    assert(!('ok' in started))
+    assertEquals(started.stage, 'waiting-dns')
+    const later = new Date(NOW.getTime() + TXT_WAIT_MS + 60_000)
+    const unreachable: Dns01Deps = {
+      ...w.deps,
+      now: () => later,
+      dns: { ...w.deps.dns, txtAt: () => Promise.reject(new Error('network unreachable')) },
+    }
+    const failed = await advanceOrder(unreachable, (await loadDns01Row(db, w.hostnameId))!)
+    assertEquals(failed.stage, 'backoff')
+    assertEquals(failed.lastError?.cause, 'dns-lookup')
+    assertEquals([failed.attempts, failed.lookupFailures], [0, 1])
+    // An order was opened, so its start still counts against the hourly budget.
+    assertEquals(failed.attemptTimes, [NOW.toISOString()])
+    assertEquals(w.records.get(`_acme-challenge.${host}`), [])
   } finally {
     await cleanup(db, w.hostnameId)
     await endDbConnection(db)
