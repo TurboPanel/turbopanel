@@ -31,6 +31,7 @@ import {
   type IngressMode,
 } from './ingress-modes.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
+import type { InstanceHostnameCertSource } from '../../contracts/cell-protocol.ts'
 import { isLoopbackOrPrivateHostname } from './install-tls.ts'
 import {
   hostFromPublicUrlEntry,
@@ -42,14 +43,19 @@ import {
 export const INSTANCE_HOSTNAME_SOURCES = [
   'platform-ca',
   'uploaded',
-  'lets-encrypt',
-  'dns-01',
+  'acme-http-01',
+  'acme-dns-01',
 ] as const
 
 /** `certificate.kind`: an operator's upload, or a pair the control plane issued over DNS-01. */
-export const CERTIFICATE_KINDS = ['uploaded', 'dns-01'] as const
+export const CERTIFICATE_KINDS = ['uploaded', 'acme-dns-01'] as const
 
 export type InstanceHostnameSource = (typeof INSTANCE_HOSTNAME_SOURCES)[number]
+
+/** Sources issued by Let's Encrypt, over HTTP-01 or DNS-01. Both need accepted terms. */
+export function isAcmeHostnameSource(source: string): boolean {
+  return source === 'acme-http-01' || source === 'acme-dns-01'
+}
 
 export type InstanceHostnameStatus = 'ready' | 'pending' | 'failed' | 'expired'
 
@@ -188,24 +194,35 @@ export function deriveInstanceHostnameStatus(
     if (!Number.isNaN(expiry) && expiry <= now) return 'expired'
     if (!Number.isNaN(expiry)) return 'ready'
   }
-  if (row.source === 'lets-encrypt' || row.source === 'dns-01') return 'pending'
+  if (isAcmeHostnameSource(row.source)) return 'pending'
   return 'ready'
 }
 
 /**
- * The source the listener actually serves for a row. A `dns-01` name with a
+ * The source the listener actually serves for a row. An `acme-dns-01` name with a
  * live issued pair is served like an upload; before its first certificate, or
  * once that one has expired, it falls back to the Platform CA leaf. Derived,
- * never stored, so the row keeps `dns-01` and the screens can say `expired`.
+ * never stored, so the row keeps `acme-dns-01` and the screens can say `expired`.
  */
 export function effectiveCertificateSource(
   row: { source: InstanceHostnameSource; uploadedCertId?: string | null; notAfter?: string | null },
   now = Date.now()
-): Exclude<InstanceHostnameSource, 'dns-01'> {
-  if (row.source !== 'dns-01') return row.source
+): ServedCertificateSource {
+  if (row.source !== 'acme-dns-01') return row.source
   const expiry = Date.parse(row.notAfter ?? '')
   const live = Boolean(row.uploadedCertId) && !Number.isNaN(expiry) && expiry > now
   return live ? 'uploaded' : 'platform-ca'
+}
+
+/** A source the listener serves, as `effectiveCertificateSource` returns it. */
+export type ServedCertificateSource = Exclude<InstanceHostnameSource, 'acme-dns-01'>
+
+/**
+ * The daemon wire keeps its original names: `acme-http-01` travels as
+ * `lets-encrypt`, so the daemon contract does not change with the stored names.
+ */
+export function wireCertificateSource(source: ServedCertificateSource): InstanceHostnameCertSource {
+  return source === 'acme-http-01' ? 'lets-encrypt' : source
 }
 
 function toRecord(row: StoredHostname): InstanceHostnameRecord {
@@ -242,8 +259,8 @@ export function validateHostnameSource(
       invalid: [host],
     }
   }
-  if (source === 'dns-01') return validateDns01Host(host, hostname)
-  if (source !== 'lets-encrypt') return { ok: true }
+  if (source === 'acme-dns-01') return validateDns01Host(host, hostname)
+  if (source !== 'acme-http-01') return { ok: true }
   if (isLoopbackOrPrivateHostname(hostname)) {
     return {
       ok: false,
@@ -550,12 +567,12 @@ export async function recordInstanceAcmeApplyTimeout(
   await db
     .update(instanceHostname)
     .set({ acmeLastAttemptAt: at, acmeLastError: message })
-    .where(eq(instanceHostname.source, 'lets-encrypt'))
+    .where(eq(instanceHostname.source, 'acme-http-01'))
 }
 
 /**
  * Record one instance Let's Encrypt probe. Matches `origin` rows whose
- * source is `lets-encrypt`. Does not touch an organization's `tls` rows.
+ * source is `acme-http-01`. Does not touch an organization's `tls` rows.
  * `notAfter` is written only on success. A failure leaves the stored expiry
  * in place. Changing the source away from Let's Encrypt clears it.
  */
@@ -575,7 +592,7 @@ export async function recordInstanceAcmeIssuance(
       host: instanceHostname.host,
     })
     .from(instanceHostname)
-    .where(eq(instanceHostname.source, 'lets-encrypt'))
+    .where(eq(instanceHostname.source, 'acme-http-01'))
   const match = rows.find(
     (row) => row.host === event.hostname || hostFromPublicUrlEntry(row.host) === event.hostname
   )
@@ -645,14 +662,14 @@ type CarriedAcme = Pick<
 
 /**
  * Attempt state survives a rewrite only while the source stays the same
- * issuing source. A `dns-01` row also keeps its issued pair and order state:
+ * issuing source. A `acme-dns-01` row also keeps its issued pair and order state:
  * both are owned by the control plane, never taken from a request body.
  */
 function carryAcme(
   previous: StoredHostname | undefined,
   source: InstanceHostnameSource
 ): CarriedAcme {
-  const issuing = source === 'lets-encrypt' || source === 'dns-01'
+  const issuing = isAcmeHostnameSource(source)
   if (!previous || !issuing || previous.source !== source) {
     return {
       acmeLastAttemptAt: null,
@@ -662,7 +679,7 @@ function carryAcme(
       uploadedCertId: null,
     }
   }
-  const dns01 = source === 'dns-01'
+  const dns01 = source === 'acme-dns-01'
   return {
     acmeLastAttemptAt: previous.acmeLastAttemptAt,
     acmeLastError: previous.acmeLastError,
@@ -730,7 +747,7 @@ export function certificateSourceForInstallOrigin(
     uploadedCertId?: string | null
     notAfter?: string | null
   }[]
-): Exclude<InstanceHostnameSource, 'dns-01'> | undefined {
+): ServedCertificateSource | undefined {
   const wanted = hostFromPublicUrlEntry(origin)?.toLowerCase()
   if (!wanted) return undefined
   const match = hostnames.find((row) => hostFromPublicUrlEntry(row.host)?.toLowerCase() === wanted)

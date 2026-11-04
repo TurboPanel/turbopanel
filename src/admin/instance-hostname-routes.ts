@@ -19,6 +19,7 @@ import {
 } from '../features/install/instance-certificates.ts'
 import {
   type InstanceHostnameRecord,
+  isAcmeHostnameSource,
   listInstanceHostnames,
   replaceInstanceHostnames,
   validateHostnameSource,
@@ -52,7 +53,7 @@ const ENCRYPTION_UNAVAILABLE = {
  * alone (`certificateSourceForInstallOrigin`) with no relation to what's
  * actually serving TLS, and could silently change
  * `installOriginNeedsInsecureTls`'s verdict for generated install commands
- * (an "uploaded" or "lets-encrypt" source with no real certificate behind it
+ * (an "uploaded" or "acme-http-01" source with no real certificate behind it
  * reads as untrusted, adding `-k`). Refusing writes here keeps the
  * `instanceHostname` / `instanceUploadedCertificate` tables and the ACME
  * settings empty on Workers, which is the state every other reader already
@@ -179,10 +180,11 @@ export function registerInstanceHostnameAdminRoutes(
       const checked = validateHostnameSource(entry.host, entry.source)
       if (!checked.ok) return c.json(checked, 422)
     }
-    // A Let's Encrypt row stored without accepted terms would make every
-    // later apply fail, including unrelated hostname edits — refuse the save.
+    // A Let's Encrypt row (HTTP-01 or DNS-01) stored without accepted terms
+    // could never be issued, and an HTTP-01 one would make every later apply
+    // fail, including unrelated hostname edits — refuse the save.
     if (
-      parsed.hostnames.some((entry) => entry.source === 'lets-encrypt') &&
+      parsed.hostnames.some((entry) => isAcmeHostnameSource(entry.source)) &&
       !(await tosAccepted(c, db))
     ) {
       return c.json(

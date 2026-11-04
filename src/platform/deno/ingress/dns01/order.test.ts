@@ -62,7 +62,7 @@ async function seed(
     .returning({ id: ingressAccount.id })
   const [row] = await db
     .insert(instanceHostname)
-    .values({ host: `https://${host}:8443`, source: 'dns-01' })
+    .values({ host: `https://${host}:8443`, source: 'acme-dns-01' })
     .returning({ id: instanceHostname.id })
   return { hostnameId: row!.id, accountId: account!.id }
 }
@@ -130,7 +130,7 @@ async function cleanup(db: Db, hostnameId: string): Promise<void> {
   await db.delete(setting).where(eq(setting.key, INSTANCE_ACME_ACCOUNT_SETTING_KEY))
 }
 
-test('a DNS-01 order goes from idle to issued and stores a sealed dns-01 pair', async () => {
+test('a DNS-01 order goes from idle to issued and stores a sealed acme-dns-01 pair', async () => {
   if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
   const db = createDenoDb()
   const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
@@ -152,7 +152,7 @@ test('a DNS-01 order goes from idle to issued and stores a sealed dns-01 pair', 
       .select()
       .from(instanceUploadedCertificate)
       .where(eq(instanceUploadedCertificate.id, row.uploadedCertId))
-    assertEquals(cert?.kind, 'dns-01')
+    assertEquals(cert?.kind, 'acme-dns-01')
     assertEquals(cert?.dnsNames, [host])
     assert((await decryptSecret(w.deps.dataEncryption, cert!.keyPem)).includes('PRIVATE KEY'))
     assertEquals(w.records.get(`_acme-challenge.${host}`), [])
@@ -209,7 +209,7 @@ test('an order is refused while the authority limit pauses the name', async () =
   }
 })
 
-test('the tick drives a new dns-01 name to issued and pushes the fallback once at expiry', async () => {
+test('the tick drives a new acme-dns-01 name to issued and pushes the fallback once at expiry', async () => {
   if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
   const db = createDenoDb()
   const w = await world(db, `panel-${crypto.randomUUID().slice(0, 8)}.example.com`)

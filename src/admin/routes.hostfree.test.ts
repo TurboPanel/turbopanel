@@ -955,7 +955,7 @@ test('instance hostname, certificate, and ACME routes cover validation branches'
     method: 'PUT',
     headers,
     body: JSON.stringify({
-      hostnames: [{ host: '10.1.2.3', source: 'lets-encrypt' }],
+      hostnames: [{ host: '10.1.2.3', source: 'acme-http-01' }],
     }),
   })
   assertEquals(privateAcme.status, 422)
@@ -967,10 +967,36 @@ test('instance hostname, certificate, and ACME routes cover validation branches'
     method: 'PUT',
     headers,
     body: JSON.stringify({
-      hostnames: [{ host: '*.example.com', source: 'lets-encrypt' }],
+      hostnames: [{ host: '*.example.com', source: 'acme-http-01' }],
     }),
   })
   assertEquals(wildcard.status, 422)
+
+  // Both Let's Encrypt sources need accepted terms before they are stored.
+  for (const source of ['acme-http-01', 'acme-dns-01']) {
+    const unaccepted = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        hostnames: [{ host: 'https://acme.example.com', source }],
+      }),
+    })
+    assertEquals(unaccepted.status, 422)
+    const unacceptedBody = await jsonBody<{ code?: string }>(unaccepted)
+    assertEquals(unacceptedBody.code, 'acme_terms_not_accepted')
+  }
+
+  // The old stored names are not accepted by the API.
+  for (const source of ['lets-encrypt', 'dns-01']) {
+    const legacy = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        hostnames: [{ host: 'https://acme.example.com', source }],
+      }),
+    })
+    assertEquals(legacy.status, 400)
+  }
 
   const saved = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
     method: 'PUT',

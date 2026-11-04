@@ -49,7 +49,7 @@ async function withInstanceAcmeFixture(fn: (fixture: Fixture) => Promise<void>):
     .values({ organizationId, daemon: { projection: { remoteAddress: '__direct__' } } })
     .returning({ id: server.id })
   const [stray] = await db.insert(server).values({ organizationId }).returning({ id: server.id })
-  await db.insert(instanceHostname).values({ host, source: 'lets-encrypt' })
+  await db.insert(instanceHostname).values({ host, source: 'acme-http-01' })
   try {
     await fn({ db, host, hostedServerId: hosted!.id, strayServerId: stray!.id })
   } finally {
