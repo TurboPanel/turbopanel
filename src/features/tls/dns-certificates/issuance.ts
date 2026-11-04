@@ -48,7 +48,6 @@ import {
 import {
   answerChallenges,
   checkValidation,
-  cleanRecords,
   leftoverRecords,
   collectCertificate,
   openOrder,
@@ -56,6 +55,7 @@ import {
   type StepResult,
   timedOutError,
 } from './steps.ts'
+import { cleanRecords } from './records.ts'
 import { ariDue, fallbackRenewAt, refreshedRenewAt } from './timing.ts'
 import { findCarrier } from '../../tunnels/records.ts'
 import { openDnsToken } from './token.ts'

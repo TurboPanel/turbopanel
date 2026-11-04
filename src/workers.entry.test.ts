@@ -144,6 +144,25 @@ describe('workers.ts entry handlers', () => {
     expect(paths.filter((path) => SELF_HOSTED_ONLY_ROUTE.test(path))).toEqual([])
   }, 30_000)
 
+  it('built Workers app mounts the DNS certificate order routes only as refusals', async () => {
+    const ctx = fakeExecutionContext()
+    await workers.fetch(
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      workersTestEnv(),
+      ctx
+    )
+    await Promise.all(ctx.waitUntilPromises)
+    const paths = getWorkerAppRoutePathsForTests().filter((path) =>
+      path.includes('/dns-certificates')
+    )
+    // The list stays; start, check and retry answer `certificate_ordering_off`
+    // (dns-certificate-routes.hostfree.test.ts), and no Workers code can reach
+    // the ordering modules (ordering-off.hostfree.test.ts).
+    expect(paths).toContain(`${CLIENT_API_PREFIX}/organizations/:id/dns-certificates`)
+    expect(paths).toContain(`${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/check`)
+    expect(paths).toContain(`${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/retry`)
+  }, 30_000)
+
   it('fetch applies signup force and dev-surface env branches', async () => {
     resetWorkerAppCachesForTests()
     const ctx = fakeExecutionContext()

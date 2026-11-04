@@ -20,7 +20,8 @@ import { TunnelProviderError } from '../../tunnels/errors.ts'
 import { findCarrier } from '../../tunnels/records.ts'
 import type { TunnelProvider } from '../../tunnels/vocabulary.ts'
 import { orgAccount } from './account.ts'
-import { noDnsTokenError, openDnsToken, withAnyDnsToken, withDnsToken } from './token.ts'
+import { withAnyDnsToken } from './token.ts'
+import { cleanRecords, dnsFor } from './records.ts'
 import {
   ANSWER_RECHECK_MS,
   clock,
@@ -28,11 +29,7 @@ import {
   PRESENT_GRACE_MS,
   READBACK_RETRY_MS,
 } from './context.ts'
-import {
-  ChallengeTargetError,
-  challengeRecordName,
-  type DnsChallengeProvider,
-} from './dns-provider.ts'
+import { ChallengeTargetError, challengeRecordName } from './dns-provider.ts'
 import type {
   ChallengeState,
   DnsCertState,
@@ -69,41 +66,6 @@ async function openClient(ctx: DnsCertContext, state: DnsCertState, order: Order
     accountUrl: order.accountUrl,
     fetch: ctx.acmeFetch,
   })
-}
-
-/**
- * The DNS host for one zone. Each call is made with a token of the account
- * that reaches the zone, picked at call time, so a token removed or refused
- * after the order started is replaced by another one that covers the zone.
- */
-async function dnsFor(
-  ctx: DnsCertContext,
-  row: OrderRow,
-  state: DnsCertState,
-  zoneId: string
-): Promise<DnsChallengeProvider> {
-  const carrier = await findCarrier(ctx.db, row.organizationId, state.carrierId)
-  const token = carrier ? await openDnsToken(ctx, carrier.id, { zone: { id: zoneId } }) : null
-  if (!carrier || !token) throw noDnsTokenError()
-  const provider = carrier.provider as TunnelProvider
-  const call = <T>(fn: (dns: DnsChallengeProvider) => Promise<T>) =>
-    withDnsToken(ctx, carrier.id, { id: zoneId }, (t) => fn(ctx.dns(provider, t)))
-  // The optional reads stay optional: a host without them is not asked.
-  const shape = ctx.dns(provider, token)
-  return {
-    lookupCname: (input) => call((dns) => dns.lookupCname(input)),
-    present: (input) => call((dns) => dns.present(input)),
-    remove: (ref) => call((dns) => dns.remove(ref)),
-    ...(shape.checkZone
-      ? { checkZone: (id: string) => call(async (dns) => await dns.checkZone?.(id)) }
-      : {}),
-    ...(shape.txtValues
-      ? {
-          txtValues: (input: { zoneId: string; name: string }) =>
-            call(async (dns) => (await dns.txtValues?.(input)) ?? []),
-        }
-      : {}),
-  }
 }
 
 function zoneFor(zones: readonly ZoneRef[], name: string): ZoneRef | undefined {
@@ -243,29 +205,6 @@ async function publishAll(
     throw withLeftovers(failed.reason, cleaned.records)
   }
   return { challenges, records: made }
-}
-
-/**
- * Remove every record this panel made for the row, by id. A record that cannot
- * be removed stays on the list for the next try; nothing else is ever touched.
- */
-export async function cleanRecords(
-  ctx: DnsCertContext,
-  row: OrderRow,
-  state: DnsCertState
-): Promise<DnsCertState> {
-  const left = await Promise.all(
-    state.records.map(async (rec): Promise<PublishedRecord | null> => {
-      try {
-        const dns = await dnsFor(ctx, row, state, rec.zoneId)
-        await dns.remove({ zoneId: rec.zoneId, recordId: rec.recordId })
-        return null
-      } catch {
-        return rec
-      }
-    })
-  )
-  return { ...state, records: left.filter((r): r is PublishedRecord => r !== null) }
 }
 
 /**
