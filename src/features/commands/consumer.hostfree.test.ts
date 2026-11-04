@@ -22,6 +22,7 @@ import {
   FENCE_DRAIN_WAIT_MS,
   enrichPingResult,
   errorMessage,
+  commandRequestLifetime,
   extractObservedHostname,
   failCommandAfterRetries,
   failureErrorCodeField,
@@ -942,7 +943,10 @@ test('processCommandEnvelope fails fast when the daemon is offline', async () =>
   )
 })
 
-function onlineRegistry(pending: PendingRequestRecord | null): {
+function onlineRegistry(
+  pending: PendingRequestRecord | null,
+  options: { current?: PendingRequestRecord | null; cell?: Partial<DaemonCell> } = {}
+): {
   registry: DaemonCellRegistry
   enqueued: Array<{ commandId: string; payload: unknown }>
 } {
@@ -989,7 +993,7 @@ function onlineRegistry(pending: PendingRequestRecord | null): {
     },
     markSent: () => Promise.resolve(),
     handleInbound: () => Promise.resolve(null),
-    getRequest: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(options.current ?? null),
     listRequests: () => Promise.resolve([]),
     waitForRequest: () => Promise.resolve(pending),
     createRequestAndWait: (outbound) =>
@@ -1009,6 +1013,7 @@ function onlineRegistry(pending: PendingRequestRecord | null): {
     prune: () => Promise.resolve([]),
     clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: () => Promise.resolve(),
+    ...options.cell,
   }
 
   return {
@@ -1021,6 +1026,108 @@ function onlineRegistry(pending: PendingRequestRecord | null): {
     enqueued,
   }
 }
+
+function ackedRequest(): PendingRequestRecord {
+  return { ...donePending(), status: 'acked', result: undefined }
+}
+
+const BACKUP_ENVELOPE: CommandEnvelope = {
+  commandId: COMMAND_ID,
+  serverId: SERVER_ID,
+  type: 'storage.backup',
+  attempt: 3,
+  queuedAt: '2020-01-01T00:00:00.000Z',
+}
+
+test('commandRequestLifetime keeps a long command record for its whole run once acked', () => {
+  assertEquals(commandRequestLifetime({ type: 'storage.backup' }), {
+    ackedTtlSeconds: 30 * 60 + 15 * 60,
+  })
+  assertEquals(commandRequestLifetime({ type: 'daemon.ping' }), { ackedTtlSeconds: 30 + 15 * 60 })
+  assertEquals('ttlSeconds' in commandRequestLifetime({ type: 'environment.deploy' }), true)
+})
+
+test('a long command still running after one hold hands its wait back to the queue', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ name: 'storage.backup' }),
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: {},
+  })
+  const { registry, enqueued } = onlineRegistry(null, { current: ackedRequest() })
+  const handedBack: CommandEnvelope[] = []
+  await processCommandEnvelope(db, registry, BACKUP_ENVELOPE, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+    commandQueue: {
+      enqueue: (envelope) => {
+        handedBack.push(envelope)
+        return Promise.resolve()
+      },
+    },
+  })
+  assertEquals(enqueued.length, 1)
+  // Back on the queue with a fresh retry count, and not timed out.
+  assertEquals(handedBack, [{ ...BACKUP_ENVELOPE, attempt: 1 }])
+  assertEquals(
+    transitions.some((t) => t.status === 'timed_out'),
+    false
+  )
+})
+
+test('a long command handed back resumes its wait instead of being sent again', async () => {
+  const sentAt = new Date().toISOString()
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ name: 'storage.backup', status: 'acked', sentAt }),
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: {},
+  })
+  const { registry, enqueued } = onlineRegistry(
+    { ...donePending(), result: {} },
+    { current: ackedRequest() }
+  )
+  await processCommandEnvelope(db, registry, BACKUP_ENVELOPE, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+  })
+  assertEquals(enqueued, [])
+  assertEquals(
+    transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+})
+
+test('a resumed command the daemon never acknowledged gets the ack check, not its whole budget', async () => {
+  const sentAt = new Date().toISOString()
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ name: 'storage.backup', status: 'sent', sentAt }),
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: {},
+  })
+  const unacked = { ...donePending(), status: 'sent' as const, result: undefined }
+  let dropped = 0
+  const { registry, enqueued } = onlineRegistry(null, {
+    current: unacked,
+    cell: {
+      dropDaemonConnection: () => {
+        dropped += 1
+        return Promise.resolve()
+      },
+      expireRequest: () => Promise.resolve({ ...unacked, status: 'expired' }),
+    },
+  })
+  await processCommandEnvelope(db, registry, BACKUP_ENVELOPE, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+  })
+  // The dead connection is dropped and the command fails as unacknowledged
+  // (before, a resumed wait sat out the whole 30-minute budget).
+  assertEquals(dropped, 1)
+  assertEquals(enqueued, [])
+  assertEquals(
+    transitions.some((t) => t.status === 'failed'),
+    true
+  )
+})
 
 function donePending(): PendingRequestRecord {
   return {

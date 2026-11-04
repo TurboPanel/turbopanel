@@ -178,6 +178,19 @@ in the execution-log store — there is no Postgres column for them. See
   acking the old one: if the ack is lost in between, the command is delivered
   twice and the second copy re-sends it to the server, which drops a command
   id it has already seen.
+- **Long commands** (a 30-minute backup or restore). The request record
+  keeps the cell's default 300 s to be delivered and acknowledged (so an
+  undelivered command never reaches a server long after it was given up on),
+  then, from the daemon's ack, the command's whole budget plus 15 minutes
+  (`commandRequestLifetime`, `CellEnqueueOptions.ackedTtlSeconds`): the Redis
+  cell extends the record on ack; the Durable Object cell already keeps an
+  acknowledged request until its result. Before this, a self-hosted command
+  running past 5 minutes lost its record and ended `timed_out` even when it
+  succeeded. One consumer run waits at most `COMMAND_WAIT_HOLD_MS` (10
+  minutes, under the Workers consumer limit) and then hands the wait back to
+  the queue (`attempt: 1`); the next run resumes the wait on the same request
+  (`resumeSentWait`) instead of sending the command again, and a command whose
+  request is gone is sent again as before. Deploys keep their own clocks.
 - **Broken messages** (unparseable, or a permanent error) are dead-lettered.
 - `CommandQueue.enqueue(envelope, { delaySeconds })` is the one way to delay:
   Workers passes it to `send`; Deno publishes to the delay queue of the next
