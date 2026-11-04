@@ -19,6 +19,7 @@ import {
 } from '../../../../lib/acme/client.ts'
 import { buildCertificateRequest, generateCertificateKey } from '../../../../lib/acme/csr.ts'
 import { logWarn } from '../../../../lib/logger.ts'
+import { aboutWait, utcMoment } from '../../../../lib/plain-time.ts'
 import { forEachSequential } from '../../../../lib/sequential.ts'
 import { encryptSecret } from '../../../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../../../lib/secrets/secrets.ts'
@@ -271,25 +272,57 @@ async function publishChallenge(
 }
 
 /**
+ * Whether the authority answered a read with a plain no (4xx: the
+ * authorization is gone or not this account's), as opposed to an answer that
+ * is unknown (no answer, a 5xx or a rate limit).
+ */
+function definiteRefusal(err: unknown): boolean {
+  if (!(err instanceof AcmeError) || err.status === null) return false
+  return err.status >= 400 && err.status < 500 && err.code !== 'rate_limited'
+}
+
+/**
  * Pick up the order kept by a lookup failure when its authorization is still
  * pending and has time left: wait for its record again instead of opening a
- * new order. Null when there is none to pick up.
+ * new order. Null when there is none to pick up. When the authority cannot
+ * say how the authorization stands, the order stays kept for the next start:
+ * only a definite answer gives it up.
  */
 async function resumeKept(
   deps: Dns01Deps,
   row: Dns01Row,
-  nameservers: string[]
+  nameservers: string[],
+  priorStarts: string[]
 ): Promise<Dns01State | null> {
   const kept = row.state.order
   if (!kept || kept.answeredAt) return null
   const acme = await client(deps)
-  const authz = await acme.getAuthorization(kept.authzUrl).catch(() => null)
+  let authz: AcmeAuthorization | null = null
+  try {
+    authz = await acme.getAuthorization(kept.authzUrl)
+  } catch (err) {
+    // A gone account is handled by the caller's failure path (the order closes there).
+    if (err instanceof AcmeError && err.code === 'account_gone') throw err
+    if (!definiteRefusal(err)) return await keepAfterUnknownRead(deps, row, err, priorStarts)
+  }
   if (!authz || !canResume(authz, deps.now())) return null
   const order = { ...kept, nameservers, startedAt: deps.now().toISOString() }
   // The lookup count stays: the record has still not been seen, so the waits keep growing.
   const state = withStage(row.state, 'waiting-dns', { order, nextAttemptAt: null })
   await saveDns01State(deps.db, row.id, state, { acmeLastAttemptAt: order.startedAt })
   return state
+}
+
+/** The kept order stays for the next start; no new order was opened, so the start budget is left alone. */
+async function keepAfterUnknownRead(
+  deps: Dns01Deps,
+  row: Dns01Row,
+  err: unknown,
+  priorStarts: string[]
+): Promise<Dns01State> {
+  const mapped = mapAcmeFailure(err, deps.now())
+  const failure = { cause: mapped.cause, detail: mapped.detail }
+  return await recordFailure(deps, row, failure, mapped.stopUntil, priorStarts, 'keep')
 }
 
 /** Give up a kept order that cannot be picked up again, before a new one opens. */
@@ -310,10 +343,13 @@ async function holdForCap(
   priorStarts: string[]
 ): Promise<Dns01State> {
   const now = deps.now()
-  const state = cappedState(row.state, now, priorStarts)
+  const capped = cappedState(row.state, now, priorStarts)
+  const failure = { cause: 'order-cap' as const, detail: capped.lastError?.detail ?? '' }
+  // Once per run, like every other cause: a name that stopped opening orders must be seen.
+  const state = await alertOnFailure(capped, row.name, failure, capped.nextAttemptAt, deps.notify)
   await saveDns01State(deps.db, row.id, state, {
     acmeLastAttemptAt: now.toISOString(),
-    acmeLastError: state.lastError?.detail ?? null,
+    acmeLastError: failure.detail,
   })
   return state
 }
@@ -367,11 +403,16 @@ async function startWith(
     const starts = lookup ? priorStarts : undefined
     return await recordFailure(deps, row, failure, null, starts, lookup ? 'keep' : undefined)
   }
-  const resumed = await resumeKept(deps, row, checked.nameservers)
+  const resumed = await resumeKept(deps, row, checked.nameservers, priorStarts)
   if (resumed) return resumed
   const fresh = await dropKept(deps, row)
-  if (orderCapReached(fresh.state, deps.now())) return await holdForCap(deps, fresh, priorStarts)
-  return await openOrder(deps, fresh, provider, checked.zone.id, checked.nameservers)
+  try {
+    if (orderCapReached(fresh.state, deps.now())) return await holdForCap(deps, fresh, priorStarts)
+    return await openOrder(deps, fresh, provider, checked.zone.id, checked.nameservers)
+  } catch (err) {
+    // The kept order was given up above: fail on the row without it, so it is not given up twice.
+    return await failWith(deps, fresh, err)
+  }
 }
 
 export type StartRefusal = { ok: false; error: string }
@@ -380,17 +421,18 @@ export type StartRefusal = { ok: false; error: string }
 function startRefusal(state: Dns01State, now: Date): StartRefusal | null {
   const stop = Date.parse(state.stopUntil ?? '')
   if (!Number.isNaN(stop) && stop > now.getTime()) {
+    const until = new Date(stop)
     return {
       ok: false,
-      error: `Retry is paused until ${state.stopUntil} by the certificate authority's limit.`,
+      error: `Retry is paused for ${aboutWait(stop - now.getTime())} (until ${utcMoment(until)}) by the certificate authority's limit.`,
     }
   }
   const recent = startsInLastHour(state.attemptTimes, now)
   if (recent.length < DNS01_MAX_STARTS_PER_HOUR) return null
-  const free = nextAttemptAt(now, 0, () => 0, recent).toISOString()
+  const free = nextAttemptAt(now, 0, () => 0, recent)
   return {
     ok: false,
-    error: `Too many orders for this name in the last hour. Retry after ${free}.`,
+    error: `Too many orders for this name in the last hour. Retry in ${aboutWait(free.getTime() - now.getTime())} (after ${utcMoment(free)}).`,
   }
 }
 

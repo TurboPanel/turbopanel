@@ -2,10 +2,12 @@
 
 ### Where control-plane hostnames come from
 
-One rule per runtime, in `control-plane-origins.ts`; every reader (links and
+One rule per runtime, in `control-plane-origins.ts`. Links and
 `resolvePublicBaseUrl`, install commands, passkey origins, the identity
-document and the daemon hello URLs, published Git origins, install trust, the
-site-name guard) goes through it.
+document and the daemon hello URLs, published Git origins and install trust go
+through it. The site-name guard (`features/hostings/panel-hostname-guard.ts`)
+does not: its callers have no runtime to pass, so it reads the rows itself and
+skips them when there is no `Deno` global (High Availability).
 
 - **High availability (Workers):** only the platform environment,
   `TURBOPANEL_BASE_URL` then `TURBOPANEL_PUBLIC_URLS`, always port-free (the
@@ -35,7 +37,8 @@ site-name guard) goes through it.
 
 **DNS-01 source (self-hosted).** `acme-dns-01` is a fourth `origin.source`: the
 control plane orders the certificate itself (`src/platform/deno/ingress/dns01/`)
-and points `uploaded_cert_id` at the issued `certificate` row (`kind='acme-dns-01'`).
+and points `uploaded_cert_id` at the issued `certificate` row
+(`kind='acme-dns-01'`).
 A rewrite of the hostname list keeps that pair and `acme_state`; a request body
 never sets them. `effectiveCertificateSource` maps the row to `uploaded` while
 the pair is live and to `platform-ca` before the first one and after expiry;
@@ -51,8 +54,9 @@ already renders), `uploaded` (a `certificate` row whose key is a sealed
 `tpsecret` envelope), `acme-http-01` (Let's Encrypt over HTTP-01, issued by the
 daemon) or `acme-dns-01` (below). Let's Encrypt is refused for loopback,
 private, and wildcard names, and a save with either Let's Encrypt source is
-refused (422 `acme_terms_not_accepted`) while the terms are not accepted. Issuance state (`acme_last_attempt_at`,
-`acme_last_error`, `not_after`) is per hostname.
+refused (422 `acme_terms_not_accepted`) while the terms are not accepted.
+Issuance state (`acme_last_attempt_at`, `acme_last_error`, `not_after`) is per
+hostname.
 
 Instance-wide ACME knobs (contact email, terms acceptance, directory URL,
 staging) are the `INSTANCE_ACME_SETTINGS` setting row. That group is

@@ -31,6 +31,10 @@ export const DNS01_CAUSES = [
   'account-error',
   /** This host could not look up the zone's nameservers; a local problem, retried without limit. */
   'dns-lookup',
+  /** The DNS provider and this host's resolver both answered that the zone lists no nameservers. */
+  'no-nameservers',
+  /** Too many orders for this name were given up in the last day; no new order opens until one ages out or Retry. */
+  'order-cap',
 ] as const
 export type Dns01Cause = (typeof DNS01_CAUSES)[number]
 

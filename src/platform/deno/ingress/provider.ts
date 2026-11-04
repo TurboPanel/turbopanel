@@ -115,6 +115,20 @@ export type IngressStatus = {
   facts?: Record<string, string | number | boolean>
 }
 
+/**
+ * A remove the provider refuses before changing anything (for example a tunnel
+ * whose routes live in a file on its connector). The route answers 422 with
+ * the cause and the detail; the stored provider state stays.
+ */
+export class IngressRemoveRefused extends Error {
+  readonly code: IngressCause
+  constructor(code: IngressCause, detail: string) {
+    super(detail)
+    this.name = 'IngressRemoveRefused'
+    this.code = code
+  }
+}
+
 export interface IngressProvider {
   readonly mode: IngressMode
   readonly capabilities: IngressCapabilities
@@ -122,6 +136,6 @@ export interface IngressProvider {
   /** Idempotent. Writes nothing itself; returns the state the caller stores. */
   apply(ctx: IngressContext): Promise<ApplyResult>
   status(ctx: IngressContext): Promise<IngressStatus>
-  /** Idempotent; tolerates an already removed setup. */
+  /** Idempotent; tolerates an already removed setup. Throws `IngressRemoveRefused` to refuse. */
   remove(ctx: IngressContext): Promise<void>
 }

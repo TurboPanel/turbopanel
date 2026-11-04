@@ -224,3 +224,46 @@ test('only tunnel hostnames carry the public port, and only for a daemon that li
     }
   })
 })
+
+test('a DNS-01 name reaches the daemon as uploaded while its pair is live, else as platform-ca', async () => {
+  await withRollback(async (tx) => {
+    const now = Date.parse('2026-11-01T00:00:00.000Z')
+    const notAfter = '2026-12-01T00:00:00.000Z'
+    const [cert] = await tx
+      .insert(instanceUploadedCertificate)
+      .values({
+        label: 'DNS-01 payload fixture',
+        certPem: 'dns01-certificate-pem',
+        keyPem: await encryptSecret(await dataEncryption(), UPLOADED_KEY),
+        dnsNames: [],
+        notAfter,
+        kind: 'acme-dns-01',
+      })
+      .returning({ id: instanceUploadedCertificate.id })
+    const id = crypto.randomUUID()
+    const issued = `dns01-issued-${id}.example.test`
+    const waiting = `dns01-waiting-${id}.example.test`
+    await tx.insert(instanceHostname).values([
+      { host: issued, source: 'acme-dns-01', uploadedCertId: cert!.id, notAfter },
+      { host: waiting, source: 'acme-dns-01' },
+    ])
+    const secrets = await dataEncryption()
+    const build = (at: number) =>
+      resolvePublicUrlsApplyPayload(tx, [issued, waiting], '0.1.1', secrets, {}, null, { now: at })
+    const sourceOf = (payload: Awaited<ReturnType<typeof build>>, host: string) =>
+      payload.hostnames?.find((entry) => entry.host === host)?.source
+
+    const live = await build(now)
+    assertEquals(sourceOf(live, issued), 'uploaded')
+    assertEquals(
+      live.hostnames?.find((entry) => entry.host === issued)?.certPem,
+      'dns01-certificate-pem'
+    )
+    assertEquals(sourceOf(live, waiting), 'platform-ca')
+    // The stored name never reaches the wire.
+    assertEquals(JSON.stringify(live.hostnames).includes('acme-dns-01'), false)
+
+    const expired = await build(Date.parse(notAfter) + 1000)
+    assertEquals(sourceOf(expired, issued), 'platform-ca')
+  })
+})

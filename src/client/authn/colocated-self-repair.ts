@@ -9,9 +9,9 @@
  *
  * {@link createColocatedSelfRepair} checks only after such a refusal came
  * straight in on the control plane's Unix socket (`isDirectLocalSocketRequest`
- * in `src/lib/peer-address.ts`): only the daemon on this server can connect
- * back that way, while public traffic reaches the same socket through Caddy
- * and is never counted. A parked daemon retries every few minutes, which
+ * in `src/lib/peer-address.ts`): only local processes in group `tp` (the
+ * daemon among them) can open that socket and connect back that way, while
+ * public traffic reaches the same socket through Caddy and is never counted. A parked daemon retries every few minutes, which
  * brings the next refusal; there is no boot-time check. When the files do not
  * match it:
  *

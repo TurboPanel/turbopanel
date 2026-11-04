@@ -1,4 +1,4 @@
-import { assert, assertEquals } from '@std/assert'
+import { assert, assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../../../db/connection.ts'
 import type { InstanceHostnameRecord } from '../../../../features/install/instance-hostnames.ts'
 import type { IngressAccountRecord } from '../accounts.ts'
@@ -16,7 +16,7 @@ import {
   tunnelPhase,
   tunnelRulesStale,
 } from '../cloudflare/tunnel-config.ts'
-import type { HostnameWithState, IngressContext } from '../provider.ts'
+import { type HostnameWithState, type IngressContext, IngressRemoveRefused } from '../provider.ts'
 import { applyHostname } from '../registry.ts'
 import { cloudflareTunnelProvider, routesName } from './cloudflare-tunnel.ts'
 
@@ -498,6 +498,26 @@ test('an applied tunnel is read again on each apply and refused once it turns lo
   const writes = h.cf.log.filter((line) => !line.startsWith('GET ')).length
   const again = await applyHostname(h.ctx(row))
   assertEquals(again.ok ? '' : again.cause, 'tunnel-locally-managed')
+  assertEquals(h.cf.log.filter((line) => !line.startsWith('GET ')).length, writes)
+})
+
+test('remove refuses a tunnel that turned locally managed before anything is changed', async () => {
+  const h = harness()
+  const first = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
+  assert(first.ok)
+  const one = hostname('h1', 'panel.example.com', first.state)
+  const second = await applyHostname(
+    h.ctx(hostname('h2', 'admin.example.com'), [one, hostname('h2', 'admin.example.com')])
+  )
+  assert(second.ok)
+  const two = hostname('h2', 'admin.example.com', second.state)
+  h.cf.tunnels[0]!.config_src = 'local'
+  const writes = h.cf.log.filter((line) => !line.startsWith('GET ')).length
+  const err = await assertRejects(
+    () => cloudflareTunnelProvider.remove(h.ctx(one, [one, two])),
+    IngressRemoveRefused
+  )
+  assertEquals(err.code, 'tunnel-locally-managed')
   assertEquals(h.cf.log.filter((line) => !line.startsWith('GET ')).length, writes)
 })
 

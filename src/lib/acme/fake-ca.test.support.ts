@@ -51,6 +51,10 @@ export type FakeCaOptions = {
   authzExpires?: string
   /** Refuse authorization deactivation with a server error. */
   refuseDeactivation?: boolean
+  /** An answered challenge stays pending, as while the authority is still validating. */
+  holdValidation?: boolean
+  /** This many new orders are opened; every one after them answers a server error. */
+  ordersBeforeFailure?: number
   /** Renewal information answers 503 (with `renewalRetryAfter` if set) instead of a window. */
   renewalBusy?: boolean
 }
@@ -65,6 +69,8 @@ export type FakeCa = {
   answers: string[]
   /** Authorizations deactivated by their account (the authorization id of each). */
   deactivated: string[]
+  /** Every deactivation asked for, refused ones included (the authorization id of each). */
+  deactivationAsked: string[]
   /** The names on each certificate issued, in order. */
   issued: string[][]
   /** Renewal-information requests received (the identifier of each). */
@@ -75,6 +81,8 @@ export type FakeCa = {
   hits: { directory: number; nonce: number; renewal: number; signed: number }
   /** From now on every request signed by an account that exists is refused as deactivated. */
   deactivateAccounts: () => void
+  /** The next `count` authorization reads (not deactivations) answer a server error. */
+  failAuthzReads: (count: number) => void
 }
 
 function json(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}) {
@@ -148,6 +156,8 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const nonces = new Set<string>()
   let stale = options.staleNonceOnce === true
   let toLose = options.loseAnswers ?? 0
+  let authzReadFailures = 0
+  const deactivationAsked: string[] = []
   let counter = 0
   const next = (prefix: string) => {
     counter += 1
@@ -206,7 +216,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const authzBody = async (a: Authz, jwk: Jwk) => {
     let status = 'pending'
     if (a.deactivated) status = 'deactivated'
-    else if (a.answered) {
+    else if (a.answered && !options.holdValidation) {
       const thumb = await accountThumbprint({ publicJwk: jwk } as AcmeAccountKey)
       const expected = base64urlEncode(
         new Uint8Array(
@@ -264,6 +274,9 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
         ...headers,
         ...(retryAfter ? { 'Retry-After': retryAfter } : {}),
       })
+    }
+    if (options.ordersBeforeFailure !== undefined && orders.length >= options.ordersBeforeFailure) {
+      return problem('serverInternal', 'busy', 500, headers)
     }
     if (options.rateLimitOrders) {
       return problem('rateLimited', 'too many new orders', 429, {
@@ -343,19 +356,27 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   ): Promise<Response> => {
     const authz = order.authz.find((a) => a.id === id)!
     const asked = (signed.payload as { status?: string } | '') || null
-    if (asked?.status === 'deactivated') {
-      if (options.refuseDeactivation) return problem('serverInternal', 'busy', 500, headers)
-      if (authz.answered || authz.deactivated) {
-        return problem(
-          'malformed',
-          'only a pending authorization is deactivated here',
-          400,
-          headers
-        )
+    if (asked?.status !== 'deactivated') {
+      if (authzReadFailures > 0) {
+        authzReadFailures -= 1
+        return problem('serverInternal', 'busy', 500, headers)
       }
-      authz.deactivated = true
-      deactivatedAuthz.push(id)
+      return json(await authzBody(authz, signed.jwk), { headers })
     }
+    deactivationAsked.push(id)
+    if (options.refuseDeactivation) return problem('serverInternal', 'busy', 500, headers)
+    // A pending or valid authorization can be deactivated, answered or not (RFC 8555 §7.5.2).
+    const current = (await authzBody(authz, signed.jwk)).status
+    if (current !== 'pending' && current !== 'valid') {
+      return problem(
+        'malformed',
+        'only a pending or valid authorization can be deactivated',
+        400,
+        headers
+      )
+    }
+    authz.deactivated = true
+    deactivatedAuthz.push(id)
     return json(await authzBody(authz, signed.jwk), { headers })
   }
 
@@ -443,11 +464,15 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     issued,
     answers,
     deactivated: deactivatedAuthz,
+    deactivationAsked,
     renewalAsked,
     orderReplaces,
     hits,
     deactivateAccounts: () => {
       for (const id of accounts.keys()) deactivated.add(id)
+    },
+    failAuthzReads: (count) => {
+      authzReadFailures = count
     },
   }
 }

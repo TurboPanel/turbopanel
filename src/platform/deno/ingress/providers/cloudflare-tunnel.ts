@@ -26,15 +26,16 @@ import {
   type TunnelState,
 } from '../cloudflare/tunnel-config.ts'
 import { check, planHostname } from '../planner.ts'
-import type {
-  ApplyResult,
-  IngressCause,
-  IngressContext,
-  IngressDeps,
-  IngressProvider,
-  IngressStatus,
-  PreflightCheck,
-  PreflightResult,
+import {
+  type ApplyResult,
+  type IngressCause,
+  type IngressContext,
+  type IngressDeps,
+  type IngressProvider,
+  IngressRemoveRefused,
+  type IngressStatus,
+  type PreflightCheck,
+  type PreflightResult,
 } from '../provider.ts'
 
 const ALLOWED_PORTS = [443, 8443] as const
@@ -42,6 +43,8 @@ const SELF_CHECK_TIMEOUT_MS = 10_000
 const IDENTITY_PATH = '/api/daemon/v1/instance/identity'
 const LOCALLY_MANAGED =
   'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. In Cloudflare, open this tunnel and migrate it to dashboard management, then connect again.'
+const LOCALLY_MANAGED_REMOVE =
+  "This tunnel is managed by a configuration file on its connector, so the control plane cannot remove this name's route from it. Remove the route from the connector's file, or migrate the tunnel to dashboard management in Cloudflare, then disconnect again."
 
 type Ready = { deps: IngressDeps; name: string; zoneId: string; accountId: string; token: string }
 
@@ -431,11 +434,16 @@ async function removeWith(
   const account = deps.account
   if (!account) return
   const api = new CloudflareClient({ token: await deps.openToken(account), fetch: deps.fetch })
+  const remaining = namesOnTunnel(ctx, null)
+  const rewritesRoutes = remaining.length > 0 || state.adopted
+  // Refused before anything is changed, as Connect is: the routes of such a tunnel cannot be written.
+  if (rewritesRoutes && (await tunnelLocallyManaged(api, state))) {
+    throw new IngressRemoveRefused('tunnel-locally-managed', LOCALLY_MANAGED_REMOVE)
+  }
   if (state.createdRecord && state.dnsRecordId) {
     await ignoreGone(() => api.deleteDnsRecord(state.zoneId, state.dnsRecordId))
   }
-  const remaining = namesOnTunnel(ctx, null)
-  if (remaining.length > 0 || state.adopted) {
+  if (rewritesRoutes) {
     // An adopted tunnel keeps running with its other rules; only our name goes.
     const { ingress: existing, ...rest } = await api.getConfiguration(
       state.accountId,
@@ -449,6 +457,16 @@ async function removeWith(
   // Last name on the tunnel: stop the connector first, then the tunnel can go.
   await pushRunToken(deps, '')
   await ignoreGone(() => api.deleteTunnel(state.accountId, state.tunnelId))
+}
+
+/** Whether the stored tunnel now takes its routes from a file; a tunnel that is gone is not. */
+async function tunnelLocallyManaged(api: CloudflareClient, state: TunnelState): Promise<boolean> {
+  try {
+    return isLocallyManaged(await api.getTunnel(state.accountId, state.tunnelId))
+  } catch (err) {
+    if (err instanceof TunnelProviderError && err.code === 'not_found') return false
+    throw err
+  }
 }
 
 async function ignoreGone(run: () => Promise<void>): Promise<void> {

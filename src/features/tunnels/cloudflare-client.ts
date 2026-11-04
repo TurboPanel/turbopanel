@@ -56,6 +56,15 @@ export type CloudflareTunnelDetail = {
   remote_config?: boolean
 }
 
+/** Cloudflare's own answer for a tunnel that never had a configuration, and no other 404. */
+function isConfigurationNotFound(err: unknown): boolean {
+  return (
+    err instanceof TunnelProviderError &&
+    err.code === 'not_found' &&
+    /configuration[^;]*not found/i.test(err.message)
+  )
+}
+
 /** Whether the tunnel's routes live in a config file on its connector, so the API cannot set them. */
 export function isLocallyManaged(tunnel: CloudflareTunnelDetail): boolean {
   if (typeof tunnel.config_src === 'string') return tunnel.config_src === 'local'
@@ -310,7 +319,8 @@ export class CloudflareClient {
   /**
    * The tunnel's ingress rules as Cloudflare holds them (remotely managed
    * tunnels). A remotely managed tunnel that never had a configuration answers
-   * 404 ("Configuration for tunnel not found"): that is an empty one.
+   * 404 ("Configuration for tunnel not found"): that is an empty one. Any
+   * other 404 (the tunnel itself is gone) stays an error.
    */
   async getConfiguration(accountId: string, tunnelId: string): Promise<CloudflareTunnelConfig> {
     let result: { config?: Partial<CloudflareTunnelConfig> | null } | null
@@ -320,7 +330,7 @@ export class CloudflareClient {
         `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/configurations`
       )
     } catch (err) {
-      if (err instanceof TunnelProviderError && err.code === 'not_found') return { ingress: [] }
+      if (isConfigurationNotFound(err)) return { ingress: [] }
       throw err
     }
     const config = result?.config ?? {}

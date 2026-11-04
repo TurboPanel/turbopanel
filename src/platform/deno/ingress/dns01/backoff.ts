@@ -7,6 +7,7 @@
  */
 import { type AcmeAuthorization, AcmeError } from '../../../../lib/acme/client.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
+import { utcMoment } from '../../../../lib/plain-time.ts'
 import { type Dns01Cause, type Dns01Failure, type Dns01State, withStage } from './state.ts'
 
 export const DNS01_BACKOFF_BASE_MS = 5 * 60_000
@@ -84,14 +85,14 @@ export function orderCapReached(state: Dns01State, now: Date): boolean {
 /**
  * The state when the daily order cap holds a start back after a passing
  * preflight: no order, the failure counts untouched, the preflight again in an
- * hour, and a last error that says why and how to lift it.
+ * hour, and a last error (`order-cap`) that says why and how to lift it.
  */
 export function cappedState(state: Dns01State, now: Date, attemptTimes: string[]): Dns01State {
   const window = abandonedInLastDay(state.abandonedTimes, now)
     .map(Date.parse)
     .sort((a, b) => a - b)
   const oldest = window[window.length - DNS01_MAX_ABANDONED_PER_DAY] ?? now.getTime()
-  const freeAt = new Date(oldest + DAY_MS).toISOString()
+  const freeAt = utcMoment(new Date(oldest + DAY_MS))
   const detail =
     `${window.length} certificate orders for this name were given up in the last day, ` +
     `so no new order opens before ${freeAt}. Press Retry once the cause is fixed.`
@@ -101,7 +102,7 @@ export function cappedState(state: Dns01State, now: Date, attemptTimes: string[]
     abandonedTimes: abandonedInLastDay(state.abandonedTimes, now),
     nextAttemptAt: new Date(now.getTime() + DNS01_BACKOFF_CAP_MS).toISOString(),
     lastError: {
-      cause: state.lastError?.cause ?? 'acme-error',
+      cause: 'order-cap',
       detail,
       at: now.toISOString(),
     },

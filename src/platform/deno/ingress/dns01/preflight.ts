@@ -107,15 +107,29 @@ export async function caaAllows(
  * host's resolver. A resolver behind split DNS answers the zone locally and
  * lists no nameservers (or its own), so it is only the fallback. A provider
  * that cannot say, or refuses the read, leaves the resolver to answer.
+ * `answered` is true only when every source asked gave an answer (an empty
+ * list counts), so an empty list then means the zone has none, not that a
+ * lookup failed.
  */
 async function nameserverNames(
   provider: DnsChallengeProvider,
   dns: DnsLookup,
   zone: ProviderZone
-): Promise<string[]> {
-  const listed = provider.nameservers ? await provider.nameservers(zone.id).catch(() => []) : []
-  if (listed.length > 0) return listed
-  return await dns.ns(zone.name).catch(() => [])
+): Promise<{ names: string[]; answered: boolean }> {
+  let providerAnswered = true
+  if (provider.nameservers) {
+    try {
+      const listed = await provider.nameservers(zone.id)
+      if (listed.length > 0) return { names: listed, answered: true }
+    } catch {
+      providerAnswered = false
+    }
+  }
+  try {
+    return { names: await dns.ns(zone.name), answered: providerAnswered }
+  } catch {
+    return { names: [], answered: false }
+  }
 }
 
 /** Every address of every nameserver, through this host's resolver. */
@@ -127,14 +141,27 @@ async function nameserverAddresses(dns: DnsLookup, servers: readonly string[]): 
 }
 
 /**
- * Why no nameserver address was found. This is a lookup problem on this side
- * (`dns-lookup`), never a refusal by the authority, so it backs off on its own
- * schedule and does not count toward the failed-order limit.
+ * Why no nameserver address was found. When the provider and the resolver
+ * both answered with no nameservers, the zone itself lists none
+ * (`no-nameservers`: fix the zone, so it counts like any other failure).
+ * Otherwise this is a lookup problem on this side (`dns-lookup`), never a
+ * refusal by the authority, so it backs off on its own schedule and does not
+ * count toward the failed-order limit.
  */
-function lookupFailure(zone: ProviderZone, names: readonly string[]): Dns01Failure {
+function lookupFailure(
+  zone: ProviderZone,
+  found: { names: readonly string[]; answered: boolean }
+): Dns01Failure {
+  const { names } = found
+  if (names.length === 0 && found.answered) {
+    return {
+      cause: 'no-nameservers',
+      detail: `The ${zone.name} zone lists no nameservers: the DNS provider listed none, and this server's resolver found no NS records. Check that the zone is delegated to its DNS provider.`,
+    }
+  }
   const detail =
     names.length === 0
-      ? `No nameservers found for ${zone.name}: the DNS provider listed none, and this server's resolver returned no NS records.`
+      ? `Could not look up the nameservers of ${zone.name}: the DNS provider or this server's resolver did not answer.`
       : `Could not look up the addresses of the ${zone.name} nameservers (${names.join(', ')}) through this server's resolver.`
   return { cause: 'dns-lookup', detail }
 }
@@ -167,9 +194,9 @@ export async function preflightDns01(input: {
     return stop(checks, { cause: 'caa-forbids', detail }, zone)
   }
   checks.push(check('caa', true, 'CAA records allow this certificate authority.'))
-  const names = await nameserverNames(input.provider, dns, zone)
-  const nameservers = await nameserverAddresses(dns, names)
-  if (nameservers.length === 0) return stop(checks, lookupFailure(zone, names), zone)
+  const found = await nameserverNames(input.provider, dns, zone)
+  const nameservers = await nameserverAddresses(dns, found.names)
+  if (nameservers.length === 0) return stop(checks, lookupFailure(zone, found), zone)
   checks.push(check('nameservers', true, `Found ${nameservers.length} nameserver addresses.`))
   return { ok: true, checks, failure: null, zone, nameservers }
 }
@@ -242,7 +269,15 @@ export const denoDnsLookup: DnsLookup = {
       tag: record.tag,
       value: record.value,
     })),
-  ns: (name) => Deno.resolveDns(name, 'NS', withTimeout()),
+  ns: async (name) => {
+    try {
+      return await Deno.resolveDns(name, 'NS', withTimeout())
+    } catch (err) {
+      // NotFound is an answer: the name has no NS records. Anything else is no answer.
+      if (err instanceof Deno.errors.NotFound) return []
+      throw err
+    }
+  },
   addresses: async (name) => {
     const [v4, v6] = await Promise.all([
       Deno.resolveDns(name, 'A', withTimeout()).catch(() => []),
