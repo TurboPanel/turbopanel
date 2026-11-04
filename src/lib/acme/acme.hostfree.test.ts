@@ -248,3 +248,30 @@ test('the terms of service come from the directory and must be an https link', a
     )
   }
 })
+
+test('an authorization that will not be answered is deactivated', async () => {
+  const ca = createFakeCa({ txt: () => [] })
+  const acme = await client(ca)
+  await acme.ensureAccount()
+  const order = await acme.newOrder(['example.com'])
+  const url = order.authorizations[0]!
+  assertEquals((await acme.getAuthorization(url)).status, 'pending')
+  const deactivated = await acme.deactivateAuthorization(url)
+  assertEquals(deactivated.status, 'deactivated')
+  assertEquals(deactivated.url, url)
+  assertEquals(ca.deactivated, [url.split('/').pop()])
+  assertEquals((await acme.getOrder(order.url)).status, 'invalid')
+})
+
+test('a refused deactivation is a coded error', async () => {
+  const ca = createFakeCa({ txt: () => [], refuseDeactivation: true })
+  const acme = await client(ca)
+  await acme.ensureAccount()
+  const order = await acme.newOrder(['example.com'])
+  const err = await assertRejects(
+    () => acme.deactivateAuthorization(order.authorizations[0]!),
+    AcmeError
+  )
+  assertEquals(err.code, 'server')
+  assertEquals(ca.deactivated, [])
+})

@@ -29,7 +29,7 @@ function missing(c: Context<AppEnv>): Response {
   return c.json({ ok: false, error: 'No DNS-01 hostname with that id' }, 404)
 }
 
-/** Start an order now; `reset` (Retry) also clears the failure counts. */
+/** Start an order now; `reset` (Retry) also clears the failure counts and the daily order cap. */
 async function orderNow(
   c: Context<AppEnv>,
   deps: IngressAdminDeps,

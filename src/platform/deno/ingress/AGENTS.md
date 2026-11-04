@@ -174,7 +174,29 @@ High Availability (Workers) must not contain any of it.
   failure asked the authority nothing, so it does not use the hourly start
   budget; one while waiting for the record came after an order was opened, so
   that start stays in `attemptTimes` and counts. Retry clears both counts
-  (`clearedForRetry`). The last valid certificate keeps serving until it expires; at
+  and the daily order cap (`clearedForRetry`).
+- **Abandoned orders.** Every open order holds a pending authorization at the
+  authority, which limits pending authorizations and new orders per account,
+  so an order is never just dropped. A `dns-lookup` while waiting for the
+  record (and a preflight `dns-lookup` after it) keeps the order and its
+  record in `acme_state` (`OrderFate` `keep` in `dns01/order.ts`); the next
+  start runs the preflight and picks it up again (`resumeKept`) while its
+  authorization is still pending, its challenge unanswered and it has more
+  than `DNS01_RESUME_MARGIN_MS` (2 hours) left (`canResume`), restarting the
+  record wait with the lookup count kept. Any other way an unanswered order
+  ends (record not visible after `TXT_WAIT_MS`, a failed challenge answer, an
+  error after `newOrder`, a non-lookup preflight failure with a kept order, a
+  kept order that cannot be picked up, the validation timeout) deactivates its
+  authorization (RFC 8555 §7.5.2, `AcmeClient.deactivateAuthorization`) and
+  adds the time to `abandonedTimes`. Deactivation is best effort: a failure is
+  logged without detail and the stored cause stays. An `account-error` skips
+  it (the account is gone, and a new client would register another). After
+  `DNS01_MAX_ABANDONED_PER_DAY` (10) in a rolling day the name opens no new
+  order: the preflight still runs hourly and `lastError` says when the cap
+  frees; Retry clears it. `abandonedTimes` is additive JSON (missing reads as
+  empty). A kept order on a hostname that is removed lapses at the authority
+  on its own.
+- **After failures.** The last valid certificate keeps serving until it expires; at
   expiry the tick pushes the Platform CA fallback once. Alerts use the one
   instance event `certificate.expiring`: `kind: failed` once per cause, then a
   countdown at 14, 7, 3 and 1 days (`certificate.renewal_failed` is
