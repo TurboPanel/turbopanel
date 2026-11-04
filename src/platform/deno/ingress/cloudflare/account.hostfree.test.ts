@@ -135,7 +135,7 @@ test('a token that cannot read its own policies passes on read probes and names 
   )
   assertEquals(
     detail(result, 'scope-dns')?.detail,
-    'The token can read DNS records in example.com. DNS-01 certificates are issued only for names in this zone.'
+    'The token can read DNS records in example.com. DNS Edit is confirmed at the first certificate. DNS-01 certificates are issued only for names in this zone.'
   )
   assertEquals(result.zones, [{ id: 'zone-1', name: 'example.com' }])
   assert(cf.log.includes('GET /accounts/acct-1/cfd_tunnel?is_deleted=false&per_page=1'))
@@ -164,7 +164,7 @@ test('without its own policies, a refused tunnel or DNS read fails that scope', 
   const dnsResult = await preflightCloudflareToken(TOKEN, noDns.fetch, NOW)
   assertEquals(
     detail(dnsResult, 'scope-dns')?.detail,
-    'The token cannot edit DNS records in any zone (Zone › DNS › Edit).'
+    'The token cannot read DNS records in any zone (Zone › DNS › Edit).'
   )
 })
 

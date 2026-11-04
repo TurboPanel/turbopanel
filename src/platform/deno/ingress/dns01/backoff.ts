@@ -7,13 +7,21 @@
  */
 import { AcmeError } from '../../../../lib/acme/client.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
-import type { Dns01Cause } from './state.ts'
+import { type Dns01Cause, type Dns01Failure, type Dns01State, withStage } from './state.ts'
 
 export const DNS01_BACKOFF_BASE_MS = 5 * 60_000
 export const DNS01_BACKOFF_CAP_MS = 60 * 60_000
 export const DNS01_MAX_STARTS_PER_HOUR = 4
 /** After this many failed orders the name waits for a person to press Retry. */
 export const DNS01_MAX_ATTEMPTS = 6
+/**
+ * A nameserver lookup that failed on this host (`dns-lookup`) retries after
+ * 1, 5, 15 and 60 minutes, then hourly, and never counts toward
+ * `DNS01_MAX_ATTEMPTS`: no authority was asked, so nothing was refused.
+ */
+export const DNS01_LOOKUP_BACKOFF_MS = [1, 5, 15, 60].map((minutes) => minutes * 60_000)
+/** A lookup failure alerts only once it has happened this many times in a row. */
+export const DNS01_LOOKUP_ALERT_AFTER = 3
 const HOUR_MS = 60 * 60_000
 const WEEK_MS = 7 * 24 * HOUR_MS
 const MAX_DETAIL = 200
@@ -36,13 +44,76 @@ export function nextAttemptAt(
 ): Date {
   const ceiling = Math.min(DNS01_BACKOFF_CAP_MS, DNS01_BACKOFF_BASE_MS * 2 ** Math.max(0, attempts))
   const delay = DNS01_BACKOFF_BASE_MS + random() * (ceiling - DNS01_BACKOFF_BASE_MS)
-  const at = now.getTime() + delay
+  return pastStartBudget(now.getTime() + delay, now, recentStarts)
+}
+
+/** `at`, or just past the hour window when the hourly start budget is spent. */
+function pastStartBudget(at: number, now: Date, recentStarts: readonly string[]): Date {
   const window = startsInLastHour(recentStarts, now)
     .map(Date.parse)
     .sort((a, b) => a - b)
   if (window.length < DNS01_MAX_STARTS_PER_HOUR) return new Date(at)
   const oldestInWindow = window[window.length - DNS01_MAX_STARTS_PER_HOUR] ?? now.getTime()
   return new Date(Math.max(at, oldestInWindow + HOUR_MS + 1000))
+}
+
+export function isLookupFailure(cause: Dns01Cause): boolean {
+  return cause === 'dns-lookup'
+}
+
+/** When the `n`th lookup failure in a row (from 1) tries again. */
+export function lookupRetryAt(now: Date, n: number, recentStarts: readonly string[] = []): Date {
+  const index = Math.min(Math.max(n, 1), DNS01_LOOKUP_BACKOFF_MS.length) - 1
+  return pastStartBudget(now.getTime() + DNS01_LOOKUP_BACKOFF_MS[index]!, now, recentStarts)
+}
+
+/**
+ * The state after a failure. An order failure counts toward
+ * `DNS01_MAX_ATTEMPTS` and stops at `failed`; a lookup failure only backs off
+ * and keeps the count where it was. `attemptTimes` replaces the stored start
+ * times (a start that never reached the authority is dropped from them).
+ */
+export function failureState(
+  state: Dns01State,
+  failure: Dns01Failure,
+  input: {
+    now: Date
+    random: () => number
+    stopUntil: Date | null
+    attemptTimes?: string[]
+  }
+): Dns01State {
+  const { now, stopUntil } = input
+  const attemptTimes = input.attemptTimes ?? state.attemptTimes
+  const common = {
+    order: null,
+    attemptTimes,
+    stopUntil: stopUntil?.toISOString() ?? state.stopUntil,
+    lastError: { ...failure, at: now.toISOString() },
+  }
+  if (isLookupFailure(failure.cause)) {
+    const lookupFailures = state.lookupFailures + 1
+    const retry = stopUntil ?? lookupRetryAt(now, lookupFailures, attemptTimes)
+    return withStage(state, 'backoff', {
+      ...common,
+      lookupFailures,
+      nextAttemptAt: retry.toISOString(),
+    })
+  }
+  const attempts = state.attempts + 1
+  const exhausted = attempts >= DNS01_MAX_ATTEMPTS
+  const retry = stopUntil ?? nextAttemptAt(now, attempts, input.random, attemptTimes)
+  return withStage(state, exhausted ? 'failed' : 'backoff', {
+    ...common,
+    attempts,
+    lookupFailures: 0,
+    nextAttemptAt: exhausted ? null : retry.toISOString(),
+  })
+}
+
+/** Whether this failure is worth an alert: a lookup blip is not, until it repeats. */
+export function alertsFor(state: Dns01State, failure: Dns01Failure): boolean {
+  return !isLookupFailure(failure.cause) || state.lookupFailures >= DNS01_LOOKUP_ALERT_AFTER
 }
 
 /** The control plane's own account cannot be used (terms not accepted, no contact). */

@@ -230,7 +230,7 @@ function probedDnsCheck(zones: readonly ProviderZone[]): PreflightCheck {
     return check(
       'scope-dns',
       false,
-      'The token cannot edit DNS records in any zone (Zone › DNS › Edit).'
+      'The token cannot read DNS records in any zone (Zone › DNS › Edit).'
     )
   }
   const names = listNames(zones.map((zone) => zone.name))
@@ -238,7 +238,7 @@ function probedDnsCheck(zones: readonly ProviderZone[]): PreflightCheck {
   return check(
     'scope-dns',
     true,
-    `The token can read DNS records in ${names}. DNS-01 certificates are issued only for names in ${these}.`
+    `The token can read DNS records in ${names}. DNS Edit is confirmed at the first certificate. DNS-01 certificates are issued only for names in ${these}.`
   )
 }
 

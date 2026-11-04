@@ -21,8 +21,10 @@ import { dnsName } from '../cloudflare/tunnel-config.ts'
 import { dns01Directory, forgetInstanceAcmeAccount, instanceAcmeClient } from './account.ts'
 import { alertOnFailure, type Notify } from './alerts.ts'
 import {
-  DNS01_MAX_ATTEMPTS,
+  alertsFor,
   DNS01_MAX_STARTS_PER_HOUR,
+  failureState,
+  isLookupFailure,
   mapAcmeFailure,
   nextAttemptAt,
   startsInLastHour,
@@ -130,26 +132,29 @@ async function removeRecord(
   await provider.remove(order.record).catch(() => undefined)
 }
 
-/** Back off (or stop, after too many tries) and tell the operator once per cause. */
+/**
+ * Back off (or stop, after too many failed orders) and tell the operator once
+ * per cause. `attemptTimes` replaces the stored start times when the start
+ * never reached the authority.
+ */
 export async function recordFailure(
   deps: Dns01Deps,
   row: Dns01Row,
   failure: Dns01Failure,
-  stopUntil: Date | null
+  stopUntil: Date | null,
+  attemptTimes?: string[]
 ): Promise<Dns01State> {
   await removeRecord(deps, row, row.state.order)
   const now = deps.now()
-  const attempts = row.state.attempts + 1
-  const exhausted = attempts >= DNS01_MAX_ATTEMPTS
-  const retry = stopUntil ?? nextAttemptAt(now, attempts, deps.random, row.state.attemptTimes)
-  const failed = withStage(row.state, exhausted ? 'failed' : 'backoff', {
-    order: null,
-    attempts,
-    nextAttemptAt: exhausted ? null : retry.toISOString(),
-    stopUntil: stopUntil?.toISOString() ?? row.state.stopUntil,
-    lastError: { ...failure, at: now.toISOString() },
+  const failed = failureState(row.state, failure, {
+    now,
+    random: deps.random,
+    stopUntil,
+    ...(attemptTimes ? { attemptTimes } : {}),
   })
-  const alerted = await alertOnFailure(failed, row.name, failure, failed.nextAttemptAt, deps.notify)
+  const alerted = alertsFor(failed, failure)
+    ? await alertOnFailure(failed, row.name, failure, failed.nextAttemptAt, deps.notify)
+    : failed
   await saveDns01State(deps.db, row.id, alerted, {
     acmeLastAttemptAt: now.toISOString(),
     acmeLastError: failure.detail,
@@ -212,7 +217,8 @@ async function openOrder(
 async function startWith(
   deps: Dns01Deps,
   row: Dns01Row,
-  account: IngressAccountRecord
+  account: IngressAccountRecord,
+  priorStarts: string[]
 ): Promise<Dns01State> {
   const provider = await deps.challengeProvider(account)
   const checked = await preflightDns01({
@@ -222,15 +228,17 @@ async function startWith(
     host: row.name,
   })
   if (!checked.ok || !checked.zone) {
-    return await recordFailure(
-      deps,
-      row,
-      checked.failure ?? { cause: 'provider-error', detail: 'Preflight failed.' },
-      null
-    )
+    const failure = checked.failure ?? { cause: 'provider-error', detail: 'Preflight failed.' }
+    // A lookup failure asked the authority nothing, so this start does not use the hourly budget.
+    const starts = isLookupFailure(failure.cause) ? priorStarts : undefined
+    return await recordFailure(deps, row, failure, null, starts)
   }
   const order = await openOrder(deps, row, provider, checked.zone.id, checked.nameservers)
-  const state = withStage(row.state, 'waiting-dns', { order, nextAttemptAt: null })
+  const state = withStage(row.state, 'waiting-dns', {
+    order,
+    nextAttemptAt: null,
+    lookupFailures: 0,
+  })
   await saveDns01State(deps.db, row.id, state, { acmeLastAttemptAt: order.startedAt })
   return state
 }
@@ -263,7 +271,8 @@ export async function startOrder(
   const now = deps.now()
   const refusal = startRefusal(row.state, now)
   if (refusal) return refusal
-  const attemptTimes = [...startsInLastHour(row.state.attemptTimes, now), now.toISOString()]
+  const priorStarts = startsInLastHour(row.state.attemptTimes, now)
+  const attemptTimes = [...priorStarts, now.toISOString()]
   const started: Dns01Row = {
     ...row,
     state: withStage(row.state, 'preflight', { attemptTimes, stopUntil: null }),
@@ -274,7 +283,7 @@ export async function startOrder(
     return await recordFailure(deps, started, { cause: 'zone-not-on-provider', detail }, null)
   }
   try {
-    return await startWith(deps, started, account)
+    return await startWith(deps, started, account, priorStarts)
   } catch (err) {
     return await failWith(deps, started, err)
   }
@@ -291,7 +300,9 @@ async function waitForDns(deps: Dns01Deps, row: Dns01Row, order: Dns01Order): Pr
   }
   if (deps.now().getTime() - Date.parse(order.startedAt) < TXT_WAIT_MS) return row.state
   const detail = txtNotVisibleDetail(visible)
-  return await recordFailure(deps, row, { cause: 'txt-not-visible', detail }, null)
+  // No server answered at all: this host cannot reach them, which says nothing about the record.
+  const cause = visible.missing.length === 0 ? 'dns-lookup' : 'txt-not-visible'
+  return await recordFailure(deps, row, { cause, detail }, null)
 }
 
 function challengeFailure(authz: AcmeAuthorization): Dns01Failure {

@@ -29,7 +29,7 @@ function missing(c: Context<AppEnv>): Response {
   return c.json({ ok: false, error: 'No DNS-01 hostname with that id' }, 404)
 }
 
-/** Start an order now; `reset` (Retry) also clears the failure count. */
+/** Start an order now; `reset` (Retry) also clears the failure counts. */
 async function orderNow(
   c: Context<AppEnv>,
   deps: IngressAdminDeps,
@@ -50,7 +50,10 @@ async function orderNow(
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
   })
   const target = reset
-    ? { ...row, state: withStage(row.state, row.state.stage, { attempts: 0 }) }
+    ? {
+        ...row,
+        state: withStage(row.state, row.state.stage, { attempts: 0, lookupFailures: 0 }),
+      }
     : row
   const result = await startOrder(dns01, target)
   if ('ok' in result) return c.json(result, 422)

@@ -29,6 +29,8 @@ export const DNS01_CAUSES = [
   'provider-rate-limited',
   'acme-error',
   'account-error',
+  /** This host could not look up the zone's nameservers; a local problem, retried without limit. */
+  'dns-lookup',
 ] as const
 export type Dns01Cause = (typeof DNS01_CAUSES)[number]
 
@@ -54,6 +56,11 @@ export type Dns01State = {
   stage: Dns01Stage
   order: Dns01Order | null
   attempts: number
+  /**
+   * Lookup failures (`dns-lookup`) in a row. They back off on their own
+   * schedule and never count toward `attempts`.
+   */
+  lookupFailures: number
   /** Start times of recent orders, to stay under the authority's hourly failure limit. */
   attemptTimes: string[]
   nextAttemptAt: string | null
@@ -79,6 +86,7 @@ export const IDLE_STATE: Dns01State = {
   stage: 'idle',
   order: null,
   attempts: 0,
+  lookupFailures: 0,
   attemptTimes: [],
   nextAttemptAt: null,
   stopUntil: null,
@@ -150,6 +158,7 @@ export function readDns01State(raw: unknown): Dns01State {
     stage,
     order: readOrder(raw.order),
     attempts: typeof raw.attempts === 'number' ? raw.attempts : 0,
+    lookupFailures: typeof raw.lookupFailures === 'number' ? raw.lookupFailures : 0,
     attemptTimes: strings(raw.attemptTimes),
     nextAttemptAt: text(raw.nextAttemptAt),
     stopUntil: text(raw.stopUntil),
