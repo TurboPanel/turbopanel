@@ -61,6 +61,15 @@ test('a registration stores the key and adds the feature a stale hello dropped',
     assertEquals(after?.advertisesSealedSecrets, true)
     assertEquals(after?.sealingKey?.kid, KEY.kid)
     assertEquals(after?.receivesPlaintext, false)
+
+    // A later hello that leaves the feature out does not bring plaintext back.
+    await db
+      .update(server)
+      .set({ daemon: { projection: { features: [] } } })
+      .where(eq(server.id, row!.id))
+    const stripped = (await listSealedSecretsState(db)).find((entry) => entry.id === row!.id)
+    assertEquals(stripped?.advertisesSealedSecrets, false)
+    assertEquals(stripped?.receivesPlaintext, false)
   } finally {
     await db.delete(server).where(eq(server.id, row!.id))
     await db.delete(organization).where(eq(organization.id, org!.id))

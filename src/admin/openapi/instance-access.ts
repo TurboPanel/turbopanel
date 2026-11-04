@@ -34,8 +34,8 @@ export const INSTANCE_ACCESS_PATHS = {
         '`{ id, name, organizationId, isConnected, advertisesSealedSecrets, sealingKey, ' +
         'plaintextSecretsAt, receivesPlaintext }`. `sealingKey` is `{ kid, reportedAt }` or ' +
         'null, `plaintextSecretsAt` is the last plaintext decrypt answer (written at most ' +
-        'hourly) or null, and `receivesPlaintext` is true unless the daemon lists ' +
-        '`daemon-sealed-secrets-v1` and has registered a sealing key. ' +
+        'hourly) or null, and `receivesPlaintext` is true while no sealing key is on file ' +
+        '(the hello feature list is reported but does not switch sealing off). ' +
         '`receivingPlaintext` counts those servers. The edge go-live gate reads this.',
       security: [...cookieSecurity],
       responses: {
