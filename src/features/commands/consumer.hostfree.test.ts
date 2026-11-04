@@ -945,7 +945,7 @@ test('processCommandEnvelope fails fast when the daemon is offline', async () =>
 
 function onlineRegistry(
   pending: PendingRequestRecord | null,
-  options: { current?: PendingRequestRecord | null } = {}
+  options: { current?: PendingRequestRecord | null; cell?: Partial<DaemonCell> } = {}
 ): {
   registry: DaemonCellRegistry
   enqueued: Array<{ commandId: string; payload: unknown }>
@@ -1013,6 +1013,7 @@ function onlineRegistry(
     prune: () => Promise.resolve([]),
     clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: () => Promise.resolve(),
+    ...options.cell,
   }
 
   return {
@@ -1091,6 +1092,39 @@ test('a long command handed back resumes its wait instead of being sent again', 
   assertEquals(enqueued, [])
   assertEquals(
     transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+})
+
+test('a resumed command the daemon never acknowledged gets the ack check, not its whole budget', async () => {
+  const sentAt = new Date().toISOString()
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ name: 'storage.backup', status: 'sent', sentAt }),
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: {},
+  })
+  const unacked = { ...donePending(), status: 'sent' as const, result: undefined }
+  let dropped = 0
+  const { registry, enqueued } = onlineRegistry(null, {
+    current: unacked,
+    cell: {
+      dropDaemonConnection: () => {
+        dropped += 1
+        return Promise.resolve()
+      },
+      expireRequest: () => Promise.resolve({ ...unacked, status: 'expired' }),
+    },
+  })
+  await processCommandEnvelope(db, registry, BACKUP_ENVELOPE, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+  })
+  // The dead connection is dropped and the command fails as unacknowledged
+  // (before, a resumed wait sat out the whole 30-minute budget).
+  assertEquals(dropped, 1)
+  assertEquals(enqueued, [])
+  assertEquals(
+    transitions.some((t) => t.status === 'failed'),
     true
   )
 })

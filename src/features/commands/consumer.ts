@@ -773,6 +773,11 @@ async function enqueueAndAwaitOutcome(
  * (`resumeSentWait`) instead of sending the command again. Without a usable
  * queue the whole budget is waited in one go, as before.
  */
+async function isSentButUnacked(cell: DaemonCell, requestId: string): Promise<boolean> {
+  const current = await cell.getRequest(requestId).catch(() => null)
+  return current?.status === 'sent' && !current.ackAt
+}
+
 async function awaitWithHandOff(
   db: Db,
   cell: DaemonCell,
@@ -788,10 +793,13 @@ async function awaitWithHandOff(
   const queue = deps?.commandQueue
   const canHandOff = queue !== undefined && !isNoopCommandQueue(queue)
   const holdMs = canHandOff ? Math.min(leftMs, COMMAND_WAIT_HOLD_MS) : leftMs
-  // A wait picked up again has been through the ack check already.
-  const pending = resumed
-    ? await cell.waitForRequest(record.id, holdMs)
-    : await awaitOutcomeWithAckDeadline(cell, record.id, holdMs, COMMAND_ACK_DEADLINE_MS)
+  // A wait picked up again has usually been through the ack check already; one
+  // whose run died before the daemon acknowledged it has not, so it gets the
+  // check again instead of waiting out its whole budget on a dead connection.
+  const unacked = resumed ? await isSentButUnacked(cell, record.id) : true
+  const pending = unacked
+    ? await awaitOutcomeWithAckDeadline(cell, record.id, holdMs, COMMAND_ACK_DEADLINE_MS)
+    : await cell.waitForRequest(record.id, holdMs)
   if (pending) return pending
   if (canHandOff && leftMs > holdMs) {
     const live = await cell.getRequest(record.id)
