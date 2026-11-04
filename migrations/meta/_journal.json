@@ -155,6 +155,13 @@
       "when": 1793745997993,
       "tag": "0021_acme_source_names",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793802354103,
+      "tag": "0022_command_server_open",
+      "breakpoints": true
     }
   ]
 }
