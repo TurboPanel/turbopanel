@@ -84,8 +84,6 @@ function createStubRegistry(): DaemonCellRegistry {
   } as unknown as DaemonCellRegistry
 }
 
-const CURRENT_TERMS = 'https://letsencrypt.org/documents/current.pdf'
-
 async function createTlsTestApp(db: ReturnType<typeof createDenoDb>) {
   const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -106,16 +104,6 @@ async function createTlsTestApp(db: ReturnType<typeof createDenoDb>) {
     secrets,
     runtime: 'deno',
     signupEnvOverride: undefined,
-    // Let's Encrypt's directory stand-in: it names the "current" agreement.
-    acmeTermsFetch: () =>
-      Promise.resolve(
-        Response.json({
-          newNonce: 'https://acme.test/nonce',
-          newAccount: 'https://acme.test/account',
-          newOrder: 'https://acme.test/order',
-          meta: { termsOfService: CURRENT_TERMS },
-        })
-      ),
   })
   return { app, secrets }
 }
@@ -307,39 +295,6 @@ test('POST /tls lets_encrypt managed cert appears in list and detail with empty 
     assertEquals(detailBody.tls.metadata.status, 'automatic')
     assertEquals(detailBody.tls.metadata.fingerprintSha256, '')
     assertEquals(detailBody.tls.metadata.dnsNames, ['pending.example.com'])
-  })
-})
-
-test("POST /tls holds a new lets_encrypt row while the org has not accepted Let's Encrypt's newer terms", async () => {
-  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
-    const headers = {
-      cookie,
-      [ORG_ID_HEADER]: organizationId,
-      'content-type': 'application/json',
-    }
-    const create = (hostnames: string[]) =>
-      app.request('/tls', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ source: 'lets_encrypt', hostnames }),
-      })
-    await db
-      .update(organization)
-      .set({
-        acmeTermsUrl: 'https://letsencrypt.org/documents/older.pdf',
-        acmeTermsAcceptedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, organizationId))
-    const held = await create(['held.example.com'])
-    assertEquals(held.status, 409)
-    assertEquals((await held.json()).error, 'acme_terms_changed')
-
-    await db
-      .update(organization)
-      .set({ acmeTermsUrl: CURRENT_TERMS })
-      .where(eq(organization.id, organizationId))
-    assertEquals((await create(['held.example.com'])).status, 200)
   })
 })
 

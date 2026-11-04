@@ -30,7 +30,12 @@ import { getWorkersClientOpenApiSpec } from './client/openapi/workers.ts'
 import { resolveBillingConfig } from './features/billing/config.ts'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './features/email/mailgun/workers-queue.ts'
-import type { EmailQueue } from './features/email/types.ts'
+import type { EmailJob, EmailQueue } from './features/email/types.ts'
+import { isNoopEmailQueue } from './features/email/noop-queue.ts'
+import {
+  createWorkersQueuedEmailQueue,
+  settleEmailMessage,
+} from './features/email/workers-mail-queue.ts'
 import { normalizeSignupEnvOverride } from './client/authn/install-state.ts'
 import {
   assertPasswordHasherAvailable,
@@ -382,6 +387,41 @@ function stringBindingEnv(env: CloudflareBindings): Record<string, string | unde
   return out
 }
 
+/** The system mail queues are named `<env>-system-email` (`system-email` on live). */
+function isEmailQueueName(name: string): boolean {
+  return name === 'system-email' || name.endsWith('-system-email')
+}
+
+/**
+ * The mail queue consumer: one per-invocation database client to read the
+ * current mail settings (the same rule as every other handler), then each
+ * message is sent and acked, retried later or dead-lettered.
+ */
+async function consumeEmailBatch(batch: MessageBatch<unknown>, env: CloudflareBindings) {
+  const db = resolveWorkersDb(env)
+  try {
+    const direct = await resolveWorkersEmailQueue(
+      db,
+      stringBindingEnv(env),
+      cachedDataEncryptionSecrets ?? undefined
+    )
+    const sender = isNoopEmailQueue(direct)
+      ? null
+      : { send: (job: EmailJob) => direct.enqueue(job) }
+    await forEachSequential(batch.messages, async (message) => {
+      await settleEmailMessage({
+        message,
+        sender,
+        deadLetterQueue: env.TURBOPANEL_EMAIL_DEAD_QUEUE,
+      })
+    })
+  } catch {
+    batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
+  } finally {
+    if (db) await endDbConnection(db).catch(() => {})
+  }
+}
+
 /** Wait before a message the consumer could not re-queue is delivered again. */
 const REDELIVER_DELAY_SECONDS = 30
 
@@ -439,11 +479,12 @@ export default {
       // DB/platform env, so admin PUT /settings/email still takes effect
       // without restarting the Worker — same as the eager resolve this
       // replaces, just deferred to the route that actually needs it.
-      const emailQueue: EmailQueue = createLazyWorkersEmailQueue(
-        db,
-        platformEnv,
-        cachedDataEncryptionSecrets ?? undefined
-      )
+      // With the mail queue binding, a request only puts the job on the queue
+      // (no settings read at all); the queue consumer sends it, with retries
+      // and a dead-letter queue (`features/email/workers-mail-queue.ts`).
+      const emailQueue: EmailQueue = env.TURBOPANEL_EMAIL_QUEUE
+        ? createWorkersQueuedEmailQueue(env.TURBOPANEL_EMAIL_QUEUE)
+        : createLazyWorkersEmailQueue(db, platformEnv, cachedDataEncryptionSecrets ?? undefined)
       const requestApp = new Hono<AppEnv>()
       requestApp.use('*', async (c, next) => {
         // Session-cookie TLS uses the URL-derived (Workers) path — a spoofed
@@ -542,6 +583,10 @@ export default {
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {
     initPromise ??= initWorkerApp(env)
     await initPromise
+    if (isEmailQueueName(batch.queue)) {
+      await consumeEmailBatch(batch, env)
+      return
+    }
 
     const db = resolveWorkersDb(env)
     try {
@@ -582,6 +627,7 @@ export default {
               envelope,
               error,
               deps,
+              registry,
             })
             applyDeliveryOutcome(msg, outcome)
           }

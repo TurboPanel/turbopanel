@@ -8,6 +8,7 @@ import {
   getLatestAvailableBuild,
   isUpgradeTarget,
   LATEST_BUILD_SETTINGS_KEY,
+  releaseServerUnreachable,
   resolveUpgradeTarget,
   setLatestAvailableBuild,
   unitTargetFromManifest,
@@ -138,4 +139,22 @@ test('latest-build setting round-trips and rejects a bad row', async () => {
   await setLatestAvailableBuild(db, target)
   assertEquals(await getLatestAvailableBuild(db), target)
   assertEquals(await getLatestAvailableBuild(createFakeSettingDb({ nope: 1 })), null)
+})
+
+test('the release server reads as unreachable only when every published manifest is empty', () => {
+  const none = { daemon: null, instance: null, ui: null }
+  assertEquals(releaseServerUnreachable('release', none), true)
+  const daemonOnly = {
+    ...none,
+    daemon: {
+      version: '0.1.22',
+      commit: 'd1',
+      buildId: 'd1',
+      builtAt: null,
+      manifestUrl: 'https://example.test/d1/manifest.json',
+    },
+  }
+  assertEquals(releaseServerUnreachable('release', daemonOnly), false)
+  // A channel that publishes no manifest has nothing to reach.
+  assertEquals(releaseServerUnreachable('trunk', none), false)
 })

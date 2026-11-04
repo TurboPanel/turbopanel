@@ -4,6 +4,7 @@
  * `queue()` handler so both treat a busy server, a passing outage and a
  * broken message the same way. See `delivery-retry.ts` for the policy.
  */
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
 import { type CommandConsumerDeps, failCommandAfterRetries, isTransientError } from './consumer.ts'
@@ -45,6 +46,8 @@ export async function settleFailedDelivery(input: {
   envelope: CommandEnvelope | null
   error: unknown
   deps?: CommandConsumerDeps
+  /** Lets a command given up on be taken back from its server's outbox first. */
+  registry?: DaemonCellRegistry
   /** Test seam: how a command is failed after its retries. */
   failCommand?: typeof failCommandAfterRetries
 }): Promise<DeliveryOutcome> {
@@ -77,12 +80,12 @@ export async function settleFailedDelivery(input: {
   }
   try {
     const failCommand = input.failCommand ?? failCommandAfterRetries
-    const result = await failCommand(input.db, envelope, decision.error, input.deps)
+    const result = await failCommand(input.db, envelope, decision.error, input.deps, input.registry)
     compatLogError(
       'command-consumer',
       result === 'left_running'
-        ? `stopped waiting on command ${envelope.commandId} (already sent to its server; ` +
-            `its result or the stale sweep ends it): ${decision.error}`
+        ? `stopped waiting on command ${envelope.commandId} (it may be running on its server; ` +
+            `the stale-command sweep ends it): ${decision.error}`
         : `gave up on command ${envelope.commandId}: ${decision.error}`
     )
     return 'ack'

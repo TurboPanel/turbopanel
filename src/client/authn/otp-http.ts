@@ -83,7 +83,10 @@ function enqueueEmailOtp(
     compatLogWarn('email', `OTP email not sent for ${to}: email queue unavailable`)
     return
   }
-  void queue
+  // Not awaited (response time must not reveal whether the account exists),
+  // but on Workers kept alive past the response with `waitUntil`, the same as
+  // the password-reset email; without it the send could be cut off.
+  const sending = queue
     .enqueue({
       type: 'email-otp',
       to,
@@ -94,6 +97,11 @@ function enqueueEmailOtp(
     .catch((err) => {
       compatLogWarn('email', `OTP email enqueue failed: ${err}`)
     })
+  try {
+    c.executionCtx.waitUntil(sending)
+  } catch {
+    // No execution context (Deno, tests): the promise simply runs on.
+  }
 }
 
 async function resolveOtpSignInUserId(

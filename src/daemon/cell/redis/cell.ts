@@ -1,4 +1,5 @@
 import type {
+  CellEnqueueOptions,
   ClearUpdateStatusOptions,
   CellDiagnostics,
   DaemonCell,
@@ -762,7 +763,7 @@ export class RedisDaemonCell implements DaemonCell {
 
   async enqueue(
     outbound: DaemonOutboundEnvelope,
-    opts?: { ttlSeconds?: number }
+    opts?: CellEnqueueOptions
   ): Promise<PendingRequestRecord> {
     this.#bumpMethodRoute('enqueue')
     const redis = this.#redis('enqueue')
@@ -827,6 +828,9 @@ export class RedisDaemonCell implements DaemonCell {
     }
     if (outbound.kind === 'command-dispatch') {
       recordFields.command = outbound.commandType
+    }
+    if (opts?.ackedTtlSeconds !== undefined && opts.ackedTtlSeconds > 0) {
+      recordFields.ackedTtlSeconds = String(Math.ceil(opts.ackedTtlSeconds))
     }
 
     await redis.hset(reqKey, recordFields)
@@ -916,7 +920,19 @@ export class RedisDaemonCell implements DaemonCell {
       ackAt: inbound.at,
       daemonReceivedAt: inbound.daemonReceivedAt,
     }
+    // A command that may run longer than its delivery window keeps its record
+    // (and so its result) for the whole run once the daemon has it. Never
+    // shortens a longer lifetime the request was enqueued with.
+    const ackedTtlSeconds = Number(fields.ackedTtlSeconds)
+    const extendedUntilMs = Date.now() + ackedTtlSeconds * 1000
+    const currentUntilMs = Date.parse(fields.expiresAt ?? '')
+    const extend =
+      Number.isFinite(ackedTtlSeconds) &&
+      ackedTtlSeconds > 0 &&
+      (Number.isNaN(currentUntilMs) || currentUntilMs < extendedUntilMs)
+    if (extend) updates.expiresAt = nowIso(extendedUntilMs)
     await redis.hset(reqKey, updates)
+    if (extend) await redis.expire(reqKey, ackedTtlSeconds)
     await redis.hset(metaKey(this.#serverId), {
       lastInboundAt: inbound.at,
     })

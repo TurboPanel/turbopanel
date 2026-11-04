@@ -10,8 +10,11 @@ import {
 import {
   buildPanelIngress,
   originCertVerifiable,
+  PANEL_RULES_VERSION,
+  readTunnelState,
   tunnelName,
   tunnelPhase,
+  tunnelRulesStale,
 } from '../cloudflare/tunnel-config.ts'
 import type { HostnameWithState, IngressContext } from '../provider.ts'
 import { applyHostname } from '../registry.ts'
@@ -124,7 +127,6 @@ test('buildPanelIngress sends every name to the loopback listener with a catch-a
       service: 'https://127.0.0.1:8443',
       originRequest: {
         originServerName: 'a.example.com',
-        httpHostHeader: 'a.example.com',
         noTLSVerify: true,
       },
     },
@@ -133,7 +135,6 @@ test('buildPanelIngress sends every name to the loopback listener with a catch-a
       service: 'https://127.0.0.1:8443',
       originRequest: {
         originServerName: 'b.example.com',
-        httpHostHeader: 'b.example.com',
         noTLSVerify: true,
       },
     },
@@ -474,9 +475,9 @@ test('a locally managed tunnel is refused before anything is written', async () 
     dashboardTunnel(h, id, extra)
     const result = await applyHostname(h.ctx(hostname('h1', 'panel.example.com')))
     assertEquals(result.ok ? null : { cause: result.cause, detail: result.detail }, {
-      cause: 'provider-error',
+      cause: 'tunnel-locally-managed',
       detail:
-        'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. Switch it to dashboard management in Cloudflare, or let the control plane create its own tunnel.',
+        'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. In Cloudflare, open this tunnel and migrate it to dashboard management, then connect again.',
     })
     assertEquals(
       h.cf.log.filter((line) => !line.startsWith('GET ')),
@@ -496,7 +497,7 @@ test('an applied tunnel is read again on each apply and refused once it turns lo
   h.cf.tunnels[0]!.config_src = 'local'
   const writes = h.cf.log.filter((line) => !line.startsWith('GET ')).length
   const again = await applyHostname(h.ctx(row))
-  assertEquals(again.ok ? '' : again.cause, 'provider-error')
+  assertEquals(again.ok ? '' : again.cause, 'tunnel-locally-managed')
   assertEquals(h.cf.log.filter((line) => !line.startsWith('GET ')).length, writes)
 })
 
@@ -527,4 +528,20 @@ test('a routed wildcard covers exactly one label', () => {
   assertEquals(routesName(['*.example.com'], 'example.com'), false)
   assertEquals(routesName(['panel.example.com'], 'panel.example.com'), true)
   assertEquals(routesName([], 'panel.example.com'), false)
+})
+
+test('rules written in an older shape are applied again, so a fix reaches tunnels already set up', () => {
+  const before = readTunnelState({ tunnelId: 't1', accountId: 'a1', originVerified: false })
+  assertEquals(before?.rulesVersion, 1)
+  assertEquals(tunnelRulesStale(before!, false), true)
+  const current = { ...before!, rulesVersion: PANEL_RULES_VERSION }
+  assertEquals(tunnelRulesStale(current, false), false)
+  // A certificate that changed under the rule still makes it stale.
+  assertEquals(tunnelRulesStale(current, true), true)
+})
+
+test('the panel route lets the visitor Host through, so the edge-port redirect cannot loop', () => {
+  const [rule] = buildPanelIngress(['panel.example.com'])
+  assertEquals(rule?.originRequest?.httpHostHeader, undefined)
+  assertEquals(rule?.originRequest?.originServerName, 'panel.example.com')
 })

@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { hosting, ip, tls } from '../../db/schema.ts'
@@ -18,11 +18,6 @@ import {
 import { parseHostingOptions, resolveHostingBind } from '../../features/hostings/hosting-options.ts'
 import { buildPatchUpdateFields, parseJsonbObject, stripPromotedMetadataKeys } from '../shared.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import {
-  ACME_TERMS_HOLD_MESSAGE,
-  acmeTermsHeldFor,
-  sharedAcmeTermsReader,
-} from '../../features/organizations/acme-terms.ts'
 
 /**
  * Compose-ownership provenance markers (`hosting-compose-owner.ts`) — only
@@ -81,38 +76,9 @@ export async function parseOptionalTlsId(
         ),
       }
     }
-    // Pinning a Let's Encrypt row no site uses yet, and that never had a
-    // certificate, orders a new one: it waits for newer terms.
-    if (
-      (await isUnissuedUnpinnedLetsEncrypt(db, tlsIdRaw)) &&
-      (await acmeTermsHeldFor(db, organizationId, sharedAcmeTermsReader()))
-    ) {
-      return {
-        kind: 'error',
-        response: c.json({ error: 'acme_terms_changed', message: ACME_TERMS_HOLD_MESSAGE }, 409),
-      }
-    }
     return { kind: 'value', value: tlsIdRaw }
   }
   return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
-}
-
-/** An automatic Let's Encrypt row that never had a certificate and that no site pins. */
-async function isUnissuedUnpinnedLetsEncrypt(db: Db, tlsId: string): Promise<boolean> {
-  const [row] = await db
-    .select({ id: tls.id })
-    .from(tls)
-    .where(
-      and(
-        eq(tls.id, tlsId),
-        eq(tls.source, 'lets_encrypt'),
-        eq(tls.status, 'automatic'),
-        sql`${tls.privateKeyPem} is null and ${tls.certificatePem} is null and ${tls.issuedByServerId} is null and ${tls.metadata} -> 'acme' ->> 'lastIssuedAt' is null and ${tls.metadata} -> 'acme' ->> 'notAfter' is null and ${tls.metadata} -> 'acme' ->> 'lastReportedAt' is null`,
-        sql`not exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`
-      )
-    )
-    .limit(1)
-  return row !== undefined
 }
 
 /** A certificate ordered from the authority's test directory: no browser trusts it. */

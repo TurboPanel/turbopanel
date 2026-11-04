@@ -13,7 +13,11 @@ import { refreshInstanceConnector } from './cloudflare/instance-tunnel.ts'
 import { accountsDueForRecheck, recheckIngressAccount } from './cloudflare/account.ts'
 import { buildDns01Deps, type Dns01RuntimeDeps } from './dns01/runtime.ts'
 import { anyDns01Hostname, runDns01Tick } from './dns01/tick.ts'
-import { originCertVerifiable, readTunnelState } from './cloudflare/tunnel-config.ts'
+import {
+  originCertVerifiable,
+  readTunnelState,
+  tunnelRulesStale,
+} from './cloudflare/tunnel-config.ts'
 import {
   applyIngress,
   loadHostnamesWithState,
@@ -52,10 +56,11 @@ async function recheckAccounts(db: Db, deps: IngressTickDeps): Promise<void> {
 }
 
 /**
- * Re-applies a tunnel name whose certificate changed under it: the rule
- * verifies the origin only while a public pair is live, so an issued,
- * expired or replaced pair means the stored rule is out of date. One apply
- * rebuilds the whole shared rule list.
+ * Re-applies a tunnel name whose stored rule is out of date: its certificate
+ * changed under it (the rule verifies the origin only while a public pair is
+ * live), or the rules were written in an older shape (`PANEL_RULES_VERSION`),
+ * so an update reaches tunnels already set up. One apply rebuilds the whole
+ * shared rule list.
  */
 export async function reconcileTunnelOriginVerification(
   db: Db,
@@ -64,7 +69,7 @@ export async function reconcileTunnelOriginVerification(
   const rows = await loadHostnamesWithState(db)
   const stale = rows.filter((row) => {
     const state = row.mode === 'cloudflare-tunnel' ? readTunnelState(row.providerState) : null
-    return state !== null && state.originVerified !== originCertVerifiable(row)
+    return state !== null && tunnelRulesStale(state, originCertVerifiable(row))
   })
   await forEachSequential(stale, async (row) => {
     await applyIngress(db, row.id, deps)
