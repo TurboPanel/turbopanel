@@ -59,7 +59,7 @@ function memoryInstallDb(
   extra: Record<string, unknown>[] = [],
   certificates: Record<string, unknown>[] = []
 ): Db {
-  const rows = [hostnameRow('https://acme.example.com:8443', 'lets-encrypt', null), ...extra]
+  const rows = [hostnameRow('https://acme.example.com:8443', 'acme-http-01', null), ...extra]
   return {
     select() {
       return {

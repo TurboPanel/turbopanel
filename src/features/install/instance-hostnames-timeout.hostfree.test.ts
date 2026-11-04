@@ -4,7 +4,7 @@ import { recordInstanceAcmeApplyTimeout } from './instance-hostnames.ts'
 
 const test = Deno.test
 
-test('recordInstanceAcmeApplyTimeout stamps every lets-encrypt row with the message', async () => {
+test('recordInstanceAcmeApplyTimeout stamps every acme-http-01 row with the message', async () => {
   const updates: Array<Record<string, unknown>> = []
   const db = {
     update() {

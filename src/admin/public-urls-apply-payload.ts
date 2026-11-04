@@ -28,6 +28,7 @@ import {
 import {
   effectiveCertificateSource,
   listInstanceHostnames,
+  wireCertificateSource,
 } from '../features/install/instance-hostnames.ts'
 import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
@@ -81,10 +82,11 @@ export async function resolvePublicUrlsApplyPayload(
   if (!capable) return { urls }
 
   // A DNS-01 name travels as `uploaded` with its issued pair, or as
-  // `platform-ca` before its first certificate and after it expires.
+  // `platform-ca` before its first certificate and after it expires. An
+  // HTTP-01 name travels under the daemon's own name, `lets-encrypt`.
   const rows = (await listInstanceHostnames(db)).map((row) => ({
     ...row,
-    source: effectiveCertificateSource(row, now),
+    source: wireCertificateSource(effectiveCertificateSource(row, now)),
   }))
   const uploadedIds = [
     ...new Set(

@@ -80,7 +80,7 @@ export async function loadDns01Row(db: Db, id: string): Promise<Dns01Row | null>
   const rows = await db
     .select()
     .from(instanceHostname)
-    .where(and(eq(instanceHostname.id, id), eq(instanceHostname.source, 'dns-01')))
+    .where(and(eq(instanceHostname.id, id), eq(instanceHostname.source, 'acme-dns-01')))
     .limit(1)
   const row = rows[0]
   const name = row ? dnsName(row.host) : null
@@ -345,7 +345,7 @@ export async function storeIssuedPair(
       keyPem: await encryptSecret(deps.dataEncryption, pair.keyPem),
       dnsNames: parsed.dnsNames,
       notAfter: parsed.notAfter.toISOString(),
-      kind: 'dns-01',
+      kind: 'acme-dns-01',
     })
     .returning({ id: instanceUploadedCertificate.id })
   const id = inserted[0]!.id

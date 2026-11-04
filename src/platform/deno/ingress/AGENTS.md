@@ -145,16 +145,18 @@ High Availability (Workers) must not contain any of it.
   answer counts as an answer without the record, and at least one address must
   confirm), answer, then finalize with a key made inside that step (never
   stored before the pair), store the pair sealed in `certificate` with
-  `kind='dns-01'`, point `origin.uploaded_cert_id` at it, remove the record and
+  `kind='acme-dns-01'`, point `origin.uploaded_cert_id` at it, remove the record and
   push the hostname list to the daemon. Renewal time is a random moment in the
   ARI window, else a third of the lifetime before expiry (at least 7 days);
   renewals send `replaces`. Every issued name is public in certificate
   transparency logs.
-- **Wire mapping.** The daemon never sees `dns-01`: `effectiveCertificateSource`
+- **Wire mapping.** The daemon never sees `acme-dns-01`: `effectiveCertificateSource`
   (`features/install/instance-hostnames.ts`) turns a row with a live pair into
   `uploaded` and one without (or expired) into `platform-ca`, in the apply
   payload, the install trust and the `/instance/ca` decision alike. Derived,
-  never stored.
+  never stored. The apply payload then passes it through
+  `wireCertificateSource`, which sends `acme-http-01` under the daemon's
+  original name `lets-encrypt`; the stored and API names never reach the wire.
 - **Failure handling.** Each failure maps to one cause (`dns01/state.ts`
   `DNS01_CAUSES`). Retries back off with full jitter from 5 minutes, capped at
   an hour, never more than 4 starts in a rolling hour; the weekly duplicate

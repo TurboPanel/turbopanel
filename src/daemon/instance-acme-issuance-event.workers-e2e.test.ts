@@ -38,7 +38,7 @@ describe('instance-acme-issuance-event real-Postgres end-to-end', () => {
       const suffix = crypto.randomUUID().slice(0, 8)
       const instanceHost = `instance-acme-e2e-${suffix}.example.com`
       const tenantHost = `tenant-acme-e2e-${suffix}.example.com`
-      await realDb.insert(instanceHostname).values({ host: instanceHost, source: 'lets-encrypt' })
+      await realDb.insert(instanceHostname).values({ host: instanceHost, source: 'acme-http-01' })
       // A tenant row the same socket reports on afterwards: once its error
       // lands, the instance frame sent before it has been handled too.
       const [tenantRow] = await realDb
