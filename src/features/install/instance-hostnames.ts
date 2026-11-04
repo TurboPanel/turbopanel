@@ -611,6 +611,70 @@ export async function recordInstanceAcmeIssuance(
   await db.update(instanceHostname).set(patch).where(eq(instanceHostname.id, match.id))
 }
 
+/**
+ * Start of the error a DNS-01 row carries when its newly issued pair did not
+ * reach the daemon. Only a later apply that carries that same pair clears it.
+ */
+export const DAEMON_NOT_LOADED_PREFIX =
+  'The certificate was issued but the daemon has not loaded it yet: '
+
+export function daemonNotLoadedError(reason: string): string {
+  return `${DAEMON_NOT_LOADED_PREFIX}${reason}`
+}
+
+type CertificateErrorRow = {
+  id: string
+  source: string
+  uploadedCertId: string | null
+  acmeLastError: string | null
+}
+
+/**
+ * Rows whose "not loaded yet" error a successful apply has made stale: the
+ * apply carried the row's current certificate id. Any other error (a failed
+ * renewal while the old pair is still served) stays.
+ */
+export function certificateErrorsToClear(
+  rows: readonly CertificateErrorRow[],
+  applied: readonly { uploadedCertId?: string }[]
+): string[] {
+  const carried = new Set(applied.map((entry) => entry.uploadedCertId).filter(Boolean))
+  return rows
+    .filter(
+      (row) =>
+        row.source === 'acme-dns-01' &&
+        row.uploadedCertId !== null &&
+        carried.has(row.uploadedCertId) &&
+        row.acmeLastError?.startsWith(DAEMON_NOT_LOADED_PREFIX) === true
+    )
+    .map((row) => row.id)
+}
+
+/**
+ * Call only once the daemon applied `applied`: clears the "not loaded yet"
+ * error of each DNS-01 row whose certificate that apply carried.
+ */
+export async function clearInstalledCertificateErrors(
+  db: Db,
+  applied: readonly { uploadedCertId?: string }[] | undefined
+): Promise<void> {
+  if (!applied?.some((entry) => entry.uploadedCertId)) return
+  const rows = await db
+    .select({
+      id: instanceHostname.id,
+      source: instanceHostname.source,
+      uploadedCertId: instanceHostname.uploadedCertId,
+      acmeLastError: instanceHostname.acmeLastError,
+    })
+    .from(instanceHostname)
+    .where(eq(instanceHostname.source, 'acme-dns-01'))
+  await Promise.all(
+    certificateErrorsToClear(rows, applied).map((id) =>
+      db.update(instanceHostname).set({ acmeLastError: null }).where(eq(instanceHostname.id, id))
+    )
+  )
+}
+
 export async function getInstanceHostnamesLegacyShim(db: Db): Promise<string[]> {
   const rows = await listInstanceHostnames(db)
   return rows.map((row) => row.host)

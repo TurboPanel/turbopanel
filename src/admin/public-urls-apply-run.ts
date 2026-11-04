@@ -12,7 +12,10 @@ import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import { resolveInstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
-import { listInstanceHostnames } from '../features/install/instance-hostnames.ts'
+import {
+  clearInstalledCertificateErrors,
+  listInstanceHostnames,
+} from '../features/install/instance-hostnames.ts'
 import { getPublicUrls } from '../features/install/public-urls.ts'
 import {
   EDGE_TRUST_FEATURE,
@@ -86,11 +89,15 @@ export async function publicUrlsPayloadFingerprint(
   )
 }
 
-/** Record that the daemon rendered this body, once the apply succeeded. */
+/**
+ * Record that the daemon rendered this body, once the apply succeeded, and
+ * clear the "not loaded yet" error of each certificate it carried.
+ */
 export async function recordPublicUrlsApplied(
   db: Db,
   payload: PublicUrlsApplyPayload
 ): Promise<void> {
+  await clearInstalledCertificateErrors(db, payload.hostnames)
   await markPublicUrlsApplied(
     db,
     {
@@ -111,7 +118,11 @@ export async function applyPublicUrlsIfChanged(
   send: (payload: PublicUrlsApplyPayload) => Promise<PublicUrlsApplyWaitResult>
 ): Promise<boolean> {
   const hash = await publicUrlsPayloadFingerprint(payload)
-  if ((await loadEdgeTrustState(db)).appliedPayloadHash === hash) return false
+  if ((await loadEdgeTrustState(db)).appliedPayloadHash === hash) {
+    // The daemon already rendered this body, so its certificates are loaded.
+    await clearInstalledCertificateErrors(db, payload.hostnames)
+    return false
+  }
   const result = await send(payload)
   if (result.kind !== 'done') {
     throw new Error(result.kind === 'timeout' ? 'apply timed out' : result.error)

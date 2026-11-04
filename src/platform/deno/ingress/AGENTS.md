@@ -152,7 +152,12 @@ High Availability (Workers) must not contain any of it.
   push the hostname list to the daemon. Renewal time is a random moment in the
   ARI window, else a third of the lifetime before expiry (at least 7 days);
   renewals send `replaces`. Every issued name is public in certificate
-  transparency logs.
+  transparency logs. A failed push stores "The certificate was issued but the
+  daemon has not loaded it yet" (the row reads `failed`); nothing in the DNS-01
+  tick retries it, the edge trust tick resends because the body changed. Any
+  apply the daemon takes that carries the row's `uploaded_cert_id` (that resend,
+  Apply, a later push, or the tick finding that body already applied) clears
+  that error through `clearInstalledCertificateErrors`; other errors stay.
 - **Wire mapping.** The daemon never sees `acme-dns-01`: `effectiveCertificateSource`
   (`features/install/instance-hostnames.ts`) turns a row with a live pair into
   `uploaded` and one without (or expired) into `platform-ca`, in the apply
