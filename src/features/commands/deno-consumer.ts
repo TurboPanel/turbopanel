@@ -73,13 +73,14 @@ const DELIVERY_DISPOSITION: Record<DeliveryOutcome, CommandMessageDisposition> =
 }
 
 /**
- * Unacknowledged deliveries the broker hands this consumer at once. Commands
- * for a busy server wait in their lane holding a slot, so this is the room
- * for that backlog; it is also the most that is redelivered after a crash.
+ * Unacknowledged deliveries the broker hands this consumer at once: the ones
+ * running plus the ones waiting for a run slot. A command whose server is busy
+ * does not hold one (it is acked and put back). It is also the most that is
+ * redelivered after a crash.
  */
 export const COMMAND_CONSUMER_PREFETCH = 32
 
-/** Servers whose commands may run at the same moment. */
+/** Commands this consumer runs at the same moment. */
 export const COMMAND_LANE_CONCURRENCY = 8
 
 /**
@@ -311,12 +312,16 @@ export async function startCommandConsumer(
   }
 
   /**
-   * Parse the delivery and hand it to its server's lane. The ack or nack
-   * happens only after the command has finished, so a delivery that has not
-   * finished stays unacknowledged and the broker redelivers it if this
-   * process or the channel goes away. A deploy gives its lane up once the
-   * server has taken it over (`leaveLane`), so the rest of its wait never holds
-   * up the server's other commands.
+   * Parse the delivery and run it in a lane of its own (the lane scheduler
+   * only caps how many run at once). Per-server order is the server-turn
+   * check every command passes (`server-turn.ts`), as on Workers: a command
+   * whose server is busy is acked and put back for a little later, so it never
+   * holds a delivery slot or waits unseen in memory, and its waiting never
+   * counts against its time limit. The ack or nack happens only after the
+   * command has finished, so a delivery that has not finished stays
+   * unacknowledged and the broker redelivers it if this process or the
+   * channel goes away. A deploy gives its slot up once the server has taken it
+   * over (`leaveLane`).
    */
   async function handleMessage(
     channel: AmqpChannel,
@@ -334,7 +339,7 @@ export async function startCommandConsumer(
       return
     }
 
-    await lanes.run(envelope.serverId, async (release) => {
+    await lanes.run(envelope.commandId, async (release) => {
       // Waiting in a lane can outlast the session. Shutdown, or a broker
       // loss, leaves this delivery unacknowledged and the broker redelivers
       // it, so running it now would run it twice.
@@ -367,6 +372,7 @@ export async function startCommandConsumer(
         envelope,
         error,
         deps: consumerDeps,
+        registry: opts.registry,
       })
       disposition = DELIVERY_DISPOSITION[outcome]
     }

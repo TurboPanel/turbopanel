@@ -582,6 +582,7 @@ export default {
               envelope,
               error,
               deps,
+              registry,
             })
             applyDeliveryOutcome(msg, outcome)
           }

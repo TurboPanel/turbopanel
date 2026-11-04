@@ -557,6 +557,7 @@ async function markDispatching(
   const turn = await claimServerTurn(db, {
     commandId: record.id,
     serverId: envelope.serverId,
+    type: envelope.type,
     attempts: record.attempts,
   })
   if (turn === 'busy') throw new ServerBusyError(envelope.serverId)
@@ -3777,7 +3778,7 @@ async function applyUndeliveredSideEffects(
 export type GiveUpResult =
   /** The command never reached its server and is now failed. */
   | 'failed'
-  /** The server may be running it: left for its result or the stale sweep. */
+  /** The server may be running it: left for the stale sweep to end. */
   | 'left_running'
   /** Nothing to do: the command is gone or already finished. */
   | 'none'
@@ -3787,18 +3788,29 @@ export type GiveUpResult =
  * passing reason (database or cell unreachable). One that never reached its
  * server is failed with that reason and releases what it held, like a command
  * that never got there. One that was sent may be running on the server right
- * now: failing it would free its server's turn under it and drop its result,
- * so it is left to report back, or to the stale sweep.
+ * now: failing it would free its server's turn under it, so it is left, and
+ * with nothing waiting on it any more the stale sweep ends it.
+ *
+ * A request can already sit in the server's cell outbox when the write that
+ * marks it `sent` failed; it is taken back first (`registry`), so a command
+ * failed here can never still reach its server.
  */
 export async function failCommandAfterRetries(
   db: Db,
   envelope: CommandEnvelope,
   error: string,
-  deps?: CommandConsumerDeps
+  deps?: CommandConsumerDeps,
+  registry?: DaemonCellRegistry
 ): Promise<GiveUpResult> {
   const record = await loadDispatchableRecord(db, envelope)
   if (!record) return 'none'
   if (record.sentAt !== null) return 'left_running'
+  const cell = registry?.getCell(envelope.serverId)
+  if (cell?.expireRequest) {
+    // Could not take it back, or the server already answered: not ours to fail.
+    const taken = await cell.expireRequest(record.id).catch(() => null)
+    if (taken?.status !== 'expired') return 'left_running'
+  }
   const failed = await transitionCommand(db, record.id, {
     status: 'failed',
     error,
