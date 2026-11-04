@@ -111,6 +111,14 @@ test('list shows a page without removing anything, and masks the recipient', asy
   assertEquals(broker.closed, { channel: 1, connection: 1 })
 })
 
+test('count reads the queue depth without taking a message off it', async () => {
+  const broker = fakeBroker([dead('m-1', 'jane.doe@example.com'), dead('m-2', 'bob@example.com')])
+  assertEquals(await storeFor(broker).count(), 2)
+  assertEquals(broker.queue.length, 2)
+  assertEquals(broker.inFlight.size, 0)
+  assertEquals(broker.closed, { channel: 1, connection: 1 })
+})
+
 test('list on an empty queue is an empty page', async () => {
   const broker = fakeBroker([])
   assertEquals(await storeFor(broker).list(50), { total: 0, items: [] })

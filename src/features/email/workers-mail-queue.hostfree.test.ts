@@ -103,6 +103,28 @@ test('a job the provider refused for good, or out of tries, is dead-lettered and
   }
 })
 
+test('a dead-lettered job is counted for the Admin notice; a sent one is not', async () => {
+  let counted = 0
+  const onDeadLetter = () => {
+    counted += 1
+    return Promise.resolve()
+  }
+  const dead = recordingBinding()
+  await settleEmailMessage({
+    message: message({ v: 1, job: OTP_JOB }, 9).msg,
+    sender: { send: () => Promise.reject(new Error('down')) },
+    deadLetterQueue: dead.binding,
+    onDeadLetter,
+  })
+  await settleEmailMessage({
+    message: message({ v: 1, job: OTP_JOB }).msg,
+    sender: { send: () => Promise.resolve() },
+    deadLetterQueue: dead.binding,
+    onDeadLetter,
+  })
+  assertEquals(counted, 1)
+})
+
 test('an unreadable message is dead-lettered without a send', async () => {
   const { msg, settled } = message({ v: 2, something: 'else' })
   const dead = recordingBinding()

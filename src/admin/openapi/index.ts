@@ -129,6 +129,21 @@ export function getAdminOpenApiSpec(
                 $ref: '#/components/schemas/EmailSettingEntry',
               },
             },
+            delivery: {
+              type: 'object',
+              description:
+                'Whether system email can go out right now (GET only). `not_configured`: no usable provider for this edition. `queue_unavailable`: self-hosted, the mail broker could not be reached when the control plane started.',
+              required: ['state', 'deadLetters'],
+              properties: {
+                state: { type: 'string', enum: ['ok', 'not_configured', 'queue_unavailable'] },
+                deadLetters: {
+                  type: 'integer',
+                  nullable: true,
+                  description:
+                    'Mail that gave up after every retry. Self-hosted: jobs waiting in the dead-letter queue. High Availability: jobs the mail consumer dead-lettered in the last four days (replays do not lower it). Null when the count cannot be read.',
+                },
+              },
+            },
           },
         },
         EmailSettingsPutBody: {

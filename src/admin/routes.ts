@@ -20,6 +20,10 @@ import {
 import { registerNotificationAdminRoutes } from './notification-routes.ts'
 import { registerMailDeadLetterAdminRoutes } from './mail-dead-letter-routes.ts'
 import type { MailDeadLetterStore } from '../features/email/smtp/dead-letter-replay.ts'
+import { type EmailDeliveryStatus, emailDeliveryState } from '../features/email/delivery-status.ts'
+import { isNoopEmailQueue } from '../features/email/noop-queue.ts'
+import { getEmailQueue } from '../features/email/types.ts'
+import { countEmailDeadLetters } from '../features/email/dead-letter-tally.ts'
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
@@ -159,6 +163,21 @@ async function reconcilePlatformCaTrustAfterApply(
   const actorId = c.get('session')?.userId
   if (!commandQueue || !actorId) return
   await enqueuePlatformCaTrustReconcileBestEffort({ db, commandQueue, actorId, readBundle })
+}
+
+/**
+ * Mail that gave up: self-hosted, the jobs waiting in the dead-letter queue;
+ * High Availability, the jobs the mail consumer dead-lettered in the last
+ * four days (replays do not lower it). `null` when this edition cannot tell.
+ */
+async function readDeadLetterCount(
+  store: MailDeadLetterStore | undefined,
+  runtime: 'deno' | 'workers',
+  db: NonNullable<ReturnType<typeof getDb>>
+): Promise<number | null> {
+  if (store) return await store.count().catch(() => null)
+  if (runtime === 'workers') return await countEmailDeadLetters(db).catch(() => null)
+  return null
 }
 
 /**
@@ -452,7 +471,25 @@ export function registerAdminRoutes(
       resolvePlatformEnv(c, opts),
       dataEncryptionSecrets
     )
-    return c.json({ settings: emailSettingsToApiShape(resolved) })
+    const runtime = c.get('runtime') === 'workers' ? 'workers' : 'deno'
+    const state = emailDeliveryState({
+      settings: resolved,
+      runtime,
+      queueUnavailable: isNoopEmailQueue(getEmailQueue(c)),
+    })
+    const delivery: EmailDeliveryStatus = {
+      state,
+      // Self-hosted reads its broker's dead-letter queue depth; High
+      // Availability reads the tally its mail consumer keeps
+      // (`dead-letter-tally.ts`). A count that cannot be read is unknown
+      // rather than failing the page, and a queue already known to be down is
+      // not dialled (that would hold the page for the connect timeout).
+      deadLetters:
+        state === 'queue_unavailable'
+          ? null
+          : await readDeadLetterCount(opts.mailDeadLetters, runtime, db),
+    }
+    return c.json({ settings: emailSettingsToApiShape(resolved), delivery })
   })
 
   admin.put('/settings/email', createRootOnlyMiddleware(opts.secrets), async (c) => {

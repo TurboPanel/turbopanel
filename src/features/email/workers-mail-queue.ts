@@ -75,12 +75,15 @@ function jobFromBody(body: unknown): EmailJob | null {
 async function deadLetter(
   dead: EmailQueueBinding | undefined,
   message: EmailQueueMessage,
-  reason: string
+  reason: string,
+  onDeadLetter: (() => Promise<void>) | undefined
 ): Promise<void> {
   compatLogError('email', `mail job dead-lettered: ${reason}`)
   if (!dead) return
   try {
     await dead.send({ body: message.body, reason, at: new Date().toISOString() })
+    // Counted for the notice on Admin › Settings › Email; best effort.
+    await onDeadLetter?.()
   } catch (error) {
     // Could not keep it: hand it back rather than lose it silently.
     compatLogWarn('email', `could not dead-letter a mail job: ${errorText(error)}`)
@@ -99,13 +102,15 @@ export async function settleEmailMessage(input: {
   message: EmailQueueMessage
   sender: EmailSender
   deadLetterQueue?: EmailQueueBinding
+  /** Counts a dead-lettered job (`dead-letter-tally.ts`); never throws. */
+  onDeadLetter?: () => Promise<void>
   random?: () => number
 }): Promise<'sent' | 'retry' | 'dead'> {
   const { message } = input
   const job = jobFromBody(message.body)
   if (!job) {
     try {
-      await deadLetter(input.deadLetterQueue, message, 'unreadable mail job')
+      await deadLetter(input.deadLetterQueue, message, 'unreadable mail job', input.onDeadLetter)
       message.ack()
     } catch {
       // handed back above
@@ -141,7 +146,8 @@ export async function settleEmailMessage(input: {
     await deadLetter(
       input.deadLetterQueue,
       message,
-      `${job.type} gave up after ${message.attempts} attempts: ${failure}`
+      `${job.type} gave up after ${message.attempts} attempts: ${failure}`,
+      input.onDeadLetter
     )
     message.ack()
   } catch {

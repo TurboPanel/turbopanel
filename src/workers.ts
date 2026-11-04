@@ -32,6 +32,7 @@ import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './features/email/mailgun/workers-queue.ts'
 import type { EmailJob, EmailQueue } from './features/email/types.ts'
 import { isNoopEmailQueue } from './features/email/noop-queue.ts'
+import { recordEmailDeadLetter } from './features/email/dead-letter-tally.ts'
 import {
   createWorkersQueuedEmailQueue,
   settleEmailMessage,
@@ -413,6 +414,7 @@ async function consumeEmailBatch(batch: MessageBatch<unknown>, env: CloudflareBi
         message,
         sender,
         deadLetterQueue: env.TURBOPANEL_EMAIL_DEAD_QUEUE,
+        onDeadLetter: db ? () => recordEmailDeadLetter(db) : undefined,
       })
     })
   } catch {

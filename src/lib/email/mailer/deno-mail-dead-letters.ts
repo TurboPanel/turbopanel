@@ -164,6 +164,8 @@ export function createAmqpMailDeadLetterStore(
   }
 
   return {
+    count: () => withQueue((_channel, total) => Promise.resolve(total)),
+
     list: (limit) =>
       withQueue(async (channel, total): Promise<DeadLetterList> => {
         const taken = await takeUpTo(channel, limit)
