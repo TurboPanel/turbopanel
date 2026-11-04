@@ -107,6 +107,12 @@ test('a listed certificate says it will not renew, and shows no renewal or retry
     [shown.status, shown.warning, shown.renewAt, shown.nextAttemptAt, shown.notAfter],
     ['ready', NO_RENEWAL_MESSAGE, null, null, '2027-01-01T00:00:00.000Z']
   )
+  // Not on an order left open or a certificate that has expired.
+  assertEquals(toApiDnsCertificate({ ...row({}), status: 'pending' }, now).warning, null)
+  assertEquals(
+    toApiDnsCertificate({ ...row({}), notAfter: '2026-01-01T00:00:00.000Z' }, now).warning,
+    null
+  )
   // A warning about the certificate itself is kept as it is.
   assertEquals(
     toApiDnsCertificate(row({ warning: 'The token is gone.' }), now).warning,

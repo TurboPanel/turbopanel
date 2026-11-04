@@ -21,7 +21,7 @@ export const ORDERING_OFF_ERROR = 'certificate_ordering_off'
 /** The plain sentence that goes with it. */
 export const ORDERING_OFF_MESSAGE =
   'Ordering certificates from the control plane is turned off. Certificates will be ordered by the server that runs the site in a coming release.'
-/** What every listed certificate says while no other warning is due. */
+/** What an issued certificate in use says while no other warning is due. */
 export const NO_RENEWAL_MESSAGE =
   'This certificate will not renew from the control plane. It keeps working until it expires.'
 
@@ -82,7 +82,8 @@ export function toApiDnsCertificate(row: Row, now: Date = new Date()): ApiDnsCer
     stage: meta.acme?.stage ?? 'queued',
     staging: meta.acme?.staging === true,
     lastError: meta.acme?.lastError ?? null,
-    warning: meta.acme?.warning ?? NO_RENEWAL_MESSAGE,
+    // Only a certificate in use keeps working; an order left open never finishes.
+    warning: meta.acme?.warning ?? (issued && !ended ? NO_RENEWAL_MESSAGE : null),
     attempts: meta.acme?.attempts ?? 0,
     // Nothing is tried again or renewed from the control plane.
     nextAttemptAt: null,

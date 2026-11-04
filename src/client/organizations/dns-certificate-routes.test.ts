@@ -3,7 +3,7 @@
  * longer orders these certificates: starting, checking and retrying an order
  * are refused for every signed-in caller, and the list still shows the
  * certificates already made, for owners and managers of the organization only,
- * with nothing private and the plain note that they will not renew. Skips
+ * with nothing private. Skips
  * without TURBOPANEL_DATABASE_URL.
  */
 import { assert, assertEquals, assertStringIncludes } from '@std/assert'
@@ -23,7 +23,6 @@ import { ORG_ID_HEADER } from '../org-context.ts'
 import { toPublicTlsRow } from '../tls/routes-helpers.ts'
 import { buildDnsCertContext } from '../tls/dns-certificate-context.ts'
 import {
-  NO_RENEWAL_MESSAGE,
   ORDERING_OFF_ERROR,
   ORDERING_OFF_MESSAGE,
   registerOrganizationDnsCertificateRoutes,
@@ -211,7 +210,7 @@ test('starting, checking and retrying an order are refused in plain words and ch
     )
   }))
 
-test('the list still shows a certificate made earlier, says it will not renew, and shows nothing private', () =>
+test('the list still shows a certificate made earlier and shows nothing private', () =>
   withFixture(async (f) => {
     const path = `/organizations/${f.orgA}/dns-certificates`
     const listed = await call(f, 'GET', path, f.managerCookie)
@@ -221,7 +220,8 @@ test('the list still shows a certificate made earlier, says it will not renew, a
     const shown = certificates[0]!
     assertEquals(
       [shown.id, shown.names, shown.warning, shown.renewAt, shown.nextAttemptAt],
-      [f.certificateId, ['a.example.com'], NO_RENEWAL_MESSAGE, null, null]
+      // An order left open is not said to keep working; the issued case is in the host-free test.
+      [f.certificateId, ['a.example.com'], null, null, null]
     )
     for (const secretWord of ['accountKey', 'dnsCert', 'pendingKey', 'privateKey', 'BEGIN']) {
       assert(!listed.text.includes(secretWord), secretWord)

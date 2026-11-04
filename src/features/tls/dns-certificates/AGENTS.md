@@ -10,8 +10,8 @@ when the daemon can order them. Until then:
 - `POST …/dns-certificates`, `…/:tlsId/check` and `…/:tlsId/retry` answer 422
   `certificate_ordering_off` with a plain `message`, for anyone signed in,
   before anything is read (`client/organizations/dns-certificate-routes.ts`).
-  The list stays, and each row's `warning` says it will not renew from the
-  control plane (`renewAt` and `nextAttemptAt` are null).
+  The list stays, and an issued row in use says in `warning` that it will not
+  renew from the control plane (`renewAt` and `nextAttemptAt` are null).
 - The sweep on both editions (Workers offline sweep, Deno interval) runs only
   `runDnsCertificateCleanupTick` (`cleanup.ts`): it removes the challenge
   records the panel made and still lists, by id, through the DNS provider
