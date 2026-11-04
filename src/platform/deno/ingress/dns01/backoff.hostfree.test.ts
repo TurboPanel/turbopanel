@@ -11,7 +11,7 @@ import {
   mapAcmeFailure,
   nextAttemptAt,
 } from './backoff.ts'
-import { type Dns01Failure, type Dns01State, IDLE_STATE } from './state.ts'
+import { clearedForRetry, type Dns01Failure, type Dns01State, IDLE_STATE } from './state.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -155,4 +155,13 @@ test('a lookup failure alerts only once it repeats', () => {
     [false, false, true]
   )
   assertEquals(alertsFor(first, { cause: 'caa-forbids', detail: '' }), true)
+})
+
+test('Retry clears both failure counts and keeps the rest of the state', () => {
+  let state = fail({ ...IDLE_STATE }, { cause: 'acme-error', detail: 'refused' })
+  state = fail(fail(state, LOOKUP), LOOKUP)
+  assertEquals([state.attempts, state.lookupFailures], [1, 2])
+  const cleared = clearedForRetry(state)
+  assertEquals([cleared.attempts, cleared.lookupFailures], [0, 0])
+  assertEquals(cleared, { ...state, attempts: 0, lookupFailures: 0 })
 })

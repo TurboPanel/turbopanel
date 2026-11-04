@@ -141,13 +141,8 @@ High Availability (Workers) must not contain any of it.
   (zone on the account, a probe TXT write, CAA, nameservers: the provider's
   own list first (`DnsChallengeProvider.nameservers`, Cloudflare's zone
   `name_servers`), this host's resolver only as the fallback, because a
-  resolver behind split DNS answers the zone locally with no NS records; each
-  NS or address lookup that this host's resolver answers empty or not at all is
-  asked again of the public resolvers (`PUBLIC_RESOLVER_NAMES`: Cloudflare's
-  `one.one.one.one`, then Google's `dns.google`, reached by name so no IP
-  literal sits in the code; the last addresses found for them are kept for a
-  later outage)), order and publish
-  the TXT record, wait until every authoritative nameserver address that
+  resolver behind split DNS answers the zone locally with no NS records; no
+  other resolver is asked), order and publish the TXT record, wait until every authoritative nameserver address that
   answers has it (up to 10 minutes; `txtVisibleOnAll`: an address this host
   cannot reach, such as IPv6 on an IPv4-only host, is left out, a NotFound
   answer counts as an answer without the record, and at least one address must
@@ -173,10 +168,13 @@ High Availability (Workers) must not contain any of it.
   for Retry; every cause counts toward that except `dns-lookup`. `dns-lookup`
   (no nameserver address found in preflight, or no authoritative server
   reachable while waiting for the record) is this host's problem, not the
-  authority's: it backs off 1, 5, 15, 60 minutes, then hourly
+  authority's refusal: it backs off 1, 5, 15, 60 minutes, then hourly
   (`DNS01_LOOKUP_BACKOFF_MS`, counted in `lookupFailures`), never reaches
-  `failed`, alerts only from the third in a row, and a preflight lookup
-  failure does not use the hourly start budget. Retry clears both counts. The last valid certificate keeps serving until it expires; at
+  `failed` and alerts only from the third in a row. A preflight lookup
+  failure asked the authority nothing, so it does not use the hourly start
+  budget; one while waiting for the record came after an order was opened, so
+  that start stays in `attemptTimes` and counts. Retry clears both counts
+  (`clearedForRetry`). The last valid certificate keeps serving until it expires; at
   expiry the tick pushes the Platform CA fallback once. Alerts use the one
   instance event `certificate.expiring`: `kind: failed` once per cause, then a
   countdown at 14, 7, 3 and 1 days (`certificate.renewal_failed` is
