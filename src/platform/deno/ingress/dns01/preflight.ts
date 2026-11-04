@@ -20,6 +20,8 @@ export type DnsLookup = {
   caa(name: string): Promise<{ tag: string; value: string }[]>
   ns(name: string, resolver?: string): Promise<string[]>
   addresses(name: string, resolver?: string): Promise<string[]>
+  /** Addresses of the public resolvers to ask when this host's resolver returns nothing. */
+  publicResolvers(): Promise<string[]>
   /** TXT values at `name` as one authoritative server (by address) answers. */
   txtAt(name: string, server: string): Promise<string[]>
 }
@@ -34,8 +36,13 @@ export type Dns01Preflight = {
 
 /** Let's Encrypt's CAA identity; its staging directory uses the same one. */
 export const LETS_ENCRYPT_CAA = ['letsencrypt.org'] as const
-/** Asked, in order, when this host's resolver returns nothing for a nameserver lookup. */
-export const PUBLIC_RESOLVERS = ['1.1.1.1', '8.8.8.8'] as const
+/**
+ * Public resolvers asked, in order, when this host's resolver returns nothing
+ * for a nameserver lookup: Cloudflare's and Google's, by their published
+ * names. The addresses last found for them are kept, so a later lookup that
+ * fails here can still reach them.
+ */
+export const PUBLIC_RESOLVER_NAMES = ['one.one.one.one', 'dns.google'] as const
 const LOOKUP_TIMEOUT_MS = 3_000
 
 function stop(
@@ -112,12 +119,18 @@ export async function caaAllows(
  * The first non-empty answer: this host's resolver, then each public resolver.
  * A failed or empty lookup on one moves on to the next.
  */
-function firstAnswer(ask: (resolver?: string) => Promise<string[]>): Promise<string[]> {
-  const resolvers: (string | undefined)[] = [undefined, ...PUBLIC_RESOLVERS]
-  return firstSequential(resolvers, async (resolver) => {
-    const found = await ask(resolver).catch(() => [])
-    return found.length > 0 ? found : undefined
-  }).then((found) => found ?? [])
+async function firstAnswer(
+  dns: DnsLookup,
+  ask: (resolver?: string) => Promise<string[]>
+): Promise<string[]> {
+  const local = await ask().catch(() => [])
+  if (local.length > 0) return local
+  const resolvers = await dns.publicResolvers().catch(() => [])
+  const found = await firstSequential(resolvers, async (resolver) => {
+    const answer = await ask(resolver).catch(() => [])
+    return answer.length > 0 ? answer : undefined
+  })
+  return found ?? []
 }
 
 /**
@@ -133,7 +146,7 @@ async function nameserverNames(
 ): Promise<string[]> {
   const listed = provider.nameservers ? await provider.nameservers(zone.id).catch(() => []) : []
   if (listed.length > 0) return listed
-  return await firstAnswer((resolver) => dns.ns(zone.name, resolver))
+  return await firstAnswer(dns, (resolver) => dns.ns(zone.name, resolver))
 }
 
 /** Every address of every nameserver; each name falls back to the public resolvers on its own. */
@@ -141,7 +154,7 @@ async function nameserverAddresses(dns: DnsLookup, servers: readonly string[]): 
   const addresses = await Promise.all(
     servers.map((server) => {
       const name = server.replace(/\.$/, '')
-      return firstAnswer((resolver) => dns.addresses(name, resolver))
+      return firstAnswer(dns, (resolver) => dns.addresses(name, resolver))
     })
   )
   return [...new Set(addresses.flat())]
@@ -262,6 +275,23 @@ function via(resolver?: string): Deno.ResolveDnsOptions {
  * asks one authoritative server directly by address, because authoritative
  * answers are the point there.
  */
+let publicResolverAddresses: string[] = []
+
+/** One IPv4 address per public resolver name, in order; the last good list when none resolves. */
+async function lookUpPublicResolvers(): Promise<string[]> {
+  const found = await Promise.all(
+    PUBLIC_RESOLVER_NAMES.map((name) =>
+      Deno.resolveDns(name, 'A', withTimeout()).then(
+        (answer) => answer.slice(0, 1),
+        () => []
+      )
+    )
+  )
+  const addresses = found.flat()
+  if (addresses.length > 0) publicResolverAddresses = addresses
+  return publicResolverAddresses
+}
+
 export const denoDnsLookup: DnsLookup = {
   caa: async (name) =>
     ((await Deno.resolveDns(name, 'CAA', withTimeout())) as DenoCaa[]).map((record) => ({
@@ -276,6 +306,7 @@ export const denoDnsLookup: DnsLookup = {
     ])
     return [...v4, ...v6]
   },
+  publicResolvers: lookUpPublicResolvers,
   txtAt: async (name, server) => {
     try {
       const answer = await Deno.resolveDns(name, 'TXT', {

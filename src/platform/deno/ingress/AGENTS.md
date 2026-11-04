@@ -143,8 +143,10 @@ High Availability (Workers) must not contain any of it.
   `name_servers`), this host's resolver only as the fallback, because a
   resolver behind split DNS answers the zone locally with no NS records; each
   NS or address lookup that this host's resolver answers empty or not at all is
-  asked again of the public resolvers `PUBLIC_RESOLVERS` (1.1.1.1, then
-  8.8.8.8)), order and publish
+  asked again of the public resolvers (`PUBLIC_RESOLVER_NAMES`: Cloudflare's
+  `one.one.one.one`, then Google's `dns.google`, reached by name so no IP
+  literal sits in the code; the last addresses found for them are kept for a
+  later outage)), order and publish
   the TXT record, wait until every authoritative nameserver address that
   answers has it (up to 10 minutes; `txtVisibleOnAll`: an address this host
   cannot reach, such as IPv6 on an IPv4-only host, is left out, a NotFound

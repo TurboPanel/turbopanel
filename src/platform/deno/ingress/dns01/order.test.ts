@@ -103,6 +103,7 @@ async function world(db: Db, host: string): Promise<World> {
       caa: () => Promise.resolve([]),
       ns: () => Promise.resolve(['ns1.example.net']),
       addresses: () => Promise.resolve([SERVER]),
+      publicResolvers: () => Promise.resolve([]),
       txtAt: (name) => Promise.resolve(records.get(name) ?? []),
     },
     dataEncryption: await deriveEncryptionSecretsConfig(

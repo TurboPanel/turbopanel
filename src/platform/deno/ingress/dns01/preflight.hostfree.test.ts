@@ -12,6 +12,9 @@ import {
 const test = Deno.test.bind(Deno)
 
 const ZONES = [{ id: 'zone-1', name: 'example.com' }]
+/** Stand-ins for the public resolvers' addresses (RFC 5737). */
+const PUBLIC_A = '203.0.113.1'
+const PUBLIC_B = '203.0.113.8'
 
 function fakeDns(caa: Record<string, { tag: string; value: string }[]> = {}): DnsLookup {
   return {
@@ -19,6 +22,7 @@ function fakeDns(caa: Record<string, { tag: string; value: string }[]> = {}): Dn
     ns: () => Promise.resolve(['ns1.example.net.', 'ns2.example.net.']),
     addresses: (name) =>
       Promise.resolve(name === 'ns1.example.net' ? ['192.0.2.53'] : ['198.51.100.53']),
+    publicResolvers: () => Promise.resolve([PUBLIC_A, PUBLIC_B]),
     txtAt: (_name, server) => Promise.resolve(server === '192.0.2.53' ? ['token-value'] : []),
   }
 }
@@ -174,13 +178,13 @@ test("nameserver addresses this host's resolver cannot find are asked of a publi
   const asked: string[] = []
   const result = await preflightDns01({
     provider: withNameservers(provider, () => Promise.resolve(['ns1.example.net'])),
-    dns: answeringOnly('1.1.1.1', asked),
+    dns: answeringOnly(PUBLIC_A, asked),
     zones: ZONES,
     host: 'panel.example.com',
   })
   assertEquals(result.ok, true)
   assertEquals(result.nameservers, ['192.0.2.53'])
-  assertEquals(asked, ['a ns1.example.net system', 'a ns1.example.net 1.1.1.1'])
+  assertEquals(asked, ['a ns1.example.net system', `a ns1.example.net ${PUBLIC_A}`])
 })
 
 test('with no provider list, a failed NS lookup moves on through the public resolvers', async () => {
@@ -188,7 +192,7 @@ test('with no provider list, a failed NS lookup moves on through the public reso
   const asked: string[] = []
   const result = await preflightDns01({
     provider,
-    dns: answeringOnly('8.8.8.8', asked),
+    dns: answeringOnly(PUBLIC_B, asked),
     zones: ZONES,
     host: 'panel.example.com',
   })
@@ -196,8 +200,8 @@ test('with no provider list, a failed NS lookup moves on through the public reso
   assertEquals(result.nameservers, ['192.0.2.53'])
   assertEquals(asked.slice(0, 3), [
     'ns example.com system',
-    'ns example.com 1.1.1.1',
-    'ns example.com 8.8.8.8',
+    `ns example.com ${PUBLIC_A}`,
+    `ns example.com ${PUBLIC_B}`,
   ])
 })
 
