@@ -60,11 +60,6 @@ export const hostingSchemas = {
         description: 'When a waiting request is checked again; the wait grows after each miss.',
       },
       checks: { type: 'integer', description: 'Checks this waiting request has had.' },
-      termsHeld: {
-        type: 'boolean',
-        description:
-          "The certificate would be a new one and the organization has not accepted Let's Encrypt's newer terms yet: the request waits (and does not expire) until they are accepted. Certificates that already exist keep renewing.",
-      },
     },
   },
   HostingCertificate: {
@@ -482,7 +477,7 @@ const letsEncryptPaths = {
         },
         '409': {
           description:
-            "hosting_owned_by_compose, except when compose asks for tls.mode automatic: then the request re-pins the managed Let's Encrypt row compose chose (Try again). acme_terms_changed: the certificate would be a new one and the organization has not accepted Let's Encrypt's newer terms; the request is kept and goes ahead once they are accepted.",
+            "hosting_owned_by_compose, except when compose asks for tls.mode automatic: then the request re-pins the managed Let's Encrypt row compose chose (Try again).",
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },

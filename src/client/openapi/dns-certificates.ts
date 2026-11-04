@@ -122,7 +122,7 @@ export const dnsCertificatePaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Order a certificate by DNS challenge',
       description:
-        'Owners and managers only; the organization must allow Let’s Encrypt. 201 starts an order (`pending`); 200 returns a certificate that already covers the names (`reused: true`) or an order already running for them. Errors: 400 `names_invalid`, `carrier_invalid`, `no_dns_token`, `zone_not_found` (with `hostnames`), `badge_rejected`; 403 `lets_encrypt_not_enabled`; 409 `acme_terms_changed` (a new certificate waits for the organization to accept Let’s Encrypt’s newer terms); 429 `dns_certificate_limit` (10 new certificates a day); 502 `provider_unavailable`; 503 `secrets_unavailable`.',
+        'Owners and managers only; the organization must allow Let’s Encrypt. 201 starts an order (`pending`); 200 returns a certificate that already covers the names (`reused: true`) or an order already running for them. Errors: 400 `names_invalid`, `carrier_invalid`, `no_dns_token`, `zone_not_found` (with `hostnames`), `badge_rejected`; 403 `lets_encrypt_not_enabled`; 429 `dns_certificate_limit` (10 new certificates a day); 502 `provider_unavailable`; 503 `secrets_unavailable`.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM],
       requestBody: {
@@ -163,7 +163,7 @@ export const dnsCertificatePaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Try a failed order again',
       description:
-        'Only for a certificate that gave up (`failed`), and not within 15 minutes of the last failure: 409 `not_failed` or `acme_terms_changed` (a failed first certificate is a new order and waits for newer Let’s Encrypt terms), 429 `retry_too_soon`.',
+        'Only for a certificate that gave up (`failed`), and not within 15 minutes of the last failure: 409 `not_failed`, 429 `retry_too_soon`.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TLS_ID_PARAM],
       responses: { ...ok('Certificate', ONE), ...errors() },
