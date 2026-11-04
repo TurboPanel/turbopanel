@@ -5,7 +5,7 @@
  * on Workers many consumers run at once. So before a command starts, the
  * consumer takes its server's turn here, in one short transaction:
  *
- * 1. lock the server's row (`SELECT … FOR UPDATE`, waiting at most
+ * 1. lock the server's row (`SELECT … FOR NO KEY UPDATE`, waiting at most
  *    {@link SERVER_TURN_LOCK_TIMEOUT_MS}); the lock lives only for this
  *    transaction and Postgres drops it on commit, rollback or a lost
  *    connection, so it can never be left behind;
@@ -19,27 +19,50 @@
  * then. A deploy stops counting as running once the server has taken it over
  * ({@link deployMayLeaveLane}): the server orders its own deploys.
  *
- * The self-hosted consumer also keeps its in-memory lanes; this is what holds
- * the order when more than one consumer runs.
+ * Waiting never counts against a command: each busy check stamps it as seen
+ * and moves its expiry on by the time it waited, and the stale sweep times a
+ * waiting command from that stamp. {@link QUICK_COMMAND_TYPES} skip the line.
  */
 import { and, eq, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, server } from '../../db/schema.ts'
 import { DEPLOY_SIGNAL_GRACE_MS } from './deploy-wait.ts'
 import { nowIso } from './ids.ts'
-import { TERMINAL_COMMAND_STATUSES } from './types.ts'
+import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
 /** The longest a consumer waits for another consumer's turn check on the same server. */
 export const SERVER_TURN_LOCK_TIMEOUT_MS = 2_000
+
+/**
+ * Quick, read-only or confirm-only commands that never wait their server's
+ * turn and never hold it: the server runs them alongside a long command.
+ * `server.firewall.confirm` must arrive before the server's own deadline or
+ * the server undoes the new firewall rules, so it can never queue behind a
+ * backup. Add a type here only if it is short and safe to run beside any
+ * other command on the same server.
+ */
+export const QUICK_COMMAND_TYPES: ReadonlySet<CommandType> = new Set<CommandType>([
+  'daemon.ping',
+  'server.firewall.confirm',
+  'server.tunnel.status',
+])
+
+/** The quick types as bound parameters, for the turn check. */
+const QUICK_TYPES_SQL = sql.join(
+  [...QUICK_COMMAND_TYPES].map((type) => sql`${type}`),
+  sql`, `
+)
 
 /**
  * An older command still `queued` makes a newer one wait only while it was
  * touched this recently. Every busy check stamps the waiting command's
  * `updated_at`, so a command still waiting its turn keeps its place however
  * long the server is busy; one whose queue message was lost stops being
- * touched, and past this it no longer holds its server up.
+ * touched, and past this it no longer holds its server up. Longer than the
+ * longest retry wait (`COMMAND_RETRY_DELAYS_SECONDS`, 10 minutes), so a
+ * command waiting out a retry does not lose its place either.
  */
-export const OLDER_QUEUED_WAIT_MS = 5 * 60_000
+export const OLDER_QUEUED_WAIT_MS = 15 * 60_000
 
 /** Postgres `lock_not_available`: the lock timeout ran out. */
 const LOCK_NOT_AVAILABLE = '55P03'
@@ -68,6 +91,7 @@ function blockingCommandExists(input: { commandId: string; serverId: string }) {
     select 1 from ${command} other
     where other.server_id = ${input.serverId}
       and other.id <> ${input.commandId}
+      and other.name not in (${QUICK_TYPES_SQL})
       and (
         (
           other.status in ('dispatching', 'sent', 'acked', 'running')
@@ -91,14 +115,41 @@ function blockingCommandExists(input: { commandId: string; serverId: string }) {
   )`
 }
 
+/** Mark the command `dispatching`; `false` when it already finished. */
+async function markClaimed(
+  tx: Pick<Db, 'update'>,
+  input: { commandId: string; attempts: number },
+  now: string
+): Promise<boolean> {
+  const claimed = await tx
+    .update(command)
+    .set({
+      status: 'dispatching',
+      dispatchStartedAt: now,
+      updatedAt: now,
+      attempts: input.attempts + 1,
+    })
+    .where(
+      and(
+        eq(command.id, input.commandId),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+      )
+    )
+    .returning({ id: command.id })
+  return claimed.length > 0
+}
+
 /**
  * Take the server's turn for `commandId` and mark it `dispatching`
  * (stamping `dispatch_started_at` and counting the attempt), or say why not.
  */
 export async function claimServerTurn(
   db: Db,
-  input: { commandId: string; serverId: string; attempts: number }
+  input: { commandId: string; serverId: string; type: CommandType; attempts: number }
 ): Promise<ServerTurn> {
+  if (QUICK_COMMAND_TYPES.has(input.type)) {
+    return (await markClaimed(db, input, nowIso())) ? 'claimed' : 'finished'
+  }
   try {
     return await db.transaction(async (tx) => {
       await tx.execute(sql.raw(`set local lock_timeout = '${SERVER_TURN_LOCK_TIMEOUT_MS}ms'`))
@@ -116,29 +167,20 @@ export async function claimServerTurn(
       )
       const now = nowIso()
       if (blocking?.blocked === true) {
-        // Still waiting its turn: keep its place ahead of newer commands.
+        // Still waiting its turn: keep its place ahead of newer commands, and
+        // give the time it has waited since it was last seen back to its
+        // expiry. One UPDATE: every SET expression reads the row's old
+        // `updated_at`, so the credit is the wait since the last stamp.
         await tx
           .update(command)
-          .set({ updatedAt: now })
+          .set({
+            updatedAt: now,
+            expiresAt: sql`${command.expiresAt} + (${now}::timestamptz - ${command.updatedAt})`,
+          })
           .where(and(eq(command.id, input.commandId), eq(command.status, 'queued')))
         return 'busy'
       }
-      const claimed = await tx
-        .update(command)
-        .set({
-          status: 'dispatching',
-          dispatchStartedAt: now,
-          updatedAt: now,
-          attempts: input.attempts + 1,
-        })
-        .where(
-          and(
-            eq(command.id, input.commandId),
-            notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
-          )
-        )
-        .returning({ id: command.id })
-      return claimed.length > 0 ? 'claimed' : 'finished'
+      return (await markClaimed(tx, input, now)) ? 'claimed' : 'finished'
     })
   } catch (error) {
     if (isLockTimeout(error)) return 'busy'

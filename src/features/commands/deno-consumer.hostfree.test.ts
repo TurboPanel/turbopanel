@@ -672,7 +672,7 @@ const OTHER_SERVER_ENVELOPE_JSON = JSON.stringify({
   queuedAt: '2020-01-01T00:00:00.000Z',
 })
 
-test('each delivery goes to its own server lane and is acked only after the lane runs it', async () => {
+test('each delivery runs in its own slot and is acked only after it ran', async () => {
   const broker = createStubBroker()
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   const { lanes, held } = heldLanes()
@@ -687,9 +687,10 @@ test('each delivery goes to its own server lane and is acked only after the lane
     broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
     broker.deliver({ content: { toString: () => OTHER_SERVER_ENVELOPE_JSON } })
     await new Promise((resolve) => setTimeout(resolve, 0))
+    // Keyed by command, not server: per-server order is the server-turn check.
     assertEquals(
       held.map((entry) => entry.key),
-      ['00000000-0000-4000-8000-0000000000bb', '00000000-0000-4000-8000-0000000000ee']
+      ['00000000-0000-4000-8000-0000000000cc', '00000000-0000-4000-8000-0000000000dd']
     )
     // Handed to a lane, not finished: still unacknowledged.
     assertEquals(broker.dispositions, [])

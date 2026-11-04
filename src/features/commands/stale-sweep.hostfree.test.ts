@@ -36,6 +36,23 @@ function candidate(overrides: Partial<StaleCommandCandidate>): StaleCommandCandi
   }
 }
 
+test('isStaleCommand never counts time a command spent waiting its server turn', () => {
+  // A ping (30 s budget) queued at T0 behind a 30-minute backup, last seen
+  // waiting a minute ago: still alive.
+  const waiting = candidate({
+    name: 'daemon.ping',
+    status: 'queued',
+    queuedAt: new Date(T0).toISOString(),
+    updatedAt: new Date(T0 + 29 * 60_000).toISOString(),
+  })
+  assertEquals(isStaleCommand(waiting, T0 + 30 * 60_000), false)
+  // Nothing has seen it for budget + grace since: its message was lost.
+  assertEquals(isStaleCommand(waiting, T0 + 29 * 60_000 + 30_000 + STALE_COMMAND_GRACE_MS), true)
+  // The stamp only counts while it waits: once dispatching, its own clock runs.
+  const dispatching = { ...waiting, status: 'dispatching', dispatchStartedAt: waiting.queuedAt }
+  assertEquals(isStaleCommand(dispatching, T0 + 30 * 60_000), true)
+})
+
 test('isStaleCommand keeps a running command within its budget', () => {
   const row = candidate({ startedAt: new Date(T0).toISOString() })
   // managed.apply budget is 600s; still inside budget + grace.

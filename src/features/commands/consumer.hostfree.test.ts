@@ -733,7 +733,7 @@ test('processCommandEnvelope no-ops for already-terminal commands', async () => 
 
 test('processCommandEnvelope leaves the command untouched while its server runs another one', async () => {
   const { db, transitions } = createConsumerFakeDb({
-    commandRow: baseCommandRow(),
+    commandRow: baseCommandRow({ name: 'server.hostname.set' }),
     serverBusy: true,
   })
   await assertRejects(
@@ -741,7 +741,7 @@ test('processCommandEnvelope leaves the command untouched while its server runs 
       processCommandEnvelope(db, emptyRegistry(), {
         commandId: COMMAND_ID,
         serverId: SERVER_ID,
-        type: 'daemon.ping',
+        type: 'server.hostname.set',
         attempt: 1,
         queuedAt: '2020-01-01T00:00:00.000Z',
       }),
@@ -749,6 +749,23 @@ test('processCommandEnvelope leaves the command untouched while its server runs 
   )
   // Still queued: not marked dispatching, never sent.
   assertEquals(transitions, [])
+})
+
+test('processCommandEnvelope starts a quick command even while its server is busy', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow(),
+    serverBusy: true,
+  })
+  await processCommandEnvelope(db, emptyRegistry(), {
+    commandId: COMMAND_ID,
+    serverId: SERVER_ID,
+    type: 'daemon.ping',
+    attempt: 1,
+    queuedAt: '2020-01-01T00:00:00.000Z',
+  })
+  // It skipped the turn check and went on to dispatch (and fail fast here:
+  // the fake server is not found).
+  assertEquals(transitions[0]?.status, 'dispatching')
 })
 
 const GIVE_UP_ENVELOPE: CommandEnvelope = {
@@ -766,6 +783,50 @@ test('failCommandAfterRetries fails a command that never reached its server', as
     'failed'
   )
   assertEquals(transitions, [{ status: 'failed', error: 'database unreachable' }])
+})
+
+function outboxRegistry(expire: () => Promise<PendingRequestRecord>): DaemonCellRegistry {
+  return {
+    ...emptyRegistry(),
+    getCell: () => ({ expireRequest: expire }) as unknown as DaemonCell,
+  }
+}
+
+test('failCommandAfterRetries takes the request back from the outbox before failing', async () => {
+  const { db, transitions } = createConsumerFakeDb({ commandRow: baseCommandRow() })
+  const expired = { status: 'expired' } as PendingRequestRecord
+  assertEquals(
+    await failCommandAfterRetries(
+      db,
+      GIVE_UP_ENVELOPE,
+      'database unreachable',
+      undefined,
+      outboxRegistry(() => Promise.resolve(expired))
+    ),
+    'failed'
+  )
+  assertEquals(transitions, [{ status: 'failed', error: 'database unreachable' }])
+})
+
+test('failCommandAfterRetries does not fail a command it could not take back', async () => {
+  for (const expire of [
+    () => Promise.reject(new Error('cell unavailable')),
+    // The server already answered while the write to `sent` was failing.
+    () => Promise.resolve({ status: 'done' } as PendingRequestRecord),
+  ]) {
+    const { db, transitions } = createConsumerFakeDb({ commandRow: baseCommandRow() })
+    assertEquals(
+      await failCommandAfterRetries(
+        db,
+        GIVE_UP_ENVELOPE,
+        'database unreachable',
+        undefined,
+        outboxRegistry(expire)
+      ),
+      'left_running'
+    )
+    assertEquals(transitions, [])
+  }
 })
 
 test('failCommandAfterRetries leaves a command the server may be running alone', async () => {
