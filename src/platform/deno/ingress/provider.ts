@@ -55,6 +55,8 @@ export type IngressCause =
   | 'provider-rate-limited'
   | 'daemon-offline'
   | 'edge-unreachable'
+  /** The tunnel takes its routes from a file on its connector; trying again never helps. */
+  | 'tunnel-locally-managed'
 
 /**
  * What an API-driven provider needs besides the hostname. Built per request
