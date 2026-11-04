@@ -8,7 +8,7 @@ import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
 import { type CommandConsumerDeps, failCommandAfterRetries, isTransientError } from './consumer.ts'
-import { decideRetry, SERVER_BUSY_DELAY_SECONDS, ServerBusyError } from './delivery-retry.ts'
+import { decideRetry, ServerBusyError, serverBusyDelaySeconds } from './delivery-retry.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import type { CommandQueue } from './queue.ts'
 
@@ -58,7 +58,7 @@ export async function settleFailedDelivery(input: {
   }
   if (error instanceof ServerBusyError) {
     // Not a failure: the command waits its turn and the attempt is not counted.
-    const queued = await putBack(input.queue, envelope, SERVER_BUSY_DELAY_SECONDS)
+    const queued = await putBack(input.queue, envelope, serverBusyDelaySeconds(envelope.queuedAt))
     return queued ? 'ack' : 'redeliver'
   }
   if (!isTransientError(error)) {

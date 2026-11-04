@@ -6,6 +6,7 @@ import {
   decideRetry,
   QUEUE_RETRY_EXHAUSTED_CODE,
   SERVER_BUSY_DELAY_SECONDS,
+  serverBusyDelaySeconds,
   ServerBusyError,
 } from './delivery-retry.ts'
 import type { CommandEnvelope } from './envelope.ts'
@@ -62,14 +63,25 @@ test('decideRetry waits 5 s, 30 s, 2 min and 10 min, then gives up', () => {
 
 test('a busy server puts the command back for a little later without counting an attempt', async () => {
   const { queue, sent } = recordingQueue()
+  const fresh = { ...ENVELOPE, queuedAt: new Date().toISOString() }
   const outcome = await settleFailedDelivery({
     db: NO_DB,
     queue,
-    envelope: ENVELOPE,
+    envelope: fresh,
     error: new ServerBusyError(ENVELOPE.serverId),
   })
   assertEquals(outcome, 'ack')
-  assertEquals(sent, [{ envelope: ENVELOPE, options: { delaySeconds: SERVER_BUSY_DELAY_SECONDS } }])
+  assertEquals(sent, [{ envelope: fresh, options: { delaySeconds: SERVER_BUSY_DELAY_SECONDS } }])
+})
+
+test('a command waiting longer looks again less often', () => {
+  const queuedAt = '2026-01-01T00:00:00.000Z'
+  const at = (ms: number) => Date.parse(queuedAt) + ms
+  assertEquals(serverBusyDelaySeconds(queuedAt, at(0)), 10)
+  assertEquals(serverBusyDelaySeconds(queuedAt, at(59_000)), 10)
+  assertEquals(serverBusyDelaySeconds(queuedAt, at(2 * 60_000)), 30)
+  assertEquals(serverBusyDelaySeconds(queuedAt, at(6 * 60_000)), 120)
+  assertEquals(serverBusyDelaySeconds('not a time', at(60 * 60_000)), 10)
 })
 
 test('a passing failure is tried again after a wait with the attempt counted', async () => {

@@ -19,7 +19,7 @@
  * then. A deploy stops counting as running once the server has taken it over
  * ({@link deployMayLeaveLane}): the server orders its own deploys.
  *
- * Waiting never counts against a command: each busy check stamps it as seen
+ * Waiting never counts against a command: a busy check stamps it as seen
  * and moves its expiry on by the time it waited, and the stale sweep times a
  * waiting command from that stamp. {@link QUICK_COMMAND_TYPES} skip the line.
  */
@@ -27,6 +27,7 @@ import { and, eq, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, server } from '../../db/schema.ts'
 import { DEPLOY_SIGNAL_GRACE_MS } from './deploy-wait.ts'
+import { SERVER_BUSY_LONGEST_DELAY_SECONDS } from './delivery-retry.ts'
 import { nowIso } from './ids.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
@@ -115,10 +116,37 @@ function blockingCommandExists(input: { commandId: string; serverId: string }) {
   )`
 }
 
-/** Mark the command `dispatching`; `false` when it already finished. */
+/** What the consumer read of the command, so a claim only wins against that exact row. */
+export type ServerTurnInput = {
+  commandId: string
+  serverId: string
+  type: CommandType
+  attempts: number
+  /** The status the consumer read; the claim fails if another delivery moved it since. */
+  status: string
+  /** `dispatch_started_at` as read; with `status` it tells two deliveries of one command apart. */
+  dispatchStartedAt: string | null
+}
+
+/** How rarely a waiting command's `updated_at` is stamped (its place and its expiry credit). */
+export const WAITING_STAMP_INTERVAL_MS = 30_000
+
+/**
+ * A waiting command's expiry is never set closer than this after a stamp: the
+ * longest wait before its next look plus a margin, so its next look always
+ * finds it alive and stamps it again.
+ */
+export const WAITING_EXPIRY_FLOOR_MS = (SERVER_BUSY_LONGEST_DELAY_SECONDS + 60) * 1000
+
+/**
+ * Mark the command `dispatching` (stamping `dispatch_started_at` and counting
+ * the attempt), but only if it is still exactly as the consumer read it: a
+ * second delivery of the same command (an at-least-once queue can hand one
+ * out twice) loses and does nothing. `false` when it lost or finished.
+ */
 async function markClaimed(
   tx: Pick<Db, 'update'>,
-  input: { commandId: string; attempts: number },
+  input: ServerTurnInput,
   now: string
 ): Promise<boolean> {
   const claimed = await tx
@@ -132,7 +160,9 @@ async function markClaimed(
     .where(
       and(
         eq(command.id, input.commandId),
-        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES])
+        eq(command.status, input.status),
+        notInArray(command.status, [...TERMINAL_COMMAND_STATUSES]),
+        sql`${command.dispatchStartedAt} is not distinct from ${input.dispatchStartedAt}::timestamptz`
       )
     )
     .returning({ id: command.id })
@@ -140,15 +170,54 @@ async function markClaimed(
 }
 
 /**
- * Take the server's turn for `commandId` and mark it `dispatching`
- * (stamping `dispatch_started_at` and counting the attempt), or say why not.
+ * Still waiting its turn: keep its place ahead of newer commands and give the
+ * time it waited since it was last seen back to its expiry. One UPDATE, so
+ * every SET expression reads the row's old `updated_at` and the credit is the
+ * wait since the last stamp. At most once per {@link WAITING_STAMP_INTERVAL_MS}:
+ * each stamp is a row write, and the credit adds up the same either way.
  */
-export async function claimServerTurn(
-  db: Db,
-  input: { commandId: string; serverId: string; type: CommandType; attempts: number }
-): Promise<ServerTurn> {
+async function stampWaiting(db: Db, commandId: string, now: string): Promise<void> {
+  await db
+    .update(command)
+    .set({
+      updatedAt: now,
+      // Never closer than the longest wait to its next look plus a margin: a
+      // command with a two-minute lifetime that looks every two minutes would
+      // otherwise expire just before it looks again. No expiry stays none.
+      expiresAt: sql`case when ${command.expiresAt} is null then null else greatest(
+        ${command.expiresAt} + (${now}::timestamptz - ${command.updatedAt}),
+        ${now}::timestamptz + ${WAITING_EXPIRY_FLOOR_MS} * interval '1 millisecond'
+      ) end`,
+    })
+    .where(
+      and(
+        eq(command.id, commandId),
+        eq(command.status, 'queued'),
+        sql`${command.updatedAt} < ${now}::timestamptz - ${WAITING_STAMP_INTERVAL_MS} * interval '1 millisecond'`
+      )
+    )
+}
+
+/**
+ * Take the server's turn for `commandId` and mark it `dispatching`, or say why
+ * not. A busy server is the common answer and the cheap one: one unlocked read
+ * says so, and the waiting command is stamped at most every 30 seconds
+ * (often enough that a command with a two-minute expiry is credited before it
+ * runs out). Only when nothing seems to block does it take the server row's
+ * lock and check again
+ * before claiming (a false "busy" from the unlocked read only means trying
+ * again a little later).
+ */
+export async function claimServerTurn(db: Db, input: ServerTurnInput): Promise<ServerTurn> {
   if (QUICK_COMMAND_TYPES.has(input.type)) {
     return (await markClaimed(db, input, nowIso())) ? 'claimed' : 'finished'
+  }
+  const [seen] = await db.execute<{ blocked: boolean }>(
+    sql`select ${blockingCommandExists(input)} as blocked`
+  )
+  if (seen?.blocked === true) {
+    await stampWaiting(db, input.commandId, nowIso())
+    return 'busy'
   }
   try {
     return await db.transaction(async (tx) => {
@@ -165,22 +234,8 @@ export async function claimServerTurn(
       const [blocking] = await tx.execute<{ blocked: boolean }>(
         sql`select ${blockingCommandExists(input)} as blocked`
       )
-      const now = nowIso()
-      if (blocking?.blocked === true) {
-        // Still waiting its turn: keep its place ahead of newer commands, and
-        // give the time it has waited since it was last seen back to its
-        // expiry. One UPDATE: every SET expression reads the row's old
-        // `updated_at`, so the credit is the wait since the last stamp.
-        await tx
-          .update(command)
-          .set({
-            updatedAt: now,
-            expiresAt: sql`${command.expiresAt} + (${now}::timestamptz - ${command.updatedAt})`,
-          })
-          .where(and(eq(command.id, input.commandId), eq(command.status, 'queued')))
-        return 'busy'
-      }
-      return (await markClaimed(tx, input, now)) ? 'claimed' : 'finished'
+      if (blocking?.blocked === true) return 'busy'
+      return (await markClaimed(tx, input, nowIso())) ? 'claimed' : 'finished'
     })
   } catch (error) {
     if (isLockTimeout(error)) return 'busy'

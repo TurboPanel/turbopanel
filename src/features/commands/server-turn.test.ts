@@ -61,17 +61,36 @@ function newCommand(db: Ctx['db'], serverId: string, type: CommandType) {
   })
 }
 
-function claim(
-  db: Ctx['db'],
-  record: { id: string; serverId: string; type: string; attempts: number }
-) {
+/** Claim the way the consumer does: from the row as it reads it now. */
+async function claim(db: Ctx['db'], command: { id: string }) {
+  const record = await getCommandRecord(db, command.id)
+  if (!record) throw new TypeError(`no command ${command.id}`)
   return claimServerTurn(db, {
     commandId: record.id,
     serverId: record.serverId,
     type: record.type as CommandType,
     attempts: record.attempts,
+    status: record.status,
+    dispatchStartedAt: record.dispatchStartedAt,
   })
 }
+
+test('a second delivery of the same command loses the claim', async () => {
+  await withServers(async ({ db, serverId }) => {
+    const record = await newCommand(db, serverId, 'server.hostname.set')
+    const read = {
+      commandId: record.id,
+      serverId,
+      type: 'server.hostname.set' as CommandType,
+      attempts: record.attempts,
+      status: record.status,
+      dispatchStartedAt: record.dispatchStartedAt,
+    }
+    // Both copies read the same queued row; only one may start it.
+    const results = await Promise.all([claimServerTurn(db, read), claimServerTurn(db, read)])
+    assertEquals(results.filter((result) => result === 'claimed').length, 1)
+  })
+})
 
 test('a quick command skips the line and never holds it', async () => {
   await withServers(async ({ db, serverId }) => {
@@ -84,6 +103,24 @@ test('a quick command skips the line and never holds it', async () => {
     await transitionCommand(db, backup.id, { status: 'succeeded' })
     const next = await newCommand(db, serverId, 'server.hostname.set')
     assertEquals(await claim(db, next), 'claimed')
+  })
+})
+
+test('a waiting command with a short lifetime is kept alive until its next look', async () => {
+  await withServers(async ({ db, serverId }) => {
+    const running = await newCommand(db, serverId, 'server.hostname.set')
+    await transitionCommand(db, running.id, { status: 'sent' })
+    const waiting = await newCommand(db, serverId, 'server.hostname.set')
+    // Seen 40 s ago, about to expire: the credit alone would leave 45 s, less
+    // than the two minutes until it looks again.
+    await db.execute(
+      sql`update command set updated_at = now() - interval '40 seconds', expires_at = now() + interval '5 seconds' where id = ${waiting.id}`
+    )
+    assertEquals(await claim(db, waiting), 'busy')
+    const [row] = await db.execute<{ seconds: number }>(
+      sql`select extract(epoch from (expires_at - now())) as seconds from command where id = ${waiting.id}`
+    )
+    assertEquals(Number(row?.seconds) > 170, true)
   })
 })
 
