@@ -3942,6 +3942,35 @@ export async function failCommandAfterRetries(
   return 'failed'
 }
 
+/**
+ * A command already sent: resume waiting on it (rare, so the payload is read
+ * up front). `done` when it was handled here; otherwise the loaded record,
+ * or `null` when there is nothing to run, for the normal path to send again.
+ */
+async function resumeIfSent(
+  db: Db,
+  registry: DaemonCellRegistry,
+  open: CommandRecord,
+  envelope: CommandEnvelope,
+  deps?: CommandConsumerDeps
+): Promise<'done' | DispatchableCommandRecord | null> {
+  if (open.sentAt === null || !['sent', 'acked', 'running'].includes(open.status)) return null
+  const record = await attachDispatchPayload(db, open, envelope)
+  if (!record) return 'done'
+  const resumed = await resumeSentWait(db, registry, record, envelope, deps)
+  if (resumed === null) return record
+  if (resumed.pending) {
+    await applyPendingOutcome(
+      db,
+      record,
+      envelope,
+      resumed.pending,
+      deps ? { ...deps, registry } : deps
+    )
+  }
+  return 'done'
+}
+
 export async function processCommandEnvelope(
   db: Db,
   registry: DaemonCellRegistry,
@@ -3953,30 +3982,13 @@ export async function processCommandEnvelope(
 
   if (await failSupersededReseed(db, open)) return
 
-  let record: DispatchableCommandRecord | null = null
-  if (open.sentAt !== null && ['sent', 'acked', 'running'].includes(open.status)) {
-    // Already sent: resume waiting on it (rare, so the payload is read now).
-    record = await attachDispatchPayload(db, open, envelope)
-    if (!record) return
-    const resumed = await resumeSentWait(db, registry, record, envelope, deps)
-    if (resumed !== null) {
-      if (resumed.pending) {
-        await applyPendingOutcome(
-          db,
-          record,
-          envelope,
-          resumed.pending,
-          deps ? { ...deps, registry } : deps
-        )
-      }
-      return
-    }
-  }
+  const resumed = await resumeIfSent(db, registry, open, envelope, deps)
+  if (resumed === 'done') return
 
   // Take the server's turn before reading the payload: a command whose server
   // is busy is checked often and only needs the row.
   if (!(await markDispatching(db, open, envelope))) return
-  record ??= await attachDispatchPayload(db, open, envelope)
+  const record = resumed ?? (await attachDispatchPayload(db, open, envelope))
   if (!record) return
 
   const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
