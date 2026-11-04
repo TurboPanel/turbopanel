@@ -458,6 +458,11 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
       owner.consumerTag = undefined
       return
     }
+    // A delivery to a session that is being closed or was lost (a late
+    // connect after close(), or a broker loss) is left unacknowledged: its
+    // channel is going away, so the broker redelivers it. Sending it here
+    // first would send the mail twice.
+    if (closed || owner.lost) return
 
     let disposition: Disposition
     let jobType: EmailJob['type'] | undefined
