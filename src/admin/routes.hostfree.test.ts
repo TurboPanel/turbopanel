@@ -538,8 +538,10 @@ test('GET/PUT /settings/email cover db/validation/encryption branches', async ()
     headers: { Cookie: cookie },
   })
   assertEquals(get.status, 200)
-  const getBody = await jsonBody<{ settings: unknown }>(get)
+  const getBody = await jsonBody<{ settings: unknown; delivery: unknown }>(get)
   assertExists(getBody.settings)
+  // The test app has no provider set up and no dead-letter store.
+  assertEquals(getBody.delivery, { state: 'not_configured', deadLetters: null })
 
   const bad = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
     method: 'PUT',

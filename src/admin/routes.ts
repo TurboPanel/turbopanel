@@ -20,6 +20,9 @@ import {
 import { registerNotificationAdminRoutes } from './notification-routes.ts'
 import { registerMailDeadLetterAdminRoutes } from './mail-dead-letter-routes.ts'
 import type { MailDeadLetterStore } from '../features/email/smtp/dead-letter-replay.ts'
+import { type EmailDeliveryStatus, emailDeliveryState } from '../features/email/delivery-status.ts'
+import { isNoopEmailQueue } from '../features/email/noop-queue.ts'
+import { getEmailQueue } from '../features/email/types.ts'
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
@@ -452,7 +455,20 @@ export function registerAdminRoutes(
       resolvePlatformEnv(c, opts),
       dataEncryptionSecrets
     )
-    return c.json({ settings: emailSettingsToApiShape(resolved) })
+    const runtime = c.get('runtime') === 'workers' ? 'workers' : 'deno'
+    const delivery: EmailDeliveryStatus = {
+      state: emailDeliveryState({
+        settings: resolved,
+        runtime,
+        queueUnavailable: isNoopEmailQueue(getEmailQueue(c)),
+      }),
+      // Only the self-hosted broker can be counted from here; a broker that
+      // cannot be reached leaves the count unknown rather than failing the page.
+      deadLetters: opts.mailDeadLetters
+        ? ((await opts.mailDeadLetters.list(1).catch(() => null))?.total ?? null)
+        : null,
+    }
+    return c.json({ settings: emailSettingsToApiShape(resolved), delivery })
   })
 
   admin.put('/settings/email', createRootOnlyMiddleware(opts.secrets), async (c) => {
