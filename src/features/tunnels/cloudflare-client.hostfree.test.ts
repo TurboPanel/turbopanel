@@ -91,6 +91,20 @@ test('any other 400 stays a provider error', async () => {
   assertEquals(err.code, 'provider_error')
 })
 
+test('only the configuration-not-found 404 reads as an empty tunnel configuration', async () => {
+  const empty = new CloudflareClient({
+    token: TOKEN,
+    fetch: refusingFetch(404, 'Configuration for tunnel not found'),
+  })
+  assertEquals(await empty.getConfiguration('a'.repeat(32), 'tunnel-1'), { ingress: [] })
+  const gone = new CloudflareClient({ token: TOKEN, fetch: refusingFetch(404, 'Tunnel not found') })
+  const err = await gone.getConfiguration('a'.repeat(32), 'tunnel-1').catch((e) => e)
+  assertEquals(err instanceof TunnelProviderError, true)
+  assertEquals(err.code, 'not_found')
+  const bare = new CloudflareClient({ token: TOKEN, fetch: refusingFetch(404, '') })
+  assertEquals((await bare.getConfiguration('a'.repeat(32), 't').catch((e) => e)).code, 'not_found')
+})
+
 test('a long provider message is cut between words, never inside one', () => {
   const text = `${'word '.repeat(80)}connections`
   const out = clip(text, 50)

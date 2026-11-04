@@ -24,10 +24,7 @@
  */
 
 import type { Db } from '../../db/connection.ts'
-import {
-  controlPlaneOrigins,
-  platformControlPlaneOrigin,
-} from '../install/control-plane-origins.ts'
+import { controlPlaneOrigins } from '../install/control-plane-origins.ts'
 import { publicHttpsOrigin, publicUrlEntryToInstallOrigin } from '../install/public-urls.ts'
 
 export type PublishedOrigins = {
@@ -43,12 +40,6 @@ export type PublishedOrigins = {
 export type PublishedOriginsRuntime = {
   runtime?: 'deno' | 'workers'
   platformEnv?: Record<string, string | undefined>
-}
-
-/** The hosted runtime's own address, or `null` off Workers or when unusable. */
-export function platformManagedOrigin(input: PublishedOriginsRuntime): string | null {
-  if (input.runtime !== 'workers') return null
-  return platformControlPlaneOrigin(input.platformEnv)
 }
 
 function stripTrailingSlash(origin: string): string {

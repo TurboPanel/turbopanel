@@ -24,7 +24,14 @@ import type { NotificationContext } from '../../../../features/notifications/eve
 import { skipWithoutDatabase } from '../../../../test-fixtures/require-service.test.support.ts'
 import { parseTestSecretsConfig } from '../../../../test-fixtures/secrets.ts'
 import { DNS01_MAX_ABANDONED_PER_DAY } from './backoff.ts'
-import { advanceOrder, type Dns01Deps, loadDns01Row, startOrder, TXT_WAIT_MS } from './order.ts'
+import {
+  advanceOrder,
+  type Dns01Deps,
+  loadDns01Row,
+  ORDER_TIMEOUT_MS,
+  startOrder,
+  TXT_WAIT_MS,
+} from './order.ts'
 import { clearedForRetry } from './state.ts'
 import { runDns01Tick } from './tick.ts'
 
@@ -208,7 +215,8 @@ test('an order is refused while the authority limit pauses the name', async () =
     const paused = { ...row, state: { ...row.state, stopUntil: '2026-11-02T00:00:00.000Z' } }
     const result = await startOrder(w.deps, paused)
     assert('ok' in result)
-    assert(result.error.includes('2026-11-02'))
+    assert(result.error.includes('Nov 2, 2026, 00:00 UTC'), result.error)
+    assertEquals(result.error.includes('T00:00'), false)
     const recent = [10, 20, 30, 40].map((min) =>
       new Date(NOW.getTime() - min * 60_000).toISOString()
     )
@@ -461,7 +469,13 @@ test('the daily cap stops new orders but still runs the preflight, and Retry lif
     assertEquals(capped.attemptTimes, [])
     assertEquals(capped.nextAttemptAt, new Date(NOW.getTime() + 60 * 60_000).toISOString())
     assert(capped.lastError?.detail.includes('Retry'))
+    assertEquals(capped.lastError?.cause, 'order-cap')
     assertEquals(w.ca.orders.length, 0)
+    // Holding new orders back is told to the operator once, like any other failure.
+    assertEquals(
+      w.sent.map((ctx) => ctx.cause),
+      ['order-cap']
+    )
 
     // The preflight still runs while capped: a lookup failure is recorded as such.
     const noAddresses = { ...w.deps, dns: { ...w.deps.dns, addresses: () => Promise.resolve([]) } }
@@ -494,6 +508,95 @@ test('a refused order is mapped as before and deactivates nothing', async () => 
     assert(failed.stopUntil)
     assertEquals(w.ca.deactivated, [])
     assertEquals(failed.abandonedTimes, [])
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('an order the authority does not finish validating in time is deactivated', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host, { holdValidation: true })
+  try {
+    await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    const validating = await advanceOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    assertEquals(validating.stage, 'validating')
+    const later = new Date(NOW.getTime() + ORDER_TIMEOUT_MS + 60_000)
+    const late = { ...w.deps, now: () => later }
+    const failed = await advanceOrder(late, (await loadDns01Row(db, w.hostnameId))!)
+    assertEquals(failed.lastError?.cause, 'acme-error')
+    assertEquals(failed.order, null)
+    // The answered authorization is still pending at the authority, which accepts deactivating it.
+    assertEquals(w.ca.deactivated.length, 1)
+    assertEquals(failed.abandonedTimes, [later.toISOString()])
+    assertEquals(w.records.get(`_acme-challenge.${host}`), [])
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('a kept order given up before a new order that fails is given up once', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host, { authzExpires: '2026-11-01T01:00:00Z', ordersBeforeFailure: 1 })
+  try {
+    await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    await advanceOrder(unreachableLater(w.deps), (await loadDns01Row(db, w.hostnameId))!)
+    const failed = await startOrder(
+      { ...w.deps, now: () => new Date(NOW.getTime() + 2 * 60 * 60_000) },
+      (await loadDns01Row(db, w.hostnameId))!
+    )
+    assert(!('ok' in failed))
+    assertEquals(failed.stage, 'backoff')
+    assertEquals(failed.order, null)
+    assertEquals(w.ca.orders.length, 1)
+    assertEquals(w.ca.deactivationAsked.length, 1)
+    assertEquals(w.ca.deactivated.length, 1)
+    assertEquals(failed.abandonedTimes.length, 1)
+    assertEquals(w.records.get(`_acme-challenge.${host}`), [])
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
+test('a kept order whose authorization cannot be read right now stays kept', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host)
+  try {
+    const started = await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    assert(!('ok' in started))
+    await advanceOrder(unreachableLater(w.deps), (await loadDns01Row(db, w.hostnameId))!)
+
+    w.ca.failAuthzReads(1)
+    const busyAt = new Date(NOW.getTime() + 2 * 60 * 60_000)
+    const busy = await startOrder(
+      { ...w.deps, now: () => busyAt },
+      (await loadDns01Row(db, w.hostnameId))!
+    )
+    assert(!('ok' in busy))
+    assertEquals(busy.stage, 'backoff')
+    assertEquals(busy.order?.url, started.order?.url)
+    assertEquals(w.ca.orders.length, 1)
+    assertEquals(w.ca.deactivationAsked, [])
+    assertEquals(busy.abandonedTimes, [])
+    assertEquals(w.records.get(`_acme-challenge.${host}`)?.length, 1)
+
+    const resumedAt = new Date(NOW.getTime() + 3 * 60 * 60_000)
+    const resumed = await startOrder(
+      { ...w.deps, now: () => resumedAt },
+      (await loadDns01Row(db, w.hostnameId))!
+    )
+    assert(!('ok' in resumed))
+    assertEquals(resumed.stage, 'waiting-dns')
+    assertEquals(resumed.order?.url, started.order?.url)
+    assertEquals(w.ca.orders.length, 1)
   } finally {
     await cleanup(db, w.hostnameId)
     await endDbConnection(db)

@@ -1,4 +1,5 @@
 import { assert, assertEquals } from '@std/assert'
+import { utcMoment } from '../../../../lib/plain-time.ts'
 import { AcmeError } from '../../../../lib/acme/client.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
 import type { AcmeAuthorization } from '../../../../lib/acme/client.ts'
@@ -213,10 +214,11 @@ test('a capped start opens nothing, keeps the counts and runs the preflight agai
   assertEquals(capped.attemptTimes, ['prior'])
   assertEquals(capped.abandonedTimes.length, 10)
   assertEquals(capped.nextAttemptAt, new Date(NOW.getTime() + HOUR).toISOString())
-  assertEquals(capped.lastError?.cause, 'dns-lookup')
+  assertEquals(capped.lastError?.cause, 'order-cap')
   // The oldest of the ten (20 hours ago) frees the cap four hours from now.
-  const freeAt = new Date(NOW.getTime() + 4 * HOUR).toISOString()
+  const freeAt = utcMoment(new Date(NOW.getTime() + 4 * HOUR))
   assert(capped.lastError?.detail.includes(freeAt), capped.lastError?.detail)
+  assertEquals(capped.lastError?.detail.includes('T04:00'), false)
   assert(capped.lastError?.detail.includes('Retry'))
 })
 

@@ -739,7 +739,7 @@ type CarriedAcme = Pick<
 
 /**
  * Attempt state survives a rewrite only while the source stays the same
- * issuing source. A `acme-dns-01` row also keeps its issued pair and order state:
+ * issuing source. An `acme-dns-01` row also keeps its issued pair and order state:
  * both are owned by the control plane, never taken from a request body.
  */
 function carryAcme(

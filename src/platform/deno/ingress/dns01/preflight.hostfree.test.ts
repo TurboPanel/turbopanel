@@ -137,7 +137,7 @@ test('a provider that refuses the nameserver read falls back to the resolver', a
   assertEquals(result.nameservers, ['192.0.2.53', '198.51.100.53'])
 })
 
-test('no nameservers from the provider or the resolver fails and says where it looked', async () => {
+test('a lookup that failed while the provider listed none is a lookup problem', async () => {
   const { provider } = fakeProvider()
   const result = await preflightDns01({
     provider: withNameservers(provider, () => Promise.resolve([])),
@@ -149,7 +149,34 @@ test('no nameservers from the provider or the resolver fails and says where it l
   assertEquals(result.failure, {
     cause: 'dns-lookup',
     detail:
-      "No nameservers found for example.com: the DNS provider listed none, and this server's resolver returned no NS records.",
+      "Could not look up the nameservers of example.com: the DNS provider or this server's resolver did not answer.",
+  })
+})
+
+test('a provider read that failed is a lookup problem even when the resolver lists none', async () => {
+  const { provider } = fakeProvider()
+  const result = await preflightDns01({
+    provider: withNameservers(provider, () => Promise.reject(new Error('timed out'))),
+    dns: { ...fakeDns(), ns: () => Promise.resolve([]) },
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.failure?.cause, 'dns-lookup')
+})
+
+test('a zone that both the provider and the resolver say has no nameservers is its own cause', async () => {
+  const { provider } = fakeProvider()
+  const result = await preflightDns01({
+    provider: withNameservers(provider, () => Promise.resolve([])),
+    dns: { ...fakeDns(), ns: () => Promise.resolve([]) },
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.ok, false)
+  assertEquals(result.failure, {
+    cause: 'no-nameservers',
+    detail:
+      "The example.com zone lists no nameservers: the DNS provider listed none, and this server's resolver found no NS records. Check that the zone is delegated to its DNS provider.",
   })
 })
 

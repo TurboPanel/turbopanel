@@ -18,6 +18,9 @@ import { requireServerOwnerContext } from './owner-context.ts'
 
 export const COLOCATED_REPAIR_PATH = '/servers/:id/colocated-repair'
 
+/** After a press reaches the repair, the same server's next press waits this long. */
+export const COLOCATED_REPAIR_COOLDOWN_MS = 60_000
+
 /** Plain messages for each refusal; the code travels beside it. */
 export const COLOCATED_REPAIR_REFUSAL_MESSAGES: Readonly<Record<ColocatedRepairRefusal, string>> = {
   not_deno: 'Repair Connection is only available on a self-hosted control plane.',
@@ -69,7 +72,27 @@ export function colocatedRepairResponse(
 export type ColocatedRepairRouteDeps = Readonly<{
   store?: (db: Db) => ColocatedRepairStore
   disk?: () => ColocatedRepairDisk
+  now?: () => number
 }>
+
+/** The refusal for a press inside the cooldown: a plain 429 with the wait, in seconds. */
+export function colocatedRepairTooSoon(retryAfterSeconds: number): Record<string, unknown> {
+  const wait = Math.max(1, Math.ceil(retryAfterSeconds))
+  return {
+    error: `Repair Connection ran a moment ago. Try again in ${wait} second${wait === 1 ? '' : 's'}.`,
+    code: 'too_soon',
+    retryAfterSeconds: wait,
+  }
+}
+
+/** What the audit row records for an outcome; never the token. */
+function auditContext(outcome: ColocatedRequestedRepairOutcome): Record<string, unknown> {
+  if (outcome.status === 'repaired') {
+    return { result: 'repaired', reasons: outcome.reasons, clearedKey: outcome.clearedKey }
+  }
+  if (outcome.status === 'failed') return { result: 'failed', reason: outcome.reason }
+  return { result: 'refused', code: outcome.code }
+}
 
 /**
  * `POST /servers/:id/colocated-repair`: the owner's Repair Connection for the
@@ -88,40 +111,48 @@ export function registerServerColocatedRepairRoutes(
     throw new TypeError('session secrets are required for server co-located repair routes')
   }
   router.use(COLOCATED_REPAIR_PATH, createSessionMiddleware(opts.secrets))
+  const now = deps.now ?? Date.now
+  // Per server, in this process: the last press that reached the repair.
+  const lastRun = new Map<string, number>()
 
   router.post(COLOCATED_REPAIR_PATH, async (c: Context<AppEnv>) => {
     const ctx = await requireServerOwnerContext(c)
     if (ctx instanceof Response) return ctx
     const { db, session, organizationId, serverId } = ctx
-
-    if (opts.runtime === 'workers') {
-      const refused = colocatedRepairResponse({ status: 'refused', code: 'not_deno' })
-      return c.json(refused.body, 409)
-    }
-
-    // Always on: this replaces the server's credentials.
-    const stepUp = await requireInstanceStepUp(c, 'server.colocated_repair')
-    if (stepUp) return stepUp
-
-    const store = (deps.store ?? createColocatedRepairStore)(db)
-    const disk = (deps.disk ?? createColocatedRepairDisk)()
-    const outcome = await repairColocatedCredentialsOnRequest(store, disk, serverId)
-    const answer = colocatedRepairResponse(outcome)
-
-    if (outcome.status !== 'refused') {
-      await recordAudit(db, {
+    const audited = (outcome: ColocatedRequestedRepairOutcome) =>
+      recordAudit(db, {
         organizationId,
         actorUserId: session.userId,
         actorEmail: session.email,
         action: 'server.colocated_repair',
         targetType: 'server',
         targetId: serverId,
-        context:
-          outcome.status === 'repaired'
-            ? { result: 'repaired', reasons: outcome.reasons, clearedKey: outcome.clearedKey }
-            : { result: 'failed', reason: outcome.reason },
+        context: auditContext(outcome),
       })
+
+    if (opts.runtime === 'workers') {
+      const outcome = { status: 'refused', code: 'not_deno' } as const
+      await audited(outcome)
+      return c.json(colocatedRepairResponse(outcome).body, 409)
     }
+
+    const waitMs = (lastRun.get(serverId) ?? -Infinity) + COLOCATED_REPAIR_COOLDOWN_MS - now()
+    if (waitMs > 0) {
+      const body = colocatedRepairTooSoon(waitMs / 1000)
+      c.header('Retry-After', String(body.retryAfterSeconds))
+      return c.json(body, 429)
+    }
+
+    // Always on: this replaces the server's credentials.
+    const stepUp = await requireInstanceStepUp(c, 'server.colocated_repair')
+    if (stepUp) return stepUp
+
+    lastRun.set(serverId, now())
+    const store = (deps.store ?? createColocatedRepairStore)(db)
+    const disk = (deps.disk ?? createColocatedRepairDisk)()
+    const outcome = await repairColocatedCredentialsOnRequest(store, disk, serverId)
+    await audited(outcome)
+    const answer = colocatedRepairResponse(outcome)
     return c.json(answer.body, answer.status)
   })
 }

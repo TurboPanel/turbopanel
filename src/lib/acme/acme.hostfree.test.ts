@@ -263,6 +263,33 @@ test('an authorization that will not be answered is deactivated', async () => {
   assertEquals((await acme.getOrder(order.url)).status, 'invalid')
 })
 
+test('an answered authorization still being validated can be deactivated', async () => {
+  const ca = createFakeCa({ txt: () => [], holdValidation: true })
+  const acme = await client(ca)
+  await acme.ensureAccount()
+  const order = await acme.newOrder(['example.com'])
+  const url = order.authorizations[0]!
+  const authz = await acme.getAuthorization(url)
+  await acme.answerChallenge(authz.challenges[0]!.url)
+  assertEquals((await acme.getAuthorization(url)).status, 'pending')
+  assertEquals((await acme.deactivateAuthorization(url)).status, 'deactivated')
+  assertEquals(ca.deactivated, [url.split('/').pop()])
+})
+
+test('an authorization that already failed cannot be deactivated', async () => {
+  const ca = createFakeCa({ txt: () => [] })
+  const acme = await client(ca)
+  await acme.ensureAccount()
+  const order = await acme.newOrder(['example.com'])
+  const url = order.authorizations[0]!
+  const authz = await acme.getAuthorization(url)
+  await acme.answerChallenge(authz.challenges[0]!.url)
+  assertEquals((await acme.getAuthorization(url)).status, 'invalid')
+  const err = await assertRejects(() => acme.deactivateAuthorization(url), AcmeError)
+  assertEquals(err.code, 'malformed')
+  assertEquals(ca.deactivated, [])
+})
+
 test('a refused deactivation is a coded error', async () => {
   const ca = createFakeCa({ txt: () => [], refuseDeactivation: true })
   const acme = await client(ca)

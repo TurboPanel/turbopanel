@@ -30,8 +30,10 @@ import type {
   ColocatedSeat,
 } from '../authn/colocated-self-repair.ts'
 import {
+  COLOCATED_REPAIR_COOLDOWN_MS,
   COLOCATED_REPAIR_REFUSAL_MESSAGES,
   colocatedRepairResponse,
+  colocatedRepairTooSoon,
   registerServerColocatedRepairRoutes,
 } from './colocated-repair-routes.ts'
 
@@ -68,6 +70,8 @@ type Fixture = {
   stepUpDone?: boolean
   revoked?: boolean
   write?: boolean
+  /** The route's clock, in ms; tests move it to step past the cooldown. */
+  clock?: { at: number }
 }
 
 function fakeRepair(fx: Fixture) {
@@ -159,7 +163,11 @@ async function buildApp(fx: Fixture = {}) {
   registerServerColocatedRepairRoutes(
     app,
     { secrets, runtime: fx.runtime ?? 'deno', signupEnvOverride: undefined },
-    { store: () => repair.store, disk: () => repair.disk }
+    {
+      store: () => repair.store,
+      disk: () => repair.disk,
+      now: () => fx.clock?.at ?? Date.parse(NOW),
+    }
   )
   const headers = {
     Cookie: `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`,
@@ -221,7 +229,44 @@ test('repair: another server is refused with a plain message', async () => {
   assertEquals(body.code, 'not_colocated_server')
   assertEquals(body.error, COLOCATED_REPAIR_REFUSAL_MESSAGES.not_colocated_server)
   assertEquals(events, [])
-  assertEquals(db.rows(audit).length, 0)
+  // A refused attempt is audited too, with the refusal code.
+  const rows = db.rows(audit)
+  assertEquals(rows.length, 1)
+  assertEquals(rows[0]?.targetId, OTHER)
+  assertEquals(rows[0]?.context, { result: 'refused', code: 'not_colocated_server' })
+})
+
+test('repair: a refusal on High Availability is audited', async () => {
+  const { db, post } = await buildApp({ runtime: 'workers', stepUpDone: true })
+  assertEquals((await post(COLOCATED)).status, 409)
+  assertEquals(db.rows(audit)[0]?.context, { result: 'refused', code: 'not_deno' })
+})
+
+test('repair: a second press on the same server inside the cooldown is a plain 429', async () => {
+  const clock = { at: Date.parse(NOW) }
+  const { db, post, events } = await buildApp({ stepUpDone: true, clock })
+  assertEquals((await post(COLOCATED)).status, 200)
+  clock.at += 20_000
+  const again = await post(COLOCATED)
+  assertEquals(again.status, 429)
+  assertEquals(again.headers.get('Retry-After'), '40')
+  assertEquals(await again.json(), colocatedRepairTooSoon(40))
+  // Nothing ran the second time, and only the press that ran is audited.
+  assertEquals(events, ['lock', 'rotate', 'clear:key-stored'])
+  assertEquals(db.rows(audit).length, 1)
+  // Another server is not held back by this one's cooldown.
+  assertEquals((await post(OTHER)).status, 409)
+  clock.at += COLOCATED_REPAIR_COOLDOWN_MS
+  assertEquals((await post(COLOCATED)).status, 200)
+})
+
+test('the cooldown message says how long to wait', () => {
+  assertEquals(colocatedRepairTooSoon(0.2), {
+    error: 'Repair Connection ran a moment ago. Try again in 1 second.',
+    code: 'too_soon',
+    retryAfterSeconds: 1,
+  })
+  assertEquals(colocatedRepairTooSoon(59.5).retryAfterSeconds, 60)
 })
 
 test('repair: a revoked key is refused and nothing is written', async () => {

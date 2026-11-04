@@ -6,6 +6,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
 import { listIngressCapabilities } from './capabilities.ts'
+import { IngressRemoveRefused } from './provider.ts'
 import { auditInstance, type IngressAdminDeps, notFound, routeServices } from './route-context.ts'
 import {
   applyIngress,
@@ -70,7 +71,13 @@ function registerHostnameWriteRoutes(admin: Hono<AppEnv>, deps: IngressAdminDeps
   admin.post('/instance/ingress/hostnames/:id/remove', deps.rootOnly, async (c) => {
     const ready = routeServices(c, deps)
     if (ready instanceof Response) return ready
-    const removed = await removeIngress(ready.db, c.req.param('id'), ready.service)
+    let removed: boolean
+    try {
+      removed = await removeIngress(ready.db, c.req.param('id'), ready.service)
+    } catch (err) {
+      if (!(err instanceof IngressRemoveRefused)) throw err
+      return c.json({ ok: false, cause: err.code, error: err.message }, 422)
+    }
     if (!removed) return notFound(c)
     await auditInstance(c, ready.db, 'instance.hostname_ingress.removed', c.req.param('id'))
     return c.json({ ok: true })

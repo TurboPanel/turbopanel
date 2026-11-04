@@ -1976,7 +1976,7 @@ const serverBasePaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Repair the connection of the server this control plane runs on',
       description:
-        "Self-hosted only (409 `not_deno` on High Availability). Owner only, always behind step-up re-authentication (403 `reauth_required`, action `server.colocated_repair`), audited as `server.colocated_repair`. For the server this control plane runs on, whose daemon is refused with an invalid license or an already registered key: issues a new token on the existing co-located license (same license, same server; no server is created), clears this server's stored daemon key when the daemon no longer holds it, then writes the daemon's server id, license id and license token files, so the daemon enrolls the same server again. A revoked key is never touched (409 `daemon_key_revoked`). Any other server is refused (409 `not_colocated_server`). The token is never returned or logged.",
+        "Self-hosted only (409 `not_deno` on High Availability). Owner only, always behind step-up re-authentication (403 `reauth_required`, action `server.colocated_repair`), audited as `server.colocated_repair`. For the server this control plane runs on, whose daemon is refused with an invalid license or an already registered key: issues a new token on the existing co-located license (same license, same server; no server is created), clears this server's stored daemon key when the daemon no longer holds it, then writes the daemon's server id, license id and license token files, so the daemon enrolls the same server again. A revoked key is never touched (409 `daemon_key_revoked`). Any other server is refused (409 `not_colocated_server`). Refusals are audited too (`result: refused` with the code). A second press on the same server within a minute of one that ran is refused with 429 `too_soon` and `retryAfterSeconds` (also in `Retry-After`). The token is never returned or logged.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -2009,6 +2009,23 @@ const serverBasePaths: Record<string, unknown> = {
           description: 'Not the organization owner, or step-up required (`reauth_required`)',
         },
         '404': { description: 'Server not found in this organization' },
+        '429': {
+          description:
+            'Pressed again within a minute of a repair that ran on this server; nothing was changed.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error', 'code', 'retryAfterSeconds'],
+                properties: {
+                  error: { type: 'string' },
+                  code: { type: 'string', enum: ['too_soon'] },
+                  retryAfterSeconds: { type: 'integer', minimum: 1 },
+                },
+              },
+            },
+          },
+        },
         '409': {
           description: 'Refused; nothing was changed. `error` is a plain message.',
           content: {

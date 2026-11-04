@@ -903,6 +903,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       }
     },
     async runCleanup() {
+      // One console link per tick, read the first time a mail sweep needs it.
+      let tickEmail: Promise<EmitEmail> | null = null
+      const email = () => (tickEmail ??= consoleEmail())
       // Workers parity (offline-sweep cron): bounded cleanup of expired
       // `dispatch` failure-retention payloads on the process-long db.
       await runCleanupPhase('command dispatch sweep', () =>
@@ -930,7 +933,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // folders that became orphans since the last tick, once per orphan.
       await runCleanupPhase('orphan folder alert sweep', async () =>
         alertNewOrphanFolders(db, dataEncryptionSecrets, {
-          email: await consoleEmail(),
+          email: await email(),
         })
       )
       // Workers parity (offline-sweep cron): resend notification deliveries
@@ -938,7 +941,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       await runCleanupPhase('notification retry sweep', async () =>
         retryDueDeliveries(db, dataEncryptionSecrets, {
           allowPrivateTargets: true,
-          email: await consoleEmail(),
+          email: await email(),
         })
       )
       // Workers parity (offline-sweep cron): one summary email per channel
@@ -947,7 +950,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         sendDueDigests(db, {
           secrets: dataEncryptionSecrets,
           allowPrivateTargets: true,
-          email: await consoleEmail(),
+          email: await email(),
         })
       )
       // Workers parity (offline-sweep cron): bounded removal of command

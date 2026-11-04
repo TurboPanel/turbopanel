@@ -97,9 +97,15 @@ High Availability (Workers) must not contain any of it.
   name before one is created. Before writing routes, Connect reads the
   tunnel (`config_src`, falling back to the deprecated `remote_config`) and
   refuses a locally managed one (`config_src: local`: routes live in a file on
-  the connector) before anything is written. A configuration read that answers
-  404 (a remotely managed tunnel that never had one) is an empty configuration
-  (`CloudflareClient.getConfiguration`), for apply, remove and the edge view. Every tunnel name on the account is rebuilt into
+  the connector) before anything is written. Disconnect checks the same before
+  it rewrites the routes of a tunnel that keeps other names (or an adopted
+  one): the provider throws `IngressRemoveRefused` and the remove route answers
+  422 `{ ok: false, cause: 'tunnel-locally-managed', error }`, with nothing
+  changed and the stored state kept. A configuration read that answers 404
+  with Cloudflare's "Configuration for tunnel not found" (a remotely managed
+  tunnel that never had one) is an empty configuration
+  (`CloudflareClient.getConfiguration`), for apply, remove and the edge view;
+  any other 404 (the tunnel itself is gone) stays an error. Every tunnel name on the account is rebuilt into
   the ingress list on each apply and remove, all to `https://127.0.0.1:8443`
   with `originServerName` and `noTLSVerify` on the loopback hop, and no
   `httpHostHeader`: the visitor's Host (with its port) must reach Caddy, whose
@@ -173,7 +179,11 @@ High Availability (Workers) must not contain any of it.
   for Retry; every cause counts toward that except `dns-lookup`. `dns-lookup`
   (no nameserver address found in preflight, or no authoritative server
   reachable while waiting for the record) is this host's problem, not the
-  authority's refusal: it backs off 1, 5, 15, 60 minutes, then hourly
+  authority's refusal. When both the provider and this host's resolver answer
+  that the zone lists no nameservers (an empty list, or NotFound from the
+  resolver, with neither read failing), the cause is `no-nameservers` instead:
+  the zone needs fixing, so it counts like any other cause. A `dns-lookup`
+  backs off 1, 5, 15, 60 minutes, then hourly
   (`DNS01_LOOKUP_BACKOFF_MS`, counted in `lookupFailures`), never reaches
   `failed` and alerts only from the third in a row. A preflight lookup
   failure asked the authority nothing, so it does not use the hourly start
@@ -188,19 +198,35 @@ High Availability (Workers) must not contain any of it.
   start runs the preflight and picks it up again (`resumeKept`) while its
   authorization is still pending, its challenge unanswered and it has more
   than `DNS01_RESUME_MARGIN_MS` (2 hours) left (`canResume`), restarting the
-  record wait with the lookup count kept. Any other way an unanswered order
+  record wait with the lookup count kept. Only a definite answer about the
+  authorization (a 4xx other than a rate limit) gives a kept order up; a read
+  that gets no answer, a 5xx or a rate limit records that failure and keeps
+  the order for the next start, without using the hourly start budget. Any other way an unanswered order
   ends (record not visible after `TXT_WAIT_MS`, a failed challenge answer, an
   error after `newOrder`, a non-lookup preflight failure with a kept order, a
   kept order that cannot be picked up, the validation timeout) deactivates its
   authorization (RFC 8555 §7.5.2, `AcmeClient.deactivateAuthorization`) and
   adds the time to `abandonedTimes`. Deactivation is best effort: a failure is
   logged without detail and the stored cause stays. An `account-error` skips
-  it (the account is gone, and a new client would register another). After
+  it (the account is gone, and a new client would register another). A kept
+  order given up before a new order opens is given up once: a failure of the
+  new order is recorded on the row without it. The fake authority in tests
+  (`src/lib/acme/fake-ca.test.support.ts`) accepts deactivating a pending or valid
+  authorization, answered or not, as real ones do. After
   `DNS01_MAX_ABANDONED_PER_DAY` (10) in a rolling day the name opens no new
-  order: the preflight still runs hourly and `lastError` says when the cap
-  frees; Retry clears it. `abandonedTimes` is additive JSON (missing reads as
-  empty). A kept order on a hostname that is removed lapses at the authority
-  on its own.
+  order: the preflight still runs hourly, `lastError` (cause `order-cap`)
+  says when the cap frees, and the operator gets one `certificate.expiring`
+  `failed` alert for it; Retry clears it. `abandonedTimes` is additive JSON
+  (missing reads as empty).
+- **Removed or re-sourced names leave DNS-01 leftovers.** Removing a hostname,
+  or switching it away from `acme-dns-01`, does not touch a kept order: its
+  pending authorization stays at the authority until it lapses on its own,
+  and its `_acme-challenge` TXT record stays in the zone until someone
+  deletes it in the DNS provider. Both are harmless, but the record is
+  visible in the zone.
+- **Times in refusals** (a Retry paused by the authority, the hourly start
+  budget, the daily order cap) read in words (`src/lib/plain-time.ts`: "about 2
+  hours", "Nov 1, 2026, 14:00 UTC"), never as a raw timestamp.
 - **After failures.** The last valid certificate keeps serving until it expires; at
   expiry the tick pushes the Platform CA fallback once. Alerts use the one
   instance event `certificate.expiring`: `kind: failed` once per cause, then a
