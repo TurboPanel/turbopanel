@@ -43,7 +43,14 @@
     }
   ],
   "queues": {
-    "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "dev-daemon-commands" }],
+    "producers": [
+      { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "dev-daemon-commands" },
+      // System mail (src/features/email/workers-mail-queue.ts). The consumer's
+      // max_retries must cover the sign-in mail schedule (5 retries); the code
+      // dead-letters to TURBOPANEL_EMAIL_DEAD_QUEUE itself before that.
+      { "binding": "TURBOPANEL_EMAIL_QUEUE", "queue": "dev-system-email" },
+      { "binding": "TURBOPANEL_EMAIL_DEAD_QUEUE", "queue": "dev-system-email-dlq" }
+    ],
     "consumers": [
       {
         "queue": "dev-daemon-commands",
@@ -51,6 +58,14 @@
         "max_batch_size": 1,
         "max_batch_timeout": 0,
         "max_retries": 3
+      },
+      {
+        "queue": "dev-system-email",
+        "dead_letter_queue": "dev-system-email-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_retries": 6,
+        "max_concurrency": 2
       }
     ]
   },
@@ -194,7 +209,9 @@
       "name": "testing-instance",
       "queues": {
         "producers": [
-          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "testing-daemon-commands" }
+          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "testing-daemon-commands" },
+          { "binding": "TURBOPANEL_EMAIL_QUEUE", "queue": "testing-system-email" },
+          { "binding": "TURBOPANEL_EMAIL_DEAD_QUEUE", "queue": "testing-system-email-dlq" }
         ],
         "consumers": [
           {
@@ -203,6 +220,14 @@
             "max_batch_size": 1,
             "max_batch_timeout": 0,
             "max_retries": 3
+          },
+          {
+            "queue": "testing-system-email",
+            "dead_letter_queue": "testing-system-email-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 1,
+            "max_retries": 6,
+            "max_concurrency": 2
           }
         ]
       },
@@ -366,7 +391,9 @@
       "name": "staging-instance",
       "queues": {
         "producers": [
-          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" }
+          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" },
+          { "binding": "TURBOPANEL_EMAIL_QUEUE", "queue": "staging-system-email" },
+          { "binding": "TURBOPANEL_EMAIL_DEAD_QUEUE", "queue": "staging-system-email-dlq" }
         ],
         "consumers": [
           {
@@ -375,6 +402,14 @@
             "max_batch_size": 1,
             "max_batch_timeout": 0,
             "max_retries": 3
+          },
+          {
+            "queue": "staging-system-email",
+            "dead_letter_queue": "staging-system-email-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 1,
+            "max_retries": 6,
+            "max_concurrency": 2
           }
         ]
       },
@@ -507,7 +542,11 @@
     "live": {
       "name": "instance",
       "queues": {
-        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "daemon-commands" }],
+        "producers": [
+          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "daemon-commands" },
+          { "binding": "TURBOPANEL_EMAIL_QUEUE", "queue": "system-email" },
+          { "binding": "TURBOPANEL_EMAIL_DEAD_QUEUE", "queue": "system-email-dlq" }
+        ],
         "consumers": [
           {
             "queue": "daemon-commands",
@@ -515,6 +554,14 @@
             "max_batch_size": 1,
             "max_batch_timeout": 0,
             "max_retries": 3
+          },
+          {
+            "queue": "system-email",
+            "dead_letter_queue": "system-email-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 1,
+            "max_retries": 6,
+            "max_concurrency": 2
           }
         ]
       },
