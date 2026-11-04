@@ -1,5 +1,6 @@
 import type { Db } from '../../db/connection.ts'
 import type {
+  CellEnqueueOptions,
   ClearUpdateStatusOptions,
   CellDiagnostics,
   DaemonCell,
@@ -231,7 +232,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
 
   enqueue(
     outbound: DaemonOutboundEnvelope,
-    opts?: { ttlSeconds?: number }
+    opts?: CellEnqueueOptions
   ): Promise<PendingRequestRecord> {
     return this.#rpc('/rpc/enqueue', {
       serverId: this.#serverId,

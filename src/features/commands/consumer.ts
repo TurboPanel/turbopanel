@@ -12,7 +12,12 @@ import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
-import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
+import type {
+  CellEnqueueOptions,
+  DaemonCell,
+  DaemonCellRegistry,
+  PendingRequestRecord,
+} from '../../contracts/cell.ts'
 import { generateDeliveryId } from '../../contracts/cell-protocol.ts'
 import { resultSummaryForPersist } from './result-summary.ts'
 import { getResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
@@ -557,7 +562,7 @@ async function markDispatching(
   const turn = await claimServerTurn(db, {
     commandId: record.id,
     serverId: envelope.serverId,
-    type: envelope.type,
+    type: record.type as CommandType,
     attempts: record.attempts,
   })
   if (turn === 'busy') throw new ServerBusyError(envelope.serverId)
@@ -695,6 +700,35 @@ export async function awaitOutcomeWithAckDeadline(
   }
 }
 
+/**
+ * How long one run of the consumer waits on a non-deploy command before it
+ * hands the wait back to the queue (and the next run picks it up), kept under
+ * the Workers queue consumer's wall-clock limit of about 15 minutes. Deploys
+ * have their own, shorter hold (`DEPLOY_QUEUE_HOLD_MS`).
+ */
+export const COMMAND_WAIT_HOLD_MS = 10 * 60_000
+
+/** Extra life a command's request keeps past its wait budget, so a late result still finds it. */
+const COMMAND_REQUEST_MARGIN_SECONDS = 15 * 60
+
+/**
+ * The request record's lifetime for a command. A deploy may wait hours for
+ * the server, so its request outlives the default five minutes from the
+ * start. Any other command keeps the default to be delivered and acknowledged
+ * (an undelivered one should not reach a server long after it was given up
+ * on), then, once the daemon has it, its whole budget plus a margin: a
+ * 30-minute backup's record, and so its result, must outlive the backup.
+ */
+export function commandRequestLifetime(record: {
+  type: string
+  payload?: unknown
+}): CellEnqueueOptions {
+  if (record.type === 'environment.deploy') return { ttlSeconds: DEPLOY_REQUEST_TTL_SECONDS }
+  return {
+    ackedTtlSeconds: Math.ceil(commandWaitMs(record) / 1000) + COMMAND_REQUEST_MARGIN_SECONDS,
+  }
+}
+
 async function enqueueAndAwaitOutcome(
   db: Db,
   registry: DaemonCellRegistry,
@@ -713,11 +747,7 @@ async function enqueueAndAwaitOutcome(
   }
 
   const cell = registry.getCell(envelope.serverId)
-  // A deploy may wait hours for the server, so its request must outlive the default five minutes.
-  await cell.enqueue(
-    outbound,
-    record.type === 'environment.deploy' ? { ttlSeconds: DEPLOY_REQUEST_TTL_SECONDS } : undefined
-  )
+  await cell.enqueue(outbound, commandRequestLifetime(record))
   commandConsumerTrace('dispatch-enqueued', {
     commandId: record.id,
     commandType: record.type,
@@ -735,11 +765,59 @@ async function enqueueAndAwaitOutcome(
 }
 
 /**
+ * Wait for a non-deploy command's result in holds of at most
+ * {@link COMMAND_WAIT_HOLD_MS}, counted against its budget from `sentAt`.
+ * When the budget is not used up after a hold and its request is still live,
+ * the message goes back on the queue and this run lets go (`null`, nothing
+ * settled); the next run resumes the wait on the same request
+ * (`resumeSentWait`) instead of sending the command again. Without a usable
+ * queue the whole budget is waited in one go, as before.
+ */
+async function awaitWithHandOff(
+  db: Db,
+  cell: DaemonCell,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps: CommandConsumerDeps | undefined,
+  sentAt: string,
+  resumed: boolean
+): Promise<PendingRequestRecord | null> {
+  const sentMs = Date.parse(sentAt)
+  const startMs = Number.isFinite(sentMs) ? sentMs : Date.now()
+  const leftMs = Math.max(0, startMs + commandWaitMs(record) - Date.now())
+  const queue = deps?.commandQueue
+  const canHandOff = queue !== undefined && !isNoopCommandQueue(queue)
+  const holdMs = canHandOff ? Math.min(leftMs, COMMAND_WAIT_HOLD_MS) : leftMs
+  // A wait picked up again has been through the ack check already.
+  const pending = resumed
+    ? await cell.waitForRequest(record.id, holdMs)
+    : await awaitOutcomeWithAckDeadline(cell, record.id, holdMs, COMMAND_ACK_DEADLINE_MS)
+  if (pending) return pending
+  if (canHandOff && leftMs > holdMs) {
+    const live = await cell.getRequest(record.id)
+    if (live && (live.status === 'queued' || live.status === 'sent' || live.status === 'acked')) {
+      // Not a failure: the next run starts a fresh retry count.
+      await queue.enqueue({ ...envelope, attempt: 1 })
+      commandConsumerTrace('dispatch-result', {
+        commandId: record.id,
+        commandType: record.type,
+        serverId: envelope.serverId,
+        resultStatus: 'handed_off',
+      })
+      return null
+    }
+    if (live && (live.status === 'done' || live.status === 'failed')) return live
+  }
+  await settleUnansweredCommand(db, cell, record, envelope, deps, undefined)
+  return null
+}
+
+/**
  * Wait for what the server reports. A deploy has two clocks (see
  * `deploy-wait.ts`): the run cap counts from when the server starts it, and a
  * deploy that has not started is not timed out for being queued. When it is
  * still waiting after one hold, the message goes back on the queue and this
- * run lets go; the next run picks the wait up (`resumeDeployWait`).
+ * run lets go; the next run picks the wait up (`resumeSentWait`).
  */
 async function awaitCommandOutcome(
   db: Db,
@@ -755,6 +833,9 @@ async function awaitCommandOutcome(
     record.type === 'environment.deploy'
       ? await makeDeployWaiter(db, record, envelope.serverId, sentAt, deps)
       : undefined
+  if (!waiter) {
+    return awaitWithHandOff(db, cell, record, envelope, deps, sentAt, resumed)
+  }
 
   // A wait picked up again has been through the ack check already.
   const pending =
@@ -859,17 +940,26 @@ async function settleUnansweredCommand(
  * request that is already on the server instead of sending it twice.
  * `null` when there is nothing to resume.
  */
-async function resumeDeployWait(
+async function resumeSentWait(
   db: Db,
   registry: DaemonCellRegistry,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   deps?: CommandConsumerDeps
 ): Promise<{ pending: PendingRequestRecord | null } | null> {
-  if (record.type !== 'environment.deploy' || record.sentAt === null) return null
+  if (record.sentAt === null) return null
   if (!['sent', 'acked', 'running'].includes(record.status)) return null
   const cell = registry.getCell(envelope.serverId)
   const existing = await cell.getRequest(record.id)
+  if (record.type !== 'environment.deploy') {
+    // A long command whose wait was handed back (or whose consumer died
+    // mid-wait): keep waiting on the request already on the server rather than
+    // sending it twice. With its request gone it is sent again, as before.
+    if (existing === null || existing.status === 'expired') return null
+    return {
+      pending: await awaitCommandOutcome(db, registry, record, envelope, deps, record.sentAt, true),
+    }
+  }
   if (existing === null || existing.status === 'expired') {
     // The deploy may already be running on the server, so it is never sent again:
     // with its request gone no result can reach it, and it is given up on.
@@ -3832,9 +3922,17 @@ export async function processCommandEnvelope(
 
   if (await failSupersededReseed(db, record)) return
 
-  const resumed = await resumeDeployWait(db, registry, record, envelope, deps)
+  const resumed = await resumeSentWait(db, registry, record, envelope, deps)
   if (resumed !== null) {
-    if (resumed.pending) await applyPendingOutcome(db, record, envelope, resumed.pending, deps)
+    if (resumed.pending) {
+      await applyPendingOutcome(
+        db,
+        record,
+        envelope,
+        resumed.pending,
+        deps ? { ...deps, registry } : deps
+      )
+    }
     return
   }
 
