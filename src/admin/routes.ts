@@ -23,6 +23,7 @@ import type { MailDeadLetterStore } from '../features/email/smtp/dead-letter-rep
 import { type EmailDeliveryStatus, emailDeliveryState } from '../features/email/delivery-status.ts'
 import { isNoopEmailQueue } from '../features/email/noop-queue.ts'
 import { getEmailQueue } from '../features/email/types.ts'
+import { countEmailDeadLetters } from '../features/email/dead-letter-tally.ts'
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
@@ -162,6 +163,17 @@ async function reconcilePlatformCaTrustAfterApply(
   const actorId = c.get('session')?.userId
   if (!commandQueue || !actorId) return
   await enqueuePlatformCaTrustReconcileBestEffort({ db, commandQueue, actorId, readBundle })
+}
+
+/** Mail jobs waiting in the dead-letter queue, or `null` when this edition cannot tell. */
+async function readDeadLetterCount(
+  store: MailDeadLetterStore | undefined,
+  runtime: 'deno' | 'workers',
+  db: NonNullable<ReturnType<typeof getDb>>
+): Promise<number | null> {
+  if (store) return (await store.list(1).catch(() => null))?.total ?? null
+  if (runtime === 'workers') return await countEmailDeadLetters(db).catch(() => null)
+  return null
 }
 
 /**
@@ -462,11 +474,10 @@ export function registerAdminRoutes(
         runtime,
         queueUnavailable: isNoopEmailQueue(getEmailQueue(c)),
       }),
-      // Only the self-hosted broker can be counted from here; a broker that
-      // cannot be reached leaves the count unknown rather than failing the page.
-      deadLetters: opts.mailDeadLetters
-        ? ((await opts.mailDeadLetters.list(1).catch(() => null))?.total ?? null)
-        : null,
+      // Self-hosted counts its broker's dead-letter queue; High Availability
+      // reads the tally its mail consumer keeps (`dead-letter-tally.ts`). A
+      // count that cannot be read is unknown rather than failing the page.
+      deadLetters: await readDeadLetterCount(opts.mailDeadLetters, runtime, db),
     }
     return c.json({ settings: emailSettingsToApiShape(resolved), delivery })
   })
