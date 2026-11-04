@@ -178,6 +178,35 @@ describe('workers.ts entry handlers', () => {
     expect(takeLastOfflineSweepScheduledTimeForTests()).toBe(scheduledTime)
   }, 30_000)
 
+  it('queue sends the mail queue to the mail consumer, not the command consumer', async () => {
+    setWorkersDbFactoryForTests(() => undefined)
+    const msg = fakeQueueMessage({
+      v: 1,
+      job: {
+        type: 'email-otp',
+        to: 'ops@example.com',
+        from: 'noreply@example.com',
+        otp: '123456',
+        otpType: 'sign-in',
+      },
+    })
+    const batch = {
+      ...fakeMessageBatch([msg]),
+      queue: 'testing-system-email',
+    } as unknown as MessageBatch<unknown>
+    // No mail provider in the test env: the job waits and is retried later
+    // (never treated as a broken command envelope).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await workers.queue(batch, workersTestEnv())
+      expect(msg.retried).toBe(true)
+      expect(msg.acked).toBe(false)
+      expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('command.permanent_failure')
+    } finally {
+      errorSpy.mockRestore()
+    }
+  }, 30_000)
+
   it('queue retries the batch when no DB client is available', async () => {
     setWorkersDbFactoryForTests(() => undefined)
     const batch = fakeMessageBatch([fakeQueueMessage({ commandId: 'cmd-1' })])

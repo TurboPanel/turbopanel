@@ -6,6 +6,7 @@ import { sendMailpitJob } from '../mailpit/send.ts'
 import { createNoopQueue } from '../noop-queue.ts'
 import type { EmailJob, EmailQueue } from '../types.ts'
 import { sendMailgunJob } from './send.ts'
+import { EmailSendError } from '../workers-mail-queue.ts'
 
 type WorkersMailgunQueueOptions = {
   apiKey: string
@@ -29,7 +30,7 @@ class WorkersMailgunQueue implements EmailQueue {
         error: outcome.error,
         permanent: outcome.permanent,
       })
-      throw new Error(outcome.error)
+      throw new EmailSendError(outcome.error, outcome.permanent)
     }
   }
 }
@@ -56,7 +57,7 @@ class WorkersMailpitQueue implements EmailQueue {
         error: outcome.error,
         permanent: outcome.permanent,
       })
-      throw new Error(outcome.error)
+      throw new EmailSendError(outcome.error, outcome.permanent)
     }
   }
 }
