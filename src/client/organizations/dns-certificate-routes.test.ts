@@ -1,28 +1,32 @@
 /**
- * The DNS-certificate routes against a real database, an in-memory authority
- * and a faked DNS host: owners and managers only, the organization's Let's
- * Encrypt switch, names and zones checked first, an order that is started,
- * carried on and reused, and nothing private in a response. Skips without
- * TURBOPANEL_DATABASE_URL.
+ * The DNS-certificate routes against a real database. The control plane no
+ * longer orders these certificates: starting, checking and retrying an order
+ * are refused for every signed-in caller, and the list still shows the
+ * certificates already made, for owners and managers of the organization only,
+ * with nothing private. Skips
+ * without TURBOPANEL_DATABASE_URL.
  */
 import { assert, assertEquals, assertStringIncludes } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
-import { audit, badge, carrier, grant, organization, secret, tls, user } from '../../db/schema.ts'
+import { audit, carrier, grant, organization, tls, user } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { createFakeCa } from '../../lib/acme/fake-ca.test.support.ts'
-import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { startDnsCertificate } from '../../features/tls/dns-certificates/issuance.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { parseOptionalTlsId } from '../hostings/routes-helpers.ts'
 import { toPublicTlsRow } from '../tls/routes-helpers.ts'
-import { registerOrganizationDnsCertificateRoutes } from './dns-certificate-routes.ts'
+import { buildDnsCertContext } from '../tls/dns-certificate-context.ts'
+import {
+  ORDERING_OFF_ERROR,
+  ORDERING_OFF_MESSAGE,
+  registerOrganizationDnsCertificateRoutes,
+} from './dns-certificate-routes.ts'
 
 /** Jest/Mocha-shaped alias so Sonar sees real tests (typescript:S2187). */
 const test = Deno.test.bind(Deno)
@@ -32,42 +36,6 @@ type Db = ReturnType<typeof createDenoDb>
 type Called = { status: number; text: string; body: Record<string, unknown> }
 
 const ACCOUNT = 'a'.repeat(32)
-const TOKEN = 'cf-dns-token-0123456789abcdefghijklmnopqrstuv'
-
-/** A DNS host that holds TXT records and answers the zone lookups. */
-function fakeProvider() {
-  const records = new Map<string, { name: string; content: string }>()
-  let n = 0
-  const handler: typeof fetch = (input, init) => {
-    const url = new URL(String(input))
-    const path = url.pathname.replace('/client/v4', '')
-    const method = init?.method ?? 'GET'
-    const ok = (result: unknown) => Promise.resolve(Response.json({ success: true, result }))
-    if (path === '/zones') return ok([{ id: 'z1', name: 'example.com', account: { id: ACCOUNT } }])
-    if (path === '/zones/z1/dns_records' && method === 'POST') {
-      const body = JSON.parse(String(init?.body)) as { name: string; content: string }
-      n += 1
-      records.set(`rec${n}`, body)
-      return ok({ id: `rec${n}` })
-    }
-    if (path.startsWith('/zones/z1/dns_records/') && method === 'DELETE') {
-      records.delete(path.split('/').pop()!)
-      return ok({ id: 'gone' })
-    }
-    if (path === '/zones/z1/dns_records') {
-      // A TXT read-back lists the records at the name, as the real host does.
-      const name = url.searchParams.get('name')
-      const wanted = url.searchParams.get('type') === 'TXT' && name
-      return ok(wanted ? [...records.values()].filter((r) => r.name === name) : [])
-    }
-    return Promise.resolve(
-      Response.json({ success: false, errors: [{ message: 'nope' }] }, { status: 404 })
-    )
-  }
-  const txt = (name: string) =>
-    [...records.values()].filter((r) => r.name === name).map((r) => r.content)
-  return { handler, records, txt }
-}
 
 type Fixture = {
   db: Db
@@ -78,7 +46,8 @@ type Fixture = {
   managerCookie: string
   memberCookie: string
   otherManagerCookie: string
-  provider: ReturnType<typeof fakeProvider>
+  /** A certificate made before ordering was turned off, in organization A. */
+  certificateId: string
 }
 
 async function insertUser(db: Db, organizationId: string, permission: string): Promise<string> {
@@ -96,10 +65,7 @@ async function insertUser(db: Db, organizationId: string, permission: string): P
   return row!.id
 }
 
-async function withFixture(
-  options: { acmeEnabled?: boolean; badge?: boolean },
-  fn: (f: Fixture) => Promise<void>
-): Promise<void> {
+async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('dns certificate route tests')
     return
@@ -108,8 +74,6 @@ async function withFixture(
   const secretsConfig = parseTestSecretsConfig('deno')
   const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const secrets = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
-  const provider = fakeProvider()
-  const ca = createFakeCa({ txt: provider.txt })
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -117,15 +81,15 @@ async function withFixture(
     c.set('dataEncryptionSecrets', secrets)
     return next()
   })
-  registerOrganizationDnsCertificateRoutes(
-    app,
-    { secrets: sessionSecrets, runtime: 'deno', signupEnvOverride: undefined },
-    { fetch: provider.handler, acmeFetch: ca.fetch, presentGraceMs: 0 }
-  )
+  registerOrganizationDnsCertificateRoutes(app, {
+    secrets: sessionSecrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   const orgs = await db
     .insert(organization)
     .values([
-      { name: 'Dns Org A', isAcmeEnabled: options.acmeEnabled ?? true },
+      { name: 'Dns Org A', isAcmeEnabled: true },
       { name: 'Dns Org B', isAcmeEnabled: true },
     ])
     .returning({ id: organization.id })
@@ -141,28 +105,14 @@ async function withFixture(
         externalAccountId: ACCOUNT,
       })
       .returning({ id: carrier.id })
-    if (options.badge !== false) {
-      const [stored] = await db
-        .insert(secret)
-        .values({
-          organizationId: orgA,
-          provider: 'carrier_badge',
-          name: 'token',
-          secretEnvelope: await encryptSecret(secrets, TOKEN),
-        })
-        .returning({ id: secret.id })
-      await db.insert(badge).values({
-        carrierId: c!.id,
-        secretId: stored!.id,
-        label: 'dns',
-        lastFour: TOKEN.slice(-4),
-        capabilities: {
-          tunnels: false,
-          dns: [{ id: 'z1', name: 'example.com' }],
-          certificates: [],
-        },
-      })
-    }
+    const started = await startDnsCertificate(buildDnsCertContext(db, { secrets }), {
+      organizationId: orgA,
+      carrierId: c!.id,
+      names: ['a.example.com'],
+      zones: [{ id: 'z1', name: 'example.com' }],
+      staging: true,
+    })
+    assertEquals(started.kind, 'created')
     const ids = {
       manager: await insertUser(db, orgA, 'organization:manage'),
       member: await insertUser(db, orgA, 'organization:read'),
@@ -182,9 +132,10 @@ async function withFixture(
       managerCookie: await cookie(ids.manager),
       memberCookie: await cookie(ids.member),
       otherManagerCookie: await cookie(ids.otherManager),
-      provider,
+      certificateId: (started as { id: string }).id,
     })
   } finally {
+    await db.delete(tls).where(inArray(tls.organizationId, [orgA, orgB]))
     await db.delete(audit).where(inArray(audit.organizationId, [orgA, orgB]))
     await db.delete(organization).where(inArray(organization.id, [orgA, orgB]))
     if (userIds.length > 0) await db.delete(user).where(inArray(user.id, userIds))
@@ -216,174 +167,80 @@ async function call(
   }
 }
 
-const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+const orderPaths = (f: Fixture, orgId: string) => [
+  `/organizations/${orgId}/dns-certificates`,
+  `/organizations/${orgId}/dns-certificates/${f.certificateId}/check`,
+  `/organizations/${orgId}/dns-certificates/${f.certificateId}/retry`,
+]
 
-test('every route refuses a request without a session, a read-only member and another organization', () =>
-  withFixture({}, async (f) => {
-    const id = crypto.randomUUID()
-    const paths: [string, string][] = [
-      ['GET', `/organizations/${f.orgA}/dns-certificates`],
-      ['POST', `/organizations/${f.orgA}/dns-certificates`],
-      ['POST', `/organizations/${f.orgA}/dns-certificates/${id}/check`],
-      ['POST', `/organizations/${f.orgA}/dns-certificates/${id}/retry`],
-    ]
-    for (const [method, path] of paths) {
-      assertEquals((await call(f, method, path, null, {})).status, 401, `${method} ${path}`)
-      assertEquals(
-        (await call(f, method, path, f.memberCookie, {})).status,
-        403,
-        `${method} ${path}`
-      )
-      assertEquals(
-        (await call(f, method, path, f.otherManagerCookie, {})).status,
-        403,
-        `${method} ${path}`
-      )
+test('every route needs a session, and the list is for the organization’s owners and managers only', () =>
+  withFixture(async (f) => {
+    const list = `/organizations/${f.orgA}/dns-certificates`
+    for (const path of [list, ...orderPaths(f, f.orgA)]) {
+      for (const method of path === list ? ['GET', 'POST'] : ['POST']) {
+        assertEquals((await call(f, method, path, null, {})).status, 401, `${method} ${path}`)
+      }
     }
+    assertEquals((await call(f, 'GET', list, f.memberCookie)).status, 403)
+    assertEquals((await call(f, 'GET', list, f.otherManagerCookie)).status, 403)
   }))
 
-test('names, the account and the organization’s Let’s Encrypt switch are checked before anything starts', () =>
-  withFixture({ acmeEnabled: false }, async (f) => {
-    const path = `/organizations/${f.orgA}/dns-certificates`
-    assertEquals(
-      (
-        await call(f, 'POST', path, f.managerCookie, {
+test('starting, checking and retrying an order are refused in plain words and change nothing', () =>
+  withFixture(async (f) => {
+    const [before] = await f.db.select().from(tls).where(eq(tls.id, f.certificateId))
+    for (const cookie of [f.managerCookie, f.memberCookie, f.otherManagerCookie]) {
+      for (const path of orderPaths(f, f.orgA)) {
+        const refused = await call(f, 'POST', path, cookie, {
           carrierId: f.carrierId,
-          names: ['bad name'],
+          names: ['b.example.com'],
         })
-      ).body.error,
-      'names_invalid'
-    )
-    assertEquals(
-      (await call(f, 'POST', path, f.managerCookie, { names: ['a.example.com'] })).body.error,
-      'carrier_invalid'
-    )
-    const off = await call(f, 'POST', path, f.managerCookie, {
-      carrierId: f.carrierId,
-      names: ['a.example.com'],
-    })
-    assertEquals([off.status, off.body.error], [403, 'lets_encrypt_not_enabled'])
-    assertEquals((await f.db.select().from(tls).where(eq(tls.organizationId, f.orgA))).length, 0)
-  }))
-
-test('a name outside the zones the tokens edit, and an account with no DNS token, are refused in plain words', () =>
-  withFixture({}, async (f) => {
-    const path = `/organizations/${f.orgA}/dns-certificates`
-    const elsewhere = await call(f, 'POST', path, f.managerCookie, {
-      carrierId: f.carrierId,
-      names: ['a.elsewhere.net'],
-    })
-    assertEquals([elsewhere.status, elsewhere.body.error], [400, 'zone_not_found'])
-    assertEquals(elsewhere.body.hostnames, ['a.elsewhere.net'])
-  }))
-
-test('an account without a DNS token cannot start an order', () =>
-  withFixture({ badge: false }, async (f) => {
-    const none = await call(
-      f,
-      'POST',
-      `/organizations/${f.orgA}/dns-certificates`,
-      f.managerCookie,
-      {
-        carrierId: f.carrierId,
-        names: ['a.example.com'],
+        assertEquals(
+          [refused.status, refused.body.error, refused.body.message],
+          [422, ORDERING_OFF_ERROR, ORDERING_OFF_MESSAGE],
+          path
+        )
       }
+    }
+    const rows = await f.db.select().from(tls).where(eq(tls.organizationId, f.orgA))
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.metadata, before!.metadata)
+    assertEquals(
+      (await f.db.select().from(audit).where(eq(audit.organizationId, f.orgA))).length,
+      0
     )
-    assertEquals([none.status, none.body.error], [400, 'no_dns_token'])
   }))
 
-test('an order is started, carried on, finished, reused, and never shows anything private', () =>
-  withFixture({}, async (f) => {
+test('the list still shows a certificate made earlier and shows nothing private', () =>
+  withFixture(async (f) => {
     const path = `/organizations/${f.orgA}/dns-certificates`
-    const started = await call(f, 'POST', path, f.managerCookie, {
-      carrierId: f.carrierId,
-      names: ['example.com', '*.example.com'],
-      staging: true,
-    })
-    assertEquals(started.status, 201, started.text)
-    const created = started.body.certificate as {
-      id: string
-      status: string
-      names: string[]
-      staging: boolean
-    }
-    assertEquals(
-      [created.status, created.staging, created.names],
-      ['pending', true, ['example.com', '*.example.com']]
-    )
-
-    // The first steps run after the answer; "check now" carries the rest.
-    let latest = created as Record<string, unknown>
-    for (let i = 0; i < 40 && latest.status !== 'ready'; i += 1) {
-      await pause(25)
-      const checked = await call(f, 'POST', `${path}/${created.id}/check`, f.managerCookie)
-      assertEquals(checked.status, 200, checked.text)
-      latest = checked.body.certificate as Record<string, unknown>
-    }
-    assertEquals(latest.status, 'ready')
-    assertEquals(latest.wildcard, true)
-    assert(typeof latest.notAfter === 'string')
-    assertEquals(f.provider.records.size, 0)
-
     const listed = await call(f, 'GET', path, f.managerCookie)
-    assertEquals((listed.body.certificates as unknown[]).length, 1)
-    for (const text of [started.text, listed.text]) {
-      assert(!text.includes(TOKEN))
-      for (const secretWord of ['accountKey', 'dnsCert', 'pendingKey', 'privateKey', 'BEGIN']) {
-        assert(!text.includes(secretWord), secretWord)
-      }
-    }
-
-    // The same names again reuse the certificate; a covered name does too.
-    const again = await call(f, 'POST', path, f.managerCookie, {
-      carrierId: f.carrierId,
-      names: ['www.example.com'],
-      staging: true,
-    })
-    assertEquals([again.status, again.body.reused], [200, true])
-    assertEquals((again.body.certificate as { id: string }).id, created.id)
-
-    // The generic library view of the row carries no private state either.
-    const [row] = await f.db.select().from(tls).where(eq(tls.id, created.id))
-    const shown = JSON.stringify(toPublicTlsRow(row as never))
-    assertStringIncludes(shown, 'dns-01')
-    assert(
-      !shown.includes('accountKey') && !shown.includes('dnsCert') && !shown.includes('records')
-    )
-
-    // A Test Certificate is named so, and cannot be pinned to a site.
-    assertStringIncludes(row!.name ?? '', 'Test Certificate')
-    const jsonContext = { json: (b: unknown, status?: number) => Response.json(b, { status }) }
-    const pinned = await parseOptionalTlsId(jsonContext as never, f.db, f.orgA, created.id)
-    assertEquals(pinned.kind, 'error')
-    if (pinned.kind === 'error') {
-      assertEquals(pinned.response.status, 400)
-      const refusal = (await pinned.response.json()) as { error: string; message: string }
-      assertEquals(refusal.error, 'tls_pin_staging')
-      assertEquals(
-        refusal.message,
-        "Test certificates are only for trying out ordering. Browsers show a security warning for them, so they can't be attached to a site."
-      )
-    }
-
-    // Retry is for a certificate that gave up.
+    assertEquals(listed.status, 200, listed.text)
+    const certificates = listed.body.certificates as Record<string, unknown>[]
+    assertEquals(certificates.length, 1)
+    const shown = certificates[0]!
     assertEquals(
-      (await call(f, 'POST', `${path}/${created.id}/retry`, f.managerCookie)).status,
-      409
+      [shown.id, shown.names, shown.warning, shown.renewAt, shown.nextAttemptAt],
+      // An order left open is not said to keep working; the issued case is in the host-free test.
+      [f.certificateId, ['a.example.com'], null, null, null]
     )
-  }))
-
-test('another organization cannot see or move on a certificate', () =>
-  withFixture({}, async (f) => {
-    const path = `/organizations/${f.orgA}/dns-certificates`
-    const started = await call(f, 'POST', path, f.managerCookie, {
-      carrierId: f.carrierId,
-      names: ['a.example.com'],
-      staging: true,
-    })
-    const id = (started.body.certificate as { id: string }).id
-    const other = `/organizations/${f.orgB}/dns-certificates`
-    assertEquals((await call(f, 'GET', other, f.otherManagerCookie)).body.certificates, [])
-    assertEquals((await call(f, 'POST', `${other}/${id}/check`, f.otherManagerCookie)).status, 404)
-    assertEquals((await call(f, 'POST', `${other}/${id}/retry`, f.otherManagerCookie)).status, 404)
+    for (const secretWord of ['accountKey', 'dnsCert', 'pendingKey', 'privateKey', 'BEGIN']) {
+      assert(!listed.text.includes(secretWord), secretWord)
+    }
+    // The generic library view of the row carries no private state either.
+    const [row] = await f.db.select().from(tls).where(eq(tls.id, f.certificateId))
+    const library = JSON.stringify(toPublicTlsRow(row as never))
+    assertStringIncludes(library, 'dns-01')
+    assert(
+      !library.includes('accountKey') &&
+        !library.includes('dnsCert') &&
+        !library.includes('records')
+    )
+    // Another organization sees none of it.
+    const other = await call(
+      f,
+      'GET',
+      `/organizations/${f.orgB}/dns-certificates`,
+      f.otherManagerCookie
+    )
+    assertEquals(other.body.certificates, [])
   }))

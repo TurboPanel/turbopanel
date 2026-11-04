@@ -1,5 +1,34 @@
 # DNS-validated certificates (`src/features/tls/dns-certificates/`)
 
+## Ordering is turned off (owner decision 2026-11-04)
+
+The control plane no longer orders, renews or retries these certificates, on
+either edition. An organization certificate is ordered by the daemon on a
+server that runs the service, never by the control plane; wildcards come back
+when the daemon can order them. Until then:
+
+- `POST …/dns-certificates`, `…/:tlsId/check` and `…/:tlsId/retry` answer 422
+  `certificate_ordering_off` with a plain `message`, for anyone signed in,
+  before anything is read (`client/organizations/dns-certificate-routes.ts`).
+  The list stays, and an issued row in use says in `warning` that it will not
+  renew from the control plane (`renewAt` and `nextAttemptAt` are null).
+- The sweep on both editions (Workers offline sweep, Deno interval) runs only
+  `runDnsCertificateCleanupTick` (`cleanup.ts`): it removes the challenge
+  records the panel made and still lists, by id, through the DNS provider
+  (`records.ts`). Every listed record is a leftover now, open order or not.
+  A row whose record would not go is held an hour. It never asks the
+  certificate authority anything.
+- Certificates already issued stay in the library and keep serving until they
+  expire; they are deleted like any library certificate. An order left open
+  stays `pending` and never finishes. The stored rows and the `acme_account`
+  secrets go on wipe day; no migration.
+- `ordering-off.hostfree.test.ts` reads the import graph: `issuance.ts`,
+  `steps.ts`, `account.ts`, `sweep.ts` and `sweep-select.ts` are unreachable
+  from `src/workers.ts` and `src/deno.ts`, and `cleanup.ts` reaches nothing in
+  `src/lib/acme/`. Keep it that way: wiring any of them back in is a new owner
+  decision. The rest of this guide describes that ordering code, kept for the
+  daemon-side ordering that reuses its DNS record parts.
+
 A library certificate this panel orders itself from an ACME authority
 (Let's Encrypt), proving control of the names with a DNS challenge through the
 account that hosts the domain's DNS. The server is not involved, so it works
@@ -63,14 +92,14 @@ seconds, answer the challenges) → `validating` (poll; all valid, send the
 request) → `finalizing` (poll, download) → `issued`. Each call to
 `advanceDnsCertificate` does at most three steps and writes the result. A
 conditional update takes the row for 90 seconds, so the sweep and "check now"
-at once cannot run the same step twice (`busy`). The routes only start an order
-and report; the sweep carries it on (`sweep.ts`, wired into the Workers
-offline sweep and the Deno interval).
+at once cannot run the same step twice (`busy`). The routes used to start an order
+and report, and the sweep carried it on (`sweep.ts`); neither is wired any
+more (see the top of this guide).
 
 ## The sweep tick
 
-`runDnsCertificateSweepTick` (`sweep.ts`, `sweep-select.ts`) runs every minute
-on both editions. It picks work by due time, read out of the private state in
+`runDnsCertificateSweepTick` (`sweep.ts`, `sweep-select.ts`) is no longer
+called on either edition (only `cleanup.ts` is). When it ran, every minute, it picked work by due time, read out of the private state in
 the database with no column or index (a certificate's back-off and renewal
 time, an open order is due now; with no stored renewal time, a third of the
 lifetime before the end, as `renewAtOf` reads it). A time that cannot be read
@@ -137,8 +166,8 @@ A zone may hold someone else's `_acme-challenge` records. Only a record the
 panel made is ever removed, by the id the provider returned. Each id is written
 to `metadata.dnsCert.records` the moment the record exists, apart from the rest
 of the state, so an interrupted request still leaves a list. Records are
-removed when the order ends, succeeds or fails; the sweep removes any still
-listed after two hours, but only by id. A record is not kept for the next
+removed when the order ends, succeeds or fails; the cleanup tick now removes
+any still listed, but only by id. A record is not kept for the next
 renewal: the value depends on a fresh token the authority picks each time.
 
 If `_acme-challenge.<name>` is a CNAME, the record goes where it points (a TXT

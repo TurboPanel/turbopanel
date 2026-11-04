@@ -17,6 +17,9 @@ import { acmeDirectoryUrl } from '../../../lib/acme/directories.ts'
 import { generateAccountKeyPem, importAccountKey } from '../../../lib/acme/jws.ts'
 import { decryptSecret, encryptSecret } from '../../../lib/secrets/data-encryption.ts'
 import type { DnsCertContext } from './context.ts'
+import { safeTimestamp } from './sql-time.ts'
+
+export { safeTimestamp } from './sql-time.ts'
 
 export const ACME_ACCOUNT_SECRET_PROVIDER = 'acme_account'
 
@@ -180,12 +183,4 @@ export async function pausedAccounts(
       )
     )
   return rows.map((r) => ({ organizationId: r.organizationId, staging: r.name === 'staging' }))
-}
-
-/**
- * A text value read as a time, or the epoch when it is missing or not a time,
- * so one bad value in metadata never fails a whole query.
- */
-export function safeTimestamp(text: SQL): SQL {
-  return sql`(case when pg_input_is_valid(${text}, 'timestamptz') then (${text})::timestamptz else 'epoch'::timestamptz end)`
 }

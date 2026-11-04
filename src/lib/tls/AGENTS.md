@@ -31,7 +31,7 @@ and renewals go ahead even when Let's Encrypt publishes newer terms. The
 organization is only asked to accept the newer ones (`acmeTermsChanged` on the
 TLS settings read).
 
-**DNS-validated certificates (built).** The panel can also order a library certificate itself with a DNS challenge through the connected DNS account; see `../../features/tls/dns-certificates/AGENTS.md`. It is a normal `upload` row marked `metadata.acme.managedBy = 'panel'`, not a `lets_encrypt` row, so none of the Caddy-managed paths below apply to it.
+**DNS-validated certificates (ordering turned off).** The panel used to order a library certificate itself with a DNS challenge through the connected DNS account; it no longer orders or renews them on either edition, and the ones already issued serve until they expire; see `../../features/tls/dns-certificates/AGENTS.md`. It is a normal `upload` row marked `metadata.acme.managedBy = 'panel'`, not a `lets_encrypt` row, so none of the Caddy-managed paths below apply to it.
 
 **Issuance-failure visibility (built).** The daemon's `AcmeIssuanceObserver`
 (`turbopaneld/src/instance/acme-observe.ts`) live-probes every deployed

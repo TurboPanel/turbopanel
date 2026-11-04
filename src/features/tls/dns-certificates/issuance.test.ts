@@ -44,6 +44,7 @@ import {
 import { readDnsCertState, withDnsCertState } from './order-state.ts'
 import { renewalCertId } from '../../../lib/acme/renewal-id.ts'
 import { limitRenewalStarts, runDnsCertificateSweepTick } from './sweep.ts'
+import { runDnsCertificateCleanupTick } from './cleanup.ts'
 import { selectDueSteps } from './sweep-select.ts'
 
 /** Jest/Mocha-shaped alias so Sonar sees real tests (typescript:S2187). */
@@ -1201,4 +1202,38 @@ test('a DNS-validated certificate keeps its token from being removed until anoth
     await maintainDnsCertificate(s.ctx, id)
     const acme = (await rowOf(db, id)).metadata as { acme: { warning?: string } }
     assertEquals(acme.acme.warning, undefined)
+  }))
+
+test('the cleanup tick removes the records of an order left open and never asks the authority', () =>
+  withDb(async (db) => {
+    const s = await setup(db)
+    const issuedId = await issue(s, ['done.example.com'])
+    await makeDue(db, issuedId)
+    const before = await rowOf(db, issuedId)
+    const openId = (
+      (await startDnsCertificate(s.ctx, s.input(['open.example.com']))) as { id: string }
+    ).id
+    assertEquals(await advanceDnsCertificate(s.ctx, openId), 'waiting')
+    assertEquals(s.dns.records.size, 1)
+    const issuedBefore = s.ca.issued.length
+    let asked = 0
+    s.ctx.acmeFetch = (() => {
+      asked += 1
+      return Promise.reject(new Error('the authority must not be asked'))
+    }) as typeof fetch
+
+    tick(s.clock, DAY_MS)
+    const done = await runDnsCertificateCleanupTick(s.ctx, { organizationId: s.organizationId })
+    assertEquals([done.scanned, done.removed, done.left], [1, 1, 0])
+    assertEquals([s.dns.records.size, asked, s.ca.issued.length], [0, 0, issuedBefore])
+    const open = await rowOf(db, openId)
+    assertEquals(readDnsCertState(open.metadata)?.records, [])
+    assertEquals(open.status, 'pending')
+    // The issued certificate, due for renewal, is left exactly as it was.
+    const after = await rowOf(db, issuedId)
+    assertEquals([after.status, after.certificatePem], [before.status, before.certificatePem])
+
+    // Nothing left to tidy: a second tick looks at nothing.
+    const again = await runDnsCertificateCleanupTick(s.ctx, { organizationId: s.organizationId })
+    assertEquals([again.scanned, asked], [0, 0])
   }))

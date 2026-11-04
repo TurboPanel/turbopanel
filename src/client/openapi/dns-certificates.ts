@@ -1,11 +1,34 @@
-import { resourceErrorResponses } from './shared.ts'
+import { clientErrorJson, resourceErrorResponses } from './shared.ts'
 
 /**
- * OpenAPI for certificates this panel orders itself and proves by a DNS
- * challenge (`client/organizations/dns-certificate-routes.ts`). Owners and
- * managers only. Ordering takes minutes: a new certificate answers `pending`
- * and the periodic sweep, or "check now", moves it on.
+ * OpenAPI for certificates the panel ordered itself and proved by a DNS
+ * challenge (`client/organizations/dns-certificate-routes.ts`). The control
+ * plane no longer orders them: the three order routes answer 422
+ * `certificate_ordering_off`. The list stays, for owners and managers.
  */
+
+const ORDERING_OFF = {
+  '401': {
+    description: 'Unauthorized: no session.',
+    content: { 'application/json': { schema: clientErrorJson } },
+  },
+  '422': {
+    description:
+      'Ordering certificates from the control plane is turned off (`certificate_ordering_off`, with a plain `message`). Certificates will be ordered by the server that runs the site in a coming release.',
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          required: ['error', 'message'],
+          properties: {
+            error: { type: 'string', enum: ['certificate_ordering_off'] },
+            message: { type: 'string' },
+          },
+        },
+      },
+    },
+  },
+} as const
 
 const ORG_ID_PARAM = {
   name: 'id',
@@ -25,7 +48,7 @@ export const dnsCertificateSchemas = {
   DnsCertificate: {
     type: 'object',
     description:
-      'A library certificate ordered by TurboPanel through a DNS challenge. It is pinned to a site like any library certificate.',
+      'A library certificate ordered by TurboPanel through a DNS challenge. It is pinned to a site like any library certificate, and keeps serving until it expires: it is not renewed from the control plane.',
     properties: {
       id: { type: 'string', format: 'uuid' },
       names: { type: 'array', items: { type: 'string' } },
@@ -49,11 +72,22 @@ export const dnsCertificateSchemas = {
       warning: {
         type: 'string',
         nullable: true,
-        description: 'Something that will stop the next renewal, in plain words.',
+        description:
+          'In plain words: something wrong with the certificate, or that it will not renew from the control plane.',
       },
       attempts: { type: 'integer' },
-      nextAttemptAt: { type: 'string', format: 'date-time', nullable: true },
-      renewAt: { type: 'string', format: 'date-time', nullable: true },
+      nextAttemptAt: {
+        type: 'string',
+        format: 'date-time',
+        nullable: true,
+        description: 'Always null: nothing is tried again from the control plane.',
+      },
+      renewAt: {
+        type: 'string',
+        format: 'date-time',
+        nullable: true,
+        description: 'Always null: the certificate is not renewed from the control plane.',
+      },
       notAfter: { type: 'string', format: 'date-time', nullable: true },
       issuer: { type: 'string', nullable: true },
       createdAt: { type: 'string', format: 'date-time' },
@@ -85,20 +119,12 @@ export const dnsCertificateSchemas = {
   },
 } as const
 
-function errors(extra?: { badRequest?: boolean }) {
-  return resourceErrorResponses({
-    badRequest: extra?.badRequest,
-    notFound: true,
-  }) as Record<string, unknown>
+function errors() {
+  return resourceErrorResponses({ notFound: true }) as Record<string, unknown>
 }
 
-function ok(description: string, schema: Record<string, unknown>, status = '200') {
-  return { [status]: { description, content: { 'application/json': { schema } } } }
-}
-
-const ONE = {
-  type: 'object',
-  properties: { certificate: { $ref: '#/components/schemas/DnsCertificate' } },
+function ok(description: string, schema: Record<string, unknown>) {
+  return { '200': { description, content: { 'application/json': { schema } } } }
 }
 
 export const dnsCertificatePaths: Record<string, unknown> = {
@@ -120,53 +146,37 @@ export const dnsCertificatePaths: Record<string, unknown> = {
     },
     post: {
       tags: ['Organizations'],
-      summary: 'Order a certificate by DNS challenge',
-      description:
-        'Owners and managers only; the organization must allow Let’s Encrypt. 201 starts an order (`pending`); 200 returns a certificate that already covers the names (`reused: true`) or an order already running for them. Errors: 400 `names_invalid`, `carrier_invalid`, `no_dns_token`, `zone_not_found` (with `hostnames`), `badge_rejected`; 403 `lets_encrypt_not_enabled`; 429 `dns_certificate_limit` (10 new certificates a day); 502 `provider_unavailable`; 503 `secrets_unavailable`.',
+      summary: 'Order a certificate by DNS challenge (turned off)',
+      description: 'Always refused: the control plane no longer orders certificates.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM],
       requestBody: {
-        required: true,
+        required: false,
         content: {
           'application/json': { schema: { $ref: '#/components/schemas/DnsCertificateCreate' } },
         },
       },
-      responses: {
-        ...ok(
-          'Started',
-          { ...ONE, properties: { ...ONE.properties, reused: { type: 'boolean' } } },
-          '201'
-        ),
-        ...errors({ badRequest: true }),
-      },
+      responses: { ...ORDERING_OFF },
     },
   },
   '/api/client/v1/organizations/{id}/dns-certificates/{tlsId}/check': {
     post: {
       tags: ['Organizations'],
-      summary: 'Move an order on now',
-      description:
-        'Does the next step or two of the order and returns where it stands (`outcome`: busy, waiting, issued, failed, backoff).',
+      summary: 'Move an order on now (turned off)',
+      description: 'Always refused: the control plane no longer orders certificates.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TLS_ID_PARAM],
-      responses: {
-        ...ok('Certificate', {
-          ...ONE,
-          properties: { ...ONE.properties, outcome: { type: 'string' } },
-        }),
-        ...errors(),
-      },
+      responses: { ...ORDERING_OFF },
     },
   },
   '/api/client/v1/organizations/{id}/dns-certificates/{tlsId}/retry': {
     post: {
       tags: ['Organizations'],
-      summary: 'Try a failed order again',
-      description:
-        'Only for a certificate that gave up (`failed`), and not within 15 minutes of the last failure: 409 `not_failed`, 429 `retry_too_soon`.',
+      summary: 'Try a failed order again (turned off)',
+      description: 'Always refused: the control plane no longer orders certificates.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TLS_ID_PARAM],
-      responses: { ...ok('Certificate', ONE), ...errors() },
+      responses: { ...ORDERING_OFF },
     },
   },
 }

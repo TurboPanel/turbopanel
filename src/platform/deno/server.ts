@@ -77,7 +77,7 @@ import {
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
 import { runHttpIssuanceSweepTick } from '../../client/tls/http-issuance-sweep.ts'
-import { runDnsCertificateSweepTick } from '../../features/tls/dns-certificates/sweep.ts'
+import { runDnsCertificateCleanupTick } from '../../features/tls/dns-certificates/cleanup.ts'
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
@@ -1040,12 +1040,10 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         await runHostingLetsEncryptSweepTick(tickDb, {
           apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
         })
-        // DNS-validated certificates: the next step of each order, upkeep, renewals.
-        await runDnsCertificateSweepTick(
-          buildDnsCertContext(tickDb, {
-            secrets: dataEncryptionSecrets,
-            push: { commandQueue, secretsConfig },
-          })
+        // DNS-validated certificates: no order and no renewal from the control plane;
+        // only challenge records it made are removed, through the DNS provider.
+        await runDnsCertificateCleanupTick(
+          buildDnsCertContext(tickDb, { secrets: dataEncryptionSecrets })
         )
         // Certificates a serving server orders at the panel's request.
         await runHttpIssuanceSweepTick(tickDb, {
