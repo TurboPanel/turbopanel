@@ -140,12 +140,9 @@ import {
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
 } from '../../features/bindings/host-run.ts'
-import {
-  ACME_ISSUE_FEATURE,
-  DAEMON_SEALED_SECRETS_FEATURE,
-  PHP_SITE_MODES_FEATURE,
-} from '../../lib/version-wire.ts'
+import { ACME_ISSUE_FEATURE, PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
+import { getDaemonSealingKey } from '../../features/servers/daemon-sealing-key.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -934,7 +931,10 @@ async function resolveDaemonSealContext(
 /**
  * The deploy's Hosting Accounts with their password hashes sealed for the
  * daemon, or the material unchanged when no account has a hash, the deploy is a
- * preview, or the daemon does not list `daemon-sealed-secrets-v1`.
+ * preview, or the server has no sealing key on file. The choice keys on the
+ * registered key, never on the unsigned hello `features` list (only a daemon
+ * with `daemon-sealed-secrets-v1` registers a key, and it signs the
+ * registration with the server's identity key).
  */
 async function sealPrincipalMaterialForDaemon(
   c: Context<AppEnv>,
@@ -946,10 +946,7 @@ async function sealPrincipalMaterialForDaemon(
   if (mode === 'preview' || material.every((entry) => entry.passwordHash === undefined)) {
     return material
   }
-  const daemonState = await getServerDaemonStateByServerId(db, serverId)
-  if (!(daemonState?.projection?.features ?? []).includes(DAEMON_SEALED_SECRETS_FEATURE)) {
-    return material
-  }
+  if (!(await getDaemonSealingKey(db, serverId))) return material
   const sealing = await resolveDaemonSealContext(c, db, serverId)
   if (sealing instanceof Response) return sealing
   return await sealPrincipalPasswordHashes(material, (plaintext) =>

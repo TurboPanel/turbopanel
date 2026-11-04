@@ -2334,8 +2334,8 @@ export function registerDaemonApiRoutes<E extends Env>(
         decryptDaemonCiphertext(secretsConfig, recipient, ciphertext)
       )
 
-      // Sealed to the daemon's registered sealing key when it lists
-      // `daemon-sealed-secrets-v1`; plaintext only for older daemons.
+      // Sealed whenever the server has a registered sealing key; plaintext
+      // only when none is on file (the unsigned hello list is not consulted).
       const db = getDb(c)
       return c.json(
         await buildSecretsDecryptAnswer(

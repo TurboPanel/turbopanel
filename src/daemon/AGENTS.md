@@ -145,8 +145,11 @@ refuse an envelope there); every reconcile caller passes the secrets config
 (`enqueuePrincipalsReconcile`). A verified sealing-key registration also adds
 `daemon-sealed-secrets-v1` to the stored hello features when it is missing
 (`setDaemonSealingKey`): a daemon that connected before this control plane knew
-the feature had it filtered from its hello. That only keeps the report honest;
-sealing itself keys on the stored key. Recovery for a host rolled back (break
+the feature had it filtered from its hello. The decrypt answer and the deploy's
+`passwordHashEnvelope` key on the stored sealing key, not on that list.
+`server.principals.reconcile` still reads the hello for
+`daemon-sealed-principal-reconcile-v1`, because a key on file does not prove a
+daemon understands an envelope there. Recovery for a host rolled back (break
 glass) to a build without the feature is an operator clearing
 `server.sealing_key_kid` and `sealing_key_pub`; nothing on the wire can. The superadmin read `GET
 /api/admin/v1/instance/identity/sealed-secrets` reports, per server, the

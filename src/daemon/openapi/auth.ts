@@ -55,7 +55,7 @@ export const authSchemas = {
   DaemonSecretsDecryptResponse: {
     type: 'object',
     description:
-      'Exactly one of plaintexts or sealed. sealed is returned to a daemon that lists daemon-sealed-secrets-v1 and has registered a sealing key; plaintexts is the answer to every other daemon.',
+      'Exactly one of plaintexts or sealed. sealed is returned whenever the server has a registered sealing key, whatever its hello features list; plaintexts only to a server with no key on file.',
     properties: {
       plaintexts: {
         type: 'array',
@@ -268,7 +268,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ['Daemon'],
       summary: "Register the daemon's X25519 sealing key",
       description:
-        "Stores the public half of the daemon's sealing key after checking the Ed25519 signature against the key on file. Decrypt answers are then sealed to it when the daemon lists daemon-sealed-secrets-v1.",
+        "Stores the public half of the daemon's sealing key after checking the Ed25519 signature against the key on file. Every later decrypt answer is sealed to it, whatever the hello features list says.",
       security: [{ bearerAuth: [] }],
       requestBody: {
         required: true,
