@@ -14,6 +14,13 @@ import type { HostnameWithState, IngressPhase } from '../provider.ts'
 
 /** The loopback hop from the connector to the control plane listener. */
 export const PANEL_ORIGIN_DIAL = 'https://127.0.0.1:8443'
+/**
+ * The shape of the panel's tunnel rules. Raise it when `buildPanelIngress`
+ * changes in a way an existing tunnel must pick up: the ingress tick re-applies
+ * every tunnel row stored with an older version. 2: no `httpHostHeader` (a
+ * forced bare Host looped the edge-port redirect).
+ */
+export const PANEL_RULES_VERSION = 2
 /** Cloudflare runs four connections per connector when it is fully up. */
 export const HEALTHY_CONNECTIONS = 4
 /** How long a pushed run token may take to bring the connector up before the tunnel counts as failed. */
@@ -36,6 +43,8 @@ export type TunnelState = {
   tokenPushedAt: string
   /** True when the rule for this name verifies the origin certificate (a public pair is live for it). */
   originVerified: boolean
+  /** `PANEL_RULES_VERSION` when the rules were last written; state from before it counts as 1. */
+  rulesVersion: number
 }
 
 export function tunnelName(instanceId: string): string {
@@ -121,7 +130,16 @@ export function readTunnelState(value: unknown): TunnelState | null {
     adopted: raw.adopted === true,
     tokenPushedAt: typeof raw.tokenPushedAt === 'string' ? raw.tokenPushedAt : '',
     originVerified: raw.originVerified === true,
+    rulesVersion: typeof raw.rulesVersion === 'number' ? raw.rulesVersion : 1,
   }
+}
+
+/**
+ * Whether a tunnel row must be applied again: its rule's origin check no
+ * longer matches its certificate, or its rules were written in an older shape.
+ */
+export function tunnelRulesStale(state: TunnelState, originVerifiable: boolean): boolean {
+  return state.originVerified !== originVerifiable || state.rulesVersion < PANEL_RULES_VERSION
 }
 
 /** Tunnel rows on one account that are set up, other than `exceptId`. */

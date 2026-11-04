@@ -101,6 +101,11 @@ High Availability (Workers) must not contain any of it.
   with `originServerName` and `noTLSVerify` on the loopback hop, and no
   `httpHostHeader`: the visitor's Host (with its port) must reach Caddy, whose
   edge-port redirect reads the port from it (a forced bare name looped it).
+  A dashboard tunnel adopted with a top-level `originRequest.httpHostHeader`
+  would bring the loop back (its top-level settings are kept). Changing the
+  rule shape means raising `PANEL_RULES_VERSION`: the tick re-applies every
+  tunnel row stored with an older version (`tunnelRulesStale`), so installs
+  already connected pick the change up.
   A locally managed tunnel is refused with cause `tunnel-locally-managed`;
   verifying the loopback hop with `caPool` is a later step. `noTLSVerify` drops for a name whose ACME
   pair (DNS-01 or HTTP-01) is issued and unexpired (`originCertVerifiable`);

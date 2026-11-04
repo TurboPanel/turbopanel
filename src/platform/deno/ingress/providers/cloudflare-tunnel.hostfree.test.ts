@@ -10,8 +10,11 @@ import {
 import {
   buildPanelIngress,
   originCertVerifiable,
+  PANEL_RULES_VERSION,
+  readTunnelState,
   tunnelName,
   tunnelPhase,
+  tunnelRulesStale,
 } from '../cloudflare/tunnel-config.ts'
 import type { HostnameWithState, IngressContext } from '../provider.ts'
 import { applyHostname } from '../registry.ts'
@@ -474,7 +477,7 @@ test('a locally managed tunnel is refused before anything is written', async () 
     assertEquals(result.ok ? null : { cause: result.cause, detail: result.detail }, {
       cause: 'tunnel-locally-managed',
       detail:
-        "This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. In Cloudflare, open Zero Trust › Networks › Tunnels › this tunnel and choose Migrate, or delete this hostname's DNS record there so the control plane creates its own tunnel.",
+        'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. In Cloudflare, open this tunnel and migrate it to dashboard management, then connect again.',
     })
     assertEquals(
       h.cf.log.filter((line) => !line.startsWith('GET ')),
@@ -525,4 +528,20 @@ test('a routed wildcard covers exactly one label', () => {
   assertEquals(routesName(['*.example.com'], 'example.com'), false)
   assertEquals(routesName(['panel.example.com'], 'panel.example.com'), true)
   assertEquals(routesName([], 'panel.example.com'), false)
+})
+
+test('rules written in an older shape are applied again, so a fix reaches tunnels already set up', () => {
+  const before = readTunnelState({ tunnelId: 't1', accountId: 'a1', originVerified: false })
+  assertEquals(before?.rulesVersion, 1)
+  assertEquals(tunnelRulesStale(before!, false), true)
+  const current = { ...before!, rulesVersion: PANEL_RULES_VERSION }
+  assertEquals(tunnelRulesStale(current, false), false)
+  // A certificate that changed under the rule still makes it stale.
+  assertEquals(tunnelRulesStale(current, true), true)
+})
+
+test('the panel route lets the visitor Host through, so the edge-port redirect cannot loop', () => {
+  const [rule] = buildPanelIngress(['panel.example.com'])
+  assertEquals(rule?.originRequest?.httpHostHeader, undefined)
+  assertEquals(rule?.originRequest?.originServerName, 'panel.example.com')
 })

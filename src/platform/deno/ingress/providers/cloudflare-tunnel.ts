@@ -17,6 +17,7 @@ import {
   buildPanelIngress,
   dnsName,
   originCertVerifiable,
+  PANEL_RULES_VERSION,
   readTunnelState,
   tunnelName,
   tunnelIdFromTarget,
@@ -40,7 +41,7 @@ const ALLOWED_PORTS = [443, 8443] as const
 const SELF_CHECK_TIMEOUT_MS = 10_000
 const IDENTITY_PATH = '/api/daemon/v1/instance/identity'
 const LOCALLY_MANAGED =
-  "This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. In Cloudflare, open Zero Trust › Networks › Tunnels › this tunnel and choose Migrate, or delete this hostname's DNS record there so the control plane creates its own tunnel."
+  'This tunnel is managed by a configuration file on its connector, so the control plane cannot add routes to it. In Cloudflare, open this tunnel and migrate it to dashboard management, then connect again.'
 
 type Ready = { deps: IngressDeps; name: string; zoneId: string; accountId: string; token: string }
 
@@ -314,6 +315,7 @@ async function applyWith(
     adopted: tunnel.adopted,
     tokenPushedAt: ready.deps.now().toISOString(),
     originVerified: originCertVerifiable(ctx.hostname),
+    rulesVersion: PANEL_RULES_VERSION,
   }
   return { ok: true, state }
 }
