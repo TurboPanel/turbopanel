@@ -147,8 +147,18 @@ in the execution-log store — there is no Postgres column for them. See
   and only then marks this one `dispatching`. A deploy stops counting once the
   server has taken it over (`deployMayLeaveLane`). Nothing is held while the
   command runs; a run that dies leaves its row live until the stale sweep ends
-  it. Busy: the envelope goes back on the queue `SERVER_BUSY_DELAY_SECONDS`
-  later and the attempt is not counted.
+  it. Busy: the envelope goes back on the queue and the attempt is not counted.
+- **Busy checks are cheap.** A busy server is the common answer, so it is
+  found with one unlocked read; the lock is taken only when nothing seems to
+  block (and the check runs again under it). The waiting command is stamped at
+  most every 30 s (`WAITING_STAMP_INTERVAL_MS`), its dispatch payload is read
+  only after it wins its turn, and it looks again less often the longer it
+  waits (`serverBusyDelaySeconds`: 10 s for the first minute, 30 s up to five
+  minutes, then 120 s). The claim only succeeds against the row exactly as the
+  consumer read it (`status` and `dispatch_started_at`), so a second delivery
+  of the same command loses and does nothing. A load review on 2026-11-04 put
+  the old cost at about 960 database round trips a minute for 20 commands
+  behind one 30-minute backup.
 - **Waiting never counts.** A busy check also moves the command's
   `expires_at` on by the time it waited since it was last seen, and the stale
   sweep times a `queued` command from its last stamp (`updated_at`), so a short

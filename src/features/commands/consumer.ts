@@ -479,10 +479,22 @@ export function commandIsExpired(
   return Boolean(expiresAt) && Date.parse(expiresAt as string) < nowMs
 }
 
+/** The command row and its dispatch payload, or `null` when there is nothing to run. */
 async function loadDispatchableRecord(
   db: Db,
   envelope: CommandEnvelope
 ): Promise<DispatchableCommandRecord | null> {
+  const record = await loadOpenCommand(db, envelope)
+  return record ? await attachDispatchPayload(db, record, envelope) : null
+}
+
+/**
+ * The command row, when it is still open, not expired and for this envelope's
+ * server. The dispatch payload is read separately ({@link attachDispatchPayload}),
+ * only once the command may run: a command waiting its server's turn is
+ * checked often and never needs it.
+ */
+async function loadOpenCommand(db: Db, envelope: CommandEnvelope): Promise<CommandRecord | null> {
   const record = await getCommandRecord(db, envelope.commandId)
   if (!record) {
     return null
@@ -520,6 +532,15 @@ async function loadDispatchableRecord(
     return null
   }
 
+  return record
+}
+
+/** Read the dispatch payload; a missing one fails the command (`dispatch_payload_missing`). */
+async function attachDispatchPayload(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope
+): Promise<DispatchableCommandRecord | null> {
   const payload = await getCommandDispatchPayload(db, record.id)
   if (payload === null) {
     compatLogWarn('command-consumer', `missing dispatch payload for command ${envelope.commandId}`)
@@ -556,7 +577,7 @@ async function loadDispatchableRecord(
  */
 async function markDispatching(
   db: Db,
-  record: DispatchableCommandRecord,
+  record: CommandRecord,
   envelope: CommandEnvelope
 ): Promise<boolean> {
   const turn = await claimServerTurn(db, {
@@ -564,6 +585,8 @@ async function markDispatching(
     serverId: envelope.serverId,
     type: record.type as CommandType,
     attempts: record.attempts,
+    status: record.status,
+    dispatchStartedAt: record.dispatchStartedAt,
   })
   if (turn === 'busy') throw new ServerBusyError(envelope.serverId)
   if (turn === 'finished') return false
@@ -3837,7 +3860,7 @@ async function absorbRefusedReseed(
  * primary's data. If the switchover was overtaken before the command was sent
  * (a second switchover or failover), refuse it instead of wiping.
  */
-async function failSupersededReseed(db: Db, record: DispatchableCommandRecord): Promise<boolean> {
+async function failSupersededReseed(db: Db, record: CommandRecord): Promise<boolean> {
   if (record.type !== 'managed.apply') return false
   const guard = parseReseedGuard(await getCommandMetadata(db, record.id))
   if (!guard) return false
@@ -3925,26 +3948,36 @@ export async function processCommandEnvelope(
   envelope: CommandEnvelope,
   deps?: CommandConsumerDeps
 ): Promise<void> {
-  const record = await loadDispatchableRecord(db, envelope)
-  if (!record) return
+  const open = await loadOpenCommand(db, envelope)
+  if (!open) return
 
-  if (await failSupersededReseed(db, record)) return
+  if (await failSupersededReseed(db, open)) return
 
-  const resumed = await resumeSentWait(db, registry, record, envelope, deps)
-  if (resumed !== null) {
-    if (resumed.pending) {
-      await applyPendingOutcome(
-        db,
-        record,
-        envelope,
-        resumed.pending,
-        deps ? { ...deps, registry } : deps
-      )
+  let record: DispatchableCommandRecord | null = null
+  if (open.sentAt !== null && ['sent', 'acked', 'running'].includes(open.status)) {
+    // Already sent: resume waiting on it (rare, so the payload is read now).
+    record = await attachDispatchPayload(db, open, envelope)
+    if (!record) return
+    const resumed = await resumeSentWait(db, registry, record, envelope, deps)
+    if (resumed !== null) {
+      if (resumed.pending) {
+        await applyPendingOutcome(
+          db,
+          record,
+          envelope,
+          resumed.pending,
+          deps ? { ...deps, registry } : deps
+        )
+      }
+      return
     }
-    return
   }
 
-  if (!(await markDispatching(db, record, envelope))) return
+  // Take the server's turn before reading the payload: a command whose server
+  // is busy is checked often and only needs the row.
+  if (!(await markDispatching(db, open, envelope))) return
+  record ??= await attachDispatchPayload(db, open, envelope)
+  if (!record) return
 
   const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
   if (notReady !== null) {
