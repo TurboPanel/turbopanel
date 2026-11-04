@@ -124,6 +124,8 @@ export type AcmeAuthorization = {
   identifier: AcmeIdentifier
   wildcard: boolean
   challenges: AcmeChallenge[]
+  /** When a pending authorization lapses (RFC 8555 §7.1.4); optional for pending ones. */
+  expires?: string
 }
 
 export type AcmeClientOptions = {
@@ -323,6 +325,15 @@ export class AcmeClient {
 
   async getAuthorization(url: string): Promise<AcmeAuthorization> {
     const response = await this.#post(url, '')
+    return { ...((await response.json()) as Omit<AcmeAuthorization, 'url'>), url }
+  }
+
+  /**
+   * Give up an authorization this account will not complete (RFC 8555
+   * §7.5.2), so it stops counting against the authority's pending limits.
+   */
+  async deactivateAuthorization(url: string): Promise<AcmeAuthorization> {
+    const response = await this.#post(url, { status: 'deactivated' })
     return { ...((await response.json()) as Omit<AcmeAuthorization, 'url'>), url }
   }
 

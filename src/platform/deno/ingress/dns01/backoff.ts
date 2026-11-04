@@ -5,7 +5,7 @@
  * full jitter, are capped at about hourly and stay one start under the hourly
  * limit so a manual retry still fits.
  */
-import { AcmeError } from '../../../../lib/acme/client.ts'
+import { type AcmeAuthorization, AcmeError } from '../../../../lib/acme/client.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
 import { type Dns01Cause, type Dns01Failure, type Dns01State, withStage } from './state.ts'
 
@@ -25,8 +25,18 @@ export const DNS01_MAX_ATTEMPTS = 6
 export const DNS01_LOOKUP_BACKOFF_MS = [1, 5, 15, 60].map((minutes) => minutes * 60_000)
 /** A lookup failure alerts only once it has happened this many times in a row. */
 export const DNS01_LOOKUP_ALERT_AFTER = 3
+/**
+ * After this many orders given up before validation in a day, a name opens no
+ * new order (only the preflight runs, hourly) until the oldest ages out or a
+ * person presses Retry. Each one left a pending authorization at the
+ * authority, which limits pending authorizations and new orders per account.
+ */
+export const DNS01_MAX_ABANDONED_PER_DAY = 10
+/** A kept order is reused only while its authorization has at least this long left. */
+export const DNS01_RESUME_MARGIN_MS = 2 * 60 * 60_000
 const HOUR_MS = 60 * 60_000
-const WEEK_MS = 7 * 24 * HOUR_MS
+const DAY_MS = 24 * HOUR_MS
+const WEEK_MS = 7 * DAY_MS
 const MAX_DETAIL = 200
 
 /** Starts within the last hour, from the stored start times. */
@@ -58,6 +68,57 @@ function pastStartBudget(at: number, now: Date, recentStarts: readonly string[])
   if (window.length < DNS01_MAX_STARTS_PER_HOUR) return new Date(at)
   const oldestInWindow = window[window.length - DNS01_MAX_STARTS_PER_HOUR] ?? now.getTime()
   return new Date(Math.max(at, oldestInWindow + HOUR_MS + 1000))
+}
+
+/** Orders given up within the last day, from the stored times. */
+export function abandonedInLastDay(times: readonly string[], now: Date): string[] {
+  const since = now.getTime() - DAY_MS
+  return times.filter((at) => Date.parse(at) > since)
+}
+
+/** Whether the name has given up so many orders today that it must not open another. */
+export function orderCapReached(state: Dns01State, now: Date): boolean {
+  return abandonedInLastDay(state.abandonedTimes, now).length >= DNS01_MAX_ABANDONED_PER_DAY
+}
+
+/**
+ * The state when the daily order cap holds a start back after a passing
+ * preflight: no order, the failure counts untouched, the preflight again in an
+ * hour, and a last error that says why and how to lift it.
+ */
+export function cappedState(state: Dns01State, now: Date, attemptTimes: string[]): Dns01State {
+  const window = abandonedInLastDay(state.abandonedTimes, now)
+    .map(Date.parse)
+    .sort((a, b) => a - b)
+  const oldest = window[window.length - DNS01_MAX_ABANDONED_PER_DAY] ?? now.getTime()
+  const freeAt = new Date(oldest + DAY_MS).toISOString()
+  const detail =
+    `${window.length} certificate orders for this name were given up in the last day, ` +
+    `so no new order opens before ${freeAt}. Press Retry once the cause is fixed.`
+  return withStage(state, 'backoff', {
+    order: null,
+    attemptTimes,
+    abandonedTimes: abandonedInLastDay(state.abandonedTimes, now),
+    nextAttemptAt: new Date(now.getTime() + DNS01_BACKOFF_CAP_MS).toISOString(),
+    lastError: {
+      cause: state.lastError?.cause ?? 'acme-error',
+      detail,
+      at: now.toISOString(),
+    },
+  })
+}
+
+/**
+ * Whether a kept, never answered order can be picked up again: its
+ * authorization is still pending with its DNS-01 challenge unanswered, and it
+ * lasts long enough for another wait and validation.
+ */
+export function canResume(authz: AcmeAuthorization, now: Date): boolean {
+  if (authz.status !== 'pending') return false
+  const challenge = authz.challenges.find((item) => item.type === 'dns-01')
+  if (challenge?.status !== 'pending') return false
+  const expires = Date.parse(authz.expires ?? '')
+  return !Number.isNaN(expires) && expires - now.getTime() > DNS01_RESUME_MARGIN_MS
 }
 
 export function isLookupFailure(cause: Dns01Cause): boolean {

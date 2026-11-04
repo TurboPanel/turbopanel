@@ -20,6 +20,7 @@ type Authz = {
   wildcard: boolean
   token: string
   answered: boolean
+  deactivated: boolean
 }
 type Order = { id: string; names: string[]; authz: Authz[]; finalized: boolean; polls: number }
 
@@ -46,6 +47,10 @@ export type FakeCaOptions = {
   renewalWindow?: { start: Date; end: Date }
   /** `Retry-After` sent with each renewal-information answer. */
   renewalRetryAfter?: string
+  /** `expires` of every authorization; the default is far in the future. */
+  authzExpires?: string
+  /** Refuse authorization deactivation with a server error. */
+  refuseDeactivation?: boolean
   /** Renewal information answers 503 (with `renewalRetryAfter` if set) instead of a window. */
   renewalBusy?: boolean
 }
@@ -58,6 +63,8 @@ export type FakeCa = {
   log: { path: string; kid: string | null }[]
   /** Challenge answers received (the challenge id of each), lost ones included. */
   answers: string[]
+  /** Authorizations deactivated by their account (the authorization id of each). */
+  deactivated: string[]
   /** The names on each certificate issued, in order. */
   issued: string[][]
   /** Renewal-information requests received (the identifier of each). */
@@ -133,6 +140,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
   const log: FakeCa['log'] = []
   const issued: string[][] = []
   const answers: string[] = []
+  const deactivatedAuthz: string[] = []
   const renewalAsked: string[] = []
   const orderReplaces: (string | undefined)[] = []
   const hits = { directory: 0, nonce: 0, renewal: 0, signed: 0 }
@@ -197,7 +205,8 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
 
   const authzBody = async (a: Authz, jwk: Jwk) => {
     let status = 'pending'
-    if (a.answered) {
+    if (a.deactivated) status = 'deactivated'
+    else if (a.answered) {
       const thumb = await accountThumbprint({ publicJwk: jwk } as AcmeAccountKey)
       const expected = base64urlEncode(
         new Uint8Array(
@@ -212,6 +221,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
       status,
       identifier: { type: 'dns', value: a.identifier },
       wildcard: a.wildcard,
+      expires: options.authzExpires ?? '2099-01-01T00:00:00Z',
       challenges: [
         {
           type: 'dns-01',
@@ -232,8 +242,8 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     const states = await Promise.all(order.authz.map((a) => authzBody(a, jwk)))
     const allValid = states.every((s) => s.status === 'valid')
     let status = allValid ? 'ready' : 'pending'
-    // As the protocol says: one failed authorization makes the whole order invalid.
-    if (states.some((a) => a.status === 'invalid')) status = 'invalid'
+    // As the protocol says: one failed (or given up) authorization makes the whole order invalid.
+    if (states.some((a) => a.status === 'invalid' || a.status === 'deactivated')) status = 'invalid'
     if (order.finalized) {
       order.polls += 1
       status = order.polls > (options.processingPolls ?? 0) ? 'valid' : 'processing'
@@ -274,6 +284,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
       wildcard: name.startsWith('*.'),
       token: base64urlEncode(crypto.getRandomValues(new Uint8Array(16))),
       answered: false,
+      deactivated: false,
     }))
     const order: Order = { id, names, authz, finalized: false, polls: 0 }
     orders.push(order)
@@ -323,6 +334,31 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     })
   }
 
+  /** Read an authorization, or deactivate it when the payload asks (RFC 8555 §7.5.2). */
+  const authorization = async (
+    order: Order,
+    id: string,
+    signed: Signed,
+    headers: ReplyHeaders
+  ): Promise<Response> => {
+    const authz = order.authz.find((a) => a.id === id)!
+    const asked = (signed.payload as { status?: string } | '') || null
+    if (asked?.status === 'deactivated') {
+      if (options.refuseDeactivation) return problem('serverInternal', 'busy', 500, headers)
+      if (authz.answered || authz.deactivated) {
+        return problem(
+          'malformed',
+          'only a pending authorization is deactivated here',
+          400,
+          headers
+        )
+      }
+      authz.deactivated = true
+      deactivatedAuthz.push(id)
+    }
+    return json(await authzBody(authz, signed.jwk), { headers })
+  }
+
   /** A request about one order or one of its authorizations (`/<kind>/<id>`). */
   const orderRequest = async (
     kind: string,
@@ -336,15 +372,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
       case 'chall':
         return answer(order, id, headers)
       case 'authz':
-        return json(
-          await authzBody(
-            order.authz.find((a) => a.id === id)!,
-            signed.jwk
-          ),
-          {
-            headers,
-          }
-        )
+        return await authorization(order, id, signed, headers)
       case 'order':
         return json(await orderBody(order, signed.jwk), { headers })
       case 'finalize':
@@ -414,6 +442,7 @@ export function createFakeCa(options: FakeCaOptions): FakeCa {
     log,
     issued,
     answers,
+    deactivated: deactivatedAuthz,
     renewalAsked,
     orderReplaces,
     hits,
