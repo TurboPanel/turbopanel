@@ -1484,6 +1484,15 @@ export const command = pgTable(
     index('idx_command_open')
       .using('btree', table.status.asc(), table.updatedAt.asc())
       .where(sql`${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running')`),
+    /**
+     * Open commands of one server, oldest first: the server-turn check
+     * (`features/commands/server-turn.ts`) asks "is anything of this server
+     * still running, or older and still waiting" on every look of a waiting
+     * command. Only open rows are in it, so it stays small.
+     */
+    index('idx_command_server_open')
+      .using('btree', table.serverId.asc(), table.createdAt.asc(), table.id.asc())
+      .where(sql`${table.status} IN ('queued', 'dispatching', 'sent', 'acked', 'running')`),
     /** Open commands of one managed cluster (failover, destroy, TLS rotation lookups). */
     index('idx_command_managed')
       .using('btree', table.managedId.asc())

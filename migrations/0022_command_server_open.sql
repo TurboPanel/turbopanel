@@ -1,0 +1,1 @@
+CREATE INDEX "idx_command_server_open" ON "command" USING btree ("server_id","created_at","id") WHERE "command"."status" IN ('queued', 'dispatching', 'sent', 'acked', 'running');
