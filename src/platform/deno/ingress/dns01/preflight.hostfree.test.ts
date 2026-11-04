@@ -79,6 +79,79 @@ test("CAA on the apex allowing Let's Encrypt passes and the nameservers are reso
   assertEquals(result.nameservers, ['192.0.2.53', '198.51.100.53'])
 })
 
+/** A resolver behind split DNS: the zone is answered locally, so it has no NS records. */
+function splitDns(): DnsLookup {
+  return {
+    ...fakeDns(),
+    ns: () => Promise.reject(new Error('no records found for NS query')),
+  }
+}
+
+function withNameservers(
+  provider: DnsChallengeProvider,
+  nameservers: DnsChallengeProvider['nameservers']
+): DnsChallengeProvider {
+  return { ...provider, nameservers }
+}
+
+test("the provider's nameservers are used when this host's resolver lists none", async () => {
+  const { provider } = fakeProvider()
+  const listed = withNameservers(provider, (zoneId) =>
+    Promise.resolve(zoneId === 'zone-1' ? ['ns1.example.net', 'ns2.example.net'] : [])
+  )
+  const result = await preflightDns01({
+    provider: listed,
+    dns: splitDns(),
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.ok, true)
+  assertEquals(result.nameservers, ['192.0.2.53', '198.51.100.53'])
+})
+
+test("the provider's nameservers win over the resolver's", async () => {
+  const { provider } = fakeProvider()
+  const listed = withNameservers(provider, () => Promise.resolve(['ns1.example.net']))
+  const result = await preflightDns01({
+    provider: listed,
+    dns: fakeDns(),
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.nameservers, ['192.0.2.53'])
+})
+
+test('a provider that refuses the nameserver read falls back to the resolver', async () => {
+  const { provider } = fakeProvider()
+  const refusing = withNameservers(provider, () =>
+    Promise.reject(new TunnelProviderError('forbidden', 'refused', 403))
+  )
+  const result = await preflightDns01({
+    provider: refusing,
+    dns: fakeDns(),
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.ok, true)
+  assertEquals(result.nameservers, ['192.0.2.53', '198.51.100.53'])
+})
+
+test('no nameservers from the provider or the resolver fails and says where it looked', async () => {
+  const { provider } = fakeProvider()
+  const result = await preflightDns01({
+    provider: withNameservers(provider, () => Promise.resolve([])),
+    dns: splitDns(),
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.ok, false)
+  assertEquals(result.failure, {
+    cause: 'provider-error',
+    detail:
+      "No nameservers found for example.com: the DNS provider listed none and this server's resolver returned no NS records.",
+  })
+})
+
 test('txtVisibleOnAll names the servers that do not answer yet', async () => {
   const seen = await txtVisibleOnAll(
     fakeDns(),

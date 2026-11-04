@@ -34,6 +34,13 @@ export type DnsChallengeProvider = {
    * Optional: a host without one is answered after the usual short pause.
    */
   txtValues?(input: { zoneId: string; name: string }): Promise<string[]>
+  /**
+   * The nameservers the provider serves the zone from (host names), read
+   * through its own API. Preferred over a lookup on this host, whose resolver
+   * may answer the zone locally (split DNS) and list no nameservers, or the
+   * wrong ones. Optional: a host without one falls back to that lookup.
+   */
+  nameservers?(zoneId: string): Promise<string[]>
   present(input: ChallengeRecordInput): Promise<ChallengeRecordRef>
   /** Remove a record; one that is already gone counts as removed. */
   remove(ref: ChallengeRecordRef): Promise<void>

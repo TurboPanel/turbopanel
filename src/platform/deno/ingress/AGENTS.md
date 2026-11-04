@@ -135,7 +135,10 @@ High Availability (Workers) must not contain any of it.
   the existing ACME client with its own account (`INSTANCE_ACME_ACCOUNT`
   setting, sealed, swept by the re-encrypt `identity` stage; contact, terms and
   directory from `INSTANCE_ACME_SETTINGS`). One step per tick: preflight
-  (zone on the account, a probe TXT write, CAA, nameservers), order and publish
+  (zone on the account, a probe TXT write, CAA, nameservers: the provider's
+  own list first (`DnsChallengeProvider.nameservers`, Cloudflare's zone
+  `name_servers`), this host's resolver only as the fallback, because a
+  resolver behind split DNS answers the zone locally with no NS records), order and publish
   the TXT record, wait until every authoritative nameserver address that
   answers has it (up to 10 minutes; `txtVisibleOnAll`: an address this host
   cannot reach, such as IPv6 on an IPv4-only host, is left out, a NotFound
