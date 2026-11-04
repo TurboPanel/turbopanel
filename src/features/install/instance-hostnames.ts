@@ -11,7 +11,7 @@
  * organization's ACME opt-in, and must not touch any `tls` table row.
  */
 
-import { eq, isNotNull } from 'drizzle-orm'
+import { and, eq, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   hostname as siteHostname,
@@ -668,10 +668,23 @@ export async function clearInstalledCertificateErrors(
     })
     .from(instanceHostname)
     .where(eq(instanceHostname.source, 'acme-dns-01'))
+  const stale = new Set(certificateErrorsToClear(rows, applied))
+  // The write matches the values read, so a newer pair or error written meanwhile stays.
   await Promise.all(
-    certificateErrorsToClear(rows, applied).map((id) =>
-      db.update(instanceHostname).set({ acmeLastError: null }).where(eq(instanceHostname.id, id))
-    )
+    rows
+      .filter((row) => stale.has(row.id))
+      .map((row) =>
+        db
+          .update(instanceHostname)
+          .set({ acmeLastError: null })
+          .where(
+            and(
+              eq(instanceHostname.id, row.id),
+              eq(instanceHostname.uploadedCertId, row.uploadedCertId ?? ''),
+              eq(instanceHostname.acmeLastError, row.acmeLastError ?? '')
+            )
+          )
+      )
   )
 }
 
