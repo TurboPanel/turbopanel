@@ -747,8 +747,7 @@ export const server = pgTable(
     /**
      * The daemon's X25519 sealing key (public half only), registered by the
      * daemon and signed by its Ed25519 key. `kid` is the key's fingerprint.
-     * `/secrets/decrypt` seals answers to it when the daemon lists
-     * `daemon-sealed-secrets-v1`.
+     * `/secrets/decrypt` seals every answer to it once it is on file.
      */
     sealingKeyKid: text('sealing_key_kid'),
     sealingKeyPub: text('sealing_key_pub'),

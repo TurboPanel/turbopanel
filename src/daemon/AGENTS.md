@@ -132,8 +132,9 @@ A daemon with this feature generates an X25519 sealing key and registers it with
 Ed25519 signature over `"tp-sealing-key\n" + pub`, checked against the key on file
 (`sealing-key-registration.ts`). `POST /secrets/decrypt` then answers `{ sealed:
 [envelope | null, ...] }` (same order as the request, `aad` = server id) and
-omits `plaintexts`; a daemon without the feature, or without a registered key,
-still gets `plaintexts`, and `server.plaintext_secrets_at` is stamped (at most
+omits `plaintexts` whenever a sealing key is on file, whatever the hello
+`features` list says (that list is unsigned, so keying on it let a token holder
+ask for plaintext); a server with no registered key still gets `plaintexts`, and `server.plaintext_secrets_at` is stamped (at most
 hourly) so the edge go-live gate can read that nothing is still answered in
 plaintext. The answer is never both fields. Only the key id may be logged. The
 Hosting Account password hash rides as `passwordHashEnvelope` (a `tpdaemon`
@@ -144,7 +145,12 @@ refuse an envelope there); every reconcile caller passes the secrets config
 (`enqueuePrincipalsReconcile`). A verified sealing-key registration also adds
 `daemon-sealed-secrets-v1` to the stored hello features when it is missing
 (`setDaemonSealingKey`): a daemon that connected before this control plane knew
-the feature had it filtered from its hello, and would otherwise get plaintext
-until it reconnected. The superadmin read `GET
+the feature had it filtered from its hello. The decrypt answer and the deploy's
+`passwordHashEnvelope` key on the stored sealing key, not on that list.
+`server.principals.reconcile` still reads the hello for
+`daemon-sealed-principal-reconcile-v1`, because a key on file does not prove a
+daemon understands an envelope there. Recovery for a host rolled back (break
+glass) to a build without the feature is an operator clearing
+`server.sealing_key_kid` and `sealing_key_pub`; nothing on the wire can. The superadmin read `GET
 /api/admin/v1/instance/identity/sealed-secrets` reports, per server, the
 feature, the key id and `plaintext_secrets_at`, for the edge go-live gate. The `MIN_SUPPORTED_*` floors are untouched.

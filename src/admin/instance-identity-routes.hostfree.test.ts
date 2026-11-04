@@ -185,6 +185,8 @@ test('the sealed-secrets read lists which servers still get plaintext', async ()
         plaintextSecretsAt: '2026-11-01T01:00:00.000Z',
       }),
       sealingRow('no-key', { sealingKeyKid: null, sealingKeyPub: null }),
+      // A hello that leaves the feature out does not switch sealing off.
+      sealingRow('stripped-hello', { daemon: { projection: { features: [] } } }),
     ],
   })
   const res = await app.request(SEALED_URL, { headers: { Cookie: cookie } })
@@ -209,6 +211,8 @@ test('the sealed-secrets read lists which servers still get plaintext', async ()
   assertEquals(body.servers[1].receivesPlaintext, true)
   assertEquals(body.servers[2].advertisesSealedSecrets, true)
   assertEquals(body.servers[2].receivesPlaintext, true)
+  assertEquals(body.servers[3].advertisesSealedSecrets, false)
+  assertEquals(body.servers[3].receivesPlaintext, false)
 })
 
 test('the sealed-secrets read is refused for a non-superadmin', async () => {

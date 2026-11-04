@@ -110,12 +110,11 @@ test('a valid registration is stored; a bad signature or wrong key id changes no
   assertEquals(unknownServer.saved.length, 0)
 })
 
-function answerSource(options: { advertised: boolean; key: DaemonSealingKey | null }) {
+function answerSource(options: { key: DaemonSealingKey | null }) {
   const noted: string[] = []
   return {
     noted,
     source: {
-      advertisesSealedSecrets: () => Promise.resolve(options.advertised),
       sealingKey: () => Promise.resolve(options.key),
       notePlaintextAnswer: (id: string) => {
         noted.push(id)
@@ -125,10 +124,10 @@ function answerSource(options: { advertised: boolean; key: DaemonSealingKey | nu
   }
 }
 
-test('decrypt answers are sealed to the registered key when advertised, never both fields', async () => {
+test('decrypt answers are sealed to the registered key, never both fields', async () => {
   const recipient = await hpkeTestRecipient()
   const key = { kid: recipient.kid, pub: base64urlEncode(recipient.pub) }
-  const { source, noted } = answerSource({ advertised: true, key })
+  const { source, noted } = answerSource({ key })
   const answer = await buildSecretsDecryptAnswer(source, SERVER_ID, [DECRYPTED_SAMPLE, null])
   assert('sealed' in answer)
   assert(!('plaintexts' in answer))
@@ -140,16 +139,8 @@ test('decrypt answers are sealed to the registered key when advertised, never bo
   assert(!JSON.stringify(answer).includes(DECRYPTED_SAMPLE))
 })
 
-test('older daemons and daemons without a registered key still get plaintext and are counted', async () => {
-  const recipient = await hpkeTestRecipient()
-  const key = { kid: recipient.kid, pub: base64urlEncode(recipient.pub) }
-  const legacy = answerSource({ advertised: false, key })
-  assertEquals(await buildSecretsDecryptAnswer(legacy.source, SERVER_ID, ['a']), {
-    plaintexts: ['a'],
-  })
-  assertEquals(legacy.noted, [SERVER_ID])
-
-  const noKey = answerSource({ advertised: true, key: null })
+test('servers without a registered key still get plaintext and are counted', async () => {
+  const noKey = answerSource({ key: null })
   assertEquals(await buildSecretsDecryptAnswer(noKey.source, SERVER_ID, ['b']), {
     plaintexts: ['b'],
   })
@@ -162,7 +153,6 @@ test('older daemons and daemons without a registered key still get plaintext and
 
 test('a failing plaintext counter never blocks the answer', async () => {
   const failing = {
-    advertisesSealedSecrets: () => Promise.resolve(false),
     sealingKey: () => Promise.resolve(null),
     notePlaintextAnswer: () => Promise.reject(new Error('db down')),
   }
@@ -181,14 +171,10 @@ test('sealing and registering write no plaintext or key material to the console'
       ...body,
       sig: 'x'.repeat(86),
     })
-    await buildSecretsDecryptAnswer(answerSource({ advertised: true, key }).source, SERVER_ID, [
+    await buildSecretsDecryptAnswer(answerSource({ key }).source, SERVER_ID, [DECRYPTED_SAMPLE])
+    await buildSecretsDecryptAnswer(answerSource({ key: null }).source, SERVER_ID, [
       DECRYPTED_SAMPLE,
     ])
-    await buildSecretsDecryptAnswer(
-      answerSource({ advertised: false, key: null }).source,
-      SERVER_ID,
-      [DECRYPTED_SAMPLE]
-    )
   } finally {
     capture.restore()
   }

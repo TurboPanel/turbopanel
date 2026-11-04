@@ -1,9 +1,10 @@
 /**
  * The daemon's X25519 sealing key (public half) and the sealed answer to
  * `/secrets/decrypt`. The daemon registers the key with a signature from its
- * Ed25519 identity key; the control plane seals decrypt answers to it when the
- * daemon lists `daemon-sealed-secrets-v1`, so an edge that terminates TLS in
- * front of the control plane never reads a plaintext secret.
+ * Ed25519 identity key; once a key is on file the control plane seals every
+ * decrypt answer to it, so an edge that terminates TLS in front of the control
+ * plane never reads a plaintext secret. The unsigned hello `features` list does
+ * not switch sealing off.
  */
 import { and, eq, gte, isNotNull, isNull, lt, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -36,9 +37,9 @@ export async function getDaemonSealingKey(
  * Store the key and add `daemon-sealed-secrets-v1` to the stored hello
  * features when it is missing: only a daemon with the feature registers, and
  * one that connected before this control plane knew the feature had it
- * dropped from its hello. Without this the decrypt route would keep answering
- * it in plaintext until the socket reconnected. The next hello replaces the
- * list as usual (a daemon rolled back to a build without the feature loses it).
+ * dropped from its hello. The list is informational (the sealed-secrets
+ * report shows it); the decrypt route seals on the key alone, so a later
+ * hello without the feature does not bring plaintext back.
  */
 export async function setDaemonSealingKey(
   db: Db,
@@ -132,7 +133,7 @@ type SealedSecretsRow = {
   plaintextSecretsAt: string | null
 }
 
-/** The same rule as the decrypt route: feature advertised and a key on file. */
+/** The same rule as the decrypt route: sealed whenever a key is on file. */
 export function sealedSecretsServerState(row: SealedSecretsRow): SealedSecretsServerState {
   const features = parseServerDaemonState(row.daemon)?.projection?.features ?? []
   const advertisesSealedSecrets = features.includes(DAEMON_SEALED_SECRETS_FEATURE)
@@ -148,7 +149,7 @@ export function sealedSecretsServerState(row: SealedSecretsRow): SealedSecretsSe
     advertisesSealedSecrets,
     sealingKey,
     plaintextSecretsAt: row.plaintextSecretsAt,
-    receivesPlaintext: !(advertisesSealedSecrets && sealingKey !== null),
+    receivesPlaintext: sealingKey === null,
   }
 }
 
