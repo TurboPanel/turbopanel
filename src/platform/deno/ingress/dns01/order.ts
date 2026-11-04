@@ -9,6 +9,7 @@ import { and, eq, ne } from 'drizzle-orm'
 import type { Db } from '../../../../db/connection.ts'
 import { instanceHostname, instanceUploadedCertificate } from '../../../../db/schema.ts'
 import type { ResolvedInstanceAcmeSettings } from '../../../../features/install/instance-acme-settings.ts'
+import { daemonNotLoadedError } from '../../../../features/install/instance-hostnames.ts'
 import type { DnsChallengeProvider } from '../../../../features/tls/dns-certificates/dns-provider.ts'
 import {
   AcmeError,
@@ -542,17 +543,22 @@ async function issue(
   return state
 }
 
-/** The new leaf goes out at once; a failed push is shown, and the next apply retries it. */
-async function pushToDaemon(deps: Dns01Deps, id: string): Promise<void> {
+/**
+ * The new leaf goes out at once; a failed push is shown, and the next apply
+ * that carries this pair (the edge trust tick resends it, as does Apply)
+ * clears the error.
+ */
+export async function pushToDaemon(
+  deps: Pick<Dns01Deps, 'db' | 'applyToDaemon'>,
+  id: string
+): Promise<void> {
   try {
     await deps.applyToDaemon()
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
     await deps.db
       .update(instanceHostname)
-      .set({
-        acmeLastError: `The certificate was issued but the daemon has not loaded it yet: ${reason}`,
-      })
+      .set({ acmeLastError: daemonNotLoadedError(reason) })
       .where(eq(instanceHostname.id, id))
   }
 }

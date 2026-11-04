@@ -15,6 +15,7 @@ import {
 import { resolveColocatedServerId } from '../../../../client/authn/install-state.ts'
 import type { DaemonCellRegistry } from '../../../../contracts/cell.ts'
 import type { Db } from '../../../../db/connection.ts'
+import { clearInstalledCertificateErrors } from '../../../../features/install/instance-hostnames.ts'
 import { resolveInstanceSecretSealing } from '../../../../features/install/instance-secret-sealing.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../../../lib/secrets/secrets.ts'
 
@@ -48,4 +49,5 @@ export async function pushHostnamesToDaemon(db: Db, deps: DaemonApplyDeps): Prom
   const result = await waitForPublicUrlsApply(deps.registry, serverId, payload)
   if (result.kind === 'timeout') throw new Error('the daemon did not answer in time')
   if (result.kind !== 'done') throw new Error(result.error)
+  await clearInstalledCertificateErrors(db, payload.hostnames)
 }
