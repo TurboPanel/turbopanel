@@ -6,16 +6,20 @@
  */
 import type { DnsChallengeProvider } from '../../../../features/tls/dns-certificates/dns-provider.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
+import { firstSequential } from '../../../../lib/sequential.ts'
 import { type ProviderZone, zoneForName } from '../accounts.ts'
 import type { PreflightCheck } from '../provider.ts'
 import { check } from '../planner.ts'
 import type { Dns01Failure } from './state.ts'
 
-/** The record types this module asks for; a thin seam over `Deno.resolveDns`. */
+/**
+ * The record types this module asks for; a thin seam over `Deno.resolveDns`.
+ * `resolver` (an IP address) asks that resolver instead of this host's own.
+ */
 export type DnsLookup = {
   caa(name: string): Promise<{ tag: string; value: string }[]>
-  ns(name: string): Promise<string[]>
-  addresses(name: string): Promise<string[]>
+  ns(name: string, resolver?: string): Promise<string[]>
+  addresses(name: string, resolver?: string): Promise<string[]>
   /** TXT values at `name` as one authoritative server (by address) answers. */
   txtAt(name: string, server: string): Promise<string[]>
 }
@@ -30,6 +34,8 @@ export type Dns01Preflight = {
 
 /** Let's Encrypt's CAA identity; its staging directory uses the same one. */
 export const LETS_ENCRYPT_CAA = ['letsencrypt.org'] as const
+/** Asked, in order, when this host's resolver returns nothing for a nameserver lookup. */
+export const PUBLIC_RESOLVERS = ['1.1.1.1', '8.8.8.8'] as const
 const LOOKUP_TIMEOUT_MS = 3_000
 
 function stop(
@@ -103,10 +109,22 @@ export async function caaAllows(
 }
 
 /**
- * The zone's nameserver names: the provider's own list first, then this
- * host's resolver. A resolver behind split DNS answers the zone locally and
- * lists no nameservers (or its own), so it is only the fallback. A provider
- * that cannot say, or refuses the read, leaves the resolver to answer.
+ * The first non-empty answer: this host's resolver, then each public resolver.
+ * A failed or empty lookup on one moves on to the next.
+ */
+function firstAnswer(ask: (resolver?: string) => Promise<string[]>): Promise<string[]> {
+  const resolvers: (string | undefined)[] = [undefined, ...PUBLIC_RESOLVERS]
+  return firstSequential(resolvers, async (resolver) => {
+    const found = await ask(resolver).catch(() => [])
+    return found.length > 0 ? found : undefined
+  }).then((found) => found ?? [])
+}
+
+/**
+ * The zone's nameserver names: the provider's own list first, then the
+ * resolvers. A resolver behind split DNS answers the zone locally and lists no
+ * nameservers (or its own), so it is only the fallback. A provider that cannot
+ * say, or refuses the read, leaves the resolvers to answer.
  */
 async function nameserverNames(
   provider: DnsChallengeProvider,
@@ -115,19 +133,31 @@ async function nameserverNames(
 ): Promise<string[]> {
   const listed = provider.nameservers ? await provider.nameservers(zone.id).catch(() => []) : []
   if (listed.length > 0) return listed
-  return await dns.ns(zone.name).catch(() => [])
+  return await firstAnswer((resolver) => dns.ns(zone.name, resolver))
 }
 
-async function nameserverAddresses(
-  provider: DnsChallengeProvider,
-  dns: DnsLookup,
-  zone: ProviderZone
-): Promise<string[]> {
-  const servers = await nameserverNames(provider, dns, zone)
+/** Every address of every nameserver; each name falls back to the public resolvers on its own. */
+async function nameserverAddresses(dns: DnsLookup, servers: readonly string[]): Promise<string[]> {
   const addresses = await Promise.all(
-    servers.map((server) => dns.addresses(server.replace(/\.$/, '')).catch(() => []))
+    servers.map((server) => {
+      const name = server.replace(/\.$/, '')
+      return firstAnswer((resolver) => dns.addresses(name, resolver))
+    })
   )
   return [...new Set(addresses.flat())]
+}
+
+/**
+ * Why no nameserver address was found. This is a lookup problem on this side
+ * (`dns-lookup`), never a refusal by the authority, so it backs off on its own
+ * schedule and does not count toward the failed-order limit.
+ */
+function lookupFailure(zone: ProviderZone, names: readonly string[]): Dns01Failure {
+  const detail =
+    names.length === 0
+      ? `No nameservers found for ${zone.name}: the DNS provider listed none, and neither this server's resolver nor the public resolvers returned NS records.`
+      : `Could not look up the addresses of the ${zone.name} nameservers (${names.join(', ')}) through this server's resolver or the public resolvers.`
+  return { cause: 'dns-lookup', detail }
 }
 
 export async function preflightDns01(input: {
@@ -158,11 +188,9 @@ export async function preflightDns01(input: {
     return stop(checks, { cause: 'caa-forbids', detail }, zone)
   }
   checks.push(check('caa', true, 'CAA records allow this certificate authority.'))
-  const nameservers = await nameserverAddresses(input.provider, dns, zone)
-  if (nameservers.length === 0) {
-    const detail = `No nameservers found for ${zone.name}: the DNS provider listed none and this server's resolver returned no NS records.`
-    return stop(checks, { cause: 'provider-error', detail }, zone)
-  }
+  const names = await nameserverNames(input.provider, dns, zone)
+  const nameservers = await nameserverAddresses(dns, names)
+  if (nameservers.length === 0) return stop(checks, lookupFailure(zone, names), zone)
   checks.push(check('nameservers', true, `Found ${nameservers.length} nameserver addresses.`))
   return { ok: true, checks, failure: null, zone, nameservers }
 }
@@ -224,10 +252,15 @@ function withTimeout(): { signal: AbortSignal } {
   return { signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) }
 }
 
+function via(resolver?: string): Deno.ResolveDnsOptions {
+  return resolver ? { ...withTimeout(), nameServer: { ipAddr: resolver, port: 53 } } : withTimeout()
+}
+
 /**
- * The real lookups. CAA, NS and addresses go through this host's resolver,
- * which split DNS may answer locally; `txtAt` asks one authoritative server
- * directly by address, because authoritative answers are the point there.
+ * The real lookups. CAA, NS and addresses go through this host's resolver
+ * (split DNS may answer it locally), or the public resolver named; `txtAt`
+ * asks one authoritative server directly by address, because authoritative
+ * answers are the point there.
  */
 export const denoDnsLookup: DnsLookup = {
   caa: async (name) =>
@@ -235,11 +268,11 @@ export const denoDnsLookup: DnsLookup = {
       tag: record.tag,
       value: record.value,
     })),
-  ns: (name) => Deno.resolveDns(name, 'NS', withTimeout()),
-  addresses: async (name) => {
+  ns: (name, resolver) => Deno.resolveDns(name, 'NS', via(resolver)),
+  addresses: async (name, resolver) => {
     const [v4, v6] = await Promise.all([
-      Deno.resolveDns(name, 'A', withTimeout()).catch(() => []),
-      Deno.resolveDns(name, 'AAAA', withTimeout()).catch(() => []),
+      Deno.resolveDns(name, 'A', via(resolver)).catch(() => []),
+      Deno.resolveDns(name, 'AAAA', via(resolver)).catch(() => []),
     ])
     return [...v4, ...v6]
   },

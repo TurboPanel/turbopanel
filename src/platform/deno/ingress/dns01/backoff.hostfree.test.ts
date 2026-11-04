@@ -2,12 +2,16 @@ import { assert, assertEquals } from '@std/assert'
 import { AcmeError } from '../../../../lib/acme/client.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
 import {
+  alertsFor,
   DNS01_BACKOFF_BASE_MS,
   DNS01_BACKOFF_CAP_MS,
+  DNS01_MAX_ATTEMPTS,
   Dns01AccountError,
+  failureState,
   mapAcmeFailure,
   nextAttemptAt,
 } from './backoff.ts'
+import { type Dns01Failure, type Dns01State, IDLE_STATE } from './state.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -80,4 +84,75 @@ test('each failure kind maps to one plain cause', () => {
     'provider-rate-limited'
   )
   assertEquals(mapAcmeFailure(new Error('x'.repeat(500)), NOW).detail.length, 200)
+})
+
+const LOOKUP: Dns01Failure = { cause: 'dns-lookup', detail: 'No nameservers found.' }
+const MINUTE = 60_000
+
+function fail(state: Dns01State, failure: Dns01Failure, now = NOW): Dns01State {
+  return failureState(state, failure, { now, random: () => 0, stopUntil: null })
+}
+
+test('a nameserver lookup failure backs off 1, 5, 15, 60 minutes, then hourly, and never stops', () => {
+  let state: Dns01State = { ...IDLE_STATE, stage: 'preflight' }
+  const delays: number[] = []
+  for (let n = 0; n < DNS01_MAX_ATTEMPTS + 3; n++) {
+    state = fail(state, LOOKUP)
+    delays.push((Date.parse(state.nextAttemptAt ?? '') - NOW.getTime()) / MINUTE)
+    assertEquals(state.stage, 'backoff')
+  }
+  assertEquals(delays, [1, 5, 15, 60, 60, 60, 60, 60, 60])
+  assertEquals(state.attempts, 0)
+  assertEquals(state.lookupFailures, DNS01_MAX_ATTEMPTS + 3)
+  assertEquals(state.lastError, { ...LOOKUP, at: NOW.toISOString() })
+})
+
+test('a lookup failure leaves the failed-order count alone, and an order failure still stops at the limit', () => {
+  const nearLimit: Dns01State = {
+    ...IDLE_STATE,
+    stage: 'backoff',
+    attempts: DNS01_MAX_ATTEMPTS - 1,
+  }
+  const looked = fail(nearLimit, LOOKUP)
+  assertEquals(looked.stage, 'backoff')
+  assertEquals(looked.attempts, DNS01_MAX_ATTEMPTS - 1)
+  const refused = fail(looked, { cause: 'caa-forbids', detail: 'CAA forbids' })
+  assertEquals(refused.stage, 'failed')
+  assertEquals(refused.attempts, DNS01_MAX_ATTEMPTS)
+  assertEquals(refused.nextAttemptAt, null)
+  assertEquals(refused.lookupFailures, 0)
+})
+
+test('authority refusals still count toward the limit as before', () => {
+  const causes = ['caa-forbids', 'txt-not-visible', 'acme-error', 'scope-missing'] as const
+  for (const cause of causes) {
+    let state: Dns01State = { ...IDLE_STATE }
+    for (let n = 1; n <= DNS01_MAX_ATTEMPTS; n++) {
+      state = fail(state, { cause, detail: cause })
+      assertEquals(state.attempts, n)
+      assertEquals(state.stage, n === DNS01_MAX_ATTEMPTS ? 'failed' : 'backoff', cause)
+    }
+  }
+})
+
+test('a lookup failure keeps the start times it is given and honours a stop time', () => {
+  const kept = failureState({ ...IDLE_STATE, attemptTimes: ['a', 'b'] }, LOOKUP, {
+    now: NOW,
+    random: () => 0,
+    stopUntil: new Date(NOW.getTime() + 30 * MINUTE),
+    attemptTimes: ['a'],
+  })
+  assertEquals(kept.attemptTimes, ['a'])
+  assertEquals(kept.nextAttemptAt, new Date(NOW.getTime() + 30 * MINUTE).toISOString())
+})
+
+test('a lookup failure alerts only once it repeats', () => {
+  const first = fail({ ...IDLE_STATE }, LOOKUP)
+  const second = fail(first, LOOKUP)
+  const third = fail(second, LOOKUP)
+  assertEquals(
+    [first, second, third].map((state) => alertsFor(state, LOOKUP)),
+    [false, false, true]
+  )
+  assertEquals(alertsFor(first, { cause: 'caa-forbids', detail: '' }), true)
 })
