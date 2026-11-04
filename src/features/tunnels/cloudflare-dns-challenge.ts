@@ -18,7 +18,7 @@ const REQUEST_TIMEOUT_MS = 15_000
 type Envelope = {
   success?: boolean
   errors?: { message?: string }[]
-  result?: { id?: string; content?: string } | { content?: string }[] | null
+  result?: { id?: string; content?: string; name_servers?: unknown } | { content?: string }[] | null
 }
 
 export function createCloudflareDnsChallenge(options: {
@@ -99,6 +99,16 @@ export function createCloudflareDnsChallenge(options: {
       return rows.flatMap((r) =>
         typeof r.content === 'string' ? [r.content.replace(/^"(.*)"$/, '$1')] : []
       )
+    },
+
+    async nameservers(zoneId: string): Promise<string[]> {
+      // The nameservers Cloudflare assigned to the zone (needs Zone Read).
+      const envelope = await call('GET', `/zones/${encodeURIComponent(zoneId)}`)
+      const zone = envelope?.result
+      const listed = zone && !Array.isArray(zone) ? zone.name_servers : undefined
+      return Array.isArray(listed)
+        ? listed.filter((name): name is string => typeof name === 'string' && name.length > 0)
+        : []
     },
 
     async present(input: ChallengeRecordInput): Promise<ChallengeRecordRef> {
