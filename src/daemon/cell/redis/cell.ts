@@ -925,10 +925,11 @@ export class RedisDaemonCell implements DaemonCell {
     // shortens a longer lifetime the request was enqueued with.
     const ackedTtlSeconds = Number(fields.ackedTtlSeconds)
     const extendedUntilMs = Date.now() + ackedTtlSeconds * 1000
+    const currentUntilMs = Date.parse(fields.expiresAt ?? '')
     const extend =
       Number.isFinite(ackedTtlSeconds) &&
       ackedTtlSeconds > 0 &&
-      !(Date.parse(fields.expiresAt ?? '') >= extendedUntilMs)
+      (Number.isNaN(currentUntilMs) || currentUntilMs < extendedUntilMs)
     if (extend) updates.expiresAt = nowIso(extendedUntilMs)
     await redis.hset(reqKey, updates)
     if (extend) await redis.expire(reqKey, ackedTtlSeconds)
