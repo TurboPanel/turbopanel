@@ -2773,12 +2773,58 @@ function validateCommandOutcomeFields(record: Record<string, unknown>): string |
   if (typeof record.ok !== 'boolean') return 'invalid ok'
   const errorIssue = validateOptionalError(record.error)
   if (errorIssue) return errorIssue
-  const resultIssue = validateCommandResult(record.result)
+  // Over the size cap is not a refusal: `validateDaemonInboundFrame` turns it
+  // into a failed outcome. Anything that is not JSON still is.
+  const resultIssue = validateBoundedJson(record.result, Number.POSITIVE_INFINITY, 'result')
   if (resultIssue) return resultIssue
   return (
     validateOptionalIsoTimestamp(record.daemonReceivedAt, 'daemonReceivedAt') ??
     validateOptionalIsoTimestamp(record.daemonRespondedAt, 'daemonRespondedAt')
   )
+}
+
+/** Ids written into the log note as they are; anything else is logged as `?`. */
+const LOGGABLE_OUTCOME_ID = /^[A-Za-z0-9_-]{1,64}$/
+
+/** UTF-8 bytes of a command result as JSON, or null when it is within the cap. */
+function oversizedResultBytes(result: unknown): number | null {
+  if (result === undefined) return null
+  const bytes = utf8ByteLength(JSON.stringify(result))
+  return bytes > MAX_DAEMON_WS_RESULT_JSON_BYTES ? bytes : null
+}
+
+/** The error a command gets when its result is over {@link MAX_DAEMON_WS_RESULT_JSON_BYTES}. */
+function oversizedResultError(bytes: number): string {
+  const limitKb = MAX_DAEMON_WS_RESULT_JSON_BYTES / 1024
+  return `The server's report was too large to store (${Math.ceil(bytes / 1024)} KB; limit ${limitKb} KB).`
+}
+
+/**
+ * A `command-outcome` whose id, timestamps and `ok` are valid but whose result
+ * is over the cap becomes a failed outcome for the same id, without the
+ * result. Refusing the frame would close the socket, and a daemon that keeps
+ * the outcome until it is confirmed would send it again on every attach. The
+ * daemon's own error, if any, comes first and the size note follows it, within
+ * the error cap.
+ */
+function failOversizedOutcome(
+  record: Record<string, unknown>
+): { message: DaemonMessage; note: string } | null {
+  const bytes = oversizedResultBytes(record.result)
+  if (bytes === null) return null
+  const { result: _dropped, ...rest } = record
+  const sizeNote = oversizedResultError(bytes)
+  // The daemon's error leads: the consumer reads prefixes such as
+  // `cancelled: ` at its start. Room is kept for the size note after it.
+  const error =
+    typeof record.error === 'string' && record.error !== ''
+      ? `${record.error.slice(0, MAX_DAEMON_WS_ERROR_CHARS - sizeNote.length - 1)} ${sizeNote}`
+      : sizeNote
+  const id = typeof record.id === 'string' && LOGGABLE_OUTCOME_ID.test(record.id) ? record.id : '?'
+  return {
+    message: { ...rest, ok: false, error } as DaemonMessage,
+    note: `command-outcome id=${id} result of ${bytes} bytes over the ${MAX_DAEMON_WS_RESULT_JSON_BYTES} byte cap recorded as failed`,
+  }
 }
 
 /**
@@ -2811,7 +2857,9 @@ function ignoredInboundFrame(reason: string): { ok: false; ignored: true; reason
  * An unrecognized `type` on an otherwise well-formed object is `ignored`
  * (the peer learned a message this process has not). Oversized frames,
  * invalid JSON, a non-object body, and a known type that fails field
- * validation stay rejections.
+ * validation stay rejections. A `command-outcome` whose only fault is a result
+ * over the cap is accepted as a failed outcome (see `failOversizedOutcome`),
+ * so it is stored and acknowledged instead of resent on every attach.
  */
 export function validateDaemonInboundFrame(raw: string): DaemonInboundFrameResult {
   if (utf8ByteLength(raw) > MAX_DAEMON_WS_FRAME_BYTES) {
@@ -2837,6 +2885,11 @@ export function validateDaemonInboundFrame(raw: string): DaemonInboundFrameResul
     return typeIssue.startsWith(UNKNOWN_VALUE_PREFIX)
       ? ignoredInboundFrame(typeIssue)
       : rejectedInboundFrame(typeIssue)
+  }
+
+  if (parsed.type === 'command-outcome') {
+    const failed = failOversizedOutcome(parsed)
+    if (failed) return { ok: true, message: failed.message, notes: [failed.note] }
   }
 
   if (parsed.type === 'hello' && Array.isArray(parsed.features)) {

@@ -89,6 +89,7 @@ import {
 } from './command-recovery.ts'
 import { touchServerMetadata } from '../servers/server-registry.ts'
 import { dispatchDaemonInboundMessage } from '../../daemon/deno-ws.ts'
+import { validateDaemonInboundFrame } from '../../contracts/cell-protocol.ts'
 import type { CommandQueue } from './queue.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
@@ -7735,6 +7736,61 @@ test('an outcome the server sends again after a reconnect is confirmed and settl
       .where(eq(deployment.serverId, ctx.serverId))
     assertEquals(row?.status, 'applied')
     assertEquals(row?.applied, 2)
+  })
+})
+
+test('an outcome whose result is over the cap is confirmed and fails the deploy', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 2 * MIN,
+      silentMs: 0,
+      recovery: true,
+    })
+    const cells = survivingCellRequests(ctx.serverId)
+    cells.requests.set(record.id, ACKED_REQUEST(ctx.serverId, record.id))
+    const { queue } = fakeQueue()
+
+    // The frame as the daemon sends it: a result well over the 64 KB cap.
+    const finishedAt = new Date().toISOString()
+    const validated = validateDaemonInboundFrame(
+      JSON.stringify({
+        type: 'command-outcome',
+        id: record.id,
+        ok: true,
+        result: { containers: [], log: 'x'.repeat(70 * 1024) },
+        at: finishedAt,
+        daemonRespondedAt: finishedAt,
+      })
+    )
+    if (!validated.ok) throw new Error(`frame refused: ${validated.reason}`)
+
+    const replies: unknown[] = []
+    await dispatchDaemonInboundMessage({
+      cell: cells.process().getCell(),
+      db: ctx.db,
+      serverId: ctx.serverId,
+      connectionId: 'conn-oversized-result',
+      message: validated.message,
+      reply: (message) => replies.push(message),
+    })
+    assertEquals(replies.length, 1)
+    assertEquals((replies[0] as { type: string }).type, 'command-outcome-ack')
+    assertEquals((replies[0] as { id: string }).id, record.id)
+
+    await processCommandEnvelope(ctx.db, cells.process(), buildEnvelope(record, ctx.serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    })
+    assertEquals(cells.requests.get(record.id)?.status, 'failed')
+    assertEquals(cells.requests.get(record.id)?.result, undefined)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'failed')
+    assertEquals(stored?.error, "The server's report was too large to store (71 KB; limit 64 KB).")
   })
 })
 
