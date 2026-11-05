@@ -250,6 +250,8 @@ test('attachDaemonStateToServer mints a new key id when the same key is presente
   assertEquals(result.keyId !== originalId, true)
   assertEquals(fake.getKey()?.fingerprint, activeKey.fingerprint)
   assertEquals(fake.getKey()?.revokedAt, null)
+  // The same key presented again still drops the old sealing key.
+  assertClearedSealingKey(fake.getUpdates())
 })
 
 test('attachDaemonStateToServer throws when the server row is missing', async () => {

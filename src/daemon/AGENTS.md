@@ -151,7 +151,8 @@ daemon registers a sealing key without opening an envelope on reconcile too.
 The key stays on file until the server's identity key is replaced (enrollment
 attach) or removed (`clearServerDaemonState`), which clear
 `sealing_key_kid`, `sealing_key_pub` and `sealing_key_reported_at` with it; the
-new daemon registers its own key before it asks for a secret. Recovery for a
+new daemon registers its own key when it connects with the new key id, and the
+server is treated as one with no key until that lands. Recovery for a
 host rolled back (break glass) to a build without the feature is an operator
 clearing `server.sealing_key_kid` and `sealing_key_pub`; nothing on the wire
 can. The superadmin read `GET

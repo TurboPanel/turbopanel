@@ -151,9 +151,11 @@ function clearedProjectionColumns() {
  * it cannot open until it registers again. Clearing it is no plaintext
  * downgrade a token holder can reach: only an enrollment signed with a new
  * identity key (license or owner re-enroll ticket) or an administrator removing
- * the key gets here, and the new daemon registers its own key, signed with its
- * own identity key, before it asks for a secret. Sealing on every path keys on
- * this key alone, so clearing it is also what resets that rule for the server.
+ * the key gets here. The new daemon registers its own key, signed with its own
+ * identity key, when it connects with the new key id; until that lands the
+ * server is treated as one with no key (plaintext answers and command
+ * payloads). Sealing on every path keys on this key alone, so clearing it is
+ * also what resets that rule for the server.
  */
 function clearedSealingKeyColumns() {
   return {
