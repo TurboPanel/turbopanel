@@ -38,7 +38,7 @@ function fakeIo(opts: {
     removed,
     runs,
     mkdirs,
-    env: (key) => (key === 'TURBOPANEL_STATE_DIR' ? '/state/' : undefined),
+    stateDir: () => '/state/',
     makeTempFile: (options) => {
       if (options.dir === undefined && opts.tempDenied) {
         return Promise.reject(new Deno.errors.NotCapable('Requires write access to "/tmp"'))
@@ -137,12 +137,6 @@ test('the openssl issuer check reads the leaf from standard input', async () => 
 })
 
 test('the scratch folder sits under the instance folder of the state tree', () => {
-  assertEquals(
-    opensslScratchDir(() => undefined),
-    '/var/lib/turbopanel/instance/tmp'
-  )
-  assertEquals(
-    opensslScratchDir(() => ' /srv/state// '),
-    '/srv/state/instance/tmp'
-  )
+  assertEquals(opensslScratchDir(undefined), '/var/lib/turbopanel/instance/tmp')
+  assertEquals(opensslScratchDir(' /srv/state// '), '/srv/state/instance/tmp')
 })

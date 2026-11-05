@@ -89,7 +89,8 @@ function isDenied(err: unknown): boolean {
  * host-free tests pass their own so a denied write can be proven harmless.
  */
 export type OpensslCheckIo = {
-  env: (key: string) => string | undefined
+  /** `TURBOPANEL_STATE_DIR`, when set. */
+  stateDir: () => string | undefined
   makeTempFile: (options: { dir?: string; prefix: string; suffix: string }) => Promise<string>
   mkdir: (path: string, options: { recursive: boolean; mode: number }) => Promise<void>
   writeTextFile: (path: string, data: string) => Promise<void>
@@ -123,7 +124,7 @@ async function spawnOpenssl(args: string[], stdin: string): Promise<boolean> {
 
 function denoOpensslCheckIo(): OpensslCheckIo {
   return {
-    env: (key) => Deno.env.get(key),
+    stateDir: () => Deno.env.get('TURBOPANEL_STATE_DIR'),
     makeTempFile: (options) => Deno.makeTempFile(options),
     mkdir: (path, options) => Deno.mkdir(path, options),
     writeTextFile: (path, data) => Deno.writeTextFile(path, data),
@@ -141,8 +142,8 @@ const SCRATCH_PREFIX = 'tp-uploaded-trust-'
  * denied there, and `<state>/tls` belongs to root. `<state>/instance` is the
  * instance user's own folder (its HOME lives under it).
  */
-export function opensslScratchDir(env: (key: string) => string | undefined): string {
-  const state = env('TURBOPANEL_STATE_DIR')?.trim().replace(/\/+$/, '') || '/var/lib/turbopanel'
+export function opensslScratchDir(stateDir: string | undefined): string {
+  const state = stateDir?.trim().replace(/\/+$/, '') || '/var/lib/turbopanel'
   return `${state}/instance/tmp`
 }
 
@@ -169,7 +170,7 @@ async function writeVerifyPem(io: OpensslCheckIo, body: string): Promise<string>
   try {
     return await scratchFileIn(io, body)
   } catch {
-    return await scratchFileIn(io, body, opensslScratchDir(io.env))
+    return await scratchFileIn(io, body, opensslScratchDir(io.stateDir()))
   }
 }
 
