@@ -422,6 +422,63 @@ test('PATCH /organizations/:id rejects invalid names and non-managers', async ()
   )
 })
 
+test('PATCH /organizations/:id sets the icon and the emoji icon setting', async () => {
+  await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const patch = (body: Record<string, unknown>) =>
+      app.request(`/organizations/${organizationId}`, {
+        method: 'PATCH',
+        headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    type OrgBody = { organization: { icon: string | null; isEmojiIconAllowed: boolean } }
+
+    const emoji = await patch({ icon: '🚀' })
+    assertEquals(emoji.status, 200)
+    const emojiOrg = ((await emoji.json()) as OrgBody).organization
+    assertEquals(emojiOrg.icon, '🚀')
+    assertEquals(emojiOrg.isEmojiIconAllowed, true)
+
+    assertEquals((await patch({ icon: 'unicorn' })).status, 400)
+    assertEquals((await patch({ isEmojiIconAllowed: 'no' })).status, 400)
+
+    // Turning emoji icons off keeps the stored emoji.
+    const off = await patch({ isEmojiIconAllowed: false })
+    assertEquals(off.status, 200)
+    assertEquals(((await off.json()) as OrgBody).organization.icon, '🚀')
+
+    const refused = await patch({ icon: '👍🏽' })
+    assertEquals(refused.status, 422)
+    assertEquals(await refused.json(), {
+      error: 'emoji_icons_off',
+      message: 'This organization has emoji icons turned off. Pick one of the regular icons.',
+    })
+
+    // A key is always allowed; an emoji with the setting turned on in the same request is too.
+    assertEquals((await patch({ icon: 'globe' })).status, 200)
+    const both = await patch({ icon: '🇺🇸', isEmojiIconAllowed: true })
+    assertEquals(both.status, 200)
+    const bothOrg = ((await both.json()) as OrgBody).organization
+    assertEquals(bothOrg.icon, '🇺🇸')
+    assertEquals(bothOrg.isEmojiIconAllowed, true)
+
+    const list = await app.request('/organizations', { headers: { Cookie: cookie } })
+    const listed = (
+      (await list.json()) as { organizations: Array<{ id: string } & OrgBody['organization']> }
+    ).organizations.find((row) => row.id === organizationId)
+    assertEquals(listed?.icon, '🇺🇸')
+    assertEquals(listed?.isEmojiIconAllowed, true)
+
+    const auditRows = await db
+      .select({ action: audit.action })
+      .from(audit)
+      .where(eq(audit.organizationId, organizationId))
+    const actions = auditRows.map((row) => row.action)
+    assertEquals(actions.filter((a) => a === 'organization.icon.set').length, 3)
+    assertEquals(actions.filter((a) => a === 'organization.emoji_icons.set').length, 2)
+  })
+})
+
 test('PUT /organizations/:id/docker-networking replaces, echoes, clears, and 409s on a colliding pool', async () => {
   await withOrgFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)

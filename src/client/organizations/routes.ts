@@ -70,7 +70,8 @@ import {
   parseHostDefaultsPatch,
   parseManagedDefaultsPatch,
   parseOrganizationCreateDisplayName,
-  parseOrganizationPatchDisplayName,
+  organizationPatchAudits,
+  parseOrganizationPatch,
   parseProjectSettingsPatch,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
@@ -89,6 +90,7 @@ import {
   validateManagedDefaults,
 } from './routes-helpers.ts'
 import { registerOrganizationFabricRoutes } from './fabric-routes.ts'
+import { EMOJI_ICONS_OFF_BODY } from '../../lib/icons.ts'
 
 async function loadOrganizationRecord(db: Db, id: string) {
   const [orgRow] = await db
@@ -96,6 +98,8 @@ async function loadOrganizationRecord(db: Db, id: string) {
       id: organization.id,
       name: organization.name,
       createdAt: organization.createdAt,
+      icon: organization.icon,
+      isEmojiIconAllowed: organization.isEmojiIconAllowed,
     })
     .from(organization)
     .where(eq(organization.id, id))
@@ -189,24 +193,41 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const parsed = parseOrganizationPatchDisplayName(body)
+    const parsed = parseOrganizationPatch(body)
     if (!parsed.ok) {
       return c.json({ error: parsed.error }, parsed.status)
     }
+    const { patch } = parsed
 
     const orgRow = await loadOrganizationRecord(db, id)
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
+    // The setting in the same request wins over the stored one, so turning
+    // emoji icons on and picking an emoji is one save.
+    if (patch.iconIsEmoji && !(patch.isEmojiIconAllowed ?? orgRow.isEmojiIconAllowed)) {
+      return c.json(EMOJI_ICONS_OFF_BODY, 422)
+    }
+
     await db
       .update(organization)
       .set({
-        name: parsed.name,
+        ...(patch.name === undefined ? {} : { name: patch.name }),
+        ...(patch.icon === undefined ? {} : { icon: patch.icon }),
+        ...(patch.isEmojiIconAllowed === undefined
+          ? {}
+          : { isEmojiIconAllowed: patch.isEmojiIconAllowed }),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(organization.id, id))
 
     const updated = await loadOrganizationRecord(db, id)
     if (!updated) return c.json({ error: 'Not found' }, 404)
+
+    await Promise.all(
+      organizationPatchAudits(patch, orgRow).map(({ action, context }) =>
+        recordOrgSettingAudit(c, scope, action, context)
+      )
+    )
 
     return c.json({
       ok: true as const,

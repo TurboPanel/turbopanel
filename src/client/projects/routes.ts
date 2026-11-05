@@ -23,6 +23,8 @@ import {
   type CatalogEntry,
 } from './catalog/index.ts'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
+import { isEmojiIconAllowedForOrganization } from '../../features/organizations/emoji-icons.ts'
+import { EMOJI_ICONS_OFF_BODY, isEmojiIcon } from '../../lib/icons.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -367,6 +369,8 @@ async function parseCreateProjectInput(
   const extras = parseCreateProjectExtras(c, body, projectType)
   if (extras instanceof Response) return extras
   const { metadata, icon } = extras
+  const emojiRefused = await refuseEmojiIconWhenOff(c, db, organizationId, icon)
+  if (emojiRefused) return emojiRefused
 
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
@@ -397,6 +401,21 @@ async function parseCreateProjectInput(
     serverId,
     defaultEnvironmentName,
   }
+}
+
+/**
+ * 422 `emoji_icons_off` when `icon` is an emoji and the organization has emoji
+ * icons turned off; keys and null always pass.
+ */
+async function refuseEmojiIconWhenOff(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  icon: string | null | undefined
+): Promise<Response | undefined> {
+  if (!isEmojiIcon(icon)) return undefined
+  if (await isEmojiIconAllowedForOrganization(db, organizationId)) return undefined
+  return c.json(EMOJI_ICONS_OFF_BODY, 422)
 }
 
 /** Caller metadata and the optional icon of a create request. */
@@ -1082,6 +1101,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind
+    const emojiRefused = await refuseEmojiIconWhenOff(c, db, organizationId, patchFields.icon)
+    if (emojiRefused) return emojiRefused
 
     const conflict = await checkProjectPatchConflicts(c, db, organizationId, id, body, patchFields)
     if (conflict) return conflict
