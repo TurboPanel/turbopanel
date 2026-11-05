@@ -140,6 +140,12 @@
       "tag": "0022_command_server_open",
       "when": 1793802354103,
       "sha256": "4cb592ef47748054dc0326bc133c6f4ab3b1fc7d78730e281ea4e9f55bea31cb"
+    },
+    {
+      "idx": 23,
+      "tag": "0023_organization_icon_and_emoji_icons",
+      "when": 1793836684611,
+      "sha256": "8c995d3fbd388abbf4062053dad9d61ad9f8772f17d83b06b050b5c8b1ea15f0"
     }
   ]
 }

@@ -1137,6 +1137,71 @@ test('PATCH /projects/:id rejects renaming onto another project name in the org'
   })
 })
 
+test('project icons take a key or one emoji, and emoji only while the organization allows them', async () => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'Content-Type': 'application/json',
+    }
+    const create = (name: string, icon: unknown) =>
+      app.request('/projects', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ type: 'empty', workspaceId, name, icon }),
+      })
+    const storedIcon = async (id: string) =>
+      (await db.select({ icon: project.icon }).from(project).where(eq(project.id, id)).limit(1))[0]
+        ?.icon
+
+    const rocket = await create('Rocket Project', '🚀')
+    assertEquals(rocket.status, 200)
+    const { id } = (await rocket.json()) as { id: string }
+    assertEquals(await storedIcon(id), '🚀')
+    assertEquals((await create('Two Rockets', '🚀🚀')).status, 400)
+
+    await db
+      .update(organization)
+      .set({ isEmojiIconAllowed: false })
+      .where(eq(organization.id, organizationId))
+    const refusedBody = {
+      error: 'emoji_icons_off',
+      message: 'This organization has emoji icons turned off. Pick one of the regular icons.',
+    }
+    const refusedCreate = await create('Thumbs Project', '👍🏽')
+    assertEquals(refusedCreate.status, 422)
+    assertEquals(await refusedCreate.json(), refusedBody)
+
+    const refusedPatch = await app.request(`/projects/${id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ icon: '👩‍💻' }),
+    })
+    assertEquals(refusedPatch.status, 422)
+    assertEquals(await refusedPatch.json(), refusedBody)
+    // The stored emoji is kept; the screens show the default instead.
+    assertEquals(await storedIcon(id), '🚀')
+
+    // Re-sending the emoji it already stores is not a new emoji: a whole-form save still works.
+    const resendPatch = await app.request(`/projects/${id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ name: 'Rocket Project Renamed', icon: '🚀' }),
+    })
+    assertEquals(resendPatch.status, 200)
+    assertEquals(await storedIcon(id), '🚀')
+
+    const keyPatch = await app.request(`/projects/${id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ icon: 'globe' }),
+    })
+    assertEquals(keyPatch.status, 200)
+    assertEquals(await storedIcon(id), 'globe')
+  })
+})
+
 test('uniq_project_organization_name is the lock: a duplicate past the app pre-check is refused by Postgres and maps to 409', async () => {
   await withProjectFixtures(async ({ db, organizationId, workspaceId }) => {
     await db.insert(project).values({ name: 'Race Winner', workspaceId, organizationId })
