@@ -192,7 +192,17 @@ import {
   parseProofVersion,
   type ProofVersion,
 } from './authn/proof-version.ts'
-import { markChallengeUsed } from '../features/servers/daemon-nonce.ts'
+import { markChallengeUsed, markRequestNonceUsed } from '../features/servers/daemon-nonce.ts'
+import { raiseServerTrustLevel } from '../features/servers/trust-level.ts'
+import {
+  DAEMON_SIGNATURE_HEADER,
+  REQUEST_MAX_SKEW_SECONDS,
+  SIGNED_REQUEST_REQUIRED_ERROR,
+  daemonKeyThumbprint,
+  verifyDaemonRequest,
+} from './authn/request-signature.ts'
+import { DAEMON_PROOF_TRUST_LEVEL } from './authn/attach-proof.ts'
+import { panelFingerprintSource } from './authn/upgrade-signature.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
 import { createNoopRateLimiter } from './rate-limit/contracts.ts'
 import {
@@ -227,6 +237,13 @@ async function readRequestBodyWithLimit(
   c: Context,
   maxBytes: number
 ): Promise<{ ok: true; text: string } | { ok: false }> {
+  // A signed request's body was already read (and checked) by the key gate.
+  const signedBody = (c as Context<DaemonApiEnv>).get('daemonBody')
+  if (signedBody) {
+    return signedBody.byteLength > maxBytes
+      ? { ok: false }
+      : { ok: true, text: new TextDecoder().decode(signedBody) }
+  }
   const bodyRead = await readBodyWithByteLimit(c, maxBytes)
   if (!bodyRead.ok) return { ok: false }
   return { ok: true, text: new TextDecoder().decode(bodyRead.bytes) }
@@ -1325,10 +1342,22 @@ type DaemonApiEnv = {
     daemonServerId: string
     daemonKeyId: string
     daemonTokenId: string
+    /** The token's `cnf.jkt`: the request must be signed by that daemon key. */
+    daemonCnfJkt?: string
+    /** The body of a signed request, read once by the key gate. */
+    daemonBody?: Uint8Array<ArrayBuffer>
     /** Bound by the app (`bindContextValue`); absent when no secrets are configured. */
     dataEncryptionSecrets?: DerivedSecretsConfig
   }
 }
+
+/**
+ * Per-route settings of the daemon key gate: the body limit a signed
+ * request is read within, and whether its nonce may be used only once (routes
+ * that change state or hand out secrets; `/metrics` and transcript chunks are
+ * checked for clock skew only, so they never write a nonce row).
+ */
+type DaemonKeyGate = { maxBodyBytes: number; singleUse: boolean }
 
 /** `Retry-After` (seconds) sent with a daemon REST 429. */
 const DAEMON_REST_RETRY_AFTER_SECONDS = '5'
@@ -1643,7 +1672,106 @@ export function registerDaemonApiRoutes<E extends Env>(
     c.set('daemonServerId', payload.sub)
     c.set('daemonKeyId', payload.kid)
     c.set('daemonTokenId', payload.jti)
+    if (payload.cnf) c.set('daemonCnfJkt', payload.cnf.jkt)
     return next()
+  }
+
+  /** The control plane keys a pinned daemon may name in a signature: current, and next when set. */
+  const panelFingerprints = panelFingerprintSource(options.panelIdentity)
+
+  /** Check this request's daemon signature against the server's current key. */
+  const checkRequestSignature = async (
+    c: Context<DaemonApiEnv>,
+    state: ServerDaemonStateWithMetadata,
+    body: Uint8Array<ArrayBuffer>
+  ): Promise<
+    | { ok: true; value: { nonce: string; iat: number } }
+    | { ok: false; status: 400 | 401 | 503; error: string }
+  > => {
+    const fingerprints = await panelFingerprints()
+    if (!fingerprints) return { ok: false, status: 503, error: 'Panel identity unavailable' }
+    return await verifyDaemonRequest({
+      header: c.req.header(DAEMON_SIGNATURE_HEADER),
+      method: c.req.method,
+      pathname: new URL(c.req.url).pathname,
+      body,
+      keyId: state.key.id,
+      publicJwk: state.key.publicJwk,
+      panelFingerprints: fingerprints,
+      nowMs: Date.now(),
+    })
+  }
+
+  /**
+   * A request must be signed by the daemon key when its token is bound to that
+   * key (`cnf`) or the server already proved itself with its key
+   * (`trust_level` 2). The body is read here once, within the route's limit,
+   * and handed on through `daemonBody`. Null when the request may go on.
+   */
+  const refuseUnsignedRequest = async (
+    c: Context<DaemonApiEnv>,
+    db: Db,
+    state: ServerDaemonStateWithMetadata,
+    gate: DaemonKeyGate
+  ): Promise<Response | null> => {
+    const cnf = c.get('daemonCnfJkt')
+    if (!cnf && (state.trustLevel ?? 0) < DAEMON_PROOF_TRUST_LEVEL) return null
+    if (cnf && cnf !== (await daemonKeyThumbprint(state.key.publicJwk))) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    if (contentLengthExceeds(c, gate.maxBodyBytes)) {
+      return c.json({ ok: false, error: 'request body too large' }, 413)
+    }
+    const bodyRead = await readBodyWithByteLimit(c, gate.maxBodyBytes)
+    if (!bodyRead.ok) return c.json({ ok: false, error: 'request body too large' }, 413)
+    const body = new Uint8Array(bodyRead.bytes)
+    const verified = await checkRequestSignature(c, state, body)
+    if (!verified.ok) return c.json({ ok: false, error: verified.error }, verified.status)
+    if (gate.singleUse) {
+      const fresh = await markRequestNonceUsed(
+        db,
+        c.get('daemonServerId'),
+        verified.value.nonce,
+        new Date((verified.value.iat + REQUEST_MAX_SKEW_SECONDS) * 1000)
+      )
+      if (!fresh) return c.json({ ok: false, error: 'Request replayed' }, 401)
+    }
+    c.set('daemonBody', body)
+    return null
+  }
+
+  /**
+   * `/auth/session` signed by the daemon key: the token is bound to that key
+   * (`cnf`) and the server is raised to `trust_level` 2, after which every
+   * request must be signed. Unsigned stays a bearer token, unless the server
+   * already proved itself (then refused).
+   */
+  const bindSessionToDaemonKey = async (
+    c: Context<DaemonApiEnv>,
+    db: Db,
+    serverId: string,
+    state: ServerDaemonStateWithMetadata,
+    bodyText: string
+  ): Promise<{ jkt?: string } | { refusal: { status: 400 | 403 | 503; error: string } }> => {
+    const trustLevel = state.trustLevel ?? 0
+    if (!c.req.header(DAEMON_SIGNATURE_HEADER)) {
+      return trustLevel >= DAEMON_PROOF_TRUST_LEVEL
+        ? { refusal: { status: 403, error: SIGNED_REQUEST_REQUIRED_ERROR } }
+        : {}
+    }
+    const verified = await checkRequestSignature(c, state, new TextEncoder().encode(bodyText))
+    if (!verified.ok) {
+      // 401 would send the daemon into a token refresh, so a bad proof here is
+      // a 403; and a header that is present but unreadable is a bad signature,
+      // never `Signed request required` (which the daemon treats as permanent).
+      if (verified.status !== 401)
+        return { refusal: { status: verified.status, error: verified.error } }
+      return { refusal: { status: 403, error: 'Invalid request signature' } }
+    }
+    if (trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
+      await raiseServerTrustLevel(db, serverId, DAEMON_PROOF_TRUST_LEVEL)
+    }
+    return { jkt: await daemonKeyThumbprint(state.key.publicJwk) }
   }
 
   /**
@@ -1652,19 +1780,23 @@ export function registerDaemonApiRoutes<E extends Env>(
    * and rate limiting so limiter tests can still exercise 429 without a DB.
    * When no DB is bound (unit tests), JWT signature/expiry alone gate the route.
    */
-  const requireActiveDaemonKey = async (c: Context<DaemonApiEnv>, next: Next) => {
-    const db = getDb(c)
-    if (db === undefined) {
-      return next()
+  const requireActiveDaemonKey =
+    (gate: DaemonKeyGate) => async (c: Context<DaemonApiEnv>, next: Next) => {
+      const db = getDb(c)
+      if (db === undefined) {
+        // Without a database the daemon key cannot be read, so a key-bound
+        // token cannot be checked either.
+        return c.get('daemonCnfJkt') ? c.json({ ok: false, error: 'unauthorized' }, 401) : next()
+      }
+      const serverId = c.get('daemonServerId')
+      const keyId = c.get('daemonKeyId')
+      const keyState = await loadActiveDaemonKeyState(db, serverId, keyId)
+      if (!keyState.ok) {
+        return c.json({ ok: false, error: 'unauthorized' }, 401)
+      }
+      const refused = await refuseUnsignedRequest(c, db, keyState.daemonState, gate)
+      return refused ?? next()
     }
-    const serverId = c.get('daemonServerId')
-    const keyId = c.get('daemonKeyId')
-    const keyState = await loadActiveDaemonKeyState(db, serverId, keyId)
-    if (!keyState.ok) {
-      return c.json({ ok: false, error: 'unauthorized' }, 401)
-    }
-    return next()
-  }
 
   // Co-located self-hosted daemons poll this before opening the daemon WS.
   // Returns 503 until the install wizard has created org + superadmin.
@@ -2073,10 +2205,24 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: licenseState.error }, licenseState.status)
     }
 
+    const binding = await bindSessionToDaemonKey(
+      c,
+      db,
+      serverId,
+      keyState.daemonState,
+      bodyRead.text
+    )
+    if ('refusal' in binding) {
+      return c.json({ ok: false, error: binding.refusal.error }, binding.refusal.status)
+    }
+
     await touchDaemonKeyLastUsed(db, serverId)
     await touchServerMetadata(db, serverId, { machineKey, hostname })
 
-    const issued = await issueDaemonJwt({ sub: serverId, kid: keyId }, secrets)
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: keyId, ...(binding.jkt ? { cnf: { jkt: binding.jkt } } : {}) },
+      secrets
+    )
     return c.json(
       {
         token: issued.token,
@@ -2117,7 +2263,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/commands/:commandId/log',
     requireDaemonJwt,
     enforceJwtRestLimit('commands-log'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_EXECUTION_LOG_CHUNK_BODY_BYTES, singleUse: false }),
     async (c) => {
       const daemonServerId = c.get('daemonServerId')
       const commandId = normalizeRequiredString(c.req.param('commandId'))
@@ -2198,7 +2344,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/metrics',
     requireDaemonJwt,
     enforceJwtMetricsLimit,
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_METRICS_PAYLOAD_BYTES, singleUse: false }),
     async (c) => {
       const serverId = c.get('daemonServerId')
 
@@ -2317,7 +2463,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/secrets/decrypt',
     requireDaemonJwt,
     enforceJwtRestLimit('secrets-decrypt'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_SECRETS_DECRYPT_BODY_BYTES, singleUse: true }),
     async (c) => {
       if (!secretsConfig) {
         return c.json({ ok: false, error: 'decryption unavailable' }, 503)
@@ -2394,7 +2540,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/servers/self/sealing-key',
     requireDaemonJwt,
     enforceJwtRestLimit('sealing-key'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_SEALING_KEY_BODY_BYTES, singleUse: true }),
     async (c) => {
       const db = getDb(c)
       if (!db) return c.json({ ok: false, error: 'storage unavailable' }, 503)
@@ -2432,7 +2578,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/tls/issued',
     requireDaemonJwt,
     enforceJwtRestLimit('tls-issued'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_TLS_ISSUED_BODY_BYTES, singleUse: true }),
     async (c) => {
       const bodyRead = await readBoundedJsonBody(c, MAX_TLS_ISSUED_BODY_BYTES)
       if (!bodyRead.ok) return bodyRead.response
@@ -2489,15 +2635,19 @@ export function registerDaemonApiRoutes<E extends Env>(
    * change goes live to prove it can still reach the control plane with a
    * valid token; it reads nothing and the control plane runs no test of its own.
    */
-  daemon.get('/ping', requireDaemonJwt, enforceJwtRestLimit('ping'), requireActiveDaemonKey, (c) =>
-    c.json({ ok: true, at: new Date().toISOString() }, 200)
+  daemon.get(
+    '/ping',
+    requireDaemonJwt,
+    enforceJwtRestLimit('ping'),
+    requireActiveDaemonKey({ maxBodyBytes: 0, singleUse: true }),
+    (c) => c.json({ ok: true, at: new Date().toISOString() }, 200)
   )
 
   daemon.post(
     '/deployments/secrets/rehydrate',
     requireDaemonJwt,
     enforceJwtRestLimit('secrets-rehydrate'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_SECRETS_DECRYPT_BODY_BYTES, singleUse: true }),
     async (c) => {
       const db = getDb(c)
       if (!db) {
@@ -2528,7 +2678,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/host/docker-networking',
     requireDaemonJwt,
     enforceJwtRestLimit('host-docker-networking'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: 0, singleUse: false }),
     async (c) => {
       const db = getDb(c)
       if (!db) {

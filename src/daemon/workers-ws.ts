@@ -12,12 +12,19 @@ import { extractCloudflareGeo } from '../features/geo/server-geo.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
 import { daemonConnectRateLimitKey } from './rate-limit/keys.ts'
 import { resolvePeerAddress } from '../lib/peer-address.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { refuseUnsignedDaemonUpgrade } from './authn/upgrade-signature.ts'
 
 const CELL_SERVER_ID_HEADER = 'X-Turbopanel-Cell-Server-Id'
 const CELL_GEO_HEADER = 'X-Turbopanel-Cell-Geo'
 const REAL_IP_HEADER = 'X-Real-IP'
 /** `server.trust_level` read at upgrade; the cell refuses an unsigned session at 1 or more. */
 export const CELL_TRUST_LEVEL_HEADER = 'X-Turbopanel-Cell-Trust-Level'
+/**
+ * `<keyId>:<x>` of the server's current daemon key, read at upgrade, so the
+ * cell checks the daemon's attach proof without a database read.
+ */
+export const CELL_DAEMON_KEY_HEADER = 'X-Turbopanel-Cell-Daemon-Key'
 
 /** Internal headers stamped by the Workers isolate — never pass through from clients. */
 const INTERNAL_CELL_FORWARD_HEADERS = [
@@ -25,12 +32,15 @@ const INTERNAL_CELL_FORWARD_HEADERS = [
   CELL_GEO_HEADER,
   REAL_IP_HEADER,
   CELL_TRUST_LEVEL_HEADER,
+  CELL_DAEMON_KEY_HEADER,
 ] as const
 
 export type WorkersDaemonWebSocketOptions = {
   secrets?: DaemonJwtKeyring
   /** Cloudflare Rate Limit binding adapter — gates reconnect storms before the DO wakes. */
   connectLimiter?: RateLimiter
+  /** The control plane identity key; checks a signed upgrade. Null = feature off. */
+  panelIdentity?: () => Promise<PanelIdentity | null>
 }
 
 export function buildWorkersDaemonCellForwardHeaders(
@@ -40,6 +50,7 @@ export function buildWorkersDaemonCellForwardHeaders(
     cf?: unknown
     cfConnectingIp?: string | null
     trustLevel?: number
+    daemonKey?: { id: string; x: string }
   }
 ): Headers {
   const headers = new Headers(inbound)
@@ -49,6 +60,9 @@ export function buildWorkersDaemonCellForwardHeaders(
 
   headers.set(CELL_SERVER_ID_HEADER, options.serverId)
   headers.set(CELL_TRUST_LEVEL_HEADER, String(options.trustLevel ?? 0))
+  if (options.daemonKey) {
+    headers.set(CELL_DAEMON_KEY_HEADER, `${options.daemonKey.id}:${options.daemonKey.x}`)
+  }
 
   const geo = extractCloudflareGeo(options.cf)
   if (geo) {
@@ -130,6 +144,16 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
       return new Response('Forbidden', { status: 403 })
     }
 
+    const refused = await refuseUnsignedDaemonUpgrade({
+      db,
+      request: c.req.raw,
+      serverId,
+      cnfJkt: payload.cnf?.jkt,
+      state: daemonState,
+      panelIdentity: options.panelIdentity,
+    })
+    if (refused) return new Response(refused.error, { status: refused.status })
+
     const locationHint = await resolveCellLocationHint(db, serverId)
     const logicalName = serverId
 
@@ -145,6 +169,9 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
       cf: (c.req.raw as Request & { cf?: unknown }).cf,
       cfConnectingIp: c.req.header('CF-Connecting-IP'),
       trustLevel: daemonState.trustLevel ?? 0,
+      ...(typeof daemonState.key.publicJwk.x === 'string'
+        ? { daemonKey: { id: daemonState.key.id, x: daemonState.key.publicJwk.x } }
+        : {}),
     })
 
     return stub.fetch(new Request(c.req.raw, { headers }))

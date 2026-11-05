@@ -342,6 +342,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
   })
   // Unversioned, session-free surface: mounted on the top-level app rather than
   // under CLIENT_API_PREFIX, and authenticating itself (see

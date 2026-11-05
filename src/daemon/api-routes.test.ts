@@ -69,6 +69,12 @@ import {
 } from './cell/stateless-challenge.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import {
+  DAEMON_SIGNATURE_HEADER,
+  daemonKeyThumbprint,
+  requestSigningInput,
+  sha256B64u,
+} from './authn/request-signature.ts'
+import {
   clearServerDaemonState,
   getServerDaemonStateByServerId,
   revokeDaemonKey,
@@ -4606,5 +4612,100 @@ test('POST /enroll refuses a v1 proof when re-enrolling a server that used a sig
       .from(ticket)
       .where(eq(ticket.id, reenroll.id))
     assertEquals(row?.usedAt, null)
+  })
+})
+
+// --- Daemon-signed requests (tokens bound to the daemon key) ---
+
+async function daemonSignatureHeader(
+  privateKey: CryptoKey,
+  keyId: string,
+  request: { method: string; pathname: string; body: string; panelFingerprint: string },
+  nonce = encodeBase64Url(crypto.getRandomValues(new Uint8Array(16)))
+): Promise<string> {
+  const iat = Math.floor(Date.now() / 1000)
+  const input = requestSigningInput({
+    method: request.method,
+    pathname: request.pathname,
+    panelFingerprint: request.panelFingerprint,
+    nonce,
+    bodySha256: await sha256B64u(new TextEncoder().encode(request.body)),
+    iat,
+  })
+  return `${keyId}:${nonce}:${iat}:${await signPayload(privateKey, input)}`
+}
+
+test('a signed /auth/session binds the token to the daemon key and raises the server to level 2', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const identity = await fixtureIdentity()
+    const app = await createTestApp(fixture.db, 'workers', identity)
+    const panelFingerprint = identity.current.kid
+    const body = await signedSessionBody(app, fixture, {
+      panelFingerprint,
+      iat: Math.floor(Date.now() / 1000),
+    })
+    const session = await app.request('/api/daemon/v1/auth/session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        [DAEMON_SIGNATURE_HEADER]: await daemonSignatureHeader(
+          fixture.key.privateKey,
+          fixture.keyId,
+          {
+            method: 'POST',
+            pathname: '/api/daemon/v1/auth/session',
+            body,
+            panelFingerprint,
+          }
+        ),
+      },
+      body,
+    })
+    assertEquals(session.status, 200)
+    const { token } = (await session.json()) as { token: string }
+    const claims = JSON.parse(new TextDecoder().decode(decodeBase64Url(token.split('.')[1]!))) as {
+      cnf?: { jkt: string }
+    }
+    const state = await readDaemonState(fixture.db, fixture.serverId)
+    assertExists(state)
+    assertEquals(claims.cnf?.jkt, await daemonKeyThumbprint(state.key.publicJwk))
+    assertEquals(state.trustLevel, 2)
+
+    const unsigned = await app.request('/api/daemon/v1/ping', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    assertEquals(unsigned.status, 401)
+
+    const signature = await daemonSignatureHeader(fixture.key.privateKey, fixture.keyId, {
+      method: 'GET',
+      pathname: '/api/daemon/v1/ping',
+      body: '',
+      panelFingerprint,
+    })
+    const ping = () =>
+      app.request('/api/daemon/v1/ping', {
+        headers: { Authorization: `Bearer ${token}`, [DAEMON_SIGNATURE_HEADER]: signature },
+      })
+    assertEquals((await ping()).status, 200)
+    const replay = await ping()
+    assertEquals(replay.status, 401)
+    assertEquals(((await replay.json()) as { error: string }).error, 'Request replayed')
+  })
+})
+
+test('POST /auth/session without a request signature is refused once the server proved itself', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const identity = await fixtureIdentity()
+    const app = await createTestApp(fixture.db, 'workers', identity)
+    await fixture.db.update(server).set({ trustLevel: 2 }).where(eq(server.id, fixture.serverId))
+    const refused = await postSessionBody(
+      app,
+      await signedSessionBody(app, fixture, {
+        panelFingerprint: identity.current.kid,
+        iat: Math.floor(Date.now() / 1000),
+      })
+    )
+    assertEquals(refused.status, 403)
+    assertEquals(((await refused.json()) as { error: string }).error, 'Signed request required')
   })
 })

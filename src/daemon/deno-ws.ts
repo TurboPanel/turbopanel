@@ -114,6 +114,14 @@ import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolveSession } from '../client/authn/middleware.ts'
 import { isSuperadminRole } from '../client/authn/session-store.ts'
 import { verifyLocalConsoleAuthorization } from '../developer/local-console-auth.ts'
+import { refuseUnsignedDaemonUpgrade } from './authn/upgrade-signature.ts'
+import {
+  ATTACH_PROOF_CLOSE_CODE,
+  ATTACH_PROOF_REFUSED_REASON,
+  DAEMON_PROOF_TRUST_LEVEL,
+  decideAttachProof,
+} from './authn/attach-proof.ts'
+import { raiseServerTrustLevel } from '../features/servers/trust-level.ts'
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250
@@ -1012,6 +1020,17 @@ export function registerDaemonWebSocket<E extends Env>(
     if (!colocatedRowMissing && !isCurrentActiveDaemonKey(daemonState, payload.kid)) {
       return c.json({ ok: false, error: 'forbidden' }, 403)
     }
+    const refused = daemonState
+      ? await refuseUnsignedDaemonUpgrade({
+          db,
+          request: c.req.raw,
+          serverId: payload.sub,
+          cnfJkt: payload.cnf?.jkt,
+          state: daemonState,
+          panelIdentity: options.panelIdentity,
+        })
+      : null
+    if (refused) return c.json({ ok: false, error: refused.error }, refused.status)
 
     return upgradeWebSocket(() => {
       const remoteAddress = peer?.address
@@ -1031,6 +1050,9 @@ export function registerDaemonWebSocket<E extends Env>(
       // answered waits for it instead of opening a second session.
       let sessionOpening: Promise<boolean> | undefined
       let sender: DaemonSessionSender | undefined
+      // A signed session's outbox waits for the daemon's presence hello and
+      // its attach proof; the version frame does not.
+      let awaitingAttach: { sessionId: string; kid: string } | undefined
       const senderFor = (ws: WSContext<WebSocket>): DaemonSessionSender => {
         sender ??= createDaemonSessionSender({
           sendText: (text) => ws.send(text),
@@ -1049,7 +1071,20 @@ export function registerDaemonWebSocket<E extends Env>(
           .catch(() => undefined)
       }
 
-      const startSession = (ws: WSContext<WebSocket>): void => {
+      const startPump = (ws: WSContext<WebSocket>): void => {
+        if (!connectionId) return
+        const send = senderFor(ws)
+        startDaemonOutboxPump({
+          cell: registry.getCell(payload.sub),
+          serverId: payload.sub,
+          connectionId,
+          consumer: `ws:${connectionId}`,
+          send: (wire) => send.send(wire),
+          abortRef: pumpControl,
+        })
+      }
+
+      const startSession = (ws: WSContext<WebSocket>, pump: boolean): void => {
         const send = senderFor(ws)
         send
           .send(
@@ -1065,15 +1100,49 @@ export function registerDaemonWebSocket<E extends Env>(
               `attach version frame failed: ${String(err)}`
             )
           })
-        if (!connectionId) return
-        startDaemonOutboxPump({
-          cell: registry.getCell(payload.sub),
+        if (pump) startPump(ws)
+      }
+
+      /**
+       * The first presence hello of a signed session: check the attach proof,
+       * raise the server once it verified, then let the outbox run. False when
+       * the socket was closed.
+       */
+      const acceptAttach = async (
+        attach: unknown,
+        session: { sessionId: string; kid: string },
+        ws: WSContext<WebSocket>
+      ): Promise<boolean> => {
+        const trustLevel = daemonState?.trustLevel ?? 0
+        const decision = await decideAttachProof(attach, {
+          sessionId: session.sessionId,
+          panelFingerprint: session.kid,
           serverId: payload.sub,
-          connectionId,
-          consumer: `ws:${connectionId}`,
-          send: (wire) => send.send(wire),
-          abortRef: pumpControl,
+          keyId: daemonState?.key.id,
+          publicJwk: daemonState?.key.publicJwk,
+          trustLevel,
+          nowMs: Date.now(),
         })
+        if (decision.kind === 'refused') {
+          daemonCellLog('WARN', payload.sub, connectionId, `attach refused: ${decision.reason}`)
+          pumpControl.abort = true
+          ws.close(ATTACH_PROOF_CLOSE_CODE, ATTACH_PROOF_REFUSED_REASON)
+          return false
+        }
+        if (decision.kind === 'verified' && trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
+          // Best effort: the next proof raises it again; the session goes on.
+          await raiseServerTrustLevel(db, payload.sub, DAEMON_PROOF_TRUST_LEVEL).catch((err) => {
+            daemonCellLog(
+              'WARN',
+              payload.sub,
+              connectionId,
+              `trust level raise failed: ${String(err)}`
+            )
+          })
+        }
+        awaitingAttach = undefined
+        startPump(ws)
+        return true
       }
 
       /** Handles the first frame; true when the frame is then processed as usual. */
@@ -1090,7 +1159,7 @@ export function registerDaemonWebSocket<E extends Env>(
         }
         if (decision.kind === 'legacy') {
           phase = 'legacy'
-          startSession(ws)
+          startSession(ws, true)
           return true
         }
         const urls = options.identityUrls ? await options.identityUrls(db).catch(() => []) : []
@@ -1102,8 +1171,18 @@ export function registerDaemonWebSocket<E extends Env>(
         )
         senderFor(ws).enterSigned(decision.identity, decision.session)
         phase = 'signed'
-        startSession(ws)
+        awaitingAttach = { sessionId: decision.session.sessionId, kid: decision.session.kid }
+        startSession(ws, false)
         return false
+      }
+
+      /** The first hello of a signed session passes the attach-proof check; anything else goes on. */
+      const presenceAdmitted = async (
+        message: { type: string; attach?: unknown },
+        ws: WSContext<WebSocket>
+      ): Promise<boolean> => {
+        if (!awaitingAttach || message.type !== 'hello') return true
+        return await acceptAttach(message.attach, awaitingAttach, ws)
       }
 
       const handleInboundMessage = async (raw: string, ws: WSContext<WebSocket>): Promise<void> => {
@@ -1184,6 +1263,8 @@ export function registerDaemonWebSocket<E extends Env>(
         }
 
         if (!(await keyStillActive(ws))) return
+
+        if (!(await presenceAdmitted(message, ws))) return
 
         cellTrace('inbound', {
           serverId: payload.sub,
