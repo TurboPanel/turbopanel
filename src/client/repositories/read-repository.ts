@@ -55,81 +55,97 @@ export async function readRepositoryViaDaemon(
     serverIds: readonly string[]
   }
 ): Promise<RepoReadOutcome> {
-  if (!isDaemonReadableCloneUrl(params.cloneUrl)) return REFUSED_ADDRESS
-  const records = await loadServerStatusRecords(db, registry, [...params.serverIds])
-  const online = records.find((record) => record?.connected)
-  if (!online) {
-    return {
-      ok: false,
-      code: 'no_daemon_available',
-      message:
-        'No connected server can read this repository. Connect a server, or paste the compose file instead.',
-    }
-  }
-
-  const requestId = generateRequestId()
-  const envelope: DaemonOutboundEnvelope = {
-    kind: 'repo-read-request',
-    deliveryId: generateDeliveryId(),
-    requestId,
+  const answer = await askConnectedServer(db, registry, {
     cloneUrl: params.cloneUrl,
-    ref: params.ref,
-    paths: [...params.paths],
-    ...(params.listPath === undefined ? {} : { listPath: params.listPath }),
-    maxBytesPerFile: params.maxBytesPerFile,
-    ...(params.credential === undefined ? {} : { credential: params.credential }),
-    ...(params.credentialKind === undefined ? {} : { credentialKind: params.credentialKind }),
-    ...(params.credentialUsername === undefined
-      ? {}
-      : { credentialUsername: params.credentialUsername }),
-    at: new Date().toISOString(),
-  }
-
-  cellTrace('request-start', {
-    requestId,
-    serverId: online.serverId,
-    kind: 'repo-read-request',
+    serverIds: params.serverIds,
+    words: {
+      noServer:
+        'No connected server can read this repository. Connect a server, or paste the compose file instead.',
+      timeout: 'timeout reading repository',
+      failed: 'failed to read repository',
+      malformed: 'malformed repository read result',
+    },
+    envelope: (ids) => ({
+      kind: 'repo-read-request',
+      ...ids,
+      cloneUrl: params.cloneUrl,
+      ref: params.ref,
+      paths: [...params.paths],
+      ...(params.listPath === undefined ? {} : { listPath: params.listPath }),
+      maxBytesPerFile: params.maxBytesPerFile,
+      ...(params.credential === undefined ? {} : { credential: params.credential }),
+      ...(params.credentialKind === undefined ? {} : { credentialKind: params.credentialKind }),
+      ...(params.credentialUsername === undefined
+        ? {}
+        : { credentialUsername: params.credentialUsername }),
+      at: new Date().toISOString(),
+    }),
   })
-
-  const record = await registry
-    .getCell(online.serverId)
-    .createRequestAndWait(envelope, REPO_READ_TIMEOUT_MS)
-
-  if (record.status === 'expired') {
-    return { ok: false, code: 'timeout', message: 'timeout reading repository' }
-  }
-  if (record.status === 'failed') {
-    return {
-      ok: false,
-      code: 'failed',
-      message: record.error ?? 'failed to read repository',
-    }
-  }
-
-  const result = record.result
-  if (typeof result !== 'object' || result === null) {
-    return { ok: false, code: 'failed', message: 'malformed repository read result' }
-  }
-  const payload = result as {
-    ok?: unknown
-    commitSha?: unknown
-    files?: unknown
-    entries?: unknown
-    error?: unknown
-  }
-  if (payload.ok !== true) {
-    return {
-      ok: false,
-      code: 'failed',
-      message: typeof payload.error === 'string' ? payload.error : 'failed to read repository',
-    }
-  }
+  if (!answer.ok) return answer
+  const payload = answer.payload
   return {
     ok: true,
     commitSha: typeof payload.commitSha === 'string' ? payload.commitSha : '',
     files: normalizeFiles(payload.files),
     entries: normalizeEntries(payload.entries),
   }
+}
+
+type RoundTripFailure = {
+  ok: false
+  code: 'no_daemon_available' | 'timeout' | 'failed'
+  message: string
+}
+
+/**
+ * One correlated request to the first connected candidate server, shared by
+ * both reads: the address check, the server pick, the wait and the failure
+ * mapping. Answers the result payload only when the server said `ok: true`.
+ */
+async function askConnectedServer(
+  db: Db,
+  registry: DaemonCellRegistry,
+  params: {
+    cloneUrl: string
+    serverIds: readonly string[]
+    words: { noServer: string; timeout: string; failed: string; malformed: string }
+    envelope: (ids: { deliveryId: string; requestId: string }) => DaemonOutboundEnvelope
+  }
+): Promise<{ ok: true; payload: Record<string, unknown> } | RoundTripFailure> {
+  if (!isDaemonReadableCloneUrl(params.cloneUrl)) return REFUSED_ADDRESS
+  const records = await loadServerStatusRecords(db, registry, [...params.serverIds])
+  const online = records.find((record) => record?.connected)
+  if (!online) {
+    return { ok: false, code: 'no_daemon_available', message: params.words.noServer }
+  }
+
+  const requestId = generateRequestId()
+  const envelope = params.envelope({ deliveryId: generateDeliveryId(), requestId })
+  cellTrace('request-start', { requestId, serverId: online.serverId, kind: envelope.kind })
+
+  const record = await registry
+    .getCell(online.serverId)
+    .createRequestAndWait(envelope, REPO_READ_TIMEOUT_MS)
+
+  if (record.status === 'expired') {
+    return { ok: false, code: 'timeout', message: params.words.timeout }
+  }
+  if (record.status === 'failed') {
+    return { ok: false, code: 'failed', message: record.error ?? params.words.failed }
+  }
+  const result = record.result
+  if (typeof result !== 'object' || result === null) {
+    return { ok: false, code: 'failed', message: params.words.malformed }
+  }
+  const payload = result as Record<string, unknown>
+  if (payload.ok !== true) {
+    return {
+      ok: false,
+      code: 'failed',
+      message: typeof payload.error === 'string' ? payload.error : params.words.failed,
+    }
+  }
+  return { ok: true, payload }
 }
 
 function normalizeFiles(raw: unknown): RepositoryFileEntry[] {
@@ -200,66 +216,23 @@ export async function resolveDefaultBranchViaDaemon(
     serverIds: readonly string[]
   }
 ): Promise<ResolveDefaultBranchOutcome> {
-  if (!isDaemonReadableCloneUrl(params.cloneUrl)) return REFUSED_ADDRESS
-  const records = await loadServerStatusRecords(db, registry, [...params.serverIds])
-  const online = records.find((record) => record?.connected)
-  if (!online) {
-    return {
-      ok: false,
-      code: 'no_daemon_available',
-      message: 'No connected server can resolve the default branch.',
-    }
-  }
-
-  const requestId = generateRequestId()
-  const envelope: DaemonOutboundEnvelope = {
-    kind: 'repo-default-branch-request',
-    deliveryId: generateDeliveryId(),
-    requestId,
+  const answer = await askConnectedServer(db, registry, {
     cloneUrl: params.cloneUrl,
-    at: new Date().toISOString(),
-  }
-
-  cellTrace('request-start', {
-    requestId,
-    serverId: online.serverId,
-    kind: 'repo-default-branch-request',
+    serverIds: params.serverIds,
+    words: {
+      noServer: 'No connected server can resolve the default branch.',
+      timeout: 'timeout resolving default branch',
+      failed: 'failed to resolve default branch',
+      malformed: 'malformed default-branch result',
+    },
+    envelope: (ids) => ({
+      kind: 'repo-default-branch-request',
+      ...ids,
+      cloneUrl: params.cloneUrl,
+      at: new Date().toISOString(),
+    }),
   })
-
-  const record = await registry
-    .getCell(online.serverId)
-    .createRequestAndWait(envelope, REPO_READ_TIMEOUT_MS)
-
-  if (record.status === 'expired') {
-    return { ok: false, code: 'timeout', message: 'timeout resolving default branch' }
-  }
-  if (record.status === 'failed') {
-    return {
-      ok: false,
-      code: 'failed',
-      message: record.error ?? 'failed to resolve default branch',
-    }
-  }
-
-  const result = record.result
-  if (typeof result !== 'object' || result === null) {
-    return { ok: false, code: 'failed', message: 'malformed default-branch result' }
-  }
-  const payload = result as {
-    ok?: unknown
-    defaultBranch?: unknown
-    error?: unknown
-  }
-  if (payload.ok !== true) {
-    return {
-      ok: false,
-      code: 'failed',
-      message:
-        typeof payload.error === 'string' ? payload.error : 'failed to resolve default branch',
-    }
-  }
-  return {
-    ok: true,
-    defaultBranch: typeof payload.defaultBranch === 'string' ? payload.defaultBranch : null,
-  }
+  if (!answer.ok) return answer
+  const branch = answer.payload.defaultBranch
+  return { ok: true, defaultBranch: typeof branch === 'string' ? branch : null }
 }
