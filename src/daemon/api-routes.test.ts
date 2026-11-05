@@ -11,11 +11,14 @@ import { encryptSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
   rotateColocatedLicenseCredentials,
+  rotateLicenseTokenInPlace,
 } from '../client/authn/install-state.ts'
 import {
   createLicense,
+  eraseBoundLicenseTokenForKey,
   generateLicenseToken,
   invalidateLicense,
+  lookupActiveLicense,
   revokeLicense,
 } from '../features/licenses/license.ts'
 import { getDatabaseUrl } from '../db/url.ts'
@@ -66,6 +69,7 @@ import {
 } from './cell/stateless-challenge.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import {
+  clearServerDaemonState,
   getServerDaemonStateByServerId,
   revokeDaemonKey,
   SERVER_KEY_REVOKED_ERROR,
@@ -2060,6 +2064,88 @@ test('POST /auth/session survives colocated disk-credential recovery for enrolle
       assertExists(body.token)
     }
   )
+})
+
+async function readLicenseTokenHash(
+  db: ReturnType<typeof createDenoDb>,
+  licenseId: string
+): Promise<string | null> {
+  return (await lookupActiveLicense(db, licenseId))?.token ?? null
+}
+
+test('POST /auth/session erases the token a repair left on a bound license, and that token then enrolls nothing', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const { db, app, licenseId, serverId } = fixture
+    assertEquals(await readLicenseTokenHash(db, licenseId), null)
+    // Repair Connection with healthy files: new token on the bound license, key kept.
+    const rotated = await rotateLicenseTokenInPlace(db, licenseId)
+    assertExists(await readLicenseTokenHash(db, licenseId))
+
+    const session = await postAuthSession(app, fixture)
+    assertEquals(session.status, 200)
+    assertEquals(await readLicenseTokenHash(db, licenseId), null)
+
+    // A copy of the re-issued token is now worthless, even with the server id.
+    const stolen = await postEnroll(app, {
+      licenseId,
+      licenseToken: rotated.licenseToken,
+      serverId,
+      machineKey: fixture.machineKey,
+      hostname: fixture.hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(stolen.status, 401)
+
+    // The connected daemon keeps working.
+    const next = await postAuthSession(app, fixture)
+    assertEquals(next.status, 200)
+  })
+})
+
+test('a parked daemon still re-enrolls with the token a repair re-issued after its key was removed', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const { db, app, licenseId, serverId } = fixture
+    const rotated = await rotateLicenseTokenInPlace(db, licenseId)
+    await clearServerDaemonState(db, serverId)
+
+    const newKey = await generateKeyMaterial()
+    const reEnroll = await postEnroll(app, {
+      licenseId,
+      licenseToken: rotated.licenseToken,
+      serverId,
+      machineKey: fixture.machineKey,
+      hostname: fixture.hostname,
+      key: newKey,
+    })
+    assertEquals(reEnroll.status, 200)
+    const body = (await reEnroll.json()) as { serverId: string; keyId: string }
+    assertEquals(body.serverId, serverId)
+    assertEquals(await readLicenseTokenHash(db, licenseId), null)
+
+    const session = await postAuthSession(app, { ...fixture, keyId: body.keyId, key: newKey })
+    assertEquals(session.status, 200)
+  })
+})
+
+test('eraseBoundLicenseTokenForKey leaves a token re-issued after the read, or whose key was removed', async () => {
+  await withEnrollFixture(async ({ db, licenseId, serverId, keyId }) => {
+    await rotateLicenseTokenInPlace(db, licenseId)
+    const firstHash = await readLicenseTokenHash(db, licenseId)
+    assertExists(firstHash)
+    // Re-issued again after the session read the first hash: compare-and-swap misses.
+    await rotateLicenseTokenInPlace(db, licenseId)
+    const secondHash = await readLicenseTokenHash(db, licenseId)
+    assertExists(secondHash)
+    const params = { licenseId, serverId, keyId, tokenHash: firstHash }
+    assertEquals(await eraseBoundLicenseTokenForKey(db, params), false)
+    assertEquals(await readLicenseTokenHash(db, licenseId), secondHash)
+
+    // The proved key is gone (the repair removed it): the token stays for the re-enroll.
+    await clearServerDaemonState(db, serverId)
+    const gone = { licenseId, serverId, keyId, tokenHash: secondHash }
+    assertEquals(await eraseBoundLicenseTokenForKey(db, gone), false)
+    assertEquals(await readLicenseTokenHash(db, licenseId), secondHash)
+  })
 })
 
 test('Protected route rejects missing JWT', async () => {
