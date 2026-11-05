@@ -36,7 +36,7 @@ export function isSshCloneUrl(cloneUrl: string): boolean {
  * setting that lifts it for now.
  */
 export const PUBLIC_GIT_HOST_REQUIRED_MESSAGE =
-  'Repositories must be on a public git host. Private and local network addresses, localhost and single-label names (such as gitea) are not supported.'
+  'Repositories must be on a public git host. Private and local network addresses, localhost and single-label names are not supported.'
 
 /** Why a clone URL is refused: its form, or a host that is not public. */
 export type CloneUrlRefusal = 'invalid' | 'host_not_public'

@@ -286,13 +286,13 @@ test('cloneUrlRefusal refuses a host that is not a public git host', () => {
     'https://[fe80::1]/o/r.git',
     'https://localhost/o/r.git',
     'https://LOCALHOST./o/r.git',
-    'https://gitea/o/r.git',
+    'https://gitserver/o/r.git',
     'https://git.corp.internal/o/r.git',
     'https://nas.local/o/r.git',
     'ssh://git@10.0.0.5/o/r.git',
     'ssh://git@[fd00::1]:2222/o/r.git',
     'git@10.0.0.5:o/r.git',
-    'git@gitea:o/r.git',
+    'git@gitserver:o/r.git',
   ]) {
     assertEquals(cloneUrlRefusal(url), 'host_not_public', url)
     assertEquals(isDaemonReadableCloneUrl(url), false, url)

@@ -425,7 +425,7 @@ test('a clone URL on a private or LAN host is never sent to a server', async () 
   for (const cloneUrl of [
     'https://10.0.0.5/o/r.git',
     'https://[::ffff:127.0.0.1]/o/r.git',
-    'git@gitea:o/r.git',
+    'git@gitserver:o/r.git',
     'ssh://git@localhost/o/r.git',
   ]) {
     const captured: { envelope: unknown; timeoutMs: number }[] = []
