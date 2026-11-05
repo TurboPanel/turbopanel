@@ -26,6 +26,9 @@ export async function handleTunnelTokenRequest(c: Context): Promise<Response> {
     secretsConfig: c.get('secretsConfig') as SecretsConfig | undefined,
   })
   if (!result.ok) {
+    if (result.status === 403) {
+      return c.json({ ok: false, error: result.error, code: result.code }, 403)
+    }
     return c.json({ ok: false, error: result.error }, result.status)
   }
   return c.json({ ok: true })
