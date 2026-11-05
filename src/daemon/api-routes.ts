@@ -1763,9 +1763,12 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
     const verified = await checkRequestSignature(c, state, new TextEncoder().encode(bodyText))
     if (!verified.ok) {
-      // 401 would send the daemon into a token refresh; a bad proof here is a 403.
-      const status = verified.status === 401 ? 403 : verified.status
-      return { refusal: { status, error: verified.error } }
+      // 401 would send the daemon into a token refresh, so a bad proof here is
+      // a 403; and a header that is present but unreadable is a bad signature,
+      // never `Signed request required` (which the daemon treats as permanent).
+      if (verified.status !== 401)
+        return { refusal: { status: verified.status, error: verified.error } }
+      return { refusal: { status: 403, error: 'Invalid request signature' } }
     }
     if (trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
       await raiseServerTrustLevel(db, serverId, DAEMON_PROOF_TRUST_LEVEL)

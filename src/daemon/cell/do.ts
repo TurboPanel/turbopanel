@@ -1844,19 +1844,22 @@ export class DaemonCellObject {
       ws.close(ATTACH_PROOF_CLOSE_CODE, ATTACH_PROOF_REFUSED_REASON)
       return false
     }
-    const raise = decision.kind === 'verified' && trustLevel < DAEMON_PROOF_TRUST_LEVEL
+    // The row first: the socket says level 2 only once the database does
+    // (a failed write is retried by the next proof).
+    const raised =
+      decision.kind === 'verified' &&
+      trustLevel < DAEMON_PROOF_TRUST_LEVEL &&
+      (await this.#withProjectionDbResult('trust-level', attachment.serverId, async (db) => {
+        await raiseServerTrustLevel(db, attachment.serverId, DAEMON_PROOF_TRUST_LEVEL)
+        return true
+      })) === true
     // Re-read: a signed send may have moved `seq` on while the proof was checked.
     const latest = (ws.deserializeAttachment() as SocketSessionAttachment | null) ?? attachment
     ws.serializeAttachment({
       ...latest,
       awaitingAttach: false,
-      ...(raise ? { trustLevel: DAEMON_PROOF_TRUST_LEVEL } : {}),
+      ...(raised ? { trustLevel: DAEMON_PROOF_TRUST_LEVEL } : {}),
     })
-    if (raise) {
-      await this.#withProjectionDb('trust-level', attachment.serverId, async (db) => {
-        await raiseServerTrustLevel(db, attachment.serverId, DAEMON_PROOF_TRUST_LEVEL)
-      })
-    }
     this.#runBoundedBackground(
       'pump-outbox',
       attachment.serverId,
