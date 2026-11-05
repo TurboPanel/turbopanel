@@ -122,6 +122,7 @@ import {
   DAEMON_PROOF_TRUST_LEVEL,
   decideAttachProof,
 } from './authn/attach-proof.ts'
+import { helloListsSignedReports, intakeSignedSessionReport } from './authn/report-signature.ts'
 import { raiseServerTrustLevel } from '../features/servers/trust-level.ts'
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
@@ -1054,6 +1055,10 @@ export function registerDaemonWebSocket<E extends Env>(
       // A signed session's outbox waits for the daemon's presence hello and
       // its attach proof; the version frame does not.
       let awaitingAttach: { sessionId: string; kid: string } | undefined
+      // The signed session's id, and whether the daemon's hello said it signs
+      // its reports (`report-signature.ts`).
+      let signedSessionId: string | undefined
+      let daemonSignsReports = false
       const senderFor = (ws: WSContext<WebSocket>): DaemonSessionSender => {
         sender ??= createDaemonSessionSender({
           sendText: (text) => ws.send(text),
@@ -1172,6 +1177,7 @@ export function registerDaemonWebSocket<E extends Env>(
         )
         senderFor(ws).enterSigned(decision.identity, decision.session)
         phase = 'signed'
+        signedSessionId = decision.session.sessionId
         awaitingAttach = { sessionId: decision.session.sessionId, kid: decision.session.kid }
         startSession(ws, false)
         return false
@@ -1179,9 +1185,12 @@ export function registerDaemonWebSocket<E extends Env>(
 
       /** The first hello of a signed session passes the attach-proof check; anything else goes on. */
       const presenceAdmitted = async (
-        message: { type: string; attach?: unknown; panelPin?: unknown },
+        message: { type: string; attach?: unknown; panelPin?: unknown; features?: unknown },
         ws: WSContext<WebSocket>
       ): Promise<boolean> => {
+        if (phase === 'signed' && message.type === 'hello') {
+          daemonSignsReports = helloListsSignedReports(message.features)
+        }
         if (!awaitingAttach || message.type !== 'hello') return true
         const session = awaitingAttach
         if (!(await acceptAttach(message.attach, session, ws))) return false
@@ -1244,6 +1253,20 @@ export function registerDaemonWebSocket<E extends Env>(
         traceIgnoredUnknownInboundType(payload.sub, connectionId, failure.reason)
       }
 
+      /** A signed session's report checked and unwrapped; null = drop it. */
+      const screenSignedReport = async (raw: string): Promise<string | null> => {
+        if (phase !== 'signed' || !signedSessionId) return raw
+        const intake = await intakeSignedSessionReport(raw, {
+          sessionId: signedSessionId,
+          keyId: daemonState?.key.id,
+          publicJwk: daemonState?.key.publicJwk,
+          daemonSignsReports,
+          nowMs: Date.now(),
+        })
+        if (intake.warning) daemonCellLog('WARN', payload.sub, connectionId, intake.warning)
+        return intake.raw
+      }
+
       const handleInboundMessageBody = async (
         raw: string,
         ws: WSContext<WebSocket>
@@ -1262,7 +1285,9 @@ export function registerDaemonWebSocket<E extends Env>(
           return
         }
 
-        const validated = validateDaemonInboundFrame(raw)
+        const frame = await screenSignedReport(raw)
+        if (frame === null) return
+        const validated = validateDaemonInboundFrame(frame)
         if (!validated.ok) {
           await handleUnacceptedFrame(validated, ws)
           return

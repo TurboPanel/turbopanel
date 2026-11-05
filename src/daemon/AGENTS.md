@@ -131,6 +131,26 @@ behind an edge (`src/features/install/heartbeat-policy.ts`), read from a cached
 value so the attach path makes no database call. No feature gate and no floor
 change: older daemons ignore the field.
 
+## Signed reports (`signed-reports-v1`)
+
+On a signed session a daemon that lists the feature (and sees it on the
+attach frame) signs `command-outcome` and `fabric-peers-report` with its own
+key: the frame carries `{sessionId, iat, kid}` (kid = the daemon key id) and
+`,"sig":"<base64url>"}` last, signed as `"tp-report\n" + type + "\n" +`
+the bytes before the marker plus `}` (`authn/report-signature.ts`; the prefix
+is pinned in both contract-drift scripts). Both runtimes check it before the
+frame validator, with the daemon key the upgrade checked (`deno-ws.ts`, and
+the key stamped on the socket attachment in `cell/do.ts`). Verified: the
+envelope is removed and the frame is handled as before. Wrong key id, other
+session, `iat` more than 300 s off or a bad signature: one warn line; a peer
+report is dropped, and a `command-outcome` is replaced by a failed one with
+error `signature_invalid` for the same id, so the command ends and the
+daemon still gets its `command-outcome-ack` instead of resending forever.
+Unsigned reports are still accepted (older daemons, and the few a daemon
+sends before the attach frame names the feature); a warn is logged when the
+socket's hello listed the feature. No `seq`: a result is idempotent by id.
+Refusing unsigned reports waits for a floor bump.
+
 ## Sealed secrets (`daemon-sealed-secrets-v1`)
 
 A daemon with this feature generates an X25519 sealing key and registers it with

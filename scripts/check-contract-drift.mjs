@@ -258,7 +258,13 @@ function checkPanelIdentityBytes(tp, td) {
     readRel(td, 'src/instance/panel-identity-frames.ts'),
     'panel-identity-frames.ts missing on the daemon'
   )
-  for (const name of ['HELLO_PREFIX', 'FRAME_PREFIX', 'HTTP_PREFIX', 'SIG_SUFFIX_MARKER']) {
+  for (const name of [
+    'HELLO_PREFIX',
+    'FRAME_PREFIX',
+    'HTTP_PREFIX',
+    'REPORT_PREFIX',
+    'SIG_SUFFIX_MARKER',
+  ]) {
     requireEqual(
       extractConst(envelopeLeft, name),
       extractConst(envelopeRight, name),

@@ -40,10 +40,12 @@ import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from '../contracts/capabilit
 import { fixtureBindingJson } from '../test-fixtures/panel-identity-fixture.ts'
 import { resolvePanelIdentityFromBinding } from '../lib/panel-identity/identity.ts'
 import {
+  appendSignature,
   frameSigningInput,
   helloSigningInput,
   splitSignature,
 } from '../lib/panel-identity/frame-envelope.ts'
+import { reportSigningInput } from './authn/report-signature.ts'
 import { base64urlDecode } from '../lib/encoding/base64url.ts'
 import { testDaemonKey } from '../test-fixtures/daemon-signing-key.test.support.ts'
 import { attachSigningInput } from './authn/attach-proof.ts'
@@ -4383,6 +4385,52 @@ describe('signed daemon session', () => {
       // The socket records level 2 only once the server row does; this cell
       // has no database, so it keeps the level it was opened with.
       expect(attachment.trustLevel ?? 0).toBe(0)
+    })
+    ws.close(1000, 'test done')
+  })
+
+  it('handles a signed result as sent and fails a command whose result is badly signed', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-signed-reports'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const daemonKey = await testDaemonKey()
+    const keyId = crypto.randomUUID()
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+      firstFrame: null,
+      daemonKeyX: String(daemonKey.publicJwk.x),
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    const [helloRaw] = await frames
+    const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
+    ws.send(presenceHello({ features: ['signed-reports-v1'] }))
+    await vi.waitFor(async () => {
+      const attachment = (await readAttachment(stub)) as { signsReports?: boolean }
+      expect(attachment.signsReports).toBe(true)
+    })
+    const good = generateRequestId()
+    const forged = generateRequestId()
+    await enqueuePing(stub, serverId, good, generateDeliveryId())
+    await enqueuePing(stub, serverId, forged, generateDeliveryId())
+    const report = async (id: string, sign: (input: string) => Promise<string>) => {
+      const at = new Date().toISOString()
+      const unsigned = JSON.stringify({
+        type: 'command-outcome',
+        id,
+        ok: true,
+        result: { pong: true },
+        at,
+        sessionId,
+        iat: Math.floor(Date.now() / 1000),
+        kid: keyId,
+      })
+      return appendSignature(unsigned, await sign(reportSigningInput('command-outcome', unsigned)))
+    }
+    ws.send(await report(good, daemonKey.sign))
+    ws.send(await report(forged, (await testDaemonKey()).sign))
+    await vi.waitFor(async () => {
+      expect(await requestStatus(stub, serverId, good)).toBe('done')
+      expect(await requestStatus(stub, serverId, forged)).toBe('failed')
     })
     ws.close(1000, 'test done')
   })

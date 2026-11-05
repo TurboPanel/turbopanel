@@ -11,6 +11,8 @@
 export const HELLO_PREFIX = 'tp-hello\n'
 export const FRAME_PREFIX = 'tp-frame\n'
 export const HTTP_PREFIX = 'tp-http\n'
+/** Daemon-signed reports on a signed session (`src/daemon/authn/report-signature.ts`). */
+export const REPORT_PREFIX = 'tp-report\n'
 export const SIG_SUFFIX_MARKER = ',"sig":"'
 
 const textEncoder = new TextEncoder()
