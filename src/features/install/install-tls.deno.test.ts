@@ -10,7 +10,8 @@ import {
   privateUploadedTrustUnavailable,
   readPlatformCaLeafNames,
   resolveInstallOriginTls,
-  uploadedCertificateChainsToPublicRoot,
+  setPublicTlsProbe,
+  uploadedTrustUnchecked,
 } from './install-trust.ts'
 import {
   dialedInstallHostname,
@@ -38,6 +39,18 @@ import {
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+/**
+ * The public-trust check is a TLS handshake against the control plane's own
+ * listener. These suites have no listener, so they register a probe that
+ * names the publicly trusted hosts; every other uploaded host reads as private.
+ */
+const PUBLIC_UPLOAD_HOSTS = new Set(['public.example.com'])
+let probeCalls = 0
+setPublicTlsProbe((hostname) => {
+  probeCalls += 1
+  return Promise.resolve(PUBLIC_UPLOAD_HOSTS.has(hostname) ? 'public' : 'private')
+})
 
 /** Any well-formed fingerprint; these tests check TLS choices, not the pin. */
 const TEST_CA_FINGERPRINT = 'a'.repeat(64)
@@ -472,7 +485,6 @@ test("an unlisted public name on a Let's Encrypt-only listener keeps the Platfor
     await Deno.writeTextFile(`${dir}/platform-ca.crt`, leaf.certificatePem)
     const names = await readPlatformCaLeafNames()
     assertEquals(names?.includes('panel.example.com'), true)
-    assertEquals(await uploadedCertificateChainsToPublicRoot(privateLeaf.certificatePem), false)
 
     const db = memoryInstallDb(
       [
@@ -583,17 +595,6 @@ test('a private upload without a covering issuer is not an install command', asy
   assertEquals(uncovered.error, privateUploadedTrustUnavailable('private.example.com'))
 })
 
-async function systemTrustedPem(): Promise<string> {
-  const bundle = await Deno.readTextFile('/etc/ssl/certs/ca-certificates.crt')
-  const blocks = [
-    ...bundle.matchAll(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g),
-  ].map((match) => match[0])
-  for (const block of blocks.slice(0, 40)) {
-    if (await uploadedCertificateChainsToPublicRoot(block)) return block
-  }
-  throw new TypeError('expected a certificate the system trust store accepts')
-}
-
 async function presentedLeafExchange(
   cert: string,
   key: string,
@@ -642,7 +643,10 @@ test("a private upload with a Let's Encrypt sibling enrolls from its issuer whil
     ['private.example.com'],
     { ipAddresses: ['127.0.0.1'] }
   )
-  const publicPem = await systemTrustedPem()
+  const publicLeaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, [
+    'public.example.com',
+  ])
+  const publicPem = publicLeaf.certificatePem
   const platformCa =
     '-----BEGIN CERTIFICATE-----\nNOT-THE-UPLOAD-ISSUER\n-----END CERTIFICATE-----\n'
   const privateOrigin = 'https://private.example.com:8443'
@@ -971,35 +975,7 @@ test({
   },
 })
 
-test("the public-trust check uses the host's default OpenSSL store, not a hard-coded Debian bundle", async () => {
-  const publicPem = await systemTrustedPem()
-  // SSL_CERT_FILE / SSL_CERT_DIR are how a host (or its distribution) points
-  // OpenSSL's default store elsewhere. An empty store must make the check
-  // fail; a hard-coded `-CAfile /etc/ssl/certs/…` ignored them, which is why
-  // RHEL-family hosts (whose bundle lives under /etc/pki) read every public
-  // upload as private.
-  const emptyDir = await Deno.makeTempDir({ prefix: 'tp-empty-ca-' })
-  const emptyFile = `${emptyDir}/empty.pem`
-  await Deno.writeTextFile(emptyFile, '')
-  const saved = {
-    file: Deno.env.get('SSL_CERT_FILE'),
-    dir: Deno.env.get('SSL_CERT_DIR'),
-  }
-  try {
-    Deno.env.set('SSL_CERT_FILE', emptyFile)
-    Deno.env.set('SSL_CERT_DIR', emptyDir)
-    assertEquals(await uploadedCertificateChainsToPublicRoot(publicPem), false)
-  } finally {
-    if (saved.file === undefined) Deno.env.delete('SSL_CERT_FILE')
-    else Deno.env.set('SSL_CERT_FILE', saved.file)
-    if (saved.dir === undefined) Deno.env.delete('SSL_CERT_DIR')
-    else Deno.env.set('SSL_CERT_DIR', saved.dir)
-    await Deno.remove(emptyDir, { recursive: true })
-  }
-  assertEquals(await uploadedCertificateChainsToPublicRoot(publicPem), true)
-})
-
-test('repeated uploaded-trust requests for one name do not spawn openssl again', async () => {
+test('repeated uploaded-trust requests for one name do not run the handshake again', async () => {
   const ca = await mintOrganizationCa({ organizationId: 'install-trust-cache' })
   const leaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, [
     'cached.example.com',
@@ -1016,36 +992,37 @@ test('repeated uploaded-trust requests for one name do not spawn openssl again',
   })
   registerDaemonApiRoutes(app, { tlsPublic: true })
 
-  const Original = Deno.Command
-  let spawns = 0
-  class Counting extends Original {
-    constructor(command: string | URL, options?: Deno.CommandOptions) {
-      if (String(command).endsWith('openssl')) spawns += 1
-      super(command, options)
-    }
+  const url = `http://cached.example.com:8443${DAEMON_API_PREFIX}/instance/uploaded-trust`
+  const before = probeCalls
+  const first = await app.request(url)
+  assertEquals(first.status, 200)
+  assertEquals(probeCalls, before + 1)
+  for (let i = 0; i < 3; i++) {
+    const again = await app.request(url)
+    assertEquals(again.status, 200)
+    assertEquals(await again.text(), await first.clone().text())
   }
-  Object.defineProperty(Deno, 'Command', {
-    value: Counting,
-    configurable: true,
-    writable: true,
-  })
-  try {
-    const url = `http://cached.example.com:8443${DAEMON_API_PREFIX}/instance/uploaded-trust`
-    const first = await app.request(url)
-    assertEquals(first.status, 200)
-    const afterFirst = spawns
-    assertEquals(afterFirst >= 1, true)
-    for (let i = 0; i < 3; i++) {
-      const again = await app.request(url)
-      assertEquals(again.status, 200)
-      assertEquals(await again.text(), await first.clone().text())
-    }
-    assertEquals(spawns, afterFirst)
-  } finally {
-    Object.defineProperty(Deno, 'Command', {
-      value: Original,
-      configurable: true,
-      writable: true,
-    })
+  assertEquals(probeCalls, before + 1)
+})
+
+test('an uploaded name whose certificate cannot be checked gets a clear refusal and is checked again next time', async () => {
+  const ca = await mintOrganizationCa({ organizationId: 'install-trust-unchecked' })
+  const leaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, [
+    'unchecked.example.com',
+  ])
+  const origin = 'https://unchecked.example.com:8443'
+  const db = memoryInstallDb(
+    [hostnameRow(origin, 'uploaded', 'cert-unchecked')],
+    [{ id: 'cert-unchecked', certPem: `${leaf.certificatePem}\n${ca.certificatePem}` }]
+  )
+  let calls = 0
+  const probePublicTls = () => {
+    calls += 1
+    return Promise.reject(new Deno.errors.PermissionDenied('denied'))
   }
+  for (let i = 0; i < 2; i++) {
+    const refused = await resolveInstallOriginTls(db, origin, {}, true, { probePublicTls })
+    assertEquals(refused, { ok: false, error: uploadedTrustUnchecked('unchecked.example.com') })
+  }
+  assertEquals(calls, 2)
 })

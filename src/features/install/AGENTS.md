@@ -67,8 +67,29 @@ read or write it, and organization code does not read instance ACME.
 `platform-ca`, and the `TURBOPANEL_PUBLIC_URLS` setting stays in sync so cert
 SAN generation and webhook reachability keep calling them.
 
-Uploaded public trust is per certificate. The install command treats an
-uploaded leaf as public only when that PEM chains to a system root.
+Uploaded public trust is per hostname. The install command treats an
+uploaded name as public only when the certificate the listener serves for it
+verifies against the runtime's public root store (not the host's OpenSSL
+store).
+
+Both checks run in memory: the control plane writes no certificate file
+and starts no process for them. Public trust is a TLS handshake against the
+control plane's own listener on loopback port 8443, with the uploaded hostname as SNI;
+the runtime's verifier decides whether the chain it serves reaches a public
+root and covers the name (`src/platform/deno/public-tls-probe.ts`, registered
+by the Deno composition root through `setPublicTlsProbe`). It judges what the
+listener serves, so a just-uploaded certificate counts once Caddy serves it.
+The private issuer is checked with WebCrypto (`verifyCertificateSignature`,
+RSA or ECDSA with the hash the certificate names). A handshake that cannot
+run (no listener, timeout) withholds the command with its own message
+(`uploadedTrustUnchecked`), never an unhandled error. Workers never reaches
+this path: the hosted control plane stores no uploaded hostnames. An unchecked
+dialed upload is withheld before the aggregate `TURBOPANEL_TLS_PUBLIC`
+fallback, which never stands in for a check that did not run. An uploaded
+IP address sends no SNI, so the listener answers with the certificate it
+serves for loopback (the Platform CA catch-all) and the name reads as
+private: such an upload installs only when its PEM includes the issuer.
+
 `TURBOPANEL_TLS_PUBLIC` stays an aggregate signal (any Let's Encrypt hostname,
 or the operator's public-TLS setting) and does not mark an unrelated upload
 as public. `GET /api/daemon/v1/instance/ca` still returns the Platform CA
