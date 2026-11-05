@@ -13,7 +13,9 @@ import {
 } from './document.ts'
 import { createIdentityDocumentCache } from './document-cache.ts'
 import { resolvePanelIdentityFromBinding } from './identity.ts'
-import { orderedPublicOrigins } from './urls.ts'
+import type { Db } from '../../db/connection.ts'
+import { orderedPublicOrigins } from '../../features/install/public-origins.ts'
+import { serverDialOrigins } from './urls.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -107,6 +109,20 @@ test('orderedPublicOrigins keeps order, adds https and drops blanks and duplicat
     ]),
     ['https://a.example.test', 'https://b.example.test:8443']
   )
+})
+
+test('serverDialOrigins lists only the hostnames servers dial, the primary first', async () => {
+  const rows = [
+    { host: 'edge.example.test', publicPort: 443, isDaemonDial: false },
+    { host: 'b.example.test', publicPort: 8443, isDaemonDial: true },
+    { host: 'a.example.test', publicPort: 443, isPrimary: true, isDaemonDial: true },
+  ]
+  assertEquals(await serverDialOrigins({} as Db, () => Promise.resolve(rows)), [
+    'https://a.example.test',
+    'https://b.example.test:8443',
+  ])
+  // A control plane with no hostname servers dial advertises no address.
+  assertEquals(await serverDialOrigins({} as Db, () => Promise.resolve([rows[0]!])), [])
 })
 
 test('an independent verifier (node:crypto, SPKI import) accepts the header signature over the raw body', async () => {
