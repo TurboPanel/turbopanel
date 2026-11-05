@@ -1,6 +1,6 @@
 import type { Db } from '../../db/connection.ts'
 import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
-import { installUrlsFor } from '../../features/install/public-origins.ts'
+import { installUrlsFor, type PublicOriginRow } from '../../features/install/public-origins.ts'
 
 /**
  * The addresses a server may dial, for the identity document and the signed
@@ -9,6 +9,9 @@ import { installUrlsFor } from '../../features/install/public-origins.ts'
  * the install command carries, so a pinned server that follows the document
  * never learns an address the administrator marked as not for servers.
  */
-export async function serverDialOrigins(db: Db): Promise<string[]> {
-  return installUrlsFor(await listInstanceHostnames(db))
+export async function serverDialOrigins(
+  db: Db,
+  listRows: (db: Db) => Promise<readonly PublicOriginRow[]> = listInstanceHostnames
+): Promise<string[]> {
+  return installUrlsFor(await listRows(db))
 }
