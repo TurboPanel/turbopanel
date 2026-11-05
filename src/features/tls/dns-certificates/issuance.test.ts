@@ -4,7 +4,13 @@
  * reuse, a validation that fails, a rate limit, a renewal and two workers at
  * once. Skips without TURBOPANEL_DATABASE_URL.
  */
-import { assert, assertEquals, assertNotEquals, assertStringIncludes } from '@std/assert'
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../../db/connection.ts'
 import { badge, carrier, organization, secret, tls } from '../../../db/schema.ts'
@@ -46,6 +52,7 @@ import { renewalCertId } from '../../../lib/acme/renewal-id.ts'
 import { limitRenewalStarts, runDnsCertificateSweepTick } from './sweep.ts'
 import { runDnsCertificateCleanupTick } from './cleanup.ts'
 import { selectDueSteps } from './sweep-select.ts'
+import { withAnyDnsToken, withDnsToken } from './token.ts'
 
 /** Jest/Mocha-shaped alias so Sonar sees real tests (typescript:S2187). */
 const test = Deno.test.bind(Deno)
@@ -1236,4 +1243,99 @@ test('the cleanup tick removes the records of an order left open and never asks 
     // Nothing left to tidy: a second tick looks at nothing.
     const again = await runDnsCertificateCleanupTick(s.ctx, { organizationId: s.organizationId })
     assertEquals([again.scanned, asked], [0, 0])
+  }))
+
+/** Two DNS tokens for the zone; the setup's token was checked most recently, so it is tried first. */
+async function twoDnsTokens(db: Db) {
+  const s = await setup(db)
+  const carrierId = s.input([]).carrierId
+  await db
+    .update(badge)
+    .set({ lastCheckedAt: new Date().toISOString() })
+    .where(eq(badge.carrierId, carrierId))
+  await addSecondDnsToken(db, s)
+  const badges = async () =>
+    (
+      await db.select().from(badge).where(eq(badge.carrierId, carrierId)).orderBy(badge.lastFour)
+    ).map((b) => ({
+      lastFour: b.lastFour,
+      status: b.status,
+      dns: (b.capabilities as { dns: unknown[] }).dns.length,
+    }))
+  return { s, carrierId, badges }
+}
+
+const notRefusals = [
+  {
+    what: 'a provider error (5xx)',
+    error: () => new TunnelProviderError('provider_error', 'upstream failed', 503),
+  },
+  {
+    what: 'a rate limit (429)',
+    error: () => new TunnelProviderError('rate_limited', 'slow down', 429, [], 60_000),
+  },
+]
+
+for (const { what, error } of notRefusals) {
+  test(`${what} is not tried with another token and changes no token`, () =>
+    withDb(async (db) => {
+      const { s, carrierId, badges } = await twoDnsTokens(db)
+      const before = await badges()
+      const zone = { id: 'zone-1', name: 'example.com' }
+      const calls = [
+        (run: (token: string) => Promise<string>) => withDnsToken(s.ctx, carrierId, zone, run),
+        (run: (token: string) => Promise<string>) => withAnyDnsToken(s.ctx, carrierId, run),
+      ]
+      for (const call of calls) {
+        const used: string[] = []
+        const thrown = await assertRejects(
+          () =>
+            call((token) => {
+              used.push(token)
+              return Promise.reject(error())
+            }),
+          TunnelProviderError
+        )
+        assertEquals(thrown.status, error().status)
+        assertEquals(used, ['dns-token-value'])
+      }
+      assertEquals(await badges(), before)
+    }))
+}
+
+test('a zone lookup token the DNS host no longer accepts (401) is marked and the next token is used', () =>
+  withDb(async (db) => {
+    const { s, carrierId, badges } = await twoDnsTokens(db)
+    const used: string[] = []
+    const found = await withAnyDnsToken(s.ctx, carrierId, (token) => {
+      used.push(token)
+      return token === 'dns-token-value'
+        ? Promise.reject(new TunnelProviderError('unauthorized', 'bad token', 401))
+        : Promise.resolve('zone-1')
+    })
+    assertEquals(found, { value: 'zone-1' })
+    assertEquals(used, ['dns-token-value', 'dns-token-second'])
+    const rows = await badges()
+    assertEquals(
+      rows.find((b) => b.lastFour === 'alue'),
+      {
+        lastFour: 'alue',
+        status: 'attention',
+        dns: 0,
+      }
+    )
+    assertEquals(rows.find((b) => b.lastFour === 'cond')?.status, 'active')
+  }))
+
+test('a zone lookup refused with 403 tries the next token and leaves the refused one as it was', () =>
+  withDb(async (db) => {
+    const { s, carrierId, badges } = await twoDnsTokens(db)
+    const before = await badges()
+    const found = await withAnyDnsToken(s.ctx, carrierId, (token) =>
+      token === 'dns-token-value'
+        ? Promise.reject(new TunnelProviderError('forbidden', 'denied', 403))
+        : Promise.resolve('zone-1')
+    )
+    assertEquals(found, { value: 'zone-1' })
+    assertEquals(await badges(), before)
   }))
