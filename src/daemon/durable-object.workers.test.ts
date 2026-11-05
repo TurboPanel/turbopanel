@@ -2,7 +2,7 @@
 /// <reference path="./vitest-env.d.ts" />
 /// <reference path="../../worker-configuration.d.ts" />
 import { env, runInDurableObject } from 'cloudflare:test'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import type { Db } from '../db/connection.ts'
@@ -45,6 +45,8 @@ import {
   splitSignature,
 } from '../lib/panel-identity/frame-envelope.ts'
 import { base64urlDecode } from '../lib/encoding/base64url.ts'
+import { testDaemonKey } from '../test-fixtures/daemon-signing-key.test.support.ts'
+import { attachSigningInput } from './authn/attach-proof.ts'
 
 const INBOUND_PROJECTION_COALESCE_MS = 60_000
 
@@ -105,6 +107,8 @@ async function openDaemonWebSocket(
     /** The daemon's first frame; default an older daemon's (any frame but `hello-nonce`). `null` sends none. */
     firstFrame?: string | null
     trustLevel?: number
+    /** Public `x` of the daemon key, stamped as the upgrade does (`<keyId>:<x>`). */
+    daemonKeyX?: string
   } = {}
 ): Promise<{ ws: WebSocket; token: string; tokenId: string; keyId: string }> {
   const token = await issueTestDaemonJwt(serverId, keyId)
@@ -120,6 +124,9 @@ async function openDaemonWebSocket(
   }
   if (options.trustLevel !== undefined) {
     headers['X-Turbopanel-Cell-Trust-Level'] = String(options.trustLevel)
+  }
+  if (options.daemonKeyX) {
+    headers['X-Turbopanel-Cell-Daemon-Key'] = `${keyId}:${options.daemonKeyX}`
   }
   const response = await stub.fetch('https://do.internal/ws/daemon/v1', {
     headers,
@@ -4307,5 +4314,74 @@ describe('signed daemon session', () => {
     const closed = closeEvent(ws)
     ws.send(JSON.stringify({ type: 'test-legacy-first-frame' }))
     expect(await closed).toEqual({ code: 4403, reason: 'signed-mode-required' })
+  })
+
+  function presenceHello(extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      type: 'hello',
+      at: new Date().toISOString(),
+      daemonBuild: { commit: 'attach-commit', buildId: 'attach-build' },
+      ...extra,
+    })
+  }
+
+  async function readAttachment(stub: DurableObjectStub) {
+    return await runInDurableObject(stub, (_instance, state) => {
+      const [socket] = state.getWebSockets()
+      return socket!.deserializeAttachment() as { awaitingAttach?: boolean; trustLevel?: number }
+    })
+  }
+
+  it('holds the outbox for the daemon hello, then closes a missing attach proof at level 2', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-attach-missing'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId, undefined, {
+      firstFrame: null,
+      trustLevel: 2,
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    await frames
+    expect((await readAttachment(stub)).awaitingAttach).toBe(true)
+    const closed = closeEvent(ws)
+    ws.send(presenceHello())
+    expect(await closed).toEqual({ code: 1008, reason: 'attach-proof-refused' })
+  })
+
+  it('accepts a verified attach proof and raises the socket to level 2', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-attach-ok'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const daemonKey = await testDaemonKey()
+    const keyId = crypto.randomUUID()
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+      firstFrame: null,
+      daemonKeyX: String(daemonKey.publicJwk.x),
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    const [helloRaw] = await frames
+    const hello = JSON.parse(splitSignature(helloRaw!)!.unsigned) as {
+      sessionId: string
+      kid: string
+    }
+    const iat = Math.floor(Date.now() / 1000)
+    const sig = await daemonKey.sign(
+      attachSigningInput({
+        sessionId: hello.sessionId,
+        panelFingerprint: hello.kid,
+        serverId,
+        keyId,
+        iat,
+      })
+    )
+    ws.send(presenceHello({ attach: { keyId, iat, sig } }))
+    await vi.waitFor(async () => {
+      const attachment = await readAttachment(stub)
+      expect(attachment.awaitingAttach).toBe(false)
+      expect(attachment.trustLevel).toBe(2)
+    })
+    ws.close(1000, 'test done')
   })
 })

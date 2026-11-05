@@ -804,6 +804,13 @@ export type DaemonMessage =
        * Persisted to `server.trust_pinned_by`.
        */
       panelPin?: { pinnedBy: 'install' | 'upgrade' | 'unsafe'; current: string; keyset: number }
+      /**
+       * The daemon's attach proof, signed session only: its Ed25519 signature
+       * over `"tp-attach\n" + sessionId + "\n" + panelFingerprint + "\n" +
+       * serverId + "\n" + keyId + "\n" + iat` (`src/daemon/authn/attach-proof.ts`).
+       * Omitted by a daemon that predates it.
+       */
+      attach?: { keyId: string; iat: number; sig: string }
     }
   | {
       type: 'heartbeat'
@@ -1620,7 +1627,22 @@ function validateHelloFields(record: Record<string, unknown>): string | null {
   if (!parseDaemonBuildInfo(record.daemonBuild)) return 'invalid daemonBuild'
   const presence = validatePresenceFields(record)
   if (presence) return presence
-  return validateHelloFeatures(record.features)
+  return validateHelloFeatures(record.features) ?? validateHelloAttach(record.attach)
+}
+
+/** Shape only; the signature is checked by the transport (`attach-proof.ts`). */
+function validateHelloAttach(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isRecord(value)) return 'invalid attach'
+  const { keyId, iat, sig } = value
+  const valid =
+    typeof keyId === 'string' &&
+    keyId.length > 0 &&
+    keyId.length <= 64 &&
+    Number.isSafeInteger(iat) &&
+    typeof sig === 'string' &&
+    sig.length === 86
+  return valid ? null : 'invalid attach'
 }
 
 /**

@@ -91,6 +91,14 @@ import {
 import { platformControlPlaneOrigins } from '../../features/install/control-plane-origins.ts'
 import { HEARTBEAT_SECONDS_DEFAULT } from '../../features/install/heartbeat-policy.ts'
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
+import {
+  ATTACH_PROOF_CLOSE_CODE,
+  ATTACH_PROOF_REFUSED_REASON,
+  DAEMON_PROOF_TRUST_LEVEL,
+  decideAttachProof,
+  ed25519PublicJwk,
+} from '../authn/attach-proof.ts'
+import { raiseServerTrustLevel } from '../../features/servers/trust-level.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { inboundHeartbeatProjectionDue } from './postgres-projection.ts'
 import { mergeSnapshotPresence } from './snapshot-merge.ts'
@@ -218,6 +226,14 @@ const OUTBOX_RETRY_MAX_MS = 300_000
 const CELL_GEO_HEADER = 'X-Turbopanel-Cell-Geo'
 /** Stamped by `workers-ws.ts` from `server.trust_level`; clients cannot set it. */
 const CELL_TRUST_LEVEL_HEADER = 'X-Turbopanel-Cell-Trust-Level'
+/** Stamped by `workers-ws.ts`: `<keyId>:<x>` of the server's current daemon key. */
+const CELL_DAEMON_KEY_HEADER = 'X-Turbopanel-Cell-Daemon-Key'
+
+function parseCellDaemonKey(value: string | null): { id: string; x: string } | undefined {
+  const at = value?.indexOf(':') ?? -1
+  if (!value || at < 1) return undefined
+  return { id: value.slice(0, at), x: value.slice(at + 1) }
+}
 
 /**
  * Session state kept on a daemon socket's hibernation attachment. `session`
@@ -232,6 +248,10 @@ type SocketSessionAttachment = {
   phase?: DaemonSessionPhase
   trustLevel?: number
   session?: SignedSessionState
+  /** The server's daemon key at upgrade (id and public `x`), for the attach proof. */
+  daemonKey?: { id: string; x: string }
+  /** Signed session: the outbox waits for the daemon's hello and its attach proof. */
+  awaitingAttach?: boolean
 }
 /** Schema stamp in `_cell_schema.version` — bump when `#ensureSchema` DDL changes.
  * DO SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`); `#readSchemaVersion`
@@ -1573,7 +1593,7 @@ export class DaemonCellObject {
     // batch is not even read for it, so no entry sits in flight meanwhile.
     const sockets = this.#ctx.getWebSockets().filter((ws) => {
       const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
-      return attachment?.phase !== 'await-first-frame'
+      return attachment?.phase !== 'await-first-frame' && attachment?.awaitingAttach !== true
     })
     if (sockets.length === 0) return
 
@@ -1694,6 +1714,7 @@ export class DaemonCellObject {
       ...(geo ? { geo } : {}),
       phase: 'await-first-frame',
       trustLevel: Number(request.headers.get(CELL_TRUST_LEVEL_HEADER) ?? '0') || 0,
+      daemonKey: parseCellDaemonKey(request.headers.get(CELL_DAEMON_KEY_HEADER)),
     })
 
     this.#applyDaemonSocketAttach(serverId, connectionId, {
@@ -1773,7 +1794,7 @@ export class DaemonCellObject {
     }
     if (decision.kind === 'legacy') {
       ws.serializeAttachment({ ...attachment, phase: 'legacy' })
-      this.#startSession(ws, attachment)
+      this.#startSession(ws, attachment, true)
       return true
     }
     // High availability: the platform environment names the control plane;
@@ -1787,14 +1808,65 @@ export class DaemonCellObject {
     // hello: from the mark on, a pump (the outbox alarm, an enqueue) may send an
     // enveloped frame to this socket, and none may reach the daemon before the
     // hello. The session (next seq 1) is on the attachment before any such frame.
-    ws.serializeAttachment({ ...attachment, phase: 'signed', session: decision.session })
+    ws.serializeAttachment({
+      ...attachment,
+      phase: 'signed',
+      session: decision.session,
+      awaitingAttach: true,
+    })
     ws.send(hello)
-    this.#startSession(ws, attachment)
+    this.#startSession(ws, attachment, false)
     return false
   }
 
+  /**
+   * The first presence hello of a signed session: check the attach proof
+   * against the key stamped at upgrade, raise the server once it verified,
+   * then let the outbox run. False when the socket was closed.
+   */
+  async #acceptAttach(ws: WebSocket, attach: unknown): Promise<boolean> {
+    const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
+    if (!attachment?.awaitingAttach || !attachment.session) return true
+    const trustLevel = attachment.trustLevel ?? 0
+    const decision = await decideAttachProof(attach, {
+      sessionId: attachment.session.sessionId,
+      panelFingerprint: attachment.session.kid,
+      serverId: attachment.serverId,
+      keyId: attachment.daemonKey?.id,
+      publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
+      trustLevel,
+      nowMs: Date.now(),
+    })
+    if (decision.kind === 'refused') {
+      console.warn(
+        `daemon-cell event=attach-refused serverId=${attachment.serverId} reason=${decision.reason}`
+      )
+      ws.close(ATTACH_PROOF_CLOSE_CODE, ATTACH_PROOF_REFUSED_REASON)
+      return false
+    }
+    const raise = decision.kind === 'verified' && trustLevel < DAEMON_PROOF_TRUST_LEVEL
+    // Re-read: a signed send may have moved `seq` on while the proof was checked.
+    const latest = (ws.deserializeAttachment() as SocketSessionAttachment | null) ?? attachment
+    ws.serializeAttachment({
+      ...latest,
+      awaitingAttach: false,
+      ...(raise ? { trustLevel: DAEMON_PROOF_TRUST_LEVEL } : {}),
+    })
+    if (raise) {
+      await this.#withProjectionDb('trust-level', attachment.serverId, async (db) => {
+        await raiseServerTrustLevel(db, attachment.serverId, DAEMON_PROOF_TRUST_LEVEL)
+      })
+    }
+    this.#runBoundedBackground(
+      'pump-outbox',
+      attachment.serverId,
+      this.#pumpOutboxToDaemonSockets(attachment.serverId)
+    )
+    return true
+  }
+
   /** `version` first, then the outbox, both through {@link #sendToDaemon}. */
-  #startSession(ws: WebSocket, attachment: SocketSessionAttachment): void {
+  #startSession(ws: WebSocket, attachment: SocketSessionAttachment, pump: boolean): void {
     const connectedAt = new Date(attachment.connectedAtMs ?? Date.now()).toISOString()
     this.#sendToDaemon(
       ws,
@@ -1808,6 +1880,7 @@ export class DaemonCellObject {
         }`
       )
     })
+    if (!pump) return
     this.#runBoundedBackground(
       'pump-outbox',
       attachment.serverId,
@@ -2263,6 +2336,7 @@ export class DaemonCellObject {
     try {
       this.#ensureSchema()
 
+      if (parsed.type === 'hello' && !(await this.#acceptAttach(ws, parsed.attach))) return
       if (parsed.type === 'hello' || parsed.type === 'heartbeat') {
         await this.#handlePresenceMessage(attachment, parsed)
         return

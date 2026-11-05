@@ -80,6 +80,8 @@ import {
   helloSigningInput,
   splitSignature,
 } from '../lib/panel-identity/frame-envelope.ts'
+import { testDaemonKey } from '../test-fixtures/daemon-signing-key.test.support.ts'
+import { attachSigningInput } from './authn/attach-proof.ts'
 import { base64urlDecode } from '../lib/encoding/base64url.ts'
 
 /**
@@ -3713,6 +3715,126 @@ async function openSignedSocket(port: number, serverId: string, secrets: DaemonJ
 
 type DaemonJwtSecretsForTest = Awaited<ReturnType<typeof createDaemonJwtSecrets>>
 
+function presenceHello(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: 'hello',
+    at: new Date().toISOString(),
+    daemonBuild: { commit: 'hello-commit', buildId: 'hello-build' },
+    ...extra,
+  }
+}
+
+test('signed session: a verified attach proof raises the server to level 2 and starts the outbox', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-signed-attach'
+  const identity = await fixturePanelIdentity()
+  const key = await testDaemonKey()
+  const raised: unknown[] = []
+  const base = createMockDb()
+  const db = {
+    select: () =>
+      createSelectChain(() => [
+        {
+          ...baseDaemonKey,
+          publicJwk: key.publicJwk,
+          trustLevel: 0,
+          revokedAt: null,
+          lastUsedAt: null,
+          daemon: null,
+          metadata: null,
+          hostname: null,
+          machineKey: null,
+          connected: true,
+          statusChangedAt: '2020-01-01T00:00:00.000Z',
+        },
+      ]),
+    update: () => ({
+      set: (values: unknown) => ({
+        where: () => {
+          const done = Promise.resolve(undefined)
+          return Object.assign(done, {
+            returning: () => {
+              raised.push(values)
+              return Promise.resolve([{ id: serverId }])
+            },
+          })
+        },
+      }),
+    }),
+    insert: base.insert,
+  } as unknown as Db
+  const { tracking } = outboxCellWithBatch(serverId, [outboxEnvelope('del-attach')])
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db,
+      registry: createTrackingRegistry(tracking.cell),
+      panelIdentity: () => Promise.resolve(identity),
+    },
+    async ({ port }) => {
+      const ws = await openSignedSocket(port, serverId, secrets)
+      const frames = collectWsMessages(ws, 2)
+      ws.send(JSON.stringify({ type: 'hello-nonce', nonce: HELLO_NONCE }))
+      const [helloRaw] = await frames
+      const helloBody = JSON.parse(splitSignature(helloRaw!)!.unsigned) as {
+        sessionId: string
+        kid: string
+      }
+      const iat = Math.floor(Date.now() / 1000)
+      const sig = await key.sign(
+        attachSigningInput({
+          sessionId: helloBody.sessionId,
+          panelFingerprint: helloBody.kid,
+          serverId,
+          keyId: 'key-test',
+          iat,
+        })
+      )
+      const later = collectWsMessages(ws, 1)
+      ws.send(JSON.stringify(presenceHello({ attach: { keyId: 'key-test', iat, sig } })))
+      const [outboxRaw] = await later
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+      const outboxBody = JSON.parse(splitSignature(outboxRaw!)!.unsigned) as { seq: number }
+      assertEquals(outboxBody.seq, 2)
+      assertEquals(raised, [{ trustLevel: 2 }])
+    }
+  )
+})
+
+test('signed session: a hello with a bad attach proof is closed 1008 and gets no outbox', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-signed-bad-attach'
+  const identity = await fixturePanelIdentity()
+  const { tracking } = outboxCellWithBatch(serverId, [outboxEnvelope('del-bad-attach')])
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb(),
+      registry: createTrackingRegistry(tracking.cell),
+      panelIdentity: () => Promise.resolve(identity),
+    },
+    async ({ port }) => {
+      const ws = await openSignedSocket(port, serverId, secrets)
+      const frames = collectWsMessages(ws, 2)
+      ws.send(JSON.stringify({ type: 'hello-nonce', nonce: HELLO_NONCE }))
+      await frames
+      const seen: string[] = []
+      ws.addEventListener('message', (event) => seen.push(String(event.data)))
+      const closed = waitForWsClose(ws)
+      ws.send(
+        JSON.stringify(
+          presenceHello({ attach: { keyId: 'key-test', iat: 1, sig: 'a'.repeat(86) } })
+        )
+      )
+      const event = await closed
+      assertEquals(event.code, 1008)
+      assertEquals(event.reason, 'attach-proof-refused')
+      assertEquals(seen, [])
+    }
+  )
+})
+
 test('signed session: nothing is sent before the first frame, then a signed hello and an enveloped version with seq 1', async () => {
   const secrets = await createDaemonJwtSecrets()
   const serverId = 'srv-signed-hello'
@@ -3733,9 +3855,20 @@ test('signed session: nothing is sent before the first frame, then a signed hell
       await new Promise((resolve) => setTimeout(resolve, 60))
       assertEquals(early, [])
 
-      const frames = collectWsMessages(ws, 3)
+      const frames = collectWsMessages(ws, 2)
       ws.send(JSON.stringify({ type: 'hello-nonce', nonce: HELLO_NONCE }))
-      const [helloRaw, versionRaw, outboxRaw] = await frames
+      const [helloRaw, versionRaw] = await frames
+      // The outbox waits for the daemon's presence hello (no attach proof
+      // from an older daemon, accepted while the server is below level 2).
+      const held: string[] = []
+      const holdListener = (event: MessageEvent) => held.push(String(event.data))
+      ws.addEventListener('message', holdListener)
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      ws.removeEventListener('message', holdListener)
+      assertEquals(held, [])
+      const later = collectWsMessages(ws, 1)
+      ws.send(JSON.stringify(presenceHello()))
+      const [outboxRaw] = await later
       ws.close(1000, 'done')
       await waitForWsClose(ws)
 

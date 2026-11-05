@@ -43,3 +43,16 @@ export async function pruneExpiredNonces(db: Db, now: Date = new Date()): Promis
     .returning({ value: nonce.value })
   return rows.length
 }
+
+/**
+ * Record a signed daemon request's nonce as used, kept until the request's
+ * signing window has passed. False when it was used before: a replayed request.
+ */
+export function markRequestNonceUsed(
+  db: Db,
+  serverId: string,
+  requestNonce: string,
+  expiresAt: Date
+): Promise<boolean> {
+  return markUsed(db, `request:${serverId}:${requestNonce}`, 'request', expiresAt)
+}

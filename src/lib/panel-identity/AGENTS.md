@@ -49,7 +49,28 @@ sealing key, and the signed identity document served at
   cell writes the next `seq` to the socket attachment before each signed send and sends one frame at a
   time per socket; Deno keeps it in the socket's sender. Any other first frame gets today's unsigned
   session unless `server.trust_level` is 1 or more (close 4403). Nothing reads the feature list to
-  decide. `trust_level` is raised only by the daemon's own attach proof, which is a later change.
+  decide. In a signed session the outbox waits for the daemon's first presence `hello`; the
+  `version` frame does not.
+- **Daemon proofs and `trust_level`** (`src/daemon/authn/`). Only the daemon's own key raises
+  `server.trust_level`, and only to 2: a verified attach proof on the first presence `hello` of a
+  signed session (`attach-proof.ts`, `"tp-attach\n" + sessionId + panelFingerprint + serverId +
+  keyId + iat`, joined by `\n`), or a `/auth/session` request signed with the daemon key. Nothing
+  writes 1 (a bare `hello-nonce` proves nothing, so a stolen token cannot lock a server in). A
+  hello with no attach proof is accepted below 2 (daemons from before it); a bad proof, or none
+  at 2, closes 1008 `attach-proof-refused`. The cell checks the proof without a database read:
+  `workers-ws.ts` stamps `<keyId>:<x>` of the daemon key on the upgrade (internal header) and the
+  socket attachment keeps it.
+- **Daemon-signed requests** (`request-signature.ts`). Header
+  `X-TurboPanel-Daemon-Signature: <keyId>:<nonce>:<iat>:<sig>` over
+  `"tp-request\n" + METHOD + "\n" + pathname + "\n" + panelFingerprint + "\n" + nonce + "\n" +
+  base64url(SHA-256(body)) + "\n" + iat`. A signed `/auth/session` gets a token with `cnf.jkt`
+  (base64url of the daemon key's SHA-256 thumbprint digest). A request must be signed when its token
+  has `cnf` or the server is at level 2: REST in the key gate of `api-routes.ts` (which reads the
+  body once, within the route's limit, and hands it on), and the `/ws/daemon/v1` upgrade
+  (`upgrade-signature.ts`, both runtimes). `iat` more than 300 s off answers 400
+  `Request clock skew` (not 401, so the daemon does not refresh its token). Nonces are single use
+  (`nonce` table, kind `request`) on the upgrade and on routes that change state or hand out
+  secrets; `/metrics`, transcript chunks and `/host/docker-networking` check skew only.
 - **Signed responses.** `signDaemonResponses` (`signed-response.ts`) signs every answer, errors
   included, on the paths in `SIGNED_DAEMON_RESPONSE_PATHS` (the daemon keeps the same list).
 - **Sign-in v2.** `/enroll` and `/auth/session` take `payloadVersion: 2` proofs that add the key
