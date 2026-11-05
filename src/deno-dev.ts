@@ -8,6 +8,7 @@ import {
   registerDevHostDeveloperRoutes,
 } from './developer/dev-host-routes.ts'
 import { devHostStatusStore } from './developer/dev-host-status.ts'
+import { pinDevelopmentRevision } from './developer/dev-host-view.ts'
 import { registerDevSyncRoutes } from './developer/dev-sync.ts'
 import { registerDevUpdateOverlay } from './developer/dev-update-overlay.ts'
 import { registerDevelopmentUpdatesAdminRoutes } from './developer/development-updates-routes.ts'
@@ -16,6 +17,9 @@ import { registerSystemRoutes } from './developer/system-routes.ts'
 import { registerTunnelRoutes } from './developer/tunnel-routes.ts'
 import { registerUpdateRoutes } from './developer/update-routes.ts'
 import { startDenoServer } from './platform/deno/server.ts'
+
+// Report the commit this process runs, not the one the last converge wrote.
+await pinDevelopmentRevision()
 
 await startDenoServer({
   registerDeveloperSurface({ routes, sessionSecrets, db }) {

@@ -16,7 +16,9 @@ import {
   buildDevHostView,
   createMigratePendingReader,
   migratePendingFromState,
+  pinDevelopmentRevision,
   readDevHostView,
+  readTrunkMigrationCount,
 } from './dev-host-view.ts'
 
 /**
@@ -110,19 +112,73 @@ test('a started job counts as running until a status names it', () => {
 test('migratePendingFromState counts what migrate would apply', () => {
   assertEquals(migratePendingFromState({ status: 'current', applied: 3, shipped: 3 }), {
     pending: 0,
+    applied: 3,
+    total: 3,
   })
   assertEquals(migratePendingFromState({ status: 'unmigrated', applied: 0, shipped: 4 }), {
     pending: 4,
+    applied: 0,
+    total: 4,
   })
   assertEquals(
     migratePendingFromState({ status: 'behind', applied: 2, shipped: 4, pending: ['x', 'y'] }),
-    { pending: 2 }
+    { pending: 2, applied: 2, total: 4 }
   )
   assertEquals(
     migratePendingFromState({ status: 'ahead', applied: 5, shipped: 4, unknown: ['z'] }),
     null
   )
   assertEquals(migratePendingFromState({ status: 'diverged', applied: 2, shipped: 4, at: 1 }), null)
+})
+
+test('migratePendingFromState takes the total from trunk, never below the checkout', () => {
+  // The checkout is behind trunk: trunk ships two more than it has.
+  assertEquals(migratePendingFromState({ status: 'current', applied: 23, shipped: 23 }, 25), {
+    pending: 0,
+    applied: 23,
+    total: 25,
+  })
+  // A branch checkout with its own new migration ships more than trunk.
+  assertEquals(
+    migratePendingFromState({ status: 'behind', applied: 25, shipped: 26, pending: ['n'] }, 25),
+    { pending: 1, applied: 25, total: 26 }
+  )
+})
+
+test('readTrunkMigrationCount counts the trunk manifest, null when it cannot', async () => {
+  const manifest = JSON.stringify({ entries: [{ sha256: 'a' }, { sha256: 'b' }] })
+  const paths: string[] = []
+  const show = (path: string) => {
+    paths.push(path)
+    return Promise.resolve(manifest)
+  }
+  assertEquals(await readTrunkMigrationCount(show), 2)
+  assertEquals(paths, ['migrations/manifest.json'])
+  assertEquals(await readTrunkMigrationCount(() => Promise.resolve(null)), null)
+  assertEquals(await readTrunkMigrationCount(() => Promise.resolve('not json')), null)
+  assertEquals(await readTrunkMigrationCount(() => Promise.resolve('{"entries":[]}')), null)
+})
+
+test('pinDevelopmentRevision sets the checkout HEAD, and drops a stale value it cannot replace', async () => {
+  const values = new Map<string, string>([['TURBOPANEL_REVISION', OLD]])
+  const env = {
+    set: (key: string, value: string) => {
+      values.set(key, value)
+    },
+    delete: (key: string) => {
+      values.delete(key)
+    },
+  }
+  assertEquals(
+    await pinDevelopmentRevision(() => Promise.resolve({ commit: `${HEAD}\n` }), env),
+    HEAD
+  )
+  assertEquals(values.get('TURBOPANEL_REVISION'), HEAD)
+  assertEquals(
+    await pinDevelopmentRevision(() => Promise.resolve({ commit: 'unknown' }), env),
+    null
+  )
+  assertEquals(values.has('TURBOPANEL_REVISION'), false)
 })
 
 test('the migrate reader caches for its ttl, failures included', async () => {
@@ -132,13 +188,15 @@ test('the migrate reader caches for its ttl, failures included', async () => {
   const read = createMigratePendingReader(
     () => {
       calls += 1
-      return fail ? Promise.reject(new Error('db down')) : Promise.resolve({ pending: calls })
+      return fail
+        ? Promise.reject(new Error('db down'))
+        : Promise.resolve({ pending: calls, applied: 0, total: calls })
     },
     { ttlMs: 30_000, now: () => now }
   )
-  assertEquals(await read(fakeDb), { pending: 1 })
+  assertEquals(await read(fakeDb), { pending: 1, applied: 0, total: 1 })
   now = 29_999
-  assertEquals(await read(fakeDb), { pending: 1 })
+  assertEquals(await read(fakeDb), { pending: 1, applied: 0, total: 1 })
   now = 30_000
   fail = true
   assertEquals(await read(fakeDb), null)
@@ -150,8 +208,9 @@ test('the migrate reader caches for its ttl, failures included', async () => {
 test('buildDevHostView fills the control plane commit, restart and migrate count', () => {
   const daemon = part({ name: 'daemon', unit: 'turbopaneld.service', runningCommit: OLD })
   const s = status(null, [part({ setupNeeded: { install: true } }), daemon])
-  const view = buildDevHostView(s, { runningCommit: OLD, migrate: { pending: 2 } })
-  assertEquals(view.migrate, { pending: 2 })
+  const migrate = { pending: 2, applied: 23, total: 25 }
+  const view = buildDevHostView(s, { runningCommit: OLD, migrate })
+  assertEquals(view.migrate, migrate)
   assertEquals(view.parts[0].runningCommit, OLD)
   assertEquals(view.parts[0].restartNeeded, true)
   assertEquals(view.parts[0].setupNeeded, { install: true, migrate: { pending: 2 } })
@@ -161,7 +220,10 @@ test('buildDevHostView fills the control plane commit, restart and migrate count
 
 test('buildDevHostView leaves restart off when the running commit is the HEAD', () => {
   const s = status(null, [part({ setupNeeded: { migrate: { pending: 7 } } })])
-  const view = buildDevHostView(s, { runningCommit: HEAD, migrate: { pending: 0 } })
+  const view = buildDevHostView(s, {
+    runningCommit: HEAD,
+    migrate: { pending: 0, applied: 25, total: 25 },
+  })
   assertEquals(view.parts[0].restartNeeded, false)
   assertEquals(view.parts[0].setupNeeded, {})
   const unknown = buildDevHostView(s, { runningCommit: null, migrate: null })
@@ -175,7 +237,7 @@ test('readDevHostView is null without a status or while the daemon is offline', 
   const deps = {
     store,
     isConnected: () => Promise.resolve(false),
-    readMigratePending: () => Promise.resolve({ pending: 0 }),
+    readMigratePending: () => Promise.resolve({ pending: 0, applied: 25, total: 25 }),
     runningCommit: () => Promise.resolve(HEAD),
   }
   assertEquals(await readDevHostView(fakeDb, fakeRegistry, deps), null)
@@ -193,6 +255,6 @@ test('readDevHostView is null without a status or while the daemon is offline', 
   }
   const view = await readDevHostView(fakeDb, fakeRegistry, online)
   assertEquals(asked, [SERVER])
-  assertEquals(view?.migrate, { pending: 0 })
+  assertEquals(view?.migrate, { pending: 0, applied: 25, total: 25 })
   assertEquals(view?.parts[0].runningCommit, HEAD)
 })

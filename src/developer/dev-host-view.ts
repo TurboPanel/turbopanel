@@ -8,13 +8,18 @@
  *   `restartNeeded` also turns on when that differs from the checkout HEAD.
  * - `migrate.pending` counts shipped migrations the database has not applied
  *   (`compareSchemaState` against `migrations/manifest.json` on disk, so a pull
- *   that brought a migration shows up before the restart). One SELECT and one
- *   file read, cached 30 s. Null when it cannot be read or the history is not a
- *   prefix of the manifest (the boot gate will say why).
+ *   that brought a migration shows up before the restart); `migrate.applied`
+ *   is how many the database has, and `migrate.total` how many trunk ships
+ *   (`origin/trunk:migrations/manifest.json`, the checkout's own manifest when
+ *   git cannot read that), for the bar's "Database: N of M migrations
+ *   applied". One SELECT, one file read and one `git show`, cached 30 s. Null
+ *   when it cannot be read or the history is not a prefix of the manifest (the
+ *   boot gate will say why).
  *
  * `host` is null when no status arrived or the co-located daemon is offline.
  * Development entry only; never reachable from the Workers or production entries.
  */
+import { dirname, fromFileUrl, join } from '@std/path'
 import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import type { DevHostPart, DevHostSetupNeeded, DevHostStatus } from '../contracts/cell-protocol.ts'
 import { resolveInstanceRevision } from '../app/build-info.ts'
@@ -22,6 +27,7 @@ import { getInstanceCommit } from '../daemon/version.ts'
 import type { Db } from '../db/connection.ts'
 import {
   compareSchemaState,
+  parseMigrationManifest,
   readAppliedMigrationHashes,
   readShippedMigrationHashes,
   type SchemaState,
@@ -33,21 +39,67 @@ const LOG_COMPONENT = 'development-host'
 
 export const MIGRATE_PENDING_CACHE_MS = 30_000
 
-export type DevHostMigrate = { pending: number }
+export type DevHostMigrate = {
+  /** Migrations in the checkout's manifest the database has not applied. */
+  pending: number
+  /** Migrations the database has applied. */
+  applied: number
+  /** Migrations trunk ships (the checkout's count when trunk cannot be read). */
+  total: number
+}
 
 export type DevHostView = DevHostStatus & { migrate: DevHostMigrate | null }
 
-/** Pending count for a schema state; null when migrate would refuse (ahead or diverged). */
-export function migratePendingFromState(state: SchemaState): DevHostMigrate | null {
+/**
+ * Counts for a schema state; null when migrate would refuse (ahead or
+ * diverged). `trunkTotal` is the length of trunk's manifest, or null when it
+ * could not be read (then the checkout's count stands in). A trunk that ships
+ * fewer than the checkout (a branch with a new migration) never lowers it.
+ */
+export function migratePendingFromState(
+  state: SchemaState,
+  trunkTotal: number | null = null
+): DevHostMigrate | null {
+  const total = Math.max(trunkTotal ?? 0, state.shipped)
   switch (state.status) {
     case 'current':
-      return { pending: 0 }
+      return { pending: 0, applied: state.applied, total }
     case 'unmigrated':
-      return { pending: state.shipped }
+      return { pending: state.shipped, applied: 0, total }
     case 'behind':
-      return { pending: state.pending.length }
+      return { pending: state.pending.length, applied: state.applied, total }
     default:
       return null
+  }
+}
+
+/** The instance checkout: this module lives at `<root>/src/developer/`. */
+const INSTANCE_ROOT = join(dirname(fromFileUrl(import.meta.url)), '..', '..')
+
+/** A file as `origin/trunk` has it in the instance checkout, or null when git cannot read it. */
+export async function showInstanceTrunkFile(path: string): Promise<string | null> {
+  try {
+    const { success, stdout } = await new Deno.Command('git', {
+      args: ['-C', INSTANCE_ROOT, 'show', `origin/trunk:${path}`],
+      stdout: 'piped',
+      stderr: 'null',
+    }).output()
+    return success ? new TextDecoder().decode(stdout) : null
+  } catch {
+    return null
+  }
+}
+
+/** How many migrations `origin/trunk` ships, or null when git or the manifest cannot be read. */
+export async function readTrunkMigrationCount(
+  show: (path: string) => Promise<string | null> = showInstanceTrunkFile
+): Promise<number | null> {
+  const raw = await show('migrations/manifest.json')
+  if (raw === null) return null
+  try {
+    return parseMigrationManifest(raw).length
+  } catch {
+    return null
   }
 }
 
@@ -75,11 +127,12 @@ export function createMigratePendingReader(
 }
 
 async function readMigratePendingUncached(db: Db): Promise<DevHostMigrate | null> {
-  const [applied, shipped] = await Promise.all([
+  const [applied, shipped, trunkTotal] = await Promise.all([
     readAppliedMigrationHashes(db),
     readShippedMigrationHashes(),
+    readTrunkMigrationCount(),
   ])
-  return migratePendingFromState(compareSchemaState(applied, shipped))
+  return migratePendingFromState(compareSchemaState(applied, shipped), trunkTotal)
 }
 
 export const readMigratePending = createMigratePendingReader(readMigratePendingUncached)
@@ -99,6 +152,29 @@ export function captureRunningInstanceCommit(): Promise<string | null> {
     return head === 'unknown' ? null : head
   })()
   return runningCommit
+}
+
+/**
+ * Pin `TURBOPANEL_REVISION` to the checkout HEAD before the development
+ * server starts. The value in `runtime.env` is written only by a converge, so
+ * after a pull and restart it names an older commit; the restarted process
+ * would then report that commit on `/api/health` and in its attach frame, and
+ * the daemon's Update and Restart would fail waiting for the new one. When git
+ * cannot name HEAD the stale value is removed, so the process reports
+ * `unknown` rather than a wrong commit. Development entry only: production
+ * reports the commit stamped into its build or written by the installer.
+ */
+export async function pinDevelopmentRevision(
+  readHead: () => Promise<{ commit: string }> = getInstanceCommit,
+  env: Pick<typeof Deno.env, 'set' | 'delete'> = Deno.env
+): Promise<string | null> {
+  const head = (await readHead()).commit.trim()
+  if (/^[0-9a-f]{40}$/.test(head)) {
+    env.set('TURBOPANEL_REVISION', head)
+    return head
+  }
+  env.delete('TURBOPANEL_REVISION')
+  return null
 }
 
 /** Fill the control plane part from this process's own knowledge. */
