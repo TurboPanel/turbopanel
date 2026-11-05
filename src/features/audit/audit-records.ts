@@ -115,6 +115,7 @@ export const AUDIT_ACTIONS = [
   'server.reenroll_ticket.issue',
   'server.reenroll_ticket.revoke',
   'server.colocated_repair',
+  'server.sealing_key.clear',
   'license.key.burn',
   'panel.identity.generated',
   'panel.identity_next.set',
