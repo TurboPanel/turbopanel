@@ -8,7 +8,12 @@
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { isSafeRoot } from '../../features/compose/service-kind.ts'
-import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
+import {
+  canonicalizeRepositoryUrl,
+  cloneUrlRefusal,
+  isSshCloneUrl,
+  PUBLIC_GIT_HOST_REQUIRED_MESSAGE,
+} from '../../features/git/clone-url.ts'
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -65,9 +70,6 @@ function isAutoDeploy(value: unknown): value is SourceAutoDeploy {
   return typeof value === 'string' && SOURCE_AUTO_DEPLOY_MODES.includes(value as SourceAutoDeploy)
 }
 
-/** `git@host:owner/repo.git` — the scp-like form git accepts. */
-const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
-
 /**
  * Repository URL policy.
  *
@@ -84,6 +86,12 @@ const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
  *   deploy path carries that credential to the daemon tagged
  *   `credentialKind: 'ssh_key'`, which installs it as a temporary identity file
  *   for the clone; an https source's credential is a token instead.
+ *
+ * - Every lane: the address must be on a public git host
+ *   ({@link cloneUrlRefusal}; owner decision 2026-11-05, no setting lifts
+ *   it), answered `source_repository_host_not_public`, with no credentials in
+ *   the URL. A PATCH that only changes `secretId` re-checks the stored URL, so
+ *   a row saved before this rule cannot be given a new key either.
  *
  * Callers must settle the auth shape **before** calling this, so the
  * `secretId` passed in is always one the provider is allowed to use.
@@ -103,32 +111,40 @@ export function validateRepositoryUrl(
     return { ok: false, error: 'source_repository_url_invalid' }
   }
 
-  if (url.startsWith('https://')) {
-    try {
-      const parsed = new URL(url)
-      if (!parsed.hostname || parsed.username || parsed.password) {
-        return { ok: false, error: 'source_repository_url_invalid' }
-      }
-    } catch {
-      return { ok: false, error: 'source_repository_url_invalid' }
-    }
-    return { ok: true, url: canonicalizeRepositoryUrl(url) }
-  }
-
   // Only the credential-bearing lanes may use SSH: `git` always, and `gitlab`
   // when it clones with a deploy key rather than through its OAuth connection.
-  if (provider === 'github') {
+  const isHttps = url.startsWith('https://')
+  if (!isHttps && provider === 'github') {
     return { ok: false, error: 'source_repository_url_must_be_https' }
   }
-
-  const isSsh = url.startsWith('ssh://') || SCP_LIKE_SSH_RE.test(url)
-  if (!isSsh) {
+  if (!isHttps && !isSshCloneUrl(url)) {
     return { ok: false, error: 'source_repository_url_invalid' }
   }
-  if (!secretId) {
+
+  // The same rule a server applies before it reads or clones: the form, no
+  // credentials in the URL, and a public git host.
+  const refusal = cloneUrlRefusal(url)
+  if (refusal === 'host_not_public') {
+    return { ok: false, error: 'source_repository_host_not_public' }
+  }
+  if (refusal !== null) {
+    return { ok: false, error: 'source_repository_url_invalid' }
+  }
+
+  if (!isHttps && !secretId) {
     return { ok: false, error: 'source_ssh_requires_credential' }
   }
   return { ok: true, url: canonicalizeRepositoryUrl(url) }
+}
+
+/**
+ * The 400 body for a refused repository URL: the code, plus the plain-words
+ * sentence when the host is not a public git host.
+ */
+export function repositoryUrlErrorBody(error: string): { error: string; message?: string } {
+  return error === 'source_repository_host_not_public'
+    ? { error, message: PUBLIC_GIT_HOST_REQUIRED_MESSAGE }
+    : { error }
 }
 
 function parseOptionalUuid(value: unknown): { ok: true; value: string | null } | { ok: false } {
@@ -257,7 +273,7 @@ export function parseSourceCreateBody(
   }
   const repositoryUrl = validateRepositoryUrl(provider, body.repositoryUrl, secretId.value)
   if (!repositoryUrl.ok) {
-    return c.json({ error: repositoryUrl.error }, 400)
+    return c.json(repositoryUrlErrorBody(repositoryUrl.error), 400)
   }
 
   const repositoryExternalId = parseOptionalTrimmed(body.repositoryExternalId, 64)
@@ -394,7 +410,7 @@ export function parseSourcePatchBody(
   if (authError) return c.json({ error: authError }, 400)
 
   const urlError = applyRepositoryUrlPatch(body, existing, secretId.value, patch)
-  if (urlError) return c.json({ error: urlError }, 400)
+  if (urlError) return c.json(repositoryUrlErrorBody(urlError), 400)
 
   for (const [key, parse] of SOURCE_PATCH_FIELD_PARSERS) {
     if (!(key in body)) continue

@@ -12,6 +12,7 @@
  * `src/workers.ts` (`pnpm check:workers-bundle`).
  */
 
+import { internalHostReason } from '../../lib/internal-host.ts'
 import { stripTrailingSlashes } from './origin.ts'
 
 /** `git@host:owner/repo.git` — the scp-like form git accepts. */
@@ -27,6 +28,84 @@ const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
  */
 export function isSshCloneUrl(cloneUrl: string): boolean {
   return cloneUrl.startsWith('ssh://') || SCP_LIKE_SSH_RE.test(cloneUrl)
+}
+
+/**
+ * What a person reads when a repository is refused for its host. Owner
+ * decision 2026-11-05: repositories must be on a public git host, with no
+ * setting that lifts it for now.
+ */
+export const PUBLIC_GIT_HOST_REQUIRED_MESSAGE =
+  'Repositories must be on a public git host. Private and local network addresses, localhost and single-label names are not supported.'
+
+/** Why a clone URL is refused: its form, or a host that is not public. */
+export type CloneUrlRefusal = 'invalid' | 'host_not_public'
+
+/** A host name or IP literal that starts like one, never with `-` or `.`. */
+const HOST_START_RE = /^[A-Za-z0-9[]/
+
+/**
+ * The only authority shape (`[user@]host[:port]`, between `scheme://` and the
+ * first `/`) a server is asked to fetch from: a plain user, a host name, IPv4
+ * or bracketed IPv6 literal, and a numeric port. git hands everything before
+ * the first `/` to ssh as `user@host` and decodes it first, while the URL
+ * parser stops the host at `#` or `?` and leaves an `ssh:` host
+ * percent-encoded, so `ssh://git@github.com#@127.0.0.1/r` or
+ * `ssh://git@x%40127.0.0.1/r` would pass a check on the parsed host and dial
+ * 127.0.0.1. The daemon allows only the same shape.
+ */
+const AUTHORITY_RE = /^(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/
+
+function hasPlainAuthority(cloneUrl: string, scheme: 'https' | 'ssh'): boolean {
+  const rest = cloneUrl.slice(`${scheme}://`.length)
+  const slash = rest.indexOf('/')
+  return AUTHORITY_RE.test(slash === -1 ? rest : rest.slice(0, slash))
+}
+
+/** The host of an accepted form, or `null` when the form is refused. */
+function allowedFormHost(cloneUrl: string): string | null {
+  if (cloneUrl.length === 0 || /[\s\\]/.test(cloneUrl) || cloneUrl.startsWith('-')) {
+    return null
+  }
+  const scheme = ['https', 'ssh'].find((name) => cloneUrl.startsWith(`${name}://`))
+  if (scheme === 'https' || scheme === 'ssh') {
+    if (!hasPlainAuthority(cloneUrl, scheme)) return null
+    try {
+      const parsed = new URL(cloneUrl)
+      if (parsed.hostname === '' || parsed.password !== '') return null
+      if (parsed.protocol === 'https:' && parsed.username !== '') return null
+      // A host git could read as an ssh option (`-oProxyCommand=…`) or that
+      // starts with a dot; the daemon refuses the same.
+      return HOST_START_RE.test(parsed.hostname) ? parsed.hostname : null
+    } catch {
+      return null
+    }
+  }
+  if (!SCP_LIKE_SSH_RE.test(cloneUrl) || cloneUrl.includes('@-')) return null
+  return cloneUrl.slice(cloneUrl.indexOf('@') + 1, cloneUrl.indexOf(':'))
+}
+
+/**
+ * The one address rule for a repository, on save (`validateRepositoryUrl`) and
+ * before a server is asked to read it (`repo-read-request`,
+ * `repo-default-branch-request`). Only `https://host/...` with no login,
+ * `ssh://[user@]host/...` with no password, or scp-like `user@host:path`.
+ * `file:`, `git:`, `http:`, `ext::`, a bare path, an empty host, a value git
+ * could take as an option, whitespace and backslashes are `invalid`. A host
+ * that is internal by `internalHostReason` (private, loopback, link-local and
+ * ULA literals, numeric hosts, `localhost`, single-label and reserved names) is
+ * `host_not_public`. A DNS name is not resolved. The daemon checks the same
+ * again before a read or a release checkout.
+ */
+export function cloneUrlRefusal(cloneUrl: string): CloneUrlRefusal | null {
+  const host = allowedFormHost(cloneUrl)
+  if (host === null) return 'invalid'
+  return internalHostReason(host) === null ? null : 'host_not_public'
+}
+
+/** May a server be asked to read this clone URL? See {@link cloneUrlRefusal}. */
+export function isDaemonReadableCloneUrl(cloneUrl: string): boolean {
+  return cloneUrlRefusal(cloneUrl) === null
 }
 
 /**

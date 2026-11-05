@@ -7,12 +7,14 @@ import {
   parseSourcePatchBody,
   parseSourceAttachBody,
   readSourceMetadata,
+  repositoryUrlErrorBody,
   serializeConnectionRow,
   serializeSourceRow,
   SOURCE_REFERENCED_BY_COMPOSE_ERROR,
   validateRepositoryUrl,
   type SourceRowLike,
 } from './routes-helpers.ts'
+import { PUBLIC_GIT_HOST_REQUIRED_MESSAGE } from '../../features/git/clone-url.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -538,4 +540,39 @@ test('attach rejects a malformed body', () => {
     }),
     null
   )
+})
+
+test('validateRepositoryUrl refuses a repository that is not on a public git host', () => {
+  for (const [provider, url, secretId] of [
+    ['git', 'https://192.168.1.20/org/repo.git', null],
+    ['git', 'git@10.0.0.5:org/repo.git', CREDENTIAL_ID],
+    ['git', 'git@gitserver:org/repo.git', null],
+    ['git', 'ssh://git@[fd00::1]/org/repo.git', CREDENTIAL_ID],
+    ['gitlab', 'https://localhost/org/repo.git', null],
+    ['github', 'https://127.0.0.1/org/repo.git', null],
+  ] as const) {
+    assertEquals(
+      validateRepositoryUrl(provider, url, secretId),
+      { ok: false, error: 'source_repository_host_not_public' },
+      url
+    )
+  }
+  assertEquals(
+    validateRepositoryUrl('git', 'ssh://git:secret@git.example.com/org/repo.git', CREDENTIAL_ID),
+    { ok: false, error: 'source_repository_url_invalid' }
+  )
+  assertEquals(validateRepositoryUrl('git', 'git@-oProxyCommand:org/repo.git', CREDENTIAL_ID), {
+    ok: false,
+    error: 'source_repository_url_invalid',
+  })
+})
+
+test('repositoryUrlErrorBody names the public git host rule only for that refusal', () => {
+  assertEquals(repositoryUrlErrorBody('source_repository_host_not_public'), {
+    error: 'source_repository_host_not_public',
+    message: PUBLIC_GIT_HOST_REQUIRED_MESSAGE,
+  })
+  assertEquals(repositoryUrlErrorBody('source_repository_url_invalid'), {
+    error: 'source_repository_url_invalid',
+  })
 })

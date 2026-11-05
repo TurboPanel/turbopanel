@@ -2,10 +2,12 @@ import { assertEquals } from '@std/assert'
 import {
   branchFromGitRef,
   canonicalizeRepositoryUrl,
+  cloneUrlRefusal,
   commitSubject,
   COMMIT_AUTHOR_MAX_CHARS,
   COMMIT_MESSAGE_MAX_CHARS,
   isCommitSha,
+  isDaemonReadableCloneUrl,
   isGithubDotComHttpsCloneUrl,
   isSafeGitRef,
   isValidGitRefName,
@@ -227,4 +229,97 @@ test('isValidGitRefName follows git check-ref-format for branch names', () => {
   ]) {
     assertEquals(isValidGitRefName(bad), false, JSON.stringify(bad))
   }
+})
+
+test('isDaemonReadableCloneUrl accepts only https, ssh and user@host:path', () => {
+  for (const url of [
+    'https://github.com/o/r.git',
+    'https://git.example.com:8443/group/sub/r.git',
+    'ssh://git@example.com:2222/o/r.git',
+    'git@github.com:o/r.git',
+  ]) {
+    assertEquals(isDaemonReadableCloneUrl(url), true, url)
+  }
+  for (const url of [
+    '',
+    'file:///etc',
+    'git://example.com/o/r.git',
+    'http://example.com/o/r.git',
+    'ext::sh -c id',
+    '/srv/repo',
+    'example.com:o/r.git',
+    '-oProxyCommand=x@example.com:o/r',
+    'git@-oProxyCommand=x:o/r',
+    'https://user:secret@example.com/o/r.git',
+    'https://token@example.com/o/r.git',
+    'ssh://git:secret@example.com/o/r.git',
+    'https://example.com\\@127.0.0.1/o/r.git',
+  ]) {
+    assertEquals(isDaemonReadableCloneUrl(url), false, url)
+  }
+})
+
+test('cloneUrlRefusal refuses a host that is not a public git host', () => {
+  for (const url of [
+    'https://github.com/o/r.git',
+    'https://203.0.113.7/o/r.git',
+    'https://[2606:4700::1]/o/r.git',
+    'git@gitlab.example.com:o/r.git',
+    'https://git.example.test/o/r.git',
+  ]) {
+    assertEquals(cloneUrlRefusal(url), null, url)
+  }
+  for (const url of [
+    'https://10.0.0.5/o/r.git',
+    'https://192.168.1.20/o/r.git',
+    'https://172.16.0.1/o/r.git',
+    'https://100.64.0.1/o/r.git',
+    'https://127.0.0.1/o/r.git',
+    'https://127.1/o/r.git',
+    'https://0x7f000001/o/r.git',
+    'https://2130706433/o/r.git',
+    'https://169.254.169.254/o/r.git',
+    'https://[::1]/o/r.git',
+    'https://[::ffff:10.0.0.1]/o/r.git',
+    'https://[::ffff:127.0.0.1]/o/r.git',
+    'https://[fd00::1]/o/r.git',
+    'https://[fe80::1]/o/r.git',
+    'https://localhost/o/r.git',
+    'https://LOCALHOST./o/r.git',
+    'https://gitserver/o/r.git',
+    'https://git.corp.internal/o/r.git',
+    'https://nas.local/o/r.git',
+    'ssh://git@10.0.0.5/o/r.git',
+    'ssh://git@[fd00::1]:2222/o/r.git',
+    'git@10.0.0.5:o/r.git',
+    'git@gitserver:o/r.git',
+  ]) {
+    assertEquals(cloneUrlRefusal(url), 'host_not_public', url)
+    assertEquals(isDaemonReadableCloneUrl(url), false, url)
+  }
+  assertEquals(cloneUrlRefusal('file:///srv/r.git'), 'invalid')
+  assertEquals(cloneUrlRefusal('https://user:secret@10.0.0.5/o/r.git'), 'invalid')
+})
+
+test('cloneUrlRefusal refuses a user, host or port git and the URL parser read differently', () => {
+  for (const url of [
+    'ssh://git@github.com#@127.0.0.1/a',
+    'ssh://git@github.com?@127.0.0.1/a',
+    'ssh://git@github.com#x@127.0.0.1',
+    'ssh://git@github.com?x=@10.0.0.1/a',
+    'ssh://git@github.com:22#@127.0.0.1/a',
+    'ssh://git@github.com;@127.0.0.1/a',
+    'https://github.com#@127.0.0.1/a',
+    'https://github.com?@127.0.0.1/a',
+    'ssh://git@evil%40127.0.0.1/a',
+    'ssh://%31%32%37.0.0.1/a',
+    'ssh://git@%6c%6f%63%61%6c%68%6f%73%74/a',
+    'ssh://git@%31%30.0.0.1/a',
+    'ssh://git%40x@example.com/a',
+    'ssh://-oProxyCommand=x.com/a',
+    'ssh://git@-oProxyCommand=x.com/a',
+  ]) {
+    assertEquals(cloneUrlRefusal(url), 'invalid', url)
+  }
+  assertEquals(cloneUrlRefusal('ssh://git@example.com/o/my%20repo.git'), null)
 })
