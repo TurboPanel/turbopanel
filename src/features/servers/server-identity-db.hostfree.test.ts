@@ -52,6 +52,14 @@ function assertClearedProjectionColumns(updates: Array<Record<string, unknown>>)
   assertEquals(patch?.daemonUpdateStatus, null)
 }
 
+/** The old daemon's sealing key goes whenever the identity key is replaced or removed. */
+function assertClearedSealingKey(updates: Array<Record<string, unknown>>): void {
+  const patch = updates.find((entry) => 'daemon' in entry)
+  assertEquals(patch?.sealingKeyKid, null)
+  assertEquals(patch?.sealingKeyPub, null)
+  assertEquals(patch?.sealingKeyReportedAt, null)
+}
+
 function limitResult<T>(rows: T[]) {
   return { limit: () => Promise.resolve(rows) }
 }
@@ -228,6 +236,7 @@ test('attachDaemonStateToServer inserts the key row and writes default status co
   // Re-enrollment always clears projection too — a full replace, not a merge.
   assertEquals(fake.getServerRow().daemon, null)
   assertClearedProjectionColumns(fake.getUpdates())
+  assertClearedSealingKey(fake.getUpdates())
 })
 
 test('attachDaemonStateToServer mints a new key id when the same key is presented again', async () => {
@@ -241,6 +250,8 @@ test('attachDaemonStateToServer mints a new key id when the same key is presente
   assertEquals(result.keyId !== originalId, true)
   assertEquals(fake.getKey()?.fingerprint, activeKey.fingerprint)
   assertEquals(fake.getKey()?.revokedAt, null)
+  // The same key presented again still drops the old sealing key.
+  assertClearedSealingKey(fake.getUpdates())
 })
 
 test('attachDaemonStateToServer throws when the server row is missing', async () => {
@@ -331,4 +342,5 @@ test('clearServerDaemonState deletes the key row and resets server status column
   assertEquals(fake.getServerRow().daemon, null)
   assertEquals(fake.getServerRow().connected, false)
   assertClearedProjectionColumns(fake.getUpdates())
+  assertClearedSealingKey(fake.getUpdates())
 })

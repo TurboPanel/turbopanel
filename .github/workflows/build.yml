@@ -134,6 +134,9 @@ jobs:
       - name: Check instance ACME boundary (instance ACME must not touch organization ACME)
         run: pnpm run check:instance-acme-boundary
 
+      - name: Check Workers ACME boundary (no Let's Encrypt client or directory host in the Workers build)
+        run: pnpm run check:workers-acme-boundary
+
       - name: Check import boundaries
         run: pnpm run check:import-boundaries
 

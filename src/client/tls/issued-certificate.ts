@@ -29,7 +29,7 @@ import { normalizePrivateKeyPem, PemError, splitCertificateChain } from '../../l
 import { privateKeyMatchesCertificate, TlsKeyError } from '../../lib/tls/keys.ts'
 import { CertificateParseError, parseCertificatePem } from '../../lib/tls/parse.ts'
 import type { ParsedCertificate, TlsAcmeMetadata } from '../../lib/tls/types.ts'
-import { jitteredFallbackRenewAt } from '../../features/tls/dns-certificates/timing.ts'
+import { jitteredFallbackRenewAt } from '../../lib/tls/renew-at.ts'
 import { publicMarker } from '../../features/tls/http-issuance/progress.ts'
 import {
   afterCapture,

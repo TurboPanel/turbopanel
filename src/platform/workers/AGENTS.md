@@ -1,5 +1,14 @@
 # Workers Platform and Hyperdrive (`src/platform/workers/`)
 
+### No Let's Encrypt in the Workers build
+
+The High Availability control plane never talks to Let's Encrypt; a serving
+server's daemon orders organization certificates. `pnpm
+check:workers-acme-boundary` fails when `src/lib/acme/` or a Let's Encrypt
+ACME directory host is reachable from `src/workers.ts`. Keep shared helpers
+that the Workers build needs (for example `src/lib/tls/renew-at.ts`) free of
+ACME imports. Rules: `docs/setup.md`.
+
 ### Workers Hyperdrive
 
 `wrangler.jsonc` declares a `HYPERDRIVE` binding stub (replace the placeholder
