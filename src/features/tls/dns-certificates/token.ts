@@ -82,7 +82,7 @@ async function dnsCapableBadges(
   return rows.sort((a, b) => (b.lastCheckedAt ?? '').localeCompare(a.lastCheckedAt ?? ''))
 }
 
-function refusedToken(err: unknown): boolean {
+function refusedToken(err: unknown): err is TunnelProviderError {
   return (
     err instanceof TunnelProviderError && (err.code === 'unauthorized' || err.code === 'forbidden')
   )
@@ -113,7 +113,7 @@ export async function withAnyDnsToken<T>(
     } catch (err) {
       if (!refusedToken(err)) throw err
       refusal = err
-      if ((err as TunnelProviderError).code === 'unauthorized') {
+      if (err.code === 'unauthorized') {
         await recordBadgeFailure(ctx.db, row, { capability: 'dns', zone: null, whole: true })
       }
       return undefined

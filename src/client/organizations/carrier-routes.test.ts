@@ -691,7 +691,10 @@ test('two tokens that cover each other removed at the same moment: one goes, the
     const results = await Promise.all(
       ids.map((id) => call(f, 'DELETE', `${path}/${id}`, f.managerCookie))
     )
-    assertEquals(results.map((r) => r.status).sort(), [200, 409])
+    assertEquals(
+      results.map((r) => r.status).sort((a, b) => a - b),
+      [200, 409]
+    )
     assertEquals(results.find((r) => r.status === 409)?.body.error, 'badge_in_use')
     const left = await f.db.select().from(badge).where(eq(badge.carrierId, carrierId))
     assertEquals(left.length, 1)
