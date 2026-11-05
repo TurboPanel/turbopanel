@@ -13,6 +13,7 @@ import { createNoopCommandQueue } from '../../features/commands/noop-command-que
 import { environment } from '../../db/schema.ts'
 import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 import type { PreparedDeployCompose } from './deploy-prepare.ts'
+import type { AuditEntry } from '../../features/audit/audit-records.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -33,6 +34,7 @@ import {
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
   registerEnvironmentLifecycleRoutes,
+  recordHostAccessUse,
   registerEnvironmentStopRoutes,
   runEnvironmentDeployForActor,
   tcpUdpIngressServiceRefs,
@@ -581,4 +583,38 @@ test('runEnvironmentDeployForActor returns 404 when the environment is missing',
   )
   assertEquals(result.status, 404)
   assertEquals(await result.json(), { error: 'Not found' })
+})
+
+test('recordHostAccessUse writes one use row for an automated deploy under an approval', async () => {
+  const audits: AuditEntry[] = []
+  const record = async (_db: Db | undefined, entry: AuditEntry) => {
+    audits.push(entry)
+  }
+  const db = {} as Db
+  const auth = { organizationId: 'org-1', actorId: 'repo-7' }
+  await recordHostAccessUse(db, { projectId: 'proj-1' }, auth, 'env-1', record)
+  assertEquals(audits, [])
+
+  await recordHostAccessUse(
+    db,
+    {
+      projectId: 'proj-1',
+      hostAccessUse: {
+        action: 'compose.host_access.use',
+        fingerprint: 'a'.repeat(64),
+        issues: [{ path: 'services.web.volumes[0]' }],
+        approvedBy: 'user-1',
+        approvedAt: '2026-11-05T00:00:00.000Z',
+      },
+    },
+    auth,
+    'env-1',
+    record
+  )
+  assertEquals(audits.length, 1)
+  assertEquals(audits[0]?.action, 'compose.host_access.use')
+  assertEquals(audits[0]?.actorUserId, null)
+  assertEquals(audits[0]?.targetId, 'env-1')
+  assertEquals(audits[0]?.context?.automatedActorId, 'repo-7')
+  assertEquals(audits[0]?.context?.approvedBy, 'user-1')
 })

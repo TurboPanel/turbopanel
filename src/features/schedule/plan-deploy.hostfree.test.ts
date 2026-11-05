@@ -6,7 +6,16 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { COMPOSE_TAG_KEY } from '../compose/tags.ts'
 import { emptyComposeDocument } from '../compose/types.ts'
-import { environment, fabric, mount, project, server, service } from '../../db/schema.ts'
+import {
+  environment,
+  fabric,
+  mount,
+  organization,
+  project,
+  server,
+  service,
+} from '../../db/schema.ts'
+import type { AuditEntry } from '../audit/audit-records.ts'
 import {
   computeStoragePinsFromMountRows,
   extractComposeFromOptions,
@@ -58,6 +67,7 @@ type PlanDeployDbOpts = {
     serverId: string | null
     options: unknown
     name: string | null
+    metadata?: unknown
   } | null
   project?: { id: string; options: unknown; defaultServerId?: string | null } | null
   services?: Array<{ id: string; composeServiceName: string; options: unknown }>
@@ -72,6 +82,9 @@ type PlanDeployDbOpts = {
     locationServerId: string | null
     locationRole: string | null
   }>
+  orgOptions?: unknown
+  /** Counts `db.update(...)` calls (the host-level approval write). */
+  updates?: { count: number }
 }
 
 function createPlanDeployDb(opts: PlanDeployDbOpts = {}): Db {
@@ -79,9 +92,23 @@ function createPlanDeployDb(opts: PlanDeployDbOpts = {}): Db {
   const projectRows = opts.project ? [opts.project] : []
   const fabricRows = opts.fabric ? [opts.fabric] : []
 
+  const orgRows = opts.orgOptions === undefined ? [] : [{ options: opts.orgOptions }]
   return {
+    update: () => ({
+      set: () => ({
+        where: () => {
+          if (opts.updates) opts.updates.count += 1
+          return Promise.resolve([])
+        },
+      }),
+    }),
     select: () => ({
       from: (table: unknown) => {
+        if (table === organization) {
+          return {
+            where: () => thenableRows(orgRows),
+          }
+        }
         if (table === environment) {
           return {
             where: () => thenableRows(envRows),
@@ -680,4 +707,135 @@ test('planEnvironmentDeploy treats a single-server install as a full deploy targ
   assertEquals(pinned.plan.ok, true)
   if (!pinned.plan.ok) return
   assertEquals(pinned.plan.serverIds, [SERVER_A])
+})
+
+/** A document that reaches the host: the Docker socket bound into `web`. */
+const HOST_LEVEL_CHANGES = { web: { volumes: ['/var/run/docker.sock:/var/run/docker.sock'] } }
+
+/**
+ * Plan a host-level deploy with the organization gate on, recording every
+ * audit entry and every approval write instead of touching a database.
+ */
+async function planHostLevel(
+  hostAccess: Parameters<typeof planEnvironmentDeploy>[1]['hostAccess'],
+  metadata: unknown = {}
+) {
+  const overlay = emptyComposeDocument()
+  overlay.data.services = HOST_LEVEL_CHANGES
+  const audits: AuditEntry[] = []
+  const updates = { count: 0 }
+  const result = await planEnvironmentDeploy(
+    createPlanDeployDb({
+      env: {
+        id: ENV_ID,
+        projectId: PROJECT_ID,
+        serverId: SERVER_A,
+        options: { compose: overlay },
+        name: 'production',
+        metadata,
+      },
+      project: { id: PROJECT_ID, options: { compose: composeWithWeb() } },
+      services: [],
+      servers: [],
+      orgOptions: { composeGatedFieldsEnabled: true },
+      updates,
+    }),
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess },
+    noopDeps({
+      recordAudit: async (_db, entry) => {
+        audits.push(entry)
+      },
+    })
+  )
+  return { result, audits, updates }
+}
+
+const MANAGER_ID = '00000000-0000-4000-8000-0000000000ee'
+const MANAGER = {
+  kind: 'manager',
+  userId: MANAGER_ID,
+  email: 'owner@example.test',
+  recordApproval: true,
+} as const
+
+async function approvalFingerprint(): Promise<string> {
+  const { audits } = await planHostLevel(MANAGER)
+  const fingerprint = audits[0]?.context?.fingerprint
+  if (typeof fingerprint !== 'string') throw new TypeError('expected an approve row')
+  return fingerprint
+}
+
+test('a manager deploy of new host-level content records one approve row', async () => {
+  const { result, audits, updates } = await planHostLevel(MANAGER)
+  if ('kind' in result) throw new TypeError(`expected a plan, got ${result.kind}`)
+  assertEquals(result.hostLevelApproved, true)
+  assertEquals(result.hostAccessUse, undefined)
+  assertEquals(updates.count, 1)
+  assertEquals(audits.length, 1)
+  const [entry] = audits
+  assertEquals(entry?.action, 'compose.host_access.approve')
+  assertEquals(entry?.organizationId, ORG_ID)
+  assertEquals(entry?.actorUserId, MANAGER_ID)
+  assertEquals(entry?.actorEmail, 'owner@example.test')
+  assertEquals(entry?.targetType, 'environment')
+  assertEquals(entry?.targetId, ENV_ID)
+  assertEquals(entry?.context?.projectId, PROJECT_ID)
+  assertEquals(entry?.context?.approvedBy, MANAGER_ID)
+  assertEquals(String(entry?.context?.fingerprint).length, 64)
+  assertEquals(entry?.context?.pathCount, 1)
+})
+
+test('a manager deploy of an already approved fingerprint records nothing new', async () => {
+  const fingerprint = await approvalFingerprint()
+  const metadata = {
+    composeHostAccessApproval: { fingerprint, approvedBy: MANAGER_ID, approvedAt: 'then' },
+  }
+  const { result, audits, updates } = await planHostLevel(MANAGER, metadata)
+  assertEquals('kind' in result, false)
+  assertEquals(updates.count, 0)
+  assertEquals(audits, [])
+})
+
+test('an automated deploy matching the approval carries a use event, written by the route', async () => {
+  const fingerprint = await approvalFingerprint()
+  const metadata = {
+    composeHostAccessApproval: { fingerprint, approvedBy: MANAGER_ID, approvedAt: 'then' },
+  }
+  const { result, audits, updates } = await planHostLevel(AUTOMATED, metadata)
+  if ('kind' in result) throw new TypeError(`expected a plan, got ${result.kind}`)
+  assertEquals(result.hostLevelApproved, true)
+  assertEquals(result.hostAccessUse?.action, 'compose.host_access.use')
+  assertEquals(result.hostAccessUse?.fingerprint, fingerprint)
+  assertEquals(result.hostAccessUse?.approvedBy, MANAGER_ID)
+  assertEquals(result.hostAccessUse?.approvedAt, 'then')
+  // The planner itself writes nothing: the row waits until the deploy is persisted.
+  assertEquals(updates.count, 0)
+  assertEquals(audits, [])
+})
+
+test('an automated deploy that does not match is still refused and records nothing', async () => {
+  const metadata = {
+    composeHostAccessApproval: { fingerprint: 'f'.repeat(64), approvedBy: MANAGER_ID },
+  }
+  const { result, audits, updates } = await planHostLevel(AUTOMATED, metadata)
+  if (!('kind' in result) || result.kind !== 'compose_rejected') {
+    throw new TypeError('expected compose_rejected')
+  }
+  assertEquals(result.error.kind, 'compose_host_access_requires_approval')
+  assertEquals(updates.count, 0)
+  assertEquals(audits, [])
+})
+
+test('a preview (no approval recorded) and a non-manager record nothing', async () => {
+  const preview = await planHostLevel({ ...MANAGER, recordApproval: false })
+  assertEquals('kind' in preview.result, false)
+  assertEquals(preview.updates.count, 0)
+  assertEquals(preview.audits, [])
+
+  const refused = await planHostLevel({ kind: 'not_manager' })
+  if (!('kind' in refused.result) || refused.result.kind !== 'compose_rejected') {
+    throw new TypeError('expected compose_rejected')
+  }
+  assertEquals(refused.result.error.kind, 'compose_host_access_requires_manager')
+  assertEquals(refused.audits, [])
 })
