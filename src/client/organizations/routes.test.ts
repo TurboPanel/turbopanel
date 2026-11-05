@@ -454,6 +454,11 @@ test('PATCH /organizations/:id sets the icon and the emoji icon setting', async 
       message: 'This organization has emoji icons turned off. Pick one of the regular icons.',
     })
 
+    // Re-sending the emoji it already stores is not a new emoji: a whole-form save still works.
+    const resend = await patch({ name: 'Renamed With Its Rocket', icon: '🚀' })
+    assertEquals(resend.status, 200)
+    assertEquals(((await resend.json()) as OrgBody).organization.icon, '🚀')
+
     // A key is always allowed; an emoji with the setting turned on in the same request is too.
     assertEquals((await patch({ icon: 'globe' })).status, 200)
     const both = await patch({ icon: '🇺🇸', isEmojiIconAllowed: true })

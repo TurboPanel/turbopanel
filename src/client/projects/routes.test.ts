@@ -1183,6 +1183,15 @@ test('project icons take a key or one emoji, and emoji only while the organizati
     // The stored emoji is kept; the screens show the default instead.
     assertEquals(await storedIcon(id), '🚀')
 
+    // Re-sending the emoji it already stores is not a new emoji: a whole-form save still works.
+    const resendPatch = await app.request(`/projects/${id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ name: 'Rocket Project Renamed', icon: '🚀' }),
+    })
+    assertEquals(resendPatch.status, 200)
+    assertEquals(await storedIcon(id), '🚀')
+
     const keyPatch = await app.request(`/projects/${id}`, {
       method: 'PATCH',
       headers,

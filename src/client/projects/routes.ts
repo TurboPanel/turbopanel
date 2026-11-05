@@ -403,16 +403,27 @@ async function parseCreateProjectInput(
 
 /**
  * 422 `emoji_icons_off` when `icon` is an emoji and the organization has emoji
- * icons turned off; keys and null always pass.
+ * icons turned off; keys and null always pass. With `projectId`, the emoji the
+ * project already stores also passes, so a screen that saves the whole form
+ * can still rename a project that kept an emoji from before.
  */
 async function refuseEmojiIconWhenOff(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  icon: string | null | undefined
+  icon: string | null | undefined,
+  projectId?: string
 ): Promise<Response | undefined> {
   if (!isEmojiIcon(icon)) return undefined
   if (await isEmojiIconAllowedForOrganization(db, organizationId)) return undefined
+  if (projectId !== undefined) {
+    const [stored] = await db
+      .select({ icon: project.icon })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1)
+    if (stored?.icon === icon) return undefined
+  }
   return c.json(EMOJI_ICONS_OFF_BODY, 422)
 }
 
@@ -1104,7 +1115,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind
-    const emojiRefused = await refuseEmojiIconWhenOff(c, db, organizationId, patchFields.icon)
+    const emojiRefused = await refuseEmojiIconWhenOff(c, db, organizationId, patchFields.icon, id)
     if (emojiRefused) return emojiRefused
 
     const conflict = await checkProjectPatchConflicts(c, db, organizationId, id, body, patchFields)

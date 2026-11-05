@@ -203,8 +203,14 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
     // The setting in the same request wins over the stored one, so turning
-    // emoji icons on and picking an emoji is one save.
-    if (patch.iconIsEmoji && !(patch.isEmojiIconAllowed ?? orgRow.isEmojiIconAllowed)) {
+    // emoji icons on and picking an emoji is one save. Re-sending the emoji
+    // the organization already stores is not a new emoji, so a whole-form save
+    // still works while emoji icons are off.
+    if (
+      patch.iconIsEmoji &&
+      patch.icon !== orgRow.icon &&
+      !(patch.isEmojiIconAllowed ?? orgRow.isEmojiIconAllowed)
+    ) {
       return c.json(EMOJI_ICONS_OFF_BODY, 422)
     }
 
