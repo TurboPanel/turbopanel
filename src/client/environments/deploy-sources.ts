@@ -337,8 +337,8 @@ function resolveSourceBuild(
   packageManager?: NodePackageManager
 ): EnvironmentDeploySourceBuild {
   const build: EnvironmentDeploySourceBuild = {
-    // Expand phase: an older daemon rejects `image`, so the wire keeps the old
-    // value for either spelling of the image kind.
+    // A released daemon rejects `image`, so the wire keeps the old value for
+    // either spelling of the image kind until wipe day.
     kind: isImageBuildKind(binding.buildKind) ? IMAGE_BUILD_WIRE_KIND : 'native',
   }
   // The owning service's package-manager choice rides the build object so the

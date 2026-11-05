@@ -1,11 +1,26 @@
+import { ICON_KEYS } from '../../lib/icons.ts'
+
+const ICON_DESCRIPTION = `A key from the fixed icon list (${ICON_KEYS.join(', ')}) or one emoji; null means the default icon.`
+
+const EMOJI_SETTING_DESCRIPTION =
+  'Whether emoji icons are allowed for the organization and its projects. Keys are always allowed; while this is false the screens show the default icon instead of a stored emoji.'
+
 export const organizationSchemas = {
   OrganizationRecord: {
     type: 'object',
-    required: ['id', 'name', 'createdAt'],
+    required: ['id', 'name', 'createdAt', 'icon', 'isEmojiIconAllowed'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       name: { type: ['string', 'null'] },
       createdAt: { type: 'string', format: 'date-time' },
+      icon: {
+        type: ['string', 'null'],
+        description: ICON_DESCRIPTION,
+      },
+      isEmojiIconAllowed: {
+        type: 'boolean',
+        description: EMOJI_SETTING_DESCRIPTION,
+      },
     },
   },
   OrganizationsResponse: {
@@ -27,7 +42,9 @@ export const organizationSchemas = {
   },
   OrganizationUpdate: {
     type: 'object',
-    required: ['name'],
+    description:
+      'At least one key. A key left out keeps its stored value. An emoji icon while emoji icons are off (stored, or false in the same request) is refused with 422 and `{ "error": "emoji_icons_off", "message": "…" }`.',
+    minProperties: 1,
     properties: {
       name: {
         type: 'string',
@@ -35,6 +52,14 @@ export const organizationSchemas = {
         maxLength: 255,
         description:
           'Non-empty name (any characters except control characters; ≤255). Cannot be cleared.',
+      },
+      icon: {
+        type: ['string', 'null'],
+        description: `${ICON_DESCRIPTION} Anything else is refused with 400.`,
+      },
+      isEmojiIconAllowed: {
+        type: 'boolean',
+        description: `${EMOJI_SETTING_DESCRIPTION} Turning it off does not change stored icons.`,
       },
     },
   },
@@ -892,9 +917,9 @@ export const organizationPaths: Record<string, unknown> = {
     },
     patch: {
       tags: ['Organizations'],
-      summary: 'Rename an organization',
+      summary: 'Update an organization',
       description:
-        'Manage-gated. Updates organization.name (any characters except control characters; ≤255). Names are not unique. The name cannot be cleared.',
+        'Manage-gated. Updates any of organization.name (any characters except control characters; ≤255; names are not unique and cannot be cleared), the icon and the emoji icon setting. Icon and emoji setting changes are audited (`organization.icon.set`, `organization.emoji_icons.set`).',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -924,7 +949,16 @@ export const organizationPaths: Record<string, unknown> = {
           },
         },
         '400': {
-          description: 'Invalid name or body',
+          description: 'Invalid name, icon, emoji setting or body (or no known key)',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '422': {
+          description:
+            'An emoji icon while the organization has emoji icons off (`emoji_icons_off`, with a `message` to show)',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

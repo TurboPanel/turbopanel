@@ -89,9 +89,19 @@ changes.
   `POST /servers/:id/ntp` (`server.ntp.set`) — manage-gated, create-then-poll.
   Org record: `GET`/`PATCH /organizations/:id` — GET is access-gated (same
   visibility as the org list: team membership, owner/manager grant, or platform
-  admin; missing or inaccessible → **404**); PATCH is manage-gated (`{ name }`
-  required, any characters except control characters, ≤255, cannot clear; names
-  are not unique). Returns `{ organization }` / `{ ok, organization }`. Org
+  admin; missing or inaccessible → **404**); PATCH is manage-gated and takes any
+  of `name` (any characters except control characters, ≤255, cannot clear;
+  names are not unique), `icon` and `isEmojiIconAllowed`, at least one (else
+  400). Returns `{ organization }` / `{ ok, organization }`; the record (also in
+  the `GET /organizations` list) carries `icon` (a key, one emoji, or null) and
+  `isEmojiIconAllowed`. Icons for projects and organizations are a key from
+  `ICON_KEYS` or one emoji (`src/lib/icons.ts`, `isEmojiIcon`); while the
+  organization has emoji icons off, an emoji on org PATCH, project create or
+  project PATCH is refused with **422** `{ error: 'emoji_icons_off', message }`
+  (a PATCH that turns the setting on in the same request may pick one). Turning
+  it off never rewrites stored icons; the screens show the default instead.
+  Icon and setting changes are audited (`organization.icon.set`,
+  `organization.emoji_icons.set`, only when the value changed). Org
   defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source:
   `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use
   the `server-detail` cached read model (mirrors `servers-list`).

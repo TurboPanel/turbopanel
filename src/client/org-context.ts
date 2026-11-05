@@ -9,13 +9,16 @@ import { can } from './authz/index.ts'
 /** Request header carrying the active organization for org-scoped client API calls. */
 export const ORG_ID_HEADER = 'X-Turbopanel-Organization-Id'
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type OrganizationSummary = {
   id: string
   name: string | null
   createdAt: string
+  /** A key from the fixed icon list, one emoji, or null for the default icon. */
+  icon: string | null
+  /** False when the organization has emoji icons turned off (screens then show the default). */
+  isEmojiIconAllowed: boolean
 }
 
 export function parseOrgIdFromRequest(c: Context): string | Response {
@@ -35,7 +38,7 @@ export function parseOrgIdFromRequest(c: Context): string | Response {
 export async function canAccessOrganization(
   db: Db,
   userId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<boolean> {
   const userRows = await db
     .select({ role: user.role })
@@ -51,12 +54,7 @@ export async function canAccessOrganization(
     .select({ id: teammate.id })
     .from(teammate)
     .innerJoin(team, eq(teammate.teamId, team.id))
-    .where(
-      and(
-        eq(teammate.userId, userId),
-        eq(team.organizationId, organizationId),
-      ),
-    )
+    .where(and(eq(teammate.userId, userId), eq(team.organizationId, organizationId)))
     .limit(1)
 
   if (teamRows.length > 0) {
@@ -70,10 +68,7 @@ export async function canAccessOrganization(
   return await can(db, userId, 'organization:manage', 'organization', organizationId)
 }
 
-export async function resolveOrgId(
-  c: Context,
-  userId: string,
-): Promise<string | Response> {
+export async function resolveOrgId(c: Context, userId: string): Promise<string | Response> {
   const db = getDb(c)
   if (!db) {
     return c.json({ error: 'Database unavailable' }, 503)
@@ -94,7 +89,7 @@ export async function resolveOrgId(
 
 export async function listAccessibleOrganizations(
   db: Db,
-  userId: string,
+  userId: string
 ): Promise<OrganizationSummary[]> {
   const userRows = await db
     .select({ role: user.role })
@@ -108,6 +103,8 @@ export async function listAccessibleOrganizations(
         id: organization.id,
         name: organization.name,
         createdAt: organization.createdAt,
+        icon: organization.icon,
+        isEmojiIconAllowed: organization.isEmojiIconAllowed,
       })
       .from(organization)
       .orderBy(organization.createdAt)
@@ -147,7 +144,9 @@ export async function listAccessibleOrganizations(
     SELECT
       o.id AS id,
       o.name AS "name",
-      o.created_at AS "createdAt"
+      o.created_at AS "createdAt",
+      o.icon AS icon,
+      o.is_emoji_icon_allowed AS "isEmojiIconAllowed"
     FROM ${organization} o
     WHERE o.id IN (SELECT organization_id FROM accessible_org_ids)
     ORDER BY o.created_at
