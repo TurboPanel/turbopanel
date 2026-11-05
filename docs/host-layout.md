@@ -17,7 +17,10 @@ co-located daemon can connect.
 (Postgres), `tpqueue` (RabbitMQ), `tpcaddy` (control-plane Caddy). See
 `../turbopaneld/src/paths/AGENTS.md` (Filesystem layout), the allocation table below, and
 the systemd table for ownership, ACLs, and `/run/turbopanel` **`3770 tp:tp`**
-(setgid and sticky).
+(setgid and sticky). `/var/lib/turbopanel/instance` (`tpctrl:tp`) is the
+instance's own state folder: its HOME and XDG trees live there, and
+`instance/tmp` holds short-lived scratch files (the compiled binary has no
+`/tmp` write grant).
 
 ### Production UID/GID allocation
 

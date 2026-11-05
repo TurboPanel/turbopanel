@@ -84,35 +84,36 @@ function isDenied(err: unknown): boolean {
   return err instanceof Deno.errors.NotCapable || err instanceof Deno.errors.PermissionDenied
 }
 
-async function writeVerifyPem(body: string): Promise<string> {
-  try {
-    const path = await Deno.makeTempFile({
-      prefix: 'tp-uploaded-trust-',
-      suffix: '.pem',
-    })
-    await Deno.writeTextFile(path, body)
-    return path
-  } catch (err) {
-    if (!isDenied(err)) throw err
-  }
-  const state = Deno.env.get('TURBOPANEL_STATE_DIR')?.trim() || '/var/lib/turbopanel'
-  const dir = `${state}/tls`
-  await Deno.mkdir(dir, { recursive: true })
-  const path = `${dir}/uploaded-trust-${crypto.randomUUID()}.pem`
-  await Deno.writeTextFile(path, body)
-  return path
+/**
+ * File and process calls the openssl checks make. Production uses Deno;
+ * host-free tests pass their own so a denied write can be proven harmless.
+ */
+export type OpensslCheckIo = {
+  env: (key: string) => string | undefined
+  makeTempFile: (options: { dir?: string; prefix: string; suffix: string }) => Promise<string>
+  mkdir: (path: string, options: { recursive: boolean; mode: number }) => Promise<void>
+  writeTextFile: (path: string, data: string) => Promise<void>
+  remove: (path: string) => Promise<void>
+  /** Runs `openssl <args>` with `stdin` on its standard input; true on exit 0. */
+  runOpenssl: (args: string[], stdin: string) => Promise<boolean>
 }
 
-async function opensslOk(args: string[]): Promise<boolean> {
+async function spawnOpenssl(args: string[], stdin: string): Promise<boolean> {
   for (const bin of ['/usr/bin/openssl', 'openssl']) {
     try {
-      const output = await new Deno.Command(bin, {
+      const child = new Deno.Command(bin, {
         args,
         env: opensslSpawnEnv(),
-        stdout: 'piped',
-        stderr: 'piped',
-      }).output()
-      return output.code === 0
+        stdin: 'piped',
+        stdout: 'null',
+        stderr: 'null',
+      }).spawn()
+      // A write error (openssl exited early) still leaves the exit status
+      // as the answer, so it must not send the loop to the next binary.
+      const writer = child.stdin.getWriter()
+      await writer.write(new TextEncoder().encode(stdin)).catch(() => undefined)
+      await writer.close().catch(() => undefined)
+      return (await child.status).success
     } catch (err) {
       if (isDenied(err)) return false
     }
@@ -120,35 +121,114 @@ async function opensslOk(args: string[]): Promise<boolean> {
   return false
 }
 
-async function verifyAgainstSystemRoots(leaf: string, intermediates: string): Promise<boolean> {
-  const leafPath = await writeVerifyPem(leaf)
-  const extraPath = intermediates.length > 0 ? await writeVerifyPem(intermediates) : null
-  try {
-    // No -CAfile: OpenSSL's default trust store is the one this distribution
-    // configured (Debian's /etc/ssl/certs, RHEL's /etc/pki/tls, …), and it
-    // honours SSL_CERT_FILE / SSL_CERT_DIR. A hard-coded Debian bundle made
-    // every public upload read as private on RHEL-family hosts.
-    const args = ['verify']
-    if (extraPath) args.push('-untrusted', extraPath)
-    args.push(leafPath)
-    return await opensslOk(args)
-  } finally {
-    await Deno.remove(leafPath).catch(() => undefined)
-    if (extraPath) await Deno.remove(extraPath).catch(() => undefined)
+function denoOpensslCheckIo(): OpensslCheckIo {
+  return {
+    env: (key) => Deno.env.get(key),
+    makeTempFile: (options) => Deno.makeTempFile(options),
+    mkdir: (path, options) => Deno.mkdir(path, options),
+    writeTextFile: (path, data) => Deno.writeTextFile(path, data),
+    remove: (path) => Deno.remove(path),
+    runOpenssl: spawnOpenssl,
   }
+}
+
+const SCRATCH_PREFIX = 'tp-uploaded-trust-'
+
+/**
+ * The scratch folder the instance owns under production permissions:
+ * `<state>/instance/tmp`. The compiled binary may write only under
+ * `/run/turbopanel` and `/var/lib/turbopanel`, so the system temp folder is
+ * denied there, and `<state>/tls` belongs to root. `<state>/instance` is the
+ * instance user's own folder (its HOME lives under it).
+ */
+export function opensslScratchDir(env: (key: string) => string | undefined): string {
+  const state = env('TURBOPANEL_STATE_DIR')?.trim().replace(/\/+$/, '') || '/var/lib/turbopanel'
+  return `${state}/instance/tmp`
+}
+
+async function scratchFileIn(io: OpensslCheckIo, dir?: string): Promise<string> {
+  if (dir) await io.mkdir(dir, { recursive: true, mode: 0o700 })
+  return await io.makeTempFile({ dir, prefix: SCRATCH_PREFIX, suffix: '.pem' })
+}
+
+/**
+ * Writes `body` to a fresh scratch file and returns its path. Tries the
+ * system temp folder (development, tests) and then the instance's own
+ * scratch folder (the compiled production binary). Throws when neither is
+ * writable; every caller turns that into "not verified".
+ */
+async function writeVerifyPem(io: OpensslCheckIo, body: string): Promise<string> {
+  let lastError: unknown = null
+  for (const dir of [undefined, opensslScratchDir(io.env)]) {
+    let path: string | null = null
+    try {
+      path = await scratchFileIn(io, dir)
+      await io.writeTextFile(path, body)
+      return path
+    } catch (err) {
+      lastError = err
+      if (path) await io.remove(path).catch(() => undefined)
+    }
+  }
+  throw new Error('no writable scratch folder for the openssl check', { cause: lastError })
+}
+
+/**
+ * Runs `openssl verify` with the leaf on standard input and the extra
+ * certificates (if any) in one scratch file behind `flag`. False when the
+ * check cannot run at all.
+ */
+async function opensslVerify(
+  io: OpensslCheckIo,
+  leaf: string,
+  extra: { flag: string[]; pem: string } | null
+): Promise<boolean> {
+  let extraPath: string | null = null
+  try {
+    const args = ['verify']
+    if (extra) {
+      extraPath = await writeVerifyPem(io, extra.pem)
+      args.push(...extra.flag, extraPath)
+    }
+    return await io.runOpenssl(args, leaf)
+  } catch {
+    return false
+  } finally {
+    if (extraPath) await io.remove(extraPath).catch(() => undefined)
+  }
+}
+
+async function verifyAgainstSystemRoots(
+  io: OpensslCheckIo,
+  leaf: string,
+  intermediates: string
+): Promise<boolean> {
+  // No -CAfile: OpenSSL's default trust store is the one this distribution
+  // configured (Debian's /etc/ssl/certs, RHEL's /etc/pki/tls, …), and it
+  // honours SSL_CERT_FILE / SSL_CERT_DIR. A hard-coded Debian bundle made
+  // every public upload read as private on RHEL-family hosts.
+  const extra = intermediates.length > 0 ? { flag: ['-untrusted'], pem: intermediates } : null
+  return await opensslVerify(io, leaf, extra)
 }
 
 /**
  * True when `certPem` (leaf, optionally followed by intermediates) chains to
  * the host trust store. A private or unreadable chain is not public.
  */
-export async function uploadedCertificateChainsToPublicRoot(certPem: string): Promise<boolean> {
+export async function uploadedCertificateChainsToPublicRoot(
+  certPem: string,
+  io: OpensslCheckIo | null = null
+): Promise<boolean> {
   if (typeof Deno === 'undefined') return false
   const blocks = splitCertificatePems(certPem)
   const leaf = blocks[0]
   if (!leaf) return false
   try {
-    return await verifyAgainstSystemRoots(leaf, blocks.slice(1).join('\n'))
+    return await verifyAgainstSystemRoots(
+      io ?? denoOpensslCheckIo(),
+      leaf,
+      blocks.slice(1).join('\n')
+    )
   } catch {
     return false
   }
@@ -220,22 +300,16 @@ export function privateUploadedTrustUnavailable(hostname: string): string {
   return `The uploaded certificate for ${hostname} is not publicly trusted, and TurboPanel has no private issuer that covers it. In Admin → Access, upload the leaf together with the private issuer that signed it, and include ${hostname} on the certificate. The install command is withheld until that issuer can be verified. Bootstrap insecure TLS is not saved as runtime trust.`
 }
 
-async function opensslIssuerSignsLeaf(leaf: string, issuer: string): Promise<boolean> {
-  if (typeof Deno === 'undefined') return false
-  const leafPath = await writeVerifyPem(leaf)
-  const issuerPath = await writeVerifyPem(issuer)
-  try {
-    return await opensslOk(['verify', '-partial_chain', '-CAfile', issuerPath, leafPath])
-  } finally {
-    await Deno.remove(leafPath).catch(() => undefined)
-    await Deno.remove(issuerPath).catch(() => undefined)
-  }
-}
-
-async function issuerSignsLeaf(leaf: string, issuer: string): Promise<boolean> {
+/** `io` is null on Workers, where only the signature check runs. */
+async function issuerSignsLeaf(
+  io: OpensslCheckIo | null,
+  leaf: string,
+  issuer: string
+): Promise<boolean> {
   if (pemCompact(leaf) === pemCompact(issuer)) return false
-  if (await verifyCertificateSignature(leaf, issuer)) return true
-  return await opensslIssuerSignsLeaf(leaf, issuer)
+  if (await verifyCertificateSignature(leaf, issuer).catch(() => false)) return true
+  if (!io) return false
+  return await opensslVerify(io, leaf, { flag: ['-partial_chain', '-CAfile'], pem: issuer })
 }
 
 /**
@@ -246,7 +320,8 @@ async function issuerSignsLeaf(leaf: string, issuer: string): Promise<boolean> {
  */
 export async function privateUploadedTrustMaterial(
   certPem: string,
-  hostname: string
+  hostname: string,
+  io: OpensslCheckIo | null = null
 ): Promise<string | null> {
   const blocks = splitCertificatePems(certPem)
   const leaf = blocks[0]
@@ -259,9 +334,10 @@ export async function privateUploadedTrustMaterial(
     return null
   }
   if (!coversHostname(names, hostname)) return null
+  const checkIo = typeof Deno === 'undefined' ? null : (io ?? denoOpensslCheckIo())
   const issuers: string[] = []
   await forEachSequential(blocks.slice(1), async (block) => {
-    if (await issuerSignsLeaf(leaf, block)) issuers.push(block.trim())
+    if (await issuerSignsLeaf(checkIo, leaf, block)) issuers.push(block.trim())
   })
   if (issuers.length === 0) return null
   return `${issuers.join('\n')}\n`

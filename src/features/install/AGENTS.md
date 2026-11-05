@@ -69,6 +69,15 @@ SAN generation and webhook reachability keep calling them.
 
 Uploaded public trust is per certificate. The install command treats an
 uploaded leaf as public only when that PEM chains to a system root.
+
+That check and the private-issuer check run `openssl verify` with the leaf on standard input. Only the
+intermediates (or the candidate issuer) go to a scratch file: the system
+temp folder when it is writable, otherwise `<state>/instance/tmp` (mode
+`0700`). The compiled production binary has no write grant for `/tmp`, and
+`<state>/tls` is `root:tp 0750`, so that instance-owned folder is the one
+place it may write. A check that cannot write or run openssl reads as "not
+verified", never as an error.
+
 `TURBOPANEL_TLS_PUBLIC` stays an aggregate signal (any Let's Encrypt hostname,
 or the operator's public-TLS setting) and does not mark an unrelated upload
 as public. `GET /api/daemon/v1/instance/ca` still returns the Platform CA
