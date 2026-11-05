@@ -104,7 +104,7 @@ import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.t
 import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
-import { orderedPublicOrigins } from '../../lib/panel-identity/urls.ts'
+import { serverDialOrigins } from '../../lib/panel-identity/urls.ts'
 import { type DevHostStatusSink, registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
@@ -722,7 +722,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       ),
     readPlatformCaPem,
     panelIdentity: () => Promise.resolve(panelIdentity),
-    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    identityUrls: serverDialOrigins,
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
   // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.
@@ -762,7 +762,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     inboundMessageWindowMs: inboundLimits.windowMs,
     commandQueue,
     panelIdentity: () => Promise.resolve(panelIdentity),
-    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    identityUrls: serverDialOrigins,
     ...(developerSurface && options.onDevHostStatus
       ? { onDevHostStatus: options.onDevHostStatus }
       : {}),
@@ -785,7 +785,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       options.registerDevelopmentAdminRoutes
     ),
     panelIdentity: () => Promise.resolve(panelIdentity),
-    identityUrls: async (requestDb) => orderedPublicOrigins(await listInstanceHostnames(requestDb)),
+    identityUrls: serverDialOrigins,
     onIdentityNextChanged: (fingerprint) => {
       panelIdentity = { ...panelIdentity, next: fingerprint ? { kid: fingerprint } : null }
     },
