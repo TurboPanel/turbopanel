@@ -65,8 +65,12 @@ function toTrustRow(
  */
 export type PublicTlsAnswer = 'public' | 'private' | 'unavailable'
 
-/** Dials `hostname` on `port` and reports what its certificate is. */
-export type PublicTlsProbe = (hostname: string, port: number) => Promise<PublicTlsAnswer>
+/**
+ * Reports what the control plane's own listener serves for `hostname`. The
+ * listener port is the probe's concern: a self-hosted listener always uses
+ * 8443, whatever port (if any) the stored address names.
+ */
+export type PublicTlsProbe = (hostname: string) => Promise<PublicTlsAnswer>
 
 /**
  * The check runs in memory: no certificate file is written and no process
@@ -82,26 +86,15 @@ export function setPublicTlsProbe(probe: PublicTlsProbe | null): void {
   registeredProbe = probe
 }
 
-function hostAndPort(host: string): { name: string; port: number } | null {
-  const name = hostLabel(host)
-  if (!name) return null
-  try {
-    const url = new URL(host.includes('://') ? host : `https://${host}`)
-    return { name, port: url.port ? Number(url.port) : 443 }
-  } catch {
-    return null
-  }
-}
-
 /** Never throws: a probe failure reads as `unavailable`. */
 export async function uploadedHostnameTrust(
   host: string,
   probe: PublicTlsProbe | null = registeredProbe
 ): Promise<PublicTlsAnswer> {
-  const target = hostAndPort(host)
-  if (!probe || !target) return 'unavailable'
+  const name = hostLabel(host)
+  if (!probe || !name) return 'unavailable'
   try {
-    return await probe(target.name, target.port)
+    return await probe(name)
   } catch {
     return 'unavailable'
   }

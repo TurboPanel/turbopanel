@@ -1,12 +1,13 @@
 /**
  * The self-hosted control plane's public-trust check for an uploaded
- * hostname: a TLS handshake against its own listener on loopback, with the
- * hostname as SNI. Deno's verifier decides whether the chain the listener
+ * hostname: a TLS handshake against its own listener on loopback (port
+ * 8443, the only port it listens on), with the hostname as SNI. Deno's verifier decides whether the chain the listener
  * serves for that name reaches a public root and covers the name. Nothing is
  * written to disk, no process is started, and no request is sent: the
  * connection closes as soon as the handshake ends.
  */
 
+import { DEFAULT_PUBLIC_PORT } from '../../features/install/ingress-modes.ts'
 import type { PublicTlsAnswer, PublicTlsProbe } from '../../features/install/install-trust.ts'
 
 type Closable = { close: () => void }
@@ -17,6 +18,7 @@ export type PublicTlsProbeDeps = {
   startTls: (conn: Closable, options: { hostname: string }) => Promise<TlsClosable>
   /** Where the listener is dialed. The certificate is chosen by SNI, not by this. */
   listenerAddress: string
+  listenerPort: number
   timeoutMs: number
 }
 
@@ -58,12 +60,15 @@ function track(attempt: Attempt, conn: Closable): boolean {
 async function handshake(
   deps: PublicTlsProbeDeps,
   hostname: string,
-  port: number,
   attempt: Attempt
 ): Promise<PublicTlsAnswer> {
   let tcp: Closable
   try {
-    tcp = await deps.connect({ hostname: deps.listenerAddress, port, transport: 'tcp' })
+    tcp = await deps.connect({
+      hostname: deps.listenerAddress,
+      port: deps.listenerPort,
+      transport: 'tcp',
+    })
   } catch {
     return 'unavailable'
   }
@@ -83,16 +88,17 @@ export function createPublicTlsProbe(deps: Partial<PublicTlsProbeDeps> = {}): Pu
     connect: deps.connect ?? ((options) => Deno.connect(options)),
     startTls: deps.startTls ?? ((conn, options) => Deno.startTls(conn as Deno.TcpConn, options)),
     listenerAddress: deps.listenerAddress ?? '127.0.0.1',
+    listenerPort: deps.listenerPort ?? DEFAULT_PUBLIC_PORT,
     timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
   }
-  return async (hostname, port) => {
+  return async (hostname) => {
     const attempt: Attempt = { opened: [], settled: false }
     let timer: ReturnType<typeof setTimeout> | undefined
     const timedOut = new Promise<PublicTlsAnswer>((resolve) => {
       timer = setTimeout(() => resolve('unavailable'), resolved.timeoutMs)
     })
     try {
-      return await Promise.race([handshake(resolved, hostname, port, attempt), timedOut])
+      return await Promise.race([handshake(resolved, hostname, attempt), timedOut])
     } finally {
       clearTimeout(timer)
       attempt.settled = true

@@ -15,7 +15,7 @@ function closable() {
   return state
 }
 
-test('a finished handshake is public, dials loopback with the name as SNI, and closes both connections', async () => {
+test('a finished handshake is public, dials loopback 8443 with the name as SNI, and closes both connections', async () => {
   const tcp = closable()
   const tls = closable()
   const dialed: unknown[] = []
@@ -29,7 +29,7 @@ test('a finished handshake is public, dials loopback with the name as SNI, and c
       return Promise.resolve(tls)
     },
   })
-  assertEquals(await probe('panel.example.com', 8443), 'public')
+  assertEquals(await probe('panel.example.com'), 'public')
   assertEquals(dialed, [
     { hostname: '127.0.0.1', port: 8443, transport: 'tcp' },
     { hostname: 'panel.example.com' },
@@ -47,18 +47,15 @@ test('a refused certificate is private; any other handshake failure is unavailab
           handshake: () => Promise.reject(new Deno.errors.InvalidData(message)),
         }),
     })
-  assertEquals(
-    await failing('invalid peer certificate: UnknownIssuer')('a.example.com', 8443),
-    'private'
-  )
-  assertEquals(await failing('connection reset')('a.example.com', 8443), 'unavailable')
+  assertEquals(await failing('invalid peer certificate: UnknownIssuer')('a.example.com'), 'private')
+  assertEquals(await failing('connection reset')('a.example.com'), 'unavailable')
 })
 
 test('no listener is unavailable', async () => {
   const probe = createPublicTlsProbe({
     connect: () => Promise.reject(new Deno.errors.ConnectionRefused('Connection refused')),
   })
-  assertEquals(await probe('a.example.com', 8443), 'unavailable')
+  assertEquals(await probe('a.example.com'), 'unavailable')
 })
 
 test('a stalled connect is unavailable after the timeout, and a late connection is closed', async () => {
@@ -71,7 +68,7 @@ test('a stalled connect is unavailable after the timeout, and a late connection 
         release = () => resolve(late)
       }),
   })
-  assertEquals(await probe('a.example.com', 8443), 'unavailable')
+  assertEquals(await probe('a.example.com'), 'unavailable')
   release?.()
   // Let the late connect settle and be closed.
   await new Promise((resolve) => setTimeout(resolve, 0))
@@ -96,8 +93,8 @@ test('a real handshake with a certificate no public root signed reads as private
     () => new Response('ok')
   )
   try {
-    const probe = createPublicTlsProbe()
-    assertEquals(await probe('private.example.com', server.addr.port), 'private')
+    const probe = createPublicTlsProbe({ listenerPort: server.addr.port })
+    assertEquals(await probe('private.example.com'), 'private')
   } finally {
     ac.abort()
     await server.finished

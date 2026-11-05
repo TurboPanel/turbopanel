@@ -79,18 +79,16 @@ test('a broken certificate block is no issuer, never a throw', async () => {
   assertEquals(await privateUploadedTrustMaterial(broken, HOST), null)
 })
 
-test('the probe dials the host name and port of the uploaded address', async () => {
-  const seen: [string, number][] = []
-  const probe: PublicTlsProbe = (name, port) => {
-    seen.push([name, port])
+test('the probe gets the bare host name, whatever form the stored address takes', async () => {
+  const seen: string[] = []
+  const probe: PublicTlsProbe = (name) => {
+    seen.push(name)
     return Promise.resolve('public')
   }
-  assertEquals(await uploadedHostnameTrust(ORIGIN, probe), 'public')
-  assertEquals(await uploadedHostnameTrust('https://plain.example.com', probe), 'public')
-  assertEquals(seen, [
-    [HOST, 8443],
-    ['plain.example.com', 443],
-  ])
+  for (const host of [ORIGIN, 'panel.example.com', 'https://plain.example.com', '10.1.2.3']) {
+    assertEquals(await uploadedHostnameTrust(host, probe), 'public')
+  }
+  assertEquals(seen, [HOST, 'panel.example.com', 'plain.example.com', '10.1.2.3'])
 })
 
 test('a probe that throws, or no probe at all, reads as unavailable', async () => {
