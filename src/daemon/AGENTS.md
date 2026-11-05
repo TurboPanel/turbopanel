@@ -81,6 +81,12 @@ come up empty. The cached read models deliberately do _not_ pass it, so their
 approved-SQL profile stays unchanged; their `colocatedWithInstance` is a display
 badge, not a guard.
 
+The control plane's own tunnel token is the exception that also passes
+`orgScoped: true` (`assertColocatedForInstanceTunnel`): the canonical lookup's
+fallbacks (hostname, "the single unassigned server") can name a remote server,
+so only the direct socket attach, this host's machine key and the self-host
+pin count.
+
 ## Certificate orders placed by a server (`acme-issue-v1`)
 
 A daemon that lists the `acme-issue-v1` feature in `hello.features` can be asked

@@ -1,4 +1,8 @@
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
+import {
+  assertColocatedForInstanceTunnel,
+  type TUNNEL_TOKEN_COLOCATED_ONLY,
+} from '../client/servers/colocated.ts'
 import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import {
   generateDeliveryId,
@@ -17,9 +21,7 @@ import {
 
 const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
 
-export function parseTunnelTokenBody(
-  body: unknown,
-): { ok: true; token: string } | { ok: false } {
+export function parseTunnelTokenBody(body: unknown): { ok: true; token: string } | { ok: false } {
   if (!body || typeof body !== 'object') {
     return { ok: false }
   }
@@ -33,6 +35,7 @@ export function parseTunnelTokenBody(
 export type TunnelTokenDispatch =
   | { ok: true }
   | { ok: false; status: 503 | 500; error: string }
+  | { ok: false; status: 403; code: typeof TUNNEL_TOKEN_COLOCATED_ONLY; error: string }
 
 /**
  * Push a tunnel token to the co-located daemon. An empty token tears the
@@ -55,6 +58,9 @@ export async function dispatchInstanceTunnelToken(params: {
     }
   }
 
+  const guard = await assertColocatedForInstanceTunnel(params.db, params.registry, serverId)
+  if (!guard.ok) return guard
+
   const snapshots = await params.registry.getSnapshots([serverId])
   if (!snapshots.get(serverId)?.connected) {
     return { ok: false, status: 503, error: 'co-located daemon disconnected' }
@@ -76,7 +82,7 @@ export async function dispatchInstanceTunnelToken(params: {
 /** The token field(s) for the envelope: sealed when possible, never both. */
 async function tunnelTokenFields(
   token: string,
-  sealing: InstanceSecretSealing | null,
+  sealing: InstanceSecretSealing | null
 ): Promise<{ token: string } | { tokenEnvelope: string }> {
   // The empty teardown token carries no secret; every daemon reads it as-is.
   if (!sealing || token === '') return { token }
@@ -85,12 +91,16 @@ async function tunnelTokenFields(
   }
 }
 
-/** Enqueue the `tunnel-token` request on the server's cell and wait for the daemon. */
+/**
+ * Enqueue the `tunnel-token` request on the server's cell and wait for the
+ * daemon. Callers pass {@link assertColocatedForInstanceTunnel} first, as
+ * {@link dispatchInstanceTunnelToken} does.
+ */
 export async function sendInstanceTunnelToken(
   registry: DaemonCellRegistry,
   serverId: string,
   token: string,
-  sealing: InstanceSecretSealing | null,
+  sealing: InstanceSecretSealing | null
 ): Promise<TunnelTokenDispatch> {
   const requestId = generateRequestId()
   cellTrace('request-start', {
@@ -113,10 +123,9 @@ export async function sendInstanceTunnelToken(
   })
 
   try {
-    const record = await registry.getCell(serverId).createRequestAndWait(
-      envelope,
-      TUNNEL_TOKEN_TIMEOUT_MS,
-    )
+    const record = await registry
+      .getCell(serverId)
+      .createRequestAndWait(envelope, TUNNEL_TOKEN_TIMEOUT_MS)
     return tunnelTokenRecordResult(requestId, serverId, record.status, record.error)
   } catch (err) {
     const errMessage = err instanceof Error ? err.message : String(err)
@@ -135,7 +144,7 @@ function tunnelTokenRecordResult(
   requestId: string,
   serverId: string,
   status: string,
-  error: string | null | undefined,
+  error: string | null | undefined
 ): TunnelTokenDispatch {
   if (status === 'done') {
     cellTrace('request-result', {

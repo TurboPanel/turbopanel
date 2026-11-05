@@ -195,7 +195,11 @@ export const INSTANCE_TUNNEL_TOKEN_PATH = {
         '200': { description: '`{ ok: true }`' },
         '400': { description: 'Invalid request body' },
         '401': { description: 'Unauthorized' },
-        '403': { description: 'Forbidden — requires admin or superadmin role' },
+        '403': {
+          description:
+            'Forbidden — requires admin or superadmin role, or `tunnel_token_colocated_only` ' +
+            'when the daemon is not on the control plane host',
+        },
         '500': { description: 'The daemon rejected the token or timed out' },
         '503': { description: 'No co-located daemon is connected' },
       },

@@ -121,8 +121,11 @@ High Availability (Workers) must not contain any of it.
   the ingress tick re-applies a name whose stored `originVerified` no longer
   matches, so issue, expiry and fallback rebuild the rules. The CNAME is proxied; another record on the
   name is refused unless the operator asks to replace it. The run token goes
-  only to the co-located daemon (`dispatchInstanceTunnelToken`); the daemon
-  refuses it anywhere else. Healthy = four connections; the status then
+  only to the co-located daemon (`dispatchInstanceTunnelToken`), and only
+  after `assertColocatedForInstanceTunnel` (`src/client/servers/colocated.ts`)
+  places that server on this host; otherwise 403
+  `tunnel_token_colocated_only` and nothing is sent. Every new `tunnel-token`
+  sender calls that helper first. The daemon refuses it anywhere else too. Healthy = four connections; the status then
   fetches `/api/daemon/v1/instance/identity` through the edge and checks the
   signature names this control plane's key. Removing the last name stops the
   connector (empty token) and deletes the tunnel.
