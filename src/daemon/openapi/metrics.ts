@@ -74,14 +74,7 @@ export const metricsSchemas = {
       type: { type: 'string', const: 'metrics' },
       metadata: {
         type: 'object',
-        required: [
-          'version',
-          'sampledAt',
-          'intervalSeconds',
-          'sequence',
-          'topologyGeneration',
-          'bootGeneration',
-        ],
+        required: ['version', 'sampledAt', 'intervalSeconds', 'sequence', 'bootGeneration'],
         properties: {
           version: {
             type: 'integer',
@@ -94,8 +87,9 @@ export const metricsSchemas = {
           sequence: { type: 'integer' },
           topologyGeneration: {
             type: 'integer',
+            deprecated: true,
             description:
-              'Topology (sensor/NIC/slot layout) generation this sample was collected under.',
+              'Deprecated and optional. Older daemons send their topology change counter here; the control plane ignores it.',
           },
           bootGeneration: {
             type: 'integer',

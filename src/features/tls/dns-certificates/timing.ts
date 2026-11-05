@@ -10,8 +10,12 @@ import { fetchRenewalInfo, type RenewalInfo } from '../../../lib/acme/client.ts'
 import { acmeDirectoryUrl } from '../../../lib/acme/directories.ts'
 import { renewalCertId } from '../../../lib/acme/renewal-id.ts'
 import { countThrottle } from '../../../lib/throttle-counters.ts'
+import { jitteredFallbackRenewAt } from '../../../lib/tls/renew-at.ts'
 import { DAY_MS, clock, type DnsCertContext } from './context.ts'
 import type { DnsCertState } from './order-state.ts'
+
+/** Kept here too so the ordering code and its tests read them from one place. */
+export { fallbackRenewAt, jitteredFallbackRenewAt } from '../../../lib/tls/renew-at.ts'
 
 /** Shortest wait the authority's `Retry-After` may set (RFC 9773), and the longest we accept: never fewer than two asks a day. */
 export const ARI_MIN_WAIT_MS = 60_000
@@ -22,29 +26,6 @@ export const ARI_DEFAULT_WAIT_MS = 12 * 3_600_000
 export const ARI_ERROR_WAIT_MS = 6 * 3_600_000
 /** Whatever the authority suggests, renewal starts at least this long before the end. */
 const LAST_START_BEFORE_END_MS = 2 * DAY_MS
-
-/** A third of the lifetime before the end. */
-export function fallbackRenewAt(notBefore: Date, notAfter: Date): Date {
-  return new Date(notAfter.getTime() - (notAfter.getTime() - notBefore.getTime()) / 3)
-}
-
-/** How much of the lifetime, before the one-third mark, the fallback may be spread over. */
-const FALLBACK_SPREAD = 0.1
-
-/**
- * The fallback with a random head start of up to a tenth of the lifetime, so
- * certificates issued together (a bulk order, a restore) do not all renew on
- * the same day. It is stored with the certificate and not drawn again.
- */
-export function jitteredFallbackRenewAt(
-  notBefore: Date,
-  notAfter: Date,
-  random: () => number = Math.random
-): Date {
-  const lifetime = notAfter.getTime() - notBefore.getTime()
-  const base = fallbackRenewAt(notBefore, notAfter)
-  return new Date(base.getTime() - random() * lifetime * FALLBACK_SPREAD)
-}
 
 function pickInWindow(start: Date, end: Date, random: () => number): Date {
   return new Date(start.getTime() + random() * (end.getTime() - start.getTime()))

@@ -476,6 +476,84 @@ test('the churn alert stamp is not rewritten on every refused report', async () 
   })
 })
 
+/** A report as a daemon sends it once the control plane no longer needs generation numbers. */
+function numberlessReport(nics: string[], extra: Record<string, unknown> = {}) {
+  return {
+    snapshot: { networks: nics.map((deviceId) => ({ deviceId, kind: 'uplink' })), ...extra },
+    appliedAt: REPORT_AT,
+  }
+}
+
+test('without generation numbers, the same topology is a resend and a different one is a change', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, numberlessReport(['eth0'])),
+      'recorded'
+    )
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, numberlessReport(['eth0'])),
+      'unchanged'
+    )
+    // Sizes and labels are not topology: after the cooldown they refresh in place.
+    await ageRows(db, serverId, 1)
+    assertEquals(
+      await recordTopologyGeneration(
+        db,
+        serverId,
+        numberlessReport(['eth0'], { memoryTotalBytes: 1 })
+      ),
+      'refreshed'
+    )
+    assertEquals(await topologyRowCount(db, serverId), 1)
+    // A new NIC is a new topology and counts against the limits.
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, numberlessReport(['eth0', 'eth1'])),
+      'recorded'
+    )
+    assertEquals(await topologyRowCount(db, serverId), 2)
+    const latest = await getLatestTopologyGeneration(db, serverId)
+    assertEquals(latest?.generation, undefined)
+    assertEquals(latest?.bootGeneration, undefined)
+    assertEquals(latest?.snapshot, numberlessReport(['eth0', 'eth1']).snapshot)
+  })
+})
+
+test('without generation numbers, a flood of different topologies still stops at the hourly limit', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    resetTopologyChurnLogForTests()
+    const outcomes: string[] = []
+    for (let i = 0; i < 40; i++) {
+      outcomes.push(await recordTopologyGeneration(db, serverId, numberlessReport([`nic-${i}`])))
+    }
+    assertEquals(
+      outcomes.filter((o) => o === 'recorded').length,
+      MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR
+    )
+    assertEquals(await topologyRowCount(db, serverId), MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR)
+  })
+})
+
+test('a daemon that stops sending generation numbers clears them from the stored value', async () => {
+  await withServerFixture(async ({ db, serverId }) => {
+    await recordTopologyGeneration(db, serverId, {
+      generation: 4,
+      bootGeneration: 2,
+      ...numberlessReport(['eth0']),
+    })
+    assertEquals((await getLatestTopologyGeneration(db, serverId))?.generation, 4)
+    await ageRows(db, serverId, 1)
+    // Same topology, no numbers: a refresh, not a change.
+    assertEquals(
+      await recordTopologyGeneration(db, serverId, numberlessReport(['eth0'])),
+      'refreshed'
+    )
+    const latest = await getLatestTopologyGeneration(db, serverId)
+    assertEquals(latest?.generation, undefined)
+    assertEquals(latest?.bootGeneration, undefined)
+    assertEquals(await topologyRowCount(db, serverId), 1)
+  })
+})
+
 test('a machine key belongs to one server: a second row with it is refused with the machine-key error', async () => {
   await withTwoServerFixture(async ({ db, serverIdA, serverIdB }) => {
     const machineKey = `mk-${crypto.randomUUID()}`

@@ -68,6 +68,17 @@
   `origin` / `certificate` tables. Wired into `test:hook` and CI `build.yml`
   immediately after `check:ca-boundary`. See **Instance hostnames and instance
   ACME** in `src/features/install/AGENTS.md`.
+- **`pnpm check:workers-acme-boundary`** — Workers ACME boundary, not the same
+  as the instance ACME boundary above. The High Availability build never talks
+  to Let's Encrypt: `src/lib/acme/` (the ACME client) may be imported only from
+  self-hosted code (`src/platform/deno/**`, `src/deno.ts`, `src/deno-dev.ts`),
+  no code import from `src/workers.ts` may reach it, and no Workers-reachable
+  file may name a Let's Encrypt ACME directory host. A frozen exclusion list
+  in `scripts/check-workers-acme-boundary.mjs` names the shared files that
+  still import the client; it only shrinks (a stale entry fails, and the
+  fixture test pins it). Wired into `test:hook`, `scripts/verify-ci.sh` and
+  CI `build.yml`. An empty instance directory setting means the production
+  Let's Encrypt directory, so that address lives only in self-hosted code.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`. Keep the
   `Cloudflare.Env` / global `Env` aliases that extend `CloudflareBindings`
   (vitest `cloudflare:test` `env` is typed as `Cloudflare.Env`, not the retired

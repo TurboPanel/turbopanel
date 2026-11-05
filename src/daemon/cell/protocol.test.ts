@@ -2099,6 +2099,20 @@ it('validateDaemonInboundFrame accepts a topology-report', () => {
   assertEquals(result.ok, true)
 })
 
+it('validateDaemonInboundFrame accepts a topology-report without the deprecated generation numbers', () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({ type: 'topology-report', at: VALID_AT, snapshot: { networks: [] } })
+  )
+  assertEquals(result.ok, true)
+  // A number that is sent still has to fit.
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({ type: 'topology-report', at: VALID_AT, generation: 'one', snapshot: {} })
+    ).ok,
+    false
+  )
+})
+
 it('validateDaemonInboundFrame rejects topology-report field shapes', () => {
   const base = {
     type: 'topology-report',

@@ -94,10 +94,10 @@ import {
 import { loadServerLicenseTierJoin } from '../features/tiers/tier-enforcement.ts'
 import {
   getLatestTopologyGeneration,
-  getTopologyGeneration,
   markTopologyResyncRequested,
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
+import { recordedTopologyForSample } from '../features/servers/topology-identity.ts'
 import { recordOverPlan } from './metrics/over-plan-flag.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
 import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
@@ -965,13 +965,12 @@ function isSlotMappableTopologySnapshot(value: Record<string, unknown>): value i
 }
 
 /**
- * Resolve the {@link SlotMapping} for a sample's own
- * `metadata.topologyGeneration`, given that exact generation's snapshot (not
- * the latest one — reinterpreting a sample under a different generation's
- * layout is exactly what a `SlotMapping` must never do) and the operator's
- * `hardwareProfile` overrides. `undefined` when the snapshot is missing/not a
- * plausible topology report (unknown generation) or resolution otherwise
- * fails — callers must fall back to topology-agnostic packing in that case
+ * Resolve the {@link SlotMapping} for a sample from the snapshot it was
+ * collected under (`sampleMatchesRecordedTopology`: an older daemon's
+ * `metadata.topologyGeneration`, else the entity ids the sample names) and the
+ * operator's `hardwareProfile` overrides. `undefined` when the sample does not
+ * match the stored snapshot, the snapshot is not a plausible topology report,
+ * or resolution otherwise fails — callers must fall back to topology-agnostic packing in that case
  * (see `field-map.ts`).
  */
 function resolveSlotMappingForIngest(
@@ -1000,7 +999,7 @@ function resolveSlotMappingForIngest(
   }
 }
 
-/** A fresh resync marker is not re-stamped: an unknown generation on every sample must not become a write per sample. */
+/** A fresh resync marker is not re-stamped: an unmatched topology on every sample must not become a write per sample. */
 const TOPOLOGY_RESYNC_MARK_COOLDOWN_MS = 5 * 60 * 1000
 
 export function topologyResyncRecentlyRequested(
@@ -1173,8 +1172,8 @@ async function flagOverPlan(
  * `POST /api/daemon/v1/metrics`. Resolves the effective v5 metrics
  * capability plan from persisted server/org state (replacing the
  * conservative default-only resolution) and, alongside it, checks whether
- * the sample's `metadata.topologyGeneration` has ever been recorded via
- * `recordTopologyGeneration` — an unknown generation stamps
+ * the sample matches the topology recorded via `recordTopologyGeneration`
+ * (`sampleMatchesRecordedTopology`) — a sample that does not stamps
  * `markTopologyResyncRequested` (fire-and-forget; never blocks ingestion,
  * never reaches the daemon cell directly — see that function's doc comment)
  * — and resolves the sample's {@link SlotMapping} (see
@@ -1197,12 +1196,12 @@ async function resolveIngestPlanAndReconcileTopology(
   // record. The durable 60 s baseline owns all of those.
   const durable = isDurableSample(sample)
   try {
-    const [topologyMatch, latestTopology, planRow] = await Promise.all([
-      getTopologyGeneration(db, serverId, sample.metadata.topologyGeneration),
+    const [latestTopology, planRow] = await Promise.all([
       getLatestTopologyGeneration(db, serverId),
       loadIngestServerPlanRow(db, serverId, deployment),
     ])
 
+    const topologyMatch = recordedTopologyForSample(latestTopology, sample)
     const topologyKnown = topologyMatch !== undefined
     if (
       !topologyKnown &&
@@ -1221,10 +1220,9 @@ async function resolveIngestPlanAndReconcileTopology(
 
     if (durable && planRow !== undefined) await flagOverPlan(db, serverId, planRow, sample)
 
-    const snapshotForClass = topologyMatch?.snapshot ?? latestTopology?.snapshot
     const machineClass = resolveServerMachineClass(
       planRow?.machineClass,
-      snapshotForClass,
+      latestTopology?.snapshot,
       countHostLevelSignals(sample.hardwareSignals)
     )
     if (

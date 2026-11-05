@@ -3555,6 +3555,87 @@ test('POST /metrics accepts an unknown topology generation and requests a resync
   })
 })
 
+/** A metrics frame as a daemon sends it once it no longer stamps a topology generation. */
+function numberlessMetricsFrame(nicIds: string[]): Record<string, unknown> {
+  const frame = buildValidMetricsFrame({
+    networks: nicIds.map((deviceId) => ({
+      deviceId,
+      receiveBytesPerSecond: null,
+      transmitBytesPerSecond: null,
+      receiveErrorsPerSecond: null,
+      transmitErrorsPerSecond: null,
+      receiveDropsPerSecond: null,
+      transmitDropsPerSecond: null,
+    })),
+  })
+  delete (frame.metadata as Record<string, unknown>).topologyGeneration
+  return frame
+}
+
+async function recordNumberlessTopology(
+  db: Parameters<typeof recordTopologyGeneration>[0],
+  serverId: string
+): Promise<void> {
+  await recordTopologyGeneration(db, serverId, {
+    snapshot: {
+      networks: [{ deviceId: 'eth0', kind: 'uplink', name: 'eth0', identity: {} }],
+      filesystems: [],
+      blockDevices: [],
+      gpus: [],
+      hardwareSignals: [],
+    },
+    appliedAt: new Date().toISOString(),
+  })
+}
+
+test('POST /metrics without a topology generation maps slots when the sample fits the stored topology', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    await recordNumberlessTopology(db, serverId)
+    const { app, writes, slotMappings } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(numberlessMetricsFrame(['eth0'])),
+    })
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 1)
+    assertEquals(slotMappings[0]?.normalNicSlots, ['eth0'])
+
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const metadata = await readServerMetadata(db, serverId)
+    assertEquals(metadata.topologyResyncRequestedAt, undefined)
+  })
+})
+
+test('POST /metrics without a topology generation naming an unknown device requests a resync', async () => {
+  await withEnrollFixture(async ({ db, serverId, keyId }) => {
+    await recordNumberlessTopology(db, serverId)
+    const { app, writes, slotMappings } = await createMetricsTestAppWithDb(db)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(numberlessMetricsFrame(['eth0', 'eth9'])),
+    })
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 1)
+    assertEquals(slotMappings[0], undefined)
+
+    const requested = await waitForCondition(async () => {
+      const metadata = await readServerMetadata(db, serverId)
+      return typeof metadata.topologyResyncRequestedAt === 'string'
+    })
+    assert(requested, 'expected an unknown device to stamp topologyResyncRequestedAt')
+  })
+})
+
 test('POST /metrics retains hardwareSignals for a server classified physical from its topology', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
     await recordTopologyGeneration(db, serverId, {

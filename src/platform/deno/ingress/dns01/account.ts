@@ -9,11 +9,13 @@ import type { Db } from '../../../../db/connection.ts'
 import { setting } from '../../../../db/schema.ts'
 import {
   INSTANCE_ACME_ACCOUNT_SETTING_KEY,
-  LETS_ENCRYPT_DIRECTORY_URL,
-  LETS_ENCRYPT_STAGING_DIRECTORY_URL,
   type ResolvedInstanceAcmeSettings,
 } from '../../../../features/install/instance-acme-settings.ts'
 import { AcmeClient } from '../../../../lib/acme/client.ts'
+import {
+  ACME_PRODUCTION_DIRECTORY,
+  ACME_STAGING_DIRECTORY,
+} from '../../../../lib/acme/directories.ts'
 import { generateAccountKeyPem, importAccountKey } from '../../../../lib/acme/jws.ts'
 import { decryptSecret, encryptSecret } from '../../../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../../../lib/secrets/secrets.ts'
@@ -24,14 +26,16 @@ type StoredAccount = { v: 1; directory: string; kid: string | null; sealed: stri
 export const TERMS_NOT_ACCEPTED =
   'Accept the certificate authority terms in Admin › Access › Certificates.'
 
-/** Staging replaces only the default production directory; a custom directory is used as set. */
+/**
+ * An empty directory setting means the production Let's Encrypt directory.
+ * Staging replaces only that default; a custom directory is used as set.
+ */
 export function dns01Directory(
   settings: Pick<ResolvedInstanceAcmeSettings, 'directoryUrl' | 'useStaging'>
 ): string {
-  const isDefault = settings.directoryUrl === LETS_ENCRYPT_DIRECTORY_URL
-  return settings.useStaging && isDefault
-    ? LETS_ENCRYPT_STAGING_DIRECTORY_URL
-    : settings.directoryUrl
+  const directory = settings.directoryUrl.trim() || ACME_PRODUCTION_DIRECTORY
+  const isDefault = directory === ACME_PRODUCTION_DIRECTORY
+  return settings.useStaging && isDefault ? ACME_STAGING_DIRECTORY : directory
 }
 
 function readStored(value: unknown): StoredAccount | null {

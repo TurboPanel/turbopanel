@@ -220,9 +220,23 @@ export const DAEMON_WIRE_FEATURES = [
   'signin-v2',
   'hosting-via-header-v1',
   'dev-host-v1',
+  'topology-generation-optional-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
+
+/**
+ * The control plane no longer needs the daemon's topology generation numbers:
+ * it matches a metrics sample to the stored topology by the entity ids the
+ * sample names, and tells topology reports apart by their content
+ * (`src/features/servers/topology-identity.ts`). A daemon attached to a
+ * control plane that lists this leaves `metadata.topologyGeneration` off its
+ * samples, `generation` and `bootGeneration` off its `topology-report`, and
+ * stops sending the `topology_generation_changed` event. Both are still
+ * accepted from older daemons.
+ */
+export const TOPOLOGY_GENERATION_OPTIONAL_FEATURE: DaemonWireFeature =
+  'topology-generation-optional-v1'
 
 /**
  * This daemon honours `hostingsOnly` on `environment.deploy`: it rewrites only

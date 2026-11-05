@@ -20,6 +20,7 @@ tests**). Package manager is pnpm; Deno tasks are in `deno.json`.
   `pnpm check:workers-bundle`.
 - Guards: `pnpm check:test-inventory`, `check:import-boundaries`,
   `check:vocabulary`, `check:ca-boundary`, `check:instance-acme-boundary`,
+  `check:workers-acme-boundary`,
   `check:contract-drift`, `check:migration-*`, `check:metrics-boundaries`,
   `check:query-cache-boundaries`, `notices:check`.
 - Guide pointers: `pnpm check:guide-references` (paths named in `AGENTS.md` and `docs/*.md` must exist).

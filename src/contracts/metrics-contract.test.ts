@@ -291,6 +291,14 @@ test('buildMetricsSample accepts a zero sequence/topologyGeneration/bootGenerati
   assertEquals(sample.metadata.bootGeneration, 0)
 })
 
+test('buildMetricsSample accepts metadata without the deprecated topologyGeneration', () => {
+  const input = fixtureInput()
+  delete input.metadata.topologyGeneration
+  const sample = buildMetricsSample(input)
+  assertEquals(sample.metadata.topologyGeneration, undefined)
+  assertEquals(sample.metadata.bootGeneration, 1)
+})
+
 test('buildMetricsSample rejects an unknown event kind', () => {
   const input = fixtureInput()
   input.events = [
