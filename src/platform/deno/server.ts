@@ -932,7 +932,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       await runCleanupPhase('daemon nonce sweep', () => pruneExpiredNonces(db))
       // Workers parity (offline-sweep cron): staged pin silence alarms for
       // pinned servers a TurboFabric peer still reaches (daemon/pin-silence.ts).
-      await runCleanupPhase('pin silence sweep', () => sweepPinSilence(db, dataEncryptionSecrets))
+      await runCleanupPhase('pin silence sweep', async () =>
+        sweepPinSilence(db, dataEncryptionSecrets, { email: await email() })
+      )
       // Workers parity (offline-sweep cron): tell each organization about the
       // folders that became orphans since the last tick, once per orphan.
       await runCleanupPhase('orphan folder alert sweep', async () =>

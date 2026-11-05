@@ -89,6 +89,7 @@ test('a matching report is stored and raises nothing', async () => {
       isTrustPinMatching: true,
       trustSilenceStage: null,
       trustSilenceSince: null,
+      trustSilenceAliveAt: null,
     },
   ])
   assertEquals([r.audits.length, r.emits.length], [0, 0])

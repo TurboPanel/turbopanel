@@ -831,6 +831,16 @@ export const server = pgTable(
       mode: 'string',
     }),
     /**
+     * Since when TurboFabric peers have reported a healthy tunnel to this
+     * offline server without a break; the pin silence clock. NULL while no
+     * peer reports one.
+     */
+    trustSilenceAliveAt: timestamp('trust_silence_alive_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
      * The server's container range (a /16 from the org container pool), set
      * the first time a cross-server container network or TurboFabric needs
      * it. Subnets of cross-server networks are carved from it, and a relay's

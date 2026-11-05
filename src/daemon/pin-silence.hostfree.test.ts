@@ -35,37 +35,20 @@ function peerRelay(serverId: string, key: string, ageMs: number | null, readingA
 }
 const ownRelay = { serverId: 's1', fabricId: 'f1', publicKey: KEY_S, metadata: null }
 
-test('the stages climb only with a live peer tunnel and no outage, once each', () => {
-  const at = (silentForMs: number, raisedStage: 0 | 1 | 2 = 0) =>
-    decidePinSilence({ silentForMs, evidence: 'healthy', massOutage: false, raisedStage })
+test('the stages climb only on continued healthy readings, B before C, once each', () => {
+  const at = (aliveForMs: number | null, raisedStage: 0 | 1 | 2 = 0) =>
+    decidePinSilence({ aliveForMs, massOutage: false, raisedStage })
   assertEquals(at(PIN_SILENT_MIN_MS - 1), { stage: 0, raise: null })
   assertEquals(at(PIN_SILENT_MIN_MS), { stage: 1, raise: 'server.pin_silent' })
   assertEquals(at(PIN_SILENT_MIN_MS, 1), { stage: 1, raise: null })
   assertEquals(at(PIN_MISSING_MIN_MS, 1), { stage: 2, raise: 'server.pin_missing' })
   assertEquals(at(PIN_MISSING_MIN_MS, 2), { stage: 2, raise: null })
-  // Straight to missing when the first look is already late.
-  assertEquals(at(PIN_MISSING_MIN_MS), { stage: 2, raise: 'server.pin_missing' })
-})
-
-test('no sign of life, or an outage, never raises past the ordinary offline notice', () => {
-  for (const evidence of ['down', 'unknown'] as const) {
-    assertEquals(
-      decidePinSilence({
-        silentForMs: PIN_MISSING_MIN_MS,
-        evidence,
-        massOutage: false,
-        raisedStage: 0,
-      }),
-      { stage: 0, raise: null }
-    )
-  }
+  // Never straight to missing: the warning comes first.
+  assertEquals(at(PIN_MISSING_MIN_MS), { stage: 1, raise: 'server.pin_silent' })
+  // No healthy reading now, or an outage: nothing.
+  assertEquals(at(null), { stage: 0, raise: null })
   assertEquals(
-    decidePinSilence({
-      silentForMs: PIN_MISSING_MIN_MS,
-      evidence: 'healthy',
-      massOutage: true,
-      raisedStage: 1,
-    }),
+    decidePinSilence({ aliveForMs: PIN_MISSING_MIN_MS, massOutage: true, raisedStage: 1 }),
     { stage: 1, raise: null }
   )
 })
@@ -90,36 +73,39 @@ type ServerRow = {
   organizationId: string | null
   isConnected: boolean
   statusChangedAt: string | null
+  trustPinnedBy: string | null
+  trustLevel: number
   stage: number | null
   since: string | null
+  aliveAt: string | null
 }
 
 /**
- * The calls the sweep makes, in order: update (reset), select servers, select
- * relay fabrics, select relays, then one update per raise.
+ * The calls the sweep makes, in order: select servers, (update reconnected),
+ * select relay fabrics, select relays, then one update per changed server.
  */
-function fakeDb(servers: ServerRow[], relays: unknown[], opts: { fail?: boolean } = {}) {
+function fakeDb(servers: ServerRow[], relays: unknown[], opts: { failUpdates?: boolean } = {}) {
   const updates: Record<string, unknown>[] = []
-  const selects = [
-    servers,
-    relays.map((r) => ({ fabricId: (r as { fabricId: string }).fabricId })),
-    relays,
-  ]
+  const fabrics = relays.map((r) => ({ fabricId: (r as { fabricId: string }).fabricId }))
+  const selects: unknown[] = [servers, fabrics, relays]
   let selectIndex = 0
+  const answer = () => Promise.resolve(selects[selectIndex++] ?? [])
   const db = {
     update: () => ({
       set: (values: Record<string, unknown>) => ({
         where: () => {
-          if (opts.fail) return Promise.reject(new Error('down'))
+          if (opts.failUpdates) return Promise.reject(new Error('down'))
           updates.push(values)
           return Promise.resolve()
         },
       }),
     }),
     select: () => ({
-      from: () => ({
-        where: () => Promise.resolve(selects[selectIndex++] ?? []),
-      }),
+      from: () => {
+        // The server read has no filter; the relay reads do.
+        const pending = answer()
+        return Object.assign(pending, { where: () => pending })
+      },
     }),
   } as unknown as Db
   return { db, updates }
@@ -145,123 +131,134 @@ function recorder() {
   }
 }
 
+const EIGHT_HOURS = 8 * 3_600_000
+const offlineSince = iso(NOW - EIGHT_HOURS)
+
 const silent = (over: Partial<ServerRow> = {}): ServerRow => ({
   id: 's1',
   name: 'kappa',
   organizationId: 'o1',
   isConnected: false,
-  statusChangedAt: iso(NOW - PIN_SILENT_MIN_MS - 60_000),
+  statusChangedAt: offlineSince,
+  trustPinnedBy: 'install',
+  trustLevel: 2,
   stage: null,
   since: null,
+  aliveAt: null,
   ...over,
 })
 const online = (id: string): ServerRow => ({
-  id,
-  name: id,
-  organizationId: 'o1',
+  ...silent({ id, name: id }),
   isConnected: true,
   statusChangedAt: iso(NOW - 86_400_000),
-  stage: null,
-  since: null,
+})
+const fleet = (row: ServerRow) => [row, online('s2'), online('s3'), online('s4'), online('s7')]
+const healthyPeer = [ownRelay, peerRelay('s2', KEY_S, 10_000)]
+
+test('offline for hours and only now reachable through a peer: the clock starts, nothing raised', async () => {
+  const { db, updates } = fakeDb(fleet(silent()), healthyPeer)
+  const r = recorder()
+  assertEquals(await sweepPinSilence(db, undefined, r.deps), 0)
+  assertEquals(updates, [
+    { trustSilenceStage: null, trustSilenceSince: offlineSince, trustSilenceAliveAt: iso(NOW) },
+  ])
+  assertEquals([r.audits.length, r.emits.length], [0, 0])
 })
 
-test('a silent server a peer still reaches raises pin_silent once, with audit and notice', async () => {
-  const fleet = [silent(), online('s2'), online('s3'), online('s4')]
-  const { db, updates } = fakeDb(fleet, [ownRelay, peerRelay('s2', KEY_S, 10_000)])
+test('half an hour of continued healthy readings raises pin_silent once, with audit and notice', async () => {
+  const aliveAt = iso(NOW - PIN_SILENT_MIN_MS)
   const r = recorder()
-  assertEquals(await sweepPinSilence(db, undefined, r.deps), 1)
-  assertEquals(updates[0], { trustSilenceStage: null, trustSilenceSince: null })
-  assertEquals(updates[1], { trustSilenceStage: 1, trustSilenceSince: fleet[0]!.statusChangedAt })
+  const first = fakeDb(fleet(silent({ since: offlineSince, aliveAt })), healthyPeer)
+  assertEquals(await sweepPinSilence(first.db, undefined, r.deps), 1)
+  assertEquals(first.updates, [
+    { trustSilenceStage: 1, trustSilenceSince: offlineSince, trustSilenceAliveAt: aliveAt },
+  ])
   assertEquals(
     r.audits.map((a) => a.action),
     ['server.panel_pin.silent']
   )
   assertEquals(r.emits[0]?.event, 'server.pin_silent')
-  assertEquals(r.emits[0]?.context.silentMinutes, '31')
-
-  // Same episode, same stage: nothing again.
-  const again = fakeDb(
-    [
-      silent({ stage: 1, since: fleet[0]!.statusChangedAt }),
-      online('s2'),
-      online('s3'),
-      online('s4'),
-    ],
-    [ownRelay, peerRelay('s2', KEY_S, 10_000)]
-  )
+  assertEquals(r.emits[0]?.context.offlineMinutes, '480')
+  // Same episode, same stage: nothing again, nothing written.
+  const again = fakeDb(fleet(silent({ stage: 1, since: offlineSince, aliveAt })), healthyPeer)
   assertEquals(await sweepPinSilence(again.db, undefined, r.deps), 0)
-  assertEquals(again.updates.length, 1)
+  assertEquals(again.updates.length, 0)
 })
 
-test('a later stage of the same episode raises pin_missing; a new episode starts over', async () => {
-  const started = iso(NOW - PIN_MISSING_MIN_MS - 60_000)
+test('six hours of healthy readings after the warning raises pin_missing', async () => {
+  const aliveAt = iso(NOW - PIN_MISSING_MIN_MS)
   const r = recorder()
-  const late = fakeDb(
-    [
-      silent({ statusChangedAt: started, stage: 1, since: started }),
-      online('s2'),
-      online('s3'),
-      online('s4'),
-    ],
-    [ownRelay, peerRelay('s2', KEY_S, 10_000)]
-  )
-  assertEquals(await sweepPinSilence(late.db, undefined, r.deps), 1)
+  const { db } = fakeDb(fleet(silent({ stage: 1, since: offlineSince, aliveAt })), healthyPeer)
+  assertEquals(await sweepPinSilence(db, undefined, r.deps), 1)
   assertEquals(r.emits[0]?.event, 'server.pin_missing')
-  // A stored stage from an older episode does not hold back the new one.
+})
+
+test('a reading that breaks stops the clock; a new episode starts over', async () => {
+  const r = recorder()
+  const broken = fakeDb(
+    fleet(silent({ stage: 1, since: offlineSince, aliveAt: iso(NOW - PIN_MISSING_MIN_MS) })),
+    [ownRelay, peerRelay('s2', KEY_S, 600_000)]
+  )
+  assertEquals(await sweepPinSilence(broken.db, undefined, r.deps), 0)
+  assertEquals(broken.updates, [
+    { trustSilenceStage: 1, trustSilenceSince: offlineSince, trustSilenceAliveAt: null },
+  ])
+  // A stored stage from an older episode does not carry over.
   const fresh = fakeDb(
-    [silent({ stage: 2, since: iso(NOW - 999_999_999) }), online('s2'), online('s3'), online('s4')],
-    [ownRelay, peerRelay('s2', KEY_S, 10_000)]
+    fleet(
+      silent({ stage: 2, since: iso(NOW - 999_999_999), aliveAt: iso(NOW - PIN_SILENT_MIN_MS) })
+    ),
+    healthyPeer
   )
-  assertEquals(await sweepPinSilence(fresh.db, undefined, r.deps), 1)
-  assertEquals(r.emits[1]?.event, 'server.pin_silent')
+  assertEquals(await sweepPinSilence(fresh.db, undefined, r.deps), 0)
+  assertEquals(fresh.updates[0]?.trustSilenceAliveAt, iso(NOW))
 })
 
-test('many pinned servers going quiet together raise nothing', async () => {
-  const quiet = (id: string) =>
-    silent({ id, statusChangedAt: iso(NOW - PIN_SILENT_MIN_MS - 60_000) })
-  const { db } = fakeDb(
-    [quiet('s1'), quiet('s5'), quiet('s6'), online('s2')],
-    [ownRelay, peerRelay('s2', KEY_S, 10_000)]
-  )
-  const r = recorder()
-  assertEquals(await sweepPinSilence(db, undefined, r.deps), 0)
-  assertEquals(r.emits.length, 0)
-})
-
-test('a group that went quiet together long ago is still an outage', async () => {
-  const twoHoursAgo = iso(NOW - 2 * 3_600_000)
+test('servers that went offline together are an outage, however long ago', async () => {
   const quiet = (id: string, offsetMs: number) =>
-    silent({ id, statusChangedAt: iso(Date.parse(twoHoursAgo) + offsetMs) })
-  const { db } = fakeDb(
-    [quiet('s1', 0), quiet('s5', 60_000), quiet('s6', 120_000), online('s2')],
-    [ownRelay, peerRelay('s2', KEY_S, 10_000)]
-  )
+    silent({ id, statusChangedAt: iso(NOW - EIGHT_HOURS + offsetMs), since: null })
+  const aliveAt = iso(NOW - PIN_SILENT_MIN_MS)
+  const rows = [
+    { ...quiet('s1', 0), since: iso(NOW - EIGHT_HOURS), aliveAt },
+    quiet('s5', 60_000),
+    quiet('s6', 120_000),
+    online('s2'),
+  ]
+  const { db } = fakeDb(rows, healthyPeer)
   const r = recorder()
   assertEquals(await sweepPinSilence(db, undefined, r.deps), 0)
   assertEquals(r.emits.length, 0)
 })
 
-test('no peer reading, no relay, no organization and a failing database', async () => {
+test('reconnected servers are cleared; unpinned or never-signed ones are not candidates', async () => {
   const r = recorder()
-  const fleet = () => [silent(), online('s2'), online('s3'), online('s4')]
-  // Peer says the tunnel is down: just offline.
-  const down = fakeDb(fleet(), [ownRelay, peerRelay('s2', KEY_S, 600_000)])
-  assertEquals(await sweepPinSilence(down.db, undefined, r.deps), 0)
-  // Not in TurboFabric at all.
-  const none = fakeDb(fleet(), [])
+  const back = fakeDb([{ ...online('s1'), stage: 1, aliveAt: offlineSince }], [])
+  assertEquals(await sweepPinSilence(back.db, undefined, r.deps), 0)
+  assertEquals(back.updates, [
+    { trustSilenceStage: null, trustSilenceSince: null, trustSilenceAliveAt: null },
+  ])
+  const notCandidates = fakeDb(
+    [silent({ trustPinnedBy: 'unsafe' }), silent({ id: 's9', trustLevel: 1 }), online('s2')],
+    healthyPeer
+  )
+  assertEquals(await sweepPinSilence(notCandidates.db, undefined, r.deps), 0)
+  assertEquals(notCandidates.updates.length, 0)
+})
+
+test('no peer, no organization, and a failure on one server', async () => {
+  const r = recorder()
+  const none = fakeDb(fleet(silent()), [])
   assertEquals(await sweepPinSilence(none.db, undefined, r.deps), 0)
-  // Nobody silent.
-  const quiet = fakeDb([online('s2')], [])
-  assertEquals(await sweepPinSilence(quiet.db, undefined, r.deps), 0)
-  // No organization: audited, not notified.
+  const aliveAt = iso(NOW - PIN_SILENT_MIN_MS)
   const orphan = fakeDb(
-    [silent({ organizationId: null }), online('s2'), online('s3'), online('s4')],
-    [ownRelay, peerRelay('s2', KEY_S, 10_000)]
+    fleet(silent({ organizationId: null, since: offlineSince, aliveAt })),
+    healthyPeer
   )
   assertEquals(await sweepPinSilence(orphan.db, undefined, r.deps), 1)
-  assertEquals(r.emits.length, 0)
-  assertEquals(r.audits.length, 1)
-  // A database error is logged, never thrown.
-  const broken = fakeDb(fleet(), [], { fail: true })
+  assertEquals([r.audits.length, r.emits.length], [1, 0])
+  // A failing write is logged for that server, never thrown.
+  const broken = fakeDb(fleet(silent({ since: offlineSince, aliveAt })), healthyPeer, {
+    failUpdates: true,
+  })
   assertEquals(await sweepPinSilence(broken.db, undefined, r.deps), 0)
 })

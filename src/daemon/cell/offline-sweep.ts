@@ -1633,7 +1633,9 @@ async function runOptionalCronPhases(
       runWithDbTimeout(
         db,
         async (database) => {
-          await sweepPinSilence(database, tlsRenewal?.dataEncryptionSecrets)
+          await sweepPinSilence(database, tlsRenewal?.dataEncryptionSecrets, {
+            email: await workersNotificationEmail(env, db, tlsRenewal),
+          })
         },
         capDbTimeout(deadlineMs)
       )

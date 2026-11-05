@@ -1,5 +1,5 @@
 {
-  "id": "3fa43563-6236-4810-96a0-a91e7195ac5f",
+  "id": "c64494f4-cce6-4f92-ad93-0c33100761a1",
   "prevId": "58a99a6a-3c5a-4763-bf42-fe66f3b0003e",
   "version": "7",
   "dialect": "postgresql",
@@ -12082,6 +12082,12 @@
         },
         "trust_silence_since": {
           "name": "trust_silence_since",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "trust_silence_alive_at": {
+          "name": "trust_silence_alive_at",
           "type": "timestamp(3) with time zone",
           "primaryKey": false,
           "notNull": false

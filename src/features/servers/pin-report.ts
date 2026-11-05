@@ -75,6 +75,7 @@ export async function recordPinReport(
         // pin silence alarm for it is over.
         trustSilenceStage: null,
         trustSilenceSince: null,
+        trustSilenceAliveAt: null,
       })
       .where(eq(server.id, serverId))
     const alreadyRaised = row.matching === false && row.fingerprint === report.current

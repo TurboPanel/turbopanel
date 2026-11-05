@@ -38,18 +38,22 @@ sealing key, and the signed identity document served at
   fingerprint. An unsigned report changes none of these columns. Admin's identity read returns it
   per server as `pinReport` (`resolvePinReport`); the cached client server read models do not.
 - **Pin silence alarm** (`src/daemon/pin-silence.ts`). A pinned server talking to an impostor never
-  completes a signed session here, so it looks offline; so does a powered-off one. The sweep runs on
-  the existing tick (Workers offline-sweep phase `pin-silence`, self-hosted cleanup timer), Postgres
-  only, and raises only on an independent sign of life: a TurboFabric peer's fresh reading
-  (`relay.metadata.observed`, `pairTunnelHealth`) showing a healthy tunnel to the silent server.
-  Candidates: `trust_pinned_by` install/upgrade, `trust_level >= 2`, offline; the episode is
-  `status_changed_at`. Stages: A ordinary `server.offline`; B `server.pin_silent` (warning) after
-  `PIN_SILENT_MIN_MS` (30 min) with a healthy peer tunnel; C `server.pin_missing` (critical, urgent)
-  after `PIN_MISSING_MIN_MS` (6 h) with a healthy peer tunnel still seen. Peer `down`/`unknown` never
-  passes stage A; a server that went quiet within `PIN_SILENCE_MASS_WINDOW_MS` (1 h) of enough other
-  pinned servers to meet `isMassDisconnect` is part of an outage and raises nothing, however long ago. Each stage once per episode
-  (`server.trust_silence_stage`/`trust_silence_since`), reset on reconnect and by a verified signed
-  pin report. Servers outside TurboFabric never pass stage A (known limit).
+  completes a signed session here, so it looks offline; so does a powered-off one, or one whose daemon
+  stopped or cannot sign in. The sweep runs on the existing tick (Workers offline-sweep phase
+  `pin-silence`, self-hosted cleanup timer; both every 60 s), Postgres only, and escalates only on an
+  independent sign of life: a TurboFabric peer's fresh reading (`relay.metadata.observed`,
+  `pairTunnelHealth`) showing a healthy tunnel to the silent server. Candidates: `trust_pinned_by`
+  install/upgrade, `trust_level >= 2`, offline; the episode is `status_changed_at`. The clock is
+  `trust_silence_alive_at`: the first healthy peer reading in the episode, cleared when a reading turns
+  `down`/`unknown` (a host booting after a long outage brings its tunnel up before its daemon connects,
+  and that must not count). Stages: A ordinary `server.offline`; B `server.pin_silent` (warning) after
+  `PIN_SILENT_MIN_MS` (30 min) on the clock; C `server.pin_missing` (critical, urgent) after
+  `PIN_MISSING_MIN_MS` (6 h), only once B was raised. A server that went offline within
+  `PIN_SILENCE_MASS_WINDOW_MS` (1 h) of enough others to meet `isMassDisconnect` (whole fleet, or its
+  organization) is part of an outage and raises nothing. State in `server.trust_silence_stage`,
+  `trust_silence_since`, `trust_silence_alive_at`; reset on reconnect and by a verified signed pin
+  report. Known limits: a server outside TurboFabric never passes stage A, and a healthy tunnel cannot
+  tell an impostor from a stopped daemon (the texts name both).
 - **Pinned-by.** `pinned-by.ts` `resolvePinnedBy` is the one place that reads a server's pin state
   (`install | upgrade | unsafe | none`) from the `trust_pinned_by` column (`trustPinnedBy`); a row
   read without that column reads `none`. The admin identity read selects it; the client server read

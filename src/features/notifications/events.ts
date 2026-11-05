@@ -316,28 +316,28 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'See Certificates under Access in Admin.',
   },
   'server.pin_silent': {
-    label: 'A pinned server is up but not talking to this control plane',
+    label: 'A server is running but not connecting to this control plane',
     severity: 'warning',
     scope: 'organization',
     audience: 'managers',
     urgent: false,
     title: (ctx) =>
-      `${name(ctx, 'serverName', 'A server')} is up but not connected to this control plane`,
+      `${name(ctx, 'serverName', 'A server')} is running but not connected to this control plane`,
     body: (ctx) =>
-      `It has been offline here for ${name(ctx, 'silentMinutes', 'some')} minutes while its TurboFabric peers still reach it. ` +
-      'It may have lost its route to this control plane, or it may no longer trust it. Check the server; if it stays this way it is reported as missing.',
+      `It has been offline here for ${name(ctx, 'offlineMinutes', 'some')} minutes, and for the last half hour its TurboFabric peers have reached it. ` +
+      'Its daemon may have stopped or may not be able to sign in, it may have lost its route to this control plane, or it may no longer trust it. Check the server; if this lasts it is reported again as missing.',
   },
   'server.pin_missing': {
-    label: 'A pinned server stopped trusting this control plane',
+    label: 'A server has been running for hours without connecting to this control plane',
     severity: 'critical',
     scope: 'organization',
     audience: 'managers',
     urgent: true,
     title: (ctx) =>
-      `${name(ctx, 'serverName', 'A server')} has not connected for hours while it is still running`,
+      `${name(ctx, 'serverName', 'A server')} has been running for hours without connecting to this control plane`,
     body: (ctx) =>
-      `It has been offline here for ${name(ctx, 'silentMinutes', 'many')} minutes while its TurboFabric peers still reach it, and no other servers are affected. ` +
-      'It may be talking to something that is impersonating this control plane. Check the server and reinstall it with a fresh command if you cannot explain it.',
+      `It has been offline here for ${name(ctx, 'offlineMinutes', 'many')} minutes while its TurboFabric peers have reached it for six hours. ` +
+      'Check that its daemon is running and can sign in. If it is and you cannot explain the silence, it may be talking to something impersonating this control plane: reinstall it with a fresh command.',
   },
 } as const satisfies Record<string, EventDefinition>
 

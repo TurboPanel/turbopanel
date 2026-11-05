@@ -1724,6 +1724,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Pin silence alarm raised for the current offline episode: 1 pin silent, 2 pin missing; NULL when none, cleared on reconnect or a signed pin report.',
       trust_silence_since:
         'The offline episode that alarm belongs to, as the status change time it started at.',
+      trust_silence_alive_at:
+        'Since when TurboFabric peers have reported a healthy tunnel to this offline server without a break; NULL while none does.',
       is_trust_pin_matching:
         "Whether the reported pin named this control plane's current or next key; false raises the pin mismatch alarm.",
       container_prefix:
