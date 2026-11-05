@@ -300,3 +300,18 @@ test('cloneUrlRefusal refuses a host that is not a public git host', () => {
   assertEquals(cloneUrlRefusal('file:///srv/r.git'), 'invalid')
   assertEquals(cloneUrlRefusal('https://user:secret@10.0.0.5/o/r.git'), 'invalid')
 })
+
+test('cloneUrlRefusal refuses a percent-encoded ssh user or host, and an option-like host', () => {
+  for (const url of [
+    'ssh://git@evil%40127.0.0.1/a',
+    'ssh://%31%32%37.0.0.1/a',
+    'ssh://git@%6c%6f%63%61%6c%68%6f%73%74/a',
+    'ssh://git@%31%30.0.0.1/a',
+    'ssh://git%40x@example.com/a',
+    'ssh://-oProxyCommand=x.com/a',
+    'ssh://git@-oProxyCommand=x.com/a',
+  ]) {
+    assertEquals(cloneUrlRefusal(url), 'invalid', url)
+  }
+  assertEquals(cloneUrlRefusal('ssh://git@example.com/o/my%20repo.git'), null)
+})

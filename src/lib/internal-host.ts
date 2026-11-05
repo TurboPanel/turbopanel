@@ -9,7 +9,8 @@
  * numeric hosts (`2130706433`, `0x7f.1`), `localhost`, single-label names and
  * reserved suffixes are internal. A DNS name is not resolved: a pre-check could
  * be answered differently when the server looks the name up, so it would
- * promise more than it holds.
+ * promise more than it holds. Nor does it follow redirects: an https redirect
+ * to another host on the same scheme is not stopped.
  *
  * Web APIs only, so it stays reachable from `src/workers.ts`.
  */

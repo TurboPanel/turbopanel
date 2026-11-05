@@ -41,9 +41,25 @@ export const PUBLIC_GIT_HOST_REQUIRED_MESSAGE =
 /** Why a clone URL is refused: its form, or a host that is not public. */
 export type CloneUrlRefusal = 'invalid' | 'host_not_public'
 
+/** A host name or IP literal that starts like one, never with `-` or `.`. */
+const HOST_START_RE = /^[A-Za-z0-9[]/
+
+/** `ssh://user@host:port`: everything between the scheme and the first `/`. */
+function sshAuthority(cloneUrl: string): string {
+  const rest = cloneUrl.slice('ssh://'.length)
+  const slash = rest.indexOf('/')
+  return slash === -1 ? rest : rest.slice(0, slash)
+}
+
 /** The host of an accepted form, or `null` when the form is refused. */
 function allowedFormHost(cloneUrl: string): string | null {
   if (cloneUrl.length === 0 || /[\s\\]/.test(cloneUrl) || cloneUrl.startsWith('-')) {
+    return null
+  }
+  if (cloneUrl.startsWith('ssh://') && sshAuthority(cloneUrl).includes('%')) {
+    // The URL parser leaves an `ssh:` host percent-encoded, but git decodes the
+    // whole URL before it calls ssh: `ssh://git@x%40127.0.0.1/r` would pass the
+    // host check as `x%40127.0.0.1` and dial 127.0.0.1.
     return null
   }
   if (cloneUrl.startsWith('https://') || cloneUrl.startsWith('ssh://')) {
@@ -51,7 +67,9 @@ function allowedFormHost(cloneUrl: string): string | null {
       const parsed = new URL(cloneUrl)
       if (parsed.hostname === '' || parsed.password !== '') return null
       if (parsed.protocol === 'https:' && parsed.username !== '') return null
-      return parsed.hostname
+      // A host git could read as an ssh option (`-oProxyCommand=…`) or that
+      // starts with a dot; the daemon refuses the same.
+      return HOST_START_RE.test(parsed.hostname) ? parsed.hostname : null
     } catch {
       return null
     }
