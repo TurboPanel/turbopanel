@@ -192,7 +192,7 @@ function registerClearSealingKeyRoute(admin: Hono<AppEnv>, secrets: DerivedSecre
       }
       const stepUp = await requireInstanceStepUp(c, 'server.sealing_key.clear')
       if (stepUp) return stepUp
-      const cleared = await clearDaemonSealingKey(db, target.id)
+      const cleared = await clearDaemonSealingKey(db, target.id, target.kid)
       if (cleared) {
         const session = c.get('session')
         await recordAudit(db, {

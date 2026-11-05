@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { ServerMetadata } from './server-metadata.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
@@ -168,14 +168,19 @@ function clearedSealingKeyColumns() {
 /**
  * Clear only the registered sealing key, leaving the identity key and the
  * daemon state alone: the superadmin recovery for a host rolled back to a
- * daemon build without sealed secrets. True when a key was on file and is
- * now gone.
+ * daemon build without sealed secrets. Only while the key on file is still
+ * `kid`, the one the operator was shown: a key registered after that read is
+ * left alone. True when the key was cleared.
  */
-export async function clearDaemonSealingKey(db: Db, serverId: string): Promise<boolean> {
+export async function clearDaemonSealingKey(
+  db: Db,
+  serverId: string,
+  kid: string
+): Promise<boolean> {
   const cleared = await db
     .update(server)
     .set({ ...clearedSealingKeyColumns(), updatedAt: nowTs() })
-    .where(and(eq(server.id, serverId), isNotNull(server.sealingKeyKid)))
+    .where(and(eq(server.id, serverId), eq(server.sealingKeyKid, kid)))
     .returning({ id: server.id })
   return cleared.length > 0
 }

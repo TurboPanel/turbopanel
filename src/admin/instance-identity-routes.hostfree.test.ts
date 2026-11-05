@@ -31,13 +31,29 @@ const IDENTITY_URL = `${ADMIN_API_PREFIX}/instance/identity`
 const NEXT_URL = `${IDENTITY_URL}/next`
 const STALE = new Date(Date.now() - 60 * 60 * 1000).toISOString()
 
+/** `update(server).set(values).where(...).returning(...)`: records `values`, matches one row. */
+function fakeServerUpdate(updates: Record<string, unknown>[]) {
+  const returning = () => Promise.resolve([{ id: 'srv-1' }])
+  return {
+    set: (values: Record<string, unknown>) => {
+      updates.push(values)
+      return { where: () => ({ returning }) }
+    },
+  }
+}
+
+/** `select().from(server)`, awaited whole or narrowed with `.where().limit()`. */
+function fakeServerSelect(rows: Record<string, unknown>[]) {
+  const first = () => Promise.resolve(rows.slice(0, 1))
+  return Object.assign(Promise.resolve(rows), { where: () => ({ limit: first }) })
+}
+
 async function buildApp(opts: {
   role?: string
   runtime?: 'deno' | 'workers'
   createdAt?: string
   configured?: boolean
   serverRows?: Record<string, unknown>[]
-  updateReturns?: { id: string }[]
 }) {
   const secrets = await deriveSecretsConfig(parseTestSecretsConfig('deno'), 'session-signing')
   const token = crypto.randomUUID()
@@ -57,29 +73,15 @@ async function buildApp(opts: {
   const db = new Proxy(baseDb, {
     get(target, prop, receiver) {
       if (prop === 'update') {
-        return (table: unknown) => {
-          if (table !== server) return target.update(table as never)
-          return {
-            set: (values: Record<string, unknown>) => ({
-              where: () => ({
-                returning: () => {
-                  serverUpdates.push(values)
-                  return Promise.resolve(opts.updateReturns ?? [{ id: 'srv-1' }])
-                },
-              }),
-            }),
-          }
-        }
+        return (table: unknown) =>
+          table === server ? fakeServerUpdate(serverUpdates) : target.update(table as never)
       }
       if (prop !== 'select') return Reflect.get(target, prop, receiver)
       return (fields?: unknown) => ({
-        from: (table: unknown) => {
-          if (table !== server) return target.select(fields as never).from(table as never)
-          const all = Promise.resolve(serverRows)
-          return Object.assign(all, {
-            where: () => ({ limit: () => Promise.resolve(serverRows.slice(0, 1)) }),
-          })
-        },
+        from: (table: unknown) =>
+          table === server
+            ? fakeServerSelect(serverRows)
+            : target.select(fields as never).from(table as never),
       })
     },
   }) as Db
