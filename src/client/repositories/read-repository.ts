@@ -6,17 +6,23 @@ import {
   type DaemonOutboundEnvelope,
 } from '../../contracts/cell-protocol.ts'
 import { cellTrace } from '../../lib/logger.ts'
+import { isDaemonReadableCloneUrl } from '../../features/git/clone-url.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
-import type {
-  RepositoryEntry,
-  RepositoryFileEntry,
-} from '../../features/git/git-provider.ts'
+import type { RepositoryEntry, RepositoryFileEntry } from '../../features/git/git-provider.ts'
 
 /**
  * On an operator's request path, not a deploy's — 30s, not the 600s a release
  * checkout gets.
  */
 export const REPO_READ_TIMEOUT_MS = 30_000
+
+/** The answer for a clone URL no server is asked to read. */
+const REFUSED_ADDRESS = {
+  ok: false,
+  code: 'failed',
+  message:
+    'This repository address is not https://, ssh:// or user@host:path, so no server reads it.',
+} as const
 
 export type RepoReadOutcome =
   | { ok: true; commitSha: string; files: RepositoryFileEntry[]; entries: RepositoryEntry[] }
@@ -47,11 +53,10 @@ export async function readRepositoryViaDaemon(
     credentialUsername?: string
     /** Candidate servers, most-preferred first. */
     serverIds: readonly string[]
-  },
+  }
 ): Promise<RepoReadOutcome> {
-  const records = await loadServerStatusRecords(db, registry, [
-    ...params.serverIds,
-  ])
+  if (!isDaemonReadableCloneUrl(params.cloneUrl)) return REFUSED_ADDRESS
+  const records = await loadServerStatusRecords(db, registry, [...params.serverIds])
   const online = records.find((record) => record?.connected)
   if (!online) {
     return {
@@ -73,9 +78,7 @@ export async function readRepositoryViaDaemon(
     ...(params.listPath === undefined ? {} : { listPath: params.listPath }),
     maxBytesPerFile: params.maxBytesPerFile,
     ...(params.credential === undefined ? {} : { credential: params.credential }),
-    ...(params.credentialKind === undefined
-      ? {}
-      : { credentialKind: params.credentialKind }),
+    ...(params.credentialKind === undefined ? {} : { credentialKind: params.credentialKind }),
     ...(params.credentialUsername === undefined
       ? {}
       : { credentialUsername: params.credentialUsername }),
@@ -88,10 +91,9 @@ export async function readRepositoryViaDaemon(
     kind: 'repo-read-request',
   })
 
-  const record = await registry.getCell(online.serverId).createRequestAndWait(
-    envelope,
-    REPO_READ_TIMEOUT_MS,
-  )
+  const record = await registry
+    .getCell(online.serverId)
+    .createRequestAndWait(envelope, REPO_READ_TIMEOUT_MS)
 
   if (record.status === 'expired') {
     return { ok: false, code: 'timeout', message: 'timeout reading repository' }
@@ -119,9 +121,7 @@ export async function readRepositoryViaDaemon(
     return {
       ok: false,
       code: 'failed',
-      message: typeof payload.error === 'string'
-        ? payload.error
-        : 'failed to read repository',
+      message: typeof payload.error === 'string' ? payload.error : 'failed to read repository',
     }
   }
   return {
@@ -152,9 +152,10 @@ function normalizeFiles(raw: unknown): RepositoryFileEntry[] {
     files.push({
       path: entry.path,
       found: false,
-      reason: reason === 'too_large' || reason === 'not_a_file' || reason === 'binary'
-        ? reason
-        : 'not_found',
+      reason:
+        reason === 'too_large' || reason === 'not_a_file' || reason === 'binary'
+          ? reason
+          : 'not_found',
     })
   }
   return files
@@ -197,11 +198,10 @@ export async function resolveDefaultBranchViaDaemon(
     cloneUrl: string
     /** Candidate servers, most-preferred first. */
     serverIds: readonly string[]
-  },
+  }
 ): Promise<ResolveDefaultBranchOutcome> {
-  const records = await loadServerStatusRecords(db, registry, [
-    ...params.serverIds,
-  ])
+  if (!isDaemonReadableCloneUrl(params.cloneUrl)) return REFUSED_ADDRESS
+  const records = await loadServerStatusRecords(db, registry, [...params.serverIds])
   const online = records.find((record) => record?.connected)
   if (!online) {
     return {
@@ -226,10 +226,9 @@ export async function resolveDefaultBranchViaDaemon(
     kind: 'repo-default-branch-request',
   })
 
-  const record = await registry.getCell(online.serverId).createRequestAndWait(
-    envelope,
-    REPO_READ_TIMEOUT_MS,
-  )
+  const record = await registry
+    .getCell(online.serverId)
+    .createRequestAndWait(envelope, REPO_READ_TIMEOUT_MS)
 
   if (record.status === 'expired') {
     return { ok: false, code: 'timeout', message: 'timeout resolving default branch' }
@@ -255,9 +254,8 @@ export async function resolveDefaultBranchViaDaemon(
     return {
       ok: false,
       code: 'failed',
-      message: typeof payload.error === 'string'
-        ? payload.error
-        : 'failed to resolve default branch',
+      message:
+        typeof payload.error === 'string' ? payload.error : 'failed to resolve default branch',
     }
   }
   return {

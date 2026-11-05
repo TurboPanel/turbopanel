@@ -30,6 +30,30 @@ export function isSshCloneUrl(cloneUrl: string): boolean {
 }
 
 /**
+ * May a server be asked to read this clone URL (`repo-read-request`,
+ * `repo-default-branch-request`)? Only `https://host/...` with no login,
+ * `ssh://[user@]host/...` with no password, or scp-like `user@host:path`.
+ * `file:`, `git:`, `http:`, `ext::`, a bare path, an empty host, a value git
+ * could take as an option, whitespace and backslashes are refused. The daemon
+ * checks the same forms again and also refuses internal hosts.
+ */
+export function isDaemonReadableCloneUrl(cloneUrl: string): boolean {
+  if (cloneUrl.length === 0 || /[\s\\]/.test(cloneUrl) || cloneUrl.startsWith('-')) {
+    return false
+  }
+  if (cloneUrl.startsWith('https://') || cloneUrl.startsWith('ssh://')) {
+    try {
+      const parsed = new URL(cloneUrl)
+      if (parsed.hostname === '' || parsed.password !== '') return false
+      return parsed.protocol === 'ssh:' || parsed.username === ''
+    } catch {
+      return false
+    }
+  }
+  return SCP_LIKE_SSH_RE.test(cloneUrl) && !cloneUrl.includes('@-')
+}
+
+/**
  * One repository, one string: the canonical clone URL.
  *
  * `repository` rows are deduplicated per organization by

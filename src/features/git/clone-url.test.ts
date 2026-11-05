@@ -6,6 +6,7 @@ import {
   COMMIT_AUTHOR_MAX_CHARS,
   COMMIT_MESSAGE_MAX_CHARS,
   isCommitSha,
+  isDaemonReadableCloneUrl,
   isGithubDotComHttpsCloneUrl,
   isSafeGitRef,
   isValidGitRefName,
@@ -226,5 +227,33 @@ test('isValidGitRefName follows git check-ref-format for branch names', () => {
     'a'.repeat(251),
   ]) {
     assertEquals(isValidGitRefName(bad), false, JSON.stringify(bad))
+  }
+})
+
+test('isDaemonReadableCloneUrl accepts only https, ssh and user@host:path', () => {
+  for (const url of [
+    'https://github.com/o/r.git',
+    'https://git.example.com:8443/group/sub/r.git',
+    'ssh://git@example.com:2222/o/r.git',
+    'git@github.com:o/r.git',
+  ]) {
+    assertEquals(isDaemonReadableCloneUrl(url), true, url)
+  }
+  for (const url of [
+    '',
+    'file:///etc',
+    'git://example.com/o/r.git',
+    'http://example.com/o/r.git',
+    'ext::sh -c id',
+    '/srv/repo',
+    'example.com:o/r.git',
+    '-oProxyCommand=x@example.com:o/r',
+    'git@-oProxyCommand=x:o/r',
+    'https://user:secret@example.com/o/r.git',
+    'https://token@example.com/o/r.git',
+    'ssh://git:secret@example.com/o/r.git',
+    'https://example.com\\@127.0.0.1/o/r.git',
+  ]) {
+    assertEquals(isDaemonReadableCloneUrl(url), false, url)
   }
 })

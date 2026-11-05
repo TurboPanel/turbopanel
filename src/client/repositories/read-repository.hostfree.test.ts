@@ -32,7 +32,7 @@ const BASE_PARAMS = {
 
 function registryReturning(
   record: { status: string; result?: unknown; error?: string },
-  captured?: { envelope: unknown; timeoutMs: number }[],
+  captured?: { envelope: unknown; timeoutMs: number }[]
 ): DaemonCellRegistry {
   return {
     getCell: () => ({
@@ -52,7 +52,7 @@ test('readRepositoryViaDaemon fails closed when no server is connected', async (
   const outcome = await readRepositoryViaDaemon(
     createServerPresenceDb(SERVER, false),
     registryReturning({ status: 'done', result: { ok: true } }),
-    BASE_PARAMS,
+    BASE_PARAMS
   )
   assertEquals(outcome.ok, false)
   if (outcome.ok) throw new TypeError('expected failure')
@@ -63,7 +63,7 @@ test('readRepositoryViaDaemon maps an expired cell wait to timeout', async () =>
   const outcome = await readRepositoryViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'expired' }),
-    BASE_PARAMS,
+    BASE_PARAMS
   )
   assertEquals(outcome, {
     ok: false,
@@ -76,7 +76,7 @@ test('readRepositoryViaDaemon maps a failed wait, preferring the cell error', as
   const withError = await readRepositoryViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'failed', error: 'clone refused' }),
-    BASE_PARAMS,
+    BASE_PARAMS
   )
   assertEquals(withError, {
     ok: false,
@@ -87,7 +87,7 @@ test('readRepositoryViaDaemon maps a failed wait, preferring the cell error', as
   const withoutError = await readRepositoryViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'failed' }),
-    BASE_PARAMS,
+    BASE_PARAMS
   )
   assertEquals(withoutError, {
     ok: false,
@@ -101,7 +101,7 @@ test('readRepositoryViaDaemon rejects a non-object result payload', async () => 
     const outcome = await readRepositoryViaDaemon(
       createServerPresenceDb(SERVER, true),
       registryReturning({ status: 'done', result }),
-      BASE_PARAMS,
+      BASE_PARAMS
     )
     assertEquals(outcome, {
       ok: false,
@@ -118,7 +118,7 @@ test('readRepositoryViaDaemon surfaces a provider-shaped failure on the daemon l
       status: 'done',
       result: { ok: false, error: 'ref not found' },
     }),
-    BASE_PARAMS,
+    BASE_PARAMS
   )
   assertEquals(withMessage, {
     ok: false,
@@ -129,7 +129,7 @@ test('readRepositoryViaDaemon surfaces a provider-shaped failure on the daemon l
   const withoutMessage = await readRepositoryViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'done', result: { ok: false } }),
-    BASE_PARAMS,
+    BASE_PARAMS
   )
   assertEquals(withoutMessage, {
     ok: false,
@@ -142,38 +142,41 @@ test('readRepositoryViaDaemon normalizes files, entries, and optional credential
   const captured: { envelope: unknown; timeoutMs: number }[] = []
   const outcome = await readRepositoryViaDaemon(
     createServerPresenceDb(SERVER, true),
-    registryReturning({
-      status: 'done',
-      result: {
-        ok: true,
-        commitSha: 'abc123',
-        files: [
-          { path: 'compose.yaml', found: true, content: 'x: 1', bytes: 4 },
-          { path: 'inferred.txt', found: true, content: 'hi' },
-          { path: 'big.bin', found: false, reason: 'too_large' },
-          { path: 'dir', found: false, reason: 'not_a_file' },
-          { path: 'pic.png', found: false, reason: 'binary' },
-          { path: 'missing.yml', found: false, reason: 'gone' },
-          { path: 12 },
-          'skip-me',
-          null,
-        ],
-        entries: [
-          { path: 'src', kind: 'dir' },
-          { path: 'README.md', kind: 'file', bytes: 12 },
-          { path: 'other', kind: 'symlink' },
-          { path: 9 },
-          null,
-        ],
+    registryReturning(
+      {
+        status: 'done',
+        result: {
+          ok: true,
+          commitSha: 'abc123',
+          files: [
+            { path: 'compose.yaml', found: true, content: 'x: 1', bytes: 4 },
+            { path: 'inferred.txt', found: true, content: 'hi' },
+            { path: 'big.bin', found: false, reason: 'too_large' },
+            { path: 'dir', found: false, reason: 'not_a_file' },
+            { path: 'pic.png', found: false, reason: 'binary' },
+            { path: 'missing.yml', found: false, reason: 'gone' },
+            { path: 12 },
+            'skip-me',
+            null,
+          ],
+          entries: [
+            { path: 'src', kind: 'dir' },
+            { path: 'README.md', kind: 'file', bytes: 12 },
+            { path: 'other', kind: 'symlink' },
+            { path: 9 },
+            null,
+          ],
+        },
       },
-    }, captured),
+      captured
+    ),
     {
       ...BASE_PARAMS,
       listPath: '',
       credential: 'token',
       credentialKind: 'token',
       credentialUsername: 'oauth2',
-    },
+    }
   )
 
   if (!outcome.ok) throw new TypeError('expected a successful read')
@@ -208,7 +211,7 @@ test('readRepositoryViaDaemon treats missing files/entries as empty and blanks a
       status: 'done',
       result: { ok: true, commitSha: 99, files: 'nope', entries: {} },
     }),
-    BASE_PARAMS,
+    BASE_PARAMS
   )
   if (!outcome.ok) throw new TypeError('expected a successful read')
   assertEquals(outcome.commitSha, '')
@@ -220,11 +223,14 @@ test('readRepositoryViaDaemon omits optional credential fields when they are uns
   const captured: { envelope: unknown; timeoutMs: number }[] = []
   await readRepositoryViaDaemon(
     createServerPresenceDb(SERVER, true),
-    registryReturning({
-      status: 'done',
-      result: { ok: true, commitSha: 'sha' },
-    }, captured),
-    BASE_PARAMS,
+    registryReturning(
+      {
+        status: 'done',
+        result: { ok: true, commitSha: 'sha' },
+      },
+      captured
+    ),
+    BASE_PARAMS
   )
   const envelope = captured[0]?.envelope as Record<string, unknown>
   assertEquals('listPath' in envelope, false)
@@ -234,11 +240,10 @@ test('readRepositoryViaDaemon omits optional credential fields when they are uns
 })
 
 test('readRepositoryViaDaemon returns no_daemon_available when the id list is empty', async () => {
-  const outcome = await readRepositoryViaDaemon(
-    {} as Db,
-    registryReturning({ status: 'done' }),
-    { ...BASE_PARAMS, serverIds: [] },
-  )
+  const outcome = await readRepositoryViaDaemon({} as Db, registryReturning({ status: 'done' }), {
+    ...BASE_PARAMS,
+    serverIds: [],
+  })
   if (outcome.ok) throw new TypeError('expected failure')
   assertEquals(outcome.code, 'no_daemon_available')
 })
@@ -253,7 +258,7 @@ test('resolveDefaultBranchViaDaemon fails closed when no server is connected', a
   const outcome = await resolveDefaultBranchViaDaemon(
     createServerPresenceDb(SERVER, false),
     registryReturning({ status: 'done', result: { ok: true } }),
-    BRANCH_PARAMS,
+    BRANCH_PARAMS
   )
   if (outcome.ok) throw new TypeError('expected failure')
   assertEquals(outcome.code, 'no_daemon_available')
@@ -263,7 +268,7 @@ test('resolveDefaultBranchViaDaemon maps an expired cell wait to timeout', async
   const outcome = await resolveDefaultBranchViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'expired' }),
-    BRANCH_PARAMS,
+    BRANCH_PARAMS
   )
   assertEquals(outcome, {
     ok: false,
@@ -276,7 +281,7 @@ test('resolveDefaultBranchViaDaemon maps a failed wait, preferring the cell erro
   const withError = await resolveDefaultBranchViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'failed', error: 'ls-remote refused' }),
-    BRANCH_PARAMS,
+    BRANCH_PARAMS
   )
   assertEquals(withError, {
     ok: false,
@@ -287,7 +292,7 @@ test('resolveDefaultBranchViaDaemon maps a failed wait, preferring the cell erro
   const withoutError = await resolveDefaultBranchViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'failed' }),
-    BRANCH_PARAMS,
+    BRANCH_PARAMS
   )
   assertEquals(withoutError, {
     ok: false,
@@ -301,7 +306,7 @@ test('resolveDefaultBranchViaDaemon rejects a non-object result payload', async 
     const outcome = await resolveDefaultBranchViaDaemon(
       createServerPresenceDb(SERVER, true),
       registryReturning({ status: 'done', result }),
-      BRANCH_PARAMS,
+      BRANCH_PARAMS
     )
     assertEquals(outcome, {
       ok: false,
@@ -318,7 +323,7 @@ test('resolveDefaultBranchViaDaemon surfaces a provider-shaped failure on the da
       status: 'done',
       result: { ok: false, error: 'remote unreachable' },
     }),
-    BRANCH_PARAMS,
+    BRANCH_PARAMS
   )
   assertEquals(withMessage, {
     ok: false,
@@ -329,7 +334,7 @@ test('resolveDefaultBranchViaDaemon surfaces a provider-shaped failure on the da
   const withoutMessage = await resolveDefaultBranchViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'done', result: { ok: false } }),
-    BRANCH_PARAMS,
+    BRANCH_PARAMS
   )
   assertEquals(withoutMessage, {
     ok: false,
@@ -342,11 +347,14 @@ test('resolveDefaultBranchViaDaemon reports the branch name and sends no credent
   const captured: { envelope: unknown; timeoutMs: number }[] = []
   const outcome = await resolveDefaultBranchViaDaemon(
     createServerPresenceDb(SERVER, true),
-    registryReturning({
-      status: 'done',
-      result: { ok: true, defaultBranch: 'trunk' },
-    }, captured),
-    BRANCH_PARAMS,
+    registryReturning(
+      {
+        status: 'done',
+        result: { ok: true, defaultBranch: 'trunk' },
+      },
+      captured
+    ),
+    BRANCH_PARAMS
   )
   if (!outcome.ok) throw new TypeError('expected a successful resolve')
   assertEquals(outcome.defaultBranch, 'trunk')
@@ -362,7 +370,7 @@ test('resolveDefaultBranchViaDaemon treats a non-string defaultBranch as null', 
   const outcome = await resolveDefaultBranchViaDaemon(
     createServerPresenceDb(SERVER, true),
     registryReturning({ status: 'done', result: { ok: true, defaultBranch: null } }),
-    BRANCH_PARAMS,
+    BRANCH_PARAMS
   )
   if (!outcome.ok) throw new TypeError('expected a successful resolve')
   assertEquals(outcome.defaultBranch, null)
@@ -372,8 +380,42 @@ test('resolveDefaultBranchViaDaemon returns no_daemon_available when the id list
   const outcome = await resolveDefaultBranchViaDaemon(
     {} as Db,
     registryReturning({ status: 'done' }),
-    { ...BRANCH_PARAMS, serverIds: [] },
+    { ...BRANCH_PARAMS, serverIds: [] }
   )
   if (outcome.ok) throw new TypeError('expected failure')
   assertEquals(outcome.code, 'no_daemon_available')
+})
+
+/** A db that fails the test if a refused address ever gets as far as a lookup. */
+const UNTOUCHED_DB = new Proxy(
+  {},
+  {
+    get: () => {
+      throw new TypeError('a refused address must not reach the database')
+    },
+  }
+) as unknown as Db
+
+test('a clone URL outside https, ssh and user@host:path is never sent to a server', async () => {
+  for (const cloneUrl of [
+    'file:///etc',
+    'ext::sh -c id',
+    '/srv/repo',
+    'http://example.com/r.git',
+  ]) {
+    const captured: { envelope: unknown; timeoutMs: number }[] = []
+    const registry = registryReturning({ status: 'done', result: { ok: true } }, captured)
+    const read = await readRepositoryViaDaemon(UNTOUCHED_DB, registry, { ...BASE_PARAMS, cloneUrl })
+    const branch = await resolveDefaultBranchViaDaemon(UNTOUCHED_DB, registry, {
+      organizationId: 'org-1',
+      cloneUrl,
+      serverIds: [SERVER],
+    })
+    assertEquals(read.ok, false)
+    assertEquals(branch.ok, false)
+    if (read.ok || branch.ok) throw new TypeError('expected failure')
+    assertEquals(read.code, 'failed')
+    assertEquals(branch.code, 'failed')
+    assertEquals(captured.length, 0)
+  }
 })
