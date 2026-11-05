@@ -44,11 +44,22 @@ export type CloneUrlRefusal = 'invalid' | 'host_not_public'
 /** A host name or IP literal that starts like one, never with `-` or `.`. */
 const HOST_START_RE = /^[A-Za-z0-9[]/
 
-/** `ssh://user@host:port`: everything between the scheme and the first `/`. */
-function sshAuthority(cloneUrl: string): string {
-  const rest = cloneUrl.slice('ssh://'.length)
+/**
+ * The only authority shape (`[user@]host[:port]`, between `scheme://` and the
+ * first `/`) a server is asked to fetch from: a plain user, a host name, IPv4
+ * or bracketed IPv6 literal, and a numeric port. git hands everything before
+ * the first `/` to ssh as `user@host` and decodes it first, while the URL
+ * parser stops the host at `#` or `?` and leaves an `ssh:` host
+ * percent-encoded, so `ssh://git@github.com#@127.0.0.1/r` or
+ * `ssh://git@x%40127.0.0.1/r` would pass a check on the parsed host and dial
+ * 127.0.0.1. The daemon allows only the same shape.
+ */
+const AUTHORITY_RE = /^(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/
+
+function hasPlainAuthority(cloneUrl: string, scheme: 'https' | 'ssh'): boolean {
+  const rest = cloneUrl.slice(`${scheme}://`.length)
   const slash = rest.indexOf('/')
-  return slash === -1 ? rest : rest.slice(0, slash)
+  return AUTHORITY_RE.test(slash === -1 ? rest : rest.slice(0, slash))
 }
 
 /** The host of an accepted form, or `null` when the form is refused. */
@@ -56,13 +67,9 @@ function allowedFormHost(cloneUrl: string): string | null {
   if (cloneUrl.length === 0 || /[\s\\]/.test(cloneUrl) || cloneUrl.startsWith('-')) {
     return null
   }
-  if (cloneUrl.startsWith('ssh://') && sshAuthority(cloneUrl).includes('%')) {
-    // The URL parser leaves an `ssh:` host percent-encoded, but git decodes the
-    // whole URL before it calls ssh: `ssh://git@x%40127.0.0.1/r` would pass the
-    // host check as `x%40127.0.0.1` and dial 127.0.0.1.
-    return null
-  }
-  if (cloneUrl.startsWith('https://') || cloneUrl.startsWith('ssh://')) {
+  const scheme = ['https', 'ssh'].find((name) => cloneUrl.startsWith(`${name}://`))
+  if (scheme === 'https' || scheme === 'ssh') {
+    if (!hasPlainAuthority(cloneUrl, scheme)) return null
     try {
       const parsed = new URL(cloneUrl)
       if (parsed.hostname === '' || parsed.password !== '') return null

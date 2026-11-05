@@ -301,8 +301,16 @@ test('cloneUrlRefusal refuses a host that is not a public git host', () => {
   assertEquals(cloneUrlRefusal('https://user:secret@10.0.0.5/o/r.git'), 'invalid')
 })
 
-test('cloneUrlRefusal refuses a percent-encoded ssh user or host, and an option-like host', () => {
+test('cloneUrlRefusal refuses a user, host or port git and the URL parser read differently', () => {
   for (const url of [
+    'ssh://git@github.com#@127.0.0.1/a',
+    'ssh://git@github.com?@127.0.0.1/a',
+    'ssh://git@github.com#x@127.0.0.1',
+    'ssh://git@github.com?x=@10.0.0.1/a',
+    'ssh://git@github.com:22#@127.0.0.1/a',
+    'ssh://git@github.com;@127.0.0.1/a',
+    'https://github.com#@127.0.0.1/a',
+    'https://github.com?@127.0.0.1/a',
     'ssh://git@evil%40127.0.0.1/a',
     'ssh://%31%32%37.0.0.1/a',
     'ssh://git@%6c%6f%63%61%6c%68%6f%73%74/a',
