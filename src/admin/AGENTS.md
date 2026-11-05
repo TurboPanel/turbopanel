@@ -63,7 +63,17 @@
   fingerprint (superadmin, self-hosted only, always behind `requireInstanceStepUp`, audited as
   `panel.identity_next.set|clear`, mails superadmins through `recordKeyEvent`);
   `GET /instance/identity/sealed-secrets` (superadmin) reports per server whether secrets still
-  reach it in plaintext (feature, sealing key id, `plaintext_secrets_at`); the self-hosted
+  reach it in plaintext (feature, sealing key id, `plaintext_secrets_at`);
+  `DELETE /instance/identity/sealed-secrets/:serverId/key` is Clear Sealing Key
+  (superadmin, `?confirmName` = server name then hostname then id or 400
+  `confirm_name_required`, then step-up `server.sealing_key.clear`, audited as
+  `server.sealing_key.clear` with no notification event): it clears the three
+  `sealing_key_*` columns through `clearDaemonSealingKey`, answers
+  `{ ok, cleared }` (`cleared: false` when no key was on file), and refuses 409
+  `daemon_seals_secrets` while the server is connected with a hello listing
+  `daemon-sealed-secrets-v1` (that daemon would refuse plaintext; the update
+  checks the same condition and the key id again, so a daemon that connects
+  after the read keeps its key); the self-hosted
   tunnel-token write sits behind the same step-up and is audited as `instance.tunnel_token.set`;
   `GET /instance/platform-ca` and
   `POST /instance/platform-ca/trust-reconcile` are Deno-only Platform CA read
