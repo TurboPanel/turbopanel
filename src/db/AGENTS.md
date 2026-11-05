@@ -314,6 +314,17 @@ application tables on it. A drizzle-orm upgrade that changes this DDL fails
 > (`pnpm migrate`). Manual bootstrap: `./scripts/bootstrap-dev-db.sh` from the
 > instance repo root. An unmigrated database is an operational failure (missing
 > relations propagate); it must not be treated as install mode / `needsInstall`.
+>
+> **Development database stays current on its own.** The co-located dev
+> instance unit runs `scripts/dev-migrate-on-start.mjs` before every start
+> (`ExecStartPre`, source mode with `TURBOPANEL_DEV_SURFACE=1` only). Schema
+> current: nothing happens. Pending migrations that are on `origin/trunk`
+> unchanged: a `pg_dump -Fc` inside `turbopanel-database` into
+> `TURBOPANEL_DEV_MIGRATE_BACKUP_DIR` (newest five kept), then the same steps
+> as `pnpm migrate`. A pending migration that exists only on a branch or was
+> edited locally is refused (migrations are forward-only, so it would stick):
+> the instance does not start and the log says to run `pnpm migrate` by hand
+> if that is intended. Pure rules and tests: `scripts/dev-migrate-gate.mjs`.
 
 | Direction                                     | You changed                  | Command                                      | drizzle-kit  |
 | --------------------------------------------- | ---------------------------- | -------------------------------------------- | ------------ |
