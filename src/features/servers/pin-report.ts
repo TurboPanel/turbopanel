@@ -71,6 +71,10 @@ export async function recordPinReport(
         trustPinKeyset: report.keyset,
         trustPinReportedAt: deps.now?.() ?? new Date(),
         isTrustPinMatching: matching,
+        // A signed report proves the server talks to this control plane: any
+        // pin silence alarm for it is over.
+        trustSilenceStage: null,
+        trustSilenceSince: null,
       })
       .where(eq(server.id, serverId))
     const alreadyRaised = row.matching === false && row.fingerprint === report.current

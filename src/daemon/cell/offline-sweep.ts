@@ -93,6 +93,7 @@ import {
   notifyDemotions,
 } from '../../features/alerts/notify-demotions.ts'
 import { isMassDisconnect } from './mass-disconnect.ts'
+import { sweepPinSilence } from '../pin-silence.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createWorkersCommandQueue } from '../../features/commands/workers-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -1617,6 +1618,23 @@ async function runOptionalCronPhases(
         db,
         (database) =>
           sweepDaemonTrustSafely(database, createDurableObjectDaemonCellRegistry(env, database)),
+        capDbTimeout(deadlineMs)
+      )
+    ))
+  ) {
+    return
+  }
+
+  // Pinned servers that are up (a TurboFabric peer still reaches them) but
+  // not talking to us: staged pin silence alarms (daemon/pin-silence.ts).
+  // Postgres only, no cell is woken; the sweep never throws.
+  if (
+    !(await runOptionalPhase(deadlineMs, 'pin-silence', opts.scheduledTime, phasesSkipped, () =>
+      runWithDbTimeout(
+        db,
+        async (database) => {
+          await sweepPinSilence(database, tlsRenewal?.dataEncryptionSecrets)
+        },
         capDbTimeout(deadlineMs)
       )
     ))

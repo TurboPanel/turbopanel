@@ -315,6 +315,30 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'The current certificate keeps serving until it expires; after that, servers fall back to the Platform CA certificate. ' +
       'See Certificates under Access in Admin.',
   },
+  'server.pin_silent': {
+    label: 'A pinned server is up but not talking to this control plane',
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: false,
+    title: (ctx) =>
+      `${name(ctx, 'serverName', 'A server')} is up but not connected to this control plane`,
+    body: (ctx) =>
+      `It has been offline here for ${name(ctx, 'silentMinutes', 'some')} minutes while its TurboFabric peers still reach it. ` +
+      'It may have lost its route to this control plane, or it may no longer trust it. Check the server; if it stays this way it is reported as missing.',
+  },
+  'server.pin_missing': {
+    label: 'A pinned server stopped trusting this control plane',
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) =>
+      `${name(ctx, 'serverName', 'A server')} has not connected for hours while it is still running`,
+    body: (ctx) =>
+      `It has been offline here for ${name(ctx, 'silentMinutes', 'many')} minutes while its TurboFabric peers still reach it, and no other servers are affected. ` +
+      'It may be talking to something that is impersonating this control plane. Check the server and reinstall it with a fresh command if you cannot explain it.',
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS
