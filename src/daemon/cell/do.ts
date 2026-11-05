@@ -99,6 +99,7 @@ import {
   decideAttachProof,
   ed25519PublicJwk,
 } from '../authn/attach-proof.ts'
+import { helloListsSignedReports, intakeSignedSessionReport } from '../authn/report-signature.ts'
 import { raiseServerTrustLevel } from '../../features/servers/trust-level.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { inboundHeartbeatProjectionDue } from './postgres-projection.ts'
@@ -129,6 +130,7 @@ import type {
   CommandRecoveryReport,
   DaemonBuildInfo,
   DaemonInboundEnvelope,
+  DaemonInboundFrameResult,
   DaemonMessage,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
@@ -253,6 +255,8 @@ type SocketSessionAttachment = {
   daemonKey?: { id: string; x: string }
   /** Signed session: the outbox waits for the daemon's hello and its attach proof. */
   awaitingAttach?: boolean
+  /** Signed session: the daemon's hello listed `signed-reports-v1`. */
+  signsReports?: boolean
 }
 /** Schema stamp in `_cell_schema.version` — bump when `#ensureSchema` DDL changes.
  * DO SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`); `#readSchemaVersion`
@@ -1826,6 +1830,53 @@ export class DaemonCellObject {
     return attachment?.awaitingAttach && attachment.session ? attachment : null
   }
 
+  /** Keep on the signed socket whether its daemon signs its reports (survives hibernation). */
+  #noteSignsReports(ws: WebSocket, features: unknown): void {
+    const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
+    if (latest?.phase !== 'signed') return
+    const signsReports = helloListsSignedReports(features)
+    if ((latest.signsReports ?? false) === signsReports) return
+    ws.serializeAttachment({ ...latest, signsReports })
+  }
+
+  /** A signed session's report checked and unwrapped; null = drop it. */
+  async #screenSignedReport(
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<string | null> {
+    if (attachment.phase !== 'signed' || !attachment.session) return raw
+    const intake = await intakeSignedSessionReport(raw, {
+      sessionId: attachment.session.sessionId,
+      keyId: attachment.daemonKey?.id,
+      publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
+      daemonSignsReports: attachment.signsReports === true,
+      nowMs: Date.now(),
+    })
+    if (intake.warning) {
+      console.warn(
+        `daemon-cell event=report-signature serverId=${attachment.serverId} conn=${attachment.connectionId} ${intake.warning}`
+      )
+    }
+    return intake.raw
+  }
+
+  /**
+   * A signed report checked, then the frame validated; null when it was
+   * dropped or refused (a refused frame has already been answered).
+   */
+  async #acceptedInboundFrame(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<Extract<DaemonInboundFrameResult, { ok: true }> | null> {
+    const frame = await this.#screenSignedReport(attachment, raw)
+    if (frame === null) return null
+    const validated = validateDaemonInboundFrame(frame)
+    if (validated.ok) return validated
+    this.#refuseInboundFrame(ws, attachment, validated)
+    return null
+  }
+
   /** Record the hello's signed pin report in the background (never holds up the session). */
   #intakePinReport(attachment: SocketSessionAttachment, panelPin: unknown): void {
     const session = attachment.session
@@ -2047,6 +2098,7 @@ export class DaemonCellObject {
       const session = this.#awaitingAttachSession(ws)
       if (!(await this.#acceptAttach(ws, parsed.attach))) return
       if (session) this.#intakePinReport(session, parsed.panelPin)
+      this.#noteSignsReports(ws, parsed.features)
     }
     await this.#handlePresenceMessage(attachment, parsed)
   }
@@ -2367,11 +2419,8 @@ export class DaemonCellObject {
       return
     }
 
-    const validated = validateDaemonInboundFrame(raw)
-    if (!validated.ok) {
-      this.#refuseInboundFrame(ws, attachment, validated)
-      return
-    }
+    const validated = await this.#acceptedInboundFrame(ws, session, raw)
+    if (!validated) return
     const parsed = validated.message
     this.#warnInboundNotes(attachment, validated.notes)
 

@@ -76,10 +76,12 @@ import {
 } from '../lib/panel-identity/identity.ts'
 import { fixtureBindingJson } from '../test-fixtures/panel-identity-fixture.ts'
 import {
+  appendSignature,
   frameSigningInput,
   helloSigningInput,
   splitSignature,
 } from '../lib/panel-identity/frame-envelope.ts'
+import { reportSigningInput } from './authn/report-signature.ts'
 import { testDaemonKey } from '../test-fixtures/daemon-signing-key.test.support.ts'
 import { attachSigningInput } from './authn/attach-proof.ts'
 import { base64urlDecode } from '../lib/encoding/base64url.ts'
@@ -109,12 +111,13 @@ function createSelectChain<T>(getRows: () => T[]) {
   return { from }
 }
 
-function createMockDb(keyId = 'key-test', trustLevel = 0): Db {
+function createMockDb(keyId = 'key-test', trustLevel = 0, publicJwk?: JsonWebKey): Db {
   return {
     select: () =>
       createSelectChain(() => [
         {
           ...baseDaemonKey,
+          ...(publicJwk ? { publicJwk } : {}),
           trustLevel,
           id: keyId,
           revokedAt: null,
@@ -1549,6 +1552,15 @@ function createDenoWebSocket(url: string, init?: { headers?: Record<string, stri
     ): WebSocket
   }
   return init ? new WebSocketCtor(url, init) : new WebSocketCtor(url)
+}
+
+/** Poll `condition` with a generous ceiling instead of a fixed sleep. */
+async function waitForCondition(condition: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition()) {
+    if (Date.now() > deadline) throw new TypeError('timed out waiting for a condition')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
 }
 
 async function waitForWsOpen(ws: WebSocket): Promise<void> {
@@ -3831,6 +3843,69 @@ test('signed session: a hello with a bad attach proof is closed 1008 and gets no
       assertEquals(event.code, 1008)
       assertEquals(event.reason, 'attach-proof-refused')
       assertEquals(seen, [])
+    }
+  )
+})
+
+test('signed session: a signed result is handled as sent, a badly signed one fails the command', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-signed-reports'
+  const identity = await fixturePanelIdentity()
+  const key = await testDaemonKey()
+  const tracking = createTrackingDaemonCell(serverId)
+  const inbound: DaemonInboundEnvelope[] = []
+  tracking.cell.handleInbound = (envelope) => {
+    inbound.push(envelope)
+    return Promise.resolve(null)
+  }
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb('key-test', 0, key.publicJwk),
+      registry: createTrackingRegistry(tracking.cell),
+      panelIdentity: () => Promise.resolve(identity),
+    },
+    async ({ port }) => {
+      const ws = await openSignedSocket(port, serverId, secrets)
+      const frames = collectWsMessages(ws, 2)
+      ws.send(JSON.stringify({ type: 'hello-nonce', nonce: HELLO_NONCE }))
+      const [helloRaw] = await frames
+      const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as {
+        sessionId: string
+      }
+      ws.send(JSON.stringify(presenceHello({ features: ['signed-reports-v1'] })))
+      const report = async (id: string, signWith = key) => {
+        const unsigned = JSON.stringify({
+          type: 'command-outcome',
+          id,
+          ok: true,
+          result: { done: true },
+          at: new Date().toISOString(),
+          sessionId,
+          iat: Math.floor(Date.now() / 1000),
+          kid: 'key-test',
+        })
+        return appendSignature(
+          unsigned,
+          await signWith.sign(reportSigningInput('command-outcome', unsigned))
+        )
+      }
+      ws.send(await report('cmd-good'))
+      ws.send(await report('cmd-forged', await testDaemonKey()))
+      await waitForCondition(() => inbound.length >= 2)
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+      const byId = new Map(inbound.map((envelope) => [envelope.requestId, envelope]))
+      const good = byId.get('cmd-good') as Extract<
+        DaemonInboundEnvelope,
+        { kind: 'command-outcome' }
+      >
+      const forged = byId.get('cmd-forged') as Extract<
+        DaemonInboundEnvelope,
+        { kind: 'command-outcome' }
+      >
+      assertEquals([good.ok, good.result], [true, { done: true }])
+      assertEquals([forged.ok, forged.error], [false, 'signature_invalid'])
     }
   )
 })

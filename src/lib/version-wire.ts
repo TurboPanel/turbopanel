@@ -225,6 +225,7 @@ export const DAEMON_WIRE_FEATURES = [
   'hosting-via-header-v1',
   'dev-host-v1',
   'topology-generation-optional-v1',
+  'signed-reports-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -484,6 +485,15 @@ export const FABRIC_RETAIN_KEYS_FEATURE: DaemonWireFeature = 'fabric-retain-keys
  * send the frame; an older daemon simply never does.
  */
 export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report-v1'
+
+/**
+ * On a signed session the daemon signs `command-outcome` and
+ * `fabric-peers-report` with its own key, and this control plane verifies
+ * them (`src/daemon/authn/report-signature.ts`). Listed by both sides; a
+ * daemon signs only for a control plane that lists it. Unsigned reports are
+ * still accepted until a later floor bump.
+ */
+export const SIGNED_REPORTS_FEATURE: DaemonWireFeature = 'signed-reports-v1'
 
 /**
  * The daemon understands `tunnel: false` and `lanRoutes` on
