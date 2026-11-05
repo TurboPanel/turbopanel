@@ -1172,21 +1172,21 @@ it('validateDaemonInboundFrame turns a command result over the cap into a failed
     daemonRespondedAt: VALID_AT,
   })
   assertEquals(validated.notes?.length, 1)
-  assertEquals(validated.notes?.[0]?.startsWith('command-outcome id="req-1" result of 65537'), true)
+  assertEquals(validated.notes?.[0]?.startsWith('command-outcome id=req-1 result of 65537'), true)
   // The rewritten outcome passes the envelope re-check the cell runs before storing it.
   const envelope = wireMessageToInboundEnvelope(message)
   assert(envelope)
   assertEquals(validateDaemonInboundEnvelope(envelope), { ok: true })
 })
 
-it("validateDaemonInboundFrame keeps the daemon's own error after the size note, within the error cap", () => {
+it("validateDaemonInboundFrame keeps the daemon's own error first, then the size note, within the error cap", () => {
   const short = validateDaemonInboundFrame(
-    outcomeFrameWithResultBytes(70 * 1024, { ok: false, error: 'build failed' })
+    outcomeFrameWithResultBytes(70 * 1024, { ok: false, error: 'cancelled: build failed' })
   )
   assert(short.ok)
   assertEquals(
     (short.message as { error?: string }).error,
-    "The server's report was too large to store (70 KB; limit 64 KB). build failed"
+    "cancelled: build failed The server's report was too large to store (70 KB; limit 64 KB)."
   )
 
   const long = validateDaemonInboundFrame(
@@ -1198,7 +1198,11 @@ it("validateDaemonInboundFrame keeps the daemon's own error after the size note,
   assert(long.ok)
   const error = (long.message as { error?: string }).error ?? ''
   assertEquals(error.length, MAX_DAEMON_WS_ERROR_CHARS)
-  assertEquals(error.startsWith("The server's report was too large to store"), true)
+  assertEquals(error.startsWith('eee'), true)
+  assertEquals(
+    error.endsWith("The server's report was too large to store (70 KB; limit 64 KB)."),
+    true
+  )
 })
 
 it('validateDaemonInboundFrame still refuses an oversized result with a bad id or timestamp', () => {

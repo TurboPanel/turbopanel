@@ -2783,6 +2783,9 @@ function validateCommandOutcomeFields(record: Record<string, unknown>): string |
   )
 }
 
+/** Ids written into the log note as they are; anything else is logged as `?`. */
+const LOGGABLE_OUTCOME_ID = /^[A-Za-z0-9_-]{1,64}$/
+
 /** UTF-8 bytes of a command result as JSON, or null when it is within the cap. */
 function oversizedResultBytes(result: unknown): number | null {
   if (result === undefined) return null
@@ -2801,7 +2804,8 @@ function oversizedResultError(bytes: number): string {
  * is over the cap becomes a failed outcome for the same id, without the
  * result. Refusing the frame would close the socket, and a daemon that keeps
  * the outcome until it is confirmed would send it again on every attach. The
- * daemon's own error, if any, follows the size note within the error cap.
+ * daemon's own error, if any, comes first and the size note follows it, within
+ * the error cap.
  */
 function failOversizedOutcome(
   record: Record<string, unknown>
@@ -2810,13 +2814,16 @@ function failOversizedOutcome(
   if (bytes === null) return null
   const { result: _dropped, ...rest } = record
   const sizeNote = oversizedResultError(bytes)
+  // The daemon's error leads: the consumer reads prefixes such as
+  // `cancelled: ` at its start. Room is kept for the size note after it.
   const error =
     typeof record.error === 'string' && record.error !== ''
-      ? `${sizeNote} ${record.error}`.slice(0, MAX_DAEMON_WS_ERROR_CHARS)
+      ? `${record.error.slice(0, MAX_DAEMON_WS_ERROR_CHARS - sizeNote.length - 1)} ${sizeNote}`
       : sizeNote
+  const id = typeof record.id === 'string' && LOGGABLE_OUTCOME_ID.test(record.id) ? record.id : '?'
   return {
     message: { ...rest, ok: false, error } as DaemonMessage,
-    note: `command-outcome id=${JSON.stringify(record.id)} result of ${bytes} bytes over the ${MAX_DAEMON_WS_RESULT_JSON_BYTES} byte cap recorded as failed`,
+    note: `command-outcome id=${id} result of ${bytes} bytes over the ${MAX_DAEMON_WS_RESULT_JSON_BYTES} byte cap recorded as failed`,
   }
 }
 
