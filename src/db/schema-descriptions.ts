@@ -1716,6 +1716,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'How the daemon pinned the panel key: `install`, `upgrade` or `unsafe` (installed with the skip flag); NULL until the daemon reports it.',
       trust_level:
         'Highest daemon session trust this server has used: 0 unsigned, 1 signed frames, 2 signed with a daemon attach proof; raised only, never lowered.',
+      trust_pin_fingerprint:
+        "Control plane key fingerprint the server's pin file holds, from its last signed pin report; empty when nothing is pinned, NULL until a report verifies.",
+      trust_pin_keyset: 'Key set number of that pin, from the same signed report.',
+      trust_pin_reported_at: 'When the last signed pin report verified.',
+      is_trust_pin_matching:
+        "Whether the reported pin named this control plane's current or next key; false raises the pin mismatch alarm.",
       container_prefix:
         'Container range of this server (a /16 from the org container pool), set when first needed; cross-server network subnets come from it, NULL until then.',
       metadata:

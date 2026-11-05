@@ -23,6 +23,16 @@ sealing key, and the signed identity document served at
   a connection-closed error is rethrown so the Workers entry replays the GET once.
 - **Workers:** the identity (imported keys) may live at isolate scope; the database client never
   does. Nothing here runs crypto at module load.
+- **Signed pin report.** On the first presence hello of a signed session a newer daemon signs its
+  `panelPin` (`src/daemon/authn/pin-report.ts`, `"tp-panel-pin\n" + sessionId + serverId + keyId +
+  pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the prefix is pinned in
+  the daemon's drift script). `src/daemon/pin-report-intake.ts` verifies it on both runtimes in the
+  background and `src/features/servers/pin-report.ts` stores it in `server.trust_pin_fingerprint`,
+  `trust_pin_keyset`, `trust_pin_reported_at` and `is_trust_pin_matching` (current or next key of
+  this control plane; an `unsafe` pin counts as matching, it has its own badge). A report naming
+  another key raises `panel.pin_mismatch` and audit `server.panel_pin.mismatch` once per reported
+  fingerprint. An unsigned report changes none of these columns. Admin's identity read returns it
+  per server as `pinReport` (`resolvePinReport`); the cached client server read models do not.
 - **Pinned-by.** `pinned-by.ts` `resolvePinnedBy` is the one place that reads a server's pin state
   (`install | upgrade | unsafe | none`) from the `trust_pinned_by` column (`trustPinnedBy`); a row
   read without that column reads `none`. The admin identity read selects it; the client server read

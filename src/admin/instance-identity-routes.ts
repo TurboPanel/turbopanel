@@ -8,7 +8,7 @@ import { recordKeyEvent } from '../features/notifications/key-event.ts'
 import { listSealedSecretsState } from '../features/servers/daemon-sealing-key.ts'
 import { isPanelFingerprint } from '../lib/panel-identity/fingerprint.ts'
 import { type PanelIdentity, setPanelIdentityNext } from '../lib/panel-identity/identity.ts'
-import { resolvePinnedBy } from '../lib/panel-identity/pinned-by.ts'
+import { resolvePinnedBy, resolvePinReport } from '../lib/panel-identity/pinned-by.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 
 export const WORKERS_NEXT_KEY_MESSAGE =
@@ -29,11 +29,18 @@ async function readIdentity(
             name: server.name,
             organizationId: server.organizationId,
             trustPinnedBy: server.trustPinnedBy,
+            trustPinFingerprint: server.trustPinFingerprint,
+            trustPinKeyset: server.trustPinKeyset,
+            trustPinReportedAt: server.trustPinReportedAt,
+            isTrustPinMatching: server.isTrustPinMatching,
           })
           .from(server)
-      ).map(({ trustPinnedBy, ...row }) => ({
-        ...row,
-        pinnedBy: resolvePinnedBy({ trustPinnedBy }),
+      ).map(({ id, name, organizationId, ...pin }) => ({
+        id,
+        name,
+        organizationId,
+        pinnedBy: resolvePinnedBy(pin),
+        pinReport: resolvePinReport(pin),
       }))
     : []
   return {

@@ -8,6 +8,7 @@ import {
 } from '../../lib/secrets/secrets.ts'
 import { emitCertificateRenewalFailed } from '../../features/notifications/certificate-alerts.ts'
 import { handleRepoKeyChanged } from '../../features/notifications/repo-key-alerts.ts'
+import { intakeHelloPinReport } from '../pin-report-intake.ts'
 import {
   createWorkersDb,
   type Db,
@@ -1819,6 +1820,33 @@ export class DaemonCellObject {
     return false
   }
 
+  /** The socket's signed session while its first presence hello is still awaited. */
+  #awaitingAttachSession(ws: WebSocket): SocketSessionAttachment | null {
+    const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
+    return attachment?.awaitingAttach && attachment.session ? attachment : null
+  }
+
+  /** Record the hello's signed pin report in the background (never holds up the session). */
+  #intakePinReport(attachment: SocketSessionAttachment, panelPin: unknown): void {
+    const session = attachment.session
+    if (!session || panelPin === undefined) return
+    this.#runBoundedBackground(
+      'pin-report',
+      attachment.serverId,
+      (async () => {
+        await intakeHelloPinReport(panelPin, {
+          sessionId: session.sessionId,
+          serverId: attachment.serverId,
+          keyId: attachment.daemonKey?.id,
+          publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
+          identity: await this.#getPanelIdentity(),
+          secrets: await this.#dataEncryptionSecrets(),
+          withDb: (fn) => this.#withProjectionDbResult('pin-report', attachment.serverId, fn),
+        })
+      })()
+    )
+  }
+
   /**
    * The first presence hello of a signed session: check the attach proof
    * against the key stamped at upgrade, raise the server once it verified,
@@ -2015,7 +2043,11 @@ export class DaemonCellObject {
     attachment: { connectionId: string; serverId: string; geo?: ServerGeo },
     parsed: Extract<DaemonMessage, { type: 'hello' | 'heartbeat' }>
   ): Promise<void> {
-    if (parsed.type === 'hello' && !(await this.#acceptAttach(ws, parsed.attach))) return
+    if (parsed.type === 'hello') {
+      const session = this.#awaitingAttachSession(ws)
+      if (!(await this.#acceptAttach(ws, parsed.attach))) return
+      if (session) this.#intakePinReport(session, parsed.panelPin)
+    }
     await this.#handlePresenceMessage(attachment, parsed)
   }
 

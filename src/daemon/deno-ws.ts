@@ -40,6 +40,7 @@ import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
 import { emitCertificateRenewalFailed } from '../features/notifications/certificate-alerts.ts'
 import { handleRepoKeyChanged } from '../features/notifications/repo-key-alerts.ts'
+import { intakeHelloPinReport } from './pin-report-intake.ts'
 import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
 import { handleHttpIssuanceInbound } from '../features/tls/http-issuance/events.ts'
 import {
@@ -1178,11 +1179,23 @@ export function registerDaemonWebSocket<E extends Env>(
 
       /** The first hello of a signed session passes the attach-proof check; anything else goes on. */
       const presenceAdmitted = async (
-        message: { type: string; attach?: unknown },
+        message: { type: string; attach?: unknown; panelPin?: unknown },
         ws: WSContext<WebSocket>
       ): Promise<boolean> => {
         if (!awaitingAttach || message.type !== 'hello') return true
-        return await acceptAttach(message.attach, awaitingAttach, ws)
+        const session = awaitingAttach
+        if (!(await acceptAttach(message.attach, session, ws))) return false
+        // The signed pin report rides on the same hello; it never holds up the session.
+        void intakeHelloPinReport(message.panelPin, {
+          sessionId: session.sessionId,
+          serverId: payload.sub,
+          keyId: daemonState?.key.id,
+          publicJwk: daemonState?.key.publicJwk,
+          identity: (await options.panelIdentity?.()) ?? null,
+          secrets: options.dataEncryptionSecrets,
+          withDb: (fn) => fn(db),
+        })
+        return true
       }
 
       const handleInboundMessage = async (raw: string, ws: WSContext<WebSocket>): Promise<void> => {
