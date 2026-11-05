@@ -801,9 +801,18 @@ export type DaemonMessage =
       /**
        * How this server pinned the panel key (the pin file the installer
        * wrote). Hello only; omitted by a daemon without a pin file.
-       * Persisted to `server.trust_pinned_by`.
+       * Persisted to `server.trust_pinned_by`. On the first hello of a signed
+       * session a newer daemon adds `iat` and `sig`, its daemon-key signature
+       * (`src/daemon/authn/pin-report.ts`); a verified report is stored in the
+       * `server.trust_pin_*` columns and alarms when it names another key.
        */
-      panelPin?: { pinnedBy: 'install' | 'upgrade' | 'unsafe'; current: string; keyset: number }
+      panelPin?: {
+        pinnedBy: 'install' | 'upgrade' | 'unsafe'
+        current: string
+        keyset: number
+        iat?: number
+        sig?: string
+      }
       /**
        * The daemon's attach proof, signed session only: its Ed25519 signature
        * over `"tp-attach\n" + sessionId + "\n" + panelFingerprint + "\n" +
