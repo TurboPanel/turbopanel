@@ -61,10 +61,26 @@ export async function recordAuditAndNotify(
   entry: AuditEntry,
   extra: NotificationContext = {}
 ): Promise<void> {
-  const db = c.get('db')
-  await recordAudit(db, entry)
+  await recordAudit(c.get('db'), entry)
   const event = AUDIT_EVENTS[entry.action]
-  if (!event || !db) return
+  if (!event) return
+  await notifyFromAudit(c, event, entry, extra)
+}
+
+/**
+ * Emit one event for an audit row already written, with this request's
+ * database, secrets and mail queue. For actions that notify only sometimes
+ * (a backup target change that moves the data, not a rename), which the
+ * action-to-event map above cannot express. Never throws.
+ */
+export async function notifyFromAudit(
+  c: Context<AuditNotifyEnv>,
+  event: NotificationEvent,
+  entry: AuditEntry,
+  extra: NotificationContext = {}
+): Promise<void> {
+  const db = c.get('db')
+  if (!db) return
   if (eventScope(event) === 'organization' && !entry.organizationId) return
   const queue = getEmailQueue(c)
   const email = queue

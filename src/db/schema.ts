@@ -7159,7 +7159,7 @@ export const notificationRule = pgTable(
   (table) => [
     check(
       'rule_event_check',
-      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing')`
+      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed')`
     ),
     check('rule_min_severity_check', sql`min_severity IN ('info', 'warning', 'critical')`),
     uniqueIndex('uniq_rule_channel_event').on(table.channelId, table.event),
@@ -7214,7 +7214,7 @@ export const notification = pgTable(
   (table) => [
     check(
       'notification_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed')`
     ),
     check('notification_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     index('idx_notification_user_created').on(table.userId, table.createdAt.desc()),
@@ -7286,7 +7286,7 @@ export const notificationDelivery = pgTable(
   (table) => [
     check(
       'attempt_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing')`
+      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed')`
     ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     check(

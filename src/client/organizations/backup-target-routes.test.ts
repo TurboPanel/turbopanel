@@ -25,6 +25,7 @@ import {
   grant,
   key,
   managed,
+  notification,
   organization,
   project,
   retention,
@@ -269,6 +270,16 @@ async function call(
   return { status: res.status, body: (await res.json()) as Record<string, unknown> }
 }
 
+/** The `backup.target_changed` inbox rows of organization A. */
+async function targetNotices(f: Fixture) {
+  return await f.db
+    .select({ title: notification.title, body: notification.body })
+    .from(notification)
+    .where(
+      and(eq(notification.organizationId, f.orgA), eq(notification.event, 'backup.target_changed'))
+    )
+}
+
 async function createTarget(f: Fixture, over: Record<string, unknown> = {}): Promise<string> {
   const created = await call(
     f,
@@ -416,6 +427,8 @@ test('an update keeps the secret unless a new one is sent, and clears the last t
     const [kept] = await f.db.select().from(backupTarget).where(eq(backupTarget.id, id))
     assertEquals(kept!.secretKeySealed, before!.secretKeySealed)
     assertEquals(kept!.isLastTestOk, true)
+    // A rename moves nothing, so nobody is told.
+    assertEquals(await targetNotices(f), [])
     const moved = await call(
       f,
       'PATCH',
@@ -431,6 +444,24 @@ test('an update keeps the secret unless a new one is sent, and clears the last t
     const [after] = await f.db.select().from(backupTarget).where(eq(backupTarget.id, id))
     assertNotEquals(after!.secretKeySealed, before!.secretKeySealed)
     assertEquals(after!.isLastTestOk, null)
+    // Owners and managers (and any instance administrator) hear about the move, without the secret.
+    const notices = await targetNotices(f)
+    assert(notices.length >= 2, JSON.stringify(notices))
+    for (const notice of notices) {
+      assertEquals(notice.title, 'Backup target Renamed now points somewhere else')
+      assert(notice.body?.includes('bucket tp-backups to another-bucket'))
+      assert(notice.body?.includes('a new secret access key'))
+    }
+    assert(!JSON.stringify(notices).includes('a-new-secret'))
+    const audits = await f.db
+      .select({ context: audit.context })
+      .from(audit)
+      .where(and(eq(audit.organizationId, f.orgA), eq(audit.action, 'backup_target.update')))
+    const contexts = audits.map((row) => row.context as Record<string, unknown>)
+    assert(contexts.some((ctx) => ctx.previousName === 'Offsite' && ctx.secretReplaced === false))
+    assert(
+      contexts.some((ctx) => ctx.bucketAfter === 'another-bucket' && ctx.secretReplaced === true)
+    )
   })
 })
 
@@ -447,6 +478,11 @@ test('a target in use cannot be deleted; after it is released it can', async () 
       }
     )
     assertEquals(set.status, 200)
+    const assigned = await targetNotices(f)
+    assert(assigned.length >= 2, JSON.stringify(assigned))
+    for (const notice of assigned) {
+      assertEquals(notice.title, 'Backups for the organization now go to Offsite')
+    }
     const refused = await call(
       f,
       'DELETE',
