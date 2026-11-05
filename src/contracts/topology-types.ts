@@ -129,8 +129,10 @@ export type NumaNodeTopology = {
 
 /** The daemon-reported `topology-report.snapshot` object, stored verbatim by `recordTopologyGeneration`. */
 export type TopologySnapshot = {
-  generation: number
-  bootGeneration: number
+  /** Deprecated: a daemon leaves it out once `topology-generation-optional-v1` is negotiated. */
+  generation?: number
+  /** Deprecated: a daemon leaves it out once `topology-generation-optional-v1` is negotiated. */
+  bootGeneration?: number
   networks: NetworkDeviceTopology[]
   filesystems: FilesystemTopology[]
   blockDevices: BlockDeviceTopology[]

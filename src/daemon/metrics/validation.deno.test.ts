@@ -232,6 +232,21 @@ it('validateMetricsSample rejects a negative sequence/topologyGeneration/bootGen
   )
 })
 
+it('validateMetricsSample accepts a sample without the deprecated topologyGeneration', () => {
+  const raw = validRaw()
+  delete (raw.metadata as Record<string, unknown>).topologyGeneration
+  const result = validateMetricsSample(raw, ctx())
+  assertEquals(result.ok, true)
+  if (!result.ok) return
+  assertEquals('topologyGeneration' in result.sample.metadata, false)
+  assertEquals(result.sample.metadata.bootGeneration, 0)
+  // A value that is sent still has to be a valid generation number.
+  assertEquals(
+    validateMetricsSample(validRaw({ metadata: { topologyGeneration: 'x' } }), ctx()).ok,
+    false
+  )
+})
+
 it('validateMetricsSample rejects the removed collectionMode metadata field', () => {
   const result = validateMetricsSample(
     validRaw({ metadata: { collectionMode: 'baseline' } }),
