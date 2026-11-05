@@ -130,6 +130,7 @@ import type {
   CommandRecoveryReport,
   DaemonBuildInfo,
   DaemonInboundEnvelope,
+  DaemonInboundFrameResult,
   DaemonMessage,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
@@ -143,7 +144,6 @@ import {
   outboundEnvelopeToWireMessage,
   TERMINAL_REQUEST_RETENTION_MS,
   validateDaemonInboundEnvelope,
-  type DaemonInboundFrameResult,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
 } from '../../contracts/cell-protocol.ts'
