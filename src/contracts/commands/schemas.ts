@@ -2030,11 +2030,11 @@ export type EnvironmentDeployPrincipalMaterial = {
    */
   passwordHash?: string
   /**
-   * The same hash as a `tpdaemon` envelope, sent instead of `passwordHash` to a
-   * daemon that lists `daemon-sealed-secrets-v1` (environment deploys) or
-   * `daemon-sealed-principal-reconcile-v1` (`server.principals.reconcile`). The
-   * daemon opens it through `/secrets/decrypt`, which answers sealed to its own
-   * key. Never both fields.
+   * The same hash as a `tpdaemon` envelope, sent instead of `passwordHash`
+   * (environment deploys and `server.principals.reconcile`) whenever the server
+   * has a sealing key on file, never keyed on the unsigned hello `features`
+   * list. The daemon opens it through `/secrets/decrypt`, which answers sealed
+   * to its own key. Never both fields.
    */
   passwordHashEnvelope?: string
 }

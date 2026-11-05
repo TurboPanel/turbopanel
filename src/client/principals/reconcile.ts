@@ -26,10 +26,13 @@ import { sealPrincipalPasswordHashes } from '../environments/deploy-principal-pa
 import { principalsStillOnServer } from '../environments/teardown.ts'
 import type { EnvironmentDeployPrincipalMaterial } from '../../contracts/commands/schemas.ts'
 import { isDaemonKeyActive, type ServerDaemonState } from '../../features/servers/daemon-state.ts'
+import {
+  getDaemonSealingKey,
+  type DaemonSealingKey,
+} from '../../features/servers/daemon-sealing-key.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { encryptSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
 import type { SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE } from '../../lib/version-wire.ts'
 
 export type PrincipalsReconcileActor = {
   actorType: string
@@ -120,9 +123,17 @@ export type PrincipalsReconcileOptions = {
  * The accounts with each password hash sealed for this server's daemon
  * (`passwordHashEnvelope`, opened through `/secrets/decrypt`), so the hash
  * never sits in the command row or rides the socket in the clear. Unchanged
- * when no account has a hash, the daemon does not list
- * `daemon-sealed-principal-reconcile-v1` (older daemons refuse an envelope
- * here), it has no active key, or this runtime has no secrets config.
+ * when no account has a hash, the server has no sealing key on file, its
+ * daemon key is not active, or this runtime has no secrets config.
+ *
+ * The choice keys on the registered sealing key, never on the unsigned hello
+ * `features` list: a caller holding the server token, or anything that
+ * rewrites the hello on the way, could leave the feature out and be sent the
+ * hash in the clear. Only a daemon that signs with the server's identity key
+ * can register a sealing key, and the key stays on file until the identity
+ * key is replaced or removed. No released daemon registers a sealing key
+ * without also opening an envelope here, so the hello's
+ * `daemon-sealed-principal-reconcile-v1` is informational only.
  */
 export async function sealReconcilePasswordHashes(
   db: Db,
@@ -132,22 +143,18 @@ export async function sealReconcilePasswordHashes(
   readDaemonState: (
     db: Db,
     serverId: string
-  ) => Promise<Pick<
-    ServerDaemonState,
-    'key' | 'projection'
-  > | null> = getServerDaemonStateByServerId
+  ) => Promise<Pick<ServerDaemonState, 'key'> | null> = getServerDaemonStateByServerId,
+  readSealingKey: (
+    db: Db,
+    serverId: string
+  ) => Promise<DaemonSealingKey | null> = getDaemonSealingKey
 ): Promise<EnvironmentDeployPrincipalMaterial[]> {
   if (!secretsConfig || principals.every((entry) => entry.passwordHash === undefined)) {
     return principals
   }
   const daemonState = await readDaemonState(db, serverId)
-  if (
-    !daemonState ||
-    !isDaemonKeyActive(daemonState.key) ||
-    !(daemonState.projection?.features ?? []).includes(DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE)
-  ) {
-    return principals
-  }
+  if (!daemonState || !isDaemonKeyActive(daemonState.key)) return principals
+  if (!(await readSealingKey(db, serverId))) return principals
   const recipient = { serverId, keyId: daemonState.key.id }
   return await sealPrincipalPasswordHashes(principals, (plaintext) =>
     encryptSecretForDaemon(secretsConfig, recipient, plaintext)

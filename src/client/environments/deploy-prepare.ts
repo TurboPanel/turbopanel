@@ -936,7 +936,7 @@ async function resolveDaemonSealContext(
  * with `daemon-sealed-secrets-v1` registers a key, and it signs the
  * registration with the server's identity key).
  */
-async function sealPrincipalMaterialForDaemon(
+export async function sealPrincipalMaterialForDaemon(
   c: Context<AppEnv>,
   db: Db,
   mode: DeployPrepareMode,
