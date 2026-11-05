@@ -104,7 +104,10 @@ deliberately-unversioned probe
 (`{ ok, license: 'AGPL-3.0-only', revision:
 { commit, sourceUrl } }` —
 `TURBOPANEL_REVISION` from systemd / `wrangler
-deploy --var`, else `unknown`).
+deploy --var`, else `unknown`). The development entry (`src/deno-dev.ts`)
+pins `TURBOPANEL_REVISION` to the checkout HEAD before it serves, because
+`runtime.env` is rewritten only by a converge and would name an older
+commit after a pull and restart.
 `/webhook/*` is a separate top-level traffic class rather than a versioned API —
 see the last row.
 

@@ -331,7 +331,12 @@ test('POST refuses with 409 while a development host job runs and starts nothing
 
 test('GET carries the host block and answers when reading it fails', async () => {
   resetDevelopmentPushJobForTests()
-  const host = { parts: [], lastFetchAt: null, job: null, migrate: { pending: 0 } }
+  const host = {
+    parts: [],
+    lastFetchAt: null,
+    job: null,
+    migrate: { pending: 0, applied: 25, total: 25 },
+  }
   const withHost = createApp({
     readState: () => Promise.resolve(FRESH),
     listRemoteServers: () => Promise.resolve([]),

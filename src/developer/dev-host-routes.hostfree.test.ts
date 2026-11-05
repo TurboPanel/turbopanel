@@ -122,7 +122,7 @@ function hooksWith(overrides: DevHostRoutesHooks = {}): DevHostRoutesHooks {
     pushJobActive: () => false,
     isConnected: () => Promise.resolve(true),
     daemonFeatures: () => Promise.resolve([DEV_HOST_FEATURE]),
-    readMigratePending: () => Promise.resolve({ pending: 0 }),
+    readMigratePending: () => Promise.resolve({ pending: 0, applied: 25, total: 25 }),
     runningCommit: () => Promise.resolve(HEAD),
     ...overrides,
   }
@@ -367,7 +367,7 @@ test('the Developer Console mounts serve status and the actions', async () => {
     host: { migrate: unknown; parts: { runningCommit: string }[] }
   }
   assertEquals(body.ok, true)
-  assertEquals(body.host.migrate, { pending: 0 })
+  assertEquals(body.host.migrate, { pending: 0, applied: 25, total: 25 })
   assertEquals(body.host.parts[0].runningCommit, HEAD)
   const res = await app.request(`${DEVELOPER_API_PREFIX}/dev-host/update`, { method: 'POST' })
   assertEquals(res.status, 202)

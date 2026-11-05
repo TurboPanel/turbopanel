@@ -45,8 +45,10 @@
   status (`dev-host-status`, feature `dev-host-v1`, kept in memory by
   `src/developer/dev-host-status.ts`) with the control plane part's
   `runningCommit` (this process's commit, captured at boot) and a top-level
-  `migrate: { pending } | null` (`compareSchemaState` against the manifest on
-  disk, cached 30 s) filled in by `src/developer/dev-host-view.ts`; null while
+  `migrate: { pending, applied, total } | null` (`compareSchemaState` against
+  the manifest on disk; `total` is the length of `origin/trunk`'s manifest,
+  never below the checkout's; cached 30 s) filled in by
+  `src/developer/dev-host-view.ts`; null while
   that daemon is offline or never sent one.
   `POST /instance/updates/development/host/update` (Update and Restart) and
   `.../host/restart` (Restart Only), same gates, audited as
