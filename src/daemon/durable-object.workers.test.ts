@@ -4349,7 +4349,7 @@ describe('signed daemon session', () => {
     expect(await closed).toEqual({ code: 1008, reason: 'attach-proof-refused' })
   })
 
-  it('accepts a verified attach proof and raises the socket to level 2', async () => {
+  it('accepts a verified attach proof and lets the outbox run; without a database the socket stays below 2', async () => {
     setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
     const serverId = 'test-srv-attach-ok'
     const stub = env.DAEMON_CELL.getByName(serverId)
@@ -4380,7 +4380,9 @@ describe('signed daemon session', () => {
     await vi.waitFor(async () => {
       const attachment = await readAttachment(stub)
       expect(attachment.awaitingAttach).toBe(false)
-      expect(attachment.trustLevel).toBe(2)
+      // The socket records level 2 only once the server row does; this cell
+      // has no database, so it keeps the level it was opened with.
+      expect(attachment.trustLevel ?? 0).toBe(0)
     })
     ws.close(1000, 'test done')
   })
