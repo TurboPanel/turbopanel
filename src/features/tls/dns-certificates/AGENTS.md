@@ -125,7 +125,7 @@ Before an order is opened the DNS host is asked a cheap read for every zone
 (`checkZone`), so a token that was rolled or narrowed stops the order with
 nothing spent at the authority, unless another token of the account covers the
 zone: every DNS call goes through `withDnsToken` (`token.ts`), which tries the
-account's tokens for the zone in turn, and zone lookups use `withAnyDnsToken`. Before the challenges are answered the TXT
+account's tokens for the zone in turn, and zone lookups use `withAnyDnsToken` (a token answered 401 there is marked as no longer accepted; a 403 changes nothing; a provider error or rate limit is not tried with another token). Before the challenges are answered the TXT
 values are read back through the host's own API (`txtValues`); the authority is
 not asked to validate a record that is not yet published (one of its few failed
 validations an hour). A record not seen yet is looked at again after two

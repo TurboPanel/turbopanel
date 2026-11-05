@@ -4,8 +4,11 @@
  * the badge only points at it; nothing here returns a token or the sealed
  * text. Removing a badge removes its secret row in the same transaction.
  */
-import { and, asc, eq, inArray } from 'drizzle-orm'
+import { and, asc, eq, inArray, type ExtractTablesWithRelations } from 'drizzle-orm'
+import type { PgTransaction } from 'drizzle-orm/pg-core'
+import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 import type { Db } from '../../db/connection.ts'
+import type * as schema from '../../db/schema.ts'
 import { badge, carrier, organization, secret, tunnel } from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -19,6 +22,16 @@ import {
   TUNNEL_PROVIDERS,
   type TunnelProvider,
 } from './vocabulary.ts'
+
+/** The handle inside `db.transaction(async (tx) => …)`. */
+export type TunnelDbTx = PgTransaction<
+  PostgresJsQueryResultHKT,
+  typeof schema,
+  ExtractTablesWithRelations<typeof schema>
+>
+
+/** A plain handle or a transaction: the reads and writes below serve both. */
+export type TunnelDb = Db | TunnelDbTx
 
 export const MAX_CARRIERS_PER_ORG = 10
 export const MAX_BADGES_PER_CARRIER = 50
@@ -297,7 +310,7 @@ export async function findCarrier(
   return row ?? null
 }
 
-export async function listBadges(db: Db, carrierId: string): Promise<BadgeRow[]> {
+export async function listBadges(db: TunnelDb, carrierId: string): Promise<BadgeRow[]> {
   return await db
     .select()
     .from(badge)
@@ -306,7 +319,7 @@ export async function listBadges(db: Db, carrierId: string): Promise<BadgeRow[]>
 }
 
 export async function findBadge(
-  db: Db,
+  db: TunnelDb,
   carrierId: string,
   badgeId: string
 ): Promise<BadgeRow | null> {
@@ -428,7 +441,7 @@ export function isUsefulReport(report: CredentialReport): boolean {
 }
 
 /** Keep the carrier's status in step with its badges: active while any badge works. */
-export async function refreshCarrierStatus(db: Db, carrierId: string): Promise<string> {
+export async function refreshCarrierStatus(db: TunnelDb, carrierId: string): Promise<string> {
   const badges = await listBadges(db, carrierId)
   const status = badges.some((b) => b.status === 'active') ? 'active' : 'attention'
   await db.update(carrier).set({ status }).where(eq(carrier.id, carrierId))
@@ -506,7 +519,7 @@ function namedZones(params: {
 }
 
 export async function recordBadgeCheck(
-  db: Db,
+  db: TunnelDb,
   row: BadgeRow,
   result: {
     capabilities: CredentialReport['capabilities']
@@ -550,13 +563,31 @@ function clearFailure(options: unknown): Record<string, unknown> {
   return rest
 }
 
-/** Remove a badge and its sealed token together. */
-export async function deleteBadge(db: Db, row: BadgeRow): Promise<void> {
-  await db.transaction(async (tx) => {
-    await tx.delete(badge).where(eq(badge.id, row.id))
-    await tx.delete(secret).where(eq(secret.id, row.secretId))
+/**
+ * Run `fn` in one transaction with the carrier row locked. A removal checks
+ * that another token still covers what this one does and then removes it; two
+ * removals on one account would each see the other token and both pass, so
+ * the check and the write happen under this lock, one removal after the
+ * other. Adding a token takes the same lock (`insertBadge`). Every query in
+ * `fn` must use `tx`: on Workers the request has one connection, which the
+ * transaction holds. Never call the provider inside `fn`.
+ */
+export async function withCarrierLocked<T>(
+  db: Db,
+  carrierId: string,
+  fn: (tx: TunnelDbTx) => Promise<T>
+): Promise<T> {
+  return await db.transaction(async (tx) => {
+    await tx.select({ id: carrier.id }).from(carrier).where(eq(carrier.id, carrierId)).for('update')
+    return await fn(tx)
   })
-  await refreshCarrierStatus(db, row.carrierId)
+}
+
+/** Remove a badge and its sealed token together, inside the caller's transaction (`withCarrierLocked`). */
+export async function deleteBadge(tx: TunnelDbTx, row: BadgeRow): Promise<void> {
+  await tx.delete(badge).where(eq(badge.id, row.id))
+  await tx.delete(secret).where(eq(secret.id, row.secretId))
+  await refreshCarrierStatus(tx, row.carrierId)
 }
 
 /** Remove a carrier with its badges and their sealed tokens. */
@@ -786,7 +817,7 @@ export async function recordBadgeFailure(
 
 /** Keep the zones the person named with the token, so every later check probes them again. */
 export async function setDeclaredZones(
-  db: Db,
+  db: TunnelDb,
   row: BadgeRow,
   zones: readonly DeclaredZone[]
 ): Promise<BadgeRow> {

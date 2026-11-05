@@ -8,7 +8,13 @@
  * will do (`withAnyDnsToken`).
  */
 import { firstSequential } from '../../../lib/sequential.ts'
-import { type BadgeRow, listBadges, openBadgeToken, toApiBadge } from '../../tunnels/records.ts'
+import {
+  type BadgeRow,
+  listBadges,
+  openBadgeToken,
+  recordBadgeFailure,
+  toApiBadge,
+} from '../../tunnels/records.ts'
 import {
   BadgeRefused,
   BadgeUnavailable,
@@ -76,7 +82,7 @@ async function dnsCapableBadges(
   return rows.sort((a, b) => (b.lastCheckedAt ?? '').localeCompare(a.lastCheckedAt ?? ''))
 }
 
-function refusedToken(err: unknown): boolean {
+function refusedToken(err: unknown): err is TunnelProviderError {
   return (
     err instanceof TunnelProviderError && (err.code === 'unauthorized' || err.code === 'forbidden')
   )
@@ -84,8 +90,11 @@ function refusedToken(err: unknown): boolean {
 
 /**
  * Do a zone lookup with any DNS token of the account, the most recently
- * checked first, and try the next when the provider refuses one. A refusal
- * here says nothing about one zone, so no token's stored rights change.
+ * checked first, and try the next when the provider refuses one. A 403 here
+ * says nothing about one zone, so that token's stored rights stay; a 401 means
+ * the provider no longer accepts the token at all, so it is marked as the
+ * shared selector does and not picked again. Any other failure (a provider
+ * error or a rate limit) is thrown at once and no other token is tried.
  * Null when the account has no such token; the last refusal is thrown when
  * every one was refused.
  */
@@ -104,6 +113,9 @@ export async function withAnyDnsToken<T>(
     } catch (err) {
       if (!refusedToken(err)) throw err
       refusal = err
+      if (err.code === 'unauthorized') {
+        await recordBadgeFailure(ctx.db, row, { capability: 'dns', zone: null, whole: true })
+      }
       return undefined
     }
   })

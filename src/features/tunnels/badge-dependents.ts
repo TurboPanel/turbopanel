@@ -9,10 +9,9 @@
  * certificates.
  */
 import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm'
-import type { Db } from '../../db/connection.ts'
 import { doorway, tls, tunnel } from '../../db/schema.ts'
 import { compareText } from './order.ts'
-import { listBadges, type BadgeRow } from './records.ts'
+import { listBadges, type BadgeRow, type TunnelDb } from './records.ts'
 import type { BadgeCapabilities } from './vocabulary.ts'
 
 export type BadgeDependent = {
@@ -66,7 +65,7 @@ export function lossOf(caps: BadgeCapabilities, others: readonly BadgeRow[]): Ba
   }
 }
 
-async function tunnelDependents(db: Db, carrierId: string): Promise<BadgeDependent[]> {
+async function tunnelDependents(db: TunnelDb, carrierId: string): Promise<BadgeDependent[]> {
   const tunnels = await db
     .select({ id: tunnel.id, name: tunnel.name })
     .from(tunnel)
@@ -76,7 +75,7 @@ async function tunnelDependents(db: Db, carrierId: string): Promise<BadgeDepende
 }
 
 async function hostnameDependents(
-  db: Db,
+  db: TunnelDb,
   carrierId: string,
   zones: readonly Zone[]
 ): Promise<BadgeDependent[]> {
@@ -113,7 +112,7 @@ async function hostnameDependents(
  * with a DNS right). A retired origin certificate still counts: it is revoked later.
  */
 async function certificateDependents(
-  db: Db,
+  db: TunnelDb,
   carrierId: string,
   loss: Pick<BadgeLoss, 'dnsZones' | 'certificateZones'>
 ): Promise<BadgeDependent[]> {
@@ -170,7 +169,7 @@ function certificateZone(
 
 /** The tunnels, hostnames and certificates that depend on what would be lost. */
 export async function dependentsOf(
-  db: Db,
+  db: TunnelDb,
   carrierId: string,
   loss: BadgeLoss
 ): Promise<{ dependents: BadgeDependent[]; total: number }> {
@@ -202,7 +201,7 @@ function joinAnd(items: readonly string[]): string {
 }
 
 /** Convenience: the loss of removing one whole badge from its carrier. */
-export async function lossOfRemoving(db: Db, row: BadgeRow): Promise<BadgeLoss> {
+export async function lossOfRemoving(db: TunnelDb, row: BadgeRow): Promise<BadgeLoss> {
   // A token that is not active serves nothing, so removing it loses nothing.
   if (row.status !== 'active') return { tunnels: false, dnsZones: [], certificateZones: [] }
   const others = (await listBadges(db, row.carrierId)).filter((b) => b.id !== row.id)

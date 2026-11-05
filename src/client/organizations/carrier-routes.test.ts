@@ -22,6 +22,7 @@ import {
   grant,
   organization,
   secret,
+  tls,
   tunnel,
   user,
 } from '../../db/schema.ts'
@@ -635,19 +636,7 @@ test('a token that others do not cover cannot be removed while tunnels or hostna
     const path = `/organizations/${f.orgA}/carriers/${carrierId}/badges`
     const first = await call(f, 'POST', path, f.managerCookie, { label: 'First', token: TOKEN })
     const firstId = (first.body.badge as { id: string }).id
-    const [t] = await f.db
-      .insert(tunnel)
-      .values({
-        organizationId: f.orgA,
-        routingOrganizationId: f.orgA,
-        carrierId,
-        provider: 'cloudflare',
-        name: 'web',
-        externalId: 'ext-1',
-        placement: 'chosen',
-        status: 'active',
-      })
-      .returning()
+    const t = await insertTunnel(f, carrierId)
     const refused = await call(f, 'DELETE', `${path}/${firstId}`, f.managerCookie)
     assertEquals(refused.status, 409)
     assertEquals(refused.body.error, 'badge_in_use')
@@ -663,5 +652,115 @@ test('a token that others do not cover cannot be removed while tunnels or hostna
     })
     assertEquals(second.status, 201, second.text)
     assertEquals((await call(f, 'DELETE', `${path}/${firstId}`, f.managerCookie)).status, 200)
+  })
+})
+
+/** A tunnel on the carrier, so removing its last tunnel token is refused. */
+async function insertTunnel(f: Fixture, carrierId: string) {
+  const [row] = await f.db
+    .insert(tunnel)
+    .values({
+      organizationId: f.orgA,
+      routingOrganizationId: f.orgA,
+      carrierId,
+      provider: 'cloudflare',
+      name: 'web',
+      externalId: 'ext-1',
+      placement: 'chosen',
+      status: 'active',
+    })
+    .returning()
+  return row!
+}
+
+test('two tokens that cover each other removed at the same moment: one goes, the other is refused', async () => {
+  await withFixture(async (f) => {
+    const carrierId = await createCarrier(f)
+    const path = `/organizations/${f.orgA}/carriers/${carrierId}/badges`
+    const ids: string[] = []
+    for (const [label, token] of [
+      ['First', TOKEN],
+      ['Second', SECOND_TOKEN],
+    ]) {
+      const added = await call(f, 'POST', path, f.managerCookie, { label, token })
+      assertEquals(added.status, 201, added.text)
+      ids.push((added.body.badge as { id: string }).id)
+    }
+    await insertTunnel(f, carrierId)
+    // Both checks would pass on their own; the carrier lock makes the second see the first gone.
+    const results = await Promise.all(
+      ids.map((id) => call(f, 'DELETE', `${path}/${id}`, f.managerCookie))
+    )
+    assertEquals(
+      results.map((r) => r.status).sort((a, b) => a - b),
+      [200, 409]
+    )
+    assertEquals(results.find((r) => r.status === 409)?.body.error, 'badge_in_use')
+    const left = await f.db.select().from(badge).where(eq(badge.carrierId, carrierId))
+    assertEquals(left.length, 1)
+    assertEquals(left[0]!.status, 'active')
+  })
+})
+
+test('a zone cannot be removed from a token while a certificate validated in it still needs that token', async () => {
+  await withFixture(async (f) => {
+    const carrierId = await createCarrier(f)
+    state.mode = 'narrow'
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/carriers/${carrierId}/badges`,
+      f.managerCookie,
+      {
+        label: 'Narrow',
+        token: TOKEN,
+        zones: [{ id: 'zone-9' }, { id: 'zone-8', name: 'docs.example.net' }],
+      }
+    )
+    assertEquals(added.status, 201, added.text)
+    const badgeId = (added.body.badge as { id: string }).id
+    const [cert] = await f.db
+      .insert(tls)
+      .values({
+        organizationId: f.orgA,
+        name: 'shop cert',
+        source: 'lets_encrypt',
+        status: 'ready',
+        metadata: { dnsCert: { carrierId, zones: [{ id: 'zone-9', name: 'shop.example.org' }] } },
+      })
+      .returning({ id: tls.id })
+    const refused = await call(
+      f,
+      'DELETE',
+      `${zonesPath(f, carrierId, badgeId)}/zone-9`,
+      f.managerCookie
+    )
+    assertEquals(refused.status, 409, refused.text)
+    assertEquals(refused.body.error, 'badge_in_use')
+    assertEquals(
+      (refused.body.dependents as { kind: string; id: string; zone: string }[]).map((d) => [
+        d.kind,
+        d.id,
+        d.zone,
+      ]),
+      [['certificate', cert!.id, 'shop.example.org']]
+    )
+    const [kept] = await f.db.select().from(badge).where(eq(badge.id, badgeId))
+    assert(
+      (kept!.capabilities as { dns: DnsZones }).dns.some((z) => z.id === 'zone-9'),
+      'the refused removal leaves the zone on the token'
+    )
+    // A zone no certificate needs still goes.
+    const other = await call(
+      f,
+      'DELETE',
+      `${zonesPath(f, carrierId, badgeId)}/zone-8`,
+      f.managerCookie
+    )
+    assertEquals(other.status, 200, other.text)
+    assertEquals(
+      dnsOf(other).map((z) => z.id),
+      ['zone-9']
+    )
   })
 })

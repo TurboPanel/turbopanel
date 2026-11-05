@@ -698,7 +698,7 @@ export const tunnelPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Stop naming a zone for a token',
       description:
-        'Owners and managers only. The token is checked again without the zone. 404 when the zone was not named; 409 `badge_in_use` (with `message` and `dependents`) when no other token covers the zone and hostnames or certificates there need it.',
+        'Owners and managers only. The token is checked again without the zone. 404 when the zone was not named; 409 `badge_in_use` (with `message` and `dependents`) when no other token covers the zone and hostnames or certificates there need it; 409 `badge_changed` when the token’s zones changed while it was being checked (try again).',
       security: [{ cookieAuth: [] }],
       parameters: [
         ORG_ID_PARAM,

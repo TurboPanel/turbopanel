@@ -202,7 +202,12 @@ hostnames and display.
   renew there (`kind: 'certificate'`), or the only one that manages origin
   certificates of a zone that has them (`kind: 'certificate'`, retired ones too,
   since they are revoked later). Removing a named zone from a token checks the
-  same.
+  same. The check and the delete (or the zone write) run in one transaction
+  holding the carrier row `FOR UPDATE` (`withCarrierLocked`, the lock
+  `insertBadge` takes too), so two tokens that cover each other cannot both be
+  removed at once: the second removal sees the first one gone and is refused.
+  The provider is asked before the lock, never while holding it; a zone removal
+  whose token's zones changed in between answers 409 `badge_changed`.
 - **Daily recheck.** `badge-recheck.ts` (offline sweep) re-checks up to 10 tokens a
   tick whose last check is a day old: scopes refresh, a token the provider no
   longer accepts goes to `attention`, an outage changes nothing and the token is

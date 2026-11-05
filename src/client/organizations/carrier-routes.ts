@@ -56,6 +56,9 @@ import {
   sealToken,
   toApiBadge,
   toApiCarrier,
+  type TunnelDb,
+  type TunnelDbTx,
+  withCarrierLocked,
 } from '../../features/tunnels/records.ts'
 import { countOriginCertificatesFrom } from '../../features/tunnels/origin-certificate.ts'
 import {
@@ -621,19 +624,28 @@ function checkBadgeResponse(registry: TunnelAdapterRegistry) {
 async function deleteBadgeResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const current = await loadCarrierParam(c, scope)
   if (current instanceof Response) return current
-  const row = await loadBadgeParam(c, scope, current)
-  if (row instanceof Response) return row
-  const blocked = await dependentsOf(scope.db, current.id, await lossOfRemoving(scope.db, row))
-  if (blocked.total > 0) return badgeInUse(c, blocked)
-  await deleteBadge(scope.db, row)
-  await audit(c, scope, 'badge.delete', row.id, { carrierId: current.id, label: row.label })
+  const found = await loadBadgeParam(c, scope, current)
+  if (found instanceof Response) return found
+  // The check and the delete run under the carrier lock, so two tokens that
+  // cover each other cannot both be removed at once.
+  const outcome = await withCarrierLocked(scope.db, current.id, async (tx) => {
+    const row = await findBadge(tx, current.id, found.id)
+    if (!row) return null
+    const blocked = await dependentsOf(tx, current.id, await lossOfRemoving(tx, row))
+    if (blocked.total > 0) return blocked
+    await deleteBadge(tx, row)
+    return row
+  })
+  if (outcome === null) return c.json({ error: 'Not found' }, 404)
+  if ('total' in outcome) return badgeInUse(c, outcome)
+  await audit(c, scope, 'badge.delete', outcome.id, {
+    carrierId: current.id,
+    label: outcome.label,
+  })
   return c.json({ ok: true })
 }
 
-function badgeInUse(
-  c: Context<AppEnv>,
-  blocked: { dependents: BadgeDependent[]; total: number }
-): Response {
+function badgeInUse(c: Context<AppEnv>, blocked: Blocked): Response {
   return c.json(
     {
       error: 'badge_in_use',
@@ -680,29 +692,108 @@ function addZoneResponse(registry: TunnelAdapterRegistry) {
   }
 }
 
-/** Keep the declared zones with the names the check found, then record the check. */
-async function storeZones(
-  c: Context<AppEnv>,
-  scope: Scope,
-  found: { current: CarrierRow; row: BadgeRow; declared: DeclaredZone[]; report: CredentialReport },
-  action: 'badge.zone_add' | 'badge.zone_remove'
-): Promise<Response> {
-  const { current, row, declared, report } = found
-  const named = declared.map((z) => ({
+type ZoneChange = {
+  current: CarrierRow
+  row: BadgeRow
+  declared: DeclaredZone[]
+  report: CredentialReport
+}
+
+/** The declared zones with the names the check found. */
+function namedDeclared(declared: readonly DeclaredZone[], report: CredentialReport) {
+  return declared.map((z) => ({
     id: z.id,
     name: report.declared?.find((d) => d.id === z.id)?.name ?? z.name,
   }))
-  const withZones = await setDeclaredZones(scope.db, row, named)
-  const updated = await recordBadgeCheck(scope.db, withZones, {
+}
+
+/** Keep the declared zones and record the check, on the handle given. */
+async function writeZones(db: TunnelDb, found: ZoneChange): Promise<BadgeRow> {
+  const { row, declared, report } = found
+  const withZones = await setDeclaredZones(db, row, namedDeclared(declared, report))
+  return await recordBadgeCheck(db, withZones, {
     capabilities: report.capabilities,
     status: isUsefulReport(report) ? 'active' : 'attention',
     token: report.token,
   })
-  await audit(c, scope, action, row.id, {
-    carrierId: current.id,
-    zones: named.map((z) => z.name || z.id),
+}
+
+/** Audit the change and answer with the stored badge. */
+async function zonesStored(
+  c: Context<AppEnv>,
+  scope: Scope,
+  found: ZoneChange,
+  updated: BadgeRow,
+  action: 'badge.zone_add' | 'badge.zone_remove'
+): Promise<Response> {
+  await audit(c, scope, action, found.row.id, {
+    carrierId: found.current.id,
+    zones: namedDeclared(found.declared, found.report).map((z) => z.name || z.id),
   })
-  return c.json({ badge: toApiBadge(updated), ...checkSummary(report) })
+  return c.json({ badge: toApiBadge(updated), ...checkSummary(found.report) })
+}
+
+/** Keep the declared zones with the names the check found, then record the check. */
+async function storeZones(
+  c: Context<AppEnv>,
+  scope: Scope,
+  found: ZoneChange,
+  action: 'badge.zone_add' | 'badge.zone_remove'
+): Promise<Response> {
+  return await zonesStored(c, scope, found, await writeZones(scope.db, found), action)
+}
+
+/**
+ * What would be left with no token if `row` stopped reaching `zoneId`, given
+ * what the provider now reports for it. Read under the carrier lock.
+ */
+async function zoneRemovalBlocked(
+  tx: TunnelDbTx,
+  carrierId: string,
+  row: BadgeRow,
+  zoneId: string,
+  report: CredentialReport
+) {
+  const others = (await listBadges(tx, carrierId)).filter((b) => b.id !== row.id)
+  const caps = toApiBadge(row).capabilities
+  // What the token stops reaching once the zone is no longer named for it.
+  const dropped = (had: BadgeCapabilities['dns'], keeps: BadgeCapabilities['dns']) =>
+    keeps.some((z) => z.id === zoneId) ? [] : had.filter((z) => z.id === zoneId)
+  return await dependentsOf(
+    tx,
+    carrierId,
+    lossOf(
+      {
+        tunnels: false,
+        dns: dropped(caps.dns, report.capabilities.dns),
+        certificates: dropped(caps.certificates, report.capabilities.certificates),
+      },
+      others
+    )
+  )
+}
+
+type Blocked = { dependents: BadgeDependent[]; total: number }
+
+type ZoneRemoval =
+  | { kind: 'missing' }
+  | { kind: 'changed' }
+  | { kind: 'blocked'; blocked: Blocked }
+  | { kind: 'stored'; change: ZoneChange; updated: BadgeRow }
+
+function sameZoneIds(a: readonly DeclaredZone[], b: readonly DeclaredZone[]): boolean {
+  const ids = new Set(a.map((z) => z.id))
+  return ids.size === new Set(b.map((z) => z.id)).size && b.every((z) => ids.has(z.id))
+}
+
+function badgeChanged(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      error: 'badge_changed',
+      message: 'This API Token’s zones changed while the zone was being removed. Try again.',
+    },
+    409
+  )
 }
 
 /** Stop telling the panel a token covers a zone; refused while that leaves hostnames without a token. */
@@ -720,6 +811,7 @@ function removeZoneResponse(registry: TunnelAdapterRegistry) {
     const token = await openBadgeToken(scope.db, secrets, row)
     if (token === null) return c.json({ error: 'Not found' }, 404)
     const declared = known.filter((z) => z.id !== zoneId)
+    // The provider is asked before the lock is taken; the lock is never held across it.
     const report = await runCheck(
       c,
       registry,
@@ -729,25 +821,28 @@ function removeZoneResponse(registry: TunnelAdapterRegistry) {
       declared
     )
     if (report instanceof Response) return report
-    const others = (await listBadges(scope.db, current.id)).filter((b) => b.id !== row.id)
-    const caps = toApiBadge(row).capabilities
-    // What the token stops reaching once the zone is no longer named for it.
-    const dropped = (had: BadgeCapabilities['dns'], keeps: BadgeCapabilities['dns']) =>
-      keeps.some((z) => z.id === zoneId) ? [] : had.filter((z) => z.id === zoneId)
-    const blocked = await dependentsOf(
+    // The check and the write run under the carrier lock, so two tokens that
+    // cover each other cannot both drop the zone at once.
+    const outcome = await withCarrierLocked(
       scope.db,
       current.id,
-      lossOf(
-        {
-          tunnels: false,
-          dns: dropped(caps.dns, report.capabilities.dns),
-          certificates: dropped(caps.certificates, report.capabilities.certificates),
-        },
-        others
-      )
+      async (tx): Promise<ZoneRemoval> => {
+        const fresh = await findBadge(tx, current.id, row.id)
+        if (!fresh || !declaredZonesOf(fresh).some((z) => z.id === zoneId)) {
+          return { kind: 'missing' }
+        }
+        // The provider was asked about the zones as they were; a change since then means asking again.
+        if (!sameZoneIds(declaredZonesOf(fresh), known)) return { kind: 'changed' }
+        const change: ZoneChange = { current, row: fresh, declared, report }
+        const blocked = await zoneRemovalBlocked(tx, current.id, fresh, zoneId, report)
+        if (blocked.total > 0) return { kind: 'blocked', blocked }
+        return { kind: 'stored', change, updated: await writeZones(tx, change) }
+      }
     )
-    if (blocked.total > 0) return badgeInUse(c, blocked)
-    return await storeZones(c, scope, { current, row, declared, report }, 'badge.zone_remove')
+    if (outcome.kind === 'missing') return c.json({ error: 'Not found' }, 404)
+    if (outcome.kind === 'changed') return badgeChanged(c)
+    if (outcome.kind === 'blocked') return badgeInUse(c, outcome.blocked)
+    return await zonesStored(c, scope, outcome.change, outcome.updated, 'badge.zone_remove')
   }
 }
 
