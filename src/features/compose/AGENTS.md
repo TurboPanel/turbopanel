@@ -292,7 +292,12 @@ the sorted gated keys and host-path findings with their values — and the
 webhook deploy must match it, else `403
 compose_host_access_requires_approval`. An unrelated edit keeps the
 fingerprint; any change to what reaches the host voids it. A preview records
-nothing. The key is in `ENVIRONMENT_PROMOTED_METADATA_KEYS`, so no client
+nothing. Each new approval also writes a `compose.host_access.approve` audit
+row (planner, right after the metadata write), and each automated deploy that
+runs under one writes `compose.host_access.use` (route, once the deploy is
+persisted), so the history survives the next approval
+(`src/features/schedule/host-access-audit.ts`: ids, fingerprint, paths, never
+values). The key is in `ENVIRONMENT_PROMOTED_METADATA_KEYS`, so no client
 create or patch can set it. The fingerprint's canonical form sorts in UTF-16
 code-unit order (never `localeCompare`) so it is byte-stable across hosts, and a
 test pins one known value — changing the canonical form voids every stored
