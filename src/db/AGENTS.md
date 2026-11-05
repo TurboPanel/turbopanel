@@ -318,8 +318,9 @@ application tables on it. A drizzle-orm upgrade that changes this DDL fails
 > **Development database stays current on its own.** The co-located dev
 > instance unit runs `scripts/dev-migrate-on-start.mjs` before every start
 > (`ExecStartPre`, source mode with `TURBOPANEL_DEV_SURFACE=1` only). Schema
-> current: nothing happens. Pending migrations that are on `origin/trunk`
-> unchanged: a `pg_dump -Fc` inside `turbopanel-database` into
+> current: nothing happens. Pending migrations, and every journal entry (what
+> drizzle applies) matches `origin/trunk`'s manifest in tag, time and SQL
+> sha256: a `pg_dump -Fc` inside `turbopanel-database` into
 > `TURBOPANEL_DEV_MIGRATE_BACKUP_DIR` (newest five kept), then the same steps
 > as `pnpm migrate`. A pending migration that exists only on a branch or was
 > edited locally is refused (migrations are forward-only, so it would stick):

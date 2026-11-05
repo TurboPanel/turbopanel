@@ -13,7 +13,8 @@
  * `TURBOPANEL_DEV_MIGRATE_BACKUP_DIR` for the dumps.
  *
  * - Schema current: exit 0 at once (no git, no backup).
- * - Pending migrations that are all on `origin/trunk`, unchanged: back up,
+ * - Pending migrations, and every migration drizzle would apply is on
+ *   `origin/trunk` unchanged (`dev-migrate-gate.mjs` `trunkRefusal`): back up,
  *   then `check-postgres-compat.mjs` and `migrate-locked.mjs` (the same steps
  *   as `pnpm migrate`); the newest five dumps are kept.
  * - Anything else (a migration only on a branch or edited locally, no
@@ -31,7 +32,10 @@ import {
   CONTAINER_VAR,
   DEFAULT_CONTAINER,
   DEV_FLAG,
+  parseEntries,
   pruneBackups,
+  readTrunkEntries,
+  sqlHash,
   TRUNK_REF,
   trunkRefusal,
 } from './dev-migrate-gate.mjs'
@@ -54,26 +58,31 @@ function fail(line) {
   process.exit(1)
 }
 
-/** Absolute, so a writable folder early on PATH cannot stand in for git (dev hosts are Debian). */
-const GIT = '/usr/bin/git'
-
-function git(args) {
-  const result = spawnSync(GIT, args, { cwd: ROOT, encoding: 'utf8' })
-  return { ok: result.status === 0, stdout: result.stdout ?? '' }
+function readEntries(relative) {
+  return parseEntries(fs.readFileSync(path.join(ROOT, relative), 'utf8'), relative)
 }
 
-function manifestEntries(text) {
-  const entries = JSON.parse(text).entries ?? []
-  if (entries.length === 0 || entries.some((e) => typeof e.sha256 !== 'string')) {
-    throw new Error('the migrations manifest has no usable entries')
-  }
-  return entries
-}
+/** How long a start waits for a database that does not answer yet (container starting). */
+const DATABASE_WAIT_MS = 60_000
+const DATABASE_RETRY_MS = 2_000
 
 async function readState(url, shipped) {
+  const deadline = Date.now() + DATABASE_WAIT_MS
+  for (;;) {
+    try {
+      return await readStateOnce(url, shipped)
+    } catch (err) {
+      if (Date.now() + DATABASE_RETRY_MS > deadline) throw err
+      await new Promise((resolve) => setTimeout(resolve, DATABASE_RETRY_MS))
+    }
+  }
+}
+
+async function readStateOnce(url, shipped) {
   const parts = resolvePostgresParts(url)
   if (!parts) fail('TURBOPANEL_DATABASE_URL is not a Postgres URL')
-  const options = { max: 1, prepare: false, onnotice: () => {} }
+  // A database container that is still starting answers within this or fails the start.
+  const options = { max: 1, prepare: false, connect_timeout: 15, onnotice: () => {} }
   const client = parts.socketDir
     ? postgres({
         host: parts.socketDir,
@@ -104,9 +113,7 @@ async function main() {
   const url = env.TURBOPANEL_DATABASE_URL?.trim()
   if (!url) fail('TURBOPANEL_DATABASE_URL is required')
 
-  const localEntries = manifestEntries(
-    fs.readFileSync(path.join(ROOT, 'migrations', 'manifest.json'), 'utf8')
-  )
+  const localEntries = readEntries('migrations/manifest.json')
   const state = await readState(
     url,
     localEntries.map((e) => e.sha256)
@@ -118,23 +125,20 @@ async function main() {
   if (state.status === 'ahead' || state.status === 'diverged') {
     fail(describeSchemaState(state))
   }
-  const pending = state.status === 'behind' ? state.pending : localEntries.map((e) => e.sha256)
-  log(`${pending.length} migration(s) pending`)
+  const pending = state.status === 'behind' ? state.pending.length : localEntries.length
+  log(`${pending} migration(s) pending`)
 
-  const trunk = git(['show', `${TRUNK_REF}:migrations/manifest.json`])
-  if (!trunk.ok) {
+  const trunkEntries = readTrunkEntries(ROOT)
+  if (!trunkEntries) {
     fail(
       `cannot read ${TRUNK_REF} in ${ROOT} (run \`git fetch origin trunk\`); not migrating. ${BY_HAND}`
     )
   }
-  const changed = git(['diff', '--name-only', '--diff-filter=AM', TRUNK_REF, '--', 'migrations'])
-  const untracked = git(['ls-files', '--others', '--exclude-standard', '--', 'migrations'])
-  if (!changed.ok || !untracked.ok) fail(`cannot compare migrations with ${TRUNK_REF}`)
   const refusal = trunkRefusal({
     localEntries,
-    trunkEntries: manifestEntries(trunk.stdout),
-    pending,
-    changedFiles: `${changed.stdout}\n${untracked.stdout}`.split('\n').filter(Boolean),
+    journalEntries: readEntries('migrations/meta/_journal.json'),
+    trunkEntries,
+    hashOf: (tag) => sqlHash(ROOT, tag),
   })
   if (refusal) fail(`${refusal}; not applying it automatically. ${BY_HAND}`)
 
