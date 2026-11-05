@@ -644,10 +644,53 @@ export function readKeyUsageBits(certificatePem: string): number[] | null {
   return parseKeyUsageBitString(bitStringNode)
 }
 
+/** Signature algorithm OID → the key type and hash a verifier needs. */
+const VERIFY_ALGORITHMS: Readonly<
+  Record<string, { key: 'rsa' | 'ec'; hash: 'SHA-256' | 'SHA-384' | 'SHA-512' }>
+> = {
+  '1.2.840.113549.1.1.11': { key: 'rsa', hash: 'SHA-256' },
+  '1.2.840.113549.1.1.12': { key: 'rsa', hash: 'SHA-384' },
+  '1.2.840.113549.1.1.13': { key: 'rsa', hash: 'SHA-512' },
+  '1.2.840.10045.4.3.2': { key: 'ec', hash: 'SHA-256' },
+  '1.2.840.10045.4.3.3': { key: 'ec', hash: 'SHA-384' },
+  '1.2.840.10045.4.3.4': { key: 'ec', hash: 'SHA-512' },
+}
+
+type VerifyScheme = {
+  importParams: RsaHashedImportParams | EcKeyImportParams
+  verifyParams: AlgorithmIdentifier | EcdsaParams
+  ecCoordinateBytes?: number
+}
+
 /**
- * Verify that leaf cert was signed by the CA public key: sha256WithRSAEncryption
- * for an RSA CA, ecdsa-with-SHA256 / ecdsa-with-SHA384 for a P-256 / P-384 CA.
- * Any other pairing reports `false`.
+ * How to check a signature made with `signatureOid` by the issuer whose
+ * SubjectPublicKeyInfo is `caSpki`. The hash comes from the certificate, not
+ * the key, so an RSA issuer that signs with SHA-384 verifies too. Null when
+ * the algorithm is unknown or does not fit the key type.
+ */
+export function verifySchemeFor(signatureOid: string, caSpki: Uint8Array): VerifyScheme | null {
+  const algorithm = VERIFY_ALGORITHMS[signatureOid]
+  if (!algorithm) return null
+  const issuer = signatureSchemeForSpki(caSpki)
+  const ecIssuer = issuer.ecCoordinateBytes !== undefined
+  if (ecIssuer !== (algorithm.key === 'ec')) return null
+  if (!ecIssuer) {
+    return {
+      importParams: { name: 'RSASSA-PKCS1-v1_5', hash: algorithm.hash },
+      verifyParams: { name: 'RSASSA-PKCS1-v1_5' },
+    }
+  }
+  return {
+    importParams: issuer.importParams,
+    verifyParams: { name: 'ECDSA', hash: algorithm.hash },
+    ecCoordinateBytes: issuer.ecCoordinateBytes,
+  }
+}
+
+/**
+ * Verify that leaf cert was signed by the CA public key. RSA (PKCS #1 v1.5)
+ * and ECDSA on P-256 / P-384, each with SHA-256, SHA-384 or SHA-512 as the
+ * certificate's signature algorithm names. Any other pairing reports `false`.
  */
 export async function verifyCertificateSignature(
   leafCertificatePem: string,
@@ -668,9 +711,10 @@ export async function verifyCertificateSignature(
   const tbsDer = leafDer.subarray(tbs.contentOffset - tbs.headerLength, tbs.end)
   const caSpki = extractSpkiDer(caCertificatePem)
   try {
-    const scheme = signatureSchemeForSpki(caSpki)
     const sigAlgOid = children(sigAlgNode)[0]
-    if (!sigAlgOid || readOid(sigAlgOid) !== scheme.signatureOid) return false
+    if (!sigAlgOid) return false
+    const scheme = verifySchemeFor(readOid(sigAlgOid), caSpki)
+    if (!scheme) return false
     const signature =
       scheme.ecCoordinateBytes === undefined
         ? encodedSignature
@@ -684,7 +728,7 @@ export async function verifyCertificateSignature(
       ['verify']
     )
     return await crypto.subtle.verify(
-      scheme.signParams,
+      scheme.verifyParams,
       publicKey,
       asBufferSource(signature),
       asBufferSource(tbsDer)

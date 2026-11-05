@@ -105,6 +105,8 @@ import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.t
 import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
+import { setPublicTlsProbe } from '../../features/install/install-trust.ts'
+import { createPublicTlsProbe } from './public-tls-probe.ts'
 import { serverDialOrigins } from '../../lib/panel-identity/urls.ts'
 import { type DevHostStatusSink, registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
@@ -655,6 +657,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // One reader for the CA route and the install command, so the fingerprints
   // in a command always describe the document the installer downloads.
   const readPlatformCaPem = () => Deno.readTextFile(resolveInstanceTlsCaServePath())
+  // Uploaded-certificate trust is a TLS handshake against this listener: no
+  // certificate file and no openssl process (the instance writes nothing for it).
+  setPublicTlsProbe(createPublicTlsProbe())
   const app = createApp({
     db,
     emailQueue,

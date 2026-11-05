@@ -29,7 +29,7 @@ import {
   verifyCertificateSignature,
 } from './index.ts'
 import { children, content, readNode, readOid } from './asn1.ts'
-import { extractSpkiDer } from './self-signed.ts'
+import { extractSpkiDer, verifySchemeFor } from './self-signed.ts'
 import { decodeFirstCertificate } from './pem.ts'
 
 /**
@@ -492,4 +492,72 @@ test('mintCertificateRequest makes a new key each time and rejects an empty list
   const b = await mintCertificateRequest(['a.example.com'])
   assertEquals(a.privateKeyPem === b.privateKeyPem, false)
   await assertRejects(() => mintCertificateRequest(['  ']), TypeError)
+})
+
+/** An RSA CA and a leaf it signed with sha384WithRSAEncryption (public certificates only). */
+const RSA_SHA384_CA = `-----BEGIN CERTIFICATE-----
+MIIDETCCAfmgAwIBAgIUZrG8jex9Rw3C3vbAh5NLNd7ENn0wDQYJKoZIhvcNAQEM
+BQAwGDEWMBQGA1UEAwwNcnNhLXNoYTM4NC1jYTAeFw0yNjExMDUxNjQzNDBaFw0z
+NjExMDIxNjQzNDBaMBgxFjAUBgNVBAMMDXJzYS1zaGEzODQtY2EwggEiMA0GCSqG
+SIb3DQEBAQUAA4IBDwAwggEKAoIBAQCxXfEaF5SVo8m+B+tQJEH4kbDE0JdFOyhO
+aQzrhW+u0tGZI0vcSi3UFolBIA1B3RdvYhWfe8jGuCIApf24W76I3Y/FmUyAotl6
+w9Tm+3CurnQ6Wo6bB95DhaCR0CzGzsA0Z2dPjG5A1tRbsqtC+K0mQj0kcGY9TILd
+ymaI3bG4FhMmPefoWqmtbuYGZ27hTkOn13AqKQhC0AIbcEdzCeEkpKa6BqQ97aec
+4TXI1Jh+v1N3/UVU0QqjwXgeuhyubalfXo48ApyprGf8GqQH2/qZ08URGQgNx+K8
+45vArJEqBLtQDSIF8UDKbj3sxSnNkKdo2GxLUXB0zvGLmVMvMyHBAgMBAAGjUzBR
+MB0GA1UdDgQWBBRzUzr9ZIwUQ8wNVV8JWBcAMK076zAfBgNVHSMEGDAWgBRzUzr9
+ZIwUQ8wNVV8JWBcAMK076zAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBDAUA
+A4IBAQAGi+Zf5TXVuZrgC+WVB3JxIj5HU2bgXF4F240teI1i0OHYM0f37BqyCkdt
+Q6BVpy/FLXkFBloA5nWy+pBcnIxc9FAIRRRU5gVL8xu/dDzszYkzAVflg6DbacvB
+meBxopi7HbuhFyggLlfa/S5j5aqXURlxE3v1WMewK7PgzUbfkwJsRi2QjX+p425M
+dZO4Mpi6GoO0WZ5gsaLjsDu3j2022h9+orYF0kRdm+jjf0f/42jBWW3uhv8K2CpG
+lHPOjId7R3O0cWJ64kn5A/k1eWvelZS+j3mOxzL/nu8ugXQUT5XOuhulzAAdjEkn
+hihjTPRuO/GtmYwDFFFjZQS0XVR/
+-----END CERTIFICATE-----`
+
+const RSA_SHA384_LEAF = `-----BEGIN CERTIFICATE-----
+MIICODCCASCgAwIBAgIUC3NNuaoZSpoHQW7/njt/U/WI6HIwDQYJKoZIhvcNAQEM
+BQAwGDEWMBQGA1UEAwwNcnNhLXNoYTM4NC1jYTAeFw0yNjExMDUxNjQzNDBaFw0z
+NjExMDIxNjQzNDBaMBsxGTAXBgNVBAMMEGxlYWYuZXhhbXBsZS5jb20wWTATBgcq
+hkjOPQIBBggqhkjOPQMBBwNCAATwagCGBkis1aWmrmtR7+y9uaIg+xX2OcRZNVwT
+rWBEBCu2zgFTrKNaLNhE8haWsm0uwZ5pUdAv6uzqlL0M93K5o0IwQDAdBgNVHQ4E
+FgQUogDzKwk8kX/J1o6Q/JEIiXz2Z8gwHwYDVR0jBBgwFoAUc1M6/WSMFEPMDVVf
+CVgXADCtO+swDQYJKoZIhvcNAQEMBQADggEBAG2zi6uOhhyMPo7Gwcfj7qNUv7x8
+CmlTjw9ZNkF08itwTw1YfRMukqGMxyr9+xELzcruquWFm/RWBFw7hW7ozgSXOQ1U
+DHsiRWy7lTY2euvPo5sVqnm2CzyP55aPZsYEguaemHVywfcpdsJ2ffmmTkh4VdDs
+Mj+6UWgguoIXFZ6I4DTAWLqwhx4z8Bn8YOU9BbRUsWB8hcL219T25HlQsKYeESI1
+YSXD3edEpNw/iYTW2VmmtPSzs2pOYy/DgfOPzjJ8C1LjOnn8O3XynbLPm0mD17g6
+QKGM7JFdMDZWSAuaoyLF56qTTBmSJhvFYtPyKjE27UeemzfyiFrZJMunMh4=
+-----END CERTIFICATE-----`
+
+test('verifyCertificateSignature takes the hash from the certificate, so an RSA issuer signing with SHA-384 verifies', async () => {
+  assertEquals(await verifyCertificateSignature(RSA_SHA384_LEAF, RSA_SHA384_CA), true)
+  const unrelated = await mintOrganizationCa({ organizationId: 'rsa-sha384-unrelated' })
+  assertEquals(await verifyCertificateSignature(RSA_SHA384_LEAF, unrelated.certificatePem), false)
+})
+
+test('verifySchemeFor pairs each signature algorithm with a fitting issuer key only', async () => {
+  const rsaSpki = extractSpkiDer(RSA_SHA384_CA)
+  const ecSpki = extractSpkiDer(
+    (await mintOrganizationCa({ organizationId: 'ec-spki' })).certificatePem
+  )
+  const rsaOids = ['1.2.840.113549.1.1.11', '1.2.840.113549.1.1.12', '1.2.840.113549.1.1.13']
+  const ecOids = ['1.2.840.10045.4.3.2', '1.2.840.10045.4.3.3', '1.2.840.10045.4.3.4']
+  const hashes = ['SHA-256', 'SHA-384', 'SHA-512']
+  rsaOids.forEach((signatureOid, i) => {
+    assertEquals(verifySchemeFor(signatureOid, rsaSpki)?.importParams, {
+      name: 'RSASSA-PKCS1-v1_5',
+      hash: hashes[i],
+    })
+    assertEquals(verifySchemeFor(signatureOid, ecSpki), null)
+  })
+  ecOids.forEach((signatureOid, i) => {
+    assertEquals(verifySchemeFor(signatureOid, ecSpki)?.verifyParams, {
+      name: 'ECDSA',
+      hash: hashes[i],
+    })
+    assertEquals(verifySchemeFor(signatureOid, rsaSpki), null)
+  })
+  // RSASSA-PSS and anything else unknown: no scheme.
+  assertEquals(verifySchemeFor('1.2.840.113549.1.1.10', rsaSpki), null)
 })

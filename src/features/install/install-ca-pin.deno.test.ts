@@ -160,6 +160,7 @@ test('a private upload also pins the issuer the installer stores', async () => {
   const [issuerFp] = await certificateFingerprints(issuer.certificatePem)
   const prepared = await resolveInstallOriginTls(db, origin, {}, true, {
     readPlatformCaPem: () => Promise.resolve(platform.certificatePem),
+    probePublicTls: () => Promise.resolve('private'),
   })
   assertEquals(prepared, {
     ok: true,
