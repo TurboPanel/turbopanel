@@ -138,8 +138,9 @@ export const organization = pgTable(
      * organization turns it on: each organization is responsible for its own
      * servers, so it opts in to Let's Encrypt itself. Turning it on needs a
      * contact address and the accepted terms (enforced by the TLS settings
-     * route). Organizations made before the column keep what
-     * `options.acmeEnabled` said. Turning it off does not revoke certificates
+     * route). Organizations made before the column keep what their old
+     * `options.acmeEnabled` key said; a later migration copied it once more
+     * and removed the key. Turning it off does not revoke certificates
      * already issued.
      */
     isAcmeEnabled: boolean('is_acme_enabled').default(false).notNull(),

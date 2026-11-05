@@ -146,6 +146,12 @@
       "tag": "0023_organization_icon_and_emoji_icons",
       "when": 1793836684611,
       "sha256": "8c995d3fbd388abbf4062053dad9d61ad9f8772f17d83b06b050b5c8b1ea15f0"
+    },
+    {
+      "idx": 24,
+      "tag": "0024_drop_acme_enabled_option",
+      "when": 1793882917737,
+      "sha256": "7833ac0e86551ce7ca784cd01458e423fa36842838873ff9ad227741cb75f0c9"
     }
   ]
 }

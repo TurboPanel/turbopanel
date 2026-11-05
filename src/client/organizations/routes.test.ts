@@ -777,7 +777,7 @@ test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a con
     assertEquals((await noTerms.json()).code, 'acme_terms_not_accepted')
     assertEquals((await stored()).isAcmeEnabled, false)
 
-    // Both in one request: on, with the acceptance time and the old option copy.
+    // Both in one request: on, with the acceptance time; options get no copy.
     const on = await put({
       acmeEnabled: true,
       acmeContactEmail: 'ops@example.com',
@@ -795,7 +795,10 @@ test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a con
     assertEquals((await read.json()).acmeTermsAcceptedAt, onBody.acmeTermsAcceptedAt)
     const afterOn = await stored()
     assertEquals(afterOn.isAcmeEnabled, true)
-    assertEquals(parseOrganizationOptions(afterOn.options).acmeEnabled, true)
+    assertEquals(
+      Object.hasOwn((afterOn.options ?? {}) as Record<string, unknown>, 'acmeEnabled'),
+      false
+    )
     const acceptRows = await db
       .select({ actorUserId: audit.actorUserId })
       .from(audit)
@@ -817,7 +820,10 @@ test("PUT /organizations/:id/tls-settings turns Let's Encrypt on only with a con
     assertEquals(off.status, 200)
     const afterOff = await stored()
     assertEquals(afterOff.isAcmeEnabled, false)
-    assertEquals(parseOrganizationOptions(afterOff.options).acmeEnabled, false)
+    assertEquals(
+      Object.hasOwn((afterOff.options ?? {}) as Record<string, unknown>, 'acmeEnabled'),
+      false
+    )
     assertEquals(afterOff.acmeContactEmail, 'ops@example.com')
     assertEquals(afterOff.acmeTermsAcceptedAt, afterOn.acmeTermsAcceptedAt)
     const again = await put({ acmeEnabled: true })
