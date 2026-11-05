@@ -1,8 +1,9 @@
 /**
  * Words for `project.kind` and `project.icon`. `schema.ts` carries the same
- * lists as CHECK constraints (the icon one also allows one emoji); `enum-checks.test.ts` pins them together.
+ * lists as CHECK constraints (the icon one also allows one emoji);
+ * `enum-checks.test.ts` pins them together.
  */
-import { ICON_KEYS, type IconKey, isIconKey } from '../../lib/icons.ts'
+import { ICON_KEYS } from '../../lib/icons.ts'
 
 /**
  * What a project is. `compose` covers a hand-written compose project and a
@@ -21,12 +22,6 @@ export type ProjectKind = (typeof PROJECT_KINDS)[number]
  * managed icon.
  */
 export const PROJECT_ICONS = ICON_KEYS
-
-export type ProjectIcon = IconKey
-
-export function isProjectIcon(value: unknown): value is ProjectIcon {
-  return isIconKey(value)
-}
 
 /** The stored kind for a project type named in a create or configure request. */
 export function projectKindForType(type: 'docker-compose' | 'template' | 'managed'): ProjectKind {
