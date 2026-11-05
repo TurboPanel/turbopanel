@@ -68,10 +68,30 @@ const SKIP_DIR_NAMES = new Set([
   '.cache',
 ])
 
-/** Relative static imports and re-exports; group 2 marks a type-only one. */
-const STATIC_IMPORT =
-  /(?:^|[\s;])(import|export)(\s+type\b)?(?:[^'";]*?\bfrom\s*)?\s*['"](\.{1,2}\/[^'"]+)['"]/g
+/** Where an `import` or `export` keyword starts a statement. */
+const STATEMENT_KEYWORD = /(?:^|[\s;])(?:import|export)\b/g
 const DYNAMIC_IMPORT = /\bimport\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g
+
+/**
+ * The relative specifier a static `import`/`export` statement starting at
+ * `from` names, or null for a type-only one or a statement with no module
+ * (`export const x = '...'`). A plain scan instead of one large pattern.
+ */
+function staticSpecifierAt(text, from) {
+  let quote = from
+  while (quote < text.length && text[quote] !== "'" && text[quote] !== '"') quote += 1
+  if (quote >= text.length) return null
+  const head = text.slice(from, quote).trim()
+  if (head.includes(';') || head.includes('(') || head.includes('=')) return null
+  // A later keyword starts its own statement (a comment that says "import").
+  if (/\b(?:import|export)\b/.test(head)) return null
+  if (head !== '' && !/\bfrom$/.test(head)) return null
+  if (/^type\b/.test(head)) return null
+  const end = text.indexOf(text[quote], quote + 1)
+  if (end === -1) return null
+  const spec = text.slice(quote + 1, end)
+  return spec.startsWith('./') || spec.startsWith('../') ? spec : null
+}
 
 function under(rel, prefix) {
   return rel === prefix || rel.startsWith(`${prefix}/`)
@@ -107,8 +127,9 @@ function resolveSpecifier(root, fromRel, spec) {
 /** The files `rel` imports as code (type-only imports left out). */
 export function codeImportsOf(root, rel, text) {
   const out = []
-  for (const m of text.matchAll(STATIC_IMPORT)) {
-    if (!m[2]) out.push(resolveSpecifier(root, rel, m[3]))
+  for (const m of text.matchAll(STATEMENT_KEYWORD)) {
+    const spec = staticSpecifierAt(text, m.index + m[0].length)
+    if (spec !== null) out.push(resolveSpecifier(root, rel, spec))
   }
   for (const m of text.matchAll(DYNAMIC_IMPORT)) out.push(resolveSpecifier(root, rel, m[1]))
   return out
@@ -143,6 +164,23 @@ function lintImporters(root, failures) {
   }
 }
 
+/** Checks one Workers-reachable file and returns the imports to follow. */
+function visitWorkersFile(root, rel, text, failures) {
+  if (DIRECTORY_HOST.test(text)) {
+    failures.push(
+      `${rel} names a Let's Encrypt directory host and is reachable from ${WORKERS_ENTRY}`
+    )
+  }
+  const next = []
+  for (const target of codeImportsOf(root, rel, text)) {
+    if (!under(target, ACME_DIR)) next.push(target)
+    else if (!WORKERS_REACHABLE.includes(rel)) {
+      failures.push(`${WORKERS_ENTRY} reaches ${target} through ${rel}`)
+    }
+  }
+  return next
+}
+
 function lintWorkersGraph(root, failures) {
   if (readSource(root, WORKERS_ENTRY) === null) return
   const seen = new Set()
@@ -153,18 +191,7 @@ function lintWorkersGraph(root, failures) {
     const text = readSource(root, rel)
     if (text === null) continue
     seen.add(rel)
-    if (DIRECTORY_HOST.test(text)) {
-      failures.push(
-        `${rel} names a Let's Encrypt directory host and is reachable from ${WORKERS_ENTRY}`
-      )
-    }
-    for (const target of codeImportsOf(root, rel, text)) {
-      if (!under(target, ACME_DIR)) {
-        stack.push(target)
-      } else if (!WORKERS_REACHABLE.includes(rel)) {
-        failures.push(`${WORKERS_ENTRY} reaches ${target} through ${rel}`)
-      }
-    }
+    stack.push(...visitWorkersFile(root, rel, text, failures))
   }
   for (const rel of WORKERS_REACHABLE) {
     if (!seen.has(rel)) {

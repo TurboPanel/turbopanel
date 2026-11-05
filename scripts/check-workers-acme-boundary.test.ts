@@ -106,6 +106,21 @@ test('a dynamic import of the ACME client is caught too', async () => {
   })
 })
 
+test('a comment that says import neither hides nor invents an import', async () => {
+  const typeOnly = cleanTree()
+  typeOnly['src/client/ok.ts'] =
+    "/** Workers import this file. */\nexport type { Client } from '../lib/acme/client.ts'\nexport const ok = 1\n"
+  await withTree(typeOnly, (root) => {
+    assertEquals(checkWorkersAcmeBoundary({ root }), [])
+  })
+  const code = cleanTree()
+  code['src/client/ok.ts'] =
+    "// import this from the client\nimport { client } from '../lib/acme/client.ts'\nexport const ok = client\n"
+  await withTree(code, (root) => {
+    assertFailsWith(root, 'src/workers.ts reaches src/lib/acme/client.ts through src/client/ok.ts')
+  })
+})
+
 test('a frozen entry other than the tolerated one may not become Workers-reachable', async () => {
   const files = cleanTree()
   files['src/client/ok.ts'] =
