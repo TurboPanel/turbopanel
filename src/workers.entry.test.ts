@@ -158,9 +158,46 @@ describe('workers.ts entry handlers', () => {
     // The list stays; start, check and retry answer `certificate_ordering_off`
     // (dns-certificate-routes.hostfree.test.ts), and no Workers code can reach
     // the ordering modules (ordering-off.hostfree.test.ts).
-    expect(paths).toContain(`${CLIENT_API_PREFIX}/organizations/:id/dns-certificates`)
-    expect(paths).toContain(`${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/check`)
-    expect(paths).toContain(`${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/retry`)
+    // Exactly these three: no other ordering route under `/dns-certificates`.
+    expect([...new Set(paths)].sort((a, b) => a.localeCompare(b))).toEqual([
+      `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates`,
+      `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/check`,
+      `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/retry`,
+    ])
+  }, 30_000)
+
+  it("scheduled and the DNS certificate routes never call a Let's Encrypt host", async () => {
+    // Smoke check only: `pnpm check:workers-acme-boundary` proves from the
+    // import graph that the ACME client is not in this build at all.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    try {
+      const ctx = fakeExecutionContext()
+      await workers.scheduled(
+        { scheduledTime: Date.parse('2026-01-01T00:30:00.000Z'), cron: '* * * * *', noRetry() {} },
+        workersTestEnv(),
+        ctx
+      )
+      for (const suffix of ['', '/tls-1/check', '/tls-1/retry']) {
+        const requestCtx = fakeExecutionContext()
+        await workers.fetch(
+          new Request(
+            `https://panel.example.com${CLIENT_API_PREFIX}/organizations/org-1/dns-certificates${suffix}`,
+            { method: 'POST' }
+          ),
+          workersTestEnv(),
+          requestCtx
+        )
+        await Promise.allSettled(requestCtx.waitUntilPromises)
+      }
+      await Promise.allSettled(ctx.waitUntilPromises)
+      const hosts = fetchSpy.mock.calls.map(([input]) => {
+        const url = input instanceof Request ? input.url : String(input)
+        return new URL(url, 'https://panel.example.com').hostname
+      })
+      expect(hosts.filter((host) => host.endsWith('letsencrypt.org'))).toEqual([])
+    } finally {
+      fetchSpy.mockRestore()
+    }
   }, 30_000)
 
   it('fetch applies signup force and dev-surface env branches', async () => {
