@@ -188,7 +188,7 @@ Save: every 5 minutes its maintenance tick builds the body
 when its fingerprint differs from `appliedPayloadHash` in the `EDGE_TRUST`
 setting, so a field a newer build adds, or a connection-mode change, reaches
 the daemon once. Key material is left out of the fingerprint (a sealed key is new on
-every build), and a successful Save records the same fingerprint.
+every build), and a successful Save or DNS-01 certificate push records the same fingerprint.
 
 On a self-hosted control plane (the Deno server calls `setSelfHostedAddress`
 at start-up) the public port is fixed at 8443, even behind a tunnel that also
