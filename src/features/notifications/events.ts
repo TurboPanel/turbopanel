@@ -386,8 +386,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     },
     body: (ctx) => {
       const actor = name(ctx, 'actorEmail', 'An owner or manager')
-      const check =
-        'If you did not expect this, check the backup targets in the organization settings.'
+      const check = "If you did not expect this, check the organization's backup targets."
       if (ctx.kind === 'assign') {
         return `${actor} changed where backups are copied from ${name(
           ctx,

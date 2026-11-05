@@ -199,7 +199,7 @@ test('an update notice names the target and every moved setting in plain words',
       'bucket tp-backups to other, region us-east-1 to eu-west-1, folder tp to (none), ' +
       'path-style addressing turned off, a different access key id, a new secret access key. ' +
       'Every backup copied from now on goes there. ' +
-      'If you did not expect this, check the backup targets in the organization settings.'
+      "If you did not expect this, check the organization's backup targets."
   )
   const bare = describeEvent(BACKUP_TARGET_CHANGED_EVENT, { pathStyle: true })
   assertEquals(bare.title, 'Backup target unknown now points somewhere else')
@@ -223,7 +223,7 @@ test('an assignment notice says where backups go now, or that they are no longer
   assertEquals(
     moved.body,
     'An owner or manager changed where backups are copied from Offsite to Elsewhere. ' +
-      'If you did not expect this, check the backup targets in the organization settings.'
+      "If you did not expect this, check the organization's backup targets."
   )
   const off = describeEvent(BACKUP_TARGET_CHANGED_EVENT, {
     kind: 'assign',
