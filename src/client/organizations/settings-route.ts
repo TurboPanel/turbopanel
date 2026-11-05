@@ -247,13 +247,10 @@ export function tlsSettingsGetRoute(
  * `PUT` for the TLS settings. The current agreement is read first, outside the
  * row lock (it may need a request to Let's Encrypt). Then, under the lock,
  * `apply` turns the stored settings and the patch into the new settings or a
- * refusal, and the columns are written. A change to `acmeEnabled` is also
- * merged into options, which keeps the old `options.acmeEnabled` copy in step
- * for one release so an older build rolled back onto this database still
- * reads the right switch. The old `options.acmeContactEmail` copy is
- * deliberately not kept in step.
+ * refusal, and the columns are written. Only the columns hold these
+ * settings; nothing is written to `organization.options`.
  */
-export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
+export function tlsSettingsPutRoute<P>(
   params: Readonly<{
     gate: OrgSettingsGate
     parse: (body: Record<string, unknown>) => ParsedPatch<P>
@@ -274,7 +271,6 @@ export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
     const opened = await openOrgSettingsPut(c, params.gate, params.parse)
     if (opened instanceof Response) return opened
     const { scope, parsed } = opened
-    const { acmeEnabled } = parsed.patch
     const terms = await params.currentTermsUrl()
 
     const outcome = await scope.db.transaction(async (tx0) => {
@@ -292,7 +288,6 @@ export function tlsSettingsPutRoute<P extends { acmeEnabled?: boolean }>(
           acmeContactEmail: next.acmeContactEmail,
           acmeTermsAcceptedAt: next.acmeTermsAcceptedAt,
           acmeTermsUrl: next.acmeTermsUrl,
-          ...(acmeEnabled === undefined ? {} : { options: mergeOrgOptionsSql({ acmeEnabled }) }),
           updatedAt: now,
         })
         .where(eq(organization.id, scope.id))

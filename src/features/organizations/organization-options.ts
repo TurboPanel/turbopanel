@@ -155,13 +155,6 @@ export type OrganizationOptions = {
    */
   docker?: OrganizationDockerNetworking
   /**
-   * Old copy of `organization.is_acme_enabled`, the Let's Encrypt switch. Nothing
-   * reads it any more; the TLS settings route still writes it for one release so
-   * an older build rolled back onto the database sees the same switch. Removed
-   * in a later release.
-   */
-  acmeEnabled?: boolean
-  /**
    * Step-up re-authentication for permanent actions (delete a project, remove
    * a member, revoke a key, ...). When on, those routes refuse with
    * `reauth_required` until the signed-in person has just proved who they are
@@ -410,9 +403,6 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   }
   assignMetricsCapabilityPlan(options, value)
   assignDocker(options, value)
-  if (typeof value.acmeEnabled === 'boolean') {
-    options.acmeEnabled = value.acmeEnabled
-  }
   assignRequireReauth(options, value)
   assignComposeOptIns(options, value)
   if (typeof value.deployHooksEnabled === 'boolean') {

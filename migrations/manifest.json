@@ -140,6 +140,12 @@
       "tag": "0022_command_server_open",
       "when": 1793802354103,
       "sha256": "4cb592ef47748054dc0326bc133c6f4ab3b1fc7d78730e281ea4e9f55bea31cb"
+    },
+    {
+      "idx": 23,
+      "tag": "0023_drop_acme_enabled_option",
+      "when": 1793841180977,
+      "sha256": "7833ac0e86551ce7ca784cd01458e423fa36842838873ff9ad227741cb75f0c9"
     }
   ]
 }
