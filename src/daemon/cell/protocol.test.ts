@@ -1128,18 +1128,86 @@ it('validateDaemonInboundFrame validates ok-result and command messages', () => 
     ).ok,
     false
   )
-  assertEquals(
-    validateDaemonInboundFrame(
-      JSON.stringify({
-        type: 'command-outcome',
-        id: 'req-1',
-        at: VALID_AT,
-        ok: true,
-        result: { blob: 'x'.repeat(MAX_DAEMON_WS_RESULT_JSON_BYTES) },
-      })
-    ).ok,
-    false
+})
+
+/** A `command-outcome` frame whose result is `bytes` long as JSON. */
+function outcomeFrameWithResultBytes(bytes: number, extra: Record<string, unknown> = {}): string {
+  // `{"blob":""}` is 11 bytes of JSON around the string.
+  return JSON.stringify({
+    type: 'command-outcome',
+    id: 'req-1',
+    at: VALID_AT,
+    ok: true,
+    daemonReceivedAt: VALID_AT,
+    daemonRespondedAt: VALID_AT,
+    result: { blob: 'x'.repeat(bytes - 11) },
+    ...extra,
+  })
+}
+
+it('validateDaemonInboundFrame keeps a command result exactly at the cap', () => {
+  const validated = validateDaemonInboundFrame(
+    outcomeFrameWithResultBytes(MAX_DAEMON_WS_RESULT_JSON_BYTES)
   )
+  assert(validated.ok)
+  const message = validated.message as Extract<DaemonMessage, { type: 'command-outcome' }>
+  assertEquals(message.ok, true)
+  assertEquals(JSON.stringify(message.result).length, MAX_DAEMON_WS_RESULT_JSON_BYTES)
+  assertEquals(validated.notes, undefined)
+})
+
+it('validateDaemonInboundFrame turns a command result over the cap into a failed outcome', () => {
+  const validated = validateDaemonInboundFrame(
+    outcomeFrameWithResultBytes(MAX_DAEMON_WS_RESULT_JSON_BYTES + 1)
+  )
+  assert(validated.ok, 'the frame is accepted, not refused with 1008')
+  const message = validated.message as Extract<DaemonMessage, { type: 'command-outcome' }>
+  assertEquals(message, {
+    type: 'command-outcome',
+    id: 'req-1',
+    at: VALID_AT,
+    ok: false,
+    error: "The server's report was too large to store (65 KB; limit 64 KB).",
+    daemonReceivedAt: VALID_AT,
+    daemonRespondedAt: VALID_AT,
+  })
+  assertEquals(validated.notes?.length, 1)
+  assertEquals(validated.notes?.[0]?.startsWith('command-outcome id="req-1" result of 65537'), true)
+  // The rewritten outcome passes the envelope re-check the cell runs before storing it.
+  const envelope = wireMessageToInboundEnvelope(message)
+  assert(envelope)
+  assertEquals(validateDaemonInboundEnvelope(envelope), { ok: true })
+})
+
+it("validateDaemonInboundFrame keeps the daemon's own error after the size note, within the error cap", () => {
+  const short = validateDaemonInboundFrame(
+    outcomeFrameWithResultBytes(70 * 1024, { ok: false, error: 'build failed' })
+  )
+  assert(short.ok)
+  assertEquals(
+    (short.message as { error?: string }).error,
+    "The server's report was too large to store (70 KB; limit 64 KB). build failed"
+  )
+
+  const long = validateDaemonInboundFrame(
+    outcomeFrameWithResultBytes(70 * 1024, {
+      ok: false,
+      error: 'e'.repeat(MAX_DAEMON_WS_ERROR_CHARS),
+    })
+  )
+  assert(long.ok)
+  const error = (long.message as { error?: string }).error ?? ''
+  assertEquals(error.length, MAX_DAEMON_WS_ERROR_CHARS)
+  assertEquals(error.startsWith("The server's report was too large to store"), true)
+})
+
+it('validateDaemonInboundFrame still refuses an oversized result with a bad id or timestamp', () => {
+  const badId = validateDaemonInboundFrame(
+    outcomeFrameWithResultBytes(70 * 1024, { id: 'x'.repeat(MAX_DAEMON_WS_ID_CHARS + 1) })
+  )
+  assertEquals(badId, { ok: false, ignored: false, reason: 'invalid id' })
+  const badAt = validateDaemonInboundFrame(outcomeFrameWithResultBytes(70 * 1024, { at: 'bad' }))
+  assertEquals(badAt, { ok: false, ignored: false, reason: 'invalid at timestamp' })
 })
 
 it('validateDaemonInboundEnvelope rejects invalid requestId and timestamps', () => {
