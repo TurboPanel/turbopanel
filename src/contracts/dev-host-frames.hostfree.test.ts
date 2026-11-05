@@ -83,7 +83,8 @@ function frame(value: unknown): string {
 test('dev-host-v1 is advertised and raised no floor', () => {
   assertEquals(DEV_HOST_FEATURE, 'dev-host-v1')
   assert((DAEMON_WIRE_FEATURES as readonly string[]).includes(DEV_HOST_FEATURE))
-  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+  // The floor moved for sealed secrets, not for dev-host-v1.
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
 test('dev-host-status and dev-host-action-result are allowed inbound; the action is not', () => {

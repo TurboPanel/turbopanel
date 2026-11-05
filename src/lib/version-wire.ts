@@ -46,10 +46,14 @@ export const CLIENT_VERSION_HEADER = 'x-turbopanel-client-version'
 
 /**
  * The oldest daemon this control plane will dispatch commands to. Bump when
- * a wire change stops being expand-only — never past what the current
- * release's installer ships.
+ * a wire change stops being expand-only — never past what the release this
+ * control plane ships with installs (the daemon ships first).
+ *
+ * 0.1.18 is a pre-launch hard cutoff: it is the first daemon line that
+ * registers a sealing key, opens sealed decrypt answers and opens the sealed
+ * reconcile password hash. Older daemons are refused.
  */
-export const MIN_SUPPORTED_DAEMON_VERSION = '0.1.0'
+export const MIN_SUPPORTED_DAEMON_VERSION = '0.1.18'
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
 
