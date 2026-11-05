@@ -317,6 +317,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "When the organization last accepted the Let's Encrypt terms, needed to turn it on; the audit log says who.",
       backup_destination_id:
         'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.',
+      icon: 'Icon key from the same fixed list as `project.icon`, or one emoji; NULL means the default icon.',
+      is_emoji_icon_allowed:
+        'Emoji icons allowed for the organization and its projects; off refuses new emoji icons and shows the default for stored ones, which are kept.',
       name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",
     },
   },
@@ -1024,7 +1027,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Client jsonb: the catalog `code` of a template or managed engine project, plus free caller keys; the project type lives in `kind`.',
       kind: 'What the project is: `compose` (a template too), `managed` or platform-only `system`; NULL while a draft that has not chosen yet.',
-      icon: 'Icon key from the fixed list the project screens offer; NULL means the default, and a managed project ignores it.',
+      icon: 'Icon key from the fixed list, or one emoji; NULL means the default. A managed project ignores it, the screens an emoji while emoji icons are off.',
       template_code:
         'Catalog code of the template the project was created from; NULL when not from a template. The four template columns are set together or all NULL.',
       template_track:

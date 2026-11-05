@@ -166,6 +166,17 @@ export const organization = pgTable(
       (): AnyPgColumn => backupTarget.id,
       { onDelete: 'set null' }
     ),
+    /**
+     * Optional icon: a key from the same fixed list as `project.icon`, or one
+     * emoji. NULL means the default icon.
+     */
+    icon: text(),
+    /**
+     * Emoji icons allowed for the organization and its projects. Turning it
+     * off refuses new emoji icons and makes the screens show the default icon
+     * for stored ones; the stored values are kept. Keys are always allowed.
+     */
+    isEmojiIconAllowed: boolean('is_emoji_icon_allowed').default(true).notNull(),
   },
   (table) => [
     index('idx_organization_backup_destination_id').on(table.backupDestinationId),
@@ -180,6 +191,10 @@ export const organization = pgTable(
     check(
       'organization_acme_terms_check',
       sql`(${table.acmeTermsAcceptedAt} IS NULL) = (${table.acmeTermsUrl} IS NULL) AND (${table.acmeTermsUrl} IS NULL OR (${table.acmeTermsUrl} LIKE 'https://%' AND char_length(${table.acmeTermsUrl}) <= 2048))`
+    ),
+    check(
+      'organization_icon_check',
+      sql`icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image') OR (char_length(icon) BETWEEN 1 AND 16 AND icon !~ '[[:ascii:]]')`
     ),
     check(
       'organization_acme_contact_email_check',
@@ -2501,8 +2516,10 @@ export const project = pgTable(
      */
     kind: text(),
     /**
-     * Optional icon key from the fixed list the project screens offer. NULL
-     * means the default; a managed project ignores it.
+     * Optional icon: a key from the fixed list the project screens offer, or
+     * one emoji (`lib/icons.ts` checks the exact rule; the CHECK only the
+     * shape). NULL means the default; a managed project ignores it, and so do
+     * the screens for an emoji while the organization has emoji icons off.
      */
     icon: text(),
     /** Catalog `code` of the template this project was created from; NULL when not from a template. */
@@ -2589,7 +2606,7 @@ export const project = pgTable(
     ),
     check(
       'project_icon_check',
-      sql`icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image')`
+      sql`icon IS NULL OR icon IN ('cube', 'globe', 'cart', 'bolt', 'chat', 'chart', 'code', 'book', 'layers', 'mail', 'rocket', 'image') OR (char_length(icon) BETWEEN 1 AND 16 AND icon !~ '[[:ascii:]]')`
     ),
   ]
 )

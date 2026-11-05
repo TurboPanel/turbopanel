@@ -24,6 +24,8 @@ import {
   parseHostDefaultsPatch,
   parseManagedDefaultsPatch,
   parseOrganizationCreateDisplayName,
+  organizationPatchAudits,
+  parseOrganizationPatch,
   parseOrganizationPatchDisplayName,
   parseProjectSettingsPatch,
   parseServerCapacityPutBody,
@@ -516,18 +518,71 @@ test('parseOrganizationPatchDisplayName requires a valid display name', () => {
   assertEquals(folded.name, "McDonald's")
 })
 
-test('toOrganizationRecord maps DB name to name', () => {
+test('toOrganizationRecord maps DB name, icon and the emoji setting', () => {
   assertEquals(
     toOrganizationRecord({
       id: '11111111-1111-1111-1111-111111111111',
       name: 'Acme',
       createdAt: '2026-01-01T00:00:00.000Z',
+      icon: '🚀',
+      isEmojiIconAllowed: false,
     }),
     {
       id: '11111111-1111-1111-1111-111111111111',
       name: 'Acme',
       createdAt: '2026-01-01T00:00:00.000Z',
+      icon: '🚀',
+      isEmojiIconAllowed: false,
     }
+  )
+})
+
+test('parseOrganizationPatch takes a name, an icon and the emoji setting, at least one', () => {
+  assertEquals(parseOrganizationPatch({}).ok, false)
+  assertEquals(parseOrganizationPatch({ name: '' }).ok, false)
+  assertEquals(parseOrganizationPatch({ name: 'Acme' }), {
+    ok: true,
+    patch: { name: 'Acme', iconIsEmoji: false },
+  })
+  assertEquals(parseOrganizationPatch({ icon: 'rocket' }), {
+    ok: true,
+    patch: { icon: 'rocket', iconIsEmoji: false },
+  })
+  assertEquals(parseOrganizationPatch({ icon: '👩‍💻' }), {
+    ok: true,
+    patch: { icon: '👩‍💻', iconIsEmoji: true },
+  })
+  assertEquals(parseOrganizationPatch({ icon: null }), {
+    ok: true,
+    patch: { icon: null, iconIsEmoji: false },
+  })
+  assertEquals(parseOrganizationPatch({ isEmojiIconAllowed: false }), {
+    ok: true,
+    patch: { isEmojiIconAllowed: false, iconIsEmoji: false },
+  })
+  assertEquals(parseOrganizationPatch({ icon: 'unicorn' }).ok, false)
+  assertEquals(parseOrganizationPatch({ icon: '🚀🚀' }).ok, false)
+  assertEquals(parseOrganizationPatch({ icon: '1️⃣' }).ok, false)
+  assertEquals(parseOrganizationPatch({ isEmojiIconAllowed: 'no' }).ok, false)
+  assertEquals(parseOrganizationPatch({ name: 'Acme', icon: 7 }).ok, false)
+})
+
+test('organizationPatchAudits records only the icon and emoji settings that changed', () => {
+  const before = { icon: 'rocket', isEmojiIconAllowed: true }
+  assertEquals(organizationPatchAudits({ name: 'Acme', iconIsEmoji: false }, before), [])
+  assertEquals(
+    organizationPatchAudits(
+      { icon: 'rocket', isEmojiIconAllowed: true, iconIsEmoji: false },
+      before
+    ),
+    []
+  )
+  assertEquals(
+    organizationPatchAudits({ icon: '🚀', isEmojiIconAllowed: false, iconIsEmoji: true }, before),
+    [
+      { action: 'organization.icon.set', context: { icon: '🚀', previousIcon: 'rocket' } },
+      { action: 'organization.emoji_icons.set', context: { isEmojiIconAllowed: false } },
+    ]
   )
 })
 

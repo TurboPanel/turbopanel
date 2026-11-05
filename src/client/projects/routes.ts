@@ -23,6 +23,8 @@ import {
   type CatalogEntry,
 } from './catalog/index.ts'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
+import { isEmojiIconAllowedForOrganization } from '../../features/organizations/emoji-icons.ts'
+import { EMOJI_ICONS_OFF_BODY, isEmojiIcon } from '../../lib/icons.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -364,7 +366,7 @@ async function parseCreateProjectInput(
   )
   if (defaultServerError) return defaultServerError
 
-  const extras = parseCreateProjectExtras(c, body, projectType)
+  const extras = await parseCreateProjectExtras(c, db, organizationId, body, projectType)
   if (extras instanceof Response) return extras
   const { metadata, icon } = extras
 
@@ -399,12 +401,43 @@ async function parseCreateProjectInput(
   }
 }
 
-/** Caller metadata and the optional icon of a create request. */
-function parseCreateProjectExtras(
+/**
+ * 422 `emoji_icons_off` when `icon` is an emoji and the organization has emoji
+ * icons turned off; keys and null always pass. With `projectId`, the emoji the
+ * project already stores also passes, so a screen that saves the whole form
+ * can still rename a project that kept an emoji from before.
+ */
+async function refuseEmojiIconWhenOff(
   c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  icon: string | null | undefined,
+  projectId?: string
+): Promise<Response | undefined> {
+  if (!isEmojiIcon(icon)) return undefined
+  if (await isEmojiIconAllowedForOrganization(db, organizationId)) return undefined
+  if (projectId !== undefined) {
+    const [stored] = await db
+      .select({ icon: project.icon })
+      .from(project)
+      .where(eq(project.id, projectId))
+      .limit(1)
+    if (stored?.icon === icon) return undefined
+  }
+  return c.json(EMOJI_ICONS_OFF_BODY, 422)
+}
+
+/**
+ * Caller metadata and the optional icon of a create request; an emoji icon is
+ * refused (422) while the organization has emoji icons off.
+ */
+async function parseCreateProjectExtras(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
   body: Record<string, unknown>,
   projectType: ResolvedCreateProjectType
-): { metadata: Record<string, unknown> | null; icon: string | null } | Response {
+): Promise<{ metadata: Record<string, unknown> | null; icon: string | null } | Response> {
   const metadataResult = parseCreateProjectMetadata(body)
   if (!metadataResult.ok) {
     return c.json({ error: metadataResult.error }, metadataResult.status)
@@ -413,11 +446,11 @@ function parseCreateProjectExtras(
   if (!iconResult.ok) {
     return c.json({ error: iconResult.error }, iconResult.status)
   }
-  return {
-    metadata: metadataResult.metadata,
-    // A managed project always shows the managed icon, so none is stored.
-    icon: projectType === 'managed' ? null : (iconResult.icon ?? null),
-  }
+  // A managed project always shows the managed icon, so none is stored.
+  const icon = projectType === 'managed' ? null : (iconResult.icon ?? null)
+  const emojiRefused = await refuseEmojiIconWhenOff(c, db, organizationId, icon)
+  if (emojiRefused) return emojiRefused
+  return { metadata: metadataResult.metadata, icon }
 }
 
 /**
@@ -1082,6 +1115,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     )
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind
+    const emojiRefused = await refuseEmojiIconWhenOff(c, db, organizationId, patchFields.icon, id)
+    if (emojiRefused) return emojiRefused
 
     const conflict = await checkProjectPatchConflicts(c, db, organizationId, id, body, patchFields)
     if (conflict) return conflict
