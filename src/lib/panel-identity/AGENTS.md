@@ -18,6 +18,10 @@ sealing key, and the signed identity document served at
 - **Signature** is the `X-TurboPanel-Signature: <kid>:<sig>` header over
   `"tp-http\n" + path + "\n" + exact body`, not a field in the body. `serializeIdentityDocument`
   writes the key order by hand; do not add a canonicaliser. The route returns the cached exact bytes.
+  The document's `urls` (and the signed hello's) are the addresses servers dial: on self-hosted,
+  `serverDialOrigins` (`urls.ts`, the hostname rows servers dial, primary first, the same list the
+  install command carries); on High Availability, the platform environment. A pinned server rewrites
+  its pin's address list from a verified document, so a row marked as not for servers must stay out.
   The document's `urls` come from the database, so with an identity loaded the route needs it: an
   unreachable database answers `503 {"error":"database unavailable"}` (reason in the log only);
   a connection-closed error is rethrown so the Workers entry replays the GET once.
