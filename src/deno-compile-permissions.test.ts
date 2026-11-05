@@ -360,22 +360,6 @@ it('compile tasks embed the migrations and can run openssl for the install-time 
   }
 })
 
-it('compile tasks can write the scratch folder the openssl certificate checks fall back to', async () => {
-  // The compiled binary has no /tmp write grant, so the uploaded-certificate
-  // checks (src/features/install/install-trust.ts) write their one scratch
-  // file under <state>/instance/tmp. A grant list that stops covering that
-  // folder turns Add Server for an uploaded hostname back into an error.
-  const scratch = '/var/lib/turbopanel/instance/tmp'
-  const tasks = await readCompileTasks()
-  for (const [taskName, task] of Object.entries(tasks)) {
-    const writable = extractPathListFlag(task, 'allow-write')
-    assert(
-      writable.some((dir) => scratch === dir || scratch.startsWith(`${dir}/`)),
-      `${taskName} --allow-write must cover ${scratch}`
-    )
-  }
-})
-
 it('compile tasks emit the plain binary name and skip type-checking', async () => {
   // The instance binary is `turbopanel` (the unit runs it, the installer
   // pins it at /opt/turbopanel/bin/turbopanel, the CLI verbs are

@@ -70,13 +70,18 @@ SAN generation and webhook reachability keep calling them.
 Uploaded public trust is per certificate. The install command treats an
 uploaded leaf as public only when that PEM chains to a system root.
 
-That check and the private-issuer check run `openssl verify` with the leaf on standard input. Only the
-intermediates (or the candidate issuer) go to a scratch file: the system
-temp folder when it is writable, otherwise `<state>/instance/tmp` (mode
-`0700`). The compiled production binary has no write grant for `/tmp`, and
-`<state>/tls` is `root:tp 0750`, so that instance-owned folder is the one
-place it may write. A check that cannot write or run openssl reads as "not
-verified", never as an error.
+Both checks run in memory: the control plane writes no certificate file
+and starts no process for them. Public trust is a TLS handshake against the
+control plane's own listener on loopback, with the uploaded hostname as SNI;
+the runtime's verifier decides whether the chain it serves reaches a public
+root and covers the name (`src/platform/deno/public-tls-probe.ts`, registered
+by the Deno composition root through `setPublicTlsProbe`). It judges what the
+listener serves, so a just-uploaded certificate counts once Caddy serves it.
+The private issuer is checked with WebCrypto (`verifyCertificateSignature`,
+RSA or ECDSA with the hash the certificate names). A handshake that cannot
+run (no listener, timeout) withholds the command with its own message
+(`uploadedTrustUnchecked`), never an unhandled error. Workers never reaches
+this path: the hosted control plane stores no uploaded hostnames.
 
 `TURBOPANEL_TLS_PUBLIC` stays an aggregate signal (any Let's Encrypt hostname,
 or the operator's public-TLS setting) and does not mark an unrelated upload

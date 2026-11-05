@@ -31,14 +31,6 @@ import {
 
 const PEM_BLOCK = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g
 
-const LOADER_ENV_VARS = [
-  'LD_LIBRARY_PATH',
-  'LD_PRELOAD',
-  'LD_AUDIT',
-  'DYLD_LIBRARY_PATH',
-  'DYLD_INSERT_LIBRARIES',
-]
-
 function splitCertificatePems(pem: string): string[] {
   return [...pem.matchAll(PEM_BLOCK)].map((match) => match[0])
 }
@@ -53,16 +45,6 @@ async function listServedHostnames(db: Db): Promise<ServedHostname[]> {
   return rows.map((row) => ({ ...row, source: effectiveCertificateSource(row) }))
 }
 
-function uploadedCertIds(rows: readonly ServedHostname[]): string[] {
-  const ids = new Set<string>()
-  for (const row of rows) {
-    if (row.source === 'uploaded' && row.uploadedCertId) {
-      ids.add(row.uploadedCertId)
-    }
-  }
-  return [...ids]
-}
-
 function toTrustRow(
   row: ServedHostname,
   trust: ReadonlyMap<string, boolean>
@@ -74,179 +56,76 @@ function toTrustRow(
   return { ...base, publicUploaded: declared }
 }
 
-function opensslSpawnEnv(): Record<string, string> {
-  const env = { ...Deno.env.toObject() }
-  for (const key of LOADER_ENV_VARS) delete env[key]
-  return env
-}
+/**
+ * What a TLS client sees when it dials an uploaded hostname: `public` when
+ * the served chain verifies against the runtime's public roots for that
+ * name, `private` when the handshake refuses the certificate, and
+ * `unavailable` when nothing could be checked (no listener, timeout, or no
+ * probe on this runtime).
+ */
+export type PublicTlsAnswer = 'public' | 'private' | 'unavailable'
 
-function isDenied(err: unknown): boolean {
-  return err instanceof Deno.errors.NotCapable || err instanceof Deno.errors.PermissionDenied
-}
+/** Dials `hostname` on `port` and reports what its certificate is. */
+export type PublicTlsProbe = (hostname: string, port: number) => Promise<PublicTlsAnswer>
 
 /**
- * File and process calls the openssl checks make. Production uses Deno;
- * host-free tests pass their own so a denied write can be proven harmless.
+ * The check runs in memory: no certificate file is written and no process
+ * is started. Only the Deno composition root registers a probe (a TLS
+ * handshake with the runtime's own verifier); Workers has none and never
+ * reaches this path, because the hosted control plane stores no uploaded
+ * hostnames.
  */
-export type OpensslCheckIo = {
-  /** `TURBOPANEL_STATE_DIR`, when set. */
-  stateDir: () => string | undefined
-  makeTempFile: (options: { dir?: string; prefix: string; suffix: string }) => Promise<string>
-  mkdir: (path: string, options: { recursive: boolean; mode: number }) => Promise<void>
-  writeTextFile: (path: string, data: string) => Promise<void>
-  remove: (path: string) => Promise<void>
-  /** Runs `openssl <args>` with `stdin` on its standard input; true on exit 0. */
-  runOpenssl: (args: string[], stdin: string) => Promise<boolean>
+let registeredProbe: PublicTlsProbe | null = null
+
+/** Called once by the Deno composition root; tests pass their own probe. */
+export function setPublicTlsProbe(probe: PublicTlsProbe | null): void {
+  registeredProbe = probe
 }
 
-async function spawnOpenssl(args: string[], stdin: string): Promise<boolean> {
-  for (const bin of ['/usr/bin/openssl', 'openssl']) {
-    try {
-      const child = new Deno.Command(bin, {
-        args,
-        env: opensslSpawnEnv(),
-        stdin: 'piped',
-        stdout: 'null',
-        stderr: 'null',
-      }).spawn()
-      // A write error (openssl exited early) still leaves the exit status
-      // as the answer, so it must not send the loop to the next binary.
-      const writer = child.stdin.getWriter()
-      await writer.write(new TextEncoder().encode(stdin)).catch(() => undefined)
-      await writer.close().catch(() => undefined)
-      return (await child.status).success
-    } catch (err) {
-      if (isDenied(err)) return false
-    }
-  }
-  return false
-}
-
-function denoOpensslCheckIo(): OpensslCheckIo {
-  return {
-    stateDir: () => Deno.env.get('TURBOPANEL_STATE_DIR'),
-    makeTempFile: (options) => Deno.makeTempFile(options),
-    mkdir: (path, options) => Deno.mkdir(path, options),
-    writeTextFile: (path, data) => Deno.writeTextFile(path, data),
-    remove: (path) => Deno.remove(path),
-    runOpenssl: spawnOpenssl,
-  }
-}
-
-const SCRATCH_PREFIX = 'tp-uploaded-trust-'
-
-/**
- * The scratch folder the instance owns under production permissions:
- * `<state>/instance/tmp`. The compiled binary may write only under
- * `/run/turbopanel` and `/var/lib/turbopanel`, so the system temp folder is
- * denied there, and `<state>/tls` belongs to root. `<state>/instance` is the
- * instance user's own folder (its HOME lives under it).
- */
-export function opensslScratchDir(stateDir: string | undefined): string {
-  const state = stateDir?.trim().replace(/\/+$/, '') || '/var/lib/turbopanel'
-  return `${state}/instance/tmp`
-}
-
-/** A fresh scratch file in `dir` (the system temp folder when unset) holding `body`. */
-async function scratchFileIn(io: OpensslCheckIo, body: string, dir?: string): Promise<string> {
-  if (dir) await io.mkdir(dir, { recursive: true, mode: 0o700 })
-  const path = await io.makeTempFile({ dir, prefix: SCRATCH_PREFIX, suffix: '.pem' })
+function hostAndPort(host: string): { name: string; port: number } | null {
+  const name = hostLabel(host)
+  if (!name) return null
   try {
-    await io.writeTextFile(path, body)
-  } catch (err) {
-    await io.remove(path).catch(() => undefined)
-    throw err
-  }
-  return path
-}
-
-/**
- * Writes `body` to a fresh scratch file and returns its path. Tries the
- * system temp folder (development, tests) and then the instance's own
- * scratch folder (the compiled production binary). Throws when neither is
- * writable; every caller turns that into "not verified".
- */
-async function writeVerifyPem(io: OpensslCheckIo, body: string): Promise<string> {
-  try {
-    return await scratchFileIn(io, body)
+    const url = new URL(host.includes('://') ? host : `https://${host}`)
+    return { name, port: url.port ? Number(url.port) : 443 }
   } catch {
-    return await scratchFileIn(io, body, opensslScratchDir(io.stateDir()))
+    return null
+  }
+}
+
+/** Never throws: a probe failure reads as `unavailable`. */
+export async function uploadedHostnameTrust(
+  host: string,
+  probe: PublicTlsProbe | null = registeredProbe
+): Promise<PublicTlsAnswer> {
+  const target = hostAndPort(host)
+  if (!probe || !target) return 'unavailable'
+  try {
+    return await probe(target.name, target.port)
+  } catch {
+    return 'unavailable'
   }
 }
 
 /**
- * Runs `openssl verify` with the leaf on standard input and the extra
- * certificates (if any) in one scratch file behind `flag`. False when the
- * check cannot run at all.
+ * Public trust per uploaded certificate, from the first hostname that serves
+ * it. An `unavailable` answer leaves the certificate out, so the caller
+ * falls back to the aggregate signal and the private-issuer path decides.
  */
-async function opensslVerify(
-  io: OpensslCheckIo,
-  leaf: string,
-  extra: { flag: string[]; pem: string } | null
-): Promise<boolean> {
-  let extraPath: string | null = null
-  try {
-    const args = ['verify']
-    if (extra) {
-      extraPath = await writeVerifyPem(io, extra.pem)
-      args.push(...extra.flag, extraPath)
-    }
-    return await io.runOpenssl(args, leaf)
-  } catch {
-    return false
-  } finally {
-    if (extraPath) await io.remove(extraPath).catch(() => undefined)
-  }
-}
-
-async function verifyAgainstSystemRoots(
-  io: OpensslCheckIo,
-  leaf: string,
-  intermediates: string
-): Promise<boolean> {
-  // No -CAfile: OpenSSL's default trust store is the one this distribution
-  // configured (Debian's /etc/ssl/certs, RHEL's /etc/pki/tls, …), and it
-  // honours SSL_CERT_FILE / SSL_CERT_DIR. A hard-coded Debian bundle made
-  // every public upload read as private on RHEL-family hosts.
-  const extra = intermediates.length > 0 ? { flag: ['-untrusted'], pem: intermediates } : null
-  return await opensslVerify(io, leaf, extra)
-}
-
-/**
- * True when `certPem` (leaf, optionally followed by intermediates) chains to
- * the host trust store. A private or unreadable chain is not public.
- */
-export async function uploadedCertificateChainsToPublicRoot(
-  certPem: string,
-  io: OpensslCheckIo | null = null
-): Promise<boolean> {
-  if (typeof Deno === 'undefined') return false
-  const blocks = splitCertificatePems(certPem)
-  const leaf = blocks[0]
-  if (!leaf) return false
-  try {
-    return await verifyAgainstSystemRoots(
-      io ?? denoOpensslCheckIo(),
-      leaf,
-      blocks.slice(1).join('\n')
-    )
-  } catch {
-    return false
-  }
-}
-
-async function publicTrustByCertificate(db: Db, ids: string[]): Promise<Map<string, boolean>> {
+async function publicTrustByCertificate(
+  rows: readonly ServedHostname[],
+  probe: PublicTlsProbe | null
+): Promise<Map<string, boolean>> {
   const trust = new Map<string, boolean>()
-  if (ids.length === 0 || typeof Deno === 'undefined') return trust
-  const rows = await db
-    .select({
-      id: instanceUploadedCertificate.id,
-      certPem: instanceUploadedCertificate.certPem,
-    })
-    .from(instanceUploadedCertificate)
-    .where(inArray(instanceUploadedCertificate.id, ids))
-  await forEachSequential(rows, async (row) => {
-    trust.set(row.id, await uploadedCertificateChainsToPublicRoot(row.certPem))
+  const firstHost = new Map<string, string>()
+  for (const row of rows) {
+    if (row.source === 'uploaded' && row.uploadedCertId && !firstHost.has(row.uploadedCertId)) {
+      firstHost.set(row.uploadedCertId, row.host)
+    }
+  }
+  await forEachSequential([...firstHost], async ([id, host]) => {
+    const answer = await uploadedHostnameTrust(host, probe)
+    if (answer !== 'unavailable') trust.set(id, answer === 'public')
   })
   return trust
 }
@@ -301,16 +180,10 @@ export function privateUploadedTrustUnavailable(hostname: string): string {
   return `The uploaded certificate for ${hostname} is not publicly trusted, and TurboPanel has no private issuer that covers it. In Admin → Access, upload the leaf together with the private issuer that signed it, and include ${hostname} on the certificate. The install command is withheld until that issuer can be verified. Bootstrap insecure TLS is not saved as runtime trust.`
 }
 
-/** `io` is null on Workers, where only the signature check runs. */
-async function issuerSignsLeaf(
-  io: OpensslCheckIo | null,
-  leaf: string,
-  issuer: string
-): Promise<boolean> {
+/** In memory only: WebCrypto checks the signature, nothing is written or run. */
+async function issuerSignsLeaf(leaf: string, issuer: string): Promise<boolean> {
   if (pemCompact(leaf) === pemCompact(issuer)) return false
-  if (await verifyCertificateSignature(leaf, issuer).catch(() => false)) return true
-  if (!io) return false
-  return await opensslVerify(io, leaf, { flag: ['-partial_chain', '-CAfile'], pem: issuer })
+  return await verifyCertificateSignature(leaf, issuer).catch(() => false)
 }
 
 /**
@@ -321,8 +194,7 @@ async function issuerSignsLeaf(
  */
 export async function privateUploadedTrustMaterial(
   certPem: string,
-  hostname: string,
-  io: OpensslCheckIo | null = null
+  hostname: string
 ): Promise<string | null> {
   const blocks = splitCertificatePems(certPem)
   const leaf = blocks[0]
@@ -335,10 +207,9 @@ export async function privateUploadedTrustMaterial(
     return null
   }
   if (!coversHostname(names, hostname)) return null
-  const checkIo = typeof Deno === 'undefined' ? null : (io ?? denoOpensslCheckIo())
   const issuers: string[] = []
   await forEachSequential(blocks.slice(1), async (block) => {
-    if (await issuerSignsLeaf(checkIo, leaf, block)) issuers.push(block.trim())
+    if (await issuerSignsLeaf(leaf, block)) issuers.push(block.trim())
   })
   if (issuers.length === 0) return null
   return `${issuers.join('\n')}\n`
@@ -356,6 +227,35 @@ async function loadUploadedCertPem(db: Db, id: string): Promise<string | null> {
   return row?.certPem ?? null
 }
 
+type UploadedTrust = { answer: PublicTlsAnswer | 'none'; pem: string | null }
+
+/**
+ * Trust for one dialed uploaded hostname: `none` when the name is not an
+ * upload, else the probe's answer and, for a private upload, the issuer from
+ * its PEM that signed the leaf (null when there is none).
+ */
+async function uploadedTrustForHostname(
+  db: Db,
+  hostname: string,
+  probe: PublicTlsProbe | null
+): Promise<UploadedTrust> {
+  const none: UploadedTrust = { answer: 'none', pem: null }
+  const wanted = hostLabel(hostname)
+  if (!wanted) return none
+  const hostnames = await listServedHostnames(db)
+  const row = hostnames.find(
+    (item) => item.source === 'uploaded' && hostLabel(item.host) === wanted
+  )
+  if (!row?.uploadedCertId) return none
+  const certPem = await loadUploadedCertPem(db, row.uploadedCertId)
+  if (!certPem) return none
+  return await rememberPrivateTrust(certPem, wanted, async () => {
+    const answer = await uploadedHostnameTrust(row.host, probe)
+    if (answer !== 'private') return { answer, pem: null }
+    return { answer, pem: await privateUploadedTrustMaterial(certPem, wanted) }
+  })
+}
+
 /**
  * PEM trust anchor for one dialed private uploaded hostname, or null when
  * that name is not a private upload with a covering issuer. Never the
@@ -364,55 +264,51 @@ async function loadUploadedCertPem(db: Db, id: string): Promise<string | null> {
  */
 export async function readPrivateUploadedTrustPem(
   db: Db,
-  hostname: string
+  hostname: string,
+  probe: PublicTlsProbe | null = registeredProbe
 ): Promise<string | null> {
-  const wanted = hostLabel(hostname)
-  if (!wanted) return null
-  const hostnames = await listServedHostnames(db)
-  const row = hostnames.find(
-    (item) => item.source === 'uploaded' && hostLabel(item.host) === wanted
-  )
-  if (!row?.uploadedCertId) return null
-  const certPem = await loadUploadedCertPem(db, row.uploadedCertId)
-  if (!certPem) return null
-  return await rememberPrivateTrust(certPem, wanted, async () => {
-    if (await uploadedCertificateChainsToPublicRoot(certPem)) return null
-    return await privateUploadedTrustMaterial(certPem, wanted)
-  })
+  return (await uploadedTrustForHostname(db, hostname, probe)).pem
 }
 
 /**
  * The answer for one (certificate, hostname) pair, kept for a few minutes.
  *
  * `GET /instance/uploaded-trust` is unauthenticated by design (the installer
- * calls it before it has any trust), and answering it spawns up to three
- * `openssl verify` runs. Only a configured uploaded hostname reaches this far,
- * so the keys are bounded; the cache stops a request loop against one name
- * from becoming a process-spawn loop. Keyed on the certificate's contents, so
- * a replaced upload is never answered from the old one.
+ * calls it before it has any trust), and answering it runs a TLS handshake.
+ * Only a configured uploaded hostname reaches this far, so the keys are
+ * bounded; the cache stops a request loop against one name from becoming a
+ * connection loop. Keyed on the certificate's contents, so a replaced upload
+ * is never answered from the old one. An `unavailable` answer is not kept,
+ * so the next request checks again.
  */
 const PRIVATE_TRUST_TTL_MS = 5 * 60_000
 const PRIVATE_TRUST_MAX_ENTRIES = 128
-const privateTrustCache = new Map<string, { expiresAt: number; pem: string | null }>()
+const privateTrustCache = new Map<string, { expiresAt: number; trust: UploadedTrust }>()
 
 async function rememberPrivateTrust(
   certPem: string,
   hostname: string,
-  compute: () => Promise<string | null>
-): Promise<string | null> {
+  compute: () => Promise<UploadedTrust>
+): Promise<UploadedTrust> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(certPem))
   const key = `${hostname}\n${Array.from(new Uint8Array(digest), (b) =>
     b.toString(16).padStart(2, '0')
   ).join('')}`
   const now = Date.now()
   const hit = privateTrustCache.get(key)
-  if (hit && hit.expiresAt > now) return hit.pem
-  const pem = await compute()
+  if (hit && hit.expiresAt > now) return hit.trust
+  const trust = await compute()
+  if (trust.answer === 'unavailable') return trust
   if (privateTrustCache.size >= PRIVATE_TRUST_MAX_ENTRIES) {
     privateTrustCache.clear()
   }
-  privateTrustCache.set(key, { expiresAt: now + PRIVATE_TRUST_TTL_MS, pem })
-  return pem
+  privateTrustCache.set(key, { expiresAt: now + PRIVATE_TRUST_TTL_MS, trust })
+  return trust
+}
+
+/** Why an uploaded hostname's install command is withheld when its certificate could not be checked. */
+export function uploadedTrustUnchecked(hostname: string): string {
+  return `TurboPanel could not check the certificate that ${hostname} serves, so the install command is withheld. Make sure the control plane is reachable on that address and try again.`
 }
 
 /**
@@ -424,7 +320,8 @@ async function privateUploadTrust(
   db: Db,
   instanceUrl: string,
   source: ReturnType<typeof certificateSourceForInstallOrigin>,
-  publicUploaded: boolean | undefined
+  publicUploaded: boolean | undefined,
+  probe: PublicTlsProbe | null
 ): Promise<{ error: string } | { pem: string | null }> {
   if (source !== 'uploaded' || publicUploaded === true) return { pem: null }
   const host = hostLabel(instanceUrl) ?? instanceUrl.trim()
@@ -432,9 +329,11 @@ async function privateUploadTrust(
   // the edge certificate was not signed by would look installed and then
   // fail closed in the installer.
   if (typeof Deno === 'undefined') return { error: privateUploadedTrustUnavailable(host) }
-  const pem = await readPrivateUploadedTrustPem(db, host)
-  if (!pem) return { error: privateUploadedTrustUnavailable(host) }
-  return { pem }
+  const trust = await uploadedTrustForHostname(db, host, probe)
+  if (trust.answer === 'public') return { pem: null }
+  if (trust.pem) return { pem: trust.pem }
+  if (trust.answer === 'unavailable') return { error: uploadedTrustUnchecked(host) }
+  return { error: privateUploadedTrustUnavailable(host) }
 }
 
 async function readPlatformCaQuietly(
@@ -455,6 +354,8 @@ export type InstallOriginTlsReaders = {
    * unset.
    */
   readPlatformCaPem?: () => Promise<string>
+  /** Overrides the registered public-trust probe (tests). */
+  probePublicTls?: PublicTlsProbe | null
 }
 
 /**
@@ -482,7 +383,8 @@ export async function resolveInstallOriginTls(
   // Hosted (no self-hosted listener): the platform terminates TLS and stored
   // hostname rows are ignored, so none can mark the origin untrusted.
   const hostnames = selfHostedListener ? await listServedHostnames(db) : []
-  const trust = await publicTrustByCertificate(db, uploadedCertIds(hostnames))
+  const probe = readers.probePublicTls === undefined ? registeredProbe : readers.probePublicTls
+  const trust = await publicTrustByCertificate(hostnames, probe)
   const trusted = hostnames.map((row) => toTrustRow(row, trust))
   const source = certificateSourceForInstallOrigin(instanceUrl, hostnames)
   const leafNames = selfHostedListener ? await readPlatformCaLeafNames() : null
@@ -497,7 +399,7 @@ export async function resolveInstallOriginTls(
     origin: instanceUrl,
     selfHostedListener,
   })
-  const upload = await privateUploadTrust(db, instanceUrl, source, options.publicUploaded)
+  const upload = await privateUploadTrust(db, instanceUrl, source, options.publicUploaded, probe)
   if ('error' in upload) return { ok: false, error: upload.error }
   const insecureTls = installOriginNeedsInsecureTls(instanceUrl, options)
   if (!insecureTls) return { ok: true, insecureTls, caFingerprints: [] }
