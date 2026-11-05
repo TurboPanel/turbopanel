@@ -7343,13 +7343,14 @@ test('a late success for a deploy whose project was deleted is confirmed and wri
   })
 })
 
-test('a late success whose report the database refuses is still confirmed, with the status corrected', async () => {
+test('a late success with characters Postgres refuses stores the cleaned report', async () => {
   await withDeployFixtures(async (ctx) => {
     const record = await timedOutDeploy(ctx)
-    // Postgres refuses a NUL character inside jsonb, so the full correction fails.
+    // Postgres refuses a NUL character and a lone surrogate inside jsonb; the
+    // summary is cleaned first, so the full correction still stores the report.
     const envelope = lateSuccess(record.id, {
       projectName: 'tp-deploy-test',
-      warnings: ['build printed \u0000'],
+      warnings: ['build printed \u0000', 'half \uD800 pair'],
     })
 
     const ack = await ackForReportedOutcome(ctx.db, {
@@ -7360,6 +7361,49 @@ test('a late success whose report the database refuses is still confirmed, with 
 
     assertEquals(ack?.type, 'command-outcome-ack')
     assertEquals(ack?.id, record.id)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'succeeded')
+    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.result, {
+      projectName: 'tp-deploy-test',
+      warnings: ['build printed ', 'half \uFFFD pair'],
+    })
+    const [meta] = await ctx.db
+      .select({ metadata: command.metadata })
+      .from(command)
+      .where(eq(command.id, record.id))
+    assertEquals(
+      (meta?.metadata as { lateOutcome?: { note: string } }).lateOutcome?.note,
+      LATE_OUTCOME_NOTE
+    )
+  })
+})
+
+test('a late success whose report the database refuses is still confirmed, with the status corrected', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await timedOutDeploy(ctx)
+    // Only this test's command row refuses a stored report, with a data error,
+    // so the full correction fails and the status alone is corrected.
+    const refuse = sql.raw(`tp_refuse_${record.id.replaceAll('-', '')}`)
+    await ctx.db.execute(
+      sql`CREATE FUNCTION ${refuse}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'report refused' USING ERRCODE = '22P05'; END $$`
+    )
+    await ctx.db.execute(
+      sql`CREATE TRIGGER ${refuse} BEFORE UPDATE ON command FOR EACH ROW WHEN (OLD.id = ${sql.raw(`'${record.id}'`)} AND NEW.result_summary IS NOT NULL) EXECUTE FUNCTION ${refuse}()`
+    )
+    try {
+      const ack = await ackForReportedOutcome(ctx.db, {
+        serverId: ctx.serverId,
+        envelope: lateSuccess(record.id, { projectName: 'tp-deploy-test' }),
+        record: null,
+      })
+      assertEquals(ack?.type, 'command-outcome-ack')
+      assertEquals(ack?.id, record.id)
+    } finally {
+      await ctx.db.execute(sql`DROP TRIGGER ${refuse} ON command`)
+      await ctx.db.execute(sql`DROP FUNCTION ${refuse}()`)
+    }
+
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'succeeded')
     assertEquals(stored?.error ?? null, null)
