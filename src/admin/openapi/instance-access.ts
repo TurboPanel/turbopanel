@@ -16,7 +16,10 @@ export const INSTANCE_ACCESS_PATHS = {
         'Returns `{ ok, configured, current, next, seal, urls, installUrl, servers }`. ' +
         '`current` is `{ fingerprint, keyset }`, `next` and `seal` are `{ fingerprint }` or ' +
         'null, and `servers` lists each server with `pinnedBy` (`install`, `upgrade`, ' +
-        '`unsafe` or `none`). Public values only; no key material is ever returned.',
+        '`unsafe` or `none`) and `pinReport`: its last signed pin report ' +
+        '`{ fingerprint, keyset, reportedAt, matches }`, or null before one arrives. ' +
+        '`matches` false means the server pinned another key. Public values only; no key ' +
+        'material is ever returned.',
       security: [...cookieSecurity],
       responses: {
         '200': { description: 'Fingerprints and pinned-by state' },

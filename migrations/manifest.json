@@ -152,6 +152,12 @@
       "tag": "0024_drop_acme_enabled_option",
       "when": 1793882917737,
       "sha256": "7833ac0e86551ce7ca784cd01458e423fa36842838873ff9ad227741cb75f0c9"
+    },
+    {
+      "idx": 25,
+      "tag": "0025_server_pin_report",
+      "when": 1793892427697,
+      "sha256": "7f76b95525b485584e291d2df710e508beae32e04fae3678054ecf1efffadefc"
     }
   ]
 }

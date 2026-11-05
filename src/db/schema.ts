@@ -804,6 +804,21 @@ export const server = pgTable(
      */
     trustLevel: smallint('trust_level').default(0).notNull(),
     /**
+     * The control plane key fingerprint the server's pin file holds, from its
+     * last signed pin report (empty when nothing is pinned). NULL until a
+     * daemon that signs the report attaches.
+     */
+    trustPinFingerprint: text('trust_pin_fingerprint'),
+    /** The key set number of that pin, from the same report. */
+    trustPinKeyset: integer('trust_pin_keyset'),
+    /** When the last signed pin report verified. */
+    trustPinReportedAt: timestamp('trust_pin_reported_at', { precision: 3, withTimezone: true }),
+    /**
+     * Whether that pin named this control plane's current or next key when it
+     * was reported. False raises the `panel.pin_mismatch` alarm.
+     */
+    isTrustPinMatching: boolean('is_trust_pin_matching'),
+    /**
      * The server's container range (a /16 from the org container pool), set
      * the first time a cross-server container network or TurboFabric needs
      * it. Subnets of cross-server networks are carved from it, and a relay's
