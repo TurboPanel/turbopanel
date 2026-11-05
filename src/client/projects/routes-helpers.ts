@@ -19,7 +19,7 @@ import {
   type CreateProjectType,
 } from './catalog/index.ts'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
-import { isProjectIcon } from '../../features/projects/vocabulary.ts'
+import { parseIconValue } from '../../lib/icons.ts'
 import { isConfiguredProjectType, isProductionEnvironmentName } from './empty-setup.ts'
 import { isValidEnvironmentName } from '../../contracts/directory-names.ts'
 import { normalizeDisplayName } from '../../lib/display-name-format.ts'
@@ -230,16 +230,16 @@ export function stampCreateProjectMetadata(
 }
 
 /**
- * Optional `icon`: one key from the fixed list, or null for the default.
- * `undefined` means the caller did not mention it.
+ * Optional `icon`: one key from the fixed list, one emoji, or null for the
+ * default. `undefined` means the caller did not mention it. Whether the
+ * organization allows emoji is the route's check, not this one.
  */
 export function parseProjectIconField(
   body: Record<string, unknown>
 ): { ok: true; icon: string | null | undefined } | ProjectRouteValidationError {
-  const icon = body.icon
-  if (icon === undefined || icon === null) return { ok: true, icon }
-  if (!isProjectIcon(icon)) return { ok: false, error: 'Invalid request', status: 400 }
-  return { ok: true, icon }
+  const parsed = parseIconValue(body.icon)
+  if (!parsed.ok) return { ok: false, error: 'Invalid request', status: 400 }
+  return { ok: true, icon: parsed.icon }
 }
 
 export function parseCreateProjectServerIdField(

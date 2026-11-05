@@ -233,6 +233,15 @@ TURBOPANEL_DATABASE_URL='postgresql://…@127.0.0.1:5432/postgres' pnpm check:mi
 `node scripts/check-migration-upgrade.mjs --from <tag>` tests the upgrade from
 an older release instead (the seed may not fit releases before the newest).
 
+**Icon columns** (`project.icon`, `organization.icon`, `0023_organization_icon_and_emoji_icons`)
+hold NULL, a key from `ICON_KEYS` (`src/lib/icons.ts`) or one emoji. The CHECKs
+list the keys (pinned by `enum-checks.test.ts`) and accept an emoji only by its
+shape, `char_length(icon) BETWEEN 1 AND 16 AND icon !~ '[[:ascii:]]'`, so they
+never enumerate emoji; `isEmojiIcon` is the exact one-grapheme rule every route
+applies before writing. `organization.is_emoji_icon_allowed` (default true)
+turns emoji icons off for the organization and its projects; it refuses new
+ones and never rewrites stored values.
+
 Physical boolean columns use an `is_` prefix (`is_connected`,
 `is_read_eligible`, `is_for_build`, `is_for_runtime`, `is_emit_engine_defaults`,
 `is_read_only`). Public API JSON still uses `connected`, `readEligible`,
