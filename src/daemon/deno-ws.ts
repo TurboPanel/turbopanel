@@ -114,9 +114,7 @@ import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolveSession } from '../client/authn/middleware.ts'
 import { isSuperadminRole } from '../client/authn/session-store.ts'
 import { verifyLocalConsoleAuthorization } from '../developer/local-console-auth.ts'
-import { markRequestNonceUsed } from '../features/servers/daemon-nonce.ts'
-import { DAEMON_SIGNATURE_HEADER } from './authn/request-signature.ts'
-import { panelFingerprintSource, refuseUnsignedUpgrade } from './authn/upgrade-signature.ts'
+import { refuseUnsignedDaemonUpgrade } from './authn/upgrade-signature.ts'
 import {
   ATTACH_PROOF_CLOSE_CODE,
   ATTACH_PROOF_REFUSED_REASON,
@@ -1023,16 +1021,13 @@ export function registerDaemonWebSocket<E extends Env>(
       return c.json({ ok: false, error: 'forbidden' }, 403)
     }
     const refused = daemonState
-      ? await refuseUnsignedUpgrade({
-          header: c.req.header(DAEMON_SIGNATURE_HEADER),
+      ? await refuseUnsignedDaemonUpgrade({
+          db,
+          request: c.req.raw,
+          serverId: payload.sub,
           cnfJkt: payload.cnf?.jkt,
-          trustLevel: daemonState.trustLevel ?? 0,
-          key: daemonState.key,
-          pathname: new URL(c.req.url).pathname,
-          panelFingerprints: panelFingerprintSource(options.panelIdentity),
-          markNonceUsed: (nonce, expiresAt) =>
-            markRequestNonceUsed(db, payload.sub, nonce, expiresAt),
-          nowMs: Date.now(),
+          state: daemonState,
+          panelIdentity: options.panelIdentity,
         })
       : null
     if (refused) return c.json({ ok: false, error: refused.error }, refused.status)

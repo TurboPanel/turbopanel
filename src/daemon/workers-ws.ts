@@ -13,9 +13,7 @@ import type { RateLimiter } from './rate-limit/contracts.ts'
 import { daemonConnectRateLimitKey } from './rate-limit/keys.ts'
 import { resolvePeerAddress } from '../lib/peer-address.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
-import { markRequestNonceUsed } from '../features/servers/daemon-nonce.ts'
-import { DAEMON_SIGNATURE_HEADER } from './authn/request-signature.ts'
-import { panelFingerprintSource, refuseUnsignedUpgrade } from './authn/upgrade-signature.ts'
+import { refuseUnsignedDaemonUpgrade } from './authn/upgrade-signature.ts'
 
 const CELL_SERVER_ID_HEADER = 'X-Turbopanel-Cell-Server-Id'
 const CELL_GEO_HEADER = 'X-Turbopanel-Cell-Geo'
@@ -146,15 +144,13 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
       return new Response('Forbidden', { status: 403 })
     }
 
-    const refused = await refuseUnsignedUpgrade({
-      header: c.req.header(DAEMON_SIGNATURE_HEADER),
+    const refused = await refuseUnsignedDaemonUpgrade({
+      db,
+      request: c.req.raw,
+      serverId,
       cnfJkt: payload.cnf?.jkt,
-      trustLevel: daemonState.trustLevel ?? 0,
-      key: daemonState.key,
-      pathname: new URL(c.req.url).pathname,
-      panelFingerprints: panelFingerprintSource(options.panelIdentity),
-      markNonceUsed: (nonce, expiresAt) => markRequestNonceUsed(db, serverId, nonce, expiresAt),
-      nowMs: Date.now(),
+      state: daemonState,
+      panelIdentity: options.panelIdentity,
     })
     if (refused) return new Response(refused.error, { status: refused.status })
 

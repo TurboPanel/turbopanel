@@ -5,10 +5,14 @@
  * itself with its key (`trust_level` 2); its nonce is used once, so a copied
  * upgrade cannot be replayed. Shared by `workers-ws.ts` and `deno-ws.ts`.
  */
+import type { Db } from '../../db/connection.ts'
+import { markRequestNonceUsed } from '../../features/servers/daemon-nonce.ts'
+import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import { DAEMON_PROOF_TRUST_LEVEL } from './attach-proof.ts'
 import {
   REQUEST_MAX_SKEW_SECONDS,
   daemonKeyThumbprint,
+  DAEMON_SIGNATURE_HEADER,
   verifyDaemonRequest,
 } from './request-signature.ts'
 
@@ -65,4 +69,29 @@ export async function refuseUnsignedUpgrade(params: {
     return { status: 401, error: 'Request replayed' }
   }
   return null
+}
+
+/**
+ * {@link refuseUnsignedUpgrade} for one upgrade request on either runtime:
+ * the header and path from the request, the nonce kept in the `nonce` table.
+ */
+export function refuseUnsignedDaemonUpgrade(params: {
+  db: Db
+  request: Request
+  serverId: string
+  cnfJkt: string | undefined
+  state: { trustLevel?: number; key: { id: string; publicJwk: JsonWebKey } }
+  panelIdentity: (() => Promise<PanelIdentity | null>) | undefined
+}): Promise<UpgradeRefusal | null> {
+  return refuseUnsignedUpgrade({
+    header: params.request.headers.get(DAEMON_SIGNATURE_HEADER),
+    cnfJkt: params.cnfJkt,
+    trustLevel: params.state.trustLevel ?? 0,
+    key: params.state.key,
+    pathname: new URL(params.request.url).pathname,
+    panelFingerprints: panelFingerprintSource(params.panelIdentity),
+    markNonceUsed: (nonce, expiresAt) =>
+      markRequestNonceUsed(params.db, params.serverId, nonce, expiresAt),
+    nowMs: Date.now(),
+  })
 }

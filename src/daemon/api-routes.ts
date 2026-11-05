@@ -1681,6 +1681,29 @@ export function registerDaemonApiRoutes<E extends Env>(
   /** The control plane keys a pinned daemon may name in a signature: current, and next when set. */
   const panelFingerprints = panelFingerprintSource(options.panelIdentity)
 
+  /** Check this request's daemon signature against the server's current key. */
+  const checkRequestSignature = async (
+    c: Context<DaemonApiEnv>,
+    state: ServerDaemonStateWithMetadata,
+    body: Uint8Array<ArrayBuffer>
+  ): Promise<
+    | { ok: true; value: { nonce: string; iat: number } }
+    | { ok: false; status: 400 | 401 | 503; error: string }
+  > => {
+    const fingerprints = await panelFingerprints()
+    if (!fingerprints) return { ok: false, status: 503, error: 'Panel identity unavailable' }
+    return await verifyDaemonRequest({
+      header: c.req.header(DAEMON_SIGNATURE_HEADER),
+      method: c.req.method,
+      pathname: new URL(c.req.url).pathname,
+      body,
+      keyId: state.key.id,
+      publicJwk: state.key.publicJwk,
+      panelFingerprints: fingerprints,
+      nowMs: Date.now(),
+    })
+  }
+
   /**
    * A request must be signed by the daemon key when its token is bound to that
    * key (`cnf`) or the server already proved itself with its key
@@ -1698,24 +1721,13 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (cnf && cnf !== (await daemonKeyThumbprint(state.key.publicJwk))) {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
-    const fingerprints = await panelFingerprints()
-    if (!fingerprints) return c.json({ ok: false, error: 'Panel identity unavailable' }, 503)
     if (contentLengthExceeds(c, gate.maxBodyBytes)) {
       return c.json({ ok: false, error: 'request body too large' }, 413)
     }
     const bodyRead = await readBodyWithByteLimit(c, gate.maxBodyBytes)
     if (!bodyRead.ok) return c.json({ ok: false, error: 'request body too large' }, 413)
     const body = new Uint8Array(bodyRead.bytes)
-    const verified = await verifyDaemonRequest({
-      header: c.req.header(DAEMON_SIGNATURE_HEADER),
-      method: c.req.method,
-      pathname: new URL(c.req.url).pathname,
-      body,
-      keyId: state.key.id,
-      publicJwk: state.key.publicJwk,
-      panelFingerprints: fingerprints,
-      nowMs: Date.now(),
-    })
+    const verified = await checkRequestSignature(c, state, body)
     if (!verified.ok) return c.json({ ok: false, error: verified.error }, verified.status)
     if (gate.singleUse) {
       const fresh = await markRequestNonceUsed(
@@ -1743,27 +1755,17 @@ export function registerDaemonApiRoutes<E extends Env>(
     state: ServerDaemonStateWithMetadata,
     bodyText: string
   ): Promise<{ jkt?: string } | { refusal: { status: 400 | 403 | 503; error: string } }> => {
-    const header = c.req.header(DAEMON_SIGNATURE_HEADER)
     const trustLevel = state.trustLevel ?? 0
-    if (!header) {
+    if (!c.req.header(DAEMON_SIGNATURE_HEADER)) {
       return trustLevel >= DAEMON_PROOF_TRUST_LEVEL
         ? { refusal: { status: 403, error: SIGNED_REQUEST_REQUIRED_ERROR } }
         : {}
     }
-    const fingerprints = await panelFingerprints()
-    if (!fingerprints) return { refusal: { status: 503, error: 'Panel identity unavailable' } }
-    const verified = await verifyDaemonRequest({
-      header,
-      method: c.req.method,
-      pathname: new URL(c.req.url).pathname,
-      body: new TextEncoder().encode(bodyText),
-      keyId: state.key.id,
-      publicJwk: state.key.publicJwk,
-      panelFingerprints: fingerprints,
-      nowMs: Date.now(),
-    })
+    const verified = await checkRequestSignature(c, state, new TextEncoder().encode(bodyText))
     if (!verified.ok) {
-      return { refusal: { status: verified.status === 400 ? 400 : 403, error: verified.error } }
+      // 401 would send the daemon into a token refresh; a bad proof here is a 403.
+      const status = verified.status === 401 ? 403 : verified.status
+      return { refusal: { status, error: verified.error } }
     }
     if (trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
       await raiseServerTrustLevel(db, serverId, DAEMON_PROOF_TRUST_LEVEL)
