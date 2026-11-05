@@ -16,7 +16,9 @@ import {
   service,
   storage,
 } from '../../db/schema.ts'
+import { recordAudit } from '../audit/audit-records.ts'
 import { listServerLabelsForServers } from '../servers/label-records.ts'
+import { type HostAccessAuditEvent, hostAccessAuditEntry } from './host-access-audit.ts'
 import { listEnvironmentSlots } from '../servers/slot-records.ts'
 import {
   type ComposeDeployValidationError,
@@ -57,13 +59,14 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  *
  * - `manager` — a person holding `organization:manage` (owner, manager, or a
  *   platform admin). When `recordApproval` is set, a successful gate records
- *   the document's host-level fingerprint as approved for automated deploys;
+ *   the document's host-level fingerprint as approved for automated deploys
+ *   (and a `compose.host_access.approve` audit row, stamped with `email`);
  *   a preview leaves it off because it changes nothing.
  * - `not_manager` — a person without that grant.
  * - `automated` — no person: the Git webhook.
  */
 export type HostAccessActor =
-  | { kind: 'manager'; userId: string; recordApproval: boolean }
+  | { kind: 'manager'; userId: string; email?: string | null; recordApproval: boolean }
   | { kind: 'not_manager' }
   | { kind: 'automated' }
 
@@ -98,10 +101,15 @@ function readHostAccessApproval(metadata: unknown): HostAccessApproval | null {
  */
 async function authorizeHostAccess(
   db: Db,
-  envRow: { id: string; metadata: unknown },
+  envRow: { id: string; projectId: string; metadata: unknown },
+  organizationId: string,
   merged: ComposeDocument,
-  actor: HostAccessActor
-): Promise<{ error: ComposeDeployValidationError } | { hostLevelApproved: boolean }> {
+  actor: HostAccessActor,
+  record: typeof recordAudit
+): Promise<
+  | { error: ComposeDeployValidationError }
+  | { hostLevelApproved: boolean; hostAccessUse?: HostAccessAuditEvent }
+> {
   const fingerprint = await hostAccessFingerprint(merged.data)
   if (fingerprint === null) return { hostLevelApproved: false }
   const issues = hostAccessIssues(merged.data)
@@ -110,8 +118,19 @@ async function authorizeHostAccess(
   }
   const approved = readHostAccessApproval(envRow.metadata)
   if (actor.kind === 'automated') {
+    // The use row is written by the route once the deploy is persisted, so a
+    // deploy refused further on leaves no claim that it ran.
     return approved?.fingerprint === fingerprint
-      ? { hostLevelApproved: true }
+      ? {
+          hostLevelApproved: true,
+          hostAccessUse: {
+            action: 'compose.host_access.use',
+            fingerprint,
+            issues,
+            approvedBy: approved.approvedBy,
+            approvedAt: approved.approvedAt,
+          },
+        }
       : { error: { kind: 'compose_host_access_requires_approval', issues } }
   }
   if (actor.recordApproval && approved?.fingerprint !== fingerprint) {
@@ -129,6 +148,15 @@ async function authorizeHostAccess(
         metadata: sql`coalesce(${environment.metadata}, '{}'::jsonb) || jsonb_build_object(${HOST_ACCESS_APPROVAL_METADATA_KEY}::text, ${JSON.stringify(approval)}::jsonb)`,
       })
       .where(eq(environment.id, envRow.id))
+    // Only after the approval write succeeded; `recordAudit` never throws.
+    await record(
+      db,
+      hostAccessAuditEntry(
+        { action: 'compose.host_access.approve', issues, ...approval },
+        { organizationId, environmentId: envRow.id, projectId: envRow.projectId },
+        { userId: actor.userId, email: actor.email ?? null }
+      )
+    )
   }
   return { hostLevelApproved: true }
 }
@@ -155,6 +183,13 @@ export type PlannedDeploy = {
    * Docker-socket binds.
    */
   hostLevelApproved: boolean
+  /**
+   * Set when an automated deploy passed the host-level gate on a recorded
+   * approval: the route writes it as a `compose.host_access.use` audit row once
+   * the deploy is persisted. Absent for people and for documents that reach
+   * nothing on the host.
+   */
+  hostAccessUse?: HostAccessAuditEvent
   /**
    * The organization allows builds to fetch a public remote source. Rides every
    * `environment.deploy` command as `remoteBuildSourcesApproved`, so the daemon
@@ -194,6 +229,7 @@ export type PlanEnvironmentDeployDeps = {
   registerComposeMounts?: typeof registerComposeMounts
   listEnvironmentSlots?: typeof listEnvironmentSlots
   listServerLabelsForServers?: typeof listServerLabelsForServers
+  recordAudit?: typeof recordAudit
 }
 
 /** Host-free: pull `options.compose` (or null) from project/environment options. */
@@ -398,7 +434,14 @@ export async function planEnvironmentDeploy(
     composeRemoteBuildSourcesEnabled,
   })
   if (rejected) return { kind: 'compose_rejected', error: rejected }
-  const access = await authorizeHostAccess(db, envRow, merged, params.hostAccess)
+  const access = await authorizeHostAccess(
+    db,
+    envRow,
+    params.organizationId,
+    merged,
+    params.hostAccess,
+    deps.recordAudit ?? recordAudit
+  )
   if ('error' in access) return { kind: 'compose_rejected', error: access.error }
 
   await reconcile(db, params.environmentId, merged)
@@ -480,6 +523,7 @@ export async function planEnvironmentDeploy(
     plan,
     composeValidated: true,
     hostLevelApproved: access.hostLevelApproved,
+    ...(access.hostAccessUse ? { hostAccessUse: access.hostAccessUse } : {}),
     remoteBuildSourcesApproved: composeRemoteBuildSourcesEnabled,
     pinServerId,
     defaultServerId,

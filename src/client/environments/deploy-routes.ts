@@ -145,6 +145,8 @@ import {
   type PlannedDeploy,
 } from '../../features/schedule/index.ts'
 import { servicesMapping } from '../../features/schedule/plan-deploy.ts'
+import { hostAccessAuditEntry } from '../../features/schedule/host-access-audit.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { serverHasHostRunBinding } from '../../features/managed/ingress-bound-consumers.ts'
 import {
@@ -1680,7 +1682,8 @@ async function resolveHostAccessActor(
   db: Db,
   actor: DeployActor,
   organizationId: string,
-  recordApproval: boolean
+  recordApproval: boolean,
+  email: string | null = null
 ): Promise<HostAccessActor> {
   if (actor.actorType === 'system') return { kind: 'automated' }
   const isManager = await can(
@@ -1691,8 +1694,31 @@ async function resolveHostAccessActor(
     organizationId
   )
   return isManager
-    ? { kind: 'manager', userId: actor.actorId, recordApproval }
+    ? { kind: 'manager', userId: actor.actorId, email, recordApproval }
     : { kind: 'not_manager' }
+}
+
+/**
+ * The history row for an automated deploy that runs host-level content under a
+ * recorded approval (`PlannedDeploy.hostAccessUse`). Called once the deploy's
+ * rows are persisted; the approval it names is the one the planner matched.
+ */
+export async function recordHostAccessUse(
+  db: Db,
+  planned: Pick<PlannedDeploy, 'hostAccessUse' | 'projectId'>,
+  auth: Pick<DeployRequestAuth, 'organizationId' | 'actorId'>,
+  environmentId: string,
+  record: typeof recordAudit = recordAudit
+): Promise<void> {
+  if (!planned.hostAccessUse) return
+  await record(
+    db,
+    hostAccessAuditEntry(
+      planned.hostAccessUse,
+      { organizationId: auth.organizationId, environmentId, projectId: planned.projectId },
+      { userId: null, email: null, automatedActorId: auth.actorId }
+    )
+  )
 }
 
 async function resolveSuccessfulPlan(
@@ -2213,7 +2239,13 @@ async function runEnvironmentDeploy(
     environmentId,
     auth.organizationId,
     // Applying hosting settings is not someone approving host-level Compose.
-    await resolveHostAccessActor(db, auth, auth.organizationId, auth.hostingsOnly !== true)
+    await resolveHostAccessActor(
+      db,
+      auth,
+      auth.organizationId,
+      auth.hostingsOnly !== true,
+      c.get('session')?.email ?? null
+    )
   )
   if (planned instanceof Response) return planned
 
@@ -2299,6 +2331,7 @@ async function runEnvironmentDeploy(
     if (persisted instanceof Response) return persisted
     const created = persisted
     spanningCommitted = true
+    await recordHostAccessUse(db, planned, auth, environmentId)
     const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
       created,
       environmentId,

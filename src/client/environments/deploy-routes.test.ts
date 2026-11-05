@@ -21,6 +21,7 @@ import type { PreparedDeployCompose } from './deploy-prepare.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
+  audit,
   command,
   container,
   deployment,
@@ -3070,6 +3071,18 @@ async function storedApproval(ctx: HostLevelCtx): Promise<unknown> {
   return metadata?.composeHostAccessApproval
 }
 
+/** The host-level approval rows for this environment, oldest first. */
+async function hostAccessAuditActions(ctx: HostLevelCtx): Promise<string[]> {
+  const rows = await ctx.db
+    .select({ action: audit.action, createdAt: audit.createdAt, id: audit.id })
+    .from(audit)
+    .where(and(eq(audit.organizationId, ctx.organizationId), eq(audit.targetId, ctx.environmentId)))
+  return rows
+    .filter((row) => row.action.startsWith('compose.host_access.'))
+    .sort((a, b) => (a.id < b.id ? -1 : Number(a.id > b.id)))
+    .map((row) => row.action)
+}
+
 test('POST /environments/:id/deploy refuses a Docker socket bind while host-level features are off', async () => {
   await withDeployFixtures(async (ctx) => {
     await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), false)
@@ -3127,9 +3140,14 @@ test("a manager's deploy approves host-level content for later webhook deploys",
       | undefined
     assertEquals(approval?.approvedBy, ctx.userId)
     assertEquals(approval?.fingerprint.length, 64)
+    assertEquals(await hostAccessAuditActions(ctx), ['compose.host_access.approve'])
 
     assertEquals((await webhookDeploy(ctx)).status, 200)
     assertEquals(ctx.commandQueue.envelopes.length, 2)
+    assertEquals(await hostAccessAuditActions(ctx), [
+      'compose.host_access.approve',
+      'compose.host_access.use',
+    ])
   })
 })
 
