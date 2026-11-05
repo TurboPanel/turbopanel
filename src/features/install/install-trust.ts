@@ -146,9 +146,17 @@ export function opensslScratchDir(env: (key: string) => string | undefined): str
   return `${state}/instance/tmp`
 }
 
-async function scratchFileIn(io: OpensslCheckIo, dir?: string): Promise<string> {
+/** A fresh scratch file in `dir` (the system temp folder when unset) holding `body`. */
+async function scratchFileIn(io: OpensslCheckIo, body: string, dir?: string): Promise<string> {
   if (dir) await io.mkdir(dir, { recursive: true, mode: 0o700 })
-  return await io.makeTempFile({ dir, prefix: SCRATCH_PREFIX, suffix: '.pem' })
+  const path = await io.makeTempFile({ dir, prefix: SCRATCH_PREFIX, suffix: '.pem' })
+  try {
+    await io.writeTextFile(path, body)
+  } catch (err) {
+    await io.remove(path).catch(() => undefined)
+    throw err
+  }
+  return path
 }
 
 /**
@@ -158,19 +166,11 @@ async function scratchFileIn(io: OpensslCheckIo, dir?: string): Promise<string> 
  * writable; every caller turns that into "not verified".
  */
 async function writeVerifyPem(io: OpensslCheckIo, body: string): Promise<string> {
-  let lastError: unknown = null
-  for (const dir of [undefined, opensslScratchDir(io.env)]) {
-    let path: string | null = null
-    try {
-      path = await scratchFileIn(io, dir)
-      await io.writeTextFile(path, body)
-      return path
-    } catch (err) {
-      lastError = err
-      if (path) await io.remove(path).catch(() => undefined)
-    }
+  try {
+    return await scratchFileIn(io, body)
+  } catch {
+    return await scratchFileIn(io, body, opensslScratchDir(io.env))
   }
-  throw new Error('no writable scratch folder for the openssl check', { cause: lastError })
 }
 
 /**
