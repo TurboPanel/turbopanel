@@ -143,6 +143,7 @@ import {
   outboundEnvelopeToWireMessage,
   TERMINAL_REQUEST_RETENTION_MS,
   validateDaemonInboundEnvelope,
+  type DaemonInboundFrameResult,
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
 } from '../../contracts/cell-protocol.ts'
@@ -1859,6 +1860,23 @@ export class DaemonCellObject {
     return intake.raw
   }
 
+  /**
+   * A signed report checked, then the frame validated; null when it was
+   * dropped or refused (a refused frame has already been answered).
+   */
+  async #acceptedInboundFrame(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<Extract<DaemonInboundFrameResult, { ok: true }> | null> {
+    const frame = await this.#screenSignedReport(attachment, raw)
+    if (frame === null) return null
+    const validated = validateDaemonInboundFrame(frame)
+    if (validated.ok) return validated
+    this.#refuseInboundFrame(ws, attachment, validated)
+    return null
+  }
+
   /** Record the hello's signed pin report in the background (never holds up the session). */
   #intakePinReport(attachment: SocketSessionAttachment, panelPin: unknown): void {
     const session = attachment.session
@@ -2401,13 +2419,8 @@ export class DaemonCellObject {
       return
     }
 
-    const frame = await this.#screenSignedReport(session, raw)
-    if (frame === null) return
-    const validated = validateDaemonInboundFrame(frame)
-    if (!validated.ok) {
-      this.#refuseInboundFrame(ws, attachment, validated)
-      return
-    }
+    const validated = await this.#acceptedInboundFrame(ws, session, raw)
+    if (!validated) return
     const parsed = validated.message
     this.#warnInboundNotes(attachment, validated.notes)
 

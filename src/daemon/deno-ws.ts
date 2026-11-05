@@ -1267,6 +1267,19 @@ export function registerDaemonWebSocket<E extends Env>(
         return intake.raw
       }
 
+      /** A signed report checked, then the frame validated; null when dropped or refused. */
+      const acceptedFrame = async (
+        raw: string,
+        ws: WSContext<WebSocket>
+      ): Promise<Extract<DaemonInboundFrameResult, { ok: true }> | null> => {
+        const frame = await screenSignedReport(raw)
+        if (frame === null) return null
+        const validated = validateDaemonInboundFrame(frame)
+        if (validated.ok) return validated
+        await handleUnacceptedFrame(validated, ws)
+        return null
+      }
+
       const handleInboundMessageBody = async (
         raw: string,
         ws: WSContext<WebSocket>
@@ -1285,13 +1298,8 @@ export function registerDaemonWebSocket<E extends Env>(
           return
         }
 
-        const frame = await screenSignedReport(raw)
-        if (frame === null) return
-        const validated = validateDaemonInboundFrame(frame)
-        if (!validated.ok) {
-          await handleUnacceptedFrame(validated, ws)
-          return
-        }
+        const validated = await acceptedFrame(raw, ws)
+        if (!validated) return
         const message = validated.message
         for (const note of validated.notes ?? []) {
           logWarn(
