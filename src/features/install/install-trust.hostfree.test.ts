@@ -134,3 +134,20 @@ test('a certificate that cannot be checked is a clear refusal, never a throw', a
     assertEquals(result, { ok: false, error: uploadedTrustUnchecked(HOST) })
   }
 })
+
+test('the aggregate public-TLS setting does not stand in for a check that could not run', async () => {
+  const { leaf, unrelated } = await chain('aggregate')
+  const db = memoryDb(`${leaf}\n${unrelated}\n`)
+  for (const flag of ['1', 'true']) {
+    const result = await resolveInstallOriginTls(
+      db,
+      ORIGIN,
+      { TURBOPANEL_TLS_PUBLIC: flag },
+      true,
+      {
+        probePublicTls: answers('unavailable'),
+      }
+    )
+    assertEquals(result, { ok: false, error: uploadedTrustUnchecked(HOST) })
+  }
+})

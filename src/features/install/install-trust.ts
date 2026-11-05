@@ -101,15 +101,14 @@ export async function uploadedHostnameTrust(
 }
 
 /**
- * Public trust per uploaded certificate, from the first hostname that serves
- * it. An `unavailable` answer leaves the certificate out, so the caller
- * falls back to the aggregate signal and the private-issuer path decides.
+ * The probe's answer per uploaded certificate, from the first hostname that
+ * serves it.
  */
 async function publicTrustByCertificate(
   rows: readonly ServedHostname[],
   probe: PublicTlsProbe | null
-): Promise<Map<string, boolean>> {
-  const trust = new Map<string, boolean>()
+): Promise<Map<string, PublicTlsAnswer>> {
+  const answers = new Map<string, PublicTlsAnswer>()
   const firstHost = new Map<string, string>()
   for (const row of rows) {
     if (row.source === 'uploaded' && row.uploadedCertId && !firstHost.has(row.uploadedCertId)) {
@@ -117,10 +116,34 @@ async function publicTrustByCertificate(
     }
   }
   await forEachSequential([...firstHost], async ([id, host]) => {
-    const answer = await uploadedHostnameTrust(host, probe)
-    if (answer !== 'unavailable') trust.set(id, answer === 'public')
+    answers.set(id, await uploadedHostnameTrust(host, probe))
   })
+  return answers
+}
+
+/** Public or private per certificate; an unchecked one is left out. */
+function checkedTrust(answers: ReadonlyMap<string, PublicTlsAnswer>): Map<string, boolean> {
+  const trust = new Map<string, boolean>()
+  for (const [id, answer] of answers) {
+    if (answer !== 'unavailable') trust.set(id, answer === 'public')
+  }
   return trust
+}
+
+/**
+ * True when the dialed origin is an uploaded hostname whose certificate
+ * could not be checked. Such a name is withheld outright: the aggregate
+ * `TURBOPANEL_TLS_PUBLIC` signal must not stand in for a check that did not
+ * run.
+ */
+function dialedUploadUnchecked(
+  instanceUrl: string,
+  rows: readonly ServedHostname[],
+  answers: ReadonlyMap<string, PublicTlsAnswer>
+): boolean {
+  const wanted = hostLabel(instanceUrl)
+  const row = rows.find((item) => item.source === 'uploaded' && hostLabel(item.host) === wanted)
+  return row?.uploadedCertId ? answers.get(row.uploadedCertId) === 'unavailable' : false
 }
 
 function platformCaLeafCandidates(): string[] {
@@ -377,7 +400,14 @@ export async function resolveInstallOriginTls(
   // hostname rows are ignored, so none can mark the origin untrusted.
   const hostnames = selfHostedListener ? await listServedHostnames(db) : []
   const probe = readers.probePublicTls === undefined ? registeredProbe : readers.probePublicTls
-  const trust = await publicTrustByCertificate(hostnames, probe)
+  const answers = await publicTrustByCertificate(hostnames, probe)
+  if (dialedUploadUnchecked(instanceUrl, hostnames, answers)) {
+    return {
+      ok: false,
+      error: uploadedTrustUnchecked(hostLabel(instanceUrl) ?? instanceUrl.trim()),
+    }
+  }
+  const trust = checkedTrust(answers)
   const trusted = hostnames.map((row) => toTrustRow(row, trust))
   const source = certificateSourceForInstallOrigin(instanceUrl, hostnames)
   const leafNames = selfHostedListener ? await readPlatformCaLeafNames() : null

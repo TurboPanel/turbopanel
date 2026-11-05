@@ -83,7 +83,12 @@ The private issuer is checked with WebCrypto (`verifyCertificateSignature`,
 RSA or ECDSA with the hash the certificate names). A handshake that cannot
 run (no listener, timeout) withholds the command with its own message
 (`uploadedTrustUnchecked`), never an unhandled error. Workers never reaches
-this path: the hosted control plane stores no uploaded hostnames.
+this path: the hosted control plane stores no uploaded hostnames. An unchecked
+dialed upload is withheld before the aggregate `TURBOPANEL_TLS_PUBLIC`
+fallback, which never stands in for a check that did not run. An uploaded
+IP address sends no SNI, so the listener answers with the certificate it
+serves for loopback (the Platform CA catch-all) and the name reads as
+private: such an upload installs only when its PEM includes the issuer.
 
 `TURBOPANEL_TLS_PUBLIC` stays an aggregate signal (any Let's Encrypt hostname,
 or the operator's public-TLS setting) and does not mark an unrelated upload

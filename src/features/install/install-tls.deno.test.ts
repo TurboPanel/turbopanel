@@ -1024,5 +1024,5 @@ test('an uploaded name whose certificate cannot be checked gets a clear refusal 
     const refused = await resolveInstallOriginTls(db, origin, {}, true, { probePublicTls })
     assertEquals(refused, { ok: false, error: uploadedTrustUnchecked('unchecked.example.com') })
   }
-  assertEquals(calls, 4)
+  assertEquals(calls, 2)
 })
