@@ -12,6 +12,7 @@
  * `src/workers.ts` (`pnpm check:workers-bundle`).
  */
 
+import { internalHostReason } from '../../lib/internal-host.ts'
 import { stripTrailingSlashes } from './origin.ts'
 
 /** `git@host:owner/repo.git` — the scp-like form git accepts. */
@@ -30,27 +31,56 @@ export function isSshCloneUrl(cloneUrl: string): boolean {
 }
 
 /**
- * May a server be asked to read this clone URL (`repo-read-request`,
- * `repo-default-branch-request`)? Only `https://host/...` with no login,
- * `ssh://[user@]host/...` with no password, or scp-like `user@host:path`.
- * `file:`, `git:`, `http:`, `ext::`, a bare path, an empty host, a value git
- * could take as an option, whitespace and backslashes are refused. The daemon
- * checks the same forms again and also refuses internal hosts.
+ * What a person reads when a repository is refused for its host. Owner
+ * decision 2026-11-05: repositories must be on a public git host, with no
+ * setting that lifts it for now.
  */
-export function isDaemonReadableCloneUrl(cloneUrl: string): boolean {
+export const PUBLIC_GIT_HOST_REQUIRED_MESSAGE =
+  'Repositories must be on a public git host. Private and local network addresses, localhost and single-label names (such as gitea) are not supported.'
+
+/** Why a clone URL is refused: its form, or a host that is not public. */
+export type CloneUrlRefusal = 'invalid' | 'host_not_public'
+
+/** The host of an accepted form, or `null` when the form is refused. */
+function allowedFormHost(cloneUrl: string): string | null {
   if (cloneUrl.length === 0 || /[\s\\]/.test(cloneUrl) || cloneUrl.startsWith('-')) {
-    return false
+    return null
   }
   if (cloneUrl.startsWith('https://') || cloneUrl.startsWith('ssh://')) {
     try {
       const parsed = new URL(cloneUrl)
-      if (parsed.hostname === '' || parsed.password !== '') return false
-      return parsed.protocol === 'ssh:' || parsed.username === ''
+      if (parsed.hostname === '' || parsed.password !== '') return null
+      if (parsed.protocol === 'https:' && parsed.username !== '') return null
+      return parsed.hostname
     } catch {
-      return false
+      return null
     }
   }
-  return SCP_LIKE_SSH_RE.test(cloneUrl) && !cloneUrl.includes('@-')
+  if (!SCP_LIKE_SSH_RE.test(cloneUrl) || cloneUrl.includes('@-')) return null
+  return cloneUrl.slice(cloneUrl.indexOf('@') + 1, cloneUrl.indexOf(':'))
+}
+
+/**
+ * The one address rule for a repository, on save (`validateRepositoryUrl`) and
+ * before a server is asked to read it (`repo-read-request`,
+ * `repo-default-branch-request`). Only `https://host/...` with no login,
+ * `ssh://[user@]host/...` with no password, or scp-like `user@host:path`.
+ * `file:`, `git:`, `http:`, `ext::`, a bare path, an empty host, a value git
+ * could take as an option, whitespace and backslashes are `invalid`. A host
+ * that is internal by `internalHostReason` (private, loopback, link-local and
+ * ULA literals, numeric hosts, `localhost`, single-label and reserved names) is
+ * `host_not_public`. A DNS name is not resolved. The daemon checks the same
+ * again before a read or a release checkout.
+ */
+export function cloneUrlRefusal(cloneUrl: string): CloneUrlRefusal | null {
+  const host = allowedFormHost(cloneUrl)
+  if (host === null) return 'invalid'
+  return internalHostReason(host) === null ? null : 'host_not_public'
+}
+
+/** May a server be asked to read this clone URL? See {@link cloneUrlRefusal}. */
+export function isDaemonReadableCloneUrl(cloneUrl: string): boolean {
+  return cloneUrlRefusal(cloneUrl) === null
 }
 
 /**

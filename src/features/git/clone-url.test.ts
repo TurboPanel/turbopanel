@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   branchFromGitRef,
   canonicalizeRepositoryUrl,
+  cloneUrlRefusal,
   commitSubject,
   COMMIT_AUTHOR_MAX_CHARS,
   COMMIT_MESSAGE_MAX_CHARS,
@@ -256,4 +257,46 @@ test('isDaemonReadableCloneUrl accepts only https, ssh and user@host:path', () =
   ]) {
     assertEquals(isDaemonReadableCloneUrl(url), false, url)
   }
+})
+
+test('cloneUrlRefusal refuses a host that is not a public git host', () => {
+  for (const url of [
+    'https://github.com/o/r.git',
+    'https://203.0.113.7/o/r.git',
+    'https://[2606:4700::1]/o/r.git',
+    'git@gitlab.example.com:o/r.git',
+    'https://git.example.test/o/r.git',
+  ]) {
+    assertEquals(cloneUrlRefusal(url), null, url)
+  }
+  for (const url of [
+    'https://10.0.0.5/o/r.git',
+    'https://192.168.1.20/o/r.git',
+    'https://172.16.0.1/o/r.git',
+    'https://100.64.0.1/o/r.git',
+    'https://127.0.0.1/o/r.git',
+    'https://127.1/o/r.git',
+    'https://0x7f000001/o/r.git',
+    'https://2130706433/o/r.git',
+    'https://169.254.169.254/o/r.git',
+    'https://[::1]/o/r.git',
+    'https://[::ffff:10.0.0.1]/o/r.git',
+    'https://[::ffff:127.0.0.1]/o/r.git',
+    'https://[fd00::1]/o/r.git',
+    'https://[fe80::1]/o/r.git',
+    'https://localhost/o/r.git',
+    'https://LOCALHOST./o/r.git',
+    'https://gitea/o/r.git',
+    'https://git.corp.internal/o/r.git',
+    'https://nas.local/o/r.git',
+    'ssh://git@10.0.0.5/o/r.git',
+    'ssh://git@[fd00::1]:2222/o/r.git',
+    'git@10.0.0.5:o/r.git',
+    'git@gitea:o/r.git',
+  ]) {
+    assertEquals(cloneUrlRefusal(url), 'host_not_public', url)
+    assertEquals(isDaemonReadableCloneUrl(url), false, url)
+  }
+  assertEquals(cloneUrlRefusal('file:///srv/r.git'), 'invalid')
+  assertEquals(cloneUrlRefusal('https://user:secret@10.0.0.5/o/r.git'), 'invalid')
 })

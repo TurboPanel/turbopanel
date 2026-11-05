@@ -5,6 +5,7 @@
 import { assertEquals } from '@std/assert'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
+import { PUBLIC_GIT_HOST_REQUIRED_MESSAGE } from '../../features/git/clone-url.ts'
 import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
 import {
   readRepositoryViaDaemon,
@@ -416,6 +417,28 @@ test('a clone URL outside https, ssh and user@host:path is never sent to a serve
     if (read.ok || branch.ok) throw new TypeError('expected failure')
     assertEquals(read.code, 'failed')
     assertEquals(branch.code, 'failed')
+    assertEquals(captured.length, 0)
+  }
+})
+
+test('a clone URL on a private or LAN host is never sent to a server', async () => {
+  for (const cloneUrl of [
+    'https://10.0.0.5/o/r.git',
+    'https://[::ffff:127.0.0.1]/o/r.git',
+    'git@gitea:o/r.git',
+    'ssh://git@localhost/o/r.git',
+  ]) {
+    const captured: { envelope: unknown; timeoutMs: number }[] = []
+    const registry = registryReturning({ status: 'done', result: { ok: true } }, captured)
+    const read = await readRepositoryViaDaemon(UNTOUCHED_DB, registry, { ...BASE_PARAMS, cloneUrl })
+    const branch = await resolveDefaultBranchViaDaemon(UNTOUCHED_DB, registry, {
+      organizationId: 'org-1',
+      cloneUrl,
+      serverIds: [SERVER],
+    })
+    if (read.ok || branch.ok) throw new TypeError('expected failure')
+    assertEquals(read.message, PUBLIC_GIT_HOST_REQUIRED_MESSAGE)
+    assertEquals(branch.message, PUBLIC_GIT_HOST_REQUIRED_MESSAGE)
     assertEquals(captured.length, 0)
   }
 })

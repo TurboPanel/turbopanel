@@ -6,7 +6,7 @@ import {
   type DaemonOutboundEnvelope,
 } from '../../contracts/cell-protocol.ts'
 import { cellTrace } from '../../lib/logger.ts'
-import { isDaemonReadableCloneUrl } from '../../features/git/clone-url.ts'
+import { cloneUrlRefusal, PUBLIC_GIT_HOST_REQUIRED_MESSAGE } from '../../features/git/clone-url.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import type { RepositoryEntry, RepositoryFileEntry } from '../../features/git/git-provider.ts'
 
@@ -16,12 +16,15 @@ import type { RepositoryEntry, RepositoryFileEntry } from '../../features/git/gi
  */
 export const REPO_READ_TIMEOUT_MS = 30_000
 
-/** The answer for a clone URL no server is asked to read. */
+/** The answers for a clone URL no server is asked to read. */
 const REFUSED_ADDRESS = {
-  ok: false,
-  code: 'failed',
-  message:
-    'This repository address is not https://, ssh:// or user@host:path, so no server reads it.',
+  invalid: {
+    ok: false,
+    code: 'failed',
+    message:
+      'This repository address is not https://, ssh:// or user@host:path, so no server reads it.',
+  },
+  host_not_public: { ok: false, code: 'failed', message: PUBLIC_GIT_HOST_REQUIRED_MESSAGE },
 } as const
 
 export type RepoReadOutcome =
@@ -112,7 +115,8 @@ async function askConnectedServer(
     envelope: (ids: { deliveryId: string; requestId: string }) => DaemonOutboundEnvelope
   }
 ): Promise<{ ok: true; payload: Record<string, unknown> } | RoundTripFailure> {
-  if (!isDaemonReadableCloneUrl(params.cloneUrl)) return REFUSED_ADDRESS
+  const refusal = cloneUrlRefusal(params.cloneUrl)
+  if (refusal !== null) return REFUSED_ADDRESS[refusal]
   const records = await loadServerStatusRecords(db, registry, [...params.serverIds])
   const online = records.find((record) => record?.connected)
   if (!online) {
