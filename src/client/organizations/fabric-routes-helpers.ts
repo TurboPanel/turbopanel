@@ -322,7 +322,7 @@ export function advertisedRangeProblemResponse(
 ): Response {
   const hint =
     source === 'datacenter'
-      ? ' (this range comes from a subnet of a datacenter the gateway server is in: change the subnet, or give the gateway ranges of its own)'
+      ? ' (this range comes from a subnet of a datacenter network the gateway server is on: change the subnet, or give the gateway ranges of its own)'
       : ''
   return Response.json(
     {

@@ -148,7 +148,7 @@ function tunnelPath(ctx: PairContext, a: string, b: string): FabricPairApiRow {
       'Same trusted network, but a daemon is too old to skip the tunnel: TurboFabric runs over the LAN until both servers are updated.'
     )
   }
-  return row(a, b, 'fabric', 'Different datacenters: traffic goes through TurboFabric.')
+  return row(a, b, 'fabric', 'Different datacenter networks: traffic goes through TurboFabric.')
 }
 
 /** Why the pair is not a trusted LAN pair, as the end of a sentence. */
@@ -160,7 +160,7 @@ function noLanReason(ctx: PairContext, a: string, b: string): string {
   if (sharedNetworks(ctx, a, b).trusted.length > 0) {
     return 'these servers share a trusted network but a daemon is too old to route container networks over it'
   }
-  return 'these servers are in different datacenters'
+  return 'these servers are on different datacenter networks'
 }
 
 /** Names the container networks the missing path cuts, or nothing. */

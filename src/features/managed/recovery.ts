@@ -36,7 +36,7 @@ export const AUTOMATIC_FAILOVER_BLOCKED_MESSAGE =
   'Automatic failover blocked: unable to verify previous primary is fenced'
 
 export const AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE =
-  'Automatic failover blocked: no same-datacenter failover replica is eligible'
+  'Automatic failover blocked: no failover replica on the same datacenter network is eligible'
 
 /**
  * The transport that received the event has no command queue (the Workers /
@@ -91,7 +91,7 @@ export const FENCE_STOP_UNQUEUED_MESSAGE =
   'Recovery blocked: the fence stop command could not be queued (command queue unavailable)'
 
 export const AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE =
-  'Automatic failover blocked: no same-datacenter failover replica is healthy enough to promote'
+  'Automatic failover blocked: no failover replica on the same datacenter network is healthy enough to promote'
 
 /**
  * The stored observations named no healthy candidate, and the event-time

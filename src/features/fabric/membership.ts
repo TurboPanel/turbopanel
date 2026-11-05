@@ -358,7 +358,7 @@ async function loadLanGatewayDependents(db: Db, serverId: string): Promise<Fabri
     out.push({
       kind: 'lan_gateway',
       id: pin.datacenterId,
-      label: `datacenter "${pin.name ?? pin.datacenterId}"`,
+      label: `datacenter network "${pin.name ?? pin.datacenterId}"`,
     })
   })
   return out

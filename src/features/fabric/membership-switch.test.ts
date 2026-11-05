@@ -213,7 +213,7 @@ test('the only server sharing a datacenter LAN cannot be switched out; a second 
     const blocked = await findFabricDependents(db, { serverId: offId, organizationId })
     assertEquals(
       blocked.map((row) => [row.kind, row.label]),
-      [['lan_gateway', 'datacenter "rack-a"']]
+      [['lan_gateway', 'datacenter network "rack-a"']]
     )
 
     await db.update(relay).set({ role: 'gateway' }).where(eq(relay.serverId, onId))

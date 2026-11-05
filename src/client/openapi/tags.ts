@@ -134,7 +134,7 @@ const parentQueryParameters = [
     in: 'query',
     required: false,
     schema: { type: 'string' },
-    description: 'List tags applied to this datacenter',
+    description: 'List tags applied to this datacenter network',
   },
   {
     name: 'storageId',

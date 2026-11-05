@@ -214,12 +214,12 @@ export const organizationSchemas = {
         minimum: 1,
         maximum: 65535,
         description:
-          'Org-wide SSH listen port. null = inherit platform default 22. Datacenter and server options override this.',
+          'Org-wide SSH listen port. null = inherit platform default 22. Datacenter network and server options override this.',
       },
       ntp: {
         type: ['object', 'null'],
         description:
-          'Desired NTP client settings inherited by datacenters and servers. null = no org NTP default. Apply-to-host stays on POST /servers/{id}/ntp.',
+          'Desired NTP client settings inherited by datacenter networks and servers. null = no org NTP default. Apply-to-host stays on POST /servers/{id}/ntp.',
         properties: {
           enabled: { type: 'boolean' },
           servers: {
@@ -624,7 +624,7 @@ export const organizationSchemas = {
         type: 'array',
         items: { type: 'string' },
         description:
-          "The list the gateway will actually advertise — the operator override when advertisedCidrs is non-empty, otherwise the IPv4 subnets of the relay's datacenters (IPv6 subnets are excluded because host forwarding is IPv4-only).",
+          "The list the gateway will actually advertise — the operator override when advertisedCidrs is non-empty, otherwise the IPv4 subnets of the relay's datacenter networks (IPv6 subnets are excluded because host forwarding is IPv4-only).",
       },
       keepalive: { type: ['integer', 'null'] },
       endpointAddress: {
@@ -634,7 +634,7 @@ export const organizationSchemas = {
       resolvedEndpoint: {
         type: ['string', 'null'],
         description:
-          'Globally-reachable endpoint only: the operator pin, else a public address, else null. Private datacenter addresses are never reported here because this response has no viewer context — read paths[] for source-aware (LAN / NAT / gateway) detail.',
+          'Globally-reachable endpoint only: the operator pin, else a public address, else null. Private datacenter network addresses are never reported here because this response has no viewer context — read paths[] for source-aware (LAN / NAT / gateway) detail.',
       },
       publicKey: { type: ['string', 'null'] },
       prefix: { type: 'string' },
@@ -739,7 +739,7 @@ export const organizationSchemas = {
         type: 'array',
         items: { type: 'string' },
         description:
-          "empty list = derive from the relay's datacenter IPv4 subnets. Each range must be private (RFC 1918, 100.64.0.0/10 or fc00::/7) and no shorter than /8 (IPv4) or /48 (IPv6): default routes and public ranges are 400. A range that overlaps the fabric range, the container pool, a server's fabric container range or a range another gateway advertises (the very same range on two gateways is fine; partly overlapping or nested ranges are not) is 400 gateway_range_overlaps_* with { message, cidr, conflictsWith, otherServerId? }. The daemon refuses a host's whole peer list over one such range, so the same rule also covers the ranges a gateway falls back to from its datacenter subnets when the list is empty.",
+          "empty list = derive from the relay's datacenter network IPv4 subnets. Each range must be private (RFC 1918, 100.64.0.0/10 or fc00::/7) and no shorter than /8 (IPv4) or /48 (IPv6): default routes and public ranges are 400. A range that overlaps the fabric range, the container pool, a server's fabric container range or a range another gateway advertises (the very same range on two gateways is fine; partly overlapping or nested ranges are not) is 400 gateway_range_overlaps_* with { message, cidr, conflictsWith, otherServerId? }. The daemon refuses a host's whole peer list over one such range, so the same rule also covers the ranges a gateway falls back to from its datacenter network subnets when the list is empty.",
       },
       keepalive: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
       endpointAddress: {
@@ -2607,7 +2607,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: "Set one server's TurboFabric switch and role",
       description:
-        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has its own public address; an endpoint override does not count). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
+        "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has its own public address; an endpoint override does not count). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter network LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
