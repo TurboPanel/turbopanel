@@ -16,6 +16,8 @@ import {
 } from '../../features/organizations/organization-options.ts'
 import { ENVIRONMENT_NAME_RULE_MESSAGE } from '../../features/folders/records.ts'
 import { isAllowedTimezone } from '../../lib/timezones.ts'
+import { parseIconValue } from '../../lib/icons.ts'
+import type { AuditAction } from '../../features/audit/audit-records.ts'
 import type { OrganizationSummary } from '../org-context.ts'
 import { BadRequestError, parseName } from '../shared.ts'
 import {
@@ -818,15 +820,92 @@ export function parseOrganizationPatchDisplayName(
   }
 }
 
+/** What `PATCH /organizations/:id` changes; a key left out keeps its stored value. */
+export type OrganizationPatch = {
+  name?: string
+  /** A key, one emoji, or null for the default icon. */
+  icon?: string | null
+  /** True when `icon` is an emoji, so the route checks the emoji setting. */
+  iconIsEmoji: boolean
+  isEmojiIconAllowed?: boolean
+}
+
+/**
+ * PATCH takes any of `name` (non-empty, cannot be cleared), `icon` (a key,
+ * one emoji, or null) and `isEmojiIconAllowed` (boolean), at least one.
+ */
+export function parseOrganizationPatch(
+  body: Record<string, unknown>
+): { ok: true; patch: OrganizationPatch } | OrganizationRouteValidationError {
+  const invalid: OrganizationRouteValidationError = {
+    ok: false,
+    error: 'Invalid request',
+    status: 400,
+  }
+  const hasName = 'name' in body
+  const hasIcon = body.icon !== undefined
+  const hasEmojiSetting = body.isEmojiIconAllowed !== undefined
+  if (!hasName && !hasIcon && !hasEmojiSetting) return invalid
+
+  const patch: OrganizationPatch = { iconIsEmoji: false }
+  if (hasName) {
+    const name = parseOrganizationPatchDisplayName(body)
+    if (!name.ok) return name
+    patch.name = name.name
+  }
+  if (hasIcon) {
+    const icon = parseIconValue(body.icon)
+    if (!icon.ok) return invalid
+    patch.icon = icon.icon ?? null
+    patch.iconIsEmoji = icon.emoji
+  }
+  if (hasEmojiSetting) {
+    if (typeof body.isEmojiIconAllowed !== 'boolean') return invalid
+    patch.isEmojiIconAllowed = body.isEmojiIconAllowed
+  }
+  return { ok: true, patch }
+}
+
+/**
+ * The audit rows for an organization PATCH: one per icon or emoji setting
+ * that really changed. A name change is not audited.
+ */
+export function organizationPatchAudits(
+  patch: OrganizationPatch,
+  before: { icon: string | null; isEmojiIconAllowed: boolean }
+): Array<{ action: AuditAction; context: Record<string, unknown> }> {
+  const entries: Array<{ action: AuditAction; context: Record<string, unknown> }> = []
+  if (patch.icon !== undefined && patch.icon !== before.icon) {
+    entries.push({
+      action: 'organization.icon.set',
+      context: { icon: patch.icon, previousIcon: before.icon },
+    })
+  }
+  if (
+    patch.isEmojiIconAllowed !== undefined &&
+    patch.isEmojiIconAllowed !== before.isEmojiIconAllowed
+  ) {
+    entries.push({
+      action: 'organization.emoji_icons.set',
+      context: { isEmojiIconAllowed: patch.isEmojiIconAllowed },
+    })
+  }
+  return entries
+}
+
 export function toOrganizationRecord(row: {
   id: string
   name: string | null
   createdAt: string
+  icon: string | null
+  isEmojiIconAllowed: boolean
 }): OrganizationSummary {
   return {
     id: row.id,
     name: row.name,
     createdAt: row.createdAt,
+    icon: row.icon,
+    isEmojiIconAllowed: row.isEmojiIconAllowed,
   }
 }
 

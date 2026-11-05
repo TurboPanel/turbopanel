@@ -100,12 +100,6 @@ export type ServiceReleaseRecord = {
   imageTag?: string
   builderFrontendVersion?: string
   builderPlanVersion?: string
-  /**
-   * Old names for the two fields above, still emitted so a UI that has not
-   * moved to the new names keeps showing them. Dropped in the contract phase.
-   */
-  railpackFrontendVersion?: string
-  railpackPlanVersion?: string
   /** Aggregate status across every host in {@link ServiceReleaseRecord.attempts}. */
   status: string
   queuedAt: string | null
@@ -195,8 +189,9 @@ export function imageIdentitiesFromResult(result: unknown): Map<string, ReleaseI
     const releaseId = resultField(record, 'releaseId')
     if (!composeServiceName || !releaseId) continue
     const imageTag = resultField(record, 'imageTag')
-    // Accept both spellings: a daemon that has not moved yet still reports the
-    // old field names. The new name wins when both are present.
+    // Accept both spellings: results stored from a daemon released before the
+    // rename hold the old field names. The new name wins when both are present.
+    // This read-side fallback is removed on wipe day.
     const builderFrontendVersion =
       resultField(record, 'builderFrontendVersion') ??
       resultField(record, 'railpackFrontendVersion')
@@ -271,11 +266,9 @@ function mergeImageIdentity(
     identity.builderFrontendVersion !== undefined
   ) {
     release.builderFrontendVersion = identity.builderFrontendVersion
-    release.railpackFrontendVersion = identity.builderFrontendVersion
   }
   if (release.builderPlanVersion === undefined && identity.builderPlanVersion !== undefined) {
     release.builderPlanVersion = identity.builderPlanVersion
-    release.railpackPlanVersion = identity.builderPlanVersion
   }
 }
 

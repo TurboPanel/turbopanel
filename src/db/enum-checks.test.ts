@@ -42,6 +42,7 @@ import {
   LOGIN_RECIPES,
 } from '../features/managed/logins.ts'
 import { PROJECT_ICONS, PROJECT_KINDS } from '../features/projects/vocabulary.ts'
+import { ICON_KEYS } from '../lib/icons.ts'
 import { FABRIC_PEER_KINDS, FABRIC_SERVER_ROLES } from '../features/fabric/membership-vocabulary.ts'
 import {
   DATACENTER_ADDRESS_PREFERENCES,
@@ -100,11 +101,13 @@ const test = Deno.test.bind(Deno)
  * Widening a list later is `ADD CONSTRAINT … NOT VALID; VALIDATE` — the
  * allowed forward migration (decided 2026-09-11).
  */
+// A list may be followed by one ` OR (…)` alternative that is not a word
+// list, such as the emoji shape the icon CHECKs also allow.
 const schemaSource = await Deno.readTextFile(new URL('./schema.ts', import.meta.url))
 
 function checkValues(constraintName: string): string[] {
   const re = new RegExp(
-    String.raw`check\(\s*["']${constraintName}["'],\s*sql\x60(?:[a-z_]+ IS NULL OR )?[a-z_]+ IN \(([^)]*)\)\x60`
+    String.raw`check\(\s*["']${constraintName}["'],\s*sql\x60(?:[a-z_]+ IS NULL OR )?[a-z_]+ IN \(([^)]*)\)(?: OR \([^\x60]*\))?\x60`
   )
   const match = re.exec(schemaSource)
   if (!match) throw new TypeError(`schema.ts has no ${constraintName}`)
@@ -137,6 +140,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['placement_source_check', PLACEMENT_SOURCES],
   ['project_kind_check', PROJECT_KINDS],
   ['project_icon_check', PROJECT_ICONS],
+  ['organization_icon_check', ICON_KEYS],
   ['folder_kind_check', FOLDER_KINDS],
   ['folder_state_check', FOLDER_STATES],
   ['leaf_kind_check', LEAF_KINDS],
