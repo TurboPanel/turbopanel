@@ -126,16 +126,33 @@ export function createMigratePendingReader(
   }
 }
 
-async function readMigratePendingUncached(db: Db): Promise<DevHostMigrate | null> {
+/** The three reads behind {@link readMigrateCounts}; tests swap them. */
+export type MigrateCountReads = {
+  applied: (db: Db) => Promise<string[]>
+  shipped: () => Promise<string[]>
+  trunkTotal: () => Promise<number | null>
+}
+
+const MIGRATE_COUNT_READS: MigrateCountReads = {
+  applied: readAppliedMigrationHashes,
+  shipped: () => readShippedMigrationHashes(),
+  trunkTotal: () => readTrunkMigrationCount(),
+}
+
+/** The database's migration counts against the checkout's and trunk's manifests, uncached. */
+export async function readMigrateCounts(
+  db: Db,
+  reads: MigrateCountReads = MIGRATE_COUNT_READS
+): Promise<DevHostMigrate | null> {
   const [applied, shipped, trunkTotal] = await Promise.all([
-    readAppliedMigrationHashes(db),
-    readShippedMigrationHashes(),
-    readTrunkMigrationCount(),
+    reads.applied(db),
+    reads.shipped(),
+    reads.trunkTotal(),
   ])
   return migratePendingFromState(compareSchemaState(applied, shipped), trunkTotal)
 }
 
-export const readMigratePending = createMigratePendingReader(readMigratePendingUncached)
+export const readMigratePending = createMigratePendingReader((db) => readMigrateCounts(db))
 
 let runningCommit: Promise<string | null> | null = null
 

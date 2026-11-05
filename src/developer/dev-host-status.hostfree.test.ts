@@ -18,7 +18,9 @@ import {
   migratePendingFromState,
   pinDevelopmentRevision,
   readDevHostView,
+  readMigrateCounts,
   readTrunkMigrationCount,
+  showInstanceTrunkFile,
 } from './dev-host-view.ts'
 
 /**
@@ -157,6 +159,23 @@ test('readTrunkMigrationCount counts the trunk manifest, null when it cannot', a
   assertEquals(await readTrunkMigrationCount(() => Promise.resolve(null)), null)
   assertEquals(await readTrunkMigrationCount(() => Promise.resolve('not json')), null)
   assertEquals(await readTrunkMigrationCount(() => Promise.resolve('{"entries":[]}')), null)
+})
+
+test('readMigrateCounts compares the database with the checkout and trunk manifests', async () => {
+  const reads = {
+    applied: () => Promise.resolve(['a', 'b']),
+    shipped: () => Promise.resolve(['a', 'b', 'c']),
+    trunkTotal: () => Promise.resolve(4 as number | null),
+  }
+  assertEquals(await readMigrateCounts(fakeDb, reads), { pending: 1, applied: 2, total: 4 })
+  assertEquals(
+    await readMigrateCounts(fakeDb, { ...reads, applied: () => Promise.resolve(['x']) }),
+    null
+  )
+})
+
+test('showInstanceTrunkFile is null for a file trunk does not have', async () => {
+  assertEquals(await showInstanceTrunkFile('no/such/file-for-a-test.json'), null)
 })
 
 test('pinDevelopmentRevision sets the checkout HEAD, and drops a stale value it cannot replace', async () => {
