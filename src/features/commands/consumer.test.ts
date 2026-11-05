@@ -402,7 +402,7 @@ test('processCommandEnvelope refuses a connected daemon below the supported floo
     assertEquals(updated?.errorCode, 'daemon_unsupported')
     assertEquals(
       updated?.error,
-      'Daemon version 0.0.9 is below the supported minimum 0.1.0 — update the daemon'
+      'Daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
     )
     // Never reached the cell: the update envelope is the only thing such a
     // daemon should get, and that is not a command.

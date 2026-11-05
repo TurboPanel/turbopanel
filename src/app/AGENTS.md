@@ -26,13 +26,24 @@
   control plane is flagged with the greppable `instance-version:` log and the
   daemon keeps reconnecting; `unknown` (no header and no field — an older
   instance) passes silently. Each floor tolerates every peer semver at or
-  above the constant. Today both floors are **`0.1.0`** against package
-  **`0.1.9`**, so a `0.1.x` peer is in window and a `0.0.x` peer is not. The
-  window is allowed to trail the current release by several minor versions;
-  it is not a same-version lock and it does not impose an upgrade order.
-  Bump `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION`
-  together, in the same change, and record why in this note and in
-  `../turbopaneld/src/instance/AGENTS.md`. Never raise either floor silently.
+  above the constant. The two floors name versions on two separate release
+  lines, so they are not equal: `MIN_SUPPORTED_DAEMON_VERSION` is
+  **`0.1.18`** (daemon line) and `MIN_SUPPORTED_INSTANCE_VERSION` is
+  **`0.1.22`** (control plane line). Both were raised together on
+  2026-11-05 as a **pre-launch hard cutoff**: `0.1.18` is the first daemon
+  that registers a sealing key, opens sealed decrypt answers and opens the
+  sealed reconcile password hash, and `0.1.22` is the first control plane
+  that seals them. Older daemons get `daemon_unsupported` on every command;
+  older control planes are flagged by the daemon and refused as an
+  `instance-update` target. Every peer on those two lines is let in,
+  including trunk builds from before the sealing work landed; only canary
+  and development hosts ran those. `check:contract-drift` requires each
+  floor to be a plain `X.Y.Z` no newer than the peer repo's `deno.json`
+  version. The window may trail the current release; it is not a
+  same-version lock. Bump `MIN_SUPPORTED_DAEMON_VERSION` and
+  `MIN_SUPPORTED_INSTANCE_VERSION` together, in the same change, and record
+  why in this note and in `../turbopaneld/src/instance/AGENTS.md`. Never
+  raise either floor silently.
   Dispatching `instance-update` does not gate on the daemon version (the
   daemon only runs the reconcile). The downgrade guard lives on the daemon:
   it refuses a target below its own `MIN_SUPPORTED_INSTANCE_VERSION`.
