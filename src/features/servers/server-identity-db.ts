@@ -145,6 +145,27 @@ function clearedProjectionColumns() {
 }
 
 /**
+ * The registered sealing key goes whenever the identity key is replaced or
+ * removed. It belongs to the daemon that signed its registration with the old
+ * identity key; left in place, a reinstalled host would be sent sealed answers
+ * it cannot open until it registers again. Clearing it is no plaintext
+ * downgrade a token holder can reach: only an enrollment signed with a new
+ * identity key (license or owner re-enroll ticket) or an administrator removing
+ * the key gets here. The new daemon registers its own key, signed with its own
+ * identity key, when it connects with the new key id; until that lands the
+ * server is treated as one with no key (plaintext answers and command
+ * payloads). Sealing on every path keys on this key alone, so clearing it is
+ * also what resets that rule for the server.
+ */
+function clearedSealingKeyColumns() {
+  return {
+    sealingKeyKid: null,
+    sealingKeyPub: null,
+    sealingKeyReportedAt: null,
+  }
+}
+
+/**
  * Thrown by {@link attachDaemonStateToServer} when the server's existing key
  * is revoked: the upsert's `setWhere` refused to overwrite it, atomically,
  * so a revoke committing between an enroll's pre-check and its write still
@@ -249,6 +270,7 @@ export async function attachDaemonStateToServer(
         // a merge, same as the old whole-jsonb write.
         daemon: null,
         ...clearedProjectionColumns(),
+        ...clearedSealingKeyColumns(),
         ...(hostname ? { hostname } : {}),
         ...(machineKey ? { machineKey } : {}),
         isConnected: defaultStatus.connected,
@@ -325,6 +347,7 @@ async function resetServerDaemonColumns(db: Db, serverId: string): Promise<void>
     .set({
       daemon: null,
       ...clearedProjectionColumns(),
+      ...clearedSealingKeyColumns(),
       isConnected: defaultStatus.connected,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,

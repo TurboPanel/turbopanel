@@ -547,9 +547,9 @@ The control plane **never sends an empty `principals` set on its own**
 (`enqueuePrincipalsReconcile` skips such a server unless it has an account to
 retire there) and the daemon prunes no key file on an empty set without the
 explicit `allowEmpty: true`, which nothing sets today.
-A password hash on that command rides as `passwordHashEnvelope` only to a
-daemon that lists `daemon-sealed-principal-reconcile-v1`; older daemons refuse
-an envelope there and keep getting `passwordHash`.
+A password hash on that command rides as `passwordHashEnvelope` whenever the
+server has a sealing key on file, whatever the hello lists; a server with no
+key keeps getting `passwordHash`.
 
 **Account ids are allocated centrally and reported back.** A principal that has
 no uid/gid on any server yet takes one number from the counter of the organization that owns the server (`organization.next_linux_id`, from 30001, never reused) when it is

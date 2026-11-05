@@ -17,7 +17,6 @@ import {
 } from './reconcile.ts'
 import type { ServerDaemonState } from '../../features/servers/daemon-state.ts'
 import { decryptSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
-import { DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE } from '../../lib/version-wire.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 /**
@@ -370,9 +369,8 @@ const ACCOUNTS = [
 const NO_DB = {} as Db
 
 function daemonState(
-  features: string[],
   revokedAt: string | null = null
-): () => Promise<Pick<ServerDaemonState, 'key' | 'projection'>> {
+): () => Promise<Pick<ServerDaemonState, 'key'>> {
   return () =>
     Promise.resolve({
       key: {
@@ -383,18 +381,22 @@ function daemonState(
         createdAt: '2026-01-01T00:00:00.000Z',
         revokedAt,
       },
-      projection: { features },
     })
 }
 
-test('reconcile seals the password hash for a daemon that opens it there', async () => {
+const SEALING_KEY_ON_FILE = () => Promise.resolve({ kid: 'seal-1', pub: 'pub' })
+const NO_SEALING_KEY = () => Promise.resolve(null)
+
+test('reconcile seals the password hash when a sealing key is on file', async () => {
   const secrets = parseTestSecretsConfig('deno')
+  // The hello's feature list plays no part: a stripped hello still gets the envelope.
   const sealed = await sealReconcilePasswordHashes(
     NO_DB,
     secrets,
     SERVER_A,
     ACCOUNTS,
-    daemonState(['daemon-sealed-secrets-v1', DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE])
+    daemonState(),
+    SEALING_KEY_ON_FILE
   )
   assertEquals(sealed[0]?.passwordHash, undefined)
   const envelope = sealed[0]?.passwordHashEnvelope
@@ -406,23 +408,28 @@ test('reconcile seals the password hash for a daemon that opens it there', async
   assertEquals(sealed[1], ACCOUNTS[1])
 })
 
-test('reconcile keeps the plain hash for a daemon that refuses an envelope there', async () => {
-  const secrets = parseTestSecretsConfig('deno')
-  // Lists sealed secrets (deploys) but not the reconcile feature.
+test('reconcile keeps the plain hash when no sealing key is on file', async () => {
   const kept = await sealReconcilePasswordHashes(
     NO_DB,
-    secrets,
+    parseTestSecretsConfig('deno'),
     SERVER_A,
     ACCOUNTS,
-    daemonState(['daemon-sealed-secrets-v1'])
+    daemonState(),
+    NO_SEALING_KEY
   )
   assertEquals(kept, ACCOUNTS)
 })
 
 test('reconcile keeps the plain hash without a secrets config or an active key', async () => {
-  const feature = [DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE]
   assertEquals(
-    await sealReconcilePasswordHashes(NO_DB, undefined, SERVER_A, ACCOUNTS, daemonState(feature)),
+    await sealReconcilePasswordHashes(
+      NO_DB,
+      undefined,
+      SERVER_A,
+      ACCOUNTS,
+      daemonState(),
+      SEALING_KEY_ON_FILE
+    ),
     ACCOUNTS
   )
   assertEquals(
@@ -431,7 +438,8 @@ test('reconcile keeps the plain hash without a secrets config or an active key',
       parseTestSecretsConfig('deno'),
       SERVER_A,
       ACCOUNTS,
-      daemonState(feature, '2026-01-02T00:00:00.000Z')
+      daemonState('2026-01-02T00:00:00.000Z'),
+      SEALING_KEY_ON_FILE
     ),
     ACCOUNTS
   )

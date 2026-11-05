@@ -485,9 +485,9 @@ export const DAEMON_SEALED_SECRETS_FEATURE: DaemonWireFeature = 'daemon-sealed-s
 
 /**
  * The daemon opens `passwordHashEnvelope` on `server.principals.reconcile` too
- * (through `/secrets/decrypt`). Daemons that only list
- * `daemon-sealed-secrets-v1` refuse an envelope there, so they keep the plain
- * `passwordHash` on that command.
+ * (through `/secrets/decrypt`). Informational only: the control plane seals
+ * that hash whenever a sealing key is on file, never on this unsigned listing,
+ * because no released daemon registers a key without this support.
  */
 export const DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE: DaemonWireFeature =
   'daemon-sealed-principal-reconcile-v1'
