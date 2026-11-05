@@ -228,6 +228,19 @@ test('many pinned servers going quiet together raise nothing', async () => {
   assertEquals(r.emits.length, 0)
 })
 
+test('a group that went quiet together long ago is still an outage', async () => {
+  const twoHoursAgo = iso(NOW - 2 * 3_600_000)
+  const quiet = (id: string, offsetMs: number) =>
+    silent({ id, statusChangedAt: iso(Date.parse(twoHoursAgo) + offsetMs) })
+  const { db } = fakeDb(
+    [quiet('s1', 0), quiet('s5', 60_000), quiet('s6', 120_000), online('s2')],
+    [ownRelay, peerRelay('s2', KEY_S, 10_000)]
+  )
+  const r = recorder()
+  assertEquals(await sweepPinSilence(db, undefined, r.deps), 0)
+  assertEquals(r.emits.length, 0)
+})
+
 test('no peer reading, no relay, no organization and a failing database', async () => {
   const r = recorder()
   const fleet = () => [silent(), online('s2'), online('s3'), online('s4')]

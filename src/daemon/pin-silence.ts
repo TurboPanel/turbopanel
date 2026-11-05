@@ -21,9 +21,10 @@
  *   {@link PIN_MISSING_MIN_MS} while a peer still reports a healthy tunnel.
  * - No healthy peer reading (`down` or `unknown`): never past stage A; without
  *   a sign of life an impostor cannot be told from a power cut.
- * - Many pinned servers going quiet together ({@link isMassDisconnect} over
- *   the last {@link PIN_SILENCE_MASS_WINDOW_MS}) is a control plane or network
- *   outage: the whole tick raises nothing.
+ * - A server that went quiet together with many others (the mass-disconnect
+ *   rule over pinned servers offline within {@link PIN_SILENCE_MASS_WINDOW_MS}
+ *   of each other) is part of a control plane or network outage, however long
+ *   ago it started: it raises nothing.
  * - Each stage is raised once per episode; a reconnect clears the state, and
  *   so does a verified signed pin report (`features/servers/pin-report.ts`).
  *
@@ -47,7 +48,7 @@ import { isMassDisconnect } from './cell/mass-disconnect.ts'
 export const PIN_SILENT_MIN_MS = 30 * 60_000
 /** Silent this long with a live peer tunnel: alarm (`server.pin_missing`). */
 export const PIN_MISSING_MIN_MS = 6 * 60 * 60_000
-/** Servers that went quiet within this window count toward an outage. */
+/** Servers that went quiet within this long of each other count as one outage. */
 export const PIN_SILENCE_MASS_WINDOW_MS = 60 * 60_000
 
 /** 0 nothing raised, 1 `server.pin_silent` raised, 2 `server.pin_missing` raised. */
@@ -140,16 +141,6 @@ export async function sweepPinSilence(
         !row.isConnected && row.statusChangedAt !== null
     )
     if (silent.length === 0) return 0
-    const recent = silent.filter(
-      (row) => nowMs - Date.parse(row.statusChangedAt) <= PIN_SILENCE_MASS_WINDOW_MS
-    ).length
-    if (isMassDisconnect(recent, rows.length)) {
-      compatLogWarn(
-        'pin-silence',
-        `${recent} pinned servers went quiet together; treated as an outage`
-      )
-      return 0
-    }
     const fabricRows = await db
       .select({ fabricId: relay.fabricId })
       .from(relay)
@@ -171,7 +162,7 @@ export async function sweepPinSilence(
       .where(inArray(relay.fabricId, [...new Set(fabricRows.map((row) => row.fabricId))]))
     // One server at a time: each raise writes, audits and notifies on this client.
     const results = await mapSequential(silent, (row) =>
-      stepServer(db, secrets, row, relays, nowMs, deps)
+      stepServer(db, secrets, row, relays, nowMs, deps, outageAround(row, silent, rows.length))
     )
     return results.filter(Boolean).length
   } catch (err) {
@@ -181,6 +172,20 @@ export async function sweepPinSilence(
     )
     return 0
   }
+}
+
+/**
+ * Whether this server went quiet as part of a group: the pinned servers that
+ * went offline within {@link PIN_SILENCE_MASS_WINDOW_MS} of it, checked with
+ * the mass-disconnect rule against all pinned servers. Such a group is a
+ * control plane or network outage, however long ago it started.
+ */
+function outageAround(row: SilentRow, silent: readonly SilentRow[], pinnedTotal: number): boolean {
+  const at = Date.parse(row.statusChangedAt)
+  const cluster = silent.filter(
+    (other) => Math.abs(Date.parse(other.statusChangedAt) - at) <= PIN_SILENCE_MASS_WINDOW_MS
+  ).length
+  return isMassDisconnect(cluster, pinnedTotal)
 }
 
 type SilentRow = {
@@ -199,7 +204,8 @@ async function stepServer(
   row: SilentRow,
   relays: readonly RelayRow[],
   nowMs: number,
-  deps: PinSilenceDeps
+  deps: PinSilenceDeps,
+  massOutage: boolean
 ): Promise<boolean> {
   const episode = row.statusChangedAt
   const sameEpisode = row.since !== null && Date.parse(row.since) === Date.parse(episode)
@@ -207,7 +213,7 @@ async function stepServer(
   const decision = decidePinSilence({
     silentForMs: nowMs - Date.parse(episode),
     evidence: peerEvidence(row.id, relays, nowMs),
-    massOutage: false,
+    massOutage,
     raisedStage,
   })
   if (!decision.raise) return false

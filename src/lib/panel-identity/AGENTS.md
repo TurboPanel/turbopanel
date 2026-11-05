@@ -46,8 +46,8 @@ sealing key, and the signed identity document served at
   `status_changed_at`. Stages: A ordinary `server.offline`; B `server.pin_silent` (warning) after
   `PIN_SILENT_MIN_MS` (30 min) with a healthy peer tunnel; C `server.pin_missing` (critical, urgent)
   after `PIN_MISSING_MIN_MS` (6 h) with a healthy peer tunnel still seen. Peer `down`/`unknown` never
-  passes stage A; `isMassDisconnect` over pinned servers gone quiet in the last
-  `PIN_SILENCE_MASS_WINDOW_MS` (1 h) skips the tick. Each stage once per episode
+  passes stage A; a server that went quiet within `PIN_SILENCE_MASS_WINDOW_MS` (1 h) of enough other
+  pinned servers to meet `isMassDisconnect` is part of an outage and raises nothing, however long ago. Each stage once per episode
   (`server.trust_silence_stage`/`trust_silence_since`), reset on reconnect and by a verified signed
   pin report. Servers outside TurboFabric never pass stage A (known limit).
 - **Pinned-by.** `pinned-by.ts` `resolvePinnedBy` is the one place that reads a server's pin state
