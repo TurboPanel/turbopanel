@@ -2006,6 +2006,14 @@ export class DaemonCellObject {
     }
   }
 
+  /** A hello first passes the attach-proof check of a signed session; a heartbeat always does. */
+  async #presenceAdmitted(
+    ws: WebSocket,
+    parsed: { type: 'hello' | 'heartbeat'; attach?: unknown }
+  ): Promise<boolean> {
+    return parsed.type !== 'hello' || (await this.#acceptAttach(ws, parsed.attach))
+  }
+
   async #handlePresenceMessage(
     attachment: {
       connectionId: string
@@ -2339,9 +2347,10 @@ export class DaemonCellObject {
     try {
       this.#ensureSchema()
 
-      if (parsed.type === 'hello' && !(await this.#acceptAttach(ws, parsed.attach))) return
       if (parsed.type === 'hello' || parsed.type === 'heartbeat') {
-        await this.#handlePresenceMessage(attachment, parsed)
+        if (await this.#presenceAdmitted(ws, parsed)) {
+          await this.#handlePresenceMessage(attachment, parsed)
+        }
         return
       }
 

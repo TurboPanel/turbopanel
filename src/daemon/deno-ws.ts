@@ -1176,6 +1176,15 @@ export function registerDaemonWebSocket<E extends Env>(
         return false
       }
 
+      /** The first hello of a signed session passes the attach-proof check; anything else goes on. */
+      const presenceAdmitted = async (
+        message: { type: string; attach?: unknown },
+        ws: WSContext<WebSocket>
+      ): Promise<boolean> => {
+        if (!awaitingAttach || message.type !== 'hello') return true
+        return await acceptAttach(message.attach, awaitingAttach, ws)
+      }
+
       const handleInboundMessage = async (raw: string, ws: WSContext<WebSocket>): Promise<void> => {
         // Exception boundary — mirrors DO webSocketMessage (log + swallow) so a
         // transient DB/cell error cannot tear down the daemon WebSocket.
@@ -1255,13 +1264,7 @@ export function registerDaemonWebSocket<E extends Env>(
 
         if (!(await keyStillActive(ws))) return
 
-        if (
-          awaitingAttach &&
-          message.type === 'hello' &&
-          !(await acceptAttach(message.attach, awaitingAttach, ws))
-        ) {
-          return
-        }
+        if (!(await presenceAdmitted(message, ws))) return
 
         cellTrace('inbound', {
           serverId: payload.sub,
