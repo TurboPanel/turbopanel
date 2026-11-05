@@ -334,8 +334,14 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
   const sequence = parseSafeNonNegativeInteger(raw.sequence, 'metadata.sequence')
   if (!sequence.ok) return sequence
 
-  const topologyGeneration = parseGeneration(raw.topologyGeneration, 'metadata.topologyGeneration')
-  if (!topologyGeneration.ok) return topologyGeneration
+  // Optional: only older daemons send it, and nothing reads it any more. A
+  // value that is sent must still be a valid generation number.
+  let topologyGeneration: number | undefined
+  if (raw.topologyGeneration !== undefined) {
+    const parsed = parseGeneration(raw.topologyGeneration, 'metadata.topologyGeneration')
+    if (!parsed.ok) return parsed
+    topologyGeneration = parsed.value
+  }
 
   const bootGeneration = parseGeneration(raw.bootGeneration, 'metadata.bootGeneration')
   if (!bootGeneration.ok) return bootGeneration
@@ -348,7 +354,7 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
       sampledAt: sampledAt.value,
       intervalSeconds: intervalSeconds.value,
       sequence: sequence.value,
-      topologyGeneration: topologyGeneration.value,
+      ...(topologyGeneration === undefined ? {} : { topologyGeneration }),
       bootGeneration: bootGeneration.value,
     },
   }

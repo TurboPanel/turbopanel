@@ -1102,10 +1102,15 @@ export type DaemonMessage =
        * a new topology generation (stable device/filesystem/GPU/signal
        * identity). Server identity comes from the authenticated connection, not
        * a wire field — see `managed-ha-event`'s precedent.
+       *
+       * `generation` and `bootGeneration` are deprecated and optional: the
+       * control plane tells topologies apart by their content
+       * (`topologyIdentityKey`), and a daemon leaves both out once the control
+       * plane lists `topology-generation-optional-v1`.
        */
       type: 'topology-report'
-      generation: number
-      bootGeneration: number
+      generation?: number
+      bootGeneration?: number
       snapshot: unknown
       at: string
     }
@@ -1900,8 +1905,11 @@ function isTopologyGenerationNumber(value: unknown): value is number {
 
 function validateTopologyReportFields(record: Record<string, unknown>): string | null {
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
-  if (!isTopologyGenerationNumber(record.generation)) return 'invalid generation'
-  if (!isTopologyGenerationNumber(record.bootGeneration)) {
+  // Optional (older daemons send them); a value that is sent must still fit.
+  if (record.generation !== undefined && !isTopologyGenerationNumber(record.generation)) {
+    return 'invalid generation'
+  }
+  if (record.bootGeneration !== undefined && !isTopologyGenerationNumber(record.bootGeneration)) {
     return 'invalid bootGeneration'
   }
   return validateTopologyReportSnapshot(record.snapshot)

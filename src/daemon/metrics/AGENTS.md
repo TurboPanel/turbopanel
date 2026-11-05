@@ -175,7 +175,7 @@ rules). Session issuance (`POST /auth/session`) is the cut-off. Pipeline:
 (`query/live-session.ts`) → cache the sample (`cacheLiveSample`) **or**
 fire-and-forget `ServerMetricsStore.writeSample(sample, slotMapping)` via
 `getServerMetricsStore(c)`, where `slotMapping` is the caller-resolved
-`(topology generation) -> SlotMapping`
+`(matched topology) -> SlotMapping`
 (`client/servers/topology-slot-mapping.ts`), computed once by the ingest route
 (it already does that work for capability planning) and threaded straight into
 the store — never re-derived by the store itself. WebSocket
@@ -337,8 +337,8 @@ outside `backends/cloudflare/`; `scripts/check-metrics-boundaries.mjs` enforces
 this at CI (see below).
 
 **Identity-addressed slotting:** when a `SlotMapping` is available (resolved
-from the sample's `metadata.topologyGeneration` via `topology-slot-mapping.ts`'s
-`computeSlotMapping`), `host.io`'s `double14`..`double19` (after its 13 leading
+from the stored topology the sample matches, via `topology-slot-mapping.ts`'s
+`computeSlotMapping`; see **Matching a sample to its topology** below), `host.io`'s `double14`..`double19` (after its 13 leading
 slots — 2 `host.kernel`, 7 `host.storage`, a spare, 2 `host.network`, a spare)
 embed the first two monitored NIC slots (`slotMapping.normalNicSlots[0..1]`)
 directly — so the common 1-NIC/2-NIC host never writes a `network` page at all —
@@ -353,9 +353,25 @@ validates every listed id as an `uplink` in the last recorded topology and
 rejects a list longer than the server's effective `normalNicSlots`
 (`nicSlotLimit` on `/series` and `/summary` tells the UI that limit).
 `gpu`/`network`/`filesystem`/`block` pages order entities by the matching
-`*PageOrder` list (new-since-recorded-generation entities append in sample
-order). No recorded generation yet (first sample, resync pending) degrades
+`*PageOrder` list (entities the recorded topology does not list append in
+sample order). No matching topology yet (first sample, resync pending) degrades
 gracefully to pre-topology positional packing — never a dropped sample.
+
+**Matching a sample to its topology** (`features/servers/topology-identity.ts`):
+`metadata.topologyGeneration` is deprecated and optional. While an older daemon
+sends it and the stored `server.hardware` value carries a `generation`, the
+numbers must be equal, as before. Otherwise the sample matches when every
+network device, filesystem, block device and GPU it names is in the stored
+snapshot (hardware signals are left out: an unknown one only moves to the end
+of its page). A daemon stops sending the number, the `topology-report`
+`generation`/`bootGeneration` and the `topology_generation_changed` event once
+the control plane lists the `topology-generation-optional-v1` wire feature.
+`recordTopologyGeneration` tells a new topology from a resend the same way:
+the generation numbers when both sides carry one, else `topologyIdentityKey`
+(entity ids plus the attributes `computeSlotMapping` reads), so the hourly and
+daily change limits count topology changes, not size or label changes. The
+event kind stays in the catalog and the stored keys stay readable until no
+supported daemon sends them.
 
 **Missing metrics:** same `-1e308` sentinel idiom as v3
 (`AE_MISSING_METRIC_SENTINEL`), never coerced to `0`; all host metrics are ≥ 0
@@ -587,10 +603,10 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
    Postgres `server.is_connected` is.
 10. `slotMapping` is resolved once by the ingest route and threaded through to
     the store — stores never re-derive it themselves.
-11. An unresolved topology generation (no recorded `SlotMapping` yet) degrades
-    gracefully to positional packing — never a dropped sample. Only the latest
-    generation is kept (`server.hardware`), so a sample naming an older one is
-    unresolved too.
+11. A sample that matches no recorded topology (no recorded `SlotMapping` yet)
+    degrades gracefully to positional packing — never a dropped sample. Only
+    the latest topology is kept (`server.hardware`), so a sample naming an
+    older generation, or a device the stored snapshot lacks, is unresolved too.
     11a. A hosted server with more RAM or more physical CPU cores than its licensed box size keeps
     every metric; ingest stamps `server.metadata.overPlan` (`over-plan.ts`, `over-plan-flag.ts`;
     `at` refreshed at most hourly, `since` kept from the first over reading (a stamp written before `since` existed reads it as its last refresh `at`), cleared once the
