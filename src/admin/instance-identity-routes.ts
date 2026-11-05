@@ -1,11 +1,22 @@
-import type { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { isUuid } from '../client/access/routes-helpers.ts'
 import { requireInstanceStepUp } from '../client/authn/step-up.ts'
+import {
+  CONFIRM_NAME_REQUIRED_ERROR,
+  confirmationName,
+  confirmNameMatches,
+} from '../client/confirm-name.ts'
 import { getDb, type Db } from '../db/connection.ts'
 import { server } from '../db/schema.ts'
+import { recordAudit } from '../features/audit/audit-records.ts'
 import { recordKeyEvent } from '../features/notifications/key-event.ts'
-import { listSealedSecretsState } from '../features/servers/daemon-sealing-key.ts'
+import {
+  listSealedSecretsState,
+  readSealingKeyClearTarget,
+} from '../features/servers/daemon-sealing-key.ts'
+import { clearDaemonSealingKey } from '../features/servers/server-identity-db.ts'
 import { isPanelFingerprint } from '../lib/panel-identity/fingerprint.ts'
 import { type PanelIdentity, setPanelIdentityNext } from '../lib/panel-identity/identity.ts'
 import { resolvePinnedBy } from '../lib/panel-identity/pinned-by.ts'
@@ -64,6 +75,8 @@ function parseNextBody(body: unknown): { ok: true; fingerprint: string | null } 
  * clear the next fingerprint (superadmin, self-hosted only, step-up).
  * `GET /instance/identity/sealed-secrets`: per server, whether secrets still
  * reach it in plaintext (superadmin; read by the edge go-live gate).
+ * `DELETE /instance/identity/sealed-secrets/:serverId/key`: Clear Sealing Key,
+ * see {@link registerClearSealingKeyRoute}.
  */
 export function registerInstanceIdentityAdminRoutes(
   admin: Hono<AppEnv>,
@@ -95,6 +108,8 @@ export function registerInstanceIdentityAdminRoutes(
       })
     }
   )
+
+  registerClearSealingKeyRoute(admin, opts.secrets)
 
   admin.put('/instance/identity/next', createRootOnlyMiddleware(opts.secrets), async (c) => {
     if (opts.runtime === 'workers') {
@@ -128,4 +143,76 @@ export function registerInstanceIdentityAdminRoutes(
       next: parsed.fingerprint ? { fingerprint: parsed.fingerprint } : null,
     })
   })
+}
+
+export const CLEAR_SEALING_KEY_CONFIRM_MESSAGE = 'Type the server name to clear its sealing key.'
+export const DAEMON_SEALS_SECRETS_ERROR = 'daemon_seals_secrets'
+
+function daemonSealsSecrets(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      ok: false,
+      error: DAEMON_SEALS_SECRETS_ERROR,
+      message:
+        'The connected daemon opens sealed secrets; clear the key only for a server rolled back to an older daemon.',
+    },
+    409
+  )
+}
+
+/**
+ * Clear Sealing Key: the recovery for a host rolled back (break glass) to a
+ * daemon build without sealed secrets, which cannot open the sealed answers
+ * the control plane sends once a key is on file. Superadmin, the server's
+ * name typed back as `?confirmName`, step-up, audited. Refused (409) while
+ * the server is connected with a hello that lists sealed secrets: that daemon
+ * can open sealed answers and would refuse the plaintext a clear brings. A
+ * server with no key on file answers `{ cleared: false }` and changes nothing.
+ */
+function registerClearSealingKeyRoute(admin: Hono<AppEnv>, secrets: DerivedSecretsConfig): void {
+  admin.delete(
+    '/instance/identity/sealed-secrets/:serverId/key',
+    createRootOnlyMiddleware(secrets),
+    async (c) => {
+      const db = getDb(c)
+      if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+      const serverId = c.req.param('serverId')
+      const target = isUuid(serverId) ? await readSealingKeyClearTarget(db, serverId) : null
+      if (!target) return c.json({ ok: false, error: 'Not found' }, 404)
+      const expected = confirmationName(target.name, target.hostname, target.id)
+      if (!confirmNameMatches(c.req.query('confirmName'), expected)) {
+        return c.json(
+          {
+            ok: false,
+            error: CONFIRM_NAME_REQUIRED_ERROR,
+            message: CLEAR_SEALING_KEY_CONFIRM_MESSAGE,
+          },
+          400
+        )
+      }
+      if (target.kid === null) return c.json({ ok: true, cleared: false })
+      if (target.connectedDaemonSealsSecrets) return daemonSealsSecrets(c)
+      const stepUp = await requireInstanceStepUp(c, 'server.sealing_key.clear')
+      if (stepUp) return stepUp
+      const cleared = await clearDaemonSealingKey(db, target.id, target.kid)
+      if (cleared) {
+        const session = c.get('session')
+        await recordAudit(db, {
+          organizationId: target.organizationId,
+          actorUserId: session?.userId ?? null,
+          actorEmail: session?.email ?? null,
+          action: 'server.sealing_key.clear',
+          targetType: 'server',
+          targetId: target.id,
+          context: { kid: target.kid },
+        })
+      } else {
+        // A current daemon connected, or a new key was registered, after the
+        // read: answer as the read would now.
+        const now = await readSealingKeyClearTarget(db, target.id)
+        if (now?.connectedDaemonSealsSecrets) return daemonSealsSecrets(c)
+      }
+      return c.json({ ok: true, cleared })
+    }
+  )
 }

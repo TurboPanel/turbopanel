@@ -153,8 +153,10 @@ attach) or removed (`clearServerDaemonState`), which clear
 `sealing_key_kid`, `sealing_key_pub` and `sealing_key_reported_at` with it; the
 new daemon registers its own key when it connects with the new key id, and the
 server is treated as one with no key until that lands. Recovery for a
-host rolled back (break glass) to a build without the feature is an operator
-clearing `server.sealing_key_kid` and `sealing_key_pub`; nothing on the wire
-can. The superadmin read `GET
+host rolled back (break glass) to a build without the feature is a superadmin's
+Clear Sealing Key (`DELETE /api/admin/v1/instance/identity/sealed-secrets/:serverId/key`,
+see `src/admin/AGENTS.md`); nothing on the daemon wire can clear the key. A
+plaintext decrypt answer is how a daemon learns the key is gone, and a daemon
+that has opened a sealed answer still refuses plaintext. The superadmin read `GET
 /api/admin/v1/instance/identity/sealed-secrets` reports, per server, the
 feature, the key id and `plaintext_secrets_at`, for the edge go-live gate. The `MIN_SUPPORTED_*` floors are untouched.
