@@ -17,15 +17,18 @@ export async function intakeHelloPinReport(
     serverId: string
     keyId: string | undefined
     publicJwk: JsonWebKey | undefined
-    identity: PanelIdentity | null
+    /** Read only after the report verified, off the session's critical path. */
+    identity: () => Promise<PanelIdentity | null>
     secrets: DerivedSecretsConfig | undefined
     /** Runs `fn` with a database client for this one write (Workers: per request). */
     withDb: (fn: (db: Db) => Promise<boolean>) => Promise<unknown>
   }
 ): Promise<void> {
-  if (panelPin === undefined || !ctx.identity) return
+  if (panelPin === undefined) return
   const report = await verifyPinReport(panelPin, { ...ctx, nowMs: Date.now() })
   if (!report) return
-  const kids = { current: ctx.identity.current.kid, next: ctx.identity.next?.kid ?? null }
+  const identity = await ctx.identity().catch(() => null)
+  if (!identity) return
+  const kids = { current: identity.current.kid, next: identity.next?.kid ?? null }
   await ctx.withDb((db) => recordPinReport(db, ctx.secrets, ctx.serverId, report, kids))
 }

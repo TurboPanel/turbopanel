@@ -30,6 +30,19 @@ async function daemonKey() {
   return { publicJwk, sign }
 }
 
+test('the signing input is the documented bytes (the daemon twin builds the same)', () => {
+  assertEquals(
+    pinReportSigningInput({
+      ...CTX,
+      pinnedBy: 'upgrade',
+      current: FP_A,
+      keyset: 3,
+      iat: 1700000000,
+    }),
+    `tp-panel-pin\nsess-1\nsrv-1\nkey-1\nupgrade\n${FP_A}\n3\n1700000000`
+  )
+})
+
 test('a pin report signed by the daemon key verifies and says what the server pinned', async () => {
   const key = await daemonKey()
   const fields = { pinnedBy: 'upgrade', current: FP_A, keyset: 3, iat: IAT }

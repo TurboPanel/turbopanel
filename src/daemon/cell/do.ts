@@ -1839,7 +1839,7 @@ export class DaemonCellObject {
           serverId: attachment.serverId,
           keyId: attachment.daemonKey?.id,
           publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
-          identity: await this.#getPanelIdentity(),
+          identity: () => this.#getPanelIdentity(),
           secrets: await this.#dataEncryptionSecrets(),
           withDb: (fn) => this.#withProjectionDbResult('pin-report', attachment.serverId, fn),
         })

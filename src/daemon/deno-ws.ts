@@ -1191,10 +1191,10 @@ export function registerDaemonWebSocket<E extends Env>(
           serverId: payload.sub,
           keyId: daemonState?.key.id,
           publicJwk: daemonState?.key.publicJwk,
-          identity: (await options.panelIdentity?.()) ?? null,
+          identity: async () => (await options.panelIdentity?.()) ?? null,
           secrets: options.dataEncryptionSecrets,
           withDb: (fn) => fn(db),
-        })
+        }).catch(() => {})
         return true
       }
 
