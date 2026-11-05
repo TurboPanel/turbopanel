@@ -109,6 +109,8 @@ export async function countServersWithPlaintextSecretsSince(
 export type SealedSecretsServerState = {
   id: string
   name: string | null
+  /** With `name` and `id`, what the Clear Sealing Key confirmation asks for. */
+  hostname: string | null
   organizationId: string | null
   isConnected: boolean
   /** The stored hello features list `daemon-sealed-secrets-v1`. */
@@ -124,6 +126,7 @@ export type SealedSecretsServerState = {
 type SealedSecretsRow = {
   id: string
   name: string | null
+  hostname: string | null
   organizationId: string | null
   isConnected: boolean
   daemon: unknown
@@ -149,6 +152,7 @@ export function sealedSecretsServerState(row: SealedSecretsRow): SealedSecretsSe
   return {
     id: row.id,
     name: row.name,
+    hostname: row.hostname,
     organizationId: row.organizationId,
     isConnected: row.isConnected,
     advertisesSealedSecrets,
@@ -164,6 +168,7 @@ export async function listSealedSecretsState(db: Db): Promise<SealedSecretsServe
     .select({
       id: server.id,
       name: server.name,
+      hostname: server.hostname,
       organizationId: server.organizationId,
       isConnected: server.isConnected,
       daemon: server.daemon,

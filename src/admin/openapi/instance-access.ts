@@ -31,7 +31,7 @@ export const INSTANCE_ACCESS_PATHS = {
       summary: 'Read which servers still receive secrets in plaintext',
       description:
         'Superadmin only. Returns `{ ok, receivingPlaintext, servers }`; each server is ' +
-        '`{ id, name, organizationId, isConnected, advertisesSealedSecrets, sealingKey, ' +
+        '`{ id, name, hostname, organizationId, isConnected, advertisesSealedSecrets, sealingKey, ' +
         'plaintextSecretsAt, receivesPlaintext }`. `sealingKey` is `{ kid, reportedAt }` or ' +
         'null, `plaintextSecretsAt` is the last plaintext decrypt answer (written at most ' +
         'hourly) or null, and `receivesPlaintext` is true while no sealing key is on file ' +

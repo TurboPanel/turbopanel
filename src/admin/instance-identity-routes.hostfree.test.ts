@@ -184,6 +184,7 @@ function sealingRow(id: string, overrides: Record<string, unknown>) {
   return {
     id,
     name: id,
+    hostname: null,
     organizationId: 'org-1',
     isConnected: true,
     daemon: { projection: { features: ['daemon-sealed-secrets-v1'] } },
@@ -220,6 +221,7 @@ test('the sealed-secrets read lists which servers still get plaintext', async ()
   assertEquals(body.servers[0], {
     id: 'sealed',
     name: 'sealed',
+    hostname: null,
     organizationId: 'org-1',
     isConnected: true,
     advertisesSealedSecrets: true,
