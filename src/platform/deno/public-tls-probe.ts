@@ -97,7 +97,7 @@ export function createPublicTlsProbe(deps: Partial<PublicTlsProbeDeps> = {}): Pu
       clearTimeout(timer)
       attempt.settled = true
       // The TLS connection owns the TCP one once it exists; closing both is harmless.
-      for (const conn of attempt.opened.reverse()) closeQuietly(conn)
+      for (const conn of attempt.opened.toReversed()) closeQuietly(conn)
     }
   }
 }
