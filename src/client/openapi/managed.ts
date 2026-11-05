@@ -267,7 +267,7 @@ export const managedSchemas = {
               type: 'object',
               required: ['label', 'scope', 'datacenterId', 'primary'],
               properties: {
-                label: { type: 'string', description: '`Public`, or the datacenter name.' },
+                label: { type: 'string', description: '`Public`, or the datacenter network name.' },
                 scope: { type: 'string', enum: ['public', 'datacenter'] },
                 datacenterId: { type: ['string', 'null'], format: 'uuid' },
                 primary: { type: 'boolean' },
@@ -308,7 +308,10 @@ export const managedSchemas = {
       reach: { type: 'string', enum: ['external', 'local'] },
       host: { type: 'string' },
       port: { type: 'integer' },
-      label: { type: 'string', description: 'External only: `Public`, or the datacenter name.' },
+      label: {
+        type: 'string',
+        description: 'External only: `Public`, or the datacenter network name.',
+      },
       scope: { type: 'string', enum: ['public', 'datacenter'], description: 'External only.' },
       datacenterId: { type: ['string', 'null'], format: 'uuid', description: 'External only.' },
       primary: { type: 'boolean', description: 'External only: fills the main connection string.' },
@@ -2828,7 +2831,7 @@ const managedBasePaths = {
       tags: ['Managed services'],
       summary: 'Add a managed replica member',
       description:
-        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter as primary, or TurboFabric over an untrusted one; promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter CIDR unless it rides TurboFabric. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
+        'Body `{ serverId, replicaClass?, readEligible? }`. `replicaClass` defaults to `failover` (same datacenter network as primary, or TurboFabric over an untrusted one; promotable). `read` replicas may use local/datacenter/fabric/public paths to any org server. Requires private reachability to primary; failover additionally requires a ready datacenter network CIDR unless it rides TurboFabric. Refused with 422 `managed_failover_unsupported` when the cluster image cannot take a replica (MariaDB 12.3: single server until automatic failover supports it).',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         content: {
@@ -2904,7 +2907,7 @@ const managedBasePaths = {
       tags: ['Managed services'],
       summary: 'Update managed member (readEligible and/or replicaClass)',
       description:
-        'Body `{ readEligible?, replicaClass? }` — at least one field required. Converting `read` → `failover` re-runs failover placement (shared datacenter + datacenter address). Failover → read is always allowed.',
+        'Body `{ readEligible?, replicaClass? }` — at least one field required. Converting `read` → `failover` re-runs failover placement (shared datacenter network + datacenter network address). Failover → read is always allowed.',
       parameters: [ENV_ID_PARAM, MEMBER_ID_PARAM],
       requestBody: {
         content: {
@@ -3053,7 +3056,7 @@ const managedBasePaths = {
       tags: ['Managed services'],
       summary: 'Promote a read replica for disaster recovery',
       description:
-        'Dedicated DR path for **read** replicas (`confirm: true` required). Records a `disaster-recovery` journal row, fences when the old primary is reachable, promotes the target, then reclassifies leftover `failover` members outside the new primary datacenter to `read`. Failover replicas must use `POST …/members/{memberId}/promote`.',
+        'Dedicated DR path for **read** replicas (`confirm: true` required). Records a `disaster-recovery` journal row, fences when the old primary is reachable, promotes the target, then reclassifies leftover `failover` members outside the new primary datacenter network to `read`. Failover replicas must use `POST …/members/{memberId}/promote`.',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         required: true,

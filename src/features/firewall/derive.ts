@@ -112,7 +112,7 @@ const REACH_WORDS: Record<
   Exclude<ExposureReach, 'public' | 'peers'>,
   { words: string; set: keyof FirewallSourceSets }
 > = {
-  datacenter: { words: 'this datacenter', set: 'datacenter' },
+  datacenter: { words: 'this datacenter network', set: 'datacenter' },
   fabric: { words: 'TurboFabric', set: 'fabric' },
   servers: { words: "the organization's other servers", set: 'servers' },
 }

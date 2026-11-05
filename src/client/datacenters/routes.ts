@@ -1320,7 +1320,8 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       return c.json(
         {
           error: 'datacenter_has_tunnels',
-          message: 'A Tunnel runs on every server of this datacenter. Change or remove it first.',
+          message:
+            'A Tunnel runs on every server of this datacenter network. Change or remove it first.',
         },
         409
       )

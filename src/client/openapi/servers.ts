@@ -296,7 +296,7 @@ export const serverSchemas = {
       cidr: {
         type: 'string',
         description:
-          'Aligned interface network CIDR when known. Required to create a datacenter from a private address.',
+          'Aligned interface network CIDR when known. Required to create a datacenter network from a private address.',
       },
       interface: {
         type: 'string',
@@ -412,7 +412,7 @@ export const serverSchemas = {
   },
   Location: {
     description:
-      "Effective location: each field is the operator override, else Cloudflare's detected value (a server's connect-time geo; a datacenter's geo seeded from its source server at creation), else null.",
+      "Effective location: each field is the operator override, else Cloudflare's detected value (a server's connect-time geo; a datacenter network's geo seeded from its source server at creation), else null.",
     allOf: [
       { $ref: '#/components/schemas/LocationFields' },
       {
@@ -621,7 +621,7 @@ export const serverSchemas = {
       timezone: {
         type: ['string', 'null'],
         description:
-          'Effective timezone: datacenter enforce, else org enforce, else server.options.timezone, else daemon-reported server.timezone.',
+          'Effective timezone: datacenter network enforce, else org enforce, else server.options.timezone, else daemon-reported server.timezone.',
       },
       timezoneSource: {
         type: ['string', 'null'],
@@ -634,7 +634,7 @@ export const serverSchemas = {
         minimum: 1,
         maximum: 65535,
         description:
-          'Effective SSH listen port: server.options.sshPort, else datacenter, else organization, else 22.',
+          'Effective SSH listen port: server.options.sshPort, else datacenter network, else organization, else 22.',
       },
       sshPortSource: {
         type: ['string', 'null'],
@@ -695,7 +695,7 @@ export const serverSchemas = {
           },
         },
         description:
-          'Datacenter membership pins (`ip` rows with scope=datacenter). A server may belong to many sites.',
+          'Datacenter network membership pins (`ip` rows with scope=datacenter). A server may belong to many sites.',
       },
     },
   },
@@ -815,7 +815,7 @@ export const serverSchemas = {
     properties: {
       scope: { type: 'string', enum: [...CLIENT_ADDRESS_SCOPES] },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
-      label: { type: 'string', description: '`Public`, or the datacenter name.' },
+      label: { type: 'string', description: '`Public`, or the datacenter network name.' },
       saved: { type: 'boolean', description: 'An entry was saved for this side.' },
       hostname: { type: ['string', 'null'] },
       addressV4: {
@@ -837,7 +837,7 @@ export const serverSchemas = {
         type: 'array',
         items: { type: 'string', enum: ['postgres', 'mysql'] },
         description:
-          'The engines this side is main for: the entry marked primary, else public, else the first datacenter, each only with a host and a port not set to null.',
+          'The engines this side is main for: the entry marked primary, else public, else the first datacenter network, each only with a host and a port not set to null.',
       },
       effective: {
         type: 'object',
@@ -877,7 +877,7 @@ export const serverSchemas = {
       },
       addresses: {
         type: 'array',
-        description: 'The public side first, then each datacenter the server belongs to.',
+        description: 'The public side first, then each datacenter network the server belongs to.',
         items: { $ref: '#/components/schemas/ServerClientAddress' },
       },
     },
@@ -2691,7 +2691,7 @@ const serverBasePaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Get the addresses clients use',
       description:
-        "Owners and managers only; a server of another organization is 404. One entry for the public side and one per datacenter the server belongs to, with what was saved and what the panel will use. Blank values fall back to the server's own address: a public address row, else the public interface address the server reports, and the datacenter pin.",
+        "Owners and managers only; a server of another organization is 404. One entry for the public side and one per datacenter network the server belongs to, with what was saved and what the panel will use. Blank values fall back to the server's own address: a public address row, else the public interface address the server reports, and the datacenter network pin.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {

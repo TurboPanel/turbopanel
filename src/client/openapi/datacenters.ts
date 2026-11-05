@@ -31,7 +31,7 @@ export const datacenterSchemas = {
         type: 'array',
         items: { type: 'string' },
         description:
-          "CIDRs from `network(kind='datacenter')` rows for this datacenter (one or more subnets). Prerequisite for private/replica placement (server-to-server datacenter transport).",
+          "CIDRs from `network(kind='datacenter')` rows for this datacenter network (one or more subnets). Prerequisite for private/replica placement (server-to-server datacenter network transport).",
       },
       priority: {
         type: 'integer',
@@ -43,7 +43,7 @@ export const datacenterSchemas = {
       trusted: {
         type: 'boolean',
         description:
-          "Effective trust flag (`options.trusted`, stored in a column, default `true`). `false` means the datacenter's L2 is not under the operator's control.",
+          "Effective trust flag (`options.trusted`, stored in a column, default `true`). `false` means the datacenter network's L2 is not under the operator's control.",
       },
       kind: {
         type: ['string', 'null'],
@@ -54,7 +54,7 @@ export const datacenterSchemas = {
         type: 'object',
         required: ['wins', 'tied'],
         description:
-          'Present on the list only. `wins`: no other trusted datacenter has a lower priority number, so server-to-server traffic uses this network. `tied`: another trusted datacenter has the same number (the winner is then chosen by datacenter id).',
+          'Present on the list only. `wins`: no other trusted datacenter network has a lower priority number, so server-to-server traffic uses this network. `tied`: another trusted datacenter network has the same number (the winner is then chosen by datacenter network id).',
         properties: { wins: { type: 'boolean' }, tied: { type: 'boolean' } },
       },
       location: { $ref: '#/components/schemas/Location' },
@@ -79,7 +79,7 @@ export const datacenterSchemas = {
       warnings: {
         type: 'array',
         description:
-          'Plain-words warnings about the set. `equal_priority`: two or more trusted datacenters share a priority number. `chosen_network_down`: the network servers try first has a server whose link is down or that the others cannot reach, so those servers already use `fallbackDatacenterId` (null when no other trusted network exists).',
+          'Plain-words warnings about the set. `equal_priority`: two or more trusted datacenter networks share a priority number. `chosen_network_down`: the network servers try first has a server whose link is down or that the others cannot reach, so those servers already use `fallbackDatacenterId` (null when no other trusted network exists).',
         items: {
           type: 'object',
           required: ['code'],
@@ -182,7 +182,7 @@ export const datacenterSchemas = {
       datacenter: { $ref: '#/components/schemas/DatacenterRow' },
       members: {
         type: 'array',
-        description: 'Membership pins in this datacenter (`GET /datacenters/{id}` only).',
+        description: 'Membership pins in this datacenter network (`GET /datacenters/{id}` only).',
         items: { $ref: '#/components/schemas/DatacenterMember' },
       },
     },
@@ -227,7 +227,7 @@ export const datacenterSchemas = {
         type: 'string',
         format: 'uuid',
         description:
-          'When `name` is omitted, seed the datacenter name and metadata.geo from this member (defaults to members[0])',
+          'When `name` is omitted, seed the datacenter network name and metadata.geo from this member (defaults to members[0])',
       },
     },
   },
@@ -240,7 +240,7 @@ export const datacenterSchemas = {
       options: {
         type: ['object', 'null'],
         description:
-          "Replace-all datacenter options; `null` clears the stored blob so the documented defaults apply again. `addressPreference` is `'ipv4'` or `'ipv6'`; `priority` is an integer 0–1000 (lower wins); `trusted` is a boolean. The location override is never changed through `options` (a `location` key there is ignored, and replacing or clearing `options` keeps it) — send the top-level `location` field to edit it.",
+          "Replace-all datacenter network options; `null` clears the stored blob so the documented defaults apply again. `addressPreference` is `'ipv4'` or `'ipv6'`; `priority` is an integer 0–1000 (lower wins); `trusted` is a boolean. The location override is never changed through `options` (a `location` key there is ignored, and replacing or clearing `options` keeps it) — send the top-level `location` field to edit it.",
       },
       kind: {
         type: ['string', 'null'],
@@ -310,7 +310,7 @@ export const datacenterPaths: Record<string, unknown> = {
   '/api/client/v1/datacenters/name-suggestions': {
     get: {
       tags: ['Datacenters'],
-      summary: 'Suggest datacenter names from server geolocation and ASN',
+      summary: 'Suggest datacenter network names from server geolocation and ASN',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -354,11 +354,11 @@ export const datacenterPaths: Record<string, unknown> = {
   '/api/client/v1/datacenters': {
     get: {
       tags: ['Datacenters'],
-      summary: 'List datacenters',
+      summary: 'List datacenter networks',
       security: [{ cookieAuth: [] }],
       responses: {
         '200': {
-          description: 'Datacenters in the session organization',
+          description: 'Datacenter networks in the session organization',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/DatacentersResponse' },
@@ -377,7 +377,7 @@ export const datacenterPaths: Record<string, unknown> = {
     },
     post: {
       tags: ['Datacenters'],
-      summary: 'Create a datacenter',
+      summary: 'Create a datacenter network',
       security: [{ cookieAuth: [] }],
       requestBody: {
         required: true,
@@ -437,7 +437,7 @@ export const datacenterPaths: Record<string, unknown> = {
   '/api/client/v1/datacenters/{id}': {
     get: {
       tags: ['Datacenters'],
-      summary: 'Get a datacenter',
+      summary: 'Get a datacenter network',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -472,7 +472,7 @@ export const datacenterPaths: Record<string, unknown> = {
     },
     patch: {
       tags: ['Datacenters'],
-      summary: 'Update a datacenter',
+      summary: 'Update a datacenter network',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -521,14 +521,14 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         '409': {
           description:
-            '`lan_pair_in_use` (with `message`, `networks` and `servers`): marking the datacenter untrusted would stop servers sharing a trusted LAN that a cross-server container network runs over with no tunnel, while TurboFabric is not running for them (off, paused, or a server switched off). Nothing is changed.',
+            '`lan_pair_in_use` (with `message`, `networks` and `servers`): marking the datacenter network untrusted would stop servers sharing a trusted LAN that a cross-server container network runs over with no tunnel, while TurboFabric is not running for them (off, paused, or a server switched off). Nothing is changed.',
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },
     delete: {
       tags: ['Datacenters'],
-      summary: 'Delete a datacenter',
+      summary: 'Delete a datacenter network',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -565,7 +565,7 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         '409': {
           description:
-            '`datacenter_has_members` — unassign every server first. `datacenter_has_networks` if a non-site network is still scoped to the datacenter.',
+            '`datacenter_has_members` — unassign every server first. `datacenter_has_networks` if a non-site network is still scoped to the datacenter network.',
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },
@@ -617,7 +617,7 @@ export const datacenterPaths: Record<string, unknown> = {
       tags: ['Datacenters'],
       summary: 'Use this network for server-to-server traffic',
       description:
-        'Gives this datacenter the lowest priority number among the trusted datacenters and moves the others up (lower number wins), so the owner never types a number. Does nothing when it already wins. Changed datacenters re-plan stored endpoints the same way a priority edit does.',
+        'Gives this datacenter network the lowest priority number among the trusted datacenter networks and moves the others up (lower number wins), so the owner never types a number. Does nothing when it already wins. Changed datacenter networks re-plan stored endpoints the same way a priority edit does.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -691,7 +691,7 @@ export const datacenterPaths: Record<string, unknown> = {
         },
         '409': {
           description:
-            "`datacenter_not_trusted` — an untrusted datacenter is never used for server-to-server traffic. `peers_unreachable` — a reachability check run before saving found servers that cannot reach each other on this network; `check` has the per-server results. Send `confirmUnreachable: true` to save anyway. Servers that could not be tested (older host, offline) never block. `network_choice_changed` — a network's number was edited by someone else while this save was being checked; nothing was written, read the networks again and retry.",
+            "`datacenter_not_trusted` — an untrusted datacenter network is never used for server-to-server traffic. `peers_unreachable` — a reachability check run before saving found servers that cannot reach each other on this network; `check` has the per-server results. Send `confirmUnreachable: true` to save anyway. Servers that could not be tested (older host, offline) never block. `network_choice_changed` — a network's number was edited by someone else while this save was being checked; nothing was written, read the networks again and retry.",
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },
@@ -700,7 +700,7 @@ export const datacenterPaths: Record<string, unknown> = {
   '/api/client/v1/datacenters/{id}/members': {
     post: {
       tags: ['Datacenters'],
-      summary: 'Add datacenter members',
+      summary: 'Add datacenter network members',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -762,12 +762,12 @@ export const datacenterPaths: Record<string, unknown> = {
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
-          description: 'Datacenter or member server not found',
+          description: 'Datacenter network or member server not found',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '409': {
           description:
-            '`address_in_use` when a pin address is already allocated in the organization; otherwise a `CidrCollisionError` when a newly derived site CIDR collides (`subnet_overlaps` for any site subnet in the organization, `cidr_overlaps_gateway_advertised` when the other datacenter and this one both have a gateway relay, `cidr_overlaps_reserved`, `cidr_overlaps_docker_network`, `cidr_overlaps_fabric`, `cidr_overlaps_fabric_pool`)',
+            '`address_in_use` when a pin address is already allocated in the organization; otherwise a `CidrCollisionError` when a newly derived site CIDR collides (`subnet_overlaps` for any site subnet in the organization, `cidr_overlaps_gateway_advertised` when the other datacenter network and this one both have a gateway relay, `cidr_overlaps_reserved`, `cidr_overlaps_docker_network`, `cidr_overlaps_fabric`, `cidr_overlaps_fabric_pool`)',
           content: {
             'application/json': {
               schema: {
@@ -782,8 +782,8 @@ export const datacenterPaths: Record<string, unknown> = {
   '/api/client/v1/datacenters/{id}/members/{serverId}': {
     delete: {
       tags: ['Datacenters'],
-      summary: 'Remove a server from a datacenter',
-      description: 'Removes every membership pin held by that server in this datacenter.',
+      summary: 'Remove a server from a datacenter network',
+      description: 'Removes every membership pin held by that server in this datacenter network.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -824,7 +824,7 @@ export const datacenterPaths: Record<string, unknown> = {
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
-          description: 'Datacenter or membership not found',
+          description: 'Datacenter network or membership not found',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '409': {
@@ -838,7 +838,7 @@ export const datacenterPaths: Record<string, unknown> = {
   '/api/client/v1/datacenters/{id}/subnets': {
     post: {
       tags: ['Datacenters'],
-      summary: 'Add a datacenter subnet',
+      summary: 'Add a datacenter network subnet',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -885,12 +885,12 @@ export const datacenterPaths: Record<string, unknown> = {
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
-          description: 'Datacenter not found',
+          description: 'Datacenter network not found',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '409': {
           description:
-            '`CidrCollisionError` — `subnet_overlaps` when the CIDR overlaps any site subnet in this organization, `cidr_overlaps_gateway_advertised` when that subnet is in another datacenter and both datacenters have a gateway relay, or `cidr_overlaps_reserved` / `cidr_overlaps_docker_network` / `cidr_overlaps_fabric` / `cidr_overlaps_fabric_pool`',
+            '`CidrCollisionError` — `subnet_overlaps` when the CIDR overlaps any site subnet in this organization, `cidr_overlaps_gateway_advertised` when that subnet is in another datacenter network and both datacenter networks have a gateway relay, or `cidr_overlaps_reserved` / `cidr_overlaps_docker_network` / `cidr_overlaps_fabric` / `cidr_overlaps_fabric_pool`',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/CidrCollisionError' },
@@ -903,7 +903,7 @@ export const datacenterPaths: Record<string, unknown> = {
   '/api/client/v1/datacenters/{id}/subnets/{networkId}': {
     patch: {
       tags: ['Datacenters'],
-      summary: 'Rename a datacenter subnet',
+      summary: 'Rename a datacenter network subnet',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -953,14 +953,14 @@ export const datacenterPaths: Record<string, unknown> = {
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
-          description: 'Datacenter or subnet not found',
+          description: 'Datacenter network or subnet not found',
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },
     },
     delete: {
       tags: ['Datacenters'],
-      summary: 'Delete a datacenter subnet',
+      summary: 'Delete a datacenter network subnet',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -998,7 +998,7 @@ export const datacenterPaths: Record<string, unknown> = {
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
-          description: 'Datacenter or subnet not found',
+          description: 'Datacenter network or subnet not found',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '409': {
