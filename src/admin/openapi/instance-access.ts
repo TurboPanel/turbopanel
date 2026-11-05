@@ -46,6 +46,48 @@ export const INSTANCE_ACCESS_PATHS = {
       },
     },
   },
+  [`${ADMIN_API_PREFIX}/instance/identity/sealed-secrets/{serverId}/key`]: {
+    delete: {
+      tags: ['Instance'],
+      summary: "Clear a server's sealing key",
+      description:
+        'Clear Sealing Key: the recovery for a server rolled back to a daemon build without ' +
+        'sealed secrets. Clears `sealing_key_kid`, `sealing_key_pub` and ' +
+        '`sealing_key_reported_at`, so the server gets plaintext decrypt answers until its ' +
+        'daemon registers a key again. Query `confirmName` must be exactly the server name ' +
+        '(then hostname, then id). Superadmin only, behind step-up (a stale session gets 403 ' +
+        '`reauth_required`), audited as `server.sealing_key.clear`. Returns ' +
+        '`{ ok: true, cleared }`; `cleared` is false when no key was on file.',
+      security: [...cookieSecurity],
+      parameters: [
+        {
+          name: 'serverId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+        { name: 'confirmName', in: 'query', required: true, schema: { type: 'string' } },
+      ],
+      responses: {
+        '200': { description: '`{ ok: true, cleared }`' },
+        '400': {
+          description:
+            '`confirm_name_required` (message "Type the server name to clear its sealing ' +
+            'key.") when `confirmName` is missing or is not exactly the server name; nothing ' +
+            'changed.',
+        },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires superadmin role — or `reauth_required`' },
+        '404': { description: 'No such server' },
+        '409': {
+          description:
+            '`daemon_seals_secrets`: the server is connected and its daemon lists sealed ' +
+            'secrets in its hello, so it would refuse plaintext answers; nothing changed.',
+        },
+        '503': { description: 'Database unavailable' },
+      },
+    },
+  },
   [`${ADMIN_API_PREFIX}/instance/identity/next`]: {
     put: {
       tags: ['Instance'],

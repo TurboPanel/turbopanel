@@ -37,6 +37,7 @@ async function buildApp(opts: {
   createdAt?: string
   configured?: boolean
   serverRows?: Record<string, unknown>[]
+  updateReturns?: { id: string }[]
 }) {
   const secrets = await deriveSecretsConfig(parseTestSecretsConfig('deno'), 'session-signing')
   const token = crypto.randomUUID()
@@ -49,17 +50,36 @@ async function buildApp(opts: {
     ...(opts.createdAt ? { createdAt: opts.createdAt } : {}),
   })
   const baseDb = createMockAuthDb(state)
-  // The mock auth database has no server table; answer that one read.
+  const serverRows = opts.serverRows ?? [{ id: 'srv-1', name: 'alpha', organizationId: 'org-1' }]
+  const serverUpdates: Record<string, unknown>[] = []
+  // The mock auth database has no server table; answer its reads and record
+  // its updates. A filtered read returns the first row.
   const db = new Proxy(baseDb, {
     get(target, prop, receiver) {
+      if (prop === 'update') {
+        return (table: unknown) => {
+          if (table !== server) return target.update(table as never)
+          return {
+            set: (values: Record<string, unknown>) => ({
+              where: () => ({
+                returning: () => {
+                  serverUpdates.push(values)
+                  return Promise.resolve(opts.updateReturns ?? [{ id: 'srv-1' }])
+                },
+              }),
+            }),
+          }
+        }
+      }
       if (prop !== 'select') return Reflect.get(target, prop, receiver)
       return (fields?: unknown) => ({
-        from: (table: unknown) =>
-          table === server
-            ? Promise.resolve(
-                opts.serverRows ?? [{ id: 'srv-1', name: 'alpha', organizationId: 'org-1' }]
-              )
-            : target.select(fields as never).from(table as never),
+        from: (table: unknown) => {
+          if (table !== server) return target.select(fields as never).from(table as never)
+          const all = Promise.resolve(serverRows)
+          return Object.assign(all, {
+            where: () => ({ limit: () => Promise.resolve(serverRows.slice(0, 1)) }),
+          })
+        },
       })
     },
   }) as Db
@@ -84,7 +104,7 @@ async function buildApp(opts: {
   })
   app.route(ADMIN_API_PREFIX, admin)
   const cookie = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
-  return { app, cookie, identity }
+  return { app, cookie, identity, serverUpdates }
 }
 
 function put(app: Hono<AppEnv>, cookie: string, body: unknown) {
@@ -219,4 +239,122 @@ test('the sealed-secrets read is refused for a non-superadmin', async () => {
   const { app, cookie } = await buildApp({ role: 'admin', serverRows: [] })
   assertEquals((await app.request(SEALED_URL, { headers: { Cookie: cookie } })).status, 403)
   assertEquals((await app.request(SEALED_URL)).status, 401)
+})
+
+const CLEAR_SERVER_ID = '0190a5b6-7c8d-7e9f-8a0b-1c2d3e4f5a6b'
+const CLEAR_URL = `${SEALED_URL}/${CLEAR_SERVER_ID}/key`
+
+function clearKey(app: Hono<AppEnv>, cookie: string, confirmName?: string) {
+  const query = confirmName === undefined ? '' : `?confirmName=${encodeURIComponent(confirmName)}`
+  return app.request(`${CLEAR_URL}${query}`, { method: 'DELETE', headers: { Cookie: cookie } })
+}
+
+function rolledBackRow(overrides: Record<string, unknown> = {}) {
+  // A rolled-back daemon's hello no longer lists sealed secrets.
+  return sealingRow(CLEAR_SERVER_ID, {
+    name: 'alpha',
+    hostname: 'alpha.example.com',
+    daemon: { projection: { features: [] } },
+    ...overrides,
+  })
+}
+
+test('clearing a sealing key wipes the three columns once the name is typed', async () => {
+  const { app, cookie, serverUpdates } = await buildApp({ serverRows: [rolledBackRow()] })
+  const res = await clearKey(app, cookie, 'alpha')
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { ok: true, cleared: true })
+  assertEquals(serverUpdates.length, 1)
+  const [update] = serverUpdates
+  assertEquals(update?.sealingKeyKid, null)
+  assertEquals(update?.sealingKeyPub, null)
+  assertEquals(update?.sealingKeyReportedAt, null)
+})
+
+test('clearing a sealing key is refused for a non-superadmin', async () => {
+  const { app, cookie, serverUpdates } = await buildApp({
+    role: 'admin',
+    serverRows: [rolledBackRow()],
+  })
+  assertEquals((await clearKey(app, cookie, 'alpha')).status, 403)
+  assertEquals(serverUpdates.length, 0)
+})
+
+test('clearing a sealing key needs the exact server name', async () => {
+  const { app, cookie, serverUpdates } = await buildApp({ serverRows: [rolledBackRow()] })
+  for (const typed of [undefined, '', 'Alpha', ' alpha', 'alpha.example.com']) {
+    const res = await clearKey(app, cookie, typed)
+    assertEquals(res.status, 400, String(typed))
+    const body = await res.json()
+    assertEquals(body.error, 'confirm_name_required')
+    assertEquals(body.message, 'Type the server name to clear its sealing key.')
+  }
+  assertEquals(serverUpdates.length, 0)
+})
+
+test('a server without a name is confirmed by its hostname', async () => {
+  const { app, cookie } = await buildApp({ serverRows: [rolledBackRow({ name: null })] })
+  assertEquals((await clearKey(app, cookie, 'alpha.example.com')).status, 200)
+})
+
+test('clearing is refused while a connected daemon opens sealed secrets', async () => {
+  const { app, cookie, serverUpdates } = await buildApp({
+    serverRows: [
+      rolledBackRow({ daemon: { projection: { features: ['daemon-sealed-secrets-v1'] } } }),
+    ],
+  })
+  const res = await clearKey(app, cookie, 'alpha')
+  assertEquals(res.status, 409)
+  assertEquals((await res.json()).error, 'daemon_seals_secrets')
+  assertEquals(serverUpdates.length, 0)
+})
+
+test('an offline server can be cleared whatever its last hello said', async () => {
+  const { app, cookie } = await buildApp({
+    serverRows: [
+      rolledBackRow({
+        isConnected: false,
+        daemon: { projection: { features: ['daemon-sealed-secrets-v1'] } },
+      }),
+    ],
+  })
+  assertEquals((await clearKey(app, cookie, 'alpha')).status, 200)
+})
+
+test('a server with no key on file changes nothing', async () => {
+  const { app, cookie, serverUpdates } = await buildApp({
+    serverRows: [rolledBackRow({ sealingKeyKid: null, sealingKeyPub: null })],
+  })
+  const res = await clearKey(app, cookie, 'alpha')
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { ok: true, cleared: false })
+  assertEquals(serverUpdates.length, 0)
+})
+
+test('an unknown server is 404', async () => {
+  const { app, cookie } = await buildApp({ serverRows: [] })
+  assertEquals((await clearKey(app, cookie, 'alpha')).status, 404)
+})
+
+test('a server id that is not a uuid is 404 before any read', async () => {
+  const { app, cookie, serverUpdates } = await buildApp({ serverRows: [rolledBackRow()] })
+  const res = await app.request(`${SEALED_URL}/srv-1/key?confirmName=alpha`, {
+    method: 'DELETE',
+    headers: { Cookie: cookie },
+  })
+  assertEquals(res.status, 404)
+  assertEquals(serverUpdates.length, 0)
+})
+
+test('clearing a sealing key asks a stale session to re-authenticate first', async () => {
+  const { app, cookie, serverUpdates } = await buildApp({
+    createdAt: STALE,
+    serverRows: [rolledBackRow()],
+  })
+  const res = await clearKey(app, cookie, 'alpha')
+  assertEquals(res.status, 403)
+  const body = await res.json()
+  assertEquals(body.error, 'reauth_required')
+  assertEquals(body.action, 'server.sealing_key.clear')
+  assertEquals(serverUpdates.length, 0)
 })

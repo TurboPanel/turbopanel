@@ -133,10 +133,15 @@ type SealedSecretsRow = {
   plaintextSecretsAt: string | null
 }
 
+/** The stored hello features list `daemon-sealed-secrets-v1` (replaced by every hello). */
+export function daemonAdvertisesSealedSecrets(daemon: unknown): boolean {
+  const features = parseServerDaemonState(daemon)?.projection?.features ?? []
+  return features.includes(DAEMON_SEALED_SECRETS_FEATURE)
+}
+
 /** The same rule as the decrypt route: sealed whenever a key is on file. */
 export function sealedSecretsServerState(row: SealedSecretsRow): SealedSecretsServerState {
-  const features = parseServerDaemonState(row.daemon)?.projection?.features ?? []
-  const advertisesSealedSecrets = features.includes(DAEMON_SEALED_SECRETS_FEATURE)
+  const advertisesSealedSecrets = daemonAdvertisesSealedSecrets(row.daemon)
   const sealingKey =
     row.sealingKeyKid && row.sealingKeyPub
       ? { kid: row.sealingKeyKid, reportedAt: row.sealingKeyReportedAt }
@@ -169,4 +174,46 @@ export async function listSealedSecretsState(db: Db): Promise<SealedSecretsServe
     })
     .from(server)
   return rows.map(sealedSecretsServerState)
+}
+
+/** What the Clear Sealing Key action reads about one server before it acts. */
+export type SealingKeyClearTarget = {
+  id: string
+  organizationId: string | null
+  name: string | null
+  hostname: string | null
+  kid: string | null
+  /**
+   * Connected with a hello that lists `daemon-sealed-secrets-v1`: a current
+   * daemon, which would refuse the plaintext answers a clear brings.
+   */
+  connectedDaemonSealsSecrets: boolean
+}
+
+export async function readSealingKeyClearTarget(
+  db: Db,
+  serverId: string
+): Promise<SealingKeyClearTarget | null> {
+  const [row] = await db
+    .select({
+      id: server.id,
+      name: server.name,
+      hostname: server.hostname,
+      organizationId: server.organizationId,
+      isConnected: server.isConnected,
+      daemon: server.daemon,
+      sealingKeyKid: server.sealingKeyKid,
+    })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  if (!row) return null
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    name: row.name,
+    hostname: row.hostname,
+    kid: row.sealingKeyKid,
+    connectedDaemonSealsSecrets: row.isConnected && daemonAdvertisesSealedSecrets(row.daemon),
+  }
 }
