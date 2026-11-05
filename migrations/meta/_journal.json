@@ -183,6 +183,13 @@
       "when": 1793892427697,
       "tag": "0025_server_pin_report",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793899672150,
+      "tag": "0026_pin_silence_alarm",
+      "breakpoints": true
     }
   ]
 }

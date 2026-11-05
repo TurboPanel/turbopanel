@@ -158,6 +158,12 @@
       "tag": "0025_server_pin_report",
       "when": 1793892427697,
       "sha256": "7f76b95525b485584e291d2df710e508beae32e04fae3678054ecf1efffadefc"
+    },
+    {
+      "idx": 26,
+      "tag": "0026_pin_silence_alarm",
+      "when": 1793899672150,
+      "sha256": "9ba632fb34916fec52a66b1aa6e1917038aa1630d7682587787955ff7ce8bb16"
     }
   ]
 }

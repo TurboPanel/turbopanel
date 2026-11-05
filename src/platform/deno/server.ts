@@ -2,6 +2,7 @@ import type { Hono } from 'hono'
 import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import { deriveDaemonJwtKeyring } from '../../daemon/authn/daemon-jwt-keyring.ts'
+import { sweepPinSilence } from '../../daemon/pin-silence.ts'
 import {
   type DerivedSecretsConfig,
   deriveEncryptionSecretsConfig,
@@ -934,6 +935,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // Workers parity (offline-sweep cron): drop used sign-in challenges past
       // their window. Open sockets are re-checked per frame here, not swept.
       await runCleanupPhase('daemon nonce sweep', () => pruneExpiredNonces(db))
+      // Workers parity (offline-sweep cron): staged pin silence alarms for
+      // pinned servers a TurboFabric peer still reaches (daemon/pin-silence.ts).
+      await runCleanupPhase('pin silence sweep', async () =>
+        sweepPinSilence(db, dataEncryptionSecrets, { email: await email() })
+      )
       // Workers parity (offline-sweep cron): tell each organization about the
       // folders that became orphans since the last tick, once per orphan.
       await runCleanupPhase('orphan folder alert sweep', async () =>

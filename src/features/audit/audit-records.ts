@@ -126,6 +126,8 @@ export const AUDIT_ACTIONS = [
   'panel.identity.revoked',
   'server.panel_pin.reissued',
   'server.panel_pin.mismatch',
+  'server.panel_pin.silent',
+  'server.panel_pin.missing',
   'instance.tunnel_token.set',
   'instance.ingress_account.added',
   'instance.ingress_account.removed',
