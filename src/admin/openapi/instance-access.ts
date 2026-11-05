@@ -55,9 +55,10 @@ export const INSTANCE_ACCESS_PATHS = {
         'sealed secrets. Clears `sealing_key_kid`, `sealing_key_pub` and ' +
         '`sealing_key_reported_at`, so the server gets plaintext decrypt answers until its ' +
         'daemon registers a key again. Query `confirmName` must be exactly the server name ' +
-        '(then hostname, then id). Superadmin only, behind step-up (a stale session gets 403 ' +
-        '`reauth_required`), audited as `server.sealing_key.clear`. Returns ' +
-        '`{ ok: true, cleared }`; `cleared` is false when no key was on file.',
+        '(then hostname, then id). Superadmin only, behind step-up before anything changes (a ' +
+        'stale session gets 403 `reauth_required`), audited as `server.sealing_key.clear`. ' +
+        'Returns `{ ok: true, cleared }`; `cleared` is false when no key was on file (answered ' +
+        'without step-up, nothing changes) or a different key was registered after the read.',
       security: [...cookieSecurity],
       parameters: [
         {

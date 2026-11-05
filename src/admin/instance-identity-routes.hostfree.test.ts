@@ -32,8 +32,8 @@ const NEXT_URL = `${IDENTITY_URL}/next`
 const STALE = new Date(Date.now() - 60 * 60 * 1000).toISOString()
 
 /** `update(server).set(values).where(...).returning(...)`: records `values`, matches one row. */
-function fakeServerUpdate(updates: Record<string, unknown>[]) {
-  const returning = () => Promise.resolve([{ id: 'srv-1' }])
+function fakeServerUpdate(updates: Record<string, unknown>[], matches: boolean) {
+  const returning = () => Promise.resolve(matches ? [{ id: 'srv-1' }] : [])
   return {
     set: (values: Record<string, unknown>) => {
       updates.push(values)
@@ -42,10 +42,18 @@ function fakeServerUpdate(updates: Record<string, unknown>[]) {
   }
 }
 
-/** `select().from(server)`, awaited whole or narrowed with `.where().limit()`. */
-function fakeServerSelect(rows: Record<string, unknown>[]) {
-  const first = () => Promise.resolve(rows.slice(0, 1))
-  return Object.assign(Promise.resolve(rows), { where: () => ({ limit: first }) })
+/**
+ * `select().from(server)`, awaited whole or narrowed with `.where().limit()`.
+ * Narrowed reads walk the rows in order (the last one repeats), so a test can
+ * change a server between two reads.
+ */
+function fakeServerSelect(rows: Record<string, unknown>[], reads: { narrowed: number }) {
+  const next = () => {
+    const row = rows[Math.min(reads.narrowed, rows.length - 1)]
+    reads.narrowed += 1
+    return Promise.resolve(row ? [row] : [])
+  }
+  return Object.assign(Promise.resolve(rows), { where: () => ({ limit: next }) })
 }
 
 async function buildApp(opts: {
@@ -54,6 +62,8 @@ async function buildApp(opts: {
   createdAt?: string
   configured?: boolean
   serverRows?: Record<string, unknown>[]
+  /** False when the clear's guarded update matches no row (state changed after the read). */
+  updateMatches?: boolean
 }) {
   const secrets = await deriveSecretsConfig(parseTestSecretsConfig('deno'), 'session-signing')
   const token = crypto.randomUUID()
@@ -68,19 +78,22 @@ async function buildApp(opts: {
   const baseDb = createMockAuthDb(state)
   const serverRows = opts.serverRows ?? [{ id: 'srv-1', name: 'alpha', organizationId: 'org-1' }]
   const serverUpdates: Record<string, unknown>[] = []
+  const narrowedReads = { narrowed: 0 }
   // The mock auth database has no server table; answer its reads and record
   // its updates. A filtered read returns the first row.
   const db = new Proxy(baseDb, {
     get(target, prop, receiver) {
       if (prop === 'update') {
         return (table: unknown) =>
-          table === server ? fakeServerUpdate(serverUpdates) : target.update(table as never)
+          table === server
+            ? fakeServerUpdate(serverUpdates, opts.updateMatches ?? true)
+            : target.update(table as never)
       }
       if (prop !== 'select') return Reflect.get(target, prop, receiver)
       return (fields?: unknown) => ({
         from: (table: unknown) =>
           table === server
-            ? fakeServerSelect(serverRows)
+            ? fakeServerSelect(serverRows, narrowedReads)
             : target.select(fields as never).from(table as never),
       })
     },
@@ -361,4 +374,27 @@ test('clearing a sealing key asks a stale session to re-authenticate first', asy
   assertEquals(body.error, 'reauth_required')
   assertEquals(body.action, 'server.sealing_key.clear')
   assertEquals(serverUpdates.length, 0)
+})
+
+test('a clear that loses a race to a connecting current daemon answers 409', async () => {
+  // The first read saw a rolled-back daemon; the update found a current one.
+  const rows = [
+    rolledBackRow(),
+    rolledBackRow({ daemon: { projection: { features: ['daemon-sealed-secrets-v1'] } } }),
+  ]
+  const { app, cookie } = await buildApp({ serverRows: rows, updateMatches: false })
+  const res = await clearKey(app, cookie, 'alpha')
+  assertEquals(res.status, 409)
+  assertEquals((await res.json()).error, 'daemon_seals_secrets')
+})
+
+test('a clear whose key changed after the read answers cleared: false', async () => {
+  const { app, cookie, serverUpdates } = await buildApp({
+    serverRows: [rolledBackRow()],
+    updateMatches: false,
+  })
+  const res = await clearKey(app, cookie, 'alpha')
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { ok: true, cleared: false })
+  assertEquals(serverUpdates.length, 1)
 })

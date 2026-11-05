@@ -71,7 +71,9 @@
   `sealing_key_*` columns through `clearDaemonSealingKey`, answers
   `{ ok, cleared }` (`cleared: false` when no key was on file), and refuses 409
   `daemon_seals_secrets` while the server is connected with a hello listing
-  `daemon-sealed-secrets-v1` (that daemon would refuse plaintext); the self-hosted
+  `daemon-sealed-secrets-v1` (that daemon would refuse plaintext; the update
+  checks the same condition and the key id again, so a daemon that connects
+  after the read keeps its key); the self-hosted
   tunnel-token write sits behind the same step-up and is audited as `instance.tunnel_token.set`;
   `GET /instance/platform-ca` and
   `POST /instance/platform-ca/trust-reconcile` are Deno-only Platform CA read

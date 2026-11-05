@@ -1,4 +1,4 @@
-import type { Hono } from 'hono'
+import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import { isUuid } from '../client/access/routes-helpers.ts'
@@ -148,6 +148,18 @@ export function registerInstanceIdentityAdminRoutes(
 export const CLEAR_SEALING_KEY_CONFIRM_MESSAGE = 'Type the server name to clear its sealing key.'
 export const DAEMON_SEALS_SECRETS_ERROR = 'daemon_seals_secrets'
 
+function daemonSealsSecrets(c: Context<AppEnv>): Response {
+  return c.json(
+    {
+      ok: false,
+      error: DAEMON_SEALS_SECRETS_ERROR,
+      message:
+        'The connected daemon opens sealed secrets; clear the key only for a server rolled back to an older daemon.',
+    },
+    409
+  )
+}
+
 /**
  * Clear Sealing Key: the recovery for a host rolled back (break glass) to a
  * daemon build without sealed secrets, which cannot open the sealed answers
@@ -179,17 +191,7 @@ function registerClearSealingKeyRoute(admin: Hono<AppEnv>, secrets: DerivedSecre
         )
       }
       if (target.kid === null) return c.json({ ok: true, cleared: false })
-      if (target.connectedDaemonSealsSecrets) {
-        return c.json(
-          {
-            ok: false,
-            error: DAEMON_SEALS_SECRETS_ERROR,
-            message:
-              'The connected daemon opens sealed secrets; clear the key only for a server rolled back to an older daemon.',
-          },
-          409
-        )
-      }
+      if (target.connectedDaemonSealsSecrets) return daemonSealsSecrets(c)
       const stepUp = await requireInstanceStepUp(c, 'server.sealing_key.clear')
       if (stepUp) return stepUp
       const cleared = await clearDaemonSealingKey(db, target.id, target.kid)
@@ -204,6 +206,11 @@ function registerClearSealingKeyRoute(admin: Hono<AppEnv>, secrets: DerivedSecre
           targetId: target.id,
           context: { kid: target.kid },
         })
+      } else {
+        // A current daemon connected, or a new key was registered, after the
+        // read: answer as the read would now.
+        const now = await readSealingKeyClearTarget(db, target.id)
+        if (now?.connectedDaemonSealsSecrets) return daemonSealsSecrets(c)
       }
       return c.json({ ok: true, cleared })
     }
