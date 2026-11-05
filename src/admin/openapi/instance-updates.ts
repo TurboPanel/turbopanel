@@ -262,7 +262,7 @@ export const INSTANCE_UPDATES_PATHS = {
         'hostname or organization name contains it, or a server or organization id starts with it). ' +
         '`statusCounts` (`all` plus one per outcome) honours every filter but `status`, for quick ' +
         'filters. `organizations` lists up to 100 organizations in the run with their server count. ' +
-        'Each server row has organization, datacenter, from/to version and commit, outcome, started, ' +
+        'Each server row has organization, datacenter network, from/to version and commit, outcome, started, ' +
         'finished, duration, the reason of a failed or skipped component, attempts, `connected`, ' +
         '`lastHeartbeatAt` (read for the first 51 rows of this page only, null beyond) and `components` keyed by unit (`daemon`, ' +
         '`instance`), each with its own step status, outcome, versions, times and error. `run` is ' +

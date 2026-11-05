@@ -322,7 +322,7 @@ async function checkPlacementTargets(
     throw new TunnelRefusal(
       'datacenter_required',
       400,
-      'Choose the datacenter for an all-servers Tunnel'
+      'Choose the datacenter network for an all-servers Tunnel'
     )
   }
   const listed = [...input.serverIds, ...input.exceptServerIds]
@@ -342,13 +342,17 @@ async function checkPlacementTargets(
       .where(and(eq(datacenter.id, datacenterId), eq(datacenter.organizationId, organizationId)))
       .limit(1)
     if (!dc)
-      throw new TunnelRefusal('datacenter_invalid', 400, 'Choose a datacenter of this organization')
+      throw new TunnelRefusal(
+        'datacenter_invalid',
+        400,
+        'Choose a datacenter network of this organization'
+      )
     const inDc = new Set(await datacenterServerIds(db, datacenterId))
     if (!listed.every((id) => inDc.has(id))) {
       throw new TunnelRefusal(
         'server_not_in_datacenter',
         400,
-        'Every server must be in the Tunnel datacenter'
+        'Every server must be on the Tunnel datacenter network'
       )
     }
   }

@@ -72,7 +72,7 @@ function skipReason(doorway: DoorwayFact): string {
   if (doorway.siteServerIds.length === 0) {
     return 'The site for this name does not run on any server yet'
   }
-  return 'No server that runs this site has a datacenter address'
+  return 'No server that runs this site has a datacenter network address'
 }
 
 /** Other servers that carry the tunnel may pass visitors to a site that runs here. */

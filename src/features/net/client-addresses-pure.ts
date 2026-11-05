@@ -559,7 +559,7 @@ function parseOneEntry(
   }
   const datacenterId = blankToNull(raw.datacenterId)
   if (scope === 'public' && datacenterId !== null) {
-    return fail('address_scope_invalid', 'The public address names no datacenter.', index)
+    return fail('address_scope_invalid', 'The public address names no datacenter network.', index)
   }
   if (
     scope === 'datacenter' &&
@@ -567,7 +567,7 @@ function parseOneEntry(
   ) {
     return fail(
       'address_datacenter_not_member',
-      'This server does not belong to that datacenter.',
+      'This server is not on that datacenter network.',
       index
     )
   }

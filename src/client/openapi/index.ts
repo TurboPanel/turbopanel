@@ -109,7 +109,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       { name: 'Servers', description: 'Servers and update management' },
       { name: 'Commands', description: 'Command lifecycle status polling' },
       { name: 'Networks', description: 'Organization network registry' },
-      { name: 'Datacenters', description: 'Datacenter CRUD' },
+      { name: 'Datacenters', description: 'Datacenter network CRUD' },
       { name: 'IPs', description: 'Managed IP address registry' },
       { name: 'Licenses', description: 'License lifecycle' },
       { name: 'System', description: 'Platform-managed system components' },

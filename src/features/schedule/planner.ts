@@ -504,7 +504,7 @@ function fabricOffRefusal(
   const outside = serversOutsideLanGroup(participants, pairs).map((id) => serverName(input, id))
   return `${joinNames(outside)} ${
     outside.length === 1 ? 'is' : 'are'
-  } in a different datacenter from the other servers on this network, so it needs TurboFabric. Turn TurboFabric on, or keep the network on servers that share a trusted datacenter network.`
+  } on a different datacenter network from the other servers on this network, so it needs TurboFabric. Turn TurboFabric on, or keep the network on servers that share a trusted datacenter network.`
 }
 
 function switchedOffRefusal(input: PlanEnvironmentInput, pairs: SpanPairs): string | null {

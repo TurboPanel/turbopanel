@@ -430,7 +430,7 @@ function hostingLetsEncryptRefusedMessage(
     return `${asks}, but this organization does not allow Let's Encrypt certificates. An organization owner or manager can turn on ${LETS_ENCRYPT_SETTING_PLACE}. Or set tls.mode to "internal" for a self-signed certificate.`
   }
   if (prepared.reason === 'acme_requires_public_bind') {
-    return `${asks}, but the route is not reachable from the internet. Let's Encrypt needs bind.scope "public"; use tls.mode "internal" for a local or datacenter route.`
+    return `${asks}, but the route is not reachable from the internet. Let's Encrypt needs bind.scope "public"; use tls.mode "internal" for a local or datacenter network route.`
   }
   const unsupported = prepared.names.find((name) => hostnameUnsupportedReason(name) !== null)
   if (prepared.reason === 'letsencrypt_hostname_unsupported' && unsupported !== undefined) {

@@ -158,7 +158,7 @@ function createResponse(registry: TunnelAdapterRegistry) {
       return invalid(c, 'tunnel_invalid', 'carrierId', 'Choose a Carrier of this organization')
     const datacenterId = typeof body.datacenterId === 'string' ? body.datacenterId : null
     if (datacenterId !== null && !isUuid(datacenterId)) {
-      return invalid(c, 'tunnel_invalid', 'datacenterId', 'Choose a datacenter')
+      return invalid(c, 'tunnel_invalid', 'datacenterId', 'Choose a datacenter network')
     }
     try {
       const row = await createTunnel(
@@ -188,7 +188,7 @@ async function placementResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
   if (!placement.ok) return invalid(c, 'tunnel_invalid', placement.field, placement.detail)
   const datacenterId = typeof body.datacenterId === 'string' ? body.datacenterId : null
   if (datacenterId !== null && !isUuid(datacenterId)) {
-    return invalid(c, 'tunnel_invalid', 'datacenterId', 'Choose a datacenter')
+    return invalid(c, 'tunnel_invalid', 'datacenterId', 'Choose a datacenter network')
   }
   try {
     const updated = await updatePlacement(scope.db, row, placement.value, datacenterId)

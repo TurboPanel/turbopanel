@@ -1000,8 +1000,8 @@ on auto-failover blocks with `managed_automatic_failover_blocked`
 (`Automatic
 failover blocked: unable to verify previous primary is fenced`).
 Same-DC failover members that fail the lag gate are skipped; if none remain,
-`Automatic failover blocked: no same-datacenter failover replica is healthy
-enough to promote`.
+`Automatic failover blocked: no failover replica on the same datacenter
+network is healthy enough to promote`.
 `readEligible` never selects an automatic candidate. `Future:` fail-closed HA
 lease (daemon stops advertising a former writer if it loses the Orchestrator
 Raft lease).

@@ -73,7 +73,7 @@ export const serverTrafficMapSchemas = {
               localInterface: {
                 type: ['string', 'null'],
                 description:
-                  'Local NIC holding the address on the datacenter network; null when unknown or not a datacenter address.',
+                  'Local NIC holding the address on the datacenter network; null when unknown or not a datacenter network address.',
               },
               linkDown: {
                 type: 'boolean',
@@ -200,14 +200,14 @@ export const serverTrafficMapSchemas = {
             datacenterId: {
               type: ['string', 'null'],
               format: 'uuid',
-              description: 'Datacenter this address is pinned into, if any.',
+              description: 'Datacenter network this address is pinned into, if any.',
             },
           },
         },
       },
       metrics: {
         description:
-          "Where to read this NIC's byte counters: `GET /servers/{id}/metrics/series` with the network family and this `deviceId`. Counters exist only while `monitored` is true (the monitored NIC set is capped per plan; a NIC that carries a datacenter address is added automatically when a free slot exists). Null when no topology entry is recorded for the NIC.",
+          "Where to read this NIC's byte counters: `GET /servers/{id}/metrics/series` with the network family and this `deviceId`. Counters exist only while `monitored` is true (the monitored NIC set is capped per plan; a NIC that carries a datacenter network address is added automatically when a free slot exists). Null when no topology entry is recorded for the NIC.",
         oneOf: [
           {
             type: 'object',
