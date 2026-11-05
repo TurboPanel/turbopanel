@@ -138,19 +138,22 @@ ask for plaintext); a server with no registered key still gets `plaintexts`, and
 hourly) so the edge go-live gate can read that nothing is still answered in
 plaintext. The answer is never both fields. Only the key id may be logged. The
 Hosting Account password hash rides as `passwordHashEnvelope` (a `tpdaemon`
-envelope) to such a daemon on environment deploys, and on
-`server.principals.reconcile` only to a daemon that also lists
-`daemon-sealed-principal-reconcile-v1` (daemons with just the first feature
-refuse an envelope there); every reconcile caller passes the secrets config
+envelope) to such a daemon on environment deploys and on
+`server.principals.reconcile`; every reconcile caller passes the secrets config
 (`enqueuePrincipalsReconcile`). A verified sealing-key registration also adds
 `daemon-sealed-secrets-v1` to the stored hello features when it is missing
 (`setDaemonSealingKey`): a daemon that connected before this control plane knew
-the feature had it filtered from its hello. The decrypt answer and the deploy's
-`passwordHashEnvelope` key on the stored sealing key, not on that list.
-`server.principals.reconcile` still reads the hello for
-`daemon-sealed-principal-reconcile-v1`, because a key on file does not prove a
-daemon understands an envelope there. Recovery for a host rolled back (break
-glass) to a build without the feature is an operator clearing
-`server.sealing_key_kid` and `sealing_key_pub`; nothing on the wire can. The superadmin read `GET
+the feature had it filtered from its hello. The decrypt answer, the deploy's
+and the reconcile's `passwordHashEnvelope` all key on the stored sealing key,
+never on that list: a stripped hello cannot turn sealing off.
+`daemon-sealed-principal-reconcile-v1` is informational, because no released
+daemon registers a sealing key without opening an envelope on reconcile too.
+The key stays on file until the server's identity key is replaced (enrollment
+attach) or removed (`clearServerDaemonState`), which clear
+`sealing_key_kid`, `sealing_key_pub` and `sealing_key_reported_at` with it; the
+new daemon registers its own key before it asks for a secret. Recovery for a
+host rolled back (break glass) to a build without the feature is an operator
+clearing `server.sealing_key_kid` and `sealing_key_pub`; nothing on the wire
+can. The superadmin read `GET
 /api/admin/v1/instance/identity/sealed-secrets` reports, per server, the
 feature, the key id and `plaintext_secrets_at`, for the edge go-live gate. The `MIN_SUPPORTED_*` floors are untouched.
