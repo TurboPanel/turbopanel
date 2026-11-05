@@ -31,6 +31,14 @@ const FROZEN_AT_START = [
   'src/features/tls/dns-certificates/timing.ts',
 ]
 
+/** What the Workers build was still allowed to reach when the guard landed. */
+const TOLERATED_AT_START: Record<string, string[]> = {
+  'src/features/organizations/acme-terms.ts': [
+    'src/lib/acme/client.ts',
+    'src/lib/acme/directories.ts',
+  ],
+}
+
 const PRODUCTION_HOST = ['acme-v02', 'api', 'letsencrypt', 'org'].join('.')
 const STAGING_HOST = ['acme-staging-v02', 'api', 'letsencrypt', 'org'].join('.')
 
@@ -121,6 +129,28 @@ test('a comment that says import neither hides nor invents an import', async () 
   })
 })
 
+test('the tolerated file may not import another client module', async () => {
+  const files = cleanTree()
+  files['src/lib/acme/jws.ts'] = 'export const jws = 1\n'
+  files['src/features/organizations/acme-terms.ts'] =
+    "import { client } from '../../lib/acme/client.ts'\nimport { jws } from '../../lib/acme/jws.ts'\nexport const terms = [client, jws]\n"
+  await withTree(files, (root) => {
+    assertFailsWith(
+      root,
+      'src/workers.ts reaches src/lib/acme/jws.ts through src/features/organizations/acme-terms.ts'
+    )
+  })
+})
+
+test('an import right after a block comment is read', async () => {
+  const files = cleanTree()
+  files['src/client/ok.ts'] =
+    "/* seeded */import { client } from '../lib/acme/client.ts'\nexport const ok = client\n"
+  await withTree(files, (root) => {
+    assertFailsWith(root, 'src/workers.ts reaches src/lib/acme/client.ts through src/client/ok.ts')
+  })
+})
+
 test('a frozen entry other than the tolerated one may not become Workers-reachable', async () => {
   const files = cleanTree()
   files['src/client/ok.ts'] =
@@ -157,10 +187,18 @@ test('the exclusion lists only shrink', () => {
   for (const rel of FROZEN_ACME_IMPORTERS) {
     assert(FROZEN_AT_START.includes(rel), `${rel} was added to FROZEN_ACME_IMPORTERS`)
   }
-  for (const rel of WORKERS_REACHABLE) {
-    assert(FROZEN_ACME_IMPORTERS.includes(rel), `${rel} is not a frozen ACME importer`)
+  assertEquals(
+    Object.keys(WORKERS_REACHABLE).filter((rel) => !FROZEN_ACME_IMPORTERS.includes(rel)),
+    []
+  )
+  for (const [rel, targets] of Object.entries(WORKERS_REACHABLE)) {
+    for (const target of targets) {
+      assert(
+        TOLERATED_AT_START[rel]?.includes(target),
+        `${rel} may now import ${target} in the Workers build`
+      )
+    }
   }
-  assert(WORKERS_REACHABLE.length <= 1, 'WORKERS_REACHABLE grew')
 })
 
 test('checkWorkersAcmeBoundary passes on this checkout', () => {

@@ -25,7 +25,8 @@
  * while the work that removes them lands. The list may only shrink: an entry
  * that no longer imports `src/lib/acme` fails until it is taken off, and the
  * fixture test pins the list so a new entry fails CI. `WORKERS_REACHABLE`
- * is the part of it that the Workers build may still reach.
+ * is the part of it that the Workers build may still reach, each with the
+ * exact client modules it may import.
  *
  * Usage:
  *   node scripts/check-workers-acme-boundary.mjs
@@ -52,7 +53,12 @@ export const FROZEN_ACME_IMPORTERS = Object.freeze([
 ])
 
 /** The frozen entries the Workers build may still reach. Shrink only. */
-export const WORKERS_REACHABLE = Object.freeze(['src/features/organizations/acme-terms.ts'])
+export const WORKERS_REACHABLE = Object.freeze({
+  'src/features/organizations/acme-terms.ts': Object.freeze([
+    'src/lib/acme/client.ts',
+    'src/lib/acme/directories.ts',
+  ]),
+})
 
 /** The Let's Encrypt ACME directory hosts, production and staging. */
 export const DIRECTORY_HOST = /\bacme(?:-staging)?-v02\.api\.letsencrypt\.org\b/
@@ -69,7 +75,7 @@ const SKIP_DIR_NAMES = new Set([
 ])
 
 /** Where an `import` or `export` keyword starts a statement. */
-const STATEMENT_KEYWORD = /(?:^|[\s;])(?:import|export)\b/g
+const STATEMENT_KEYWORD = /(?:^|[\s;/])(?:import|export)\b/g
 const DYNAMIC_IMPORT = /\bimport\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g
 
 /**
@@ -174,7 +180,7 @@ function visitWorkersFile(root, rel, text, failures) {
   const next = []
   for (const target of codeImportsOf(root, rel, text)) {
     if (!under(target, ACME_DIR)) next.push(target)
-    else if (!WORKERS_REACHABLE.includes(rel)) {
+    else if (!WORKERS_REACHABLE[rel]?.includes(target)) {
       failures.push(`${WORKERS_ENTRY} reaches ${target} through ${rel}`)
     }
   }
@@ -193,7 +199,7 @@ function lintWorkersGraph(root, failures) {
     seen.add(rel)
     stack.push(...visitWorkersFile(root, rel, text, failures))
   }
-  for (const rel of WORKERS_REACHABLE) {
+  for (const rel of Object.keys(WORKERS_REACHABLE)) {
     if (!seen.has(rel)) {
       failures.push(
         `${rel} is no longer reachable from ${WORKERS_ENTRY}: take it off WORKERS_REACHABLE (the list only shrinks)`
@@ -234,7 +240,7 @@ function main() {
     process.exit(1)
   }
   console.log(
-    `check-workers-acme-boundary: ${ACME_DIR} and the Let's Encrypt directory hosts stay out of ${WORKERS_ENTRY}.`
+    `check-workers-acme-boundary: ${WORKERS_ENTRY} reaches ${ACME_DIR} only through the frozen exceptions, and names no Let's Encrypt directory host.`
   )
 }
 
