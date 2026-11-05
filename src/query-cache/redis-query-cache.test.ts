@@ -167,29 +167,35 @@ test('cached returns loader result when Redis set throws', async () => {
 })
 
 function neverSettles<T>(): Promise<T> {
-  return new Promise<T>(() => {})
+  return new Promise<T>(() => {
+    // Stands in for a Redis command queued on a connection that never comes back.
+  })
 }
 
-test('cached falls back to loader when Redis get never answers', async () => {
+async function timedLoaderFallback(client: RedisCellClient, keySuffix: string) {
   const db = null as unknown as Db
   let loadCount = 0
-  const client = {
-    get: () => neverSettles<string | null>(),
-    set: () => Promise.resolve(),
-  } as unknown as RedisCellClient
-
   const cache = createRedisQueryCache({ client, db })
   const started = performance.now()
   const result = await cache.getReadModel({
     readModel: 'servers-list',
-    key: queryCacheKey('stub', 'redis-get-hangs'),
+    key: queryCacheKey('stub', keySuffix),
     ttlSeconds: 60,
     load: async () => {
       loadCount += 1
       return { fromLoader: true }
     },
   })
-  const elapsed = performance.now() - started
+  return { result, loadCount, elapsed: performance.now() - started }
+}
+
+test('cached falls back to loader when Redis get never answers', async () => {
+  const client = {
+    get: () => neverSettles<string | null>(),
+    set: () => Promise.resolve(),
+  } as unknown as RedisCellClient
+
+  const { result, loadCount, elapsed } = await timedLoaderFallback(client, 'redis-get-hangs')
 
   assertEquals(result, { fromLoader: true })
   assertEquals(loadCount, 1)
@@ -197,25 +203,12 @@ test('cached falls back to loader when Redis get never answers', async () => {
 })
 
 test('cached returns loader result when Redis set never answers', async () => {
-  const db = null as unknown as Db
-  let loadCount = 0
   const client = {
     get: () => Promise.resolve(null),
     set: () => neverSettles<void>(),
   } as unknown as RedisCellClient
 
-  const cache = createRedisQueryCache({ client, db })
-  const started = performance.now()
-  const result = await cache.getReadModel({
-    readModel: 'servers-list',
-    key: queryCacheKey('stub', 'redis-set-hangs'),
-    ttlSeconds: 60,
-    load: async () => {
-      loadCount += 1
-      return { fromLoader: true }
-    },
-  })
-  const elapsed = performance.now() - started
+  const { result, loadCount, elapsed } = await timedLoaderFallback(client, 'redis-set-hangs')
 
   assertEquals(result, { fromLoader: true })
   assertEquals(loadCount, 1)
