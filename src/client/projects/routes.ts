@@ -366,11 +366,9 @@ async function parseCreateProjectInput(
   )
   if (defaultServerError) return defaultServerError
 
-  const extras = parseCreateProjectExtras(c, body, projectType)
+  const extras = await parseCreateProjectExtras(c, db, organizationId, body, projectType)
   if (extras instanceof Response) return extras
   const { metadata, icon } = extras
-  const emojiRefused = await refuseEmojiIconWhenOff(c, db, organizationId, icon)
-  if (emojiRefused) return emojiRefused
 
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
@@ -418,12 +416,17 @@ async function refuseEmojiIconWhenOff(
   return c.json(EMOJI_ICONS_OFF_BODY, 422)
 }
 
-/** Caller metadata and the optional icon of a create request. */
-function parseCreateProjectExtras(
+/**
+ * Caller metadata and the optional icon of a create request; an emoji icon is
+ * refused (422) while the organization has emoji icons off.
+ */
+async function parseCreateProjectExtras(
   c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
   body: Record<string, unknown>,
   projectType: ResolvedCreateProjectType
-): { metadata: Record<string, unknown> | null; icon: string | null } | Response {
+): Promise<{ metadata: Record<string, unknown> | null; icon: string | null } | Response> {
   const metadataResult = parseCreateProjectMetadata(body)
   if (!metadataResult.ok) {
     return c.json({ error: metadataResult.error }, metadataResult.status)
@@ -432,11 +435,11 @@ function parseCreateProjectExtras(
   if (!iconResult.ok) {
     return c.json({ error: iconResult.error }, iconResult.status)
   }
-  return {
-    metadata: metadataResult.metadata,
-    // A managed project always shows the managed icon, so none is stored.
-    icon: projectType === 'managed' ? null : (iconResult.icon ?? null),
-  }
+  // A managed project always shows the managed icon, so none is stored.
+  const icon = projectType === 'managed' ? null : (iconResult.icon ?? null)
+  const emojiRefused = await refuseEmojiIconWhenOff(c, db, organizationId, icon)
+  if (emojiRefused) return emojiRefused
+  return { metadata: metadataResult.metadata, icon }
 }
 
 /**

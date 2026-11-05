@@ -3,8 +3,6 @@
  * lists as CHECK constraints (the icon one also allows one emoji);
  * `enum-checks.test.ts` pins them together.
  */
-import { ICON_KEYS } from '../../lib/icons.ts'
-
 /**
  * What a project is. `compose` covers a hand-written compose project and a
  * template project (a template is compose plus `metadata.code`); `managed` is a
@@ -21,7 +19,7 @@ export type ProjectKind = (typeof PROJECT_KINDS)[number]
  * emoji. A managed project ignores its stored icon and always shows the
  * managed icon.
  */
-export const PROJECT_ICONS = ICON_KEYS
+export { ICON_KEYS as PROJECT_ICONS } from '../../lib/icons.ts'
 
 /** The stored kind for a project type named in a create or configure request. */
 export function projectKindForType(type: 'docker-compose' | 'template' | 'managed'): ProjectKind {
