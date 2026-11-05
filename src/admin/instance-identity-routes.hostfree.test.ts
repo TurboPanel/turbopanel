@@ -107,9 +107,43 @@ test('the read returns public fingerprints and no private material', async () =>
   assertEquals(body.seal.fingerprint, identity?.seal.kid)
   assertEquals(body.installUrl, 'https://panel.example.com')
   assertEquals(body.servers, [
-    { id: 'srv-1', name: 'alpha', organizationId: 'org-1', pinnedBy: 'none' },
+    { id: 'srv-1', name: 'alpha', organizationId: 'org-1', pinnedBy: 'none', pinReport: null },
   ])
   assert(!/priv|seed|secret/i.test(text), 'no key material in the answer')
+})
+
+test("the read carries each server's signed pin report", async () => {
+  const fingerprint = 'x'.repeat(43)
+  const { app, cookie } = await buildApp({
+    role: 'admin',
+    serverRows: [
+      {
+        id: 'srv-1',
+        name: 'alpha',
+        organizationId: 'org-1',
+        trustPinnedBy: 'upgrade',
+        trustPinFingerprint: fingerprint,
+        trustPinKeyset: 2,
+        trustPinReportedAt: new Date('2026-11-05T12:00:00.000Z'),
+        isTrustPinMatching: false,
+      },
+    ],
+  })
+  const body = await (await app.request(IDENTITY_URL, { headers: { Cookie: cookie } })).json()
+  assertEquals(body.servers, [
+    {
+      id: 'srv-1',
+      name: 'alpha',
+      organizationId: 'org-1',
+      pinnedBy: 'upgrade',
+      pinReport: {
+        fingerprint,
+        keyset: 2,
+        reportedAt: '2026-11-05T12:00:00.000Z',
+        matches: false,
+      },
+    },
+  ])
 })
 
 test('the read says the feature is off when there is no identity', async () => {
