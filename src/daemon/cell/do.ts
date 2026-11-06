@@ -1888,7 +1888,8 @@ export class DaemonCellObject {
    * The first verified signed report on this socket from a server not yet
    * known to sign: refuse its unsigned reports from now on (the attachment
    * survives hibernation) and record it on the row in the background, so
-   * later sessions start refusing them too. One bounded write per server.
+   * later sessions start refusing them too. One bounded, conditional write
+   * per socket that first sees one (a no-op once the row is set).
    */
   #noteReportsSigned(ws: WebSocket, serverId: string): void {
     const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
