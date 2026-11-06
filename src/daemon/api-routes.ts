@@ -1174,17 +1174,22 @@ async function flagOverPlan(
  * conservative default-only resolution) and, alongside it, checks whether
  * the sample matches the topology recorded via `recordTopologyGeneration`
  * (`sampleMatchesRecordedTopology`) — a sample that does not stamps
- * `markTopologyResyncRequested` (fire-and-forget; never blocks ingestion,
- * never reaches the daemon cell directly — see that function's doc comment)
+ * `markTopologyResyncRequested` (awaited, because on Workers the request's
+ * client is closed once the handler returns; a failure logs and never blocks
+ * ingestion, and it never reaches the daemon cell directly — see that
+ * function's doc comment)
  * — and resolves the sample's {@link SlotMapping} (see
  * {@link resolveSlotMappingForIngest}) for the store's `writeSample` call.
  *
  * Every DB read/write here is best-effort: a failure logs and falls back to
  * {@link resolveDefaultMetricsCapabilityPlan} plus no slot mapping, rather
- * than rejecting an otherwise-valid sample or blocking the fire-and-forget
- * write path.
+ * than rejecting an otherwise-valid sample or blocking the route's
+ * fire-and-forget metrics store write.
+ *
+ * Every write here uses the request's client, so each one is awaited before
+ * returning: an unawaited write on Workers races the client's close.
  */
-async function resolveIngestPlanAndReconcileTopology(
+export async function resolveIngestPlanAndReconcileTopology(
   db: Db,
   serverId: string,
   sample: AuthenticatedMetricsSample,
@@ -1209,7 +1214,7 @@ async function resolveIngestPlanAndReconcileTopology(
       !topologyResyncRecentlyRequested(planRow?.serverMetadata) &&
       !topologyChurnLimitedRecently(planRow?.serverMetadata)
     ) {
-      markTopologyResyncRequested(db, serverId).catch((err) => {
+      await markTopologyResyncRequested(db, serverId).catch((err) => {
         rateLimitedMetricsLog(serverId, 'topology_resync_mark_failed', () => {
           console.warn(
             `metrics topology resync marker failed for ${serverId}: ${describeError(err)}`
@@ -1235,9 +1240,12 @@ async function resolveIngestPlanAndReconcileTopology(
       // only while the column is still undeclared, so an operator edit that
       // races this guess wins. `'virtual'` is never written back: it is only
       // absence of proof, and pinning it would stop a sensor found by a later
-      // topology generation from promoting the host. Fire-and-forget, like
-      // `markTopologyResyncRequested` above.
-      db.update(server)
+      // topology generation from promoting the host. Awaited, like
+      // `markTopologyResyncRequested` above: the request's client is closed
+      // once the handler returns on Workers. A failure logs and never blocks
+      // the sample.
+      await db
+        .update(server)
         .set({ machineClass: 'physical', machineClassSource: 'detected' })
         .where(and(eq(server.id, serverId), isNull(server.machineClass)))
         .catch((err) => {
