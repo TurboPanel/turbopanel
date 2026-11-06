@@ -4,7 +4,7 @@
  * the database (High Availability has no writable key store). Every function
  * takes the caller's database client; nothing here holds one.
  */
-import { and, asc, desc, eq, gt, isNull, max } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, isNull, max } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { approver, statement } from '../../db/schema.ts'
 import {
@@ -238,11 +238,11 @@ export async function applyApproverChanges(
   input: { keyset: number; mark: readonly ApproverMark[]; unmark: readonly string[] }
 ): Promise<void> {
   const now = new Date().toISOString()
-  for (const pkid of input.unmark) {
+  if (input.unmark.length > 0) {
     await db
       .update(approver)
       .set({ unmarkedAt: now, unmarkedKeyset: input.keyset, passkeyId: null })
-      .where(and(eq(approver.pkid, pkid), isNull(approver.unmarkedAt)))
+      .where(and(inArray(approver.pkid, [...input.unmark]), isNull(approver.unmarkedAt)))
   }
   if (input.mark.length > 0) {
     await db.insert(approver).values(

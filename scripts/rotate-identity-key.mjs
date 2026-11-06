@@ -21,7 +21,7 @@ import { pathToFileURL } from 'node:url'
 import { buildBinding, ed25519PublicKey } from './generate-identity-key.mjs'
 import { hostForEnv, verifiedFingerprint } from './set-identity-key.mjs'
 
-const ENVS = ['testing', 'staging', 'live']
+const ENVS = new Set(['testing', 'staging', 'live'])
 const IDENTITY_PATH = '/api/daemon/v1/instance/identity'
 const SIGNATURE_HEADER = 'x-turbopanel-signature'
 const SECRET_NAME = 'TURBOPANEL_IDENTITY_KEYS'
@@ -36,7 +36,7 @@ function parseArgs(argv) {
   const known = new Set(['--revoke', '--env', opts.env])
   const stray = argv.find((arg) => !known.has(arg))
   if (stray !== undefined) throw new Stop(`Unknown option ${stray}.`)
-  if (!ENVS.includes(opts.env)) {
+  if (!ENVS.has(opts.env)) {
     throw new Stop('Usage: pnpm identity:rotate --env <testing|staging|live> [--revoke]')
   }
   return opts
@@ -100,10 +100,10 @@ export async function rotateIdentityKey(argv, deps) {
     if (!(await deps.confirm('Press Enter once the change is approved (or type no to stop): '))) {
       throw new Stop('Stopped. The new key was not stored anywhere.')
     }
-    deps.out(`Setting the ${opts.env} key on Cloudflare...`)
+    deps.out(`Setting the ${opts.env} key...`)
     const put = deps.run(['secret', 'put', SECRET_NAME, '--env', opts.env], JSON.stringify(binding))
     if (put.status !== 0) {
-      throw new Stop('Cloudflare did not accept the key. Nothing was changed. Try again.')
+      throw new Stop('The key was not accepted. Nothing was changed. Try again.')
     }
     deps.out('Waiting for the control plane to start using it...')
     if (!(await pollForKey(deps, url, binding.current.kid))) {

@@ -157,7 +157,7 @@ function parsePasskeyList(value: unknown): RotationPasskey[] | null {
     const passkey = parsePasskey(entry)
     if (!passkey) return null
     const last = parsed.at(-1)
-    if (last && !(last.id < passkey.id)) return null
+    if (last && last.id >= passkey.id) return null
     parsed.push(passkey)
   }
   return parsed
@@ -280,8 +280,9 @@ export function derEcdsaToRaw(der: Uint8Array): Uint8Array | null {
   const seq = derLength(der, 1)
   if (seq?.next === undefined || seq.next + seq.length !== der.length) return null
   const r = derInteger(der, seq.next)
-  const s = r ? derInteger(der, r.next) : null
-  if (!r || !s || s.next !== der.length) return null
+  if (!r) return null
+  const s = derInteger(der, r.next)
+  if (s?.next !== der.length) return null
   const rr = component(r.value)
   const ss = component(s.value)
   if (!rr || !ss) return null
@@ -413,10 +414,16 @@ async function checkApprovals(
   for (const approval of envelope.approvals) {
     if (seen.has(approval.id)) return { reason: 'an approval is repeated' }
     seen.add(approval.id)
+    // An id the pin holds is checked as a pinned approval only; any other id
+    // must be a passkey of the statement proving possession. tp-host decides
+    // the same way.
     const pinnedKey = pin.passkeys.find((p) => p.id === approval.id)
-    if (pinnedKey && (await assertionVerifies(approval, pinnedKey, pin.rpId, challenge))) {
-      pinned.add(approval.id)
-      continue
+    if (pinnedKey) {
+      if (await assertionVerifies(approval, pinnedKey, pin.rpId, challenge)) {
+        pinned.add(approval.id)
+        continue
+      }
+      return { reason: 'an approval does not verify' }
     }
     const added = statement.passkeys.find((p) => p.id === approval.id)
     if (added && (await assertionVerifies(approval, added, statement.rpId, challenge))) {
