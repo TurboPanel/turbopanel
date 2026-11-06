@@ -85,6 +85,7 @@ export const NOTIFICATION_DELIVERY_STATUSES = [
   'failed',
   'abandoned',
   'held',
+  'suppressed',
 ] as const
 export type NotificationDeliveryStatus = (typeof NOTIFICATION_DELIVERY_STATUSES)[number]
 
