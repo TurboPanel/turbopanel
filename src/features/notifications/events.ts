@@ -75,6 +75,29 @@ function databaseSentence(ctx: NotificationContext): string {
   )
 }
 
+/** One "was → now" phrase per moved setting of a backup target; never a key value. */
+function targetChanges(ctx: NotificationContext): string {
+  const parts: string[] = []
+  const pair = (key: string, label: string) => {
+    const before = ctx[`${key}Before`]
+    const after = ctx[`${key}After`]
+    if (typeof before !== 'string' || typeof after !== 'string') return
+    parts.push(
+      `${label} ${before === '' ? '(none)' : before} to ${after === '' ? '(none)' : after}`
+    )
+  }
+  pair('endpoint', 'endpoint')
+  pair('bucket', 'bucket')
+  pair('region', 'region')
+  pair('prefix', 'folder')
+  if (typeof ctx.pathStyle === 'boolean') {
+    parts.push(`path-style addressing turned ${ctx.pathStyle ? 'on' : 'off'}`)
+  }
+  if (ctx.accessKeyChanged === true) parts.push('a different access key id')
+  if (ctx.secretReplaced === true) parts.push('a new secret access key')
+  return parts.length > 0 ? parts.join(', ') : 'its settings changed'
+}
+
 /**
  * The catalogue. Keys are the codes; the object is `as const` so the code
  * union and the CHECK pin in `enum-checks.test.ts` derive from one place.
@@ -338,6 +361,43 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     body: (ctx) =>
       `It has been offline here for ${name(ctx, 'offlineMinutes', 'many')} minutes while its TurboFabric peers have reached it for six hours. ` +
       'Check that its daemon is running and can sign in. If it is and you cannot explain the silence, it may be talking to something impersonating this control plane: reinstall it with a fresh command.',
+  },
+  // One stored code for two changes; `ctx.kind` picks the words: `update`
+  // (a target now points at another endpoint, bucket or keys) or `assign`
+  // (the organization default or a cluster now uses another target).
+  'backup.target_changed': {
+    label: 'Where backups are copied to changed',
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    // Sending copies somewhere else is a security change: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      if (ctx.kind === 'assign') {
+        const owner =
+          ctx.scope === 'cluster'
+            ? name(ctx, 'clusterName', 'a database cluster')
+            : 'the organization'
+        return ctx.afterNone === true
+          ? `Backups for ${owner} are no longer copied to a backup target`
+          : `Backups for ${owner} now go to ${name(ctx, 'after', 'another backup target')}`
+      }
+      return `Backup target ${name(ctx, 'targetName', 'unknown')} now points somewhere else`
+    },
+    body: (ctx) => {
+      const actor = name(ctx, 'actorEmail', 'An owner or manager')
+      const check = "If you did not expect this, check the organization's backup targets."
+      if (ctx.kind === 'assign') {
+        return `${actor} changed where backups are copied from ${name(
+          ctx,
+          'before',
+          'the previous setting'
+        )} to ${name(ctx, 'after', 'another backup target')}. ${check}`
+      }
+      return `${actor} changed the backup target ${name(ctx, 'targetName', 'unknown')}: ${targetChanges(
+        ctx
+      )}. Every backup copied from now on goes there. ${check}`
+    },
   },
 } as const satisfies Record<string, EventDefinition>
 
