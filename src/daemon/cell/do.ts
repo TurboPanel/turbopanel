@@ -100,7 +100,10 @@ import {
   ed25519PublicJwk,
 } from '../authn/attach-proof.ts'
 import { helloListsSignedReports, intakeSignedSessionReport } from '../authn/report-signature.ts'
-import { raiseServerTrustLevel } from '../../features/servers/trust-level.ts'
+import {
+  raiseServerTrustLevel,
+  recordServerSignsReports,
+} from '../../features/servers/trust-level.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { inboundHeartbeatProjectionDue } from './postgres-projection.ts'
 import { mergeSnapshotPresence } from './snapshot-merge.ts'
@@ -231,6 +234,8 @@ const CELL_GEO_HEADER = 'X-Turbopanel-Cell-Geo'
 const CELL_TRUST_LEVEL_HEADER = 'X-Turbopanel-Cell-Trust-Level'
 /** Stamped by `workers-ws.ts`: `<keyId>:<x>` of the server's current daemon key. */
 const CELL_DAEMON_KEY_HEADER = 'X-Turbopanel-Cell-Daemon-Key'
+/** Stamped by `workers-ws.ts`: `1` when `server.trust_reports_signed_at` is set. */
+const CELL_REPORTS_SIGNED_HEADER = 'X-Turbopanel-Cell-Reports-Signed'
 
 function parseCellDaemonKey(value: string | null): { id: string; x: string } | undefined {
   const at = value?.indexOf(':') ?? -1
@@ -257,6 +262,13 @@ type SocketSessionAttachment = {
   awaitingAttach?: boolean
   /** Signed session: the daemon's hello listed `signed-reports-v1`. */
   signsReports?: boolean
+  /**
+   * The server has sent a verified signed report (`server.trust_reports_signed_at`
+   * at upgrade, or earlier on this socket): its unsigned reports are refused.
+   */
+  reportsSigned?: boolean
+  /** The unsigned-report warning was logged on this socket (once per connection). */
+  warnedUnsigned?: boolean
 }
 /** Schema stamp in `_cell_schema.version` — bump when `#ensureSchema` DDL changes.
  * DO SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`); `#readSchemaVersion`
@@ -1720,6 +1732,7 @@ export class DaemonCellObject {
       phase: 'await-first-frame',
       trustLevel: Number(request.headers.get(CELL_TRUST_LEVEL_HEADER) ?? '0') || 0,
       daemonKey: parseCellDaemonKey(request.headers.get(CELL_DAEMON_KEY_HEADER)),
+      ...(request.headers.get(CELL_REPORTS_SIGNED_HEADER) === '1' ? { reportsSigned: true } : {}),
     })
 
     this.#applyDaemonSocketAttach(serverId, connectionId, {
@@ -1841,23 +1854,63 @@ export class DaemonCellObject {
 
   /** A signed session's report checked and unwrapped; null = drop it. */
   async #screenSignedReport(
+    ws: WebSocket,
     attachment: SocketSessionAttachment,
     raw: string
   ): Promise<string | null> {
     if (attachment.phase !== 'signed' || !attachment.session) return raw
+    // The latest attachment: an earlier report on this socket may have set the flags.
+    const current = (ws.deserializeAttachment() as SocketSessionAttachment | null) ?? attachment
     const intake = await intakeSignedSessionReport(raw, {
       sessionId: attachment.session.sessionId,
       keyId: attachment.daemonKey?.id,
       publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
-      daemonSignsReports: attachment.signsReports === true,
+      daemonSignsReports: current.signsReports === true,
+      serverSignsReports: current.reportsSigned === true,
       nowMs: Date.now(),
     })
-    if (intake.warning) {
+    if (intake.verdict === 'verified' && current.reportsSigned !== true) {
+      this.#noteReportsSigned(ws, attachment.serverId)
+    }
+    if (intake.warning && this.#shouldLogReportWarning(ws, intake.verdict, current)) {
       console.warn(
         `daemon-cell event=report-signature serverId=${attachment.serverId} conn=${attachment.connectionId} ${intake.warning}`
       )
     }
     return intake.raw
+  }
+
+  /**
+   * The first verified signed report on this socket from a server not yet
+   * known to sign: refuse its unsigned reports from now on (the attachment
+   * survives hibernation) and record it on the row in the background, so
+   * later sessions start refusing them too. One bounded write per server.
+   */
+  #noteReportsSigned(ws: WebSocket, serverId: string): void {
+    const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
+    if (latest && latest.reportsSigned !== true) {
+      ws.serializeAttachment({ ...latest, reportsSigned: true })
+    }
+    this.#runBoundedBackground(
+      'reports-signed',
+      serverId,
+      this.#withProjectionDb('reports-signed', serverId, async (db) => {
+        await recordServerSignsReports(db, serverId)
+      })
+    )
+  }
+
+  /** Refusals always log; the unsigned-report warning once per connection. */
+  #shouldLogReportWarning(
+    ws: WebSocket,
+    verdict: 'verified' | 'refused' | 'unsigned' | 'other',
+    current: SocketSessionAttachment
+  ): boolean {
+    if (verdict !== 'unsigned') return true
+    if (current.warnedUnsigned === true) return false
+    const latest = (ws.deserializeAttachment() as SocketSessionAttachment | null) ?? current
+    ws.serializeAttachment({ ...latest, warnedUnsigned: true })
+    return true
   }
 
   /**
@@ -1869,7 +1922,7 @@ export class DaemonCellObject {
     attachment: SocketSessionAttachment,
     raw: string
   ): Promise<Extract<DaemonInboundFrameResult, { ok: true }> | null> {
-    const frame = await this.#screenSignedReport(attachment, raw)
+    const frame = await this.#screenSignedReport(ws, attachment, raw)
     if (frame === null) return null
     const validated = validateDaemonInboundFrame(frame)
     if (validated.ok) return validated

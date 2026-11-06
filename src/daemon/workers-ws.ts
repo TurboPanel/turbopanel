@@ -25,6 +25,11 @@ export const CELL_TRUST_LEVEL_HEADER = 'X-Turbopanel-Cell-Trust-Level'
  * cell checks the daemon's attach proof without a database read.
  */
 export const CELL_DAEMON_KEY_HEADER = 'X-Turbopanel-Cell-Daemon-Key'
+/**
+ * `1` when `server.trust_reports_signed_at` is set (read at upgrade): the
+ * cell refuses this server's unsigned reports on a signed session.
+ */
+export const CELL_REPORTS_SIGNED_HEADER = 'X-Turbopanel-Cell-Reports-Signed'
 
 /** Internal headers stamped by the Workers isolate — never pass through from clients. */
 const INTERNAL_CELL_FORWARD_HEADERS = [
@@ -33,6 +38,7 @@ const INTERNAL_CELL_FORWARD_HEADERS = [
   REAL_IP_HEADER,
   CELL_TRUST_LEVEL_HEADER,
   CELL_DAEMON_KEY_HEADER,
+  CELL_REPORTS_SIGNED_HEADER,
 ] as const
 
 export type WorkersDaemonWebSocketOptions = {
@@ -51,6 +57,7 @@ export function buildWorkersDaemonCellForwardHeaders(
     cfConnectingIp?: string | null
     trustLevel?: number
     daemonKey?: { id: string; x: string }
+    reportsSigned?: boolean
   }
 ): Headers {
   const headers = new Headers(inbound)
@@ -63,6 +70,7 @@ export function buildWorkersDaemonCellForwardHeaders(
   if (options.daemonKey) {
     headers.set(CELL_DAEMON_KEY_HEADER, `${options.daemonKey.id}:${options.daemonKey.x}`)
   }
+  if (options.reportsSigned) headers.set(CELL_REPORTS_SIGNED_HEADER, '1')
 
   const geo = extractCloudflareGeo(options.cf)
   if (geo) {
@@ -169,6 +177,7 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
       cf: (c.req.raw as Request & { cf?: unknown }).cf,
       cfConnectingIp: c.req.header('CF-Connecting-IP'),
       trustLevel: daemonState.trustLevel ?? 0,
+      reportsSigned: daemonState.reportsSigned === true,
       ...(typeof daemonState.key.publicJwk.x === 'string'
         ? { daemonKey: { id: daemonState.key.id, x: daemonState.key.publicJwk.x } }
         : {}),

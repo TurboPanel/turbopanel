@@ -841,6 +841,16 @@ export const server = pgTable(
       mode: 'string',
     }),
     /**
+     * When the control plane first verified a signed report (`command-outcome`
+     * or `fabric-peers-report`) from this server's daemon. Set once, never
+     * cleared; once set, its unsigned reports on a signed session are refused.
+     */
+    trustReportsSignedAt: timestamp('trust_reports_signed_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
      * The server's container range (a /16 from the org container pool), set
      * the first time a cross-server container network or TurboFabric needs
      * it. Subnets of cross-server networks are carved from it, and a relay's

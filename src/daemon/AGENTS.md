@@ -146,10 +146,28 @@ session, `iat` more than 300 s off or a bad signature: one warn line; a peer
 report is dropped, and a `command-outcome` is replaced by a failed one with
 error `signature_invalid` for the same id, so the command ends and the
 daemon still gets its `command-outcome-ack` instead of resending forever.
-Unsigned reports are still accepted (older daemons, and the few a daemon
-sends before the attach frame names the feature); a warn is logged when the
-socket's hello listed the feature. No `seq`: a result is idempotent by id.
-Refusing unsigned reports waits for a floor bump.
+No `seq`: a result is idempotent by id.
+
+**Ratchet (owner decision 2026-11-05, no floor bump).** A proxy that ends TLS
+can strip the signature and the feature from the unsigned hello, so the
+hello's list is never what decides. After a server's first verified signed
+report the control plane sets `server.trust_reports_signed_at` (one
+conditional update, never cleared: `recordServerSignsReports` in
+`features/servers/trust-level.ts`), and from then on that server's unsigned
+reports on a signed session are refused exactly like a bad signature (peer
+report dropped, `command-outcome` failed with `signature_invalid` and acked).
+The flag is read at upgrade with the daemon state (`reportsSigned`); Deno
+keeps it in the socket closure, Workers gets it from the internal
+`X-Turbopanel-Cell-Reports-Signed` header onto the socket attachment
+(`reportsSigned`), and both flip it at once on the first verified report of
+the socket, then write the row (Workers through `#withProjectionDb`, bounded
+and in the background). Before the flag is set an unsigned report is still
+accepted (older daemons) and the warning, when the hello listed the feature,
+is logged once per connection (`warnedUnsigned` on the attachment). The
+daemon holds reports until the attach frame's feature list arrives
+(the daemon repo's instance guide), so an honest daemon never sends an
+unsigned report on a signed session. The cost: a server that once ran a
+signing daemon cannot go back to an older daemon on a signed session.
 
 ## Sealed secrets (`daemon-sealed-secrets-v1`)
 

@@ -37,6 +37,11 @@ export type ServerDaemonStateWithMetadata = ServerDaemonState & {
   metadata: ServerMetadata | null
   /** `server.trust_level` (0 unsigned, 1 signed frames, 2 with attach proof); absent in older fakes means 0. */
   trustLevel?: number
+  /**
+   * `server.trust_reports_signed_at` is set: the daemon has sent a verified
+   * signed report, so its unsigned ones are refused. Absent in older fakes means false.
+   */
+  reportsSigned?: boolean
 }
 
 const STATUS_COLUMNS = {
@@ -71,6 +76,7 @@ export async function getServerDaemonStateByServerId(
       hostname: server.hostname,
       machineKey: server.machineKey,
       trustLevel: server.trustLevel,
+      trustReportsSignedAt: server.trustReportsSignedAt,
       ...STATUS_COLUMNS,
       ...KEY_COLUMNS,
     })
@@ -91,6 +97,7 @@ export async function getServerDaemonStateByServerId(
     machineKey: row.machineKey ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
     trustLevel: row.trustLevel ?? 0,
+    reportsSigned: row.trustReportsSignedAt != null,
   }
 }
 

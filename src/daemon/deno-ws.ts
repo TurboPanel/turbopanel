@@ -123,7 +123,7 @@ import {
   decideAttachProof,
 } from './authn/attach-proof.ts'
 import { helloListsSignedReports, intakeSignedSessionReport } from './authn/report-signature.ts'
-import { raiseServerTrustLevel } from '../features/servers/trust-level.ts'
+import { raiseServerTrustLevel, recordServerSignsReports } from '../features/servers/trust-level.ts'
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250
@@ -1059,6 +1059,11 @@ export function registerDaemonWebSocket<E extends Env>(
       // its reports (`report-signature.ts`).
       let signedSessionId: string | undefined
       let daemonSignsReports = false
+      // The server has sent a verified signed report (`trust_reports_signed_at`
+      // at upgrade, or earlier on this socket): its unsigned reports are refused.
+      let serverSignsReports = daemonState?.reportsSigned === true
+      // The unsigned-report warning is logged once per connection.
+      let warnedUnsigned = false
       const senderFor = (ws: WSContext<WebSocket>): DaemonSessionSender => {
         sender ??= createDaemonSessionSender({
           sendText: (text) => ws.send(text),
@@ -1261,9 +1266,25 @@ export function registerDaemonWebSocket<E extends Env>(
           keyId: daemonState?.key.id,
           publicJwk: daemonState?.key.publicJwk,
           daemonSignsReports,
+          serverSignsReports,
           nowMs: Date.now(),
         })
-        if (intake.warning) daemonCellLog('WARN', payload.sub, connectionId, intake.warning)
+        if (intake.verdict === 'verified' && !serverSignsReports) {
+          // From now on on this socket, and on the row for later sessions.
+          serverSignsReports = true
+          void recordServerSignsReports(db, payload.sub).catch((err) => {
+            daemonCellLog(
+              'WARN',
+              payload.sub,
+              connectionId,
+              `reports-signed write failed: ${String(err)}`
+            )
+          })
+        }
+        const repeat = intake.verdict === 'unsigned' && warnedUnsigned
+        if (intake.verdict === 'unsigned') warnedUnsigned = true
+        if (intake.warning && !repeat)
+          daemonCellLog('WARN', payload.sub, connectionId, intake.warning)
         return intake.raw
       }
 

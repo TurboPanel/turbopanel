@@ -4,7 +4,13 @@
  * reconcile result carries the host's TurboFabric public key, handed to other
  * servers) and `fabric-peers-report` (peer health read as liveness). A proxy
  * or tunnel that ends TLS between a pinned server and the control plane can
- * then no longer forge or alter them.
+ * still strip the signature (and the feature from the unsigned hello), so a
+ * forged or altered report is detected when it is signed, and unsigned ones
+ * are refused once the server has signed: after its first verified signed
+ * report `server.trust_reports_signed_at` is set, and from then on an
+ * unsigned report on a signed session is refused exactly like a bad
+ * signature. Before that an unsigned report is still accepted (older
+ * daemons), with a warning.
  *
  * Same byte rules as the signed frames this control plane sends
  * (`frame-envelope.ts`): the frame carries `{sessionId, iat, kid}` and the
@@ -48,6 +54,12 @@ export type ReportSession = {
   publicJwk: JsonWebKey | undefined
   /** The daemon listed `signed-reports-v1` on this socket's hello. */
   daemonSignsReports: boolean
+  /**
+   * The server has sent a verified signed report before
+   * (`server.trust_reports_signed_at`, or earlier on this socket): its
+   * unsigned reports are refused.
+   */
+  serverSignsReports: boolean
   nowMs: number
 }
 
@@ -57,8 +69,15 @@ export type ReportSession = {
  *   report; a failed `command-outcome` in place of a refused one), or null to
  *   drop the frame.
  * - `warning`: one line to log, or null.
+ * - `verdict`: `verified` (a signed report that checked out: record that the
+ *   server signs), `refused`, `unsigned` (an unsigned report accepted; its
+ *   warning is logged once per connection) or `other` (not a report).
  */
-export type ReportIntake = { raw: string | null; warning: string | null }
+export type ReportIntake = {
+  raw: string | null
+  warning: string | null
+  verdict: 'verified' | 'refused' | 'unsigned' | 'other'
+}
 
 /** True when a presence `hello`'s feature list says the daemon signs its reports. */
 export function helloListsSignedReports(features: unknown): boolean {
@@ -139,20 +158,37 @@ function refusedReplacement(
 }
 
 function unsignedIntake(raw: string, ctx: ReportSession): ReportIntake {
-  if (!ctx.daemonSignsReports || !TYPE_MARKERS.some((marker) => raw.includes(marker))) {
-    return { raw, warning: null }
+  if (!TYPE_MARKERS.some((marker) => raw.includes(marker))) {
+    return { raw, warning: null, verdict: 'other' }
   }
-  const type = reportType(parseRecord(raw))
+  const report = parseRecord(raw)
+  const type = reportType(report)
+  if (!report || !type) return { raw, warning: null, verdict: 'other' }
+  // Not gated on the hello's feature list: a proxy can strip that too.
+  if (ctx.serverSignsReports) {
+    return {
+      raw: refusedReplacement(report, type, ctx.nowMs),
+      warning: `refused unsigned ${type}${loggableId(report)}: this server signs its reports`,
+      verdict: 'refused',
+    }
+  }
   return {
     raw,
-    warning: type ? `unsigned ${type} from a daemon that signs reports` : null,
+    warning: ctx.daemonSignsReports ? `unsigned ${type} from a daemon that signs reports` : null,
+    verdict: 'unsigned',
   }
 }
 
+/** ` id=<id>` when the (unverified) id looks like one, else empty. */
+function loggableId(report: Record<string, unknown>): string {
+  return typeof report.id === 'string' && LOGGABLE_ID.test(report.id) ? ` id=${report.id}` : ''
+}
+
 /**
- * Check one inbound frame of a signed session. Frames that are not signed
- * reports pass as they are; an unsigned report is still accepted (older
- * daemons) with a warning when this daemon said it signs them.
+ * Check one inbound frame of a signed session. Frames that are not reports
+ * pass as they are. An unsigned report is refused once the server has signed
+ * one; before that it is still accepted (older daemons), with a warning when
+ * this daemon said it signs them.
  */
 export async function intakeSignedSessionReport(
   raw: string,
@@ -162,13 +198,12 @@ export async function intakeSignedSessionReport(
   if (!split) return unsignedIntake(raw, ctx)
   const report = parseRecord(split.unsigned)
   const type = reportType(report)
-  if (!report || !type) return { raw, warning: null }
+  if (!report || !type) return { raw, warning: null, verdict: 'other' }
   const reason = await refusalReason(report, split, type, ctx)
-  if (reason === null) return { raw: withoutEnvelope(report), warning: null }
-  // The id is unverified text: log it only when it looks like an id.
-  const id = typeof report.id === 'string' && LOGGABLE_ID.test(report.id) ? ` id=${report.id}` : ''
+  if (reason === null) return { raw: withoutEnvelope(report), warning: null, verdict: 'verified' }
   return {
     raw: refusedReplacement(report, type, ctx.nowMs),
-    warning: `refused signed ${type}${id}: ${reason}`,
+    warning: `refused signed ${type}${loggableId(report)}: ${reason}`,
+    verdict: 'refused',
   }
 }
