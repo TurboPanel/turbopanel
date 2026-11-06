@@ -33,7 +33,7 @@ import { registerKeyRotationRoutes } from './key-rotation-routes.ts'
 
 const test = Deno.test.bind(Deno)
 const dbUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')
-const BASE = `https://cp.example.test${ADMIN_API_PREFIX}/instance/identity`
+const BASE = `http://localhost${ADMIN_API_PREFIX}/instance/identity`
 
 type Credential = { soft: SoftPasskey; credentialId: string; rowId: string }
 

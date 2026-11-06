@@ -110,3 +110,22 @@ export async function softPanelKey(): Promise<{ kid: string; pub: string }> {
   const raw = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
   return { kid: base64urlEncode(await sha256(raw)), pub: base64urlEncode(raw) }
 }
+
+/** A shared-vector envelope: approvals are stored as `[id, authenticatorData, clientDataJSON, assertion]`. */
+export type VectorEnvelope = { statement: string; approvals: string[][] }
+
+/** The envelope as the control plane serves it. */
+export function vectorEnvelope(raw: VectorEnvelope): {
+  statement: string
+  approvals: KeysetApproval[]
+} {
+  return {
+    statement: raw.statement,
+    approvals: raw.approvals.map(([id, authenticatorData, clientDataJSON, signature]) => ({
+      id: id ?? '',
+      authenticatorData: authenticatorData ?? '',
+      clientDataJSON: clientDataJSON ?? '',
+      signature: signature ?? '',
+    })),
+  }
+}

@@ -44,12 +44,15 @@ async function readIdentity(
             trustPinKeyset: server.trustPinKeyset,
             trustPinReportedAt: server.trustPinReportedAt,
             isTrustPinMatching: server.isTrustPinMatching,
+            trustPinPasskeys: server.trustPinPasskeys,
           })
           .from(server)
-      ).map(({ id, name, organizationId, ...pin }) => ({
+      ).map(({ id, name, organizationId, trustPinPasskeys, ...pin }) => ({
         id,
         name,
         organizationId,
+        // Hash of the rotation passkeys the server pinned: "" none yet, null not reported.
+        pinPasskeys: trustPinPasskeys ?? null,
         pinnedBy: resolvePinnedBy(pin),
         pinReport: resolvePinReport(pin),
       }))

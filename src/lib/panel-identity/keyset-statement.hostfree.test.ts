@@ -19,6 +19,7 @@ import {
   rawEcdsaToDer,
   softAssert,
   softPanelKey,
+  vectorEnvelope,
 } from '../../test-fixtures/software-authenticator.ts'
 import vectors from '../../test-fixtures/keyset-statement-vectors.json' with { type: 'json' }
 
@@ -28,7 +29,7 @@ const NOW = vectors.now
 
 test('the shared vectors: every forged envelope is refused', async () => {
   for (const vector of vectors.refused) {
-    const envelope = parseKeysetEnvelope(vector.envelope)
+    const envelope = parseKeysetEnvelope(vectorEnvelope(vector.envelope))
     assert(envelope, vector.name)
     const result = await verifyKeysetEnvelope(envelope, vector.pin as KeysetPin, NOW)
     assertEquals(result, { ok: false, reason: vector.reason }, vector.name)
@@ -38,7 +39,7 @@ test('the shared vectors: every forged envelope is refused', async () => {
 test('the shared vectors: an offline server applies the whole chain in order', async () => {
   let pin = vectors.pin as KeysetPin
   for (const raw of vectors.chain) {
-    const envelope = parseKeysetEnvelope(raw)
+    const envelope = parseKeysetEnvelope(vectorEnvelope(raw))
     assert(envelope)
     const result = await verifyKeysetEnvelope(envelope, pin, NOW)
     assert(result.ok, result.ok ? '' : result.reason)
@@ -46,7 +47,11 @@ test('the shared vectors: an offline server applies the whole chain in order', a
   }
   assertEquals(pin, vectors.pinAfterChain)
   // Applying the first statement again after the chain is refused.
-  const replay = await verifyKeysetEnvelope(parseKeysetEnvelope(vectors.chain[0])!, pin, NOW)
+  const replay = await verifyKeysetEnvelope(
+    parseKeysetEnvelope(vectorEnvelope(vectors.chain[0]!))!,
+    pin,
+    NOW
+  )
   assertEquals(replay.ok, false)
 })
 

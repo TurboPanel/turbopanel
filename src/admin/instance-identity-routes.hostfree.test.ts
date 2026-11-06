@@ -142,7 +142,14 @@ test('the read returns public fingerprints and no private material', async () =>
   assertEquals(body.seal.fingerprint, identity?.seal.kid)
   assertEquals(body.installUrl, 'https://panel.example.com')
   assertEquals(body.servers, [
-    { id: 'srv-1', name: 'alpha', organizationId: 'org-1', pinnedBy: 'none', pinReport: null },
+    {
+      id: 'srv-1',
+      name: 'alpha',
+      organizationId: 'org-1',
+      pinPasskeys: null,
+      pinnedBy: 'none',
+      pinReport: null,
+    },
   ])
   assert(!/priv|seed|secret/i.test(text), 'no key material in the answer')
 })
@@ -161,6 +168,7 @@ test("the read carries each server's signed pin report", async () => {
         trustPinKeyset: 2,
         trustPinReportedAt: new Date('2026-11-05T12:00:00.000Z'),
         isTrustPinMatching: false,
+        trustPinPasskeys: '',
       },
     ],
   })
@@ -170,6 +178,7 @@ test("the read carries each server's signed pin report", async () => {
       id: 'srv-1',
       name: 'alpha',
       organizationId: 'org-1',
+      pinPasskeys: '',
       pinnedBy: 'upgrade',
       pinReport: {
         fingerprint,
