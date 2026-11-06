@@ -99,7 +99,11 @@ import {
   decideAttachProof,
   ed25519PublicJwk,
 } from '../authn/attach-proof.ts'
-import { helloListsSignedReports, intakeSignedSessionReport } from '../authn/report-signature.ts'
+import {
+  helloListsSignedReports,
+  intakeSignedSessionReport,
+  type ReportVerdict,
+} from '../authn/report-signature.ts'
 import {
   raiseServerTrustLevel,
   recordServerSignsReports,
@@ -1903,7 +1907,7 @@ export class DaemonCellObject {
   /** Refusals always log; the unsigned-report warning once per connection. */
   #shouldLogReportWarning(
     ws: WebSocket,
-    verdict: 'verified' | 'refused' | 'unsigned' | 'other',
+    verdict: ReportVerdict,
     current: SocketSessionAttachment
   ): boolean {
     if (verdict !== 'unsigned') return true

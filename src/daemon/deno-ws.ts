@@ -1281,10 +1281,12 @@ export function registerDaemonWebSocket<E extends Env>(
             )
           })
         }
+        // Refusals always log; the unsigned-report warning once per connection.
         const repeat = intake.verdict === 'unsigned' && warnedUnsigned
         if (intake.verdict === 'unsigned') warnedUnsigned = true
-        if (intake.warning && !repeat)
+        if (intake.warning && !repeat) {
           daemonCellLog('WARN', payload.sub, connectionId, intake.warning)
+        }
         return intake.raw
       }
 

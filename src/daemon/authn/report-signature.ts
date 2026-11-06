@@ -76,8 +76,10 @@ export type ReportSession = {
 export type ReportIntake = {
   raw: string | null
   warning: string | null
-  verdict: 'verified' | 'refused' | 'unsigned' | 'other'
+  verdict: ReportVerdict
 }
+
+export type ReportVerdict = 'verified' | 'refused' | 'unsigned' | 'other'
 
 /** True when a presence `hello`'s feature list says the daemon signs its reports. */
 export function helloListsSignedReports(features: unknown): boolean {
