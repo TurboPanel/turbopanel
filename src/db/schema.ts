@@ -842,8 +842,9 @@ export const server = pgTable(
     }),
     /**
      * When the control plane first verified a signed report (`command-outcome`
-     * or `fabric-peers-report`) from this server's daemon. Set once, never
-     * cleared; once set, its unsigned reports on a signed session are refused.
+     * or `fabric-peers-report`) from this server's daemon. Set once; cleared
+     * when the identity key is replaced or removed (re-enroll, key removal).
+     * Once set, its unsigned reports on a signed session are refused.
      */
     trustReportsSignedAt: timestamp('trust_reports_signed_at', {
       precision: 3,

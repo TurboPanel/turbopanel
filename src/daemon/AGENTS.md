@@ -152,8 +152,11 @@ No `seq`: a result is idempotent by id.
 can strip the signature and the feature from the unsigned hello, so the
 hello's list is never what decides. After a server's first verified signed
 report the control plane sets `server.trust_reports_signed_at` (one
-conditional update, never cleared: `recordServerSignsReports` in
-`features/servers/trust-level.ts`), and from then on that server's unsigned
+conditional update, `recordServerSignsReports` in
+`features/servers/trust-level.ts`; cleared only when the identity key is
+replaced or removed, i.e. re-enroll, key replacement or key removal, owner
+decision 2026-11-06, in `features/servers/server-identity-db.ts`; clearing
+only the sealing key keeps it), and from then on that server's unsigned
 reports on a signed session are refused exactly like a bad signature (peer
 report dropped, `command-outcome` failed with `signature_invalid` and acked).
 The flag is read at upgrade with the daemon state (`reportsSigned`); Deno
@@ -167,7 +170,8 @@ is logged once per connection (`warnedUnsigned` on the attachment). The
 daemon holds reports until the attach frame's feature list arrives
 (the daemon repo's instance guide), so an honest daemon never sends an
 unsigned report on a signed session. The cost: a server that once ran a
-signing daemon cannot go back to an older daemon on a signed session.
+signing daemon cannot go back to an older daemon on a signed session unless
+it is re-enrolled.
 
 ## Sealed secrets (`daemon-sealed-secrets-v1`)
 

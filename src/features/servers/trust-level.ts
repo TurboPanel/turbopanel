@@ -22,8 +22,9 @@ export async function raiseServerTrustLevel(
 /**
  * Record that this server's daemon signs its reports: set
  * `server.trust_reports_signed_at` the first time a signed report verifies.
- * One conditional update, a no-op once set; never cleared. From then on its
- * unsigned reports on a signed session are refused (`report-signature.ts`).
+ * One conditional update, a no-op once set; reset only when the identity key
+ * is replaced or removed (`server-identity-db.ts`). From then on its unsigned
+ * reports on a signed session are refused (`report-signature.ts`).
  * True when a row changed.
  */
 export async function recordServerSignsReports(db: Db, serverId: string): Promise<boolean> {

@@ -177,6 +177,17 @@ function clearedSealingKeyColumns() {
 }
 
 /**
+ * The signed-reports ratchet (`trust_reports_signed_at`) belongs to the
+ * daemon that signed with the old identity key, so it is reset whenever that
+ * key is replaced or removed (owner decision 2026-11-06): the new daemon
+ * starts again with unsigned reports accepted until its first verified
+ * signed one. Clearing only the sealing key does not touch it.
+ */
+function clearedTrustReportsColumns() {
+  return { trustReportsSignedAt: null }
+}
+
+/**
  * Clear only the registered sealing key, leaving the identity key and the
  * daemon state alone: the superadmin recovery for a host rolled back to a
  * daemon build without sealed secrets. Only while the key on file is still
@@ -313,6 +324,7 @@ export async function attachDaemonStateToServer(
         daemon: null,
         ...clearedProjectionColumns(),
         ...clearedSealingKeyColumns(),
+        ...clearedTrustReportsColumns(),
         ...(hostname ? { hostname } : {}),
         ...(machineKey ? { machineKey } : {}),
         isConnected: defaultStatus.connected,
@@ -390,6 +402,7 @@ async function resetServerDaemonColumns(db: Db, serverId: string): Promise<void>
       daemon: null,
       ...clearedProjectionColumns(),
       ...clearedSealingKeyColumns(),
+      ...clearedTrustReportsColumns(),
       isConnected: defaultStatus.connected,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,

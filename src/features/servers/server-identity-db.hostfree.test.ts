@@ -60,6 +60,13 @@ function assertClearedSealingKey(updates: Array<Record<string, unknown>>): void 
   assertEquals(patch?.sealingKeyReportedAt, null)
 }
 
+/** The signed-reports ratchet resets with the identity key (owner decision 2026-11-06). */
+function assertClearedTrustReports(updates: Array<Record<string, unknown>>): void {
+  const patch = updates.find((entry) => 'daemon' in entry)
+  assertEquals(patch !== undefined && 'trustReportsSignedAt' in patch, true)
+  assertEquals(patch?.trustReportsSignedAt, null)
+}
+
 function limitResult<T>(rows: T[]) {
   return { limit: () => Promise.resolve(rows) }
 }
@@ -237,6 +244,7 @@ test('attachDaemonStateToServer inserts the key row and writes default status co
   assertEquals(fake.getServerRow().daemon, null)
   assertClearedProjectionColumns(fake.getUpdates())
   assertClearedSealingKey(fake.getUpdates())
+  assertClearedTrustReports(fake.getUpdates())
 })
 
 test('attachDaemonStateToServer mints a new key id when the same key is presented again', async () => {
@@ -250,8 +258,9 @@ test('attachDaemonStateToServer mints a new key id when the same key is presente
   assertEquals(result.keyId !== originalId, true)
   assertEquals(fake.getKey()?.fingerprint, activeKey.fingerprint)
   assertEquals(fake.getKey()?.revokedAt, null)
-  // The same key presented again still drops the old sealing key.
+  // The same key presented again still drops the old sealing key and resets the ratchet.
   assertClearedSealingKey(fake.getUpdates())
+  assertClearedTrustReports(fake.getUpdates())
 })
 
 test('attachDaemonStateToServer throws when the server row is missing', async () => {
@@ -343,4 +352,5 @@ test('clearServerDaemonState deletes the key row and resets server status column
   assertEquals(fake.getServerRow().connected, false)
   assertClearedProjectionColumns(fake.getUpdates())
   assertClearedSealingKey(fake.getUpdates())
+  assertClearedTrustReports(fake.getUpdates())
 })
