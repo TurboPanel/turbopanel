@@ -96,6 +96,33 @@ test('resolveTlsForHosting accepts a ready pin that covers all hostnames', () =>
   )
 })
 
+test('resolveTlsForHosting refuses a Test Certificate from the authority’s staging directory', () => {
+  const test_ = candidate('tls-1', ['example.com'], {
+    acme: { challengeType: 'dns-01', managedBy: 'panel', staging: true },
+  })
+  assertEquals(
+    resolveTlsForHosting({
+      pinId: 'tls-1',
+      hostnames: ['example.com'],
+      candidates: [test_],
+      now: NOW,
+    }),
+    { ok: false, error: 'pin_staging' }
+  )
+  const real = candidate('tls-2', ['example.com'], {
+    acme: { challengeType: 'dns-01', managedBy: 'panel', staging: false },
+  })
+  assertEquals(
+    resolveTlsForHosting({
+      pinId: 'tls-2',
+      hostnames: ['example.com'],
+      candidates: [real],
+      now: NOW,
+    }),
+    { ok: true, tlsId: 'tls-2', reason: 'pin' }
+  )
+})
+
 test('resolveTlsForHosting rejects missing, unready, or mismatched pins', () => {
   assertEquals(
     resolveTlsForHosting({

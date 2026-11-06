@@ -4,7 +4,7 @@
  */
 
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { managed, recovery, replica } from '../../db/schema.ts'
 import type { ManagedMemberRow } from '../managed/members.ts'
@@ -13,6 +13,7 @@ import { DAEMON_RESTART_INTERRUPTION_MARKER, MAX_PROMOTE_RESUMES } from '../mana
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { COMMAND_DISPATCH_FAILURE_RETENTION_MS } from './command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
+import { ServerBusyError } from './delivery-retry.ts'
 import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
 import {
   announceDeployFailure,
@@ -21,7 +22,9 @@ import {
   FENCE_DRAIN_WAIT_MS,
   enrichPingResult,
   errorMessage,
+  commandRequestLifetime,
   extractObservedHostname,
+  failCommandAfterRetries,
   failureErrorCodeField,
   hasManagedFollowUpDeps,
   isManagedObservedStatus,
@@ -396,6 +399,8 @@ type ConsumerFakeDbOptions = Readonly<{
   throwOnManagedReadyUpdate?: boolean
   throwOnManagedFailedUpdate?: boolean
   throwOnBackupInsert?: boolean
+  /** The server-turn check finds another command of the server running. */
+  serverBusy?: boolean
   /** The HA recovery journal row the command belongs to (`recovery` table reads and writes). */
   recoveryRow?: Record<string, unknown>
   /** The journal read throws (database down), so the failure hook itself fails. */
@@ -665,6 +670,9 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
       },
     }),
     transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
+    // The server-turn check (`server-turn.ts`): the lock timeout, then "no
+    // other command of this server runs or comes first".
+    execute: () => Promise.resolve([{ blocked: options.serverBusy === true }]),
   } as unknown as Db
 
   return {
@@ -722,6 +730,115 @@ test('processCommandEnvelope no-ops for already-terminal commands', async () => 
     queuedAt: '2020-01-01T00:00:00.000Z',
   })
   assertEquals(transitions.length, 0)
+})
+
+test('processCommandEnvelope leaves the command untouched while its server runs another one', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ name: 'server.hostname.set' }),
+    serverBusy: true,
+  })
+  await assertRejects(
+    () =>
+      processCommandEnvelope(db, emptyRegistry(), {
+        commandId: COMMAND_ID,
+        serverId: SERVER_ID,
+        type: 'server.hostname.set',
+        attempt: 1,
+        queuedAt: '2020-01-01T00:00:00.000Z',
+      }),
+    ServerBusyError
+  )
+  // Still queued: not marked dispatching, never sent.
+  assertEquals(transitions, [])
+})
+
+test('processCommandEnvelope starts a quick command even while its server is busy', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow(),
+    serverBusy: true,
+  })
+  await processCommandEnvelope(db, emptyRegistry(), {
+    commandId: COMMAND_ID,
+    serverId: SERVER_ID,
+    type: 'daemon.ping',
+    attempt: 1,
+    queuedAt: '2020-01-01T00:00:00.000Z',
+  })
+  // It skipped the turn check and went on to dispatch (and fail fast here:
+  // the fake server is not found).
+  assertEquals(transitions[0]?.status, 'dispatching')
+})
+
+const GIVE_UP_ENVELOPE: CommandEnvelope = {
+  commandId: COMMAND_ID,
+  serverId: SERVER_ID,
+  type: 'daemon.ping',
+  attempt: 5,
+  queuedAt: '2020-01-01T00:00:00.000Z',
+}
+
+test('failCommandAfterRetries fails a command that never reached its server', async () => {
+  const { db, transitions } = createConsumerFakeDb({ commandRow: baseCommandRow() })
+  assertEquals(
+    await failCommandAfterRetries(db, GIVE_UP_ENVELOPE, 'database unreachable'),
+    'failed'
+  )
+  assertEquals(transitions, [{ status: 'failed', error: 'database unreachable' }])
+})
+
+function outboxRegistry(expire: () => Promise<PendingRequestRecord>): DaemonCellRegistry {
+  return {
+    ...emptyRegistry(),
+    getCell: () => ({ expireRequest: expire }) as unknown as DaemonCell,
+  }
+}
+
+test('failCommandAfterRetries takes the request back from the outbox before failing', async () => {
+  const { db, transitions } = createConsumerFakeDb({ commandRow: baseCommandRow() })
+  const expired = { status: 'expired' } as PendingRequestRecord
+  assertEquals(
+    await failCommandAfterRetries(
+      db,
+      GIVE_UP_ENVELOPE,
+      'database unreachable',
+      undefined,
+      outboxRegistry(() => Promise.resolve(expired))
+    ),
+    'failed'
+  )
+  assertEquals(transitions, [{ status: 'failed', error: 'database unreachable' }])
+})
+
+test('failCommandAfterRetries does not fail a command it could not take back', async () => {
+  for (const expire of [
+    () => Promise.reject(new Error('cell unavailable')),
+    // The server already answered while the write to `sent` was failing.
+    () => Promise.resolve({ status: 'done' } as PendingRequestRecord),
+  ]) {
+    const { db, transitions } = createConsumerFakeDb({ commandRow: baseCommandRow() })
+    assertEquals(
+      await failCommandAfterRetries(
+        db,
+        GIVE_UP_ENVELOPE,
+        'database unreachable',
+        undefined,
+        outboxRegistry(expire)
+      ),
+      'left_running'
+    )
+    assertEquals(transitions, [])
+  }
+})
+
+test('failCommandAfterRetries leaves a command the server may be running alone', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ status: 'sent', sentAt: '2020-01-01T00:00:01.000Z' }),
+  })
+  assertEquals(
+    await failCommandAfterRetries(db, GIVE_UP_ENVELOPE, 'database unreachable'),
+    'left_running'
+  )
+  assertEquals(transitions, [])
 })
 
 test('processCommandEnvelope marks expired commands timed_out', async () => {
@@ -826,7 +943,10 @@ test('processCommandEnvelope fails fast when the daemon is offline', async () =>
   )
 })
 
-function onlineRegistry(pending: PendingRequestRecord | null): {
+function onlineRegistry(
+  pending: PendingRequestRecord | null,
+  options: { current?: PendingRequestRecord | null; cell?: Partial<DaemonCell> } = {}
+): {
   registry: DaemonCellRegistry
   enqueued: Array<{ commandId: string; payload: unknown }>
 } {
@@ -873,7 +993,7 @@ function onlineRegistry(pending: PendingRequestRecord | null): {
     },
     markSent: () => Promise.resolve(),
     handleInbound: () => Promise.resolve(null),
-    getRequest: () => Promise.resolve(null),
+    getRequest: () => Promise.resolve(options.current ?? null),
     listRequests: () => Promise.resolve([]),
     waitForRequest: () => Promise.resolve(pending),
     createRequestAndWait: (outbound) =>
@@ -893,6 +1013,7 @@ function onlineRegistry(pending: PendingRequestRecord | null): {
     prune: () => Promise.resolve([]),
     clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: () => Promise.resolve(),
+    ...options.cell,
   }
 
   return {
@@ -905,6 +1026,108 @@ function onlineRegistry(pending: PendingRequestRecord | null): {
     enqueued,
   }
 }
+
+function ackedRequest(): PendingRequestRecord {
+  return { ...donePending(), status: 'acked', result: undefined }
+}
+
+const BACKUP_ENVELOPE: CommandEnvelope = {
+  commandId: COMMAND_ID,
+  serverId: SERVER_ID,
+  type: 'storage.backup',
+  attempt: 3,
+  queuedAt: '2020-01-01T00:00:00.000Z',
+}
+
+test('commandRequestLifetime keeps a long command record for its whole run once acked', () => {
+  assertEquals(commandRequestLifetime({ type: 'storage.backup' }), {
+    ackedTtlSeconds: 30 * 60 + 15 * 60,
+  })
+  assertEquals(commandRequestLifetime({ type: 'daemon.ping' }), { ackedTtlSeconds: 30 + 15 * 60 })
+  assertEquals('ttlSeconds' in commandRequestLifetime({ type: 'environment.deploy' }), true)
+})
+
+test('a long command still running after one hold hands its wait back to the queue', async () => {
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ name: 'storage.backup' }),
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: {},
+  })
+  const { registry, enqueued } = onlineRegistry(null, { current: ackedRequest() })
+  const handedBack: CommandEnvelope[] = []
+  await processCommandEnvelope(db, registry, BACKUP_ENVELOPE, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+    commandQueue: {
+      enqueue: (envelope) => {
+        handedBack.push(envelope)
+        return Promise.resolve()
+      },
+    },
+  })
+  assertEquals(enqueued.length, 1)
+  // Back on the queue with a fresh retry count, and not timed out.
+  assertEquals(handedBack, [{ ...BACKUP_ENVELOPE, attempt: 1 }])
+  assertEquals(
+    transitions.some((t) => t.status === 'timed_out'),
+    false
+  )
+})
+
+test('a long command handed back resumes its wait instead of being sent again', async () => {
+  const sentAt = new Date().toISOString()
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ name: 'storage.backup', status: 'acked', sentAt }),
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: {},
+  })
+  const { registry, enqueued } = onlineRegistry(
+    { ...donePending(), result: {} },
+    { current: ackedRequest() }
+  )
+  await processCommandEnvelope(db, registry, BACKUP_ENVELOPE, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+  })
+  assertEquals(enqueued, [])
+  assertEquals(
+    transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+})
+
+test('a resumed command the daemon never acknowledged gets the ack check, not its whole budget', async () => {
+  const sentAt = new Date().toISOString()
+  const { db, transitions } = createConsumerFakeDb({
+    commandRow: baseCommandRow({ name: 'storage.backup', status: 'sent', sentAt }),
+    serverExists: true,
+    serverConnected: true,
+    dispatchPayload: {},
+  })
+  const unacked = { ...donePending(), status: 'sent' as const, result: undefined }
+  let dropped = 0
+  const { registry, enqueued } = onlineRegistry(null, {
+    current: unacked,
+    cell: {
+      dropDaemonConnection: () => {
+        dropped += 1
+        return Promise.resolve()
+      },
+      expireRequest: () => Promise.resolve({ ...unacked, status: 'expired' }),
+    },
+  })
+  await processCommandEnvelope(db, registry, BACKUP_ENVELOPE, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
+  })
+  // The dead connection is dropped and the command fails as unacknowledged
+  // (before, a resumed wait sat out the whole 30-minute budget).
+  assertEquals(dropped, 1)
+  assertEquals(enqueued, [])
+  assertEquals(
+    transitions.some((t) => t.status === 'failed'),
+    true
+  )
+})
 
 function donePending(): PendingRequestRecord {
   return {

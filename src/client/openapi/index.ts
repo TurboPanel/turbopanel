@@ -29,6 +29,8 @@ import { storagePaths, storageSchemas } from './storage.ts'
 import { storageBackupPaths, storageBackupSchemas } from './storage-backups.ts'
 import { firewallPaths, firewallSchemas } from './firewall.ts'
 import { backupTargetPaths, backupTargetSchemas } from './backup-targets.ts'
+import { dnsCertificatePaths, dnsCertificateSchemas } from './dns-certificates.ts'
+import { tunnelPaths, tunnelSchemas } from './tunnels.ts'
 import { activityPaths, activitySchemas } from './activity.ts'
 import { organizationMemberPaths, organizationMemberSchemas } from './organization-members.ts'
 import { repositoryPaths, repositorySchemas } from './repositories.ts'
@@ -107,7 +109,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       { name: 'Servers', description: 'Servers and update management' },
       { name: 'Commands', description: 'Command lifecycle status polling' },
       { name: 'Networks', description: 'Organization network registry' },
-      { name: 'Datacenters', description: 'Datacenter CRUD' },
+      { name: 'Datacenters', description: 'Datacenter network CRUD' },
       { name: 'IPs', description: 'Managed IP address registry' },
       { name: 'Licenses', description: 'License lifecycle' },
       { name: 'System', description: 'Platform-managed system components' },
@@ -178,6 +180,8 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...storageBackupSchemas,
         ...firewallSchemas,
         ...backupTargetSchemas,
+        ...tunnelSchemas,
+        ...dnsCertificateSchemas,
         ...organizationMemberSchemas,
         ...activitySchemas,
         ...repositorySchemas,
@@ -217,6 +221,8 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       ...storageBackupPaths,
       ...firewallPaths,
       ...backupTargetPaths,
+      ...tunnelPaths,
+      ...dnsCertificatePaths,
       ...organizationMemberPaths,
       ...activityPaths,
       ...repositoryPaths,

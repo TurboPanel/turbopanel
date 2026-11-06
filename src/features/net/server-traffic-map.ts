@@ -70,6 +70,10 @@ export type TrafficMapPlanned = {
   localInterface: string | null
   /** True when this network was used only because nothing that is up could carry the traffic. */
   linkDown: boolean
+  /** Set when the pair shares an untrusted network and the traffic fell to the public address (TLS only). */
+  untrustedPublic?: true
+  /** Set when the TurboFabric tunnel has no recent handshake; the address is still the tunnel's. */
+  tunnelDown?: true
 }
 
 export type TrafficMapTrafficRow = {
@@ -315,6 +319,8 @@ function trafficRow(
       localInterface:
         resolved.transport === 'datacenter' ? localInterfaceOfPin(input, datacenterId) : null,
       linkDown: resolved.linkDown === true,
+      ...(resolved.untrustedPublic ? { untrustedPublic: true as const } : {}),
+      ...(resolved.tunnelDown ? { tunnelDown: true as const } : {}),
     },
     error: null,
     onChosenNetwork,

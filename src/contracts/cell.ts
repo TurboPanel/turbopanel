@@ -148,6 +148,20 @@ export type ClearUpdateStatusOptions = {
  * (worker isolate for Durable Objects, Deno process for Redis) performs polling until
  * terminal status or deadline.
  */
+/** How long a request record lives. */
+export type CellEnqueueOptions = {
+  /** Lifetime from enqueue (default 300 s): an undelivered or unacknowledged request ends then. */
+  ttlSeconds?: number
+  /**
+   * Lifetime from the daemon's `command-ack`, for a command that may run longer
+   * than {@link ttlSeconds}: the record (and so the result the daemon sends at
+   * the end) must outlive the run. The Durable Object cell already keeps an
+   * acknowledged request until its result arrives; the Redis cell extends the
+   * record to this on ack.
+   */
+  ackedTtlSeconds?: number
+}
+
 export interface DaemonCell {
   attachDaemonSocket(meta: {
     keyId: string
@@ -173,7 +187,7 @@ export interface DaemonCell {
 
   enqueue(
     outbound: DaemonOutboundEnvelope,
-    opts?: { ttlSeconds?: number }
+    opts?: CellEnqueueOptions
   ): Promise<PendingRequestRecord>
   markSent(deliveryId: OutboxDeliveryId, connectionId: string, sentAt?: string): Promise<void>
   handleInbound(inbound: DaemonInboundEnvelope): Promise<PendingRequestRecord | null>
@@ -206,8 +220,8 @@ export interface DaemonCell {
   /**
    * Optional — Workers-only read-only liveness probe used by the offline
    * sweep cron (`cell/offline-sweep.ts`). Redis/Deno does not need this: it
-   * already runs its own timer-driven `sweepStalePresence` (see AGENTS.md
-   * Daemon Cell → Presence model).
+   * already runs its own timer-driven `sweepStalePresence` (see src/daemon/cell/AGENTS.md
+   * → Presence model).
    */
   checkLiveness?(): Promise<DaemonCellLiveness>
 

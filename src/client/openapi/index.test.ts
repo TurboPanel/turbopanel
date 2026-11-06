@@ -281,3 +281,31 @@ test('invitation OpenAPI does not document a default organization:manage grant o
   assertEquals(accept.post.description.includes('default `organization:manage`'), false)
   assertEquals(accept.post.description.includes('no grant rows'), true)
 })
+
+test('every delete that needs the typed name documents a required confirmName and its 400', () => {
+  const spec = getClientOpenApiSpec('https://panel.example.com') as {
+    paths: Record<string, Record<string, unknown>>
+  }
+  const gated = [
+    '/servers/{id}',
+    '/projects/{id}',
+    '/environments/{id}',
+    '/environments/{id}/managed',
+    '/environments/{id}/managed/databases/{name}',
+    '/projects/{projectId}/principals/{id}',
+    '/organizations/{id}/principals/{principalId}',
+  ]
+  for (const path of gated) {
+    const operation = spec.paths[`${CLIENT_API_PREFIX}${path}`]?.delete as
+      | {
+          parameters: { name: string; in: string; required: boolean }[]
+          responses: Record<string, { description: string }>
+        }
+      | undefined
+    assertExists(operation, path)
+    const param = operation.parameters.find((p) => p.name === 'confirmName')
+    assertEquals(param?.in, 'query', path)
+    assertEquals(param?.required, true, path)
+    assertEquals(operation.responses['400']?.description.includes('confirm_name_required'), true)
+  }
+})

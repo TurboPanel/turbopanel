@@ -1,3 +1,4 @@
+import { plainCertificateFailure } from '../../features/hostings/acme-failure-text.ts'
 import { isLoopbackOrPrivateHostname } from '../../features/install/install-tls.ts'
 import {
   encryptSecret,
@@ -36,12 +37,22 @@ export function isTlsUuid(value: string): boolean {
   return TLS_UUID_RE.test(value)
 }
 
+/**
+ * The metadata a response carries. A row that has no certificate yet stores an
+ * epoch placeholder for its dates; those two go out as `null` (not as 1970,
+ * which a browser in the Americas shows as 12/31/1969).
+ */
+export type TlsPublicMetadata = Omit<TlsMetadata, 'notBefore' | 'notAfter'> & {
+  notBefore: string | null
+  notAfter: string | null
+}
+
 export type TlsPublicRow = {
   id: string
   name: string | null
   source: string
   organizationId: string
-  metadata: TlsMetadata
+  metadata: TlsPublicMetadata
   options: TlsOptions | null
   certificatePem: string | null
   /**
@@ -56,6 +67,43 @@ export type TlsPublicRow = {
   caGeneration?: number | null
   createdAt: string
   updatedAt: string
+}
+
+/** True for the epoch a not-yet-issued row stores in place of a date. */
+function isPlaceholderDate(value: string): boolean {
+  const time = Date.parse(value)
+  return Number.isNaN(time) || time <= 0
+}
+
+export function publicTlsMetadata(
+  metadata: TlsMetadata,
+  hasCertificate: boolean
+): TlsPublicMetadata {
+  if (hasCertificate) return metadata
+  return {
+    ...metadata,
+    notBefore: isPlaceholderDate(metadata.notBefore) ? null : metadata.notBefore,
+    notAfter: isPlaceholderDate(metadata.notAfter) ? null : metadata.notAfter,
+  }
+}
+
+/**
+ * The issuance note a row shows: the server's own failed check in plain words
+ * (rows stored before that mapping still hold the raw text), and none once a
+ * certificate was issued after the last recorded failure.
+ */
+export function plainAcmeNote<T extends { acme?: { lastError?: string } }>(metadata: T): T {
+  const acme = metadata.acme as
+    { lastError?: string; lastIssuedAt?: string; lastFailedAt?: string } | undefined
+  if (acme?.lastError === undefined) return metadata
+  const issued = Date.parse(acme.lastIssuedAt ?? '')
+  const failed = Date.parse(acme.lastFailedAt ?? '')
+  const settled = !Number.isNaN(issued) && !Number.isNaN(failed) && issued > failed
+  const { lastError, ...rest } = acme
+  return {
+    ...metadata,
+    acme: settled ? rest : { ...rest, lastError: plainCertificateFailure(lastError) },
+  }
 }
 
 export function toPublicTlsRow(
@@ -76,7 +124,9 @@ export function toPublicTlsRow(
     name: row.name,
     source: row.source,
     organizationId: row.organizationId,
-    metadata: refreshTlsStatus(metadata),
+    metadata: plainAcmeNote(
+      publicTlsMetadata(refreshTlsStatus(metadata), row.certificatePem !== null)
+    ),
     options: parseTlsOptions(row.options),
     certificatePem: row.certificatePem,
     caGeneration: row.caGeneration ?? null,
@@ -447,5 +497,8 @@ export async function buildCreateTlsMaterial(
       return materialFromLetsEncrypt(body)
     case 'organization_ca':
       return await materialFromOrganizationCa(secrets, { organizationId })
+    case 'provider_origin':
+      // Issued through a tunnel's carrier (see features/tunnels), never created here.
+      return createFailure('provider_origin_unsupported')
   }
 }

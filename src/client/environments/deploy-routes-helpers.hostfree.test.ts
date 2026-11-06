@@ -60,6 +60,16 @@ test('tlsPinErrorCode maps pin errors', () => {
   assertEquals(tlsPinErrorCode('pin_not_ready'), 'tls_pin_not_ready')
 })
 
+test('fabricGateErrorResponse answers 409 with the plain message when TurboFabric was turned off', () => {
+  assertEquals(
+    fabricGateErrorResponse({ kind: 'turned_off', message: 'TurboFabric was turned off.' }),
+    {
+      status: 409,
+      body: { error: 'fabric_turned_off', message: 'TurboFabric was turned off.' },
+    }
+  )
+})
+
 test('fabricGateErrorResponse maps failed and pending fabric gates', () => {
   assertEquals(
     fabricGateErrorResponse({

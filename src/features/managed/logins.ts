@@ -410,6 +410,8 @@ export async function insertLogin(db: Db, input: InsertLoginInput): Promise<stri
       password: input.password,
       ...(input.nameScheme ? { nameScheme: input.nameScheme } : {}),
       ...settingsColumns(input),
+      // The backup login reads every database on the cluster, current and future.
+      ...(input.role === 'backup' ? { isAllDatabases: true } : {}),
       // No limit chosen stores the explicit anywhere pair (the column default is `internal`).
       allowedSources: loginSourcesToStored(input.allowedSources),
       ...recipeColumn({

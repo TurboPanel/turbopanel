@@ -26,12 +26,15 @@ import {
   orgOptionsPatchRoute,
   recordOrgSettingAudit,
   removeOrgOptionSql,
+  tlsSettingsGetRoute,
+  tlsSettingsPutRoute,
   writeOrgOptions,
 } from './settings-route.ts'
 import {
   parseOrganizationOptions,
   resolveRandomizedPrincipalUsernames,
 } from '../../features/organizations/organization-options.ts'
+import type { AuditAction } from '../../features/audit/audit-records.ts'
 import { loadOrgServerCapacity } from '../../features/servers/server-capacity.ts'
 import { listTimezones } from '../../lib/timezones.ts'
 import { assertCidrAvailable } from '../../features/net/cidr-collisions.ts'
@@ -39,6 +42,7 @@ import { alignedNetworkCidr } from '../../lib/ip-address.ts'
 import { findDockerBridgePoolOverlap } from '../../features/deploy/docker-address-pools.ts'
 import { cidrCollisionResponse } from '../networks/network-scope.ts'
 import { eraseStoredPairs } from '../tls/stored-pair.ts'
+import { currentAcmeTermsReader } from '../../features/organizations/acme-terms.ts'
 import {
   applyManagedDefaultsPatch,
   composeDefaultResourceLimitsGetResponse,
@@ -66,13 +70,18 @@ import {
   parseHostDefaultsPatch,
   parseManagedDefaultsPatch,
   parseOrganizationCreateDisplayName,
-  parseOrganizationPatchDisplayName,
+  organizationPatchAudits,
+  parseOrganizationPatch,
+  parseProjectSettingsPatch,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
+  applyTlsSettingsPatch,
   parseTlsSettingsPatch,
   deployTimeoutGetResponse,
   deployTimeoutPutResponse,
   parseDeployTimeoutPatch,
+  projectSettingsGetResponse,
+  projectSettingsPutResponse,
   temperatureUnitGetResponse,
   temperatureUnitPutResponse,
   tlsSettingsGetResponse,
@@ -81,6 +90,7 @@ import {
   validateManagedDefaults,
 } from './routes-helpers.ts'
 import { registerOrganizationFabricRoutes } from './fabric-routes.ts'
+import { EMOJI_ICONS_OFF_BODY } from '../../lib/icons.ts'
 
 async function loadOrganizationRecord(db: Db, id: string) {
   const [orgRow] = await db
@@ -88,6 +98,8 @@ async function loadOrganizationRecord(db: Db, id: string) {
       id: organization.id,
       name: organization.name,
       createdAt: organization.createdAt,
+      icon: organization.icon,
+      isEmojiIconAllowed: organization.isEmojiIconAllowed,
     })
     .from(organization)
     .where(eq(organization.id, id))
@@ -96,6 +108,9 @@ async function loadOrganizationRecord(db: Db, id: string) {
 }
 
 export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  // The agreement Let's Encrypt names now; null when it cannot be read (the
+  // routes then refuse to accept or turn on). Cached, and quick to give up.
+  const currentTermsUrl = currentAcmeTermsReader(opts.acmeTermsFetch)
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for organization routes')
   }
@@ -108,6 +123,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/deploy-timeout', createSessionMiddleware(secrets))
   router.use('/organizations/:id/host-defaults', createSessionMiddleware(secrets))
   router.use('/organizations/:id/default-environment', createSessionMiddleware(secrets))
+  router.use('/organizations/:id/project-settings', createSessionMiddleware(secrets))
   router.use('/organizations/:id/server-capacity', createSessionMiddleware(secrets))
   router.use('/organizations/:id/managed-defaults', createSessionMiddleware(secrets))
   router.use('/organizations/:id/principal-defaults', createSessionMiddleware(secrets))
@@ -177,24 +193,47 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const parsed = parseOrganizationPatchDisplayName(body)
+    const parsed = parseOrganizationPatch(body)
     if (!parsed.ok) {
       return c.json({ error: parsed.error }, parsed.status)
     }
+    const { patch } = parsed
 
     const orgRow = await loadOrganizationRecord(db, id)
     if (!orgRow) return c.json({ error: 'Not found' }, 404)
 
+    // The setting in the same request wins over the stored one, so turning
+    // emoji icons on and picking an emoji is one save. Re-sending the emoji
+    // the organization already stores is not a new emoji, so a whole-form save
+    // still works while emoji icons are off.
+    if (
+      patch.iconIsEmoji &&
+      patch.icon !== orgRow.icon &&
+      !(patch.isEmojiIconAllowed ?? orgRow.isEmojiIconAllowed)
+    ) {
+      return c.json(EMOJI_ICONS_OFF_BODY, 422)
+    }
+
     await db
       .update(organization)
       .set({
-        name: parsed.name,
+        ...(patch.name === undefined ? {} : { name: patch.name }),
+        ...(patch.icon === undefined ? {} : { icon: patch.icon }),
+        ...(patch.isEmojiIconAllowed === undefined
+          ? {}
+          : { isEmojiIconAllowed: patch.isEmojiIconAllowed }),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(organization.id, id))
 
     const updated = await loadOrganizationRecord(db, id)
     if (!updated) return c.json({ error: 'Not found' }, 404)
+
+    await Promise.all(
+      organizationPatchAudits(patch, orgRow).map(({ action, context }) =>
+        recordOrgSettingAudit(c, scope, action, context)
+      )
+    )
 
     return c.json({
       ok: true as const,
@@ -243,13 +282,15 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
 
   router.get(
     '/organizations/:id/tls-settings',
-    orgOptionsGetRoute('manage', tlsSettingsGetResponse)
+    tlsSettingsGetRoute('manage', currentTermsUrl, tlsSettingsGetResponse)
   )
   router.put(
     '/organizations/:id/tls-settings',
-    orgOptionsPatchRoute({
+    tlsSettingsPutRoute({
       gate: 'manage',
       parse: parseTlsSettingsPatch,
+      currentTermsUrl,
+      apply: applyTlsSettingsPatch,
       respond: tlsSettingsPutResponse,
       // Turning Let's Encrypt off: the stored keys are no longer needed.
       afterWrite: async (db, organizationId, patch) => {
@@ -257,10 +298,32 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
           await eraseStoredPairs(db, organizationId)
         }
       },
-      audit: (patch) => ({
-        action: 'organization.acme.set',
-        context: { acmeEnabled: patch.acmeEnabled },
-      }),
+      audit: (patch, before, after) => {
+        const entries: { action: AuditAction; context: Record<string, unknown> }[] = []
+        // The acceptance comes first: it is what allowed the switch.
+        if (patch.acmeTermsAccepted) {
+          entries.push({
+            action: 'organization.acme_terms.accept',
+            context: { acceptedAt: after.acmeTermsAcceptedAt, termsUrl: after.acmeTermsUrl },
+          })
+        }
+        if (patch.acmeEnabled !== undefined) {
+          entries.push({
+            action: 'organization.acme.set',
+            context: { acmeEnabled: patch.acmeEnabled },
+          })
+        }
+        if (after.acmeContactEmail !== before.acmeContactEmail) {
+          entries.push({
+            action: 'organization.acme_contact.set',
+            context: {
+              acmeContactEmail: after.acmeContactEmail,
+              previous: before.acmeContactEmail,
+            },
+          })
+        }
+        return entries
+      },
     })
   )
 
@@ -406,6 +469,21 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
           : parsed
       },
       respond: defaultEnvironmentPutResponse,
+    })
+  )
+
+  // The new-project form's "open by default" switches (Organization Settings
+  // › Project Settings). Managers only, like everything a project create needs.
+  router.get(
+    '/organizations/:id/project-settings',
+    orgOptionsGetRoute('manage', projectSettingsGetResponse)
+  )
+  router.put(
+    '/organizations/:id/project-settings',
+    orgOptionsPatchRoute({
+      gate: 'manage',
+      parse: parseProjectSettingsPatch,
+      respond: projectSettingsPutResponse,
     })
   )
 

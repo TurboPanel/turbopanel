@@ -53,8 +53,8 @@ export type CommandContextReplicaCounts = Record<string, number>
  * Every field is a non-secret identifier already visible in the UI; the clone
  * credential and build plan stay in the payload where they belong.
  *
- * **Not here: Railpack image identity.** This row is written when the command is
- * *enqueued*, and a Railpack release's image tag, frontend version, and plan
+ * **Not here: image-built release identity.** This row is written when the command is
+ * *enqueued*, and an image-built release's image tag, frontend version, and plan
  * version do not exist until the host has built it. They come back on the deploy
  * *result* (`command.result_summary`) instead, and
  * `features/git/releases.ts` folds them onto the same release record — putting

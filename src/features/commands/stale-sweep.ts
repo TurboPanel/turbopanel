@@ -118,10 +118,23 @@ export function isStaleCommand(
     toMs(row.ackedAt) ??
     toMs(row.sentAt) ??
     toMs(row.dispatchStartedAt) ??
-    toMs(row.queuedAt) ??
-    toMs(row.createdAt)
+    waitingSinceMs(row)
   if (reference === null) return false
   return nowMs >= reference + commandTimeoutMs(row.name) + graceMs
+}
+
+/**
+ * A command not yet started is timed from the last time it was seen waiting:
+ * every check of its server's turn stamps `updated_at` (`server-turn.ts`), so
+ * time spent waiting behind another command of the same server never counts
+ * against its own limit. One whose message was lost stops being stamped and
+ * is swept from then.
+ */
+function waitingSinceMs(row: StaleCommandCandidate): number | null {
+  const queued = toMs(row.queuedAt) ?? toMs(row.createdAt)
+  const lastSeen = row.status === 'queued' ? toMs(row.updatedAt ?? null) : null
+  if (queued === null) return lastSeen
+  return lastSeen === null ? queued : Math.max(queued, lastSeen)
 }
 
 /**

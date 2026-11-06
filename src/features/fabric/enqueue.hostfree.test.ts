@@ -5,6 +5,7 @@ import { buildFabricReconcilePayload, type RelayRecord } from './fabric-records.
 import {
   awaitParticipatingFabricConvergence,
   enqueueFabricReconcileForServers,
+  FABRIC_TURNED_OFF_MESSAGE,
   fabricEnqueueTypedError,
   isFabricEnqueueTypedError,
   isFabricMembershipConverged,
@@ -180,6 +181,32 @@ function createEndpointlessFabricDb(
         }
       }
 
+      if (keySet.has('isFabricEnabled')) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenable(relays.map((row) => ({ id: row.serverId, isFabricEnabled: true })))
+              },
+            }
+          },
+        }
+      }
+
+      // Server container ranges ({ id, prefix }) and daemon features ({ id, daemon }):
+      // none here, so every pair keeps its tunnel and no LAN routes are built.
+      if (keys.length === 2 && keySet.has('id') && (keySet.has('prefix') || keySet.has('daemon'))) {
+        return {
+          from() {
+            return {
+              where() {
+                return thenable([])
+              },
+            }
+          },
+        }
+      }
+
       throw new TypeError(`unexpected select keys: ${keys.join(',')}`)
     },
   } as unknown as Db
@@ -330,7 +357,8 @@ const FLEET_RELAYS: RelayRow[] = [
     address: '10.250.0.1',
     role: 'member',
     keepalive: null,
-    endpointAddress: '203.0.113.10',
+    // srv-1 and srv-3 are behind NAT: they dial srv-2 but not each other.
+    endpointAddress: null,
     publicKey: 'pk1',
     prefix: '10.192.0.0/16',
     advertisedCidrs: [],
@@ -380,8 +408,9 @@ test('enqueueFabricReconcileForServers queues the rest of the fleet when one pai
     ['queued', 'queued', 'queued']
   )
   assertEquals(results[0]?.unreachablePeers, [{ serverId: 'srv-3' }])
-  assertEquals(results[1]?.unreachablePeers, [{ serverId: 'srv-3' }])
-  assertEquals(results[2]?.unreachablePeers, undefined)
+  // srv-2 is public: both NAT servers dial in, so none is unreachable.
+  assertEquals(results[1]?.unreachablePeers, undefined)
+  assertEquals(results[2]?.unreachablePeers, [{ serverId: 'srv-1' }])
   assertEquals(
     enqueued.sort((a, b) => a.localeCompare(b)),
     ['srv-1', 'srv-2', 'srv-3']
@@ -422,7 +451,7 @@ function createMembershipFabricDb(
         }
       }
 
-      if (keys.length === 1 && keys[0] === 'id') {
+      if (keySet.has('id') && (keys.length === 1 || keySet.has('isFabricEnabled'))) {
         return {
           from() {
             return {
@@ -504,6 +533,70 @@ test('enqueueFabricReconcileForServers enqueues disable payloads when fabric is 
   })
   assertEquals(enqueued, ['srv-1'])
   assertEquals(results, [{ serverId: 'srv-1', commandId: 'cmd-1', status: 'queued' }])
+})
+
+test('enqueueFabricReconcileForServers sends a pause (retainKeys) instead of a tear down when asked', async () => {
+  const base = createMembershipFabricDb([]) as unknown as {
+    insert: () => { values: (values: { payload: unknown }) => unknown }
+  }
+  const payloads: unknown[] = []
+  const db = Object.assign(base, {
+    insert: () => {
+      const inner = createMembershipFabricDb([]) as unknown as {
+        insert: () => { values: (values: { payload: unknown }) => unknown }
+      }
+      return {
+        values: (values: { payload: unknown }) => {
+          if (values.payload !== undefined) payloads.push(values.payload)
+          return inner.insert().values(values)
+        },
+      }
+    },
+  }) as unknown as Db
+  const enqueued: string[] = []
+  await enqueueFabricReconcileForServers({
+    db,
+    commandQueue: recordingQueue(enqueued),
+    actorType: 'user',
+    actorId: 'user-1',
+    fabric: FABRIC,
+    serverIds: ['srv-1'],
+    enabled: false,
+    retainKeys: true,
+  })
+  assertEquals(enqueued, ['srv-1'])
+  assertEquals(payloads, [{ enabled: false, retainKeys: true }])
+})
+
+test('enqueueFabricReconcileForServers sends no enable while the fabric is paused', async () => {
+  const base = createMembershipFabricDb(hashGateRelays()) as unknown as {
+    select: (fields: Record<string, unknown>) => unknown
+  }
+  const db = {
+    ...base,
+    select(fields: Record<string, unknown>) {
+      if ('isEnabled' in fields && 'cidr' in fields) {
+        return {
+          from: () => ({
+            where: () => ({ limit: () => thenable([{ ...FABRIC, isEnabled: false }]) }),
+          }),
+        }
+      }
+      return base.select(fields)
+    },
+  } as unknown as Db
+  const enqueued: string[] = []
+  const results = await enqueueFabricReconcileForServers({
+    db,
+    commandQueue: recordingQueue(enqueued),
+    actorType: 'user',
+    actorId: 'user-1',
+    fabric: FABRIC,
+    serverIds: ['srv-1'],
+    enabled: true,
+  })
+  assertEquals(enqueued, [])
+  assertEquals(results, [{ serverId: 'srv-1', status: 'skipped' }])
 })
 
 test('enqueueFabricReconcileForServers reports queue unavailable after create', async () => {
@@ -1069,7 +1162,7 @@ function createConvergenceFabricDb(
           },
         }
       }
-      if (keys.length === 1 && keys[0] === 'id') {
+      if (keySet.has('id') && (keys.length === 1 || keySet.has('isFabricEnabled'))) {
         return {
           from() {
             return {
@@ -1270,4 +1363,35 @@ test('fabricNeedsRendezvous requires two public-keyed relays and non-direct path
     ]),
     true
   )
+})
+
+test('awaitParticipatingFabricConvergence stops when the fabric is paused while a deploy waits', async () => {
+  const fabricPayloads: Array<{ peers?: unknown[] }> = []
+  const base = createConvergenceFabricDb(nullKeyRelays(), fabricPayloads) as unknown as {
+    select: (fields: Record<string, unknown>) => unknown
+  }
+  const db = {
+    ...base,
+    select(fields: Record<string, unknown>) {
+      if ('isEnabled' in fields && 'cidr' in fields) {
+        return {
+          from: () => ({
+            where: () => ({ limit: () => thenable([{ ...FABRIC, isEnabled: false }]) }),
+          }),
+        }
+      }
+      return base.select(fields)
+    },
+  } as unknown as Db
+  const outcome = await awaitParticipatingFabricConvergence({
+    db,
+    commandQueue: recordingQueue([]),
+    actorType: 'user',
+    actorId: 'user-1',
+    fabric: FABRIC,
+    serverIds: ['srv-1', 'srv-2'],
+    sleep: () => Promise.resolve(),
+  })
+  assertEquals(outcome, { kind: 'turned_off', message: FABRIC_TURNED_OFF_MESSAGE })
+  assertEquals(fabricPayloads, [])
 })

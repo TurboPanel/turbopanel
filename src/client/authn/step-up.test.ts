@@ -236,7 +236,7 @@ test('every registered action is called by a route', async () => {
   const all = sources.join('\n')
   for (const action of Object.keys(STEP_UP_ACTIONS)) {
     const wired = new RegExp(
-      String.raw`(?:requireStepUpIfConfigured|authorizeManagedBackupMutation|loadManagedRowScope|tlsCaGate)\([^)]*?['"]${action.replaceAll('.', String.raw`\.`)}['"]`
+      String.raw`(?:requireStepUpIfConfigured|requireInstanceStepUp|authorizeManagedBackupMutation|loadManagedRowScope|tlsCaGate)\([^)]*?['"]${action.replaceAll('.', String.raw`\.`)}['"]`
     )
     assertEquals(wired.test(all), true, `no route calls the gate for ${action}`)
   }
@@ -453,8 +453,15 @@ async function makeStoppedEnvironment(db: Db, organizationId: string, label: str
   return { workspaceId: ws!.id, projectId: proj!.id, environmentId: env!.id }
 }
 
-function deleteEnvironment(fx: Fixture, orgId: string, envId: string, cookie: string) {
-  return fx.app.request(`${API}/environments/${envId}`, {
+/** Deletes the environment `makeStoppedEnvironment(…, label)` made, typing its name. */
+function deleteEnvironment(
+  fx: Fixture,
+  orgId: string,
+  env: { environmentId: string; label: string },
+  cookie: string
+) {
+  const query = new URLSearchParams({ confirmName: `step-up-${env.label}` })
+  return fx.app.request(`${API}/environments/${env.environmentId}?${query.toString()}`, {
     method: 'DELETE',
     headers: { cookie, [ORG_ID_HEADER]: orgId, 'X-Real-IP': '203.0.113.7' },
   })
@@ -474,11 +481,14 @@ test('delete environment is wired to the gate', async () => {
     const on = await makeStoppedEnvironment(db, orgA, 'on')
     try {
       // Setting off: the delete is not prompted.
-      assertEquals((await deleteEnvironment(fx, orgA, off.environmentId, cookie)).status, 200)
+      assertEquals(
+        (await deleteEnvironment(fx, orgA, { ...off, label: 'off' }, cookie)).status,
+        200
+      )
       assertEquals(await environmentExists(db, off.environmentId), false)
 
       await setOrgReauth(db, orgA, true)
-      const refused = await deleteEnvironment(fx, orgA, on.environmentId, cookie)
+      const refused = await deleteEnvironment(fx, orgA, { ...on, label: 'on' }, cookie)
       assertEquals(refused.status, 403)
       const body = (await refused.json()) as { error: string; action: string }
       assertEquals(body.error, 'reauth_required')
@@ -486,7 +496,7 @@ test('delete environment is wired to the gate', async () => {
       assertEquals(await environmentExists(db, on.environmentId), true)
 
       await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
-      assertEquals((await deleteEnvironment(fx, orgA, on.environmentId, cookie)).status, 200)
+      assertEquals((await deleteEnvironment(fx, orgA, { ...on, label: 'on' }, cookie)).status, 200)
       assertEquals(await environmentExists(db, on.environmentId), false)
     } finally {
       await db.delete(environment).where(eq(environment.projectId, off.projectId))

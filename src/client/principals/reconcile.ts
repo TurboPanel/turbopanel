@@ -22,7 +22,17 @@ import { createCommandRecord, transitionCommand } from '../../features/commands/
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { loadPrincipalMaterial } from '../environments/deploy-prepare.ts'
+import { sealPrincipalPasswordHashes } from '../environments/deploy-principal-password-seal.ts'
 import { principalsStillOnServer } from '../environments/teardown.ts'
+import type { EnvironmentDeployPrincipalMaterial } from '../../contracts/commands/schemas.ts'
+import { isDaemonKeyActive, type ServerDaemonState } from '../../features/servers/daemon-state.ts'
+import {
+  getDaemonSealingKey,
+  type DaemonSealingKey,
+} from '../../features/servers/daemon-sealing-key.ts'
+import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
+import { encryptSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
+import type { SecretsConfig } from '../../lib/secrets/secrets.ts'
 
 export type PrincipalsReconcileActor = {
   actorType: string
@@ -110,6 +120,48 @@ export type PrincipalsReconcileOptions = {
 }
 
 /**
+ * The accounts with each password hash sealed for this server's daemon
+ * (`passwordHashEnvelope`, opened through `/secrets/decrypt`), so the hash
+ * never sits in the command row or rides the socket in the clear. Unchanged
+ * when no account has a hash, the server has no sealing key on file, its
+ * daemon key is not active, or this runtime has no secrets config.
+ *
+ * The choice keys on the registered sealing key, never on the unsigned hello
+ * `features` list: a caller holding the server token, or anything that
+ * rewrites the hello on the way, could leave the feature out and be sent the
+ * hash in the clear. Only a daemon that signs with the server's identity key
+ * can register a sealing key, and the key stays on file until the identity
+ * key is replaced or removed. No released daemon registers a sealing key
+ * without also opening an envelope here, so the hello's
+ * `daemon-sealed-principal-reconcile-v1` is informational only.
+ */
+export async function sealReconcilePasswordHashes(
+  db: Db,
+  secretsConfig: SecretsConfig | undefined,
+  serverId: string,
+  principals: EnvironmentDeployPrincipalMaterial[],
+  readDaemonState: (
+    db: Db,
+    serverId: string
+  ) => Promise<Pick<ServerDaemonState, 'key'> | null> = getServerDaemonStateByServerId,
+  readSealingKey: (
+    db: Db,
+    serverId: string
+  ) => Promise<DaemonSealingKey | null> = getDaemonSealingKey
+): Promise<EnvironmentDeployPrincipalMaterial[]> {
+  if (!secretsConfig || principals.every((entry) => entry.passwordHash === undefined)) {
+    return principals
+  }
+  const daemonState = await readDaemonState(db, serverId)
+  if (!daemonState || !isDaemonKeyActive(daemonState.key)) return principals
+  if (!(await readSealingKey(db, serverId))) return principals
+  const recipient = { serverId, keyId: daemonState.key.id }
+  return await sealPrincipalPasswordHashes(principals, (plaintext) =>
+    encryptSecretForDaemon(secretsConfig, recipient, plaintext)
+  )
+}
+
+/**
  * Enqueue a full-state reconcile on every server a principal reaches.
  *
  * Best-effort per server and **never throws**: this runs after the write that
@@ -126,6 +178,7 @@ export type PrincipalsReconcileOptions = {
 export async function enqueuePrincipalsReconcile(
   db: Db,
   queue: CommandQueue | undefined,
+  secretsConfig: SecretsConfig | undefined,
   actor: PrincipalsReconcileActor,
   serverIds: readonly string[],
   options: PrincipalsReconcileOptions = {}
@@ -138,8 +191,9 @@ export async function enqueuePrincipalsReconcile(
   await forEachSequential(serverIds, async (serverId) => {
     try {
       const principalIds = await principalIdsOnServer(db, serverId)
-      const principals = await loadPrincipalMaterial(db, principalIds, { serverId, allocate: true })
-      if (principals.length === 0 && retirePrincipals.length === 0) return
+      const material = await loadPrincipalMaterial(db, principalIds, { serverId, allocate: true })
+      if (material.length === 0 && retirePrincipals.length === 0) return
+      const principals = await sealReconcilePasswordHashes(db, secretsConfig, serverId, material)
       const record = await createCommandRecord(db, {
         serverId,
         actorType: actor.actorType,
@@ -182,17 +236,19 @@ export async function enqueuePrincipalsReconcile(
 export async function reconcilePrincipalAccess(
   db: Db,
   queue: CommandQueue | undefined,
+  secretsConfig: SecretsConfig | undefined,
   actor: PrincipalsReconcileActor,
   principalId: string
 ): Promise<PrincipalsReconcileOutcome> {
   const serverIds = await serversForPrincipal(db, principalId)
-  return await enqueuePrincipalsReconcile(db, queue, actor, serverIds)
+  return await enqueuePrincipalsReconcile(db, queue, secretsConfig, actor, serverIds)
 }
 
 /** Reconcile every server a set of principals reaches, each server once. */
 export async function reconcilePrincipalsAccess(
   db: Db,
   queue: CommandQueue | undefined,
+  secretsConfig: SecretsConfig | undefined,
   actor: PrincipalsReconcileActor,
   principalIds: readonly string[]
 ): Promise<PrincipalsReconcileOutcome> {
@@ -217,7 +273,7 @@ export async function reconcilePrincipalsAccess(
   const serverIds = [
     ...new Set([...rows.map((row) => row.serverId as string), ...placed.map((r) => r.serverId)]),
   ]
-  return await enqueuePrincipalsReconcile(db, queue, actor, serverIds)
+  return await enqueuePrincipalsReconcile(db, queue, secretsConfig, actor, serverIds)
 }
 
 /**
@@ -232,6 +288,7 @@ export async function reconcilePrincipalsAccess(
 export async function retireDeletedPrincipal(
   db: Db,
   queue: CommandQueue | undefined,
+  secretsConfig: SecretsConfig | undefined,
   actor: PrincipalsReconcileActor,
   params: Readonly<{ serverIds: readonly string[]; appliedUsername: string }>
 ): Promise<PrincipalsReconcileOutcome> {
@@ -248,10 +305,10 @@ export async function retireDeletedPrincipal(
       failed.push(serverId)
     }
   })
-  const retired = await enqueuePrincipalsReconcile(db, queue, actor, retire, {
+  const retired = await enqueuePrincipalsReconcile(db, queue, secretsConfig, actor, retire, {
     retirePrincipals: [params.appliedUsername],
   })
-  const reconciled = await enqueuePrincipalsReconcile(db, queue, actor, keep)
+  const reconciled = await enqueuePrincipalsReconcile(db, queue, secretsConfig, actor, keep)
   return {
     queuedServerIds: [...retired.queuedServerIds, ...reconciled.queuedServerIds],
     failedServerIds: [...failed, ...retired.failedServerIds, ...reconciled.failedServerIds],

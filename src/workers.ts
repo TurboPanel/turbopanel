@@ -17,6 +17,11 @@ import { registerAdminRoutes } from './admin/routes.ts'
 import { registerAdminTierRoutes } from './admin/tier-routes.ts'
 import { getWorkersAdminOpenApiSpec } from './admin/openapi/workers.ts'
 import { registerDaemonApiRoutes } from './daemon/api-routes.ts'
+import { platformControlPlaneOrigins } from './features/install/control-plane-origins.ts'
+import {
+  resolvePanelIdentityFromBinding,
+  type PanelIdentity,
+} from './lib/panel-identity/identity.ts'
 import { revokeDaemonKey } from './features/servers/server-identity-db.ts'
 import { registerWebhookRoutes } from './webhook/routes.ts'
 import { registerStripeWebhookRoutes } from './webhook/billing/stripe.ts'
@@ -25,7 +30,13 @@ import { getWorkersClientOpenApiSpec } from './client/openapi/workers.ts'
 import { resolveBillingConfig } from './features/billing/config.ts'
 import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './features/email/mailgun/workers-queue.ts'
-import type { EmailQueue } from './features/email/types.ts'
+import type { EmailJob, EmailQueue } from './features/email/types.ts'
+import { isNoopEmailQueue } from './features/email/noop-queue.ts'
+import { recordEmailDeadLetter } from './features/email/dead-letter-tally.ts'
+import {
+  createWorkersQueuedEmailQueue,
+  settleEmailMessage,
+} from './features/email/workers-mail-queue.ts'
 import { normalizeSignupEnvOverride } from './client/authn/install-state.ts'
 import {
   assertPasswordHasherAvailable,
@@ -34,8 +45,9 @@ import {
 import { createWorkersCommandQueue } from './features/commands/workers-queue.ts'
 import { createNoopCommandQueue } from './features/commands/noop-command-queue.ts'
 import type { CommandQueue } from './features/commands/queue.ts'
-import { isTransientError, processCommandEnvelope } from './features/commands/consumer.ts'
-import { parseCommandEnvelope } from './features/commands/envelope.ts'
+import { processCommandEnvelope } from './features/commands/consumer.ts'
+import { type DeliveryOutcome, settleFailedDelivery } from './features/commands/delivery-failure.ts'
+import { type CommandEnvelope, parseCommandEnvelope } from './features/commands/envelope.ts'
 import { setRevokeBoundDaemonKey } from './features/licenses/revoke-bound-daemon-key.ts'
 import { connect as connectSocket } from 'cloudflare:sockets'
 import { registerCommandRuntimePorts } from './platform/ports/register-command-runtime-ports.ts'
@@ -110,6 +122,7 @@ let cachedWebauthnChallengeSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
+let cachedPanelIdentity: PanelIdentity | null = null
 let cachedSecretsConfig: SecretsConfig | null = null
 let cachedCommandQueue: CommandQueue | null = null
 let cachedServerMetricsStore: ServerMetricsStore | null = null
@@ -135,6 +148,7 @@ export function resetWorkerAppCachesForTests(): void {
   cachedDaemonJwtKeyring = null
   cachedChallengeSigningSecrets = null
   cachedDataEncryptionSecrets = null
+  cachedPanelIdentity = null
   cachedSecretsConfig = null
   cachedCommandQueue = null
   cachedServerMetricsStore = null
@@ -155,6 +169,11 @@ let lazyEmailQueueResolveCallsForTests = 0
 
 export function resetLazyEmailQueueResolveCallsForTests(): void {
   lazyEmailQueueResolveCallsForTests = 0
+}
+
+/** @internal Test seam: every route path registered on the cached Worker app. */
+export function getWorkerAppRoutePathsForTests(): readonly string[] {
+  return cachedApp?.routes.map((route) => route.path) ?? []
 }
 
 export function getLazyEmailQueueResolveCallsForTests(): number {
@@ -247,6 +266,8 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig,
     'data-encryption'
   )
+  // Missing binding = feature off (the panel runs); a malformed one fails init.
+  cachedPanelIdentity = await resolvePanelIdentityFromBinding(env.TURBOPANEL_IDENTITY_KEYS)
   cachedCommandQueue = env.TURBOPANEL_COMMAND_QUEUE
     ? createWorkersCommandQueue(env.TURBOPANEL_COMMAND_QUEUE)
     : createNoopCommandQueue()
@@ -294,6 +315,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     secretsConfig: cachedSecretsConfig ?? undefined,
     registerBilling: registerBillingRoutes,
     getClientOpenApiSpec: getWorkersClientOpenApiSpec,
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
   })
   warnIfDaemonRateLimitersMissing(env)
   warnIfClientAuthRateLimiterMissing(env)
@@ -314,10 +336,13 @@ async function initWorkerApp(env: CloudflareBindings) {
     restLimiter: rateLimiters.rest,
     metricsLimiter: rateLimiters.metrics,
     runtime: 'workers',
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
+    identityUrls: () => Promise.resolve(platformControlPlaneOrigins(stringBindingEnv(env))),
   })
   registerWorkersDaemonWebSocket(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
   })
   // Unversioned, session-free surface: mounted on the top-level app rather than
   // under CLIENT_API_PREFIX, and authenticating itself (see
@@ -330,6 +355,8 @@ async function initWorkerApp(env: CloudflareBindings) {
   registerStripeWebhookRoutes(cachedApp, {
     runtime: 'workers',
     rateLimiter: resolveWorkersStripeWebhookRateLimiter(env),
+    taskDaemonCellRegistry: (c, db) =>
+      createDurableObjectDaemonCellRegistry(c.env as CloudflareBindings, db),
   })
   registerAdminRoutes(cachedApp, {
     secrets: cachedSessionSecrets!,
@@ -337,6 +364,8 @@ async function initWorkerApp(env: CloudflareBindings) {
     devSurface: isWorkersDevSurface(env),
     registerTiers: (admin) => registerAdminTierRoutes(admin, { secrets: cachedSessionSecrets! }),
     getOpenApiSpec: getWorkersAdminOpenApiSpec,
+    panelIdentity: () => Promise.resolve(cachedPanelIdentity),
+    identityUrls: () => Promise.resolve(platformControlPlaneOrigins(stringBindingEnv(env))),
   })
   cachedDaemonCellRegistryFactory = (env, db) => createDurableObjectDaemonCellRegistry(env, db)
 }
@@ -360,14 +389,58 @@ function stringBindingEnv(env: CloudflareBindings): Record<string, string | unde
   return out
 }
 
+/** The system mail queues are named `<env>-system-email` (`system-email` on live). */
+function isEmailQueueName(name: string): boolean {
+  return name === 'system-email' || name.endsWith('-system-email')
+}
+
 /**
- * Failed command message: never ack. Transient and permanent failures both
- * `retry()`; once the consumer's `max_retries` (wrangler.jsonc) is exhausted
- * Cloudflare moves the message to the configured `dead_letter_queue`, matching
- * the Deno consumer's dead-lettering. Acking here would silently drop it.
+ * The mail queue consumer: one per-invocation database client to read the
+ * current mail settings (the same rule as every other handler), then each
+ * message is sent and acked, retried later or dead-lettered.
  */
-function retryOrDeadLetter(msg: Message<unknown>, error: unknown): void {
-  if (!isTransientError(error)) {
+async function consumeEmailBatch(batch: MessageBatch<unknown>, env: CloudflareBindings) {
+  const db = resolveWorkersDb(env)
+  try {
+    const direct = await resolveWorkersEmailQueue(
+      db,
+      stringBindingEnv(env),
+      cachedDataEncryptionSecrets ?? undefined
+    )
+    const sender = isNoopEmailQueue(direct)
+      ? null
+      : { send: (job: EmailJob) => direct.enqueue(job) }
+    await forEachSequential(batch.messages, async (message) => {
+      await settleEmailMessage({
+        message,
+        sender,
+        deadLetterQueue: env.TURBOPANEL_EMAIL_DEAD_QUEUE,
+        onDeadLetter: db ? () => recordEmailDeadLetter(db) : undefined,
+      })
+    })
+  } catch {
+    batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
+  } finally {
+    if (db) await endDbConnection(db).catch(() => {})
+  }
+}
+
+/** Wait before a message the consumer could not re-queue is delivered again. */
+const REDELIVER_DELAY_SECONDS = 30
+
+/**
+ * Apply the shared outcome (`features/commands/delivery-failure.ts`) to a
+ * failed command message. A broken message is never acked: it is retried
+ * until the consumer's `max_retries` (wrangler.jsonc) is used up and
+ * Cloudflare moves it to the configured `dead_letter_queue`, which matches
+ * the Deno consumer's dead-lettering. Acking it would drop it silently.
+ */
+function applyDeliveryOutcome(msg: Message<unknown>, outcome: DeliveryOutcome): void {
+  if (outcome === 'ack') {
+    msg.ack()
+    return
+  }
+  if (outcome === 'dead_letter') {
     compatLogError(
       'command-consumer',
       JSON.stringify({
@@ -375,11 +448,12 @@ function retryOrDeadLetter(msg: Message<unknown>, error: unknown): void {
         disposition: 'retry_to_dlq',
         messageId: msg.id,
         attempts: msg.attempts,
-        error: error instanceof Error ? error.message : String(error),
       })
     )
+    msg.retry()
+    return
   }
-  msg.retry()
+  msg.retry({ delaySeconds: REDELIVER_DELAY_SECONDS })
 }
 
 export default {
@@ -408,11 +482,12 @@ export default {
       // DB/platform env, so admin PUT /settings/email still takes effect
       // without restarting the Worker — same as the eager resolve this
       // replaces, just deferred to the route that actually needs it.
-      const emailQueue: EmailQueue = createLazyWorkersEmailQueue(
-        db,
-        platformEnv,
-        cachedDataEncryptionSecrets ?? undefined
-      )
+      // With the mail queue binding, a request only puts the job on the queue
+      // (no settings read at all); the queue consumer sends it, with retries
+      // and a dead-letter queue (`features/email/workers-mail-queue.ts`).
+      const emailQueue: EmailQueue = env.TURBOPANEL_EMAIL_QUEUE
+        ? createWorkersQueuedEmailQueue(env.TURBOPANEL_EMAIL_QUEUE)
+        : createLazyWorkersEmailQueue(db, platformEnv, cachedDataEncryptionSecrets ?? undefined)
       const requestApp = new Hono<AppEnv>()
       requestApp.use('*', async (c, next) => {
         // Session-cookie TLS uses the URL-derived (Workers) path — a spoofed
@@ -511,42 +586,57 @@ export default {
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {
     initPromise ??= initWorkerApp(env)
     await initPromise
+    if (isEmailQueueName(batch.queue)) {
+      await consumeEmailBatch(batch, env)
+      return
+    }
 
     const db = resolveWorkersDb(env)
     try {
       if (!db || !cachedDaemonCellRegistryFactory) {
-        batch.retryAll()
+        batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
         return
       }
 
       const registry = cachedDaemonCellRegistryFactory(env, db)
+      const commandQueue = cachedCommandQueue ?? undefined
       // The deploy-time firewall apply key; unset means observe-only everywhere.
       const firewallApplyGate = firewallApplyGateFromEnv(stringBindingEnv(env))
+      const deps = {
+        firewallApplyGate,
+        commandQueue,
+        resealDeps:
+          cachedSecretsConfig && cachedDataEncryptionSecrets
+            ? {
+                secretsConfig: cachedSecretsConfig,
+                dataEncryptionSecrets: cachedDataEncryptionSecrets,
+              }
+            : undefined,
+        secretsConfig: cachedSecretsConfig ?? undefined,
+        dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
+      }
 
       try {
         await forEachSequential(batch.messages, async (msg) => {
+          let envelope: CommandEnvelope | null = null
           try {
-            const envelope = parseCommandEnvelope(msg.body)
-            await processCommandEnvelope(db, registry, envelope, {
-              commandQueue: cachedCommandQueue ?? undefined,
-              resealDeps:
-                cachedSecretsConfig && cachedDataEncryptionSecrets
-                  ? {
-                      secretsConfig: cachedSecretsConfig,
-                      dataEncryptionSecrets: cachedDataEncryptionSecrets,
-                    }
-                  : undefined,
-              secretsConfig: cachedSecretsConfig ?? undefined,
-              dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
-              firewallApplyGate,
-            })
+            envelope = parseCommandEnvelope(msg.body)
+            await processCommandEnvelope(db, registry, envelope, deps)
             msg.ack()
           } catch (error) {
-            retryOrDeadLetter(msg, error)
+            const outcome = await settleFailedDelivery({
+              db,
+              queue: commandQueue,
+              envelope,
+              error,
+              deps,
+              registry,
+            })
+            applyDeliveryOutcome(msg, outcome)
           }
         })
       } catch {
-        batch.retryAll()
+        batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
       }
     } finally {
       if (db) await endDbConnection(db).catch(() => {})

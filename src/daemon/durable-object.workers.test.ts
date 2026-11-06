@@ -2,7 +2,7 @@
 /// <reference path="./vitest-env.d.ts" />
 /// <reference path="../../worker-configuration.d.ts" />
 import { env, runInDurableObject } from 'cloudflare:test'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import type { Db } from '../db/connection.ts'
@@ -20,6 +20,7 @@ import {
 import {
   CELL_SCHEMA_VERSION,
   DaemonCellObject,
+  setDaemonCellPanelIdentityBindingForTests,
   setDaemonCellProjectionDbFactoryForTests,
   setDaemonJwtKeyringFactoryForTests,
   setForceAlarmErrorForTests,
@@ -36,6 +37,18 @@ import {
   generateRequestId,
 } from '../contracts/cell-protocol.ts'
 import { PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN } from '../contracts/capability-plan.ts'
+import { fixtureBindingJson } from '../test-fixtures/panel-identity-fixture.ts'
+import { resolvePanelIdentityFromBinding } from '../lib/panel-identity/identity.ts'
+import {
+  appendSignature,
+  frameSigningInput,
+  helloSigningInput,
+  splitSignature,
+} from '../lib/panel-identity/frame-envelope.ts'
+import { reportSigningInput } from './authn/report-signature.ts'
+import { base64urlDecode } from '../lib/encoding/base64url.ts'
+import { testDaemonKey } from '../test-fixtures/daemon-signing-key.test.support.ts'
+import { attachSigningInput } from './authn/attach-proof.ts'
 
 const INBOUND_PROJECTION_COALESCE_MS = 60_000
 
@@ -90,7 +103,17 @@ async function openDaemonWebSocket(
   stub: DurableObjectStub,
   serverId: string,
   keyId = crypto.randomUUID(),
-  options: { geo?: ServerGeo; remoteAddress?: string } = {}
+  options: {
+    geo?: ServerGeo
+    remoteAddress?: string
+    /** The daemon's first frame; default an older daemon's (any frame but `hello-nonce`). `null` sends none. */
+    firstFrame?: string | null
+    trustLevel?: number
+    /** Public `x` of the daemon key, stamped as the upgrade does (`<keyId>:<x>`). */
+    daemonKeyX?: string
+    /** `server.trust_reports_signed_at` is set, stamped as the upgrade does. */
+    reportsSigned?: boolean
+  } = {}
 ): Promise<{ ws: WebSocket; token: string; tokenId: string; keyId: string }> {
   const token = await issueTestDaemonJwt(serverId, keyId)
   const headers: Record<string, string> = {
@@ -103,6 +126,15 @@ async function openDaemonWebSocket(
   if (options.remoteAddress) {
     headers['X-Real-IP'] = options.remoteAddress
   }
+  if (options.trustLevel !== undefined) {
+    headers['X-Turbopanel-Cell-Trust-Level'] = String(options.trustLevel)
+  }
+  if (options.daemonKeyX) {
+    headers['X-Turbopanel-Cell-Daemon-Key'] = `${keyId}:${options.daemonKeyX}`
+  }
+  if (options.reportsSigned) {
+    headers['X-Turbopanel-Cell-Reports-Signed'] = '1'
+  }
   const response = await stub.fetch('https://do.internal/ws/daemon/v1', {
     headers,
   })
@@ -110,8 +142,14 @@ async function openDaemonWebSocket(
   const ws = response.webSocket
   if (!ws) throw new Error('missing websocket')
   ws.accept()
+  // The cell sends nothing (not even `version`) until the daemon's first frame.
+  const firstFrame = options.firstFrame === undefined ? LEGACY_FIRST_FRAME : options.firstFrame
+  if (firstFrame !== null) ws.send(firstFrame)
   return { ws, token, tokenId: decodeJwtJti(token), keyId }
 }
+
+/** An unknown type: starts the unsigned session and draws no answer. */
+const LEGACY_FIRST_FRAME = JSON.stringify({ type: 'test-legacy-first-frame' })
 
 function waitForWebSocketMessage(ws: WebSocket, timeoutMs = 5000): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -151,9 +189,15 @@ async function waitForWebSocketMessageAfterAttachVersion(
 /** Consume the attach version frame that the cell sends before outbox traffic. */
 async function drainAttachVersionFrame(ws: WebSocket, timeoutMs = 5000): Promise<void> {
   const raw = await waitForWebSocketMessage(ws, timeoutMs)
-  const parsed = JSON.parse(raw) as { type?: string; instanceVersion?: string }
+  const parsed = JSON.parse(raw) as {
+    type?: string
+    instanceVersion?: string
+    heartbeatSeconds?: number
+  }
   expect(parsed.type).toBe('version')
   expect(typeof parsed.instanceVersion).toBe('string')
+  // High Availability keeps the 60-second ping.
+  expect(parsed.heartbeatSeconds).toBe(60)
 }
 
 async function waitFor(
@@ -347,6 +391,7 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
+  setDaemonCellPanelIdentityBindingForTests(null)
   setDaemonJwtKeyringFactoryForTests(null)
   setForceOutboxSendErrorForTests(null)
   setForceAlarmErrorForTests(null)
@@ -1688,6 +1733,57 @@ describe.sequential('DaemonCellObject', () => {
       expect(snapshot.lastSeenAt).toBeTruthy()
       expect(snapshot.daemonBuild?.commit).toBe('abc')
       expect(snapshot.daemonBuild?.buildId).toBe('1')
+    })
+
+    ws.close(1000, 'test done')
+  })
+
+  it('a hello advertising many names this control plane does not know stays connected', async () => {
+    const serverId = 'test-srv-hello-newer-features'
+    const { db, updateCalls } = createProjectionRecordingDb({ connected: false })
+    setDaemonCellProjectionDbFactoryForTests(() => db)
+
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId)
+    let closedWith: number | null = null
+    ws.addEventListener('close', (event) => {
+      closedWith = event.code
+    })
+
+    await waitFor(() => {
+      expect(updateCalls.length).toBeGreaterThan(0)
+    })
+
+    ws.send(
+      JSON.stringify({
+        type: 'hello',
+        at: new Date().toISOString(),
+        daemonBuild: { commit: 'abc', buildId: '1' },
+        features: [
+          ...Array.from({ length: 500 }, (_, index) => `newer-feature-${index}-v1`),
+          7,
+          'managed-upgrade-v1',
+        ],
+        someFutureField: { nested: true },
+      })
+    )
+
+    await waitFor(async () => {
+      const snapshotResponse = await cellRpc(stub, serverId, '/rpc/snapshot', { method: 'GET' })
+      const snapshot = (await snapshotResponse.json()) as {
+        lastSeenAt?: string
+        daemonBuild?: { commit: string }
+      }
+      expect(snapshot.daemonBuild?.commit).toBe('abc')
+    })
+    expect(closedWith).toBeNull()
+    // Only the one name this control plane knows is stored; the 500 newer names and the
+    // malformed entry are dropped.
+    await waitFor(() => {
+      const stored = updateCalls
+        .map((call) => (call.daemon as ServerDaemonJsonb | undefined)?.projection?.features)
+        .find((features) => features !== undefined)
+      expect(stored).toEqual(['managed-upgrade-v1'])
     })
 
     ws.close(1000, 'test done')
@@ -4133,3 +4229,305 @@ function wsSendCommandOutcome(ws: WebSocket, requestId: string): void {
     })
   )
 }
+
+describe('signed daemon session', () => {
+  const NONCE = 'c'.repeat(43)
+
+  function collectFrames(ws: WebSocket, count: number, timeoutMs = 5000): Promise<string[]> {
+    return new Promise((resolve, reject) => {
+      const seen: string[] = []
+      const timer = setTimeout(() => reject(new Error(`got ${seen.length} of ${count}`)), timeoutMs)
+      ws.addEventListener('message', (event) => {
+        seen.push(String(event.data))
+        if (seen.length !== count) return
+        clearTimeout(timer)
+        resolve(seen)
+      })
+    })
+  }
+
+  function closeEvent(ws: WebSocket): Promise<{ code: number; reason: string }> {
+    return new Promise((resolve) => {
+      ws.addEventListener('close', (event) => resolve({ code: event.code, reason: event.reason }))
+    })
+  }
+
+  async function verifies(raw: Uint8Array, input: Uint8Array, sig: string): Promise<boolean> {
+    const key = await crypto.subtle.importKey('raw', raw, { name: 'Ed25519' }, false, ['verify'])
+    return await crypto.subtle.verify('Ed25519', key, base64urlDecode(sig), input)
+  }
+
+  it('answers hello-nonce with a signed hello, then the version frame as seq 1', async () => {
+    const binding = await fixtureBindingJson()
+    const identity = await resolvePanelIdentityFromBinding(binding)
+    setDaemonCellPanelIdentityBindingForTests(binding)
+    const serverId = 'test-srv-signed-hello'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId, undefined, { firstFrame: null })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    const [helloRaw, versionRaw] = await frames
+
+    const hello = splitSignature(helloRaw!)!
+    const helloBody = JSON.parse(hello.unsigned) as Record<string, unknown>
+    expect(helloBody.type).toBe('hello')
+    expect(helloBody.nonce).toBe(NONCE)
+    expect(helloBody.kid).toBe(identity!.current.kid)
+    expect(
+      await verifies(identity!.current.publicRaw, helloSigningInput(hello.unsigned), hello.sig)
+    ).toBe(true)
+
+    const version = splitSignature(versionRaw!)!
+    const versionBody = JSON.parse(version.unsigned) as Record<string, unknown>
+    expect(versionBody.type).toBe('version')
+    expect(versionBody.seq).toBe(1)
+    expect(versionBody.sessionId).toBe(helloBody.sessionId)
+    expect(
+      await verifies(
+        identity!.current.publicRaw,
+        frameSigningInput('version', version.unsigned),
+        version.sig
+      )
+    ).toBe(true)
+
+    await runInDurableObject(stub, (_instance, state) => {
+      const [socket] = state.getWebSockets()
+      const attachment = socket!.deserializeAttachment() as {
+        phase?: string
+        session?: { nextSeq: number }
+      }
+      expect(attachment.phase).toBe('signed')
+      expect(attachment.session?.nextSeq).toBe(2)
+    })
+    ws.close(1000, 'test done')
+  })
+
+  it('closes a hello-nonce with 4403 when the control plane has no identity key', async () => {
+    const serverId = 'test-srv-signed-no-key'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId, undefined, { firstFrame: null })
+    const closed = closeEvent(ws)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    expect(await closed).toEqual({ code: 4403, reason: 'panel-identity-unavailable' })
+  })
+
+  it('closes an unsigned first frame with 4403 once the server has used signed mode', async () => {
+    const serverId = 'test-srv-signed-required'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId, undefined, {
+      firstFrame: null,
+      trustLevel: 1,
+    })
+    const closed = closeEvent(ws)
+    ws.send(JSON.stringify({ type: 'test-legacy-first-frame' }))
+    expect(await closed).toEqual({ code: 4403, reason: 'signed-mode-required' })
+  })
+
+  function presenceHello(extra: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      type: 'hello',
+      at: new Date().toISOString(),
+      daemonBuild: { commit: 'attach-commit', buildId: 'attach-build' },
+      ...extra,
+    })
+  }
+
+  async function readAttachment(stub: DurableObjectStub) {
+    return await runInDurableObject(stub, (_instance, state) => {
+      const [socket] = state.getWebSockets()
+      return socket!.deserializeAttachment() as { awaitingAttach?: boolean; trustLevel?: number }
+    })
+  }
+
+  it('holds the outbox for the daemon hello, then closes a missing attach proof at level 2', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-attach-missing'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId, undefined, {
+      firstFrame: null,
+      trustLevel: 2,
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    await frames
+    expect((await readAttachment(stub)).awaitingAttach).toBe(true)
+    const closed = closeEvent(ws)
+    ws.send(presenceHello())
+    expect(await closed).toEqual({ code: 1008, reason: 'attach-proof-refused' })
+  })
+
+  it('accepts a verified attach proof and lets the outbox run; without a database the socket stays below 2', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-attach-ok'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const daemonKey = await testDaemonKey()
+    const keyId = crypto.randomUUID()
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+      firstFrame: null,
+      daemonKeyX: String(daemonKey.publicJwk.x),
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    const [helloRaw] = await frames
+    const hello = JSON.parse(splitSignature(helloRaw!)!.unsigned) as {
+      sessionId: string
+      kid: string
+    }
+    const iat = Math.floor(Date.now() / 1000)
+    const sig = await daemonKey.sign(
+      attachSigningInput({
+        sessionId: hello.sessionId,
+        panelFingerprint: hello.kid,
+        serverId,
+        keyId,
+        iat,
+      })
+    )
+    ws.send(presenceHello({ attach: { keyId, iat, sig } }))
+    await vi.waitFor(async () => {
+      const attachment = await readAttachment(stub)
+      expect(attachment.awaitingAttach).toBe(false)
+      // The socket records level 2 only once the server row does; this cell
+      // has no database, so it keeps the level it was opened with.
+      expect(attachment.trustLevel ?? 0).toBe(0)
+    })
+    ws.close(1000, 'test done')
+  })
+
+  it('handles a signed result as sent and fails a command whose result is badly signed', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-signed-reports'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const daemonKey = await testDaemonKey()
+    const keyId = crypto.randomUUID()
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+      firstFrame: null,
+      daemonKeyX: String(daemonKey.publicJwk.x),
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    const [helloRaw] = await frames
+    const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
+    ws.send(presenceHello({ features: ['signed-reports-v1'] }))
+    await vi.waitFor(async () => {
+      const attachment = (await readAttachment(stub)) as { signsReports?: boolean }
+      expect(attachment.signsReports).toBe(true)
+    })
+    const good = generateRequestId()
+    const forged = generateRequestId()
+    await enqueuePing(stub, serverId, good, generateDeliveryId())
+    await enqueuePing(stub, serverId, forged, generateDeliveryId())
+    const report = async (id: string, sign: (input: string) => Promise<string>) => {
+      const at = new Date().toISOString()
+      const unsigned = JSON.stringify({
+        type: 'command-outcome',
+        id,
+        ok: true,
+        result: { pong: true },
+        at,
+        sessionId,
+        iat: Math.floor(Date.now() / 1000),
+        kid: keyId,
+      })
+      return appendSignature(unsigned, await sign(reportSigningInput('command-outcome', unsigned)))
+    }
+    ws.send(await report(good, daemonKey.sign))
+    ws.send(await report(forged, (await testDaemonKey()).sign))
+    await vi.waitFor(async () => {
+      expect(await requestStatus(stub, serverId, good)).toBe('done')
+      expect(await requestStatus(stub, serverId, forged)).toBe('failed')
+    })
+    ws.close(1000, 'test done')
+  })
+
+  it('fails an unsigned result once the server signs, even without the feature on the hello', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-reports-ratchet'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const daemonKey = await testDaemonKey()
+    const keyId = crypto.randomUUID()
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+      firstFrame: null,
+      daemonKeyX: String(daemonKey.publicJwk.x),
+      reportsSigned: true,
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    await frames
+    // A proxy stripped the feature from the hello and the signature from the result.
+    ws.send(presenceHello({ features: [] }))
+    await vi.waitFor(async () => {
+      const attachment = (await readAttachment(stub)) as { awaitingAttach?: boolean }
+      expect(attachment.awaitingAttach).toBe(false)
+    })
+    const stripped = generateRequestId()
+    await enqueuePing(stub, serverId, stripped, generateDeliveryId())
+    ws.send(
+      JSON.stringify({
+        type: 'command-outcome',
+        id: stripped,
+        ok: true,
+        result: { pong: true },
+        at: new Date().toISOString(),
+      })
+    )
+    await vi.waitFor(async () => {
+      expect(await requestStatus(stub, serverId, stripped)).toBe('failed')
+    })
+    ws.close(1000, 'test done')
+  })
+
+  it('refuses unsigned results on the socket after its first verified signed one', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-reports-first-signed'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const daemonKey = await testDaemonKey()
+    const keyId = crypto.randomUUID()
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+      firstFrame: null,
+      daemonKeyX: String(daemonKey.publicJwk.x),
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    const [helloRaw] = await frames
+    const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
+    ws.send(presenceHello({ features: ['signed-reports-v1'] }))
+    await vi.waitFor(async () => {
+      const attachment = (await readAttachment(stub)) as { signsReports?: boolean }
+      expect(attachment.signsReports).toBe(true)
+    })
+    const signedId = generateRequestId()
+    const unsignedId = generateRequestId()
+    await enqueuePing(stub, serverId, signedId, generateDeliveryId())
+    await enqueuePing(stub, serverId, unsignedId, generateDeliveryId())
+    const outcome = (id: string) => ({
+      type: 'command-outcome',
+      id,
+      ok: true,
+      result: { pong: true },
+      at: new Date().toISOString(),
+    })
+    const unsigned = JSON.stringify({
+      ...outcome(signedId),
+      sessionId,
+      iat: Math.floor(Date.now() / 1000),
+      kid: keyId,
+    })
+    ws.send(
+      appendSignature(
+        unsigned,
+        await daemonKey.sign(reportSigningInput('command-outcome', unsigned))
+      )
+    )
+    await vi.waitFor(async () => {
+      expect(await requestStatus(stub, serverId, signedId)).toBe('done')
+      const attachment = (await readAttachment(stub)) as { reportsSigned?: boolean }
+      expect(attachment.reportsSigned).toBe(true)
+    })
+    ws.send(JSON.stringify(outcome(unsignedId)))
+    await vi.waitFor(async () => {
+      expect(await requestStatus(stub, serverId, unsignedId)).toBe('failed')
+    })
+    ws.close(1000, 'test done')
+  })
+})

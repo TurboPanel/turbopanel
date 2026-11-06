@@ -8,13 +8,19 @@
 import { env } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from './db/connection.ts'
-import { CLIENT_API_PREFIX, GITHUB_WEBHOOK_PATH, HEALTH_PATH } from './app/surfaces.ts'
+import {
+  ADMIN_API_PREFIX,
+  CLIENT_API_PREFIX,
+  GITHUB_WEBHOOK_PATH,
+  HEALTH_PATH,
+} from './app/surfaces.ts'
 import {
   resetWorkersBindingWarningsForTests,
   setWorkersDbFactoryForTests,
 } from './platform/workers/workers-bindings.ts'
 import workers, {
   getLazyEmailQueueResolveCallsForTests,
+  getWorkerAppRoutePathsForTests,
   resetWorkerAppCachesForTests,
 } from './workers.ts'
 import { takeLastOfflineSweepScheduledTimeForTests } from './daemon/cell/offline-sweep.ts'
@@ -27,6 +33,9 @@ function mockDb(label: string): Db {
     },
   } as unknown as Db
 }
+
+/** Same predicate as `src/admin/platform-admin-routes.hostfree.test.ts`. */
+const SELF_HOSTED_ONLY_ROUTE = /\/instance\/(tunnel-token|ingress|acme-dns)/
 
 function fakeExecutionContext(): ExecutionContext & {
   waitUntilPromises: Promise<unknown>[]
@@ -121,6 +130,76 @@ describe('workers.ts entry handlers', () => {
     await Promise.all(ctx.waitUntilPromises)
   }, 30_000)
 
+  it('built Workers app has no self-hosted ingress or tunnel-token routes', async () => {
+    const ctx = fakeExecutionContext()
+    await workers.fetch(
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      workersTestEnv(),
+      ctx
+    )
+    await Promise.all(ctx.waitUntilPromises)
+    const paths = getWorkerAppRoutePathsForTests()
+    // Positive control: the admin router is mounted, so an empty table cannot pass.
+    expect(paths).toContain(`${ADMIN_API_PREFIX}/instance/daemon`)
+    expect(paths.filter((path) => SELF_HOSTED_ONLY_ROUTE.test(path))).toEqual([])
+  }, 30_000)
+
+  it('built Workers app mounts the DNS certificate order routes only as refusals', async () => {
+    const ctx = fakeExecutionContext()
+    await workers.fetch(
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      workersTestEnv(),
+      ctx
+    )
+    await Promise.all(ctx.waitUntilPromises)
+    const paths = getWorkerAppRoutePathsForTests().filter((path) =>
+      path.includes('/dns-certificates')
+    )
+    // The list stays; start, check and retry answer `certificate_ordering_off`
+    // (dns-certificate-routes.hostfree.test.ts), and no Workers code can reach
+    // the ordering modules (ordering-off.hostfree.test.ts).
+    // Exactly these three: no other ordering route under `/dns-certificates`.
+    expect([...new Set(paths)].sort((a, b) => a.localeCompare(b))).toEqual([
+      `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates`,
+      `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/check`,
+      `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/retry`,
+    ])
+  }, 30_000)
+
+  it("scheduled and the DNS certificate routes never call a Let's Encrypt host", async () => {
+    // Smoke check only: `pnpm check:workers-acme-boundary` proves from the
+    // import graph that the ACME client is not in this build at all.
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    try {
+      const ctx = fakeExecutionContext()
+      await workers.scheduled(
+        { scheduledTime: Date.parse('2026-01-01T00:30:00.000Z'), cron: '* * * * *', noRetry() {} },
+        workersTestEnv(),
+        ctx
+      )
+      for (const suffix of ['', '/tls-1/check', '/tls-1/retry']) {
+        const requestCtx = fakeExecutionContext()
+        await workers.fetch(
+          new Request(
+            `https://panel.example.com${CLIENT_API_PREFIX}/organizations/org-1/dns-certificates${suffix}`,
+            { method: 'POST' }
+          ),
+          workersTestEnv(),
+          requestCtx
+        )
+        await Promise.allSettled(requestCtx.waitUntilPromises)
+      }
+      await Promise.allSettled(ctx.waitUntilPromises)
+      const hosts = fetchSpy.mock.calls.map(([input]) => {
+        const url = input instanceof Request ? input.url : String(input)
+        return new URL(url, 'https://panel.example.com').hostname
+      })
+      expect(hosts.filter((host) => host.endsWith('letsencrypt.org'))).toEqual([])
+    } finally {
+      fetchSpy.mockRestore()
+    }
+  }, 30_000)
+
   it('fetch applies signup force and dev-surface env branches', async () => {
     resetWorkerAppCachesForTests()
     const ctx = fakeExecutionContext()
@@ -153,6 +232,35 @@ describe('workers.ts entry handlers', () => {
     )
     expect(ctx.waitUntilPromises).toHaveLength(1)
     expect(takeLastOfflineSweepScheduledTimeForTests()).toBe(scheduledTime)
+  }, 30_000)
+
+  it('queue sends the mail queue to the mail consumer, not the command consumer', async () => {
+    setWorkersDbFactoryForTests(() => undefined)
+    const msg = fakeQueueMessage({
+      v: 1,
+      job: {
+        type: 'email-otp',
+        to: 'ops@example.com',
+        from: 'noreply@example.com',
+        otp: '123456',
+        otpType: 'sign-in',
+      },
+    })
+    const batch = {
+      ...fakeMessageBatch([msg]),
+      queue: 'testing-system-email',
+    } as unknown as MessageBatch<unknown>
+    // No mail provider in the test env: the job waits and is retried later
+    // (never treated as a broken command envelope).
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      await workers.queue(batch, workersTestEnv())
+      expect(msg.retried).toBe(true)
+      expect(msg.acked).toBe(false)
+      expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('command.permanent_failure')
+    } finally {
+      errorSpy.mockRestore()
+    }
   }, 30_000)
 
   it('queue retries the batch when no DB client is available', async () => {
@@ -256,6 +364,51 @@ describe('workers.ts entry handlers', () => {
     }) as unknown as Db
     setWorkersDbFactoryForTests(() => transientDb)
 
+    const envelope = {
+      commandId: crypto.randomUUID(),
+      serverId: crypto.randomUUID(),
+      type: 'daemon.ping',
+      attempt: 1,
+      queuedAt: new Date().toISOString(),
+    }
+    const sent: Array<{ body: unknown; options: unknown }> = []
+    const queueBinding = {
+      send: (body: unknown, options?: unknown) => {
+        sent.push({ body, options })
+        return Promise.resolve()
+      },
+    }
+    const msg = fakeQueueMessage(envelope)
+    const batch = fakeMessageBatch([msg])
+    await workers.queue(
+      batch,
+      workersTestEnv({
+        TURBOPANEL_COMMAND_QUEUE: queueBinding,
+      } as unknown as Partial<CloudflareBindings>)
+    )
+    // Same policy as self-hosted: a new message 5 s later with the attempt
+    // counted, and this one acked (not retried at once).
+    expect(msg.acked).toBe(true)
+    expect(msg.retried).toBe(false)
+    expect(sent).toEqual([{ body: { ...envelope, attempt: 2 }, options: { delaySeconds: 5 } }])
+  }, 30_000)
+
+  it('queue hands a transient failure back to the queue when it cannot queue the retry', async () => {
+    const transientDb = new Proxy(function () {}, {
+      get(_target, prop) {
+        if (prop === '$client') {
+          return { end: () => Promise.resolve() }
+        }
+        throw new Error('network timeout contacting postgres')
+      },
+      apply() {
+        throw new Error('network timeout contacting postgres')
+      },
+    }) as unknown as Db
+    setWorkersDbFactoryForTests(() => transientDb)
+    const queueBinding = {
+      send: () => Promise.reject(new Error('queue unavailable')),
+    }
     const msg = fakeQueueMessage({
       commandId: crypto.randomUUID(),
       serverId: crypto.randomUUID(),
@@ -263,8 +416,12 @@ describe('workers.ts entry handlers', () => {
       attempt: 1,
       queuedAt: new Date().toISOString(),
     })
-    const batch = fakeMessageBatch([msg])
-    await workers.queue(batch, workersTestEnv())
+    await workers.queue(
+      fakeMessageBatch([msg]),
+      workersTestEnv({
+        TURBOPANEL_COMMAND_QUEUE: queueBinding,
+      } as unknown as Partial<CloudflareBindings>)
+    )
     expect(msg.retried).toBe(true)
     expect(msg.acked).toBe(false)
   }, 30_000)

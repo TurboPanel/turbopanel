@@ -11,6 +11,7 @@ import {
   container,
   environment,
   folder,
+  hostname,
   managed,
   project,
   repository,
@@ -267,8 +268,8 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
               ),
           }
         }
-        // The delete plan's folder list: this project has none.
-        if (table === folder || table === share) return emptyChain()
+        // The delete plan's folder list and the audit snapshot's hostnames: none here.
+        if (table === folder || table === share || table === hostname) return emptyChain()
         if (table === server) {
           return {
             where: () => ({
@@ -706,7 +707,7 @@ test('DELETE /projects/:id returns 409 when a managed engine is present', async 
     manageAllowed: true,
     withManagedRuntime: true,
   })
-  const res = await app.request(`/projects/${projectId}`, {
+  const res = await app.request(`/projects/${projectId}?confirmName=${projectId}`, {
     method: 'DELETE',
     headers: sessionHeaders(cookie),
   })
@@ -717,7 +718,7 @@ test('DELETE /projects/:id returns 409 when a managed engine is present', async 
 
 test('DELETE /projects/:id returns 200 when the cascade is empty', async () => {
   const { app, cookie } = await buildSessionApp({ manageAllowed: true })
-  const res = await app.request(`/projects/${projectId}`, {
+  const res = await app.request(`/projects/${projectId}?confirmName=${projectId}`, {
     method: 'DELETE',
     headers: sessionHeaders(cookie),
   })
@@ -808,7 +809,7 @@ test('DELETE /projects/:id stops a running service itself instead of refusing', 
     manageAllowed: true,
     withRunningService: true,
   })
-  const res = await app.request(`/projects/${projectId}`, {
+  const res = await app.request(`/projects/${projectId}?confirmName=${projectId}`, {
     method: 'DELETE',
     headers: sessionHeaders(cookie),
   })

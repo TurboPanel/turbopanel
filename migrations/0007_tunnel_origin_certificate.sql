@@ -1,0 +1,2 @@
+ALTER TABLE "tls" DROP CONSTRAINT "tls_source_check";--> statement-breakpoint
+ALTER TABLE "tls" ADD CONSTRAINT "tls_source_check" CHECK (source IN ('upload', 'lets_encrypt', 'self_signed', 'organization_ca', 'provider_origin'));

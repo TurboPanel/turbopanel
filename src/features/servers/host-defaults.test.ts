@@ -1,15 +1,19 @@
 import { assertEquals } from '@std/assert'
 import {
+  DEFAULT_SEND_VIA_HEADER,
   DEFAULT_SSH_PORT,
   parseDefaultFabricEnabledInput,
   parseHideWebServerNames,
   parseHideWebServerNamesInput,
   parseNtpDefaults,
+  parseSendViaHeader,
+  parseSendViaHeaderInput,
   parseNtpDefaultsInput,
   parseSshPort,
   parseSshPortInput,
   resolveEffectiveHideWebServerNames,
   resolveEffectiveNtpDefaults,
+  resolveEffectiveSendViaHeader,
   resolveEffectiveSshPort,
 } from './host-defaults.ts'
 
@@ -172,4 +176,43 @@ test('hideWebServerNames parsers read booleans and treat anything else as unset'
   assertEquals(parseHideWebServerNamesInput(null), { ok: true, value: null })
   assertEquals(parseHideWebServerNamesInput(true), { ok: true, value: true })
   assertEquals(parseHideWebServerNamesInput(0), { ok: false })
+})
+
+test('resolveEffectiveSendViaHeader is off unless the server or organization says on', () => {
+  assertEquals(DEFAULT_SEND_VIA_HEADER, false)
+  assertEquals(resolveEffectiveSendViaHeader({}, {}), { sendViaHeader: false, source: null })
+  assertEquals(resolveEffectiveSendViaHeader(null, undefined), {
+    sendViaHeader: false,
+    source: null,
+  })
+  assertEquals(resolveEffectiveSendViaHeader({}, { sendViaHeader: true }), {
+    sendViaHeader: true,
+    source: 'organization',
+  })
+  assertEquals(resolveEffectiveSendViaHeader({ sendViaHeader: true }, {}), {
+    sendViaHeader: true,
+    source: 'server',
+  })
+  assertEquals(resolveEffectiveSendViaHeader({ sendViaHeader: false }, { sendViaHeader: true }), {
+    sendViaHeader: false,
+    source: 'server',
+  })
+  assertEquals(resolveEffectiveSendViaHeader({ sendViaHeader: true }, { sendViaHeader: false }), {
+    sendViaHeader: true,
+    source: 'server',
+  })
+  assertEquals(resolveEffectiveSendViaHeader({}, { sendViaHeader: false }), {
+    sendViaHeader: false,
+    source: 'organization',
+  })
+})
+
+test('sendViaHeader parsers read booleans and treat anything else as unset', () => {
+  assertEquals(parseSendViaHeader(true), true)
+  assertEquals(parseSendViaHeader(false), false)
+  assertEquals(parseSendViaHeader(null), undefined)
+  assertEquals(parseSendViaHeader('on'), undefined)
+  assertEquals(parseSendViaHeaderInput(null), { ok: true, value: null })
+  assertEquals(parseSendViaHeaderInput(false), { ok: true, value: false })
+  assertEquals(parseSendViaHeaderInput('yes'), { ok: false })
 })

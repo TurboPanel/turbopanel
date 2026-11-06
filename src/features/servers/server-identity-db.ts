@@ -1,16 +1,21 @@
-import { eq, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { ServerMetadata } from './server-metadata.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
+import { DAEMON_SEALED_SECRETS_FEATURE } from '../../lib/version-wire.ts'
 import { key, server } from '../../db/schema.ts'
 import {
   buildDefaultDaemonStatus,
+  isDaemonKeyActive,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonKeyRow,
   parseServerDaemonState,
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from './daemon-state.ts'
+
+/** `["daemon-sealed-secrets-v1"]`, for a jsonb containment check on the stored hello features. */
+const SEALED_SECRETS_FEATURE_JSON = JSON.stringify([DAEMON_SEALED_SECRETS_FEATURE])
 
 function nowTs(): string {
   return new Date().toISOString()
@@ -30,6 +35,13 @@ export type ServerDaemonStateWithMetadata = ServerDaemonState & {
   hostname: string | null
   machineKey: string | null
   metadata: ServerMetadata | null
+  /** `server.trust_level` (0 unsigned, 1 signed frames, 2 with attach proof); absent in older fakes means 0. */
+  trustLevel?: number
+  /**
+   * `server.trust_reports_signed_at` is set: the daemon has sent a verified
+   * signed report, so its unsigned ones are refused. Absent in older fakes means false.
+   */
+  reportsSigned?: boolean
 }
 
 const STATUS_COLUMNS = {
@@ -63,6 +75,8 @@ export async function getServerDaemonStateByServerId(
       metadata: server.metadata,
       hostname: server.hostname,
       machineKey: server.machineKey,
+      trustLevel: server.trustLevel,
+      trustReportsSignedAt: server.trustReportsSignedAt,
       ...STATUS_COLUMNS,
       ...KEY_COLUMNS,
     })
@@ -82,7 +96,21 @@ export async function getServerDaemonStateByServerId(
     hostname: row.hostname ?? null,
     machineKey: row.machineKey ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
+    trustLevel: row.trustLevel ?? 0,
+    reportsSigned: row.trustReportsSignedAt != null,
   }
+}
+
+/**
+ * True when `keyId` (a daemon JWT's `kid`) is still the server's current,
+ * unrevoked daemon key. A valid token says nothing about either: it outlives
+ * a revoke by up to its full lifetime, so every socket check asks this.
+ */
+export function isCurrentActiveDaemonKey(
+  daemonState: Pick<ServerDaemonState, 'key'> | null,
+  keyId: string
+): boolean {
+  return daemonState?.key.id === keyId && isDaemonKeyActive(daemonState.key)
 }
 
 export async function getServerDaemonStateByFingerprint(
@@ -128,6 +156,69 @@ function clearedProjectionColumns() {
 }
 
 /**
+ * The registered sealing key goes whenever the identity key is replaced or
+ * removed. It belongs to the daemon that signed its registration with the old
+ * identity key; left in place, a reinstalled host would be sent sealed answers
+ * it cannot open until it registers again. Clearing it is no plaintext
+ * downgrade a token holder can reach: only an enrollment signed with a new
+ * identity key (license or owner re-enroll ticket) or an administrator removing
+ * the key gets here. The new daemon registers its own key, signed with its own
+ * identity key, when it connects with the new key id; until that lands the
+ * server is treated as one with no key (plaintext answers and command
+ * payloads). Sealing on every path keys on this key alone, so clearing it is
+ * also what resets that rule for the server.
+ */
+function clearedSealingKeyColumns() {
+  return {
+    sealingKeyKid: null,
+    sealingKeyPub: null,
+    sealingKeyReportedAt: null,
+  }
+}
+
+/**
+ * The signed-reports ratchet (`trust_reports_signed_at`) belongs to the
+ * daemon that signed with the old identity key, so it is reset whenever that
+ * key is replaced or removed (owner decision 2026-11-06): the new daemon
+ * starts again with unsigned reports accepted until its first verified
+ * signed one. Clearing only the sealing key does not touch it.
+ */
+function clearedTrustReportsColumns() {
+  return { trustReportsSignedAt: null }
+}
+
+/**
+ * Clear only the registered sealing key, leaving the identity key and the
+ * daemon state alone: the superadmin recovery for a host rolled back to a
+ * daemon build without sealed secrets. Only while the key on file is still
+ * `kid`, the one the operator was shown, and only while no connected daemon
+ * lists `daemon-sealed-secrets-v1` in its hello (checked in the same
+ * statement, so a current daemon that connects after the caller's read keeps
+ * its key). True when the key was cleared.
+ */
+export async function clearDaemonSealingKey(
+  db: Db,
+  serverId: string,
+  kid: string
+): Promise<boolean> {
+  const cleared = await db
+    .update(server)
+    .set({ ...clearedSealingKeyColumns(), updatedAt: nowTs() })
+    .where(
+      and(
+        eq(server.id, serverId),
+        eq(server.sealingKeyKid, kid),
+        or(
+          eq(server.isConnected, false),
+          sql`not coalesce(${server.daemon} #> '{projection,features}' @> ${SEALED_SECRETS_FEATURE_JSON}::jsonb, false)`
+        )
+      )
+    )
+    .returning({ id: server.id })
+  return cleared.length > 0
+}
+
+/**
  * Thrown by {@link attachDaemonStateToServer} when the server's existing key
  * is revoked: the upsert's `setWhere` refused to overwrite it, atomically,
  * so a revoke committing between an enroll's pre-check and its write still
@@ -140,6 +231,21 @@ export class DaemonKeyRevokedError extends Error {
   }
 }
 
+/**
+ * Thrown by {@link attachDaemonStateToServer} when the server already has a
+ * live key and the request carries a different one. First registered key
+ * wins: a key is never replaced through enrollment, because enrollment is
+ * proven by the license (and the new key's own signature), not by the key
+ * being replaced. A change of key needs a proof from the current key, or an
+ * administrator removing the server's key first.
+ */
+export class DaemonKeyAlreadyRegisteredError extends Error {
+  constructor(readonly serverId: string) {
+    super(`daemon key is already registered for server: ${serverId}`)
+    this.name = 'DaemonKeyAlreadyRegisteredError'
+  }
+}
+
 export async function attachDaemonStateToServer(
   db: Db,
   serverId: string,
@@ -149,6 +255,12 @@ export async function attachDaemonStateToServer(
     algorithm?: 'Ed25519'
     hostname?: string | null
     machineKey?: string | null
+    /**
+     * An owner-issued re-enroll ticket was spent for this server: a live key
+     * may be replaced by a different one. Never set from the licence path.
+     * A revoked key stays refused either way.
+     */
+    replaceLiveKey?: boolean
   }
 ): Promise<{ keyId: string }> {
   const now = nowTs()
@@ -171,9 +283,13 @@ export async function attachDaemonStateToServer(
       .onConflictDoUpdate({
         target: key.serverId,
         // Revocation is sticky at the row: a revoked key is never replaced
-        // by re-enrollment, however the caller got here. Empty `returning`
-        // below is that refusal, not a missing row.
-        setWhere: isNull(key.revokedAt),
+        // by re-enrollment, however the caller got here. First registered
+        // key wins as well: an existing live key only matches the same
+        // fingerprint (a no-op refresh). Empty `returning` below is one of
+        // those two refusals, not a missing row; the read after it says which.
+        setWhere: params.replaceLiveKey
+          ? isNull(key.revokedAt)
+          : and(isNull(key.revokedAt), eq(key.fingerprint, params.fingerprint)),
         set: {
           // Re-enrollment mints a new id too — it's a new key, not an edit
           // of the old row; `id` is the PK, so ON CONFLICT leaves it alone
@@ -191,6 +307,12 @@ export async function attachDaemonStateToServer(
       .returning({ id: key.id })
 
     if (!keyRow) {
+      const [held] = await tx
+        .select({ revokedAt: key.revokedAt })
+        .from(key)
+        .where(eq(key.serverId, serverId))
+        .limit(1)
+      if (held && !held.revokedAt) throw new DaemonKeyAlreadyRegisteredError(serverId)
       throw new DaemonKeyRevokedError(serverId)
     }
 
@@ -201,6 +323,8 @@ export async function attachDaemonStateToServer(
         // a merge, same as the old whole-jsonb write.
         daemon: null,
         ...clearedProjectionColumns(),
+        ...clearedSealingKeyColumns(),
+        ...clearedTrustReportsColumns(),
         ...(hostname ? { hostname } : {}),
         ...(machineKey ? { machineKey } : {}),
         isConnected: defaultStatus.connected,
@@ -246,14 +370,39 @@ export async function revokeDaemonKey(db: Db, serverId: string): Promise<void> {
  * `getServerDaemonStateByFingerprint` would still authenticate it.
  */
 export async function clearServerDaemonState(db: Db, serverId: string): Promise<void> {
+  await db.delete(key).where(eq(key.serverId, serverId))
+  await resetServerDaemonColumns(db, serverId)
+}
+
+/**
+ * {@link clearServerDaemonState}, but only while the server's key is still
+ * `keyId`: a key registered after the caller looked is left alone. True when
+ * the key was removed.
+ */
+export async function clearServerDaemonStateIfKey(
+  db: Db,
+  serverId: string,
+  keyId: string
+): Promise<boolean> {
+  const removed = await db
+    .delete(key)
+    .where(and(eq(key.serverId, serverId), eq(key.id, keyId)))
+    .returning({ id: key.id })
+  if (removed.length === 0) return false
+  await resetServerDaemonColumns(db, serverId)
+  return true
+}
+
+async function resetServerDaemonColumns(db: Db, serverId: string): Promise<void> {
   const now = nowTs()
   const defaultStatus = buildDefaultDaemonStatus()
-  await db.delete(key).where(eq(key.serverId, serverId))
   await db
     .update(server)
     .set({
       daemon: null,
       ...clearedProjectionColumns(),
+      ...clearedSealingKeyColumns(),
+      ...clearedTrustReportsColumns(),
       isConnected: defaultStatus.connected,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,

@@ -73,12 +73,22 @@ export const serverTrafficMapSchemas = {
               localInterface: {
                 type: ['string', 'null'],
                 description:
-                  'Local NIC holding the address on the datacenter network; null when unknown or not a datacenter address.',
+                  'Local NIC holding the address on the datacenter network; null when unknown or not a datacenter network address.',
               },
               linkDown: {
                 type: 'boolean',
                 description:
                   'True when this network was used only because no network that is up could carry the traffic.',
+              },
+              untrustedPublic: {
+                type: 'boolean',
+                description:
+                  'Present and true when the servers share only an untrusted network and the traffic fell to the public address (TLS only) because TurboFabric could not carry it.',
+              },
+              tunnelDown: {
+                type: 'boolean',
+                description:
+                  'Present and true when the TurboFabric tunnel has no recent handshake; the address is still the tunnel address.',
               },
             },
           },
@@ -88,7 +98,7 @@ export const serverTrafficMapSchemas = {
       error: {
         type: ['string', 'null'],
         description:
-          'Set when no path exists: `private_path_unavailable`, `private_family_mismatch`, `failover_requires_trusted_datacenter`, `datacenter_ip_required`.',
+          'Set when no path exists: `private_path_unavailable`, `private_family_mismatch`, `untrusted_network_needs_fabric`, `datacenter_ip_required`.',
       },
       onChosenNetwork: {
         type: 'boolean',
@@ -190,14 +200,14 @@ export const serverTrafficMapSchemas = {
             datacenterId: {
               type: ['string', 'null'],
               format: 'uuid',
-              description: 'Datacenter this address is pinned into, if any.',
+              description: 'Datacenter network this address is pinned into, if any.',
             },
           },
         },
       },
       metrics: {
         description:
-          "Where to read this NIC's byte counters: `GET /servers/{id}/metrics/series` with the network family and this `deviceId`. Counters exist only while `monitored` is true (the monitored NIC set is capped per plan; a NIC that carries a datacenter address is added automatically when a free slot exists). Null when no topology entry is recorded for the NIC.",
+          "Where to read this NIC's byte counters: `GET /servers/{id}/metrics/series` with the network family and this `deviceId`. Counters exist only while `monitored` is true (the monitored NIC set is capped per plan; a NIC that carries a datacenter network address is added automatically when a free slot exists). Null when no topology entry is recorded for the NIC.",
         oneOf: [
           {
             type: 'object',

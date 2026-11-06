@@ -8,7 +8,10 @@ import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
-import { attachDaemonStateToServer } from '../servers/server-identity-db.ts'
+import {
+  attachDaemonStateToServer,
+  getServerDaemonStateByServerId,
+} from '../servers/server-identity-db.ts'
 import {
   type DerivedSecretsConfig,
   deriveEncryptionSecretsConfig,
@@ -86,6 +89,7 @@ import {
 } from './command-recovery.ts'
 import { touchServerMetadata } from '../servers/server-registry.ts'
 import { dispatchDaemonInboundMessage } from '../../daemon/deno-ws.ts'
+import { validateDaemonInboundFrame } from '../../contracts/cell-protocol.ts'
 import type { CommandQueue } from './queue.ts'
 import { parseManagedResidual } from '../managed/serialize.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
@@ -138,13 +142,17 @@ async function attachConnectedDaemonStatus(
   db: ReturnType<typeof createDenoDb>,
   serverId: string
 ): Promise<void> {
-  await attachDaemonStateToServer(db, serverId, {
-    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-    // `key.fingerprint` is globally unique now (schema-child-tables,
-    // Road-to-0.1.x) — a fixed fingerprint would collide across the
-    // multiple servers some fixtures attach in one test.
-    fingerprint: `fp-test-${crypto.randomUUID()}`,
-  })
+  // First registered key wins: a server that already holds a key keeps it,
+  // so a second call only refreshes the status columns below.
+  if (!(await getServerDaemonStateByServerId(db, serverId))) {
+    await attachDaemonStateToServer(db, serverId, {
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      // `key.fingerprint` is globally unique now (schema-child-tables,
+      // Road-to-0.1.x) — a fixed fingerprint would collide across the
+      // multiple servers some fixtures attach in one test.
+      fingerprint: `fp-test-${crypto.randomUUID()}`,
+    })
+  }
   const now = new Date().toISOString()
   // Fleet status lives on dedicated `server` columns now — never on
   // `server.daemon` jsonb (see `mapServerDaemonStatusFromColumns`).
@@ -395,7 +403,7 @@ test('processCommandEnvelope refuses a connected daemon below the supported floo
     assertEquals(updated?.errorCode, 'daemon_unsupported')
     assertEquals(
       updated?.error,
-      'Daemon version 0.0.9 is below the supported minimum 0.1.0 — update the daemon'
+      'Daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
     )
     // Never reached the cell: the update envelope is the only thing such a
     // daemon should get, and that is not a command.
@@ -854,6 +862,51 @@ test('processCommandEnvelope stamps appliedPayloadHash when fabric reconcile is 
       const stamped = relays.find((row) => row.serverId === serverId)
       assertEquals(stamped?.publicKey, FABRIC_WG_PUBKEY)
       assertEquals(stamped?.metadata.appliedPayloadHash, SKIPPED_FABRIC_DESIRED_HASH)
+    } finally {
+      await db.delete(fabric).where(eq(fabric.organizationId, organizationId))
+    }
+  })
+})
+
+test('processCommandEnvelope stamps appliedPayloadHash for a payload with no tunnel and no key', async () => {
+  await withConsumerFixtures(async ({ db, organizationId, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const fabricRow = await enableOrganizationFabric(db, organizationId)
+    try {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'server.fabric.reconcile',
+        payload: {
+          enabled: true,
+          fabricId: fabricRow.id,
+          tunnel: false,
+          prefix: '10.192.0.0/16',
+          peers: [],
+          lanRoutes: [],
+        },
+        metadata: { desiredHash: 'tunnelless-desired-hash' },
+      })
+
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: {
+          serverId,
+          requestId: record.id,
+          requestKind: 'command-dispatch',
+          status: 'done',
+          createdAt: record.createdAt,
+          expiresAt: record.createdAt,
+          finishedAt: new Date().toISOString(),
+          result: { summary: 'TurboFabric reconciled without a tunnel' },
+        },
+      })
+
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+
+      const relays = await listFabricRelays(db, fabricRow.id)
+      const stamped = relays.find((row) => row.serverId === serverId)
+      assertEquals(stamped?.publicKey, null)
+      assertEquals(stamped?.metadata.appliedPayloadHash, 'tunnelless-desired-hash')
     } finally {
       await db.delete(fabric).where(eq(fabric.organizationId, organizationId))
     }
@@ -7291,13 +7344,14 @@ test('a late success for a deploy whose project was deleted is confirmed and wri
   })
 })
 
-test('a late success whose report the database refuses is still confirmed, with the status corrected', async () => {
+test('a late success with characters Postgres refuses stores the cleaned report', async () => {
   await withDeployFixtures(async (ctx) => {
     const record = await timedOutDeploy(ctx)
-    // Postgres refuses a NUL character inside jsonb, so the full correction fails.
+    // Postgres refuses a NUL character and a lone surrogate inside jsonb; the
+    // summary is cleaned first, so the full correction still stores the report.
     const envelope = lateSuccess(record.id, {
       projectName: 'tp-deploy-test',
-      warnings: ['build printed \u0000'],
+      warnings: ['build printed \u0000', 'half \uD800 pair'],
     })
 
     const ack = await ackForReportedOutcome(ctx.db, {
@@ -7308,6 +7362,49 @@ test('a late success whose report the database refuses is still confirmed, with 
 
     assertEquals(ack?.type, 'command-outcome-ack')
     assertEquals(ack?.id, record.id)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'succeeded')
+    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.result, {
+      projectName: 'tp-deploy-test',
+      warnings: ['build printed ', 'half \uFFFD pair'],
+    })
+    const [meta] = await ctx.db
+      .select({ metadata: command.metadata })
+      .from(command)
+      .where(eq(command.id, record.id))
+    assertEquals(
+      (meta?.metadata as { lateOutcome?: { note: string } }).lateOutcome?.note,
+      LATE_OUTCOME_NOTE
+    )
+  })
+})
+
+test('a late success whose report the database refuses is still confirmed, with the status corrected', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await timedOutDeploy(ctx)
+    // Only this test's command row refuses a stored report, with a data error,
+    // so the full correction fails and the status alone is corrected.
+    const refuse = sql.raw(`tp_refuse_${record.id.replaceAll('-', '')}`)
+    await ctx.db.execute(
+      sql`CREATE FUNCTION ${refuse}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'report refused' USING ERRCODE = '22P05'; END $$`
+    )
+    await ctx.db.execute(
+      sql`CREATE TRIGGER ${refuse} BEFORE UPDATE ON command FOR EACH ROW WHEN (OLD.id = ${sql.raw(`'${record.id}'`)} AND NEW.result_summary IS NOT NULL) EXECUTE FUNCTION ${refuse}()`
+    )
+    try {
+      const ack = await ackForReportedOutcome(ctx.db, {
+        serverId: ctx.serverId,
+        envelope: lateSuccess(record.id, { projectName: 'tp-deploy-test' }),
+        record: null,
+      })
+      assertEquals(ack?.type, 'command-outcome-ack')
+      assertEquals(ack?.id, record.id)
+    } finally {
+      await ctx.db.execute(sql`DROP TRIGGER ${refuse} ON command`)
+      await ctx.db.execute(sql`DROP FUNCTION ${refuse}()`)
+    }
+
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'succeeded')
     assertEquals(stored?.error ?? null, null)
@@ -7639,6 +7736,61 @@ test('an outcome the server sends again after a reconnect is confirmed and settl
       .where(eq(deployment.serverId, ctx.serverId))
     assertEquals(row?.status, 'applied')
     assertEquals(row?.applied, 2)
+  })
+})
+
+test('an outcome whose result is over the cap is confirmed and fails the deploy', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const record = await quietDeploy({
+      ctx,
+      environmentId: ctx.environmentId,
+      projectId: ctx.projectId,
+      ranMs: 2 * MIN,
+      silentMs: 0,
+      recovery: true,
+    })
+    const cells = survivingCellRequests(ctx.serverId)
+    cells.requests.set(record.id, ACKED_REQUEST(ctx.serverId, record.id))
+    const { queue } = fakeQueue()
+
+    // The frame as the daemon sends it: a result well over the 64 KB cap.
+    const finishedAt = new Date().toISOString()
+    const validated = validateDaemonInboundFrame(
+      JSON.stringify({
+        type: 'command-outcome',
+        id: record.id,
+        ok: true,
+        result: { containers: [], log: 'x'.repeat(70 * 1024) },
+        at: finishedAt,
+        daemonRespondedAt: finishedAt,
+      })
+    )
+    if (!validated.ok) throw new Error(`frame refused: ${validated.reason}`)
+
+    const replies: unknown[] = []
+    await dispatchDaemonInboundMessage({
+      cell: cells.process().getCell(),
+      db: ctx.db,
+      serverId: ctx.serverId,
+      connectionId: 'conn-oversized-result',
+      message: validated.message,
+      reply: (message) => replies.push(message),
+    })
+    assertEquals(replies.length, 1)
+    assertEquals((replies[0] as { type: string }).type, 'command-outcome-ack')
+    assertEquals((replies[0] as { id: string }).id, record.id)
+
+    await processCommandEnvelope(ctx.db, cells.process(), buildEnvelope(record, ctx.serverId), {
+      commandQueue: queue,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      deployWaitHoldMs: 0,
+      deployWaitEndMs: 0,
+    })
+    assertEquals(cells.requests.get(record.id)?.status, 'failed')
+    assertEquals(cells.requests.get(record.id)?.result, undefined)
+    const stored = await getCommandRecord(ctx.db, record.id)
+    assertEquals(stored?.status, 'failed')
+    assertEquals(stored?.error, "The server's report was too large to store (71 KB; limit 64 KB).")
   })
 })
 

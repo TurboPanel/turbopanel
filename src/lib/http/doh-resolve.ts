@@ -27,7 +27,7 @@ const RR_TYPE: Record<DohRecordType, number> = { A: 1, AAAA: 28 }
 const NOERROR = 0
 
 type DohAnswer = { type?: unknown; data?: unknown }
-type DohReply = { Status?: unknown; Answer?: unknown }
+export type DohReply = { Status?: unknown; Answer?: unknown }
 
 export type DohLookup = (
   name: string,
@@ -53,8 +53,16 @@ function addressesIn(reply: DohReply, recordType: DohRecordType): string[] {
     })
 }
 
-/** One A or AAAA lookup through the runtime's `fetch`. */
-export const dohLookup: DohLookup = async (name, recordType, options = {}) => {
+/**
+ * One DNS-over-HTTPS query through the runtime's `fetch`, answered as the
+ * JSON API's reply. A non-2xx reply (a redirect included) throws; reading the
+ * answers is the caller's job.
+ */
+export async function dohQuery(
+  name: string,
+  recordType: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<DohReply> {
   const timeout = AbortSignal.timeout(DOH_TIMEOUT_MS)
   const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
   const query = new URLSearchParams({ name, type: recordType })
@@ -70,5 +78,9 @@ export const dohLookup: DohLookup = async (name, recordType, options = {}) => {
     await response.body?.cancel()
     throw new Error(`doh: ${recordType} lookup failed with HTTP ${response.status}`)
   }
-  return addressesIn((await response.json()) as DohReply, recordType)
+  return (await response.json()) as DohReply
 }
+
+/** One A or AAAA lookup through the runtime's `fetch`. */
+export const dohLookup: DohLookup = async (name, recordType, options = {}) =>
+  addressesIn(await dohQuery(name, recordType, options), recordType)

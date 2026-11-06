@@ -1,8 +1,9 @@
 import { resolveClientIp } from '../client/authn/http.ts'
+import { isDirectLocalSocketRequest } from '../lib/peer-address.ts'
 import { DATABASE_ROLES_LACK_GRANTS, findMissingRuntimeGrants } from '../db/role-grants.ts'
 import { mapSequential } from '../lib/sequential.ts'
 import { Hono } from 'hono'
-import type { Context, Env, Next } from 'hono'
+import type { Context, Env, MiddlewareHandler, Next } from 'hono'
 import { and, eq, isNull } from 'drizzle-orm'
 import { isInstanceInstalled } from '../client/authn/install-state.ts'
 import { readPrivateUploadedTrustPem } from '../features/install/install-trust.ts'
@@ -10,7 +11,11 @@ import {
   dialedInstallHostname,
   shouldServePlatformCaBundle,
 } from '../features/install/install-tls.ts'
-import { lookupActiveLicense } from '../features/licenses/license.ts'
+import {
+  eraseBoundLicenseTokenForKey,
+  eraseLicenseToken,
+  lookupActiveLicense,
+} from '../features/licenses/license.ts'
 import {
   clearLicenseEnrollAttempt,
   recordLicenseEnrollAttempt,
@@ -26,14 +31,24 @@ import {
 } from '../lib/secrets/data-encryption.ts'
 import type { Db } from '../db/connection.ts'
 import { describeError } from '../lib/describe-error.ts'
+import { compatLogInfo, compatLogWarn } from '../lib/log-compat.ts'
 import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
+import { resolveIssuedPrivateKey } from './issued-private-key.ts'
+import { buildSecretsDecryptAnswer, databaseDecryptAnswerSource } from './secrets-decrypt-answer.ts'
+import { registerDaemonSealingKey } from './sealing-key-registration.ts'
+import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
+import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
+import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { signDaemonResponses } from '../lib/panel-identity/signed-response.ts'
 import {
   getDaemonCellRegistry,
   getDb,
   getExecutionLogStore,
   getMetricsGate,
   getServerMetricsStore,
+  isConnectionClosedError,
 } from '../db/connection.ts'
 import { contentLengthExceeds, readBodyWithByteLimit } from '../lib/http/bounded-body.ts'
 import {
@@ -79,10 +94,10 @@ import {
 import { loadServerLicenseTierJoin } from '../features/tiers/tier-enforcement.ts'
 import {
   getLatestTopologyGeneration,
-  getTopologyGeneration,
   markTopologyResyncRequested,
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
+import { recordedTopologyForSample } from '../features/servers/topology-identity.ts'
 import { recordOverPlan } from './metrics/over-plan-flag.ts'
 import { recordCapabilityPlanGenerationIfChanged } from '../client/servers/capability-plan-records.ts'
 import type { GateDecision, MetricsGate } from './metrics/ingest-gate.ts'
@@ -114,6 +129,13 @@ import {
 } from '../features/servers/server-registry.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
 
+/**
+ * First registered key wins: a server that already has a live key refuses a
+ * different one at enroll. The daemon treats this answer as "wait for an
+ * administrator", never as a reason to retry with yet another key.
+ */
+const SERVER_KEY_ALREADY_REGISTERED_ERROR = 'Server key already registered'
+
 const MACHINE_KEY_IN_USE_RESULT = {
   ok: false,
   status: 409,
@@ -128,11 +150,28 @@ import {
 import { ExecutionLogGapError, ExecutionLogSealedError } from '../features/execution-logs/types.ts'
 import { sealExecutionLogOnTerminal } from '../features/execution-logs/seal-on-terminal.ts'
 import { isNoopCommandQueue } from '../features/commands/noop-command-queue.ts'
-import { verifyDaemonLicense } from '../features/licenses/verify-daemon-license.ts'
+import type { VerifiedDaemonLicense } from '../features/licenses/verify-daemon-license.ts'
+import {
+  type EnrollCredential,
+  resolveEnrollCredential,
+} from '../features/licenses/enroll-credential.ts'
+import {
+  announceKeyReplaced,
+  announceServerEnrolled,
+  loadServerForAnnouncement,
+} from '../features/licenses/enroll-announce.ts'
+import {
+  consumeTicket,
+  recordTicketServer,
+  releaseTicket,
+  type TicketRow,
+} from '../features/licenses/tickets.ts'
+import { purgeDaemonCellBestEffort } from '../features/servers/daemon-cell-purge.ts'
 import { issueDaemonJwt, verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import type { ServerDaemonStateWithMetadata } from '../features/servers/server-identity-db.ts'
 import {
   attachDaemonStateToServer,
+  DaemonKeyAlreadyRegisteredError,
   DaemonKeyRevokedError,
   getServerDaemonStateByFingerprint,
   getServerDaemonStateByServerId,
@@ -146,6 +185,24 @@ import {
   computePublicKeyFingerprint,
   verifyDaemonSignature,
 } from './authn/server-key.ts'
+import {
+  buildAuthPayloadV2,
+  buildEnrollmentPayloadV2,
+  checkProofVersion,
+  parseProofVersion,
+  type ProofVersion,
+} from './authn/proof-version.ts'
+import { markChallengeUsed, markRequestNonceUsed } from '../features/servers/daemon-nonce.ts'
+import { raiseServerTrustLevel } from '../features/servers/trust-level.ts'
+import {
+  DAEMON_SIGNATURE_HEADER,
+  REQUEST_MAX_SKEW_SECONDS,
+  SIGNED_REQUEST_REQUIRED_ERROR,
+  daemonKeyThumbprint,
+  verifyDaemonRequest,
+} from './authn/request-signature.ts'
+import { DAEMON_PROOF_TRUST_LEVEL } from './authn/attach-proof.ts'
+import { panelFingerprintSource } from './authn/upgrade-signature.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
 import { createNoopRateLimiter } from './rate-limit/contracts.ts'
 import {
@@ -180,10 +237,20 @@ async function readRequestBodyWithLimit(
   c: Context,
   maxBytes: number
 ): Promise<{ ok: true; text: string } | { ok: false }> {
+  // A signed request's body was already read (and checked) by the key gate.
+  const signedBody = (c as Context<DaemonApiEnv>).get('daemonBody')
+  if (signedBody) {
+    return signedBody.byteLength > maxBytes
+      ? { ok: false }
+      : { ok: true, text: new TextDecoder().decode(signedBody) }
+  }
   const bodyRead = await readBodyWithByteLimit(c, maxBytes)
   if (!bodyRead.ok) return { ok: false }
   return { ok: true, text: new TextDecoder().decode(bodyRead.bytes) }
 }
+
+/** A sealing-key registration is three short strings. */
+const MAX_SEALING_KEY_BODY_BYTES = 1024
 
 /** Maximum number of ciphertexts accepted per `/secrets/decrypt` request. */
 export const MAX_SECRETS_DECRYPT_BATCH = 100
@@ -203,9 +270,15 @@ export const MAX_SECRETS_DECRYPT_BODY_BYTES = 2 * 1024 * 1024
 
 /**
  * `POST /tls/issued` — hostname plus one certificate chain and one private key
- * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead.
+ * (32 KiB chain + 8 KiB key at most) with JSON quoting overhead, and an
+ * optional short `requestId`.
  */
-export const MAX_TLS_ISSUED_BODY_BYTES = 64 * 1024
+export const MAX_TLS_ISSUED_BODY_BYTES = 96 * 1024
+
+/** The optional `requestId` of `POST /tls/issued`: 1 to 64 characters of letters, digits, `_` and `-`. */
+function isTlsIssuedRequestId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(value)
+}
 
 /** `POST /auth/challenge` — optional serverId/keyId only. */
 export const MAX_AUTH_CHALLENGE_BODY_BYTES = 4 * 1024
@@ -280,6 +353,18 @@ function challengeExpiresAt(at: string, ttlMs: number): string {
   return new Date(atMs + ttlMs).toISOString()
 }
 
+/**
+ * `/instance/ca` answers anyone, before any credential: the read error (a file
+ * path, a decode fault) goes to the log, and the caller gets a fixed message.
+ */
+function platformCaReadFailure(c: Context, err: unknown): Response {
+  logWarn(
+    'daemon-api',
+    `platform CA read failed: ${err instanceof Error ? err.message : String(err)}`
+  )
+  return c.json({ error: 'platform CA unavailable' }, 500)
+}
+
 /** Shared shape for helpers that either succeed with a value or fail with an HTTP status + message. */
 type FieldResult<T> =
   | { ok: true; value: T }
@@ -312,6 +397,17 @@ type EnrollFields = {
   serverIdBody: string | undefined
 }
 
+/**
+ * Only the members an Ed25519 public key is made of. The enrolled key is
+ * stored and handed back to every later signature check, so anything else a
+ * caller sent (a private `d`, `key_ops`, arbitrary fields) is dropped before
+ * the signature is checked, and what is checked is exactly what is stored.
+ * The fingerprint already hashes these same three.
+ */
+function ed25519PublicJwk(jwk: JsonWebKey): JsonWebKey {
+  return { kty: jwk.kty, crv: jwk.crv, x: jwk.x }
+}
+
 /** Parses and validates the `POST /enroll` body, keeping every field check in one place. */
 function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFields> {
   const licenseId = normalizeRequiredString(body.licenseId)
@@ -320,7 +416,9 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
   const hostname = normalizeRequiredString(body.hostname)
   const challengeId = normalizeRequiredString(body.challengeId)
   const signature = normalizeRequiredString(body.signature)
-  const publicJwk = isObjectRecord(body.publicJwk) ? (body.publicJwk as JsonWebKey) : null
+  const publicJwk = isObjectRecord(body.publicJwk)
+    ? ed25519PublicJwk(body.publicJwk as JsonWebKey)
+    : null
 
   // Keep malformed or omitted auth credentials on the same unauthorized path.
   if (!licenseId || !licenseToken) {
@@ -363,14 +461,69 @@ function enrollFailureBody(failure: { error: string; message?: string }) {
 async function resolveServerIdOrConflict(
   db: Db,
   identity: Parameters<typeof resolveServerId>[1],
-  fabricDeps: Parameters<typeof resolveServerId>[2]
+  fabricDeps: Parameters<typeof resolveServerId>[2],
+  verifiedLicense: VerifiedDaemonLicense
 ): Promise<{ serverId: string | null } | { conflict: true }> {
   try {
-    return { serverId: await resolveServerId(db, identity, fabricDeps) }
+    return { serverId: await resolveServerId(db, identity, fabricDeps, { verifiedLicense }) }
   } catch (err) {
     if (isMachineKeyInUse(err)) return { conflict: true }
     throw err
   }
+}
+
+type EnrollKeyRefusal = {
+  ok: false
+  status: 403 | 409
+  error: string
+}
+
+/** Revoked key: 403. A live key that differs from the request: 409 (first registered key wins). */
+function keyRefusal(
+  state: Awaited<ReturnType<typeof getServerDaemonStateByServerId>>,
+  fingerprint: string
+): EnrollKeyRefusal | null {
+  if (!state) return null
+  if (!isDaemonKeyActive(state.key)) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
+  }
+  if (state.key.fingerprint !== fingerprint) {
+    return { ok: false, status: 409, error: SERVER_KEY_ALREADY_REGISTERED_ERROR }
+  }
+  return null
+}
+
+/**
+ * Revocation is sticky, and the refusal comes *before* anything is written.
+ * `resolveServerId` is not a lookup — it touches metadata, binds licences
+ * and reconciles fabric membership on the way to an id — so checking after
+ * it let a revoked host holding its licence and server id rewrite its own
+ * `hostname`, `machineKey` and OS metadata on every attempt it got a 403
+ * for. The read-only resolution answers the same question without writing.
+ *
+ * Three layers, cheapest first: this one; the post-resolve check, for a row
+ * that only exists once the licence path has run; and the upsert's
+ * `setWhere` inside `attachDaemonStateToServer`, which is the atomic one,
+ * for a revoke or a key that commits between a read and the write. Recovery
+ * is `DELETE /servers/:id` (which clears daemon state and retires the bound
+ * license), then enrolling the rebuilt host fresh.
+ *
+ * A live key that differs from the request is refused here only when the
+ * caller names this server: a host without the hint still gets the
+ * license-consumed answer further down.
+ */
+async function earlyKeyRefusal(
+  db: Db,
+  identity: Parameters<typeof findServerIdForIdentity>[1],
+  fingerprint: string
+): Promise<EnrollKeyRefusal | null> {
+  const knownServerId = await findServerIdForIdentity(db, identity)
+  if (!knownServerId) return null
+  const known = await getServerDaemonStateByServerId(db, knownServerId)
+  if (!known) return null
+  // A live key only counts against a caller that names this server.
+  if (isDaemonKeyActive(known.key) && identity.serverId?.trim() !== knownServerId) return null
+  return keyRefusal(known, fingerprint)
 }
 
 async function finalizeDaemonEnrollment(
@@ -383,6 +536,8 @@ async function finalizeDaemonEnrollment(
     licenseToken: string
     fingerprint: string
     publicJwk: JsonWebKey
+    /** The route already checked the token; the licensed path reuses it. */
+    verifiedLicense: VerifiedDaemonLicense
     fabricDeps?: FabricMembershipDeps
   }
 ): Promise<
@@ -397,6 +552,7 @@ async function finalizeDaemonEnrollment(
     licenseToken,
     fingerprint,
     publicJwk,
+    verifiedLicense,
     fabricDeps,
   } = params
 
@@ -421,15 +577,10 @@ async function finalizeDaemonEnrollment(
   // for a revoke that commits between a read and the write. Recovery is
   // `DELETE /servers/:id` (which clears daemon state and retires the bound
   // license), then enrolling the rebuilt host fresh.
-  const knownServerId = await findServerIdForIdentity(db, identity)
-  if (knownServerId) {
-    const known = await getServerDaemonStateByServerId(db, knownServerId)
-    if (known && !isDaemonKeyActive(known.key)) {
-      return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
-    }
-  }
+  const early = await earlyKeyRefusal(db, identity, fingerprint)
+  if (early) return early
 
-  const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps)
+  const resolved = await resolveServerIdOrConflict(db, identity, fabricDeps, verifiedLicense)
   if ('conflict' in resolved) return MACHINE_KEY_IN_USE_RESULT
   const serverId = resolved.serverId
   if (!serverId) {
@@ -440,10 +591,8 @@ async function finalizeDaemonEnrollment(
     }
   }
 
-  const current = await getServerDaemonStateByServerId(db, serverId)
-  if (current && !isDaemonKeyActive(current.key)) {
-    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
-  }
+  const refusal = keyRefusal(await getServerDaemonStateByServerId(db, serverId), fingerprint)
+  if (refusal) return refusal
 
   const existing = await getServerDaemonStateByFingerprint(db, fingerprint)
   if (existing && existing.serverId !== serverId) {
@@ -463,10 +612,183 @@ async function finalizeDaemonEnrollment(
   }
 }
 
+type EnrollOutcome =
+  | { ok: true; serverId: string; keyId: string }
+  | { ok: false; status: 400 | 401 | 403 | 409 | 500; error: string; message?: string }
+
+type EnrollParams = {
+  serverIdBody: string | undefined
+  machineKey: string | undefined
+  hostname: string
+  /** What the daemon sent in the token slot (a licence token or a ticket secret). */
+  licenseToken: string
+  fingerprint: string
+  publicJwk: JsonWebKey
+  deployment: MetricsDeploymentKind
+  secrets: DerivedSecretsConfig | undefined
+  fabricDeps?: FabricMembershipDeps
+}
+
+const TICKET_FOR_OTHER_SERVER_RESULT = {
+  ok: false,
+  status: 403,
+  error: 'Ticket is for another server',
+} as const
+
+const TICKET_NEEDS_SERVER_ID_RESULT = {
+  ok: false,
+  status: 400,
+  error: 'This ticket is for re-enrolling a specific server; include its server id',
+} as const
+
+const INVALID_LICENSE_RESULT = { ok: false, status: 401, error: 'Invalid license' } as const
+
+/**
+ * Enrol with a registration key (legacy form) or a join ticket that stands in
+ * for it. The daemon's signature has already been checked. A ticket is spent
+ * first and put back if nothing was written; once a key binds, its own token
+ * hash is erased, so a copy of it captured anywhere verifies nothing.
+ */
+async function enrollWithKey(
+  db: Db,
+  credential: Exclude<EnrollCredential, { kind: 'reenroll' }>,
+  params: EnrollParams
+): Promise<EnrollOutcome> {
+  const joinTicket = credential.kind === 'join' ? credential.ticket : null
+  const consumedAt = joinTicket ? await consumeTicket(db, joinTicket.id) : null
+  if (joinTicket && !consumedAt) return INVALID_LICENSE_RESULT
+  const release = async () => {
+    if (joinTicket && consumedAt) await releaseTicket(db, joinTicket.id, consumedAt).catch(() => {})
+  }
+  try {
+    const enrolled = await bindKeyToEnrollment(db, credential, params, joinTicket !== null)
+    if (!enrolled.ok) await release()
+    if (enrolled.ok && joinTicket) {
+      await recordTicketServer(db, joinTicket.id, enrolled.serverId).catch(() => {})
+    }
+    return enrolled
+  } catch (err) {
+    // A failure that wrote nothing must not spend the one-hour ticket.
+    await release()
+    throw err
+  }
+}
+
+/** The key side of an enrolment once any ticket is spent: record, gate, bind, erase, announce. */
+async function bindKeyToEnrollment(
+  db: Db,
+  credential: Exclude<EnrollCredential, { kind: 'reenroll' }>,
+  params: EnrollParams,
+  viaTicket: boolean
+): Promise<EnrollOutcome> {
+  const { licenseId, verified } = credential
+  // The key's token and the daemon's signature both check out: its server
+  // is being provisioned. Recorded before the tier gate, so a refused
+  // enrol still reads as "provisioning" rather than as an unused key whose
+  // license is free (`enroll-attempt.ts`). Bookkeeping only: it must never
+  // fail an enrol.
+  await recordLicenseEnrollAttempt(db, licenseId, params.hostname).catch(() => {})
+  // Self-hosted grants itself the coverage first (`self-hosted-grant.ts`).
+  if (params.deployment === 'self-hosted') {
+    await syncSelfHostedGrantForLicense(db, licenseId)
+  }
+
+  const wasUnbound = viaTicket || (await isLicenseUnbound(db, licenseId))
+  const enrolled = await finalizeDaemonEnrollment(db, {
+    ...params,
+    licenseId,
+    verifiedLicense: verified,
+  })
+  if (enrolled.ok) {
+    // Bound now: `license.server_id` carries it from here.
+    await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
+    await eraseLicenseToken(db, licenseId).catch(() => {})
+    if (wasUnbound) await announceNewServer(db, params, enrolled.serverId)
+  }
+  return enrolled
+}
+
+async function isLicenseUnbound(db: Db, licenseId: string): Promise<boolean> {
+  const active = await lookupActiveLicense(db, licenseId)
+  return active !== null && active.serverId === null
+}
+
+async function announceNewServer(db: Db, params: EnrollParams, serverId: string): Promise<void> {
+  const target = await loadServerForAnnouncement(db, serverId)
+  if (!target) return
+  await announceServerEnrolled(db, params.secrets, {
+    ...target,
+    serverId,
+    fingerprint: params.fingerprint,
+  })
+}
+
+/** Why a re-enroll ticket cannot be used for the server the request names, or null. */
+function reenrollTargetRefusal(ticket: TicketRow, serverIdBody: string | undefined) {
+  if (!ticket.serverId) return TICKET_FOR_OTHER_SERVER_RESULT
+  const named = serverIdBody?.trim()
+  if (!named) return TICKET_NEEDS_SERVER_ID_RESULT
+  return named === ticket.serverId ? null : TICKET_FOR_OTHER_SERVER_RESULT
+}
+
+/**
+ * Replace one server's daemon key with an owner-issued re-enroll ticket. The
+ * ticket is bound to that server: presented for any other it is refused. A
+ * revoked key stays revoked (an owner removes the server instead).
+ */
+async function enrollWithReenrollTicket(
+  db: Db,
+  ticket: TicketRow,
+  params: EnrollParams
+): Promise<EnrollOutcome> {
+  const refusal = reenrollTargetRefusal(ticket, params.serverIdBody)
+  if (refusal) return refusal
+  const serverId = ticket.serverId as string
+  const target = await loadServerForAnnouncement(db, serverId)
+  if (target?.organizationId !== ticket.organizationId) {
+    return TICKET_FOR_OTHER_SERVER_RESULT
+  }
+  const current = await getServerDaemonStateByServerId(db, serverId)
+  if (current && !isDaemonKeyActive(current.key)) {
+    return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR }
+  }
+  const other = await getServerDaemonStateByFingerprint(db, params.fingerprint)
+  if (other && other.serverId !== serverId) {
+    return { ok: false, status: 409, error: 'Fingerprint already exists' }
+  }
+  const consumedAt = await consumeTicket(db, ticket.id)
+  if (!consumedAt) return INVALID_LICENSE_RESULT
+
+  try {
+    const result = await attachDaemonStateToServer(db, serverId, {
+      publicJwk: params.publicJwk,
+      fingerprint: params.fingerprint,
+      hostname: params.hostname,
+      machineKey: params.machineKey,
+      replaceLiveKey: true,
+    })
+    await recordTicketServer(db, ticket.id, serverId).catch(() => {})
+    await announceKeyReplaced(db, params.secrets, {
+      organizationId: ticket.organizationId,
+      serverId,
+      serverName: target.serverName,
+      oldFingerprint: current?.key.fingerprint ?? 'none',
+      newFingerprint: params.fingerprint,
+    })
+    return { ok: true, serverId, keyId: result.keyId }
+  } catch (err) {
+    await releaseTicket(db, ticket.id, consumedAt).catch(() => {})
+    return enrollAttachFailure(err)
+  }
+}
+
 /** The answer for a failed key attach: revoked, host already registered, or a plain error. */
 function enrollAttachFailure(err: unknown) {
   if (err instanceof DaemonKeyRevokedError) {
     return { ok: false, status: 403, error: SERVER_KEY_REVOKED_ERROR } as const
+  }
+  if (err instanceof DaemonKeyAlreadyRegisteredError) {
+    return { ok: false, status: 409, error: SERVER_KEY_ALREADY_REGISTERED_ERROR } as const
   }
   if (isMachineKeyInUse(err)) return MACHINE_KEY_IN_USE_RESULT
   const message = err instanceof Error ? err.message : String(err)
@@ -566,13 +888,22 @@ async function loadActiveDaemonKeyState(
 async function checkServerLicenseEntitlement(
   db: Db,
   serverId: string,
-  deployment: MetricsDeploymentKind
+  deployment: MetricsDeploymentKind,
+  provedKeyId: string
 ): Promise<{ ok: true } | { ok: false; status: 400; error: string }> {
   const binding = await getServerLicenseBinding(db, serverId)
   if (binding?.licenseId) {
     const activeLicense = await lookupActiveLicense(db, binding.licenseId)
     if (!activeLicense) {
       return { ok: false, status: 400, error: 'License is inactive' }
+    }
+    if (activeLicense.token !== null && activeLicense.serverId === serverId) {
+      await eraseLeftoverBoundToken(db, {
+        licenseId: binding.licenseId,
+        serverId,
+        keyId: provedKeyId,
+        tokenHash: activeLicense.token,
+      })
     }
     // Deliberately unguarded: a database error must surface as a 500 the
     // daemon retries rather than as a permanent refusal.
@@ -585,6 +916,31 @@ async function checkServerLicenseEntitlement(
     }
   }
   return { ok: true }
+}
+
+/**
+ * A bound key that still carries a token hash (a co-located Repair Connection
+ * re-issued it and kept the daemon's key) loses it on the daemon's next
+ * session: the daemon just proved its key, so it no longer needs the token,
+ * and a copy of the token must not stay usable. Read from the license row the
+ * entitlement check loads anyway, so a key with no hash (every other session)
+ * costs no extra query. Best effort: a failure is logged, never refuses the
+ * session, and the next session tries again.
+ */
+async function eraseLeftoverBoundToken(
+  db: Db,
+  params: { licenseId: string; serverId: string; keyId: string; tokenHash: string }
+): Promise<void> {
+  try {
+    if (await eraseBoundLicenseTokenForKey(db, params)) {
+      compatLogInfo('daemon-auth', `erased the leftover token of bound license ${params.licenseId}`)
+    }
+  } catch (err) {
+    compatLogWarn(
+      'daemon-auth',
+      `could not erase the leftover token of bound license ${params.licenseId}: ${describeError(err)}`
+    )
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -609,13 +965,12 @@ function isSlotMappableTopologySnapshot(value: Record<string, unknown>): value i
 }
 
 /**
- * Resolve the {@link SlotMapping} for a sample's own
- * `metadata.topologyGeneration`, given that exact generation's snapshot (not
- * the latest one — reinterpreting a sample under a different generation's
- * layout is exactly what a `SlotMapping` must never do) and the operator's
- * `hardwareProfile` overrides. `undefined` when the snapshot is missing/not a
- * plausible topology report (unknown generation) or resolution otherwise
- * fails — callers must fall back to topology-agnostic packing in that case
+ * Resolve the {@link SlotMapping} for a sample from the snapshot it was
+ * collected under (`sampleMatchesRecordedTopology`: an older daemon's
+ * `metadata.topologyGeneration`, else the entity ids the sample names) and the
+ * operator's `hardwareProfile` overrides. `undefined` when the sample does not
+ * match the stored snapshot, the snapshot is not a plausible topology report,
+ * or resolution otherwise fails — callers must fall back to topology-agnostic packing in that case
  * (see `field-map.ts`).
  */
 function resolveSlotMappingForIngest(
@@ -644,7 +999,7 @@ function resolveSlotMappingForIngest(
   }
 }
 
-/** A fresh resync marker is not re-stamped: an unknown generation on every sample must not become a write per sample. */
+/** A fresh resync marker is not re-stamped: an unmatched topology on every sample must not become a write per sample. */
 const TOPOLOGY_RESYNC_MARK_COOLDOWN_MS = 5 * 60 * 1000
 
 export function topologyResyncRecentlyRequested(
@@ -783,17 +1138,33 @@ async function loadIngestServerPlanRow(
 }
 
 /**
- * A server with more RAM or more physical CPU cores than its licensed box size
- * keeps its metrics and gets flagged on the server record (`over-plan-flag.ts`).
- * Fire-and-forget, like the other ingest-side marks: a failure logs and never
- * blocks the sample.
+ * A server whose highest RAM or physical CPU cores of the last 7 days are past
+ * its licensed box size keeps its metrics and gets flagged on the server record
+ * (`over-plan-flag.ts`, readings kept per hour in the `peak` table).
+ * Awaited inside the request: on Workers the per-request client is closed
+ * once the handler returns, so unawaited work on it would die. The per-isolate
+ * memo keeps a steady server to about one round trip per hour; a failure logs
+ * and never blocks the sample.
  */
-function flagOverPlanInBackground(db: Db, serverId: string, planRow: IngestServerPlanRow): void {
-  recordOverPlan(db, serverId, planRow.tierRank, planRow.serverMetadata).catch((err) => {
+async function flagOverPlan(
+  db: Db,
+  serverId: string,
+  planRow: IngestServerPlanRow,
+  sample: AuthenticatedMetricsSample
+): Promise<void> {
+  try {
+    await recordOverPlan(
+      db,
+      serverId,
+      planRow.tierRank,
+      planRow.serverMetadata,
+      sample.extended?.sizes?.memoryTotalBytes
+    )
+  } catch (err) {
     rateLimitedMetricsLog(serverId, 'over_plan_record_failed', () => {
       console.warn(`metrics over-plan flag failed for ${serverId}: ${describeError(err)}`)
     })
-  })
+  }
 }
 
 /**
@@ -801,19 +1172,24 @@ function flagOverPlanInBackground(db: Db, serverId: string, planRow: IngestServe
  * `POST /api/daemon/v1/metrics`. Resolves the effective v5 metrics
  * capability plan from persisted server/org state (replacing the
  * conservative default-only resolution) and, alongside it, checks whether
- * the sample's `metadata.topologyGeneration` has ever been recorded via
- * `recordTopologyGeneration` — an unknown generation stamps
- * `markTopologyResyncRequested` (fire-and-forget; never blocks ingestion,
- * never reaches the daemon cell directly — see that function's doc comment)
+ * the sample matches the topology recorded via `recordTopologyGeneration`
+ * (`sampleMatchesRecordedTopology`) — a sample that does not stamps
+ * `markTopologyResyncRequested` (awaited, because on Workers the request's
+ * client is closed once the handler returns; a failure logs and never blocks
+ * ingestion, and it never reaches the daemon cell directly — see that
+ * function's doc comment)
  * — and resolves the sample's {@link SlotMapping} (see
  * {@link resolveSlotMappingForIngest}) for the store's `writeSample` call.
  *
  * Every DB read/write here is best-effort: a failure logs and falls back to
  * {@link resolveDefaultMetricsCapabilityPlan} plus no slot mapping, rather
- * than rejecting an otherwise-valid sample or blocking the fire-and-forget
- * write path.
+ * than rejecting an otherwise-valid sample or blocking the route's
+ * fire-and-forget metrics store write.
+ *
+ * Every write here uses the request's client, so each one is awaited before
+ * returning: an unawaited write on Workers races the client's close.
  */
-async function resolveIngestPlanAndReconcileTopology(
+export async function resolveIngestPlanAndReconcileTopology(
   db: Db,
   serverId: string,
   sample: AuthenticatedMetricsSample,
@@ -825,12 +1201,12 @@ async function resolveIngestPlanAndReconcileTopology(
   // record. The durable 60 s baseline owns all of those.
   const durable = isDurableSample(sample)
   try {
-    const [topologyMatch, latestTopology, planRow] = await Promise.all([
-      getTopologyGeneration(db, serverId, sample.metadata.topologyGeneration),
+    const [latestTopology, planRow] = await Promise.all([
       getLatestTopologyGeneration(db, serverId),
       loadIngestServerPlanRow(db, serverId, deployment),
     ])
 
+    const topologyMatch = recordedTopologyForSample(latestTopology, sample)
     const topologyKnown = topologyMatch !== undefined
     if (
       !topologyKnown &&
@@ -838,7 +1214,7 @@ async function resolveIngestPlanAndReconcileTopology(
       !topologyResyncRecentlyRequested(planRow?.serverMetadata) &&
       !topologyChurnLimitedRecently(planRow?.serverMetadata)
     ) {
-      markTopologyResyncRequested(db, serverId).catch((err) => {
+      await markTopologyResyncRequested(db, serverId).catch((err) => {
         rateLimitedMetricsLog(serverId, 'topology_resync_mark_failed', () => {
           console.warn(
             `metrics topology resync marker failed for ${serverId}: ${describeError(err)}`
@@ -847,12 +1223,11 @@ async function resolveIngestPlanAndReconcileTopology(
       })
     }
 
-    if (durable && planRow !== undefined) flagOverPlanInBackground(db, serverId, planRow)
+    if (durable && planRow !== undefined) await flagOverPlan(db, serverId, planRow, sample)
 
-    const snapshotForClass = topologyMatch?.snapshot ?? latestTopology?.snapshot
     const machineClass = resolveServerMachineClass(
       planRow?.machineClass,
-      snapshotForClass,
+      latestTopology?.snapshot,
       countHostLevelSignals(sample.hardwareSignals)
     )
     if (
@@ -865,9 +1240,12 @@ async function resolveIngestPlanAndReconcileTopology(
       // only while the column is still undeclared, so an operator edit that
       // races this guess wins. `'virtual'` is never written back: it is only
       // absence of proof, and pinning it would stop a sensor found by a later
-      // topology generation from promoting the host. Fire-and-forget, like
-      // `markTopologyResyncRequested` above.
-      db.update(server)
+      // topology generation from promoting the host. Awaited, like
+      // `markTopologyResyncRequested` above: the request's client is closed
+      // once the handler returns on Workers. A failure logs and never blocks
+      // the sample.
+      await db
+        .update(server)
         .set({ machineClass: 'physical', machineClassSource: 'detected' })
         .where(and(eq(server.id, serverId), isNull(server.machineClass)))
         .catch((err) => {
@@ -972,13 +1350,167 @@ type DaemonApiEnv = {
     daemonServerId: string
     daemonKeyId: string
     daemonTokenId: string
+    /** The token's `cnf.jkt`: the request must be signed by that daemon key. */
+    daemonCnfJkt?: string
+    /** The body of a signed request, read once by the key gate. */
+    daemonBody?: Uint8Array<ArrayBuffer>
     /** Bound by the app (`bindContextValue`); absent when no secrets are configured. */
     dataEncryptionSecrets?: DerivedSecretsConfig
   }
 }
 
+/**
+ * Per-route settings of the daemon key gate: the body limit a signed
+ * request is read within, and whether its nonce may be used only once (routes
+ * that change state or hand out secrets; `/metrics` and transcript chunks are
+ * checked for clock skew only, so they never write a nonce row).
+ */
+type DaemonKeyGate = { maxBodyBytes: number; singleUse: boolean }
+
 /** `Retry-After` (seconds) sent with a daemon REST 429. */
 const DAEMON_REST_RETRY_AFTER_SECONDS = '5'
+
+/**
+ * Spend a sign-in challenge once its proof verified: a second use of the same
+ * challenge (a replayed request body) answers as an expired challenge.
+ */
+function spendChallenge(db: Db, challenge: { nonce: string; at: string }): Promise<boolean> {
+  return markChallengeUsed(
+    db,
+    challenge.nonce,
+    new Date(Date.parse(challenge.at) + DAEMON_ENROLL_AUTH_CHALLENGE_TTL_MS)
+  )
+}
+
+type ProofRefusal = { status: 400 | 403; error: string }
+
+/** Read the proof version from the body and check it against this control plane's key. */
+async function refuseUnacceptableProof(
+  body: Record<string, unknown>,
+  ctx: { identity: (() => Promise<PanelIdentity | null>) | undefined; trustLevel: number }
+): Promise<{ refusal: ProofRefusal } | { proof: ProofVersion }> {
+  const parsed = parseProofVersion(body)
+  if (!parsed.ok) return { refusal: parsed }
+  const checked = checkProofVersion(parsed.value, {
+    identity: ctx.identity ? await ctx.identity() : null,
+    trustLevel: ctx.trustLevel,
+    nowMs: Date.now(),
+  })
+  return checked.ok ? { proof: parsed.value } : { refusal: checked }
+}
+
+/** The signature must verify, and only then is the challenge spent (a replay is refused). */
+async function refuseUnverifiedProof(
+  db: Db,
+  proof: { publicJwk: JsonWebKey; payload: string; signature: string },
+  challenge: { nonce: string; at: string }
+): Promise<ProofRefusal | null> {
+  if (!(await verifyDaemonSignature(proof.publicJwk, proof.payload, proof.signature))) {
+    return { status: 403, error: 'Invalid signature' }
+  }
+  if (!(await spendChallenge(db, challenge))) {
+    return { status: 400, error: 'Invalid or expired challenge' }
+  }
+  return null
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * `server.trust_level` of the server this enroll lands on: the one a re-enroll
+ * ticket names, else the id the daemon says it already has. A brand-new server
+ * (no id, or an unknown one) is level 0. A named id can only tighten the check.
+ */
+async function readEnrollTrustLevel(
+  db: Db,
+  credential: EnrollCredential,
+  serverIdBody: string | undefined
+): Promise<number> {
+  const serverId = credential.kind === 'reenroll' ? credential.ticket.serverId : serverIdBody
+  if (!serverId || !UUID_PATTERN.test(serverId)) return 0
+  const [row] = await db
+    .select({ trustLevel: server.trustLevel })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return row?.trustLevel ?? 0
+}
+
+/** Bind the key for a verified enroll and answer; a replaced key purges the old cell. */
+async function completeEnroll(
+  c: Context<DaemonApiEnv>,
+  db: Db,
+  credential: EnrollCredential,
+  deployment: MetricsDeploymentKind,
+  params: EnrollParams
+): Promise<Response> {
+  const enrolled =
+    credential.kind === 'reenroll'
+      ? await enrollWithReenrollTicket(db, credential.ticket, params)
+      : await enrollWithKey(db, credential, params)
+  if (!enrolled.ok) {
+    return c.json(enrollFailureBody(enrolled), enrolled.status)
+  }
+  const registry = getDaemonCellRegistry(c)
+  if (credential.kind === 'reenroll' && registry) {
+    await purgeDaemonCellBestEffort(registry, enrolled.serverId, 'after daemon key replaced')
+  }
+  void primeCapabilityPlanAfterEnroll(db, registry, enrolled.serverId, deployment)
+  return c.json({ serverId: enrolled.serverId, keyId: enrolled.keyId }, 200)
+}
+
+function enrollProofPayload(
+  proof: ProofVersion,
+  fields: Parameters<typeof buildEnrollmentPayload>[0]
+): string {
+  return proof.version === 2
+    ? buildEnrollmentPayloadV2({
+        ...fields,
+        panelFingerprint: proof.panelFingerprint,
+        iat: proof.iat,
+      })
+    : buildEnrollmentPayload(fields)
+}
+
+function authProofPayload(
+  proof: ProofVersion,
+  fields: Parameters<typeof buildAuthPayload>[0]
+): string {
+  return proof.version === 2
+    ? buildAuthPayloadV2({ ...fields, panelFingerprint: proof.panelFingerprint, iat: proof.iat })
+    : buildAuthPayload(fields)
+}
+
+/**
+ * The refusals a co-located daemon with stale credential files gets:
+ * `401 Invalid license` or `409 Server key already registered` from
+ * `POST /enroll`, and `404 Server key not found` from `POST /auth/session`.
+ * The hook below fires only when such a refusal came straight in on the Unix
+ * socket (`isDirectLocalSocketRequest`), never for a request Caddy proxied.
+ */
+export function isCredentialRefusal(method: string, path: string, status: number): boolean {
+  if (method !== 'POST') return false
+  if (path === `${DAEMON_API_PREFIX}/enroll`) return status === 401 || status === 409
+  if (path === `${DAEMON_API_PREFIX}/auth/session`) return status === 404
+  return false
+}
+
+/**
+ * Calls `onRefusal` after a {@link isCredentialRefusal} response to a request
+ * that came straight in on the Unix socket. A request Caddy proxied never
+ * counts, whatever it was refused for.
+ */
+export function credentialRefusalMiddleware(onRefusal: () => void): MiddlewareHandler {
+  return async (c, next) => {
+    await next()
+    if (
+      isCredentialRefusal(c.req.method, c.req.path, c.res.status) &&
+      isDirectLocalSocketRequest((name) => c.req.header(name))
+    ) {
+      onRefusal()
+    }
+  }
+}
 
 export function registerDaemonApiRoutes<E extends Env>(
   app: Hono<E>,
@@ -1018,11 +1550,33 @@ export function registerDaemonApiRoutes<E extends Env>(
      * `platform/deno/server-paths.ts`.
      */
     readPlatformCaPem?: () => Promise<string>
+    /**
+     * The panel identity (Ed25519 current, next fingerprint, X25519 seal).
+     * Omitted or resolving to null means the feature is off and
+     * GET /instance/identity answers 404.
+     */
+    panelIdentity?: () => Promise<PanelIdentity | null>
+    /** The panel's public origins for the identity document, from the request's database client. */
+    identityUrls?: (db: Db) => Promise<string[]>
+    /**
+     * Called (fire and forget) after an enroll or session refusal that a
+     * co-located daemon with stale credential files would get, and only when
+     * the request came straight in on the Unix socket rather than through a
+     * proxy. The Deno composition root passes the rate-limited co-located
+     * self-repair (`src/client/authn/colocated-self-repair.ts`); Workers
+     * passes nothing.
+     */
+    onCredentialRefusal?: () => void
   } = {}
 ) {
   const daemon = new Hono<DaemonApiEnv>()
   const { secrets, challengeSigningSecrets, secretsConfig } = options
   const runtime = options.runtime ?? 'workers'
+  const identityDocumentCache = createIdentityDocumentCache()
+  daemon.use('*', signDaemonResponses(options.panelIdentity))
+  if (options.onCredentialRefusal) {
+    daemon.use('*', credentialRefusalMiddleware(options.onCredentialRefusal))
+  }
   const tlsPublic = options.tlsPublic ?? false
   const deployment = metricsDeploymentKindForRuntime(runtime)
   const metricsChartCache = createMetricsChartCache(runtime)
@@ -1126,7 +1680,106 @@ export function registerDaemonApiRoutes<E extends Env>(
     c.set('daemonServerId', payload.sub)
     c.set('daemonKeyId', payload.kid)
     c.set('daemonTokenId', payload.jti)
+    if (payload.cnf) c.set('daemonCnfJkt', payload.cnf.jkt)
     return next()
+  }
+
+  /** The control plane keys a pinned daemon may name in a signature: current, and next when set. */
+  const panelFingerprints = panelFingerprintSource(options.panelIdentity)
+
+  /** Check this request's daemon signature against the server's current key. */
+  const checkRequestSignature = async (
+    c: Context<DaemonApiEnv>,
+    state: ServerDaemonStateWithMetadata,
+    body: Uint8Array<ArrayBuffer>
+  ): Promise<
+    | { ok: true; value: { nonce: string; iat: number } }
+    | { ok: false; status: 400 | 401 | 503; error: string }
+  > => {
+    const fingerprints = await panelFingerprints()
+    if (!fingerprints) return { ok: false, status: 503, error: 'Panel identity unavailable' }
+    return await verifyDaemonRequest({
+      header: c.req.header(DAEMON_SIGNATURE_HEADER),
+      method: c.req.method,
+      pathname: new URL(c.req.url).pathname,
+      body,
+      keyId: state.key.id,
+      publicJwk: state.key.publicJwk,
+      panelFingerprints: fingerprints,
+      nowMs: Date.now(),
+    })
+  }
+
+  /**
+   * A request must be signed by the daemon key when its token is bound to that
+   * key (`cnf`) or the server already proved itself with its key
+   * (`trust_level` 2). The body is read here once, within the route's limit,
+   * and handed on through `daemonBody`. Null when the request may go on.
+   */
+  const refuseUnsignedRequest = async (
+    c: Context<DaemonApiEnv>,
+    db: Db,
+    state: ServerDaemonStateWithMetadata,
+    gate: DaemonKeyGate
+  ): Promise<Response | null> => {
+    const cnf = c.get('daemonCnfJkt')
+    if (!cnf && (state.trustLevel ?? 0) < DAEMON_PROOF_TRUST_LEVEL) return null
+    if (cnf && cnf !== (await daemonKeyThumbprint(state.key.publicJwk))) {
+      return c.json({ ok: false, error: 'unauthorized' }, 401)
+    }
+    if (contentLengthExceeds(c, gate.maxBodyBytes)) {
+      return c.json({ ok: false, error: 'request body too large' }, 413)
+    }
+    const bodyRead = await readBodyWithByteLimit(c, gate.maxBodyBytes)
+    if (!bodyRead.ok) return c.json({ ok: false, error: 'request body too large' }, 413)
+    const body = new Uint8Array(bodyRead.bytes)
+    const verified = await checkRequestSignature(c, state, body)
+    if (!verified.ok) return c.json({ ok: false, error: verified.error }, verified.status)
+    if (gate.singleUse) {
+      const fresh = await markRequestNonceUsed(
+        db,
+        c.get('daemonServerId'),
+        verified.value.nonce,
+        new Date((verified.value.iat + REQUEST_MAX_SKEW_SECONDS) * 1000)
+      )
+      if (!fresh) return c.json({ ok: false, error: 'Request replayed' }, 401)
+    }
+    c.set('daemonBody', body)
+    return null
+  }
+
+  /**
+   * `/auth/session` signed by the daemon key: the token is bound to that key
+   * (`cnf`) and the server is raised to `trust_level` 2, after which every
+   * request must be signed. Unsigned stays a bearer token, unless the server
+   * already proved itself (then refused).
+   */
+  const bindSessionToDaemonKey = async (
+    c: Context<DaemonApiEnv>,
+    db: Db,
+    serverId: string,
+    state: ServerDaemonStateWithMetadata,
+    bodyText: string
+  ): Promise<{ jkt?: string } | { refusal: { status: 400 | 403 | 503; error: string } }> => {
+    const trustLevel = state.trustLevel ?? 0
+    if (!c.req.header(DAEMON_SIGNATURE_HEADER)) {
+      return trustLevel >= DAEMON_PROOF_TRUST_LEVEL
+        ? { refusal: { status: 403, error: SIGNED_REQUEST_REQUIRED_ERROR } }
+        : {}
+    }
+    const verified = await checkRequestSignature(c, state, new TextEncoder().encode(bodyText))
+    if (!verified.ok) {
+      // 401 would send the daemon into a token refresh, so a bad proof here is
+      // a 403; and a header that is present but unreadable is a bad signature,
+      // never `Signed request required` (which the daemon treats as permanent).
+      if (verified.status !== 401)
+        return { refusal: { status: verified.status, error: verified.error } }
+      return { refusal: { status: 403, error: 'Invalid request signature' } }
+    }
+    if (trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
+      await raiseServerTrustLevel(db, serverId, DAEMON_PROOF_TRUST_LEVEL)
+    }
+    return { jkt: await daemonKeyThumbprint(state.key.publicJwk) }
   }
 
   /**
@@ -1135,19 +1788,23 @@ export function registerDaemonApiRoutes<E extends Env>(
    * and rate limiting so limiter tests can still exercise 429 without a DB.
    * When no DB is bound (unit tests), JWT signature/expiry alone gate the route.
    */
-  const requireActiveDaemonKey = async (c: Context<DaemonApiEnv>, next: Next) => {
-    const db = getDb(c)
-    if (db === undefined) {
-      return next()
+  const requireActiveDaemonKey =
+    (gate: DaemonKeyGate) => async (c: Context<DaemonApiEnv>, next: Next) => {
+      const db = getDb(c)
+      if (db === undefined) {
+        // Without a database the daemon key cannot be read, so a key-bound
+        // token cannot be checked either.
+        return c.get('daemonCnfJkt') ? c.json({ ok: false, error: 'unauthorized' }, 401) : next()
+      }
+      const serverId = c.get('daemonServerId')
+      const keyId = c.get('daemonKeyId')
+      const keyState = await loadActiveDaemonKeyState(db, serverId, keyId)
+      if (!keyState.ok) {
+        return c.json({ ok: false, error: 'unauthorized' }, 401)
+      }
+      const refused = await refuseUnsignedRequest(c, db, keyState.daemonState, gate)
+      return refused ?? next()
     }
-    const serverId = c.get('daemonServerId')
-    const keyId = c.get('daemonKeyId')
-    const keyState = await loadActiveDaemonKeyState(db, serverId, keyId)
-    if (!keyState.ok) {
-      return c.json({ ok: false, error: 'unauthorized' }, 401)
-    }
-    return next()
-  }
 
   // Co-located self-hosted daemons poll this before opening the daemon WS.
   // Returns 503 until the install wizard has created org + superadmin.
@@ -1224,8 +1881,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         const pem = atob(b64)
         return c.body(pem, 200, { 'content-type': 'application/x-pem-file' })
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        return c.json({ error: message }, 500)
+        return platformCaReadFailure(c, err)
       }
     }
     let presentsPlatformCaLeaf = false
@@ -1245,9 +1901,36 @@ export function registerDaemonApiRoutes<E extends Env>(
       const cert = await readPlatformCaPem()
       return c.body(cert, 200, { 'content-type': 'application/x-pem-file' })
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      return c.json({ error: message }, 500)
+      return platformCaReadFailure(c, err)
     }
+  })
+
+  // Public, no auth: the signed panel identity document. The signature is in
+  // the X-TurboPanel-Signature header, over the exact body bytes.
+  daemon.get('/instance/identity', async (c) => {
+    const identity = options.panelIdentity ? await options.panelIdentity() : null
+    if (!identity) {
+      return c.json({ error: 'panel identity not configured' }, 404)
+    }
+    const db = getDb(c)
+    let urls: string[] = []
+    try {
+      urls = db && options.identityUrls ? await options.identityUrls(db) : []
+    } catch (err) {
+      // A connection dropped mid-flight is replayed once by the Workers entry.
+      if (isConnectionClosedError(err)) throw err
+      // The URL list comes from the database: an unreachable database is a 503
+      // that says so, not an opaque 500 that reads as a broken identity key.
+      // The driver's message goes to the log only (it names the host and role).
+      logWarn('daemon-api', `identity: database unavailable: ${describeError(err)}`)
+      return c.json({ error: 'database unavailable' }, 503)
+    }
+    const signed = await identityDocumentCache.get(identity, urls)
+    return c.body(signed.body, 200, {
+      'content-type': 'application/json',
+      'Cache-Control': 'public, max-age=3600',
+      [IDENTITY_SIGNATURE_HEADER]: signed.signature,
+    })
   })
 
   // Private uploaded issuer for the dialed hostname. Distinct from the
@@ -1390,18 +2073,36 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
 
-    const verifiedLicense = await verifyDaemonLicense(db, licenseId, licenseToken)
-    if (!verifiedLicense) {
-      return c.json({ ok: false, error: 'Invalid license' }, 401)
-    }
+    // The per-license bucket is charged before the token check: verifying it
+    // is an Argon2 hash, so charging after let a wrong token buy one hash per
+    // attempt from every address the per-peer bucket did not yet cover.
     const licenseLimited = await enforceDaemonRestLimit(
       c,
       daemonRestRateLimitKey(licenseId, 'enroll')
     )
     if (licenseLimited) return licenseLimited
+    const credential = await resolveEnrollCredential(db, licenseId, licenseToken)
+    if (!credential) {
+      return c.json({ ok: false, error: 'Invalid license' }, 401)
+    }
+
+    // A new server has used no signed session (level 0), so v1 is accepted for
+    // it. A re-enroll names an existing server, and one that has used a signed
+    // session must send a v2 proof (403 Signed proof required otherwise).
+    const enrollProofResult = await refuseUnacceptableProof(body, {
+      identity: options.panelIdentity,
+      trustLevel: await readEnrollTrustLevel(db, credential, serverIdBody),
+    })
+    if ('refusal' in enrollProofResult) {
+      return c.json(
+        { ok: false, error: enrollProofResult.refusal.error },
+        enrollProofResult.refusal.status
+      )
+    }
+    const enrollProof = enrollProofResult.proof
 
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
-    const payload = buildEnrollmentPayload({
+    const payload = enrollProofPayload(enrollProof, {
       challengeId,
       nonce: challenge.nonce,
       licenseId,
@@ -1409,47 +2110,21 @@ export function registerDaemonApiRoutes<E extends Env>(
       hostname,
       publicKeyFingerprint: fingerprint,
     })
-    const verified = await verifyDaemonSignature(publicJwk, payload, signature)
-    if (!verified) {
-      return c.json({ ok: false, error: 'Invalid signature' }, 403)
-    }
-
-    // The key's token and the daemon's signature both check out: its server
-    // is being provisioned. Recorded before the tier gate, so a refused
-    // enrol still reads as "provisioning" rather than as an unused key whose
-    // license is free (`enroll-attempt.ts`).
-    // Bookkeeping only: it must never fail an enrol.
-    await recordLicenseEnrollAttempt(db, licenseId, hostname).catch(() => {})
-
-    // No tier gate and no assignment here: a freshly enrolled server holds
-    // no license tier until a manager assigns one, and it connects either
-    // way. Self-hosted grants itself the coverage first
-    // (`self-hosted-grant.ts`) — the row it writes is what still covers this
-    // server after a switch to the hosted runtime.
-    if (deployment === 'self-hosted') {
-      await syncSelfHostedGrantForLicense(db, licenseId)
-    }
+    const unverified = await refuseUnverifiedProof(db, { publicJwk, payload, signature }, challenge)
+    if (unverified) return c.json({ ok: false, error: unverified.error }, unverified.status)
 
     const fabricDeps = enrollFabricDepsFromContext(c)
-    const enrolled = await finalizeDaemonEnrollment(db, {
+    return await completeEnroll(c, db, credential, deployment, {
       serverIdBody,
       machineKey,
       hostname,
-      licenseId,
       licenseToken,
       fingerprint,
       publicJwk,
+      deployment,
+      secrets: c.get('dataEncryptionSecrets'),
       ...(fabricDeps ? { fabricDeps } : {}),
     })
-    if (!enrolled.ok) {
-      return c.json(enrollFailureBody(enrolled), enrolled.status)
-    }
-    // Bound now: `license.server_id` carries it from here.
-    await clearLicenseEnrollAttempt(db, licenseId).catch(() => {})
-
-    void primeCapabilityPlanAfterEnroll(db, getDaemonCellRegistry(c), enrolled.serverId, deployment)
-
-    return c.json({ serverId: enrolled.serverId, keyId: enrolled.keyId }, 200)
   })
 
   daemon.post('/auth/session', async (c) => {
@@ -1487,11 +2162,6 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: keyState.error }, keyState.status)
     }
 
-    const licenseState = await checkServerLicenseEntitlement(db, serverId, deployment)
-    if (!licenseState.ok) {
-      return c.json({ ok: false, error: licenseState.error }, licenseState.status)
-    }
-
     if (!authStore) {
       return c.json({ ok: false, error: 'Challenge unavailable' }, 503)
     }
@@ -1503,8 +2173,18 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!challenge) {
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
+    const sessionProofResult = await refuseUnacceptableProof(body, {
+      identity: options.panelIdentity,
+      trustLevel: keyState.daemonState.trustLevel ?? 0,
+    })
+    if ('refusal' in sessionProofResult) {
+      return c.json(
+        { ok: false, error: sessionProofResult.refusal.error },
+        sessionProofResult.refusal.status
+      )
+    }
 
-    const payload = buildAuthPayload({
+    const payload = authProofPayload(sessionProofResult.proof, {
       challengeId,
       nonce: challenge.nonce,
       serverId,
@@ -1512,14 +2192,12 @@ export function registerDaemonApiRoutes<E extends Env>(
       machineKey: machineKey ?? '',
       hostname,
     })
-    const verified = await verifyDaemonSignature(
-      keyState.daemonState.key.publicJwk,
-      payload,
-      signature
+    const unverified = await refuseUnverifiedProof(
+      db,
+      { publicJwk: keyState.daemonState.key.publicJwk, payload, signature },
+      challenge
     )
-    if (!verified) {
-      return c.json({ ok: false, error: 'Invalid signature' }, 403)
-    }
+    if (unverified) return c.json({ ok: false, error: unverified.error }, unverified.status)
 
     const serverSessionLimited = await enforceDaemonRestLimit(
       c,
@@ -1527,10 +2205,32 @@ export function registerDaemonApiRoutes<E extends Env>(
     )
     if (serverSessionLimited) return serverSessionLimited
 
+    // After the signature, not before: on self-hosted this check writes the
+    // grant and fills an empty tier, and anyone who knows a server id and its
+    // key id could otherwise trigger those writes without holding the key.
+    const licenseState = await checkServerLicenseEntitlement(db, serverId, deployment, keyId)
+    if (!licenseState.ok) {
+      return c.json({ ok: false, error: licenseState.error }, licenseState.status)
+    }
+
+    const binding = await bindSessionToDaemonKey(
+      c,
+      db,
+      serverId,
+      keyState.daemonState,
+      bodyRead.text
+    )
+    if ('refusal' in binding) {
+      return c.json({ ok: false, error: binding.refusal.error }, binding.refusal.status)
+    }
+
     await touchDaemonKeyLastUsed(db, serverId)
     await touchServerMetadata(db, serverId, { machineKey, hostname })
 
-    const issued = await issueDaemonJwt({ sub: serverId, kid: keyId }, secrets)
+    const issued = await issueDaemonJwt(
+      { sub: serverId, kid: keyId, ...(binding.jkt ? { cnf: { jkt: binding.jkt } } : {}) },
+      secrets
+    )
     return c.json(
       {
         token: issued.token,
@@ -1571,7 +2271,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/commands/:commandId/log',
     requireDaemonJwt,
     enforceJwtRestLimit('commands-log'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_EXECUTION_LOG_CHUNK_BODY_BYTES, singleUse: false }),
     async (c) => {
       const daemonServerId = c.get('daemonServerId')
       const commandId = normalizeRequiredString(c.req.param('commandId'))
@@ -1652,7 +2352,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/metrics',
     requireDaemonJwt,
     enforceJwtMetricsLimit,
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_METRICS_PAYLOAD_BYTES, singleUse: false }),
     async (c) => {
       const serverId = c.get('daemonServerId')
 
@@ -1771,7 +2471,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/secrets/decrypt',
     requireDaemonJwt,
     enforceJwtRestLimit('secrets-decrypt'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_SECRETS_DECRYPT_BODY_BYTES, singleUse: true }),
     async (c) => {
       if (!secretsConfig) {
         return c.json({ ok: false, error: 'decryption unavailable' }, 503)
@@ -1825,13 +2525,60 @@ export function registerDaemonApiRoutes<E extends Env>(
         decryptDaemonCiphertext(secretsConfig, recipient, ciphertext)
       )
 
-      return c.json({ plaintexts }, 200)
+      // Sealed whenever the server has a registered sealing key; plaintext
+      // only when none is on file (the unsigned hello list is not consulted).
+      const db = getDb(c)
+      return c.json(
+        await buildSecretsDecryptAnswer(
+          db && databaseDecryptAnswerSource(db),
+          daemonServerId,
+          plaintexts
+        ),
+        200
+      )
+    }
+  )
+
+  /**
+   * The daemon registers its X25519 sealing key. `sig` is the daemon's Ed25519
+   * signature over `"tp-sealing-key\n" + pub`, checked against the key on file;
+   * only the key id is ever logged.
+   */
+  daemon.post(
+    '/servers/self/sealing-key',
+    requireDaemonJwt,
+    enforceJwtRestLimit('sealing-key'),
+    requireActiveDaemonKey({ maxBodyBytes: MAX_SEALING_KEY_BODY_BYTES, singleUse: true }),
+    async (c) => {
+      const db = getDb(c)
+      if (!db) return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      const bodyRead = await readBoundedJsonBody(c, MAX_SEALING_KEY_BODY_BYTES)
+      if (!bodyRead.ok) return bodyRead.response
+      let parsedBody: unknown
+      try {
+        parsedBody = JSON.parse(bodyRead.text)
+      } catch {
+        return c.json({ ok: false, error: 'invalid json' }, 400)
+      }
+      const serverId = c.get('daemonServerId')
+      const result = await registerDaemonSealingKey(
+        {
+          loadDaemonPublicJwk: async (id) =>
+            (await getServerDaemonStateByServerId(db, id))?.key.publicJwk ?? null,
+          save: (id, key) => setDaemonSealingKey(db, id, key),
+        },
+        serverId,
+        parsedBody
+      )
+      return c.json(result.body, result.status)
     }
   )
 
   /**
    * The certificate and private key Caddy issued on the calling server for one
-   * hostname. Stored sealed next to the other certificates (see
+   * hostname. An optional `requestId` answers an open `acme-issue-request`
+   * from the server that was asked (otherwise only a server holding a pin may
+   * report). Stored sealed next to the other certificates (see
    * `client/tls/issued-certificate.ts` for every check). The body is never
    * logged and nothing from it comes back in the answer.
    */
@@ -1839,7 +2586,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/tls/issued',
     requireDaemonJwt,
     enforceJwtRestLimit('tls-issued'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_TLS_ISSUED_BODY_BYTES, singleUse: true }),
     async (c) => {
       const bodyRead = await readBoundedJsonBody(c, MAX_TLS_ISSUED_BODY_BYTES)
       if (!bodyRead.ok) return bodyRead.response
@@ -1847,24 +2594,26 @@ export function registerDaemonApiRoutes<E extends Env>(
         hostname?: unknown
         certificatePem?: unknown
         privateKeyPem?: unknown
+        privateKeyEnvelope?: unknown
+        requestId?: unknown
       }
       try {
         body = JSON.parse(bodyRead.text) as typeof body
       } catch {
         return c.json({ ok: false, error: 'invalid json' }, 400)
       }
-      if (
-        typeof body.hostname !== 'string' ||
-        typeof body.certificatePem !== 'string' ||
-        typeof body.privateKeyPem !== 'string'
-      ) {
-        return c.json(
-          {
-            ok: false,
-            error: 'hostname, certificatePem and privateKeyPem are required',
-          },
-          400
-        )
+      if (typeof body.hostname !== 'string' || typeof body.certificatePem !== 'string') {
+        return c.json({ ok: false, error: 'hostname and certificatePem are required' }, 400)
+      }
+      const issuedKey = await resolveIssuedPrivateKey(
+        body,
+        options.panelIdentity ? await options.panelIdentity() : null
+      )
+      if (!issuedKey.ok) {
+        return c.json({ ok: false, error: issuedKey.error }, issuedKey.status)
+      }
+      if (body.requestId !== undefined && !isTlsIssuedRequestId(body.requestId)) {
+        return c.json({ ok: false, error: 'requestId is not valid' }, 400)
       }
       const db = getDb(c)
       const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -1877,7 +2626,8 @@ export function registerDaemonApiRoutes<E extends Env>(
           serverId: c.get('daemonServerId'),
           hostname: body.hostname,
           certificatePem: body.certificatePem,
-          privateKeyPem: body.privateKeyPem,
+          privateKeyPem: issuedKey.privateKeyPem,
+          ...(body.requestId === undefined ? {} : { requestId: body.requestId }),
         },
         { dataEncryptionSecrets }
       )
@@ -1893,15 +2643,19 @@ export function registerDaemonApiRoutes<E extends Env>(
    * change goes live to prove it can still reach the control plane with a
    * valid token; it reads nothing and the control plane runs no test of its own.
    */
-  daemon.get('/ping', requireDaemonJwt, enforceJwtRestLimit('ping'), requireActiveDaemonKey, (c) =>
-    c.json({ ok: true, at: new Date().toISOString() }, 200)
+  daemon.get(
+    '/ping',
+    requireDaemonJwt,
+    enforceJwtRestLimit('ping'),
+    requireActiveDaemonKey({ maxBodyBytes: 0, singleUse: true }),
+    (c) => c.json({ ok: true, at: new Date().toISOString() }, 200)
   )
 
   daemon.post(
     '/deployments/secrets/rehydrate',
     requireDaemonJwt,
     enforceJwtRestLimit('secrets-rehydrate'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: MAX_SECRETS_DECRYPT_BODY_BYTES, singleUse: true }),
     async (c) => {
       const db = getDb(c)
       if (!db) {
@@ -1932,7 +2686,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     '/host/docker-networking',
     requireDaemonJwt,
     enforceJwtRestLimit('host-docker-networking'),
-    requireActiveDaemonKey,
+    requireActiveDaemonKey({ maxBodyBytes: 0, singleUse: false }),
     async (c) => {
       const db = getDb(c)
       if (!db) {

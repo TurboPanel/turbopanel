@@ -189,6 +189,26 @@ function requireEqual(left, right, message) {
   if (left !== right || left == null) fail(message)
 }
 
+const PLAIN_SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/
+
+function readDenoVersion(root) {
+  const text = requireText(readRel(root, 'deno.json'), `${root}/deno.json missing`)
+  return JSON.parse(text).version ?? null
+}
+
+/** A version floor is a plain X.Y.Z at or below the peer's current version. */
+function requireFloorWithinVersion(floor, peerVersion, name) {
+  const f = PLAIN_SEMVER_RE.exec(floor ?? '')
+  const v = PLAIN_SEMVER_RE.exec(peerVersion ?? '')
+  if (!f) fail(`${name} must be a plain X.Y.Z (got ${floor})`)
+  if (!v) fail(`${name}: the peer deno.json version is not X.Y.Z (got ${peerVersion})`)
+  for (let i = 1; i <= 3; i++) {
+    const diff = Number(f[i]) - Number(v[i])
+    if (diff < 0) return
+    if (diff > 0) fail(`${name} ${floor} is newer than the peer's version ${peerVersion}`)
+  }
+}
+
 function requireJoinedEqual(left, right, message) {
   if (left?.join(',') !== right?.join(',') || right == null) fail(message)
 }
@@ -226,6 +246,39 @@ function checkHostname(tp, td) {
     extractConst(hostnameRight, 'HOSTNAME_MAX_LENGTH'),
     'HOSTNAME_MAX_LENGTH drifted'
   )
+}
+
+/** The signed-session byte rules and the v2 sign-in proof tags must be identical on both sides. */
+function checkPanelIdentityBytes(tp, td) {
+  const envelopeLeft = requireText(
+    readRel(tp, 'src/lib/panel-identity/frame-envelope.ts'),
+    'frame-envelope.ts missing on the instance'
+  )
+  const envelopeRight = requireText(
+    readRel(td, 'src/instance/panel-identity-frames.ts'),
+    'panel-identity-frames.ts missing on the daemon'
+  )
+  for (const name of [
+    'HELLO_PREFIX',
+    'FRAME_PREFIX',
+    'HTTP_PREFIX',
+    'REPORT_PREFIX',
+    'SIG_SUFFIX_MARKER',
+  ]) {
+    requireEqual(
+      extractConst(envelopeLeft, name),
+      extractConst(envelopeRight, name),
+      `${name} drifted`
+    )
+  }
+  const proofLeft = requireText(
+    readRel(tp, 'src/daemon/authn/proof-version.ts'),
+    'proof-version.ts missing on the instance'
+  )
+  const proofRight = requireText(readRel(td, 'src/crypto/keys.ts'), 'keys.ts missing on the daemon')
+  for (const name of ['ENROLL_PROOF_V2_TAG', 'AUTH_PROOF_V2_TAG']) {
+    requireEqual(extractConst(proofLeft, name), extractConst(proofRight, name), `${name} drifted`)
+  }
 }
 
 function checkLayoutVectors(tp, td) {
@@ -993,10 +1046,18 @@ function checkExpandOnly(tp, td) {
     extractConst(daemonWire, 'INSTANCE_VERSION_HEADER'),
     'INSTANCE_VERSION_HEADER drifted'
   )
-  requireEqual(
-    extractConst(instanceWire, 'MIN_SUPPORTED_DAEMON_VERSION'),
+  // The two floors name versions on two separate release lines (the daemon's
+  // and the control plane's), so they are not equal. Each must be a plain
+  // X.Y.Z no newer than the version the peer repo is building.
+  requireFloorWithinVersion(
     extractConst(daemonWire, 'MIN_SUPPORTED_INSTANCE_VERSION'),
-    'MIN_SUPPORTED_DAEMON_VERSION and MIN_SUPPORTED_INSTANCE_VERSION must move together'
+    readDenoVersion(tp),
+    'MIN_SUPPORTED_INSTANCE_VERSION'
+  )
+  requireFloorWithinVersion(
+    extractConst(instanceWire, 'MIN_SUPPORTED_DAEMON_VERSION'),
+    readDenoVersion(td),
+    'MIN_SUPPORTED_DAEMON_VERSION'
   )
   requireEqual(
     extractObjectLiteral(instanceWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
@@ -1031,10 +1092,11 @@ function main() {
   checkReportedIp(tp, td)
   checkSlotMapping(tp, td)
   checkLayoutVectors(tp, td)
+  checkPanelIdentityBytes(tp, td)
   checkExpandOnly(tp, td)
 
   console.log(
-    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, folder name vectors, expand-only fields agree.'
+    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, folder name vectors, signed-session bytes, expand-only fields agree.'
   )
 }
 

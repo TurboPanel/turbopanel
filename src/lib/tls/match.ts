@@ -83,6 +83,10 @@ export function resolveTlsForHosting(params: {
   if (!pinned) {
     return { ok: false, error: 'pin_not_found' }
   }
+  // A certificate from the authority's test directory is trusted by no browser.
+  if (pinned.metadata.acme?.staging === true) {
+    return { ok: false, error: 'pin_staging' }
+  }
   if (isRevokedLetsEncrypt(pinned)) {
     if (!coversAllHostnames(pinned.metadata.dnsNames, hostnames)) {
       return { ok: false, error: 'pin_mismatch' }

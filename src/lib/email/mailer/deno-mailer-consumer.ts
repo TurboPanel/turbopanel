@@ -1,6 +1,7 @@
 import amqplib from 'amqplib'
 import type { Db } from '../../../db/connection.ts'
 import type { DerivedSecretsConfig } from '../../secrets/secrets.ts'
+import { createClosablePause } from '../../closable-pause.ts'
 import { logError, logInfo, logWarn } from '../../logger.ts'
 import {
   type EmailProvider,
@@ -151,7 +152,15 @@ export function carryOverRateLimiter(
   return next
 }
 
-async function connectAmqp(url: string): Promise<AmqpConnection> {
+/**
+ * `stopped` ends the retries early once the consumer is closed, and `pause`
+ * is the consumer's own wait, which close() cuts short.
+ */
+async function connectAmqp(
+  url: string,
+  stopped: () => boolean,
+  pause: (ms: number) => Promise<void>
+): Promise<AmqpConnection> {
   const tryConnect = async (attempt: number): Promise<AmqpConnection> => {
     if (attempt > CONNECT_ATTEMPTS) {
       throw new Error('connectAmqp: unreachable')
@@ -159,12 +168,12 @@ async function connectAmqp(url: string): Promise<AmqpConnection> {
     try {
       return await amqplib.connect(url)
     } catch (error) {
-      if (attempt === CONNECT_ATTEMPTS) throw error
+      if (attempt === CONNECT_ATTEMPTS || stopped()) throw error
       logWarn(
         'mailer',
         `AMQP connect failed (attempt ${attempt}/${CONNECT_ATTEMPTS}): ${errorMessage(error)}`
       )
-      await sleep(1000)
+      await pause(1000)
     }
     return tryConnect(attempt + 1)
   }
@@ -177,6 +186,7 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
   let closed = false
   let reconnecting = false
   let session: ConsumerSession | undefined
+  const waits = createClosablePause()
 
   let cachedSettings: { value: ResolvedEmailSettings; fetchedAt: number } | undefined
   async function currentSettings(): Promise<ResolvedEmailSettings> {
@@ -245,7 +255,7 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
   }
 
   async function openSession(): Promise<ConsumerSession> {
-    const connection = await connectAmqp(opts.amqpUrl)
+    const connection = await connectAmqp(opts.amqpUrl, () => closed, waits.pause)
     // `channel` is filled in below; the object has to exist first so the
     // connection's listeners can be attached before anything else awaits.
     const opened = {
@@ -281,6 +291,10 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
     // `close` and `error` both fire for the same loss, and a replaced session
     // can still emit late; one rebuild per loss.
     if (closed || reconnecting || session !== from) return
+    await rebuild(reason)
+  }
+
+  async function rebuild(reason: string): Promise<void> {
     reconnecting = true
     session = undefined
     logWarn('mailer', `AMQP ${reason} — reconnecting`)
@@ -296,7 +310,7 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
         } else if (rebuilt.lost) {
           logWarn('mailer', 'AMQP connection was lost again during reconnect — retrying')
           await discard(rebuilt)
-          await sleep(delay)
+          await waits.pause(delay)
         } else {
           session = rebuilt
           logWarn('mailer', 'AMQP reconnected, consuming again')
@@ -304,7 +318,7 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
         }
       } catch (error) {
         logError('mailer', `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`)
-        await sleep(delay)
+        await waits.pause(delay)
       }
       if (finished) return
       return reconnectWithBackoff(Math.min(delay * 2, RECONNECT_MAX_DELAY_MS))
@@ -444,6 +458,11 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
       owner.consumerTag = undefined
       return
     }
+    // A delivery to a session that is being closed or was lost (a late
+    // connect after close(), or a broker loss) is left unacknowledged: its
+    // channel is going away, so the broker redelivers it. Sending it here
+    // first would send the mail twice.
+    if (closed || owner.lost) return
 
     let disposition: Disposition
     let jobType: EmailJob['type'] | undefined
@@ -507,8 +526,18 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
     disposeSafely(owner, msg, disposition)
   }
 
-  session = await openSession()
-  if (session.lost) {
+  try {
+    session = await openSession()
+  } catch (error) {
+    // The broker is not up yet. Keep trying in the background like after a
+    // loss instead of leaving mail undelivered until the next restart.
+    logError(
+      'mailer',
+      `AMQP broker unreachable at start: ${errorMessage(error)} — retrying in the background`
+    )
+    void rebuild('broker unreachable at start')
+  }
+  if (session?.lost) {
     // The broker went away while the first session was being set up. Its
     // listeners fired before it was the live session, so nothing else will
     // rebuild it. `reopen` marks the rebuild in progress before its first
@@ -517,16 +546,19 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
     void reopen(dead, 'connection lost during start')
     void discard(dead)
   }
-  logInfo(
-    'mailer',
-    `consuming from ${EMAIL_AMQP_QUEUE} at ${redactUrlCredentials(
-      opts.amqpUrl
-    )} (prefetch=${appliedPrefetch})`
-  )
+  if (session) {
+    logInfo(
+      'mailer',
+      `consuming from ${EMAIL_AMQP_QUEUE} at ${redactUrlCredentials(
+        opts.amqpUrl
+      )} (prefetch=${appliedPrefetch})`
+    )
+  }
 
   return {
     async close(): Promise<void> {
       closed = true
+      waits.close()
       const current = session
       session = undefined
       if (!current) return

@@ -35,6 +35,18 @@ export function channelHasInstancePackage(channel: UpdateChannel): boolean {
 }
 
 /**
+ * True when every manifest the channel publishes came back without a build:
+ * the release server was not reached, or refused every answer. Update Now then
+ * says so instead of "up to date". False on a channel that publishes none.
+ */
+export function releaseServerUnreachable(channel: UpdateChannel, target: UpgradeTarget): boolean {
+  const kinds = (['daemon', 'instance', 'ui'] as const).filter(
+    (kind) => builtinChannelManifestUrl(channel, kind) !== null
+  )
+  return kinds.length > 0 && kinds.every((kind) => !target[kind]?.commit)
+}
+
+/**
  * One unit's pin. `manifestUrl` is the version-pinned manifest when the channel
  * pins (`canary` / `rc` / `release`), else the manifest's own URL — so an install always fetches the exact build the run
  * recorded, or the floating channel head when there is no pin.

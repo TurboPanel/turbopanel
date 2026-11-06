@@ -74,6 +74,8 @@ async function withFixture(
         return Promise.resolve()
       },
     })
+    // createApp publishes the runtime for every request; mirror it here.
+    c.set('runtime', 'workers')
     c.set('platformEnv', { TURBOPANEL_BASE_URL: 'https://panel.example.com' })
     c.set('breachRangeResponder', opts.responder ?? cleanBreachResponder())
     c.set(

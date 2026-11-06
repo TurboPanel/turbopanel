@@ -309,6 +309,15 @@ const ALLOWED_METADATA_FIELDS: ReadonlySet<string> = new Set([
   'durable',
 ])
 
+/**
+ * Optional: only older daemons send it, and nothing reads it any more. A value
+ * that is sent must still be a valid generation number.
+ */
+function parseOptionalTopologyGeneration(value: unknown): ValidateResult<number | undefined> {
+  if (value === undefined) return { ok: true, value: undefined }
+  return parseGeneration(value, 'metadata.topologyGeneration')
+}
+
 function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampleMetadata> {
   if (!isRecord(raw)) return fail('metadata must be an object')
   for (const key of Object.keys(raw)) {
@@ -334,7 +343,7 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
   const sequence = parseSafeNonNegativeInteger(raw.sequence, 'metadata.sequence')
   if (!sequence.ok) return sequence
 
-  const topologyGeneration = parseGeneration(raw.topologyGeneration, 'metadata.topologyGeneration')
+  const topologyGeneration = parseOptionalTopologyGeneration(raw.topologyGeneration)
   if (!topologyGeneration.ok) return topologyGeneration
 
   const bootGeneration = parseGeneration(raw.bootGeneration, 'metadata.bootGeneration')
@@ -348,7 +357,9 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
       sampledAt: sampledAt.value,
       intervalSeconds: intervalSeconds.value,
       sequence: sequence.value,
-      topologyGeneration: topologyGeneration.value,
+      ...(topologyGeneration.value === undefined
+        ? {}
+        : { topologyGeneration: topologyGeneration.value }),
       bootGeneration: bootGeneration.value,
     },
   }

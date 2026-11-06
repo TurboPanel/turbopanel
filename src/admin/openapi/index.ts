@@ -1,7 +1,7 @@
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveSessionCookieNameFromUrl } from '../../client/authn/crypto.ts'
 import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
-import { INSTANCE_ACCESS_PATHS } from './instance-access.ts'
+import { INSTANCE_ACCESS_PATHS, INSTANCE_TUNNEL_TOKEN_PATH } from './instance-access.ts'
 import { INSTANCE_UPDATES_PATHS } from './instance-updates.ts'
 import { MAIL_DEAD_LETTER_PATHS } from './mail-dead-letters.ts'
 import { INSTANCE_HOSTNAME_PATHS } from './instance-hostnames.ts'
@@ -11,7 +11,7 @@ const cookieSecurity = [{ cookieAuth: [] }] as const
 /** Hand-authored OpenAPI 3.1 spec for documented admin REST routes. */
 export function getAdminOpenApiSpec(
   serverUrl: string,
-  _opts?: { devSurface?: boolean; runtime?: 'deno' | 'workers' }
+  opts?: { devSurface?: boolean; runtime?: 'deno' | 'workers' }
 ): object {
   const sessionCookieName = resolveSessionCookieNameFromUrl(serverUrl)
 
@@ -127,6 +127,21 @@ export function getAdminOpenApiSpec(
               type: 'object',
               additionalProperties: {
                 $ref: '#/components/schemas/EmailSettingEntry',
+              },
+            },
+            delivery: {
+              type: 'object',
+              description:
+                'Whether system email can go out right now (GET only). `not_configured`: no usable provider for this edition. `queue_unavailable`: self-hosted, the mail broker could not be reached when the control plane started.',
+              required: ['state', 'deadLetters'],
+              properties: {
+                state: { type: 'string', enum: ['ok', 'not_configured', 'queue_unavailable'] },
+                deadLetters: {
+                  type: 'integer',
+                  nullable: true,
+                  description:
+                    'Mail that gave up after every retry. Self-hosted: jobs waiting in the dead-letter queue. High Availability: jobs the mail consumer dead-lettered in the last four days (replays do not lower it). Null when the count cannot be read.',
+                },
               },
             },
           },
@@ -404,9 +419,11 @@ export function getAdminOpenApiSpec(
                 'monitors',
                 'relays',
                 'destinations',
+                'ingress',
                 'authproviders',
                 'email',
                 'alertwebhook',
+                'identity',
               ],
             },
             afterId: {
@@ -438,6 +455,7 @@ export function getAdminOpenApiSpec(
     paths: {
       ...INSTANCE_HOSTNAME_PATHS,
       ...INSTANCE_ACCESS_PATHS,
+      ...(opts?.runtime === 'workers' ? {} : INSTANCE_TUNNEL_TOKEN_PATH),
       ...INSTANCE_UPDATES_PATHS,
       ...MAIL_DEAD_LETTER_PATHS,
       [`${ADMIN_API_PREFIX}/instance/public-urls`]: {
@@ -910,7 +928,7 @@ export function getAdminOpenApiSpec(
           description:
             'Deno only. Sends a public-urls-update WS message to the co-located daemon. ' +
             'Optional body persists URLs before apply. Workers returns 422. ' +
-            "A `lets-encrypt` hostname with Let's Encrypt terms not accepted " +
+            "An `acme-http-01` hostname with Let's Encrypt terms not accepted " +
             '(stored settings and env overrides alike) returns 422 ' +
             '`{ ok: false, error, code: "acme_terms_not_accepted" }`.',
           security: [...cookieSecurity],

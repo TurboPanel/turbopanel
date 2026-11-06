@@ -712,7 +712,7 @@ export const deployPaths = {
         },
         409: {
           description:
-            'Health-check, resource-limit, no eligible server (`server_placement_required`), or TurboFabric still converging (`fabric_reconcile_pending`)',
+            'Health-check, resource-limit, no eligible server (`server_placement_required`), TurboFabric still converging (`fabric_reconcile_pending`), or TurboFabric turned off while the deploy waited for it (`fabric_turned_off`, with a plain `message`)',
           content: {
             'application/json': {
               schema: {
@@ -854,7 +854,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Stop an environment and remove what it runs',
       description:
-        'Queues one `environment.stop` command per server the environment runs on: the compose project is taken down (containers, networks and volumes are removed), the environment\'s sites\' release trees are reclaimed and the host\'s ingress is reconciled. The environment record and its settings stay, so a later deploy starts it again. This is the teardown to use when cleaning up a test environment. A rollout still waiting for its next batch is cancelled. Needs manage on the environment, and a recent step-up when the organization requires one (403 `reauth_required`). Poll each command with `GET /servers/{serverId}/commands/{commandId}`. For a stop that keeps volumes use `POST /environments/{id}/lifecycle` with `{"action": "stop"}`.',
+        'Queues one `environment.stop` command per server the environment runs on: the compose project is taken down (containers and networks are removed, and so are anonymous volumes such as one from an image `VOLUME` line or a bare `- /path` mount; Docker named volumes stay, except a top-level volume authored with `name:` and no `external:`, which needs host approval and is removed), each service\'s published releases are cleared and the host\'s ingress is reconciled. Service and volume folders stay, and so do files a service wrote through a relative bind such as `./data` in the environment\'s compose folder; only deleting the environment or its project removes them. The environment record and its settings stay, so a later deploy starts it again. This is the teardown to use when cleaning up a test environment. A rollout still waiting for its next batch is cancelled. Needs manage on the environment, and a recent step-up when the organization requires one (403 `reauth_required`). Poll each command with `GET /servers/{serverId}/commands/{commandId}`. For a stop that removes nothing use `POST /environments/{id}/lifecycle` with `{"action": "stop"}`.',
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         200: {

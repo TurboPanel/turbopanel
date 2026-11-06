@@ -994,6 +994,36 @@ test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
       assertEquals(listedBody.hostnames[0]?.source, 'platform-ca')
       assertEquals(listedBody.hostnames[0]?.status, 'ready')
 
+      const moved = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+        method: 'PUT',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          hostnames: [
+            { host: 'https://names.example.com', source: 'platform-ca' },
+            {
+              host: 'https://primary.example.com',
+              source: 'platform-ca',
+              publicPort: 443,
+              isPrimary: true,
+            },
+          ],
+        }),
+      })
+      assertEquals(moved.status, 200)
+      const movedBody = (await moved.json()) as {
+        warnings?: string[]
+        previousPrimaryOrigin?: string
+        primaryOrigin?: string
+      }
+      assertEquals(movedBody.warnings, ['primary-host-changed'])
+      assertEquals(movedBody.previousPrimaryOrigin, 'https://names.example.com:8443')
+      assertEquals(movedBody.primaryOrigin, 'https://primary.example.com')
+      const primaryLogged = await db
+        .select({ context: audit.context })
+        .from(audit)
+        .where(eq(audit.action, 'instance.primary_hostname_changed'))
+      assertEquals(primaryLogged.length >= 1, true)
+
       const rejectedAcme = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
         method: 'PUT',
         headers: {
@@ -1001,7 +1031,7 @@ test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          hostnames: [{ host: '10.1.2.3', source: 'lets-encrypt' }],
+          hostnames: [{ host: '10.1.2.3', source: 'acme-http-01' }],
         }),
       })
       assertEquals(rejectedAcme.status, 422)
@@ -1749,7 +1779,7 @@ async function withLetsEncryptColocated(
     const seeded = await replaceInstanceHostnames(db, [
       {
         host: 'https://acme-env.example.com',
-        source: 'lets-encrypt',
+        source: 'acme-http-01',
         uploadedCertId: null,
       },
     ])
@@ -1824,7 +1854,7 @@ test("PUT /instance/hostnames refuses to store a Let's Encrypt row while the ter
       headers: { Cookie: cookie, 'content-type': 'application/json' },
       body: JSON.stringify({
         hostnames: [
-          { host: 'https://acme-env.example.com', source: 'lets-encrypt' },
+          { host: 'https://acme-env.example.com', source: 'acme-http-01' },
           { host: 'https://other.example.com', source: 'platform-ca' },
         ],
       }),

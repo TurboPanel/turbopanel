@@ -194,6 +194,7 @@ export {
   type ComposeSiteServiceExtension,
   type ComposeSourceBuildKind,
   isHostNativeServiceKind,
+  isImageBuildKind,
   isNodeComposeService,
   isSafeRoot,
   isSiteComposeService,

@@ -13,7 +13,7 @@ export const INSTANCE_HOSTNAME_PATHS = {
       summary: 'List control-plane hostnames',
       description:
         'Each entry is a published name with its certificate source ' +
-        '(`platform-ca`, `uploaded`, or `lets-encrypt`), derived status, and expiry. ' +
+        '(`platform-ca`, `uploaded`, `acme-http-01` or `acme-dns-01`), derived status, and expiry. ' +
         "`tosAccepted` is the server's answer to whether Let's Encrypt terms " +
         'are accepted (stored settings and env overrides alike).',
       security: [...cookieSecurity],
@@ -30,7 +30,7 @@ export const INSTANCE_HOSTNAME_PATHS = {
         'Body `{ hostnames: [{ host, source, uploadedCertId? }] }`. ' +
         "Let's Encrypt is refused for loopback, private, and wildcard names. " +
         'An `uploaded` source must name a stored pair whose names cover the host. ' +
-        "A `lets-encrypt` row is refused while Let's Encrypt terms are not " +
+        "An `acme-http-01` or `acme-dns-01` row is refused while Let's Encrypt terms are not " +
         'accepted, so a row every later apply would reject is never stored.',
       security: [...cookieSecurity],
       requestBody: { required: true },
@@ -43,7 +43,7 @@ export const INSTANCE_HOSTNAME_PATHS = {
           description:
             '`{ ok: false, error, invalid }` when a hostname fails validation, or ' +
             '`{ ok: false, error, code: "acme_terms_not_accepted" }` when a ' +
-            '`lets-encrypt` row is saved before the terms are accepted',
+            '`acme-http-01` or `acme-dns-01` row is saved before the terms are accepted',
         },
         '503': { description: 'Database unavailable' },
       },

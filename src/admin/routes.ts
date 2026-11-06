@@ -1,4 +1,4 @@
-import { type Context, Hono } from 'hono'
+import { type Context, Hono, type MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import {
   createAdminAccessMiddleware,
@@ -20,6 +20,10 @@ import {
 import { registerNotificationAdminRoutes } from './notification-routes.ts'
 import { registerMailDeadLetterAdminRoutes } from './mail-dead-letter-routes.ts'
 import type { MailDeadLetterStore } from '../features/email/smtp/dead-letter-replay.ts'
+import { type EmailDeliveryStatus, emailDeliveryState } from '../features/email/delivery-status.ts'
+import { isNoopEmailQueue } from '../features/email/noop-queue.ts'
+import { getEmailQueue } from '../features/email/types.ts'
+import { countEmailDeadLetters } from '../features/email/dead-letter-tally.ts'
 import {
   broadcastEchoToFleet,
   collectFleetCommands,
@@ -35,7 +39,7 @@ import {
   fetchFleetAddressesRoute,
   fetchServerAddressesRoute,
 } from '../daemon/cell/daemon-addresses-routes.ts'
-import { getDaemonCellRegistry, getDb } from '../db/connection.ts'
+import { getDaemonCellRegistry, getDb, type Db } from '../db/connection.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
 import { emptyServerIps, type ServerReportedIp } from '../contracts/server-addresses.ts'
 import { buildAdminScalarHtml } from '../app/scalar-html.ts'
@@ -75,15 +79,20 @@ import {
   tryBeginReencryptSweep,
 } from './reencrypt-secrets.ts'
 import { registerInstanceAccessAdminRoutes } from './instance-access-routes.ts'
+import { registerInstanceIdentityAdminRoutes } from './instance-identity-routes.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import { registerInstanceUpdatesAdminRoutes } from './instance-updates-routes.ts'
-import { registerInstanceHostnameAdminRoutes } from './instance-hostname-routes.ts'
+import {
+  refuseWorkersWrite,
+  registerInstanceHostnameAdminRoutes,
+} from './instance-hostname-routes.ts'
+import { platformControlPlaneOrigins } from '../features/install/control-plane-origins.ts'
 import {
   publicUrlsSiteConflict,
   recordInstanceAcmeApplyTimeout,
   recordInstanceAcmePreflightFailure,
 } from '../features/install/instance-hostnames.ts'
-import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
-import { resolveInstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
+import { buildPublicUrlsPayload, recordPublicUrlsApplied } from './public-urls-apply-run.ts'
 import {
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
@@ -95,6 +104,7 @@ import {
   publicUrlsApplyErrorResponse,
   PUBLIC_URLS_APPLY_TIMEOUT_MESSAGE,
   type PublicUrlsApplyErrorResponse,
+  type PublicUrlsApplyPayload,
   publicUrlsApplyWaitToResponse,
   resolvePerServerLimit,
   resolvePlatformEnv,
@@ -114,8 +124,7 @@ import {
 } from '../features/settings/server-metrics-settings.ts'
 
 type PublicUrlsApplyPayloadOutcome =
-  | { ok: true; payload: Awaited<ReturnType<typeof resolvePublicUrlsApplyPayload>> }
-  | ({ ok: false } & PublicUrlsApplyErrorResponse)
+  { ok: true; payload: PublicUrlsApplyPayload } | ({ ok: false } & PublicUrlsApplyErrorResponse)
 
 /** Seal secrets for the daemon and build the apply body, mapping known refusals to HTTP. */
 async function buildPublicUrlsApplyPayload(
@@ -127,15 +136,15 @@ async function buildPublicUrlsApplyPayload(
   daemonVersion: string | undefined
 ): Promise<PublicUrlsApplyPayloadOutcome> {
   try {
-    const sealing = await resolveInstanceSecretSealing(db, serverId, c.get('secretsConfig'))
-    const payload = await resolvePublicUrlsApplyPayload(
+    const payload = await buildPublicUrlsPayload({
       db,
+      serverId,
       urls,
       daemonVersion,
-      c.get('dataEncryptionSecrets'),
-      resolvePlatformEnv(c, opts),
-      sealing
-    )
+      secretsConfig: c.get('secretsConfig'),
+      dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+      env: resolvePlatformEnv(c, opts),
+    })
     return { ok: true, payload }
   } catch (err) {
     const refusal = publicUrlsApplyErrorResponse(err)
@@ -157,6 +166,21 @@ async function reconcilePlatformCaTrustAfterApply(
 }
 
 /**
+ * Mail that gave up: self-hosted, the jobs waiting in the dead-letter queue;
+ * High Availability, the jobs the mail consumer dead-lettered in the last
+ * four days (replays do not lower it). `null` when this edition cannot tell.
+ */
+async function readDeadLetterCount(
+  store: MailDeadLetterStore | undefined,
+  runtime: 'deno' | 'workers',
+  db: NonNullable<ReturnType<typeof getDb>>
+): Promise<number | null> {
+  if (store) return await store.count().catch(() => null)
+  if (runtime === 'workers') return await countEmailDeadLetters(db).catch(() => null)
+  return null
+}
+
+/**
  * Admin UI surface: fleet diagnostics, public URL management, and (dev-only) shell.
  */
 export function registerAdminRoutes(
@@ -171,6 +195,16 @@ export function registerAdminRoutes(
      * never statically imports the Stripe tier catalogue.
      */
     registerTiers?: (admin: Hono<AppEnv>) => void
+    /**
+     * Self-hosted only. `src/platform/deno/server.ts` passes the ingress
+     * registrar (`src/platform/deno/ingress/admin-routes.ts`); Workers omits
+     * it, so this registrar never imports `platform/deno`. Routes mount under
+     * the admin prefix behind the admin session middleware.
+     */
+    registerPlatformAdminRoutes?: (
+      admin: Hono<AppEnv>,
+      deps: { rootOnly: MiddlewareHandler<AppEnv> }
+    ) => void
     getOpenApiSpec?: (
       serverUrl: string,
       opts?: { devSurface?: boolean; runtime?: 'deno' | 'workers' }
@@ -182,6 +216,11 @@ export function registerAdminRoutes(
      */
     readPlatformCaBundle?: () => Promise<string>
     /**
+     * Deno composition root injects the edge address range fetch so an apply
+     * sees ranges for a mode that was just switched on. Workers omits it.
+     */
+    refreshEdgeRanges?: (db: Db) => Promise<void>
+    /**
      * Deno composition root injects host-interface collection. Workers omits
      * it so this registrar never imports `platform/deno/server-addresses-deno`.
      */
@@ -192,6 +231,12 @@ export function registerAdminRoutes(
      * queue), so the routes answer 501 there.
      */
     mailDeadLetters?: MailDeadLetterStore
+    /** The control plane identity for the Panel Identity read; omitted means the feature is off. */
+    panelIdentity?: () => Promise<PanelIdentity | null>
+    /** The public origins the identity document lists (URL 0 is the install address). */
+    identityUrls?: (db: NonNullable<ReturnType<typeof getDb>>) => Promise<string[]>
+    /** Self-hosted: the stored next key changed, so swap the in-memory identity. */
+    onIdentityNextChanged?: (fingerprint: string | null) => void
   }
 ) {
   const admin = new Hono<AppEnv>()
@@ -276,6 +321,12 @@ export function registerAdminRoutes(
   })
 
   admin.get('/instance/public-urls', async (c) => {
+    // Hosted: the platform environment names the control plane; stored rows
+    // are ignored and never listed.
+    if (opts.runtime === 'workers') {
+      const urls = platformControlPlaneOrigins(resolvePlatformEnv(c, opts))
+      return c.json({ ok: true, urls, platformManaged: true })
+    }
     const db = getDb(c)
     if (!db) return c.json({ ok: true, urls: [] })
     const urls = await getPublicUrls(db)
@@ -283,6 +334,8 @@ export function registerAdminRoutes(
   })
 
   admin.put('/instance/public-urls', createRootOnlyMiddleware(opts.secrets), async (c) => {
+    const refused = refuseWorkersWrite(c, opts)
+    if (refused) return refused
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
 
@@ -311,6 +364,14 @@ export function registerAdminRoutes(
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
   })
 
+  registerInstanceIdentityAdminRoutes(admin, {
+    secrets: opts.secrets,
+    runtime: opts.runtime,
+    ...(opts.panelIdentity ? { panelIdentity: opts.panelIdentity } : {}),
+    ...(opts.identityUrls ? { identityUrls: opts.identityUrls } : {}),
+    ...(opts.onIdentityNextChanged ? { onNextChanged: opts.onIdentityNextChanged } : {}),
+  })
+
   registerInstanceAccessAdminRoutes(admin, {
     secrets: opts.secrets,
     runtime: opts.runtime,
@@ -318,8 +379,13 @@ export function registerAdminRoutes(
     ...(opts.readPlatformCaBundle ? { readPlatformCaBundle: opts.readPlatformCaBundle } : {}),
   })
 
+  opts.registerPlatformAdminRoutes?.(admin, {
+    rootOnly: createRootOnlyMiddleware(opts.secrets),
+  })
+
   registerInstanceUpdatesAdminRoutes(admin, {
     runtime: opts.runtime,
+    rootOnly: createRootOnlyMiddleware(opts.secrets),
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
   })
 
@@ -405,7 +471,25 @@ export function registerAdminRoutes(
       resolvePlatformEnv(c, opts),
       dataEncryptionSecrets
     )
-    return c.json({ settings: emailSettingsToApiShape(resolved) })
+    const runtime = c.get('runtime') === 'workers' ? 'workers' : 'deno'
+    const state = emailDeliveryState({
+      settings: resolved,
+      runtime,
+      queueUnavailable: isNoopEmailQueue(getEmailQueue(c)),
+    })
+    const delivery: EmailDeliveryStatus = {
+      state,
+      // Self-hosted reads its broker's dead-letter queue depth; High
+      // Availability reads the tally its mail consumer keeps
+      // (`dead-letter-tally.ts`). A count that cannot be read is unknown
+      // rather than failing the page, and a queue already known to be down is
+      // not dialled (that would hold the page for the connect timeout).
+      deadLetters:
+        state === 'queue_unavailable'
+          ? null
+          : await readDeadLetterCount(opts.mailDeadLetters, runtime, db),
+    }
+    return c.json({ settings: emailSettingsToApiShape(resolved), delivery })
   })
 
   admin.put('/settings/email', createRootOnlyMiddleware(opts.secrets), async (c) => {
@@ -664,6 +748,7 @@ export function registerAdminRoutes(
       return c.json({ ok: false, error: 'co-located daemon disconnected' }, 503)
     }
 
+    await opts.refreshEdgeRanges?.(db).catch(() => undefined)
     const applied = await buildPublicUrlsApplyPayload(
       c,
       opts,
@@ -684,6 +769,7 @@ export function registerAdminRoutes(
     }
     const response = publicUrlsApplyWaitToResponse(result)
     if (response.status === 200) {
+      await recordPublicUrlsApplied(db, applied.payload)
       await reconcilePlatformCaTrustAfterApply(c, db, opts.readPlatformCaBundle)
     }
     return c.json(response.body, response.status)

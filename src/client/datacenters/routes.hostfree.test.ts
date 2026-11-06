@@ -7,7 +7,7 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { datacenter, fabric, ip, network, relay, server } from '../../db/schema.ts'
+import { datacenter, fabric, ip, network, relay, server, subnet } from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmptyMockAuthState,
@@ -251,6 +251,10 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
     },
     select: (fields?: unknown) => ({
       from: (table: unknown) => {
+        if (table === subnet) {
+          // No cross-server container network: the LAN pair guard has nothing to keep.
+          return { innerJoin: () => ({ leftJoin: () => ({ where: () => thenableRows([]) }) }) }
+        }
         if (table === network && opts.networkRows) {
           return { where: () => thenableRows(opts.networkRows ?? []) }
         }

@@ -63,6 +63,9 @@ pnpm run check:workers-bundle
 echo "==> Check vocabulary"
 pnpm run check:vocabulary
 
+echo "==> Check contributor guide references"
+pnpm run check:guide-references
+
 echo "==> Check migration freeze (manifest + additions only vs origin/trunk)"
 pnpm run check:migration-freeze
 pnpm run check:migration-additions
@@ -78,6 +81,9 @@ pnpm run check:ca-boundary
 
 echo "==> Check instance ACME boundary"
 pnpm run check:instance-acme-boundary
+
+echo "==> Check Workers ACME boundary"
+pnpm run check:workers-acme-boundary
 
 echo "==> Check import boundaries"
 pnpm run check:import-boundaries

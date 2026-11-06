@@ -14,6 +14,7 @@
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
   STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY,
   STRIPE_CUSTOMER_USER_METADATA_KEY,
@@ -370,6 +371,54 @@ test("T6 · an ended subscription revokes every license the organization holds �
   // The seat row still says what the provider counts; entitlement reads it as zero.
   assertEquals(db.rows(subscription)[0]?.status, 'canceled')
   assertEquals(seatRows(db), [['si_1', S1, 2, 'price_S1']])
+})
+
+/** A registry whose cells only answer `purge`, recording which servers were purged. */
+function purgeRecordingRegistry(purge: () => Promise<void> = () => Promise.resolve()) {
+  const purged: string[] = []
+  const registry = {
+    getCell: (serverId: string) => ({
+      purge: async () => {
+        purged.push(serverId)
+        await purge()
+      },
+    }),
+  } as unknown as DaemonCellRegistry
+  return { registry, purged }
+}
+
+test('an ended subscription also purges each bound server cell so its live socket closes', async () => {
+  const db = emptyDb({
+    licenses: [licenseRow(LICENSE_BOUND, SERVER), licenseRow(LICENSE_SPARE, null)],
+    servers: [serverRow(SERVER, S1)],
+  })
+  const client = routedClient({
+    [SUB_ROUTE]: () => stripeSubscription({ status: 'canceled' }),
+  })
+  const { registry, purged } = purgeRecordingRegistry()
+  synced(
+    await projectSubscriptionById({ db, client, now: NOW, daemonCellRegistry: registry }, 'sub_1')
+  )
+  assertEquals(purged, [SERVER])
+})
+
+test('a failed cell purge never fails the projection: the key revoke still stands', async () => {
+  const db = emptyDb({
+    licenses: [licenseRow(LICENSE_BOUND, SERVER)],
+    servers: [serverRow(SERVER, S1)],
+  })
+  const client = routedClient({
+    [SUB_ROUTE]: () => stripeSubscription({ status: 'canceled' }),
+  })
+  const { registry, purged } = purgeRecordingRegistry(() =>
+    Promise.reject(new Error('cell unreachable'))
+  )
+  const entitlements = synced(
+    await projectSubscriptionById({ db, client, now: NOW, daemonCellRegistry: registry }, 'sub_1')
+  )
+  assertEquals(purged, [SERVER])
+  assertEquals(entitlements.result.revokedLicenseIds, [LICENSE_BOUND])
+  assertEquals(entitlements.result.disconnectedServerIds, [SERVER])
 })
 
 test('T6 · a past_due subscription keeps every license and its assignment while Stripe retries', async () => {

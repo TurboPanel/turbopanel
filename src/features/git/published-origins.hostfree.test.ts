@@ -9,10 +9,10 @@ import { instanceHostname, setting } from '../../db/schema.ts'
 import {
   listPublishedOrigins,
   matchPublishedOrigin,
-  platformManagedOrigin,
   preferredPublishedOrigin,
   resolvePublishedOrigins,
 } from './published-origins.ts'
+import { platformControlPlaneOrigin } from '../install/control-plane-origins.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -58,63 +58,54 @@ function hostnamesDb(hosts: string[] = []): Db {
   } as unknown as Db
 }
 
-test('platformManagedOrigin reads the base URL on the hosted runtime only', () => {
+test('the hosted address is the base URL, trimmed and without a trailing slash', () => {
+  assertEquals(platformControlPlaneOrigin(HOSTED_ENV), 'https://panel.example.com')
   assertEquals(
-    platformManagedOrigin({ runtime: 'workers', platformEnv: HOSTED_ENV }),
+    platformControlPlaneOrigin({ TURBOPANEL_BASE_URL: ' https://panel.example.com/ ' }),
     'https://panel.example.com'
   )
-  assertEquals(
-    platformManagedOrigin({
-      runtime: 'workers',
-      platformEnv: { TURBOPANEL_BASE_URL: ' https://panel.example.com/ ' },
-    }),
-    'https://panel.example.com'
-  )
-  // Self-hosted publishes the operator list only, whatever the env says.
-  assertEquals(platformManagedOrigin({ runtime: 'deno', platformEnv: HOSTED_ENV }), null)
-  assertEquals(platformManagedOrigin({ platformEnv: HOSTED_ENV }), null)
 })
 
-test('platformManagedOrigin ignores a blank, plaintext or unusable base URL', () => {
+test('a blank, plaintext or unusable base URL publishes no hosted address', () => {
   for (const value of [undefined, '', '   ', 'http://panel.example.com', 'not a url']) {
+    assertEquals(platformControlPlaneOrigin({ TURBOPANEL_BASE_URL: value }), null, String(value))
+  }
+  assertEquals(platformControlPlaneOrigin(undefined), null)
+})
+
+test('the hosted address is always port-free: hosted answers on 443', () => {
+  for (const base of ['https://panel.example.com:443', 'https://panel.example.com:9443']) {
     assertEquals(
-      platformManagedOrigin({ runtime: 'workers', platformEnv: { TURBOPANEL_BASE_URL: value } }),
-      null,
-      String(value)
+      platformControlPlaneOrigin({ TURBOPANEL_BASE_URL: base }),
+      'https://panel.example.com'
     )
   }
-  assertEquals(platformManagedOrigin({ runtime: 'workers' }), null)
 })
 
-test('platformManagedOrigin keeps a non-default port and drops an explicit 443', () => {
-  assertEquals(
-    platformManagedOrigin({
-      runtime: 'workers',
-      platformEnv: { TURBOPANEL_BASE_URL: 'https://panel.example.com:443' },
-    }),
-    'https://panel.example.com'
-  )
-  assertEquals(
-    platformManagedOrigin({
-      runtime: 'workers',
-      platformEnv: { TURBOPANEL_BASE_URL: 'https://panel.example.com:9443' },
-    }),
-    'https://panel.example.com:9443'
-  )
-})
-
-test('listPublishedOrigins puts the platform address ahead of the stored list', async () => {
+test('listPublishedOrigins publishes the stored list self-hosted and the platform address hosted', async () => {
   assertEquals(await listPublishedOrigins(hostnamesDb()), [])
-  assertEquals(await listPublishedOrigins(hostnamesDb(), 'https://panel.example.com'), [
-    'https://panel.example.com',
-  ])
-  assertEquals(
-    await listPublishedOrigins(hostnamesDb(['hooks.example.com']), 'https://panel.example.com'),
-    ['https://panel.example.com', 'https://hooks.example.com:8443']
-  )
   assertEquals(await listPublishedOrigins(hostnamesDb(['hooks.example.com'])), [
     'https://hooks.example.com:8443',
   ])
+  assertEquals(
+    await listPublishedOrigins(hostnamesDb(['hooks.example.com']), {
+      runtime: 'deno',
+      platformEnv: HOSTED_ENV,
+    }),
+    ['https://hooks.example.com:8443']
+  )
+  // Hosted: a stored row is ignored, the platform address is the only one.
+  assertEquals(
+    await listPublishedOrigins(hostnamesDb(['hooks.example.com']), {
+      runtime: 'workers',
+      platformEnv: HOSTED_ENV,
+    }),
+    ['https://panel.example.com']
+  )
+  assertEquals(
+    await listPublishedOrigins(hostnamesDb(['hooks.example.com']), { runtime: 'workers' }),
+    []
+  )
 })
 
 test('resolvePublishedOrigins reports the runtime beside the origins', async () => {
@@ -167,4 +158,13 @@ test('matchPublishedOrigin accepts either spelling of a published origin and not
   assertEquals(matchPublishedOrigin(origins, 'https://other.example.com'), null)
   assertEquals(matchPublishedOrigin(origins, 'http://panel.example.com'), null)
   assertEquals(matchPublishedOrigin([], 'https://panel.example.com'), null)
+})
+
+test('matchPublishedOrigin maps an old :8443 webhook address to the same host published on 443', () => {
+  const origins = ['https://panel.example.com']
+  assertEquals(
+    matchPublishedOrigin(origins, 'https://panel.example.com:8443'),
+    'https://panel.example.com'
+  )
+  assertEquals(matchPublishedOrigin(origins, 'https://other.example.com:8443'), null)
 })

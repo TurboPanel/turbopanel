@@ -14,6 +14,7 @@ import type {
   DaemonInboundFrameResult,
   DaemonMessage,
   DaemonOutboundEnvelope,
+  DevHostStatusMessage,
 } from '../contracts/cell-protocol.ts'
 import {
   DAEMON_CELL_PING,
@@ -24,11 +25,28 @@ import {
   wireMessageToInboundEnvelope,
 } from '../contracts/cell-protocol.ts'
 import { instanceAttachVersionFrame } from './attach-version.ts'
+import {
+  createDaemonSessionSender,
+  type DaemonSessionPhase,
+  type DaemonSessionSender,
+  decideFirstFrame,
+  PANEL_IDENTITY_CLOSE_CODE,
+  SIGNED_SEND_FAILED_REASON,
+} from './signed-session-gate.ts'
+import { buildSignedHello } from '../lib/panel-identity/signed-session.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { HEARTBEAT_SECONDS_DEFAULT } from '../features/install/heartbeat-policy.ts'
 import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
 import { emitCertificateRenewalFailed } from '../features/notifications/certificate-alerts.ts'
+import { handleRepoKeyChanged } from '../features/notifications/repo-key-alerts.ts'
+import { intakeHelloPinReport } from './pin-report-intake.ts'
 import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
-import { recordInstanceAcmeIssuance } from '../features/install/instance-hostnames.ts'
+import { handleHttpIssuanceInbound } from '../features/tls/http-issuance/events.ts'
+import {
+  type InstanceAcmeIssuanceMessage,
+  recordInstanceAcmeIssuanceFromServer,
+} from './instance-acme-inbound.ts'
 import {
   persistDaemonReachedTarget,
   persistUpgradeOutcome,
@@ -43,7 +61,7 @@ import { getDb } from '../db/connection.ts'
 import type { Db } from '../db/connection.ts'
 import { compatLogError, compatLogWarn } from '../lib/log-compat.ts'
 import { forEachSequential } from '../lib/sequential.ts'
-import { cellTrace, daemonCellLog } from '../lib/logger.ts'
+import { cellTrace, daemonCellLog, logWarn } from '../lib/logger.ts'
 import {
   onDaemonConnected,
   onDaemonDisconnected,
@@ -63,7 +81,7 @@ import { touchServerMetadata } from '../features/servers/server-registry.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   getServerDaemonStateByServerId,
-  isDaemonKeyActive,
+  isCurrentActiveDaemonKey,
 } from '../features/servers/server-identity-db.ts'
 import type { CommandQueue } from '../features/commands/queue.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
@@ -80,6 +98,11 @@ import {
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
 import { handleManagedHealthReport } from '../features/managed/health-report.ts'
 import {
+  FabricPeerReportThrottle,
+  handleFabricPeersReport,
+  takeFabricPeersReport,
+} from '../features/fabric/peer-report.ts'
+import {
   resolveAutoFailoverFromDenoEnv,
   resolveFreshStandbyMarginMsFromDenoEnv,
 } from '../features/managed/auto-failover-switch.ts'
@@ -92,6 +115,15 @@ import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolveSession } from '../client/authn/middleware.ts'
 import { isSuperadminRole } from '../client/authn/session-store.ts'
 import { verifyLocalConsoleAuthorization } from '../developer/local-console-auth.ts'
+import { refuseUnsignedDaemonUpgrade } from './authn/upgrade-signature.ts'
+import {
+  ATTACH_PROOF_CLOSE_CODE,
+  ATTACH_PROOF_REFUSED_REASON,
+  DAEMON_PROOF_TRUST_LEVEL,
+  decideAttachProof,
+} from './authn/attach-proof.ts'
+import { helloListsSignedReports, intakeSignedSessionReport } from './authn/report-signature.ts'
+import { raiseServerTrustLevel, recordServerSignsReports } from '../features/servers/trust-level.ts'
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250
@@ -117,7 +149,9 @@ function assignColocatedDaemonOnConnect(db: Db, registry: DaemonCellRegistry): v
 
 /**
  * After license invalidation, Redis purge cannot close the live socket — reject
- * the next inbound frame when the JWT kid no longer matches an active key.
+ * the next inbound frame when the JWT kid no longer matches an active key. The
+ * upgrade runs the same check first, so this one only catches a key revoked
+ * while the socket was already open.
  */
 async function assertDaemonKeyStillActive(
   db: Db,
@@ -126,7 +160,7 @@ async function assertDaemonKeyStillActive(
   ws: WSContext<WebSocket>
 ): Promise<boolean> {
   const daemonRow = await getServerDaemonStateByServerId(db, serverId)
-  if (daemonRow?.key.id !== keyId || !isDaemonKeyActive(daemonRow.key)) {
+  if (!isCurrentActiveDaemonKey(daemonRow, keyId)) {
     cellTrace('inbound-key-revoked', { serverId, keyId })
     ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'key_revoked')
     return false
@@ -139,7 +173,8 @@ type DaemonOutboxPumpParams = {
   serverId: string
   connectionId: string
   consumer: string
-  ws: WSContext<WebSocket>
+  /** The socket's sender: plain JSON, or a signed envelope once the session is signed. */
+  send: (wire: { type: string }) => Promise<void>
   abortRef: { abort: boolean }
 }
 
@@ -148,7 +183,7 @@ async function sendOutboxBatch(
   params: DaemonOutboxPumpParams,
   batch: DaemonOutboundEnvelope[]
 ): Promise<void> {
-  const { cell, serverId, connectionId, consumer, ws } = params
+  const { cell, serverId, connectionId, consumer, send } = params
   await forEachSequential(batch, async (envelope) => {
     const wireMsg = outboundEnvelopeToWireMessage(envelope)
     await cell.markSent(envelope.deliveryId, connectionId)
@@ -159,7 +194,7 @@ async function sendOutboxBatch(
       requestId: envelope.requestId,
       kind: envelope.kind,
     })
-    ws.send(JSON.stringify(wireMsg))
+    await send(wireMsg)
     await cell.ackOutbox([envelope.deliveryId], consumer)
   })
   if (batch.length > 0) {
@@ -378,6 +413,7 @@ async function handleDaemonPresenceInbound(params: {
       releaseLinkScan: message.releaseLinkScan,
       services,
       features: message.features ?? [],
+      ...(message.panelPin ? { panelPin: message.panelPin } : {}),
     })
   } else if (
     message.timeSync ||
@@ -459,6 +495,45 @@ async function handleDaemonManagedHealthReportInbound(params: {
   await cell.recordInbound({ connectionId, at: message.at })
 }
 
+/**
+ * Process-wide "once per 60 s per server, unless a peer's health class
+ * changed" gate for `fabric-peers-report`.
+ */
+const fabricPeerReportThrottle = new FabricPeerReportThrottle()
+
+async function handleDaemonFabricPeersReportInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'fabric-peers-report' }>
+  reporterServerId: string
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params
+  if (
+    takeFabricPeersReport(fabricPeerReportThrottle, params.reporterServerId, message, Date.now())
+  ) {
+    await handleFabricPeersReport(db, {
+      reporterServerId: params.reporterServerId,
+      peers: message.peers,
+      observedAt: message.observedAt,
+    })
+  }
+  await cell.recordInbound({ connectionId, at: message.at })
+}
+
+async function handleDaemonRepoKeyChangedInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  serverId: string
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'repo-key-changed' }>
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
+}): Promise<void> {
+  const { cell, db, serverId, connectionId, message } = params
+  await handleRepoKeyChanged(db, params.dataEncryptionSecrets, serverId, message)
+  await cell.recordInbound({ connectionId, at: message.at })
+}
+
 async function handleAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
@@ -489,18 +564,13 @@ async function handleAcmeIssuanceInbound(params: {
 async function handleInstanceAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
+  serverId: string
   connectionId: string | undefined
-  message: Extract<DaemonMessage, { type: 'instance-acme-issuance-event' }>
+  message: InstanceAcmeIssuanceMessage
 }): Promise<void> {
-  const { cell, db, connectionId, message } = params
+  const { cell, db, serverId, connectionId, message } = params
   await cell.recordInbound({ connectionId, at: message.at })
-  await recordInstanceAcmeIssuance(db, {
-    hostname: message.hostname,
-    ok: message.ok,
-    at: message.at,
-    ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
-    ...(message.notAfter ? { notAfter: message.notAfter } : {}),
-  })
+  await recordInstanceAcmeIssuanceFromServer(db, serverId, message)
 }
 
 async function handleDaemonTopologyReportInbound(params: {
@@ -566,6 +636,18 @@ async function applyDaemonInboundEnvelope(params: {
   return record
 }
 
+/**
+ * Receives `dev-host-status` from the co-located daemon (feature
+ * `dev-host-v1`). Supplied only by the development entry (`src/deno-dev.ts`);
+ * without it, and for any daemon that is not co-located, the frame only
+ * records liveness.
+ */
+export type DevHostStatusSink = (report: {
+  serverId: string
+  status: DevHostStatusMessage['status']
+  at: string
+}) => void
+
 /** Everything the per-type inbound handlers need for one validated frame. */
 type DaemonInboundDispatch = {
   cell: ReturnType<DaemonCellRegistry['getCell']>
@@ -578,6 +660,10 @@ type DaemonInboundDispatch = {
   message: DaemonMessage
   /** Seals alert channel addresses when an event notifies; omit and only the bell is written. */
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** True when the frame came over the co-located Unix-socket attach (no peer address). */
+  colocated?: boolean
+  /** Development entry only: receives the co-located daemon's `dev-host-status`. */
+  onDevHostStatus?: DevHostStatusSink
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
   reply: (
     message: BackupRunReportResultMessage | CommandOutcomeAckMessage | BackupCopyReportResultMessage
@@ -698,6 +784,21 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         reporterServerId: serverId,
       })
       return
+    case 'fabric-peers-report':
+      await handleDaemonFabricPeersReportInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+        reporterServerId: serverId,
+      })
+      return
+    case 'dev-host-status':
+      await cell.recordInbound({ connectionId, at: message.at })
+      if (params.colocated === true && params.onDevHostStatus) {
+        params.onDevHostStatus({ serverId, status: message.status, at: message.at })
+      }
+      return
     case 'topology-report':
       await handleDaemonTopologyReportInbound({
         cell,
@@ -705,6 +806,16 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         connectionId,
         message,
         reporterServerId: serverId,
+      })
+      return
+    case 'repo-key-changed':
+      await handleDaemonRepoKeyChangedInbound({
+        cell,
+        db,
+        serverId,
+        connectionId,
+        message,
+        dataEncryptionSecrets: params.dataEncryptionSecrets,
       })
       return
     case 'acme-issuance-event':
@@ -717,10 +828,17 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         dataEncryptionSecrets: params.dataEncryptionSecrets,
       })
       return
+    case 'acme-issue-event':
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
+      await cell.recordInbound({ connectionId, at: message.at })
+      await handleHttpIssuanceInbound(db, serverId, message)
+      return
     case 'instance-acme-issuance-event':
       await handleInstanceAcmeIssuanceInbound({
         cell,
         db,
+        serverId,
         connectionId,
         message,
       })
@@ -804,6 +922,17 @@ export type DaemonWebSocketOptions = {
    * host); see `peer-address.ts`.
    */
   trustedProxyCidrs?: readonly string[]
+  /**
+   * Cached advised heartbeat in seconds for the attach `version` frame. Must
+   * not touch the database: the attach path calls it once per connection.
+   */
+  heartbeatSeconds?: () => number
+  /** The identity key; null or absent = no signed sessions (a pinned daemon is refused). */
+  panelIdentity?: () => Promise<PanelIdentity | null>
+  /** The control plane's public origins, sent in the signed hello. */
+  identityUrls?: (db: Db) => Promise<string[]>
+  /** Development entry only: the co-located daemon's `dev-host-status` sink. */
+  onDevHostStatus?: DevHostStatusSink
 }
 
 /**
@@ -863,22 +992,49 @@ export function registerDaemonWebSocket<E extends Env>(
       return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
     }
 
-    return upgradeWebSocket((c) => {
-      // CF-Connecting-IP is honoured only when the immediate peer is a trusted
-      // local proxy, so a Cloudflare Tunnel in front of the instance reports
-      // the daemon's real address while a daemon dialling Caddy directly
-      // cannot forge one. See `peer-address.ts`.
-      const peer = resolvePeerAddress(
-        {
-          realIp: c.req.header('x-real-ip'),
-          forwardedFor: c.req.header('x-forwarded-for'),
-          cfConnectingIp: c.req.header('cf-connecting-ip'),
-        },
-        {
-          runtime: 'deno',
-          trustedProxyCidrs: options.trustedProxyCidrs ?? trustedProxyCidrs(),
-        }
-      )
+    // CF-Connecting-IP is honoured only when the immediate peer is a trusted
+    // local proxy, so a Cloudflare Tunnel in front of the instance reports
+    // the daemon's real address while a daemon dialling Caddy directly
+    // cannot forge one. See `peer-address.ts`.
+    const peer = resolvePeerAddress(
+      {
+        realIp: c.req.header('x-real-ip'),
+        forwardedFor: c.req.header('x-forwarded-for'),
+        cfConnectingIp: c.req.header('cf-connecting-ip'),
+      },
+      {
+        runtime: 'deno',
+        trustedProxyCidrs: options.trustedProxyCidrs ?? trustedProxyCidrs(),
+      }
+    )
+
+    // A valid JWT is not enough to open a socket: it outlives a revoke by up
+    // to its full lifetime. Without this, a revoked host reconnected with its
+    // cached token, and the open handler re-created its lease, marked it
+    // online and pushed its capability plan before the first inbound frame
+    // was checked. Hosted refuses at the same point (`workers-ws.ts`).
+    //
+    // One case passes through: a co-located daemon whose server row is gone.
+    // The open handler closes it with 4401 `server row missing`, which is the
+    // signal that makes it enroll again.
+    const daemonState = await getServerDaemonStateByServerId(db, payload.sub)
+    const colocatedRowMissing = daemonState === null && peer?.address === undefined
+    if (!colocatedRowMissing && !isCurrentActiveDaemonKey(daemonState, payload.kid)) {
+      return c.json({ ok: false, error: 'forbidden' }, 403)
+    }
+    const refused = daemonState
+      ? await refuseUnsignedDaemonUpgrade({
+          db,
+          request: c.req.raw,
+          serverId: payload.sub,
+          cnfJkt: payload.cnf?.jkt,
+          state: daemonState,
+          panelIdentity: options.panelIdentity,
+        })
+      : null
+    if (refused) return c.json({ ok: false, error: refused.error }, refused.status)
+
+    return upgradeWebSocket(() => {
       const remoteAddress = peer?.address
       const identityAddress = remoteAddress ?? DIRECT_ATTACH_SENTINEL
       const connectedAt = new Date().toISOString()
@@ -889,6 +1045,172 @@ export function registerDaemonWebSocket<E extends Env>(
       let attachReady = false
       const pendingMessages: string[] = []
       const inboundGate = createInboundWindowGate(inboundMessageLimit, inboundMessageWindowMs)
+      // Nothing goes to the daemon until its first frame says which session
+      // it runs (`signed-session-gate.ts`).
+      let phase: DaemonSessionPhase = 'await-first-frame'
+      // Set by the first frame; a frame that arrives while it is still being
+      // answered waits for it instead of opening a second session.
+      let sessionOpening: Promise<boolean> | undefined
+      let sender: DaemonSessionSender | undefined
+      // A signed session's outbox waits for the daemon's presence hello and
+      // its attach proof; the version frame does not.
+      let awaitingAttach: { sessionId: string; kid: string } | undefined
+      // The signed session's id, and whether the daemon's hello said it signs
+      // its reports (`report-signature.ts`).
+      let signedSessionId: string | undefined
+      let daemonSignsReports = false
+      // The server has sent a verified signed report (`trust_reports_signed_at`
+      // at upgrade, or earlier on this socket): its unsigned reports are refused.
+      let serverSignsReports = daemonState?.reportsSigned === true
+      // The unsigned-report warning is logged once per connection.
+      let warnedUnsigned = false
+      const senderFor = (ws: WSContext<WebSocket>): DaemonSessionSender => {
+        sender ??= createDaemonSessionSender({
+          sendText: (text) => ws.send(text),
+          onSignedSendFailure: () => {
+            pumpControl.abort = true
+            ws.close(1011, SIGNED_SEND_FAILED_REASON)
+          },
+        })
+        return sender
+      }
+
+      /** An answer to a frame the daemon sent; a failed signed send already closed the socket. */
+      const replyToDaemon = (ws: WSContext<WebSocket>, answer: { type: string }): void => {
+        senderFor(ws)
+          .send(answer)
+          .catch(() => undefined)
+      }
+
+      const startPump = (ws: WSContext<WebSocket>): void => {
+        if (!connectionId) return
+        const send = senderFor(ws)
+        startDaemonOutboxPump({
+          cell: registry.getCell(payload.sub),
+          serverId: payload.sub,
+          connectionId,
+          consumer: `ws:${connectionId}`,
+          send: (wire) => send.send(wire),
+          abortRef: pumpControl,
+        })
+      }
+
+      const startSession = (ws: WSContext<WebSocket>, pump: boolean): void => {
+        const send = senderFor(ws)
+        send
+          .send(
+            instanceAttachVersionFrame(connectedAt, Deno.env.toObject(), {
+              heartbeatSeconds: options.heartbeatSeconds?.() ?? HEARTBEAT_SECONDS_DEFAULT,
+            })
+          )
+          .catch((err) => {
+            daemonCellLog(
+              'WARN',
+              payload.sub,
+              connectionId,
+              `attach version frame failed: ${String(err)}`
+            )
+          })
+        if (pump) startPump(ws)
+      }
+
+      /**
+       * The first presence hello of a signed session: check the attach proof,
+       * raise the server once it verified, then let the outbox run. False when
+       * the socket was closed.
+       */
+      const acceptAttach = async (
+        attach: unknown,
+        session: { sessionId: string; kid: string },
+        ws: WSContext<WebSocket>
+      ): Promise<boolean> => {
+        const trustLevel = daemonState?.trustLevel ?? 0
+        const decision = await decideAttachProof(attach, {
+          sessionId: session.sessionId,
+          panelFingerprint: session.kid,
+          serverId: payload.sub,
+          keyId: daemonState?.key.id,
+          publicJwk: daemonState?.key.publicJwk,
+          trustLevel,
+          nowMs: Date.now(),
+        })
+        if (decision.kind === 'refused') {
+          daemonCellLog('WARN', payload.sub, connectionId, `attach refused: ${decision.reason}`)
+          pumpControl.abort = true
+          ws.close(ATTACH_PROOF_CLOSE_CODE, ATTACH_PROOF_REFUSED_REASON)
+          return false
+        }
+        if (decision.kind === 'verified' && trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
+          // Best effort: the next proof raises it again; the session goes on.
+          await raiseServerTrustLevel(db, payload.sub, DAEMON_PROOF_TRUST_LEVEL).catch((err) => {
+            daemonCellLog(
+              'WARN',
+              payload.sub,
+              connectionId,
+              `trust level raise failed: ${String(err)}`
+            )
+          })
+        }
+        awaitingAttach = undefined
+        startPump(ws)
+        return true
+      }
+
+      /** Handles the first frame; true when the frame is then processed as usual. */
+      const openSession = async (raw: string, ws: WSContext<WebSocket>): Promise<boolean> => {
+        const decision = await decideFirstFrame(raw, {
+          trustLevel: daemonState?.trustLevel ?? 0,
+          panelIdentity: options.panelIdentity,
+        })
+        if (decision.kind === 'refused') {
+          daemonCellLog('WARN', payload.sub, connectionId, `session refused: ${decision.reason}`)
+          pumpControl.abort = true
+          ws.close(PANEL_IDENTITY_CLOSE_CODE, decision.reason)
+          return false
+        }
+        if (decision.kind === 'legacy') {
+          phase = 'legacy'
+          startSession(ws, true)
+          return true
+        }
+        const urls = options.identityUrls ? await options.identityUrls(db).catch(() => []) : []
+        ws.send(
+          await buildSignedHello(decision.identity, decision.nonce, decision.session, {
+            heartbeatSeconds: options.heartbeatSeconds?.() ?? HEARTBEAT_SECONDS_DEFAULT,
+            urls,
+          })
+        )
+        senderFor(ws).enterSigned(decision.identity, decision.session)
+        phase = 'signed'
+        signedSessionId = decision.session.sessionId
+        awaitingAttach = { sessionId: decision.session.sessionId, kid: decision.session.kid }
+        startSession(ws, false)
+        return false
+      }
+
+      /** The first hello of a signed session passes the attach-proof check; anything else goes on. */
+      const presenceAdmitted = async (
+        message: { type: string; attach?: unknown; panelPin?: unknown; features?: unknown },
+        ws: WSContext<WebSocket>
+      ): Promise<boolean> => {
+        if (phase === 'signed' && message.type === 'hello') {
+          daemonSignsReports = helloListsSignedReports(message.features)
+        }
+        if (!awaitingAttach || message.type !== 'hello') return true
+        const session = awaitingAttach
+        if (!(await acceptAttach(message.attach, session, ws))) return false
+        // The signed pin report rides on the same hello; it never holds up the session.
+        void intakeHelloPinReport(message.panelPin, {
+          sessionId: session.sessionId,
+          serverId: payload.sub,
+          keyId: daemonState?.key.id,
+          publicJwk: daemonState?.key.publicJwk,
+          identity: async () => (await options.panelIdentity?.()) ?? null,
+          secrets: options.dataEncryptionSecrets,
+          withDb: (fn) => fn(db),
+        }).catch(() => {})
+        return true
+      }
 
       const handleInboundMessage = async (raw: string, ws: WSContext<WebSocket>): Promise<void> => {
         // Exception boundary — mirrors DO webSocketMessage (log + swallow) so a
@@ -936,23 +1258,82 @@ export function registerDaemonWebSocket<E extends Env>(
         traceIgnoredUnknownInboundType(payload.sub, connectionId, failure.reason)
       }
 
+      /** A signed session's report checked and unwrapped; null = drop it. */
+      const screenSignedReport = async (raw: string): Promise<string | null> => {
+        if (phase !== 'signed' || !signedSessionId) return raw
+        const intake = await intakeSignedSessionReport(raw, {
+          sessionId: signedSessionId,
+          keyId: daemonState?.key.id,
+          publicJwk: daemonState?.key.publicJwk,
+          daemonSignsReports,
+          serverSignsReports,
+          nowMs: Date.now(),
+        })
+        if (intake.verdict === 'verified' && !serverSignsReports) {
+          // From now on on this socket, and on the row for later sessions.
+          serverSignsReports = true
+          void recordServerSignsReports(db, payload.sub).catch((err) => {
+            daemonCellLog(
+              'WARN',
+              payload.sub,
+              connectionId,
+              `reports-signed write failed: ${String(err)}`
+            )
+          })
+        }
+        // Refusals always log; the unsigned-report warning once per connection.
+        const repeat = intake.verdict === 'unsigned' && warnedUnsigned
+        if (intake.verdict === 'unsigned') warnedUnsigned = true
+        if (intake.warning && !repeat) {
+          daemonCellLog('WARN', payload.sub, connectionId, intake.warning)
+        }
+        return intake.raw
+      }
+
+      /** A signed report checked, then the frame validated; null when dropped or refused. */
+      const acceptedFrame = async (
+        raw: string,
+        ws: WSContext<WebSocket>
+      ): Promise<Extract<DaemonInboundFrameResult, { ok: true }> | null> => {
+        const frame = await screenSignedReport(raw)
+        if (frame === null) return null
+        const validated = validateDaemonInboundFrame(frame)
+        if (validated.ok) return validated
+        await handleUnacceptedFrame(validated, ws)
+        return null
+      }
+
       const handleInboundMessageBody = async (
         raw: string,
         ws: WSContext<WebSocket>
       ): Promise<void> => {
+        if (phase === 'await-first-frame') {
+          if (sessionOpening) {
+            await sessionOpening
+            if (phase === 'await-first-frame') return
+          } else {
+            sessionOpening = openSession(raw, ws)
+            if (!(await sessionOpening)) return
+          }
+        }
         if (raw === DAEMON_CELL_PING) {
           await handlePingFrame(ws)
           return
         }
 
-        const validated = validateDaemonInboundFrame(raw)
-        if (!validated.ok) {
-          await handleUnacceptedFrame(validated, ws)
-          return
-        }
+        const validated = await acceptedFrame(raw, ws)
+        if (!validated) return
         const message = validated.message
+        for (const note of validated.notes ?? []) {
+          logWarn(
+            'daemon-cell',
+            `inbound-note serverId=${payload.sub} conn=${connectionId} ${note}`
+          )
+        }
 
         if (!(await keyStillActive(ws))) return
+
+        if (!(await presenceAdmitted(message, ws))) return
 
         cellTrace('inbound', {
           serverId: payload.sub,
@@ -969,12 +1350,32 @@ export function registerDaemonWebSocket<E extends Env>(
           registry,
           message,
           dataEncryptionSecrets: options.dataEncryptionSecrets,
-          reply: (answer) => ws.send(JSON.stringify(answer)),
+          colocated: remoteAddress === undefined,
+          onDevHostStatus: options.onDevHostStatus,
+          reply: (answer) => replyToDaemon(ws, answer),
         })
       }
 
       return {
         async onOpen(_event, ws) {
+          // Before attaching, so a co-located daemon whose row is gone (the one
+          // case the upgrade lets through without a current key) never takes a
+          // lease, joins the online set or reclaims queued work.
+          if (identityAddress === DIRECT_ATTACH_SENTINEL) {
+            const daemonRow = colocatedRowMissing
+              ? null
+              : await getServerDaemonStateByServerId(db, payload.sub)
+            if (!daemonRow) {
+              compatLogWarn(
+                'ws',
+                `colocated daemon ${payload.sub} has no postgres row; forcing re-enroll`
+              )
+              pumpControl.abort = true
+              ws.close(4401, 'server row missing')
+              return
+            }
+          }
+
           const cell = registry.getCell(payload.sub)
           try {
             const attached = await cell.attachDaemonSocket({
@@ -988,19 +1389,6 @@ export function registerDaemonWebSocket<E extends Env>(
             daemonCellLog('WARN', payload.sub, undefined, `daemon attach failed: ${String(err)}`)
             ws.close(1013, 'attach failed')
             return
-          }
-
-          if (identityAddress === DIRECT_ATTACH_SENTINEL) {
-            const daemonRow = await getServerDaemonStateByServerId(db, payload.sub)
-            if (!daemonRow) {
-              compatLogWarn(
-                'ws',
-                `colocated daemon ${payload.sub} has no postgres row; forcing re-enroll`
-              )
-              pumpControl.abort = true
-              ws.close(4401, 'server row missing')
-              return
-            }
           }
 
           const geo = resolveSelfHostedGeo(remoteAddress)
@@ -1030,32 +1418,12 @@ export function registerDaemonWebSocket<E extends Env>(
           const connectedFromSuffix = peer ? ` from ${peer.address} (${peer.source})` : ''
           daemonCellLog('INFO', payload.sub, connectionId, `daemon connected${connectedFromSuffix}`)
 
-          try {
-            ws.send(JSON.stringify(instanceAttachVersionFrame(connectedAt, Deno.env.toObject())))
-          } catch (err) {
-            daemonCellLog(
-              'WARN',
-              payload.sub,
-              connectionId,
-              `attach version frame failed: ${String(err)}`
-            )
-          }
-
           if (identityAddress === DIRECT_ATTACH_SENTINEL) {
             assignColocatedDaemonOnConnect(db, registry)
           }
 
-          const consumer = `ws:${connectionId}`
-
-          startDaemonOutboxPump({
-            cell,
-            serverId: payload.sub,
-            connectionId,
-            consumer,
-            ws,
-            abortRef: pumpControl,
-          })
-
+          // The `version` frame and the outbox pump wait for the daemon's
+          // first frame (`openSession`).
           attachReady = true
           await forEachSequential(pendingMessages.splice(0), (raw) => handleInboundMessage(raw, ws))
         },

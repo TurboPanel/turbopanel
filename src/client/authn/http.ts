@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm'
+import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import { getCookie } from 'hono/cookie'
 import { type Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -89,6 +90,12 @@ export type AuthRouteOpts = {
   webauthnChallengeSecrets?: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
   /**
+   * Fetch used to read Let's Encrypt's directory for its current terms (the
+   * organization TLS settings routes). Unset uses the network; tests pass a
+   * stand-in.
+   */
+  acmeTermsFetch?: typeof fetch
+  /**
    * Optional `TURBOPANEL_IS_SIGNUP_ENABLED` force override. When set to
    * `1`/`true` or `0`/`false` it overrides the `IS_SIGNUP_ENABLED` database
    * setting; when unset the DB (panel) toggle wins. Live Workers: set this
@@ -99,6 +106,17 @@ export type AuthRouteOpts = {
   signupEnvOverride: SignupEnvOverride | undefined
   emailFrom?: string
   baseUrl?: string
+  /**
+   * Reads the Platform CA bundle `GET /api/daemon/v1/instance/ca` serves, so
+   * a self-hosted install command can carry its fingerprints. Deno only.
+   */
+  readPlatformCaPem?: () => Promise<string>
+  /**
+   * Control plane identity: the license mint response carries its
+   * fingerprints, and it signs v2 install commands. Absent or resolving null
+   * means the command stays in the older form.
+   */
+  panelIdentity?: () => Promise<PanelIdentity | null>
 }
 
 export type SessionResponse = {

@@ -1,5 +1,3 @@
-import amqplib from 'amqplib'
-import { Buffer } from 'node:buffer'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_EXCHANGE,
@@ -7,81 +5,44 @@ import {
 } from '../../../features/email/smtp/amqp-topology.ts'
 import type { EmailJob, EmailQueue } from '../../../features/email/types.ts'
 import { compatLogWarn } from '../../../lib/log-compat.ts'
+import { AmqpConfirmPublisher } from '../amqp-confirm-publisher.ts'
 
 export { DEFAULT_AMQP_URL } from '../amqp-default-url.ts'
+export { probeAmqpBrokerReachable } from '../amqp-confirm-publisher.ts'
 
 type DenoAmqpQueueOptions = {
   amqpUrl: string
 }
 
-type AmqpConnection = Awaited<ReturnType<typeof amqplib.connect>>
-type AmqpChannel = Awaited<ReturnType<AmqpConnection['createConfirmChannel']>>
-
 class DenoAmqpQueue implements EmailQueue {
-  private connection: AmqpConnection | null = null
-  private channel: AmqpChannel | null = null
-  private connectPromise: Promise<void> | null = null
+  private readonly encoder = new TextEncoder()
+  private readonly publisher: AmqpConfirmPublisher
 
-  constructor(private readonly opts: DenoAmqpQueueOptions) {}
-
-  private async ensureConnected(): Promise<boolean> {
-    if (this.channel) return true
-    this.connectPromise ??= (async () => {
-      this.connection = await amqplib.connect(this.opts.amqpUrl)
-      this.channel = await this.connection.createConfirmChannel()
-      await assertEmailAmqpTopology(this.channel)
-    })().catch((error: unknown) => {
-      compatLogWarn('email', `AMQP connection failed: ${error}`)
-      this.connection = null
-      this.channel = null
-    }).finally(() => {
-      this.connectPromise = null
+  constructor(opts: DenoAmqpQueueOptions) {
+    this.publisher = new AmqpConfirmPublisher({
+      amqpUrl: opts.amqpUrl,
+      logScope: 'email',
+      assertTopology: assertEmailAmqpTopology,
     })
-    await this.connectPromise
-    return this.channel !== null
   }
 
   async enqueue(job: EmailJob): Promise<void> {
-    const connected = await this.ensureConnected()
-    if (!connected || !this.channel) return
     try {
-      await new Promise<void>((resolve, reject) => {
-        this.channel!.publish(
-          EMAIL_AMQP_EXCHANGE,
-          EMAIL_AMQP_ROUTING_KEY,
-          Buffer.from(JSON.stringify(job), 'utf8'),
-          { persistent: true, mandatory: true },
-          (error: Error | null) => {
-            if (error) reject(error)
-            else resolve()
-          },
-        )
-      })
+      await this.publisher.publish(
+        EMAIL_AMQP_EXCHANGE,
+        EMAIL_AMQP_ROUTING_KEY,
+        this.encoder.encode(JSON.stringify(job))
+      )
     } catch (error) {
       compatLogWarn('email', `AMQP publish failed: ${error}`)
     }
   }
 
-  async close(): Promise<void> {
-    const channel = this.channel
-    const connection = this.connection
-    this.channel = null
-    this.connection = null
-    if (channel) await channel.close().catch(() => undefined)
-    if (connection) await connection.close().catch(() => undefined)
+  close(): Promise<void> {
+    return this.publisher.close()
   }
 }
 
 export function createDenoAmqpQueue(opts: DenoAmqpQueueOptions): EmailQueue {
   return new DenoAmqpQueue(opts)
-}
-
-export async function probeAmqpBrokerReachable(amqpUrl: string): Promise<boolean> {
-  try {
-    const connection = await amqplib.connect(amqpUrl)
-    await connection.close()
-    return true
-  } catch {
-    return false
-  }
 }

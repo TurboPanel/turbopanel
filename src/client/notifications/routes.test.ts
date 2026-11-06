@@ -429,7 +429,10 @@ test('the catalogue lists every event with its severity and scope', async () => 
     // The two alerts the owners asked for are offered, under their plain names.
     const label = (code: string) => events.find((e) => e.event === code)?.label
     assertEquals(label('folder.orphans_found'), 'A folder was left behind on a server')
-    assertEquals(label('certificate.renewal_failed'), 'A certificate failed to renew')
+    assertEquals(
+      label('certificate.renewal_failed'),
+      'A certificate could not be issued or renewed'
+    )
   })
 })
 

@@ -1,3 +1,4 @@
+import type { HeldLetsEncryptDeps } from '../hostings/letsencrypt-held.ts'
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray, sql } from 'drizzle-orm'
@@ -20,6 +21,7 @@ import type { PreparedDeployCompose } from './deploy-prepare.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
+  audit,
   command,
   container,
   deployment,
@@ -491,6 +493,11 @@ function composeWithReplicatedWebService(): ComposeDocument {
   }
 }
 
+/** The certificate pre-check a deploy runs; never the network. Tests that need a ready name swap it. */
+let deployPrecheck: HeldLetsEncryptDeps = {
+  lookup: () => Promise.reject(new Error('NXDOMAIN')),
+}
+
 async function createDeployRoutesTestApp(
   db: ReturnType<typeof createDenoDb>,
   options: {
@@ -511,6 +518,7 @@ async function createDeployRoutesTestApp(
     c.set('commandQueue', options.commandQueue)
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     c.set('secretsConfig', secretsConfig)
+    c.set('letsEncryptPrecheck', deployPrecheck)
     return next()
   })
   const routeOpts = {
@@ -1370,10 +1378,10 @@ test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Enc
       try {
         await useBaseCompose(db, { environmentId, projectId, serverId }, composeWithWebService())
         // POST /tls source:lets_encrypt requires the org to have opted in to
-        // ACME (organization.options.acmeEnabled, off by default).
+        // ACME (organization.is_acme_enabled).
         await db
           .update(organization)
-          .set({ options: { acmeEnabled: true } })
+          .set({ isAcmeEnabled: true })
           .where(eq(organization.id, organizationId))
 
         const cookie = await sessionCookie(db, secrets, userId)
@@ -1472,8 +1480,14 @@ function composeWithAutomaticTls(): ComposeDocument {
   }
 }
 
-for (const acmeEnabled of [true, false]) {
-  test(`POST /environments/:id/deploy with compose tls.mode automatic (Let's Encrypt ${acmeEnabled ? 'on' : 'off'})`, async () => {
+const AUTOMATIC_CASES = [
+  { acmeEnabled: true, dnsReady: true },
+  { acmeEnabled: true, dnsReady: false },
+  { acmeEnabled: false, dnsReady: true },
+]
+
+for (const { acmeEnabled, dnsReady } of AUTOMATIC_CASES) {
+  test(`POST /environments/:id/deploy with compose tls.mode automatic (Let's Encrypt ${acmeEnabled ? 'on' : 'off'}, DNS ${dnsReady ? 'ready' : 'missing'})`, async () => {
     const traefikServiceId = '00000000-0000-4000-8000-0000000000ab'
     await withDeployFixtures(
       async ({
@@ -1496,8 +1510,25 @@ for (const acmeEnabled of [true, false]) {
           )
           await db
             .update(organization)
-            .set({ options: { acmeEnabled } })
+            .set({ isAcmeEnabled: acmeEnabled })
             .where(eq(organization.id, organizationId))
+          // The server reports a public address; the name points at it only when DNS is ready.
+          await db
+            .update(server)
+            .set({
+              metadata: {
+                resources: {
+                  ips: [{ address: '203.0.113.7', version: 4, scope: 'public', interface: 'eth0' }],
+                },
+              },
+            })
+            .where(eq(server.id, serverId))
+          deployPrecheck = {
+            lookup: (_name, recordType) =>
+              dnsReady && recordType === 'A'
+                ? Promise.resolve(['203.0.113.7'])
+                : Promise.reject(new Error('NXDOMAIN')),
+          }
 
           const res = await app.request(`/environments/${environmentId}/deploy`, {
             method: 'POST',
@@ -1525,6 +1556,26 @@ for (const acmeEnabled of [true, false]) {
 
           assertEquals(res.status, 200)
           const body = (await res.json()) as { ok: boolean; commandId: string }
+          const [held] = await db
+            .select({ tlsId: hosting.tlsId, pendingAt: hosting.pendingAt })
+            .from(hosting)
+            .innerJoin(service, eq(service.id, hosting.serviceId))
+            .where(eq(service.environmentId, environmentId))
+          if (!dnsReady) {
+            // Held: no certificate is pinned or requested until the pre-check passes.
+            assertEquals(managed, [])
+            assertEquals(held?.tlsId, null)
+            assertEquals(typeof held?.pendingAt, 'string')
+            const [queued] = await db
+              .select({ payload: dispatch.payload })
+              .from(dispatch)
+              .where(eq(dispatch.commandId, body.commandId))
+              .limit(1)
+            const sent = queued?.payload as { hostings: Array<{ tlsMode?: string }> }
+            assertEquals(sent.hostings[0]?.tlsMode, undefined)
+            return
+          }
+          assertEquals(held?.pendingAt, null)
           assertEquals(managed.length, 1)
           assertEquals(managed[0]?.source, 'lets_encrypt')
           assertEquals(managed[0]?.status, 'automatic')
@@ -1551,6 +1602,7 @@ for (const acmeEnabled of [true, false]) {
             await db.delete(hosting).where(eq(hosting.serviceId, svc.id))
           }
           await db.delete(tls).where(eq(tls.organizationId, organizationId))
+          deployPrecheck = { lookup: () => Promise.reject(new Error('NXDOMAIN')) }
           restoreHierarchy()
         }
       }
@@ -2738,6 +2790,23 @@ test('POST /environments/:id/deploy: a first-batch server that cannot be reached
   })
 })
 
+/** Dispatch payload of the first queued `environment.stop` (for one server when given). */
+async function queuedStopPayload(
+  ctx: Pick<TwoServerCtx, 'db' | 'commandQueue'>,
+  serverId?: string
+): Promise<Record<string, unknown>> {
+  const stopCommand = ctx.commandQueue.envelopes.find(
+    (envelope) =>
+      envelope.type === 'environment.stop' &&
+      (serverId === undefined || envelope.serverId === serverId)
+  )
+  assertEquals(stopCommand !== undefined, true)
+  return (await getCommandDispatchPayload(ctx.db, stopCommand!.commandId)) as Record<
+    string,
+    unknown
+  >
+}
+
 test('an explicit stop clears releases but removes no folder, and delete teardown still removes them', async () => {
   await withDeployFixtures(async (ctx) => {
     const recorded = [
@@ -2765,20 +2834,73 @@ test('an explicit stop clears releases but removes no folder, and delete teardow
 
     const stopped = await postEnvironment(ctx as unknown as TwoServerCtx, 'stop')
     assertEquals(stopped.status, 200)
-    const stopCommand = ctx.commandQueue.envelopes.find(
-      (envelope) => envelope.type === 'environment.stop'
-    )
-    const payload = (await getCommandDispatchPayload(ctx.db, stopCommand!.commandId)) as Record<
-      string,
-      unknown
-    >
+    const payload = await queuedStopPayload(ctx)
     // Destroy clears the releases but names no folder to remove, so uploads stay.
     assertEquals('siteReleases' in payload, false)
     assertEquals(payload.releaseCleanup, recorded)
+    // Destroy keeps the compose folder, so a relative bind's data survives.
+    assertEquals('removeDeploymentDir' in payload, false)
 
     // The same record is what a delete reclaims, with the folder components.
     assertEquals(await resolveEnvironmentSiteReleases(ctx.db, ctx.environmentId), recorded)
     await ctx.db.delete(deployment).where(eq(deployment.environmentId, ctx.environmentId))
+  })
+})
+
+test('a server leaving the environment is stopped without removing its compose folder', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const now = new Date().toISOString()
+    const [leaving] = await ctx.db
+      .insert(server)
+      .values({
+        organizationId: ctx.organizationId,
+        name: 'Deploy Route Leaving Server',
+        isConnected: true,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id })
+    const leavingId = leaving!.id
+    try {
+      await ctx.db
+        .update(server)
+        .set({ isConnected: true, updatedAt: now })
+        .where(eq(server.id, ctx.serverId))
+      const compose: ComposeDocument = {
+        version: 1,
+        data: { services: { web: { image: 'nginx:alpine' } } },
+        presentation: { keyOrder: ['services'], comments: {} },
+      }
+      await ctx.db
+        .update(environment)
+        .set({ serverId: ctx.serverId, options: { compose } })
+        .where(eq(environment.id, ctx.environmentId))
+      // The environment used to run on a second server; this deploy plans only the first.
+      await upsertDeploymentTargets(ctx.db, {
+        environmentId: ctx.environmentId,
+        targets: [
+          {
+            serverId: leavingId,
+            desiredGeneration: 1,
+            status: 'applied',
+            options: { secretPlan: [], siteReleases: [] },
+          },
+        ],
+      })
+
+      const res = await postEnvironment(ctx as unknown as TwoServerCtx, 'deploy')
+      assertEquals(res.status, 200)
+      const payload = await queuedStopPayload(ctx, leavingId)
+      // A drained server keeps its compose folder; only a delete removes it.
+      assertEquals('removeDeploymentDir' in payload, false)
+    } finally {
+      await cleanupMultiServerFabricDeploy(ctx.db, {
+        environmentId: ctx.environmentId,
+        organizationId: ctx.organizationId,
+        serverIds: [ctx.serverId, leavingId],
+        extraServerId: leavingId,
+      })
+    }
   })
 })
 
@@ -2949,6 +3071,18 @@ async function storedApproval(ctx: HostLevelCtx): Promise<unknown> {
   return metadata?.composeHostAccessApproval
 }
 
+/** The host-level approval rows for this environment, oldest first. */
+async function hostAccessAuditActions(ctx: HostLevelCtx): Promise<string[]> {
+  const rows = await ctx.db
+    .select({ action: audit.action, createdAt: audit.createdAt, id: audit.id })
+    .from(audit)
+    .where(and(eq(audit.organizationId, ctx.organizationId), eq(audit.targetId, ctx.environmentId)))
+  return rows
+    .filter((row) => row.action.startsWith('compose.host_access.'))
+    .sort((a, b) => (a.id < b.id ? -1 : Number(a.id > b.id)))
+    .map((row) => row.action)
+}
+
 test('POST /environments/:id/deploy refuses a Docker socket bind while host-level features are off', async () => {
   await withDeployFixtures(async (ctx) => {
     await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), false)
@@ -3006,9 +3140,14 @@ test("a manager's deploy approves host-level content for later webhook deploys",
       | undefined
     assertEquals(approval?.approvedBy, ctx.userId)
     assertEquals(approval?.fingerprint.length, 64)
+    assertEquals(await hostAccessAuditActions(ctx), ['compose.host_access.approve'])
 
     assertEquals((await webhookDeploy(ctx)).status, 200)
     assertEquals(ctx.commandQueue.envelopes.length, 2)
+    assertEquals(await hostAccessAuditActions(ctx), [
+      'compose.host_access.approve',
+      'compose.host_access.use',
+    ])
   })
 })
 

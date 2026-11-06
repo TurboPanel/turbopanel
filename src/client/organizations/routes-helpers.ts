@@ -3,7 +3,11 @@ import {
   parseMaxServersInput,
   parseDeployTimeoutMinutes,
   parseTemperatureUnitInput,
-  resolveAcmeEnabled,
+  normalizeAcmeContactEmail,
+  ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+  ORG_ACME_TERMS_CHANGED_CODE,
+  ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
+  ORG_ACME_TERMS_UNAVAILABLE_CODE,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
@@ -12,11 +16,14 @@ import {
 } from '../../features/organizations/organization-options.ts'
 import { ENVIRONMENT_NAME_RULE_MESSAGE } from '../../features/folders/records.ts'
 import { isAllowedTimezone } from '../../lib/timezones.ts'
+import { parseIconValue } from '../../lib/icons.ts'
+import type { AuditAction } from '../../features/audit/audit-records.ts'
 import type { OrganizationSummary } from '../org-context.ts'
 import { BadRequestError, parseName } from '../shared.ts'
 import {
   type NtpDefaults,
   DEFAULT_HIDE_WEB_SERVER_NAMES,
+  DEFAULT_SEND_VIA_HEADER,
   parseDefaultFabricEnabledInput,
   parseHideWebServerNamesInput,
   parseNtpDefaultsInput,
@@ -60,8 +67,141 @@ export type TemperatureUnitPatch = {
   temperatureUnit: TemperatureUnit
 }
 
+/**
+ * Any of the keys; a key left out keeps its stored value. `null` clears the
+ * contact. `acmeTermsAccepted` is only ever `true` and comes with
+ * `acmeTermsUrl`, the exact agreement the person was shown: it records that
+ * the organization accepts that agreement now.
+ */
 export type TlsSettingsPatch = {
+  acmeEnabled?: boolean
+  acmeContactEmail?: string | null
+  acmeTermsAccepted?: true
+  acmeTermsUrl?: string
+}
+
+/** The organization's stored Let's Encrypt settings (see `settings-route.ts`). */
+export type TlsSettingsState = {
   acmeEnabled: boolean
+  acmeContactEmail: string | null
+  acmeTermsAcceptedAt: string | null
+  /** The exact agreement accepted at `acmeTermsAcceptedAt`. */
+  acmeTermsUrl: string | null
+}
+
+/** A refused TLS settings change: status, sentence and machine code. */
+export type TlsSettingsRefusal = { status: 400 | 409 | 503; error: string; code: string }
+
+function refuse(
+  status: TlsSettingsRefusal['status'],
+  code: string,
+  error: string
+): { ok: false; refusal: TlsSettingsRefusal } {
+  return { ok: false, refusal: { status, error, code } }
+}
+
+const TERMS_UNAVAILABLE =
+  "Let's Encrypt could not be reached to read its current terms. Try again in a moment."
+
+/**
+ * The settings after `patch`, or why they are refused. `currentTermsUrl` is
+ * the agreement Let's Encrypt names now (null when it could not be read).
+ *
+ * Turning Let's Encrypt on needs a contact address and acceptance of the
+ * current agreement: each organization is responsible for its own servers, so
+ * it agrees to the authority's terms itself, and agrees again when they
+ * change. Accepting is refused when the agreement shown is no longer the
+ * current one. While it is on the contact cannot be removed. Turning it off
+ * keeps the address and the acceptance. An organization that was on before
+ * this step may still save its contact.
+ */
+type TlsSettingsOutcome =
+  { ok: true; next: TlsSettingsState } | { ok: false; refusal: TlsSettingsRefusal }
+
+/** An acceptance must name the agreement Let's Encrypt names now. */
+function acceptanceRefusal(
+  patch: TlsSettingsPatch,
+  currentTermsUrl: string | null
+): { ok: false; refusal: TlsSettingsRefusal } | null {
+  if (!patch.acmeTermsAccepted) return null
+  if (currentTermsUrl === null) {
+    return refuse(503, ORG_ACME_TERMS_UNAVAILABLE_CODE, TERMS_UNAVAILABLE)
+  }
+  if (patch.acmeTermsUrl === currentTermsUrl) return null
+  return refuse(
+    409,
+    ORG_ACME_TERMS_CHANGED_CODE,
+    "The Let's Encrypt terms changed. Read the new agreement and accept it again."
+  )
+}
+
+/** Turning on needs a contact and acceptance of the current agreement. */
+function turnOnRefusal(
+  next: TlsSettingsState,
+  currentTermsUrl: string | null
+): { ok: false; refusal: TlsSettingsRefusal } | null {
+  if (next.acmeContactEmail === null) {
+    return refuse(
+      400,
+      ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+      "Add a contact email before turning on Let's Encrypt"
+    )
+  }
+  if (next.acmeTermsUrl === null) {
+    return refuse(
+      400,
+      ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
+      "Accept the Let's Encrypt terms before turning it on"
+    )
+  }
+  if (currentTermsUrl === null) {
+    return refuse(503, ORG_ACME_TERMS_UNAVAILABLE_CODE, TERMS_UNAVAILABLE)
+  }
+  if (next.acmeTermsUrl === currentTermsUrl) return null
+  return refuse(
+    400,
+    ORG_ACME_TERMS_NOT_ACCEPTED_CODE,
+    "Let's Encrypt has new terms. Accept them before turning it on."
+  )
+}
+
+/**
+ * The settings after `patch`, or why they are refused. `currentTermsUrl` is
+ * the agreement Let's Encrypt names now (null when it could not be read).
+ *
+ * Turning Let's Encrypt on needs a contact address and acceptance of the
+ * current agreement: each organization is responsible for its own servers, so
+ * it agrees to the authority's terms itself, and agrees again when they
+ * change. Accepting is refused when the agreement shown is no longer the
+ * current one. While it is on the contact cannot be removed. Turning it off
+ * keeps the address and the acceptance. An organization that was on before
+ * this step may still save its contact.
+ */
+export function applyTlsSettingsPatch(
+  before: TlsSettingsState,
+  patch: TlsSettingsPatch,
+  now: string,
+  currentTermsUrl: string | null
+): TlsSettingsOutcome {
+  const refusedAcceptance = acceptanceRefusal(patch, currentTermsUrl)
+  if (refusedAcceptance) return refusedAcceptance
+  const next: TlsSettingsState = {
+    acmeEnabled: patch.acmeEnabled ?? before.acmeEnabled,
+    acmeContactEmail:
+      patch.acmeContactEmail === undefined ? before.acmeContactEmail : patch.acmeContactEmail,
+    acmeTermsAcceptedAt: patch.acmeTermsAccepted ? now : before.acmeTermsAcceptedAt,
+    acmeTermsUrl: patch.acmeTermsAccepted ? (patch.acmeTermsUrl ?? null) : before.acmeTermsUrl,
+  }
+  if (before.acmeEnabled && next.acmeEnabled && patch.acmeContactEmail === null) {
+    return refuse(
+      400,
+      ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE,
+      "Turn off Let's Encrypt before removing its contact email"
+    )
+  }
+  const turningOn = next.acmeEnabled && !before.acmeEnabled
+  const refusedTurnOn = turningOn ? turnOnRefusal(next, currentTermsUrl) : null
+  return refusedTurnOn ?? { ok: true, next }
 }
 
 export type ComposeGatedFieldsPatch = {
@@ -72,6 +212,12 @@ export type DeployHooksPatch = {
   deployHooksEnabled: boolean
 }
 
+/** Either switch, or both; a key left out keeps its stored value. */
+export type ProjectSettingsPatch = {
+  openEnvironmentSectionByDefault?: boolean
+  openWorkspaceSectionByDefault?: boolean
+}
+
 export type ComposeDefaultResourceLimitsPatch = {
   composeDefaultResourceLimits: { cpus?: number; memoryBytes?: number } | null
 }
@@ -80,6 +226,7 @@ export type HostDefaultsPatch = {
   sshPort?: number | null
   ntp?: NtpDefaults | null
   hideWebServerNames?: boolean | null
+  sendViaHeader?: boolean | null
   defaultFabricEnabled?: boolean | null
 }
 
@@ -365,13 +512,60 @@ export function deployTimeoutPutResponse(minutes: number | null) {
   return { ok: true as const, ...deployTimeoutGetResponse(minutes) }
 }
 
+type TlsSettingsParseError = { ok: false; error: string; status: 400 }
+
+/** The contact field: `null` or '' clears it; anything else must be one valid address. */
+function parseContactEmailField(
+  value: unknown
+): { ok: true; email: string | null } | TlsSettingsParseError {
+  if (value === null || value === '') return { ok: true, email: null }
+  const email = normalizeAcmeContactEmail(value)
+  if (email === null) return { ok: false, error: 'Invalid acmeContactEmail', status: 400 }
+  return { ok: true, email }
+}
+
+/** The acceptance: only `true`, always with the exact agreement link shown. */
+function parseTermsAcceptance(
+  body: Record<string, unknown>
+): { ok: true; termsUrl: string } | TlsSettingsParseError {
+  if (body.acmeTermsAccepted !== true) {
+    return { ok: false, error: 'Invalid acmeTermsAccepted', status: 400 }
+  }
+  if (typeof body.acmeTermsUrl !== 'string' || body.acmeTermsUrl.length > 2048) {
+    return { ok: false, error: 'Send acmeTermsUrl, the agreement that was accepted', status: 400 }
+  }
+  return { ok: true, termsUrl: body.acmeTermsUrl }
+}
+
 export function parseTlsSettingsPatch(
   body: Record<string, unknown>
 ): { ok: true; patch: TlsSettingsPatch } | OrganizationRouteValidationError {
-  if (typeof body.acmeEnabled !== 'boolean') {
-    return { ok: false, error: 'Invalid acmeEnabled', status: 400 }
+  const patch: TlsSettingsPatch = {}
+  if ('acmeEnabled' in body) {
+    if (typeof body.acmeEnabled !== 'boolean') {
+      return { ok: false, error: 'Invalid acmeEnabled', status: 400 }
+    }
+    patch.acmeEnabled = body.acmeEnabled
   }
-  return { ok: true, patch: { acmeEnabled: body.acmeEnabled } }
+  if ('acmeContactEmail' in body) {
+    const contact = parseContactEmailField(body.acmeContactEmail)
+    if (!contact.ok) return contact
+    patch.acmeContactEmail = contact.email
+  }
+  if ('acmeTermsAccepted' in body || 'acmeTermsUrl' in body) {
+    const acceptance = parseTermsAcceptance(body)
+    if (!acceptance.ok) return acceptance
+    patch.acmeTermsAccepted = true
+    patch.acmeTermsUrl = acceptance.termsUrl
+  }
+  if (Object.keys(patch).length === 0) {
+    return {
+      ok: false,
+      error: 'Send acmeEnabled, acmeContactEmail or acmeTermsAccepted',
+      status: 400,
+    }
+  }
+  return { ok: true, patch }
 }
 
 export function parseComposeGatedFieldsPatch(
@@ -397,6 +591,34 @@ export function parseDeployHooksPatch(
     return { ok: false, error: 'Invalid deployHooksEnabled', status: 400 }
   }
   return { ok: true, patch: { deployHooksEnabled: body.deployHooksEnabled } }
+}
+
+const PROJECT_SETTINGS_KEYS = [
+  'openEnvironmentSectionByDefault',
+  'openWorkspaceSectionByDefault',
+] as const
+
+/** At least one of the two switches, each a boolean when present. */
+export function parseProjectSettingsPatch(
+  body: Record<string, unknown>
+): { ok: true; patch: ProjectSettingsPatch } | OrganizationRouteValidationError {
+  const patch: ProjectSettingsPatch = {}
+  for (const key of PROJECT_SETTINGS_KEYS) {
+    if (!(key in body)) continue
+    const value = body[key]
+    if (typeof value !== 'boolean') {
+      return { ok: false, error: `Invalid ${key}`, status: 400 }
+    }
+    patch[key] = value
+  }
+  if (Object.keys(patch).length === 0) {
+    return {
+      ok: false,
+      error: 'Send openEnvironmentSectionByDefault, openWorkspaceSectionByDefault or both',
+      status: 400,
+    }
+  }
+  return { ok: true, patch }
 }
 
 /**
@@ -464,15 +686,19 @@ export function composeDefaultResourceLimitsPutResponse(options: {
   }
 }
 
-/** Copy `hideWebServerNames` (boolean, or `null` to clear) into the patch; an error when it is neither. */
-function readHideWebServerNames(
+/**
+ * Copy a web server switch (`hideWebServerNames`, `sendViaHeader`: boolean, or
+ * `null` to clear) into the patch; an error when it is neither.
+ */
+function readWebServerSwitch(
   body: Record<string, unknown>,
-  patch: HostDefaultsPatch
+  patch: HostDefaultsPatch,
+  key: 'hideWebServerNames' | 'sendViaHeader'
 ): OrganizationRouteValidationError | null {
-  if (!('hideWebServerNames' in body)) return null
-  const parsed = parseHideWebServerNamesInput(body.hideWebServerNames)
-  if (!parsed.ok) return { ok: false, error: 'Invalid hideWebServerNames', status: 400 }
-  patch.hideWebServerNames = parsed.value
+  if (!(key in body)) return null
+  const parsed = parseHideWebServerNamesInput(body[key])
+  if (!parsed.ok) return { ok: false, error: `Invalid ${key}`, status: 400 }
+  patch[key] = parsed.value
   return null
 }
 
@@ -497,8 +723,10 @@ export function parseHostDefaultsPatch(
     patch.ntp = parsed.value
   }
 
-  const hideError = readHideWebServerNames(body, patch)
+  const hideError = readWebServerSwitch(body, patch, 'hideWebServerNames')
   if (hideError) return hideError
+  const viaError = readWebServerSwitch(body, patch, 'sendViaHeader')
+  if (viaError) return viaError
 
   if ('defaultFabricEnabled' in body) {
     const parsed = parseDefaultFabricEnabledInput(body.defaultFabricEnabled)
@@ -592,15 +820,92 @@ export function parseOrganizationPatchDisplayName(
   }
 }
 
+/** What `PATCH /organizations/:id` changes; a key left out keeps its stored value. */
+export type OrganizationPatch = {
+  name?: string
+  /** A key, one emoji, or null for the default icon. */
+  icon?: string | null
+  /** True when `icon` is an emoji, so the route checks the emoji setting. */
+  iconIsEmoji: boolean
+  isEmojiIconAllowed?: boolean
+}
+
+/**
+ * PATCH takes any of `name` (non-empty, cannot be cleared), `icon` (a key,
+ * one emoji, or null) and `isEmojiIconAllowed` (boolean), at least one.
+ */
+export function parseOrganizationPatch(
+  body: Record<string, unknown>
+): { ok: true; patch: OrganizationPatch } | OrganizationRouteValidationError {
+  const invalid: OrganizationRouteValidationError = {
+    ok: false,
+    error: 'Invalid request',
+    status: 400,
+  }
+  const hasName = 'name' in body
+  const hasIcon = body.icon !== undefined
+  const hasEmojiSetting = body.isEmojiIconAllowed !== undefined
+  if (!hasName && !hasIcon && !hasEmojiSetting) return invalid
+
+  const patch: OrganizationPatch = { iconIsEmoji: false }
+  if (hasName) {
+    const name = parseOrganizationPatchDisplayName(body)
+    if (!name.ok) return name
+    patch.name = name.name
+  }
+  if (hasIcon) {
+    const icon = parseIconValue(body.icon)
+    if (!icon.ok) return invalid
+    patch.icon = icon.icon ?? null
+    patch.iconIsEmoji = icon.emoji
+  }
+  if (hasEmojiSetting) {
+    if (typeof body.isEmojiIconAllowed !== 'boolean') return invalid
+    patch.isEmojiIconAllowed = body.isEmojiIconAllowed
+  }
+  return { ok: true, patch }
+}
+
+/**
+ * The audit rows for an organization PATCH: one per icon or emoji setting
+ * that really changed. A name change is not audited.
+ */
+export function organizationPatchAudits(
+  patch: OrganizationPatch,
+  before: { icon: string | null; isEmojiIconAllowed: boolean }
+): Array<{ action: AuditAction; context: Record<string, unknown> }> {
+  const entries: Array<{ action: AuditAction; context: Record<string, unknown> }> = []
+  if (patch.icon !== undefined && patch.icon !== before.icon) {
+    entries.push({
+      action: 'organization.icon.set',
+      context: { icon: patch.icon, previousIcon: before.icon },
+    })
+  }
+  if (
+    patch.isEmojiIconAllowed !== undefined &&
+    patch.isEmojiIconAllowed !== before.isEmojiIconAllowed
+  ) {
+    entries.push({
+      action: 'organization.emoji_icons.set',
+      context: { isEmojiIconAllowed: patch.isEmojiIconAllowed },
+    })
+  }
+  return entries
+}
+
 export function toOrganizationRecord(row: {
   id: string
   name: string | null
   createdAt: string
+  icon: string | null
+  isEmojiIconAllowed: boolean
 }): OrganizationSummary {
   return {
     id: row.id,
     name: row.name,
     createdAt: row.createdAt,
+    icon: row.icon,
+    isEmojiIconAllowed: row.isEmojiIconAllowed,
   }
 }
 
@@ -643,16 +948,30 @@ export function temperatureUnitPutResponse(options: { temperatureUnit?: Temperat
   }
 }
 
-export function tlsSettingsGetResponse(options: { acmeEnabled?: boolean }) {
+/**
+ * The TLS settings as the screen reads them. `acmeTermsUrl` is the agreement
+ * Let's Encrypt names now (null when it could not be read);
+ * `acmeAcceptedTermsUrl` the one the organization accepted; `acmeTermsChanged`
+ * says the organization accepted an older one and is asked again.
+ */
+export function tlsSettingsGetResponse(settings: TlsSettingsState, currentTermsUrl: string | null) {
   return {
-    acmeEnabled: resolveAcmeEnabled(options),
+    acmeEnabled: settings.acmeEnabled,
+    acmeContactEmail: settings.acmeContactEmail,
+    acmeTermsAcceptedAt: settings.acmeTermsAcceptedAt,
+    acmeAcceptedTermsUrl: settings.acmeTermsUrl,
+    acmeTermsUrl: currentTermsUrl,
+    acmeTermsChanged:
+      settings.acmeTermsUrl !== null &&
+      currentTermsUrl !== null &&
+      settings.acmeTermsUrl !== currentTermsUrl,
   }
 }
 
-export function tlsSettingsPutResponse(options: { acmeEnabled?: boolean }) {
+export function tlsSettingsPutResponse(settings: TlsSettingsState, currentTermsUrl: string | null) {
   return {
     ok: true as const,
-    ...tlsSettingsGetResponse(options),
+    ...tlsSettingsGetResponse(settings, currentTermsUrl),
   }
 }
 
@@ -673,6 +992,23 @@ export function deployHooksGetResponse(options: { deployHooksEnabled?: boolean }
   return { deployHooksEnabled: resolveDeployHooksEnabled(options) }
 }
 
+export function projectSettingsGetResponse(options: {
+  openEnvironmentSectionByDefault?: boolean
+  openWorkspaceSectionByDefault?: boolean
+}) {
+  return {
+    openEnvironmentSectionByDefault: options.openEnvironmentSectionByDefault ?? false,
+    openWorkspaceSectionByDefault: options.openWorkspaceSectionByDefault ?? false,
+  }
+}
+
+export function projectSettingsPutResponse(options: {
+  openEnvironmentSectionByDefault?: boolean
+  openWorkspaceSectionByDefault?: boolean
+}) {
+  return { ok: true as const, ...projectSettingsGetResponse(options) }
+}
+
 export function deployHooksPutResponse(options: { deployHooksEnabled?: boolean }) {
   return { ok: true as const, ...deployHooksGetResponse(options) }
 }
@@ -681,12 +1017,14 @@ export function hostDefaultsGetResponse(options: {
   sshPort?: number
   ntp?: NtpDefaults
   hideWebServerNames?: boolean
+  sendViaHeader?: boolean
   defaultFabricEnabled?: boolean
 }) {
   return {
     sshPort: options.sshPort ?? null,
     ntp: options.ntp ?? null,
     hideWebServerNames: options.hideWebServerNames ?? DEFAULT_HIDE_WEB_SERVER_NAMES,
+    sendViaHeader: options.sendViaHeader ?? DEFAULT_SEND_VIA_HEADER,
     defaultFabricEnabled: options.defaultFabricEnabled ?? false,
   }
 }
@@ -695,6 +1033,7 @@ export function hostDefaultsPutResponse(options: {
   sshPort?: number
   ntp?: NtpDefaults
   hideWebServerNames?: boolean
+  sendViaHeader?: boolean
   defaultFabricEnabled?: boolean
 }) {
   return {

@@ -96,6 +96,7 @@ async function withFixture(
         return Promise.resolve()
       },
     })
+    c.set('runtime', 'workers')
     c.set('platformEnv', { TURBOPANEL_BASE_URL: 'https://panel.example.com' })
     c.set('breachRangeResponder', responder)
     c.set(

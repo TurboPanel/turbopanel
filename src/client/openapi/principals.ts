@@ -1,3 +1,5 @@
+import { withConfirmName, withConfirmNameOnDelete } from './shared.ts'
+
 export const principalSchemas = {
   PrincipalReconcileOutcome: {
     type: 'object',
@@ -264,7 +266,7 @@ export const principalSchemas = {
   },
 }
 
-export const principalPaths = {
+const principalBasePaths = {
   '/api/client/v1/projects/{projectId}/principals': {
     get: {
       tags: ['Principals'],
@@ -352,7 +354,7 @@ export const principalPaths = {
         },
         400: {
           description:
-            "invalid_service_ids | username_too_long | invalid_name_scheme | Invalid request. username_reserved: the typed name is already a host system user or group (examples: ftp, git), so it cannot be a site owner's Linux user.",
+            "invalid_service_ids | username_too_long | invalid_name_scheme | Invalid request. username_reserved: the typed name is already a host system user or group (examples: ftp, git), or starts with tp (kept for TurboPanel's own accounts) or systemd-, or ends in -grp, so it cannot be a site owner's Linux user.",
         },
         409: { description: 'username_in_use | principal_scheme_locked' },
       },
@@ -386,6 +388,26 @@ export const principalPaths = {
         400: { description: 'invalid_service_ids' },
       },
     },
+    delete: withConfirmName(
+      {
+        tags: ['Principals'],
+        summary: 'Delete a Hosting Account',
+        description:
+          'Org owner or manager. Refused with 409 `principal_in_use` (and `usedBy`) while a service, binding, storage entry, secret or database login still uses it; otherwise the Linux account is retired on every server it reached.',
+        parameters: [
+          { name: 'projectId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          200: { description: 'Deleted' },
+          403: { description: 'Not allowed to manage the project' },
+          404: { description: 'Project or Hosting Account not found' },
+          409: { description: 'principal_in_use' },
+        },
+      },
+      'Hosting Account',
+      'its username'
+    ),
   },
   '/api/client/v1/organizations/{id}/principals': {
     get: {
@@ -729,3 +751,10 @@ export const principalPaths = {
     },
   },
 }
+
+export const principalPaths = withConfirmNameOnDelete(
+  principalBasePaths,
+  '/api/client/v1/organizations/{id}/principals/{principalId}',
+  'Hosting Account',
+  'its username'
+)

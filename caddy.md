@@ -1,6 +1,6 @@
 # Caddy (production) — reference
 
-Referenced from `AGENTS.md` (**Caddy**). Covers the production Caddyfile:
+Referenced from `src/app/AGENTS.md` (**Caddy (production)**). Covers the production Caddyfile:
 server addresses, certs and entrypoint, the daemon TLS trust model, and the
 static UI catch-all. Read before editing the daemon's Caddyfile template or
 `scripts/download-caddy.mjs` (pinned **2.11.4**, SHA-256 verified — keep in
@@ -46,10 +46,21 @@ Each site block also strips `CF-Connecting-IP`, `True-Client-IP`, and
 `X-Forwarded-For` from any peer that is **not** loopback, so only a connector
 running beside Caddy can present them. See **Server addresses** below.
 
+For hostnames behind a Cloudflare proxy or a Bunny pull zone, the daemon also
+adds those providers' published edge ranges (a union over the modes in use,
+refreshed daily by the control plane and sent as `edgeTrust` on
+`public-urls-update`) to `trusted_proxies`, and keeps the forwarding headers
+from peers in those ranges only. Caddy then puts the visitor's address in
+`X-Real-IP`; every other peer is still stripped. The daemon keeps the last set
+in `instance-edge-trust.json` beside `instance-hostnames.json`. Trusting a
+provider's whole published range means any customer of that provider can point
+a zone at this origin and forge a visitor address; authenticated origin pulls
+or an origin firewall that admits only the provider close that gap.
+
 **Co-located development** does not use this file. When `turbopanel_dev_user` is
-set, `turbopanel-caddy.service` loads `~/dev/orchestration/Caddyfile` instead
+set, `turbopanel-caddy.service` loads `~/turbopanel/dev/orchestration/Caddyfile` instead
 (Expo proxy, optional wrangler upstream,
-`/downloads/daemon` + installer at `/run.sh`). See **`../dev/AGENTS.md`**
+`/downloads/daemon` + installer at `/run.sh`). See **`../dev/orchestration/AGENTS.md`**
 (Ansible overlay / Caddyfile).
 
 ## Server addresses
@@ -158,6 +169,12 @@ control-plane Caddy (`<state>/caddy/.local/share`), hosting Caddy
 - Entrypoint: `https://<host>:8443` for every hostname. The certificate
   follows the name. The listener binds all interfaces; use `localhost` or
   the machine's LAN IP.
+- Only a hostname in the Cloudflare Tunnel connection mode gets a 308 from
+  any other port to `:8443` (the tunnel edge may answer on 443 as well). The
+  control plane sends `publicPort` for those names only, and the daemon
+  renders the redirect only for an entry that carries it. A direct, proxied,
+  Let's Encrypt or uploaded name never redirects: ports 80 and 443 on that
+  host belong to hosting and may serve a different site.
 - Self-hosted TLS uses a **Platform CA** stored in the durable state tree
   (`/var/lib/turbopanel/tls/ca.crt` + `ca.key`, plus `ca-bundle.pem` for
   current+retired overlap). The `:8443` leaf stays under the instance `certs/`
@@ -183,7 +200,7 @@ control-plane Caddy (`<state>/caddy/.local/share`), hosting Caddy
   `src/lib/tls/AGENTS.md`. Tenant **hosting** leaves (Caddy-fronted web
   services) are operator-pinned library certificates, Caddy `tls internal`,
   or — only once the organization has opted in
-  (`organization.options.acmeEnabled`, off by default) — a `managed`
+  (`organization.is_acme_enabled`, off by default) — a `managed`
   `lets_encrypt` row (`tlsMode: 'acme'`) that Caddy issues and renews on the
   serving host. They are never issued by the Organization CA, and the
   organization's opt-in does not obtain a certificate for the panel. The
@@ -212,15 +229,18 @@ The daemon validates the instance server cert on **every** connect — both chai
 trust **and** hostname (SAN). There is **no** insecure/skip-verification mode at
 runtime (the old `TURBOPANEL_TLS_INSECURE` daemon env was dead and was removed;
 `run.sh --insecure-tls` only affects the bootstrap `curl -k` downloads). Four
-valid configurations. Every hostname is served on `:8443`. SNI selects that
-name's certificate. The Platform CA leaf stays bound as the catch-all.
+valid configurations. On self-hosted every hostname is served on `:8443`. SNI
+selects that name's certificate. The Platform CA leaf stays bound as the
+catch-all. High Availability has no Caddy: it answers on 443 with no port in
+the URL, and only on `/api/*`, `/ws/*` and `/webhook/*` (the static UI serves
+the rest).
 
 | Path                          | Platform CA trust                                                                                                  | SAN requirement                                                                                                                                                                                                                                                                                                                                                                                                               | `GET /api/daemon/v1/instance/ca` |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| **Self-signed (self-hosted)** | Daemon trusts the downloaded **Platform CA** bundle (`TURBOPANEL_INSTANCE_CA` → `/etc/turbopanel/instance-ca.pem`, fetched from `GET /api/daemon/v1/instance/ca`). Instance material lives under `/var/lib/turbopanel/tls/` (`ca.crt` / `ca.key` / `ca-bundle.pem`) — not the replaceable checkout. Distinct from the **Organization CA** (`src/lib/tls/AGENTS.md`). | The leaf cert **must** include the hostname the daemon dials. SANs are derived from the configured public URL(s) — `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS` (see `scripts/generate-self-signed-cert.mjs`). Never hardcode the hostname.                                                                                                                    | 200 PEM |
+| **Self-signed (self-hosted)** | Daemon trusts the downloaded **Platform CA** bundle (`TURBOPANEL_INSTANCE_CA` → `/etc/turbopanel/instance-ca.pem`, fetched from `GET /api/daemon/v1/instance/ca`). Instance material lives under `/var/lib/turbopanel/tls/` (`ca.crt` / `ca.key` / `ca-bundle.pem`) — not the replaceable checkout. Distinct from the **Organization CA** (`src/lib/tls/AGENTS.md`). | The leaf cert **must** include the hostname the daemon dials. SANs come from the hostnames on Admin › Access › Hostnames, which the daemon copies into `TURBOPANEL_PUBLIC_URLS` before regenerating the leaf (`scripts/generate-self-signed-cert.mjs` also reads `TURBOPANEL_PUBLIC_URL` / `TURBOPANEL_BASE_URL` / `TURBOPANEL_INSTANCE_URL` and `TURBOPANEL_TLS_EXTRA_SANS`). Never hardcode the hostname.                                                                                                                    | 200 PEM |
 | **Uploaded cert**             | Publicly-valid when that certificate chains to a public root → **system trust**; otherwise bootstrap uses `-k`. `TURBOPANEL_TLS_PUBLIC` applies only when no Let's Encrypt sibling exists and the certificate was not checked on its own | The uploaded leaf **must** cover the hostname the daemon dials.                                                                                                                                                                                                                                                                                                                                                               | 404 for that name. 200 for a name that hits the Platform CA catch-all |
 | **Let's Encrypt**             | Publicly-valid → daemon uses the **system trust store** (ship **no** `TURBOPANEL_INSTANCE_CA` for that name)       | The real cert already covers the public hostname.                                                                                                                                                                                                                                                                                                                                                                             | 404 for that name. 200 for an unlisted name on the Platform CA catch-all |
-| **Cloudflare tunnel / proxy** | Cloudflare's edge cert is publicly-valid → **system trust**                                                        | Daemon dials the public Cloudflare hostname, which the edge cert already covers. **Caveat:** behind a tunnel the instance cannot auto-discover its own public hostname (cloudflared dials out), so the reachable URL(s) must be **declared by the operator** (admin surface / `TURBOPANEL_PUBLIC_URL`), not auto-detected. The self-signed origin leg (cloudflared → local Caddy) is separate from what the daemon validates. | 200 (origin still Platform CA) |
+| **Cloudflare tunnel / proxy** | Cloudflare's edge cert is publicly-valid → **system trust**                                                        | Daemon dials the public Cloudflare hostname, which the edge cert already covers. **Caveat:** behind a tunnel the instance cannot auto-discover its own public hostname (cloudflared dials out), so the reachable URL(s) must be **added by the operator** on Admin › Access › Hostnames, not auto-detected. On self-hosted that screen is the only source; `TURBOPANEL_PUBLIC_URLS` in `runtime.env` is the copy the daemon writes on apply and overwrites, never configuration. High Availability takes its hostnames only from the platform environment (`TURBOPANEL_BASE_URL` / `TURBOPANEL_PUBLIC_URLS`). The self-signed origin leg (cloudflared → local Caddy) is separate from what the daemon validates. | 200 (origin still Platform CA) |
 
 Note: `Deno.createHttpClient({ caCerts })` **adds** to the system roots (does
 not replace them), so configuring the **Platform CA** does not break validation

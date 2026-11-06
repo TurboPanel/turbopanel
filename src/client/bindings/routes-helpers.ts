@@ -51,9 +51,9 @@ export function bindingMaterializeHttpPayload(materializeResult: Readonly<{ kind
     materializeResult.kind === 'binding_endpoint_unavailable' ||
     materializeResult.kind === 'datacenter_ip_required' ||
     materializeResult.kind === 'private_path_unavailable' ||
-    // Bindings resolve with `client-backend`, which never raises this; listed
-    // so the mapping over `PrivateEndpointError` stays total.
-    materializeResult.kind === 'failover_requires_trusted_datacenter'
+    // An untrusted-only pair with nothing to ride (no TurboFabric, no public
+    // address); the create route words it as the untrusted-network refusal.
+    materializeResult.kind === 'untrusted_network_needs_fabric'
   ) {
     return { status: 422, body: { error: BINDING_ENDPOINT_UNAVAILABLE_ERROR } }
   }

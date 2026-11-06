@@ -75,6 +75,29 @@ function databaseSentence(ctx: NotificationContext): string {
   )
 }
 
+/** One "was → now" phrase per moved setting of a backup target; never a key value. */
+function targetChanges(ctx: NotificationContext): string {
+  const parts: string[] = []
+  const pair = (key: string, label: string) => {
+    const before = ctx[`${key}Before`]
+    const after = ctx[`${key}After`]
+    if (typeof before !== 'string' || typeof after !== 'string') return
+    parts.push(
+      `${label} ${before === '' ? '(none)' : before} to ${after === '' ? '(none)' : after}`
+    )
+  }
+  pair('endpoint', 'endpoint')
+  pair('bucket', 'bucket')
+  pair('region', 'region')
+  pair('prefix', 'folder')
+  if (typeof ctx.pathStyle === 'boolean') {
+    parts.push(`path-style addressing turned ${ctx.pathStyle ? 'on' : 'off'}`)
+  }
+  if (ctx.accessKeyChanged === true) parts.push('a different access key id')
+  if (ctx.secretReplaced === true) parts.push('a new secret access key')
+  return parts.length > 0 ? parts.join(', ') : 'its settings changed'
+}
+
 /**
  * The catalogue. Keys are the codes; the object is `as const` so the code
  * union and the CHECK pin in `enum-checks.test.ts` derive from one place.
@@ -160,19 +183,34 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )} from ${name(ctx, 'subjectKind', 'a subject')} ${name(ctx, 'subjectId', '')}`.trimEnd() +
       '.',
   },
+  // One stored code for three alerts; `ctx.kind` (`issuance`, `renewal`,
+  // `request_dropped`) picks the words. Rows from before `kind` read as renewal.
   'certificate.renewal_failed': {
-    label: 'A certificate failed to renew',
+    label: 'A certificate could not be issued or renewed',
     severity: 'warning',
     scope: 'organization',
     audience: 'members',
     urgent: true,
-    title: (ctx) => `Certificate renewal failed for ${name(ctx, 'hostname', 'a domain')}`,
-    body: (ctx) =>
-      `${name(
+    title: (ctx) => {
+      const domain = name(ctx, 'hostname', 'a domain')
+      if (ctx.kind === 'issuance') return `Couldn't get a certificate for ${domain}`
+      if (ctx.kind === 'request_dropped') return `Stopped waiting for DNS for ${domain}`
+      return `Certificate renewal failed for ${domain}`
+    },
+    body: (ctx) => {
+      if (ctx.kind === 'request_dropped') {
+        return `${name(
+          ctx,
+          'reason',
+          'The certificate request waited too long for DNS and was dropped.'
+        )} Point the domain at the server, then press Use Let's Encrypt again.`
+      }
+      return `${name(
         ctx,
         'reason',
         "Let's Encrypt could not issue or renew the certificate."
-      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`,
+      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`
+    },
   },
   'folder.orphans_found': {
     label: 'A folder was left behind on a server',
@@ -194,6 +232,172 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'Its files are still on the server and its name stays reserved. ' +
       'Open Folders that need attention in the organization settings to remove it, ' +
       'or put the service back to use it again.',
+  },
+  'server.repo_key_changed': {
+    label: "A software source's signing key changed",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    // A signing key is what vouches for the software installed on a server.
+    urgent: true,
+    title: (ctx) =>
+      `The ${name(ctx, 'keyName', 'software source')} signing key changed on ${name(
+        ctx,
+        'serverName',
+        'a server'
+      )}`,
+    body: (ctx) =>
+      `The ${name(ctx, 'keyName', 'software source')} package source now publishes a different signing key than TurboPanel expects (expected ${name(
+        ctx,
+        'expected',
+        'unknown'
+      )}, got ${name(ctx, 'got', 'unknown')}). ` +
+      'The server went on using it, and every package is still checked against that key. ' +
+      'This is usually the publisher rotating its key; if you did not expect that, check the source before the next install.',
+  },
+  'server.enrolled': {
+    label: 'A new server joined',
+    severity: 'info',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: false,
+    title: (ctx) => `${name(ctx, 'serverName', 'A new server')} joined the organization`,
+    body: (ctx) =>
+      `A server enrolled with a one-time install key (daemon key ${name(
+        ctx,
+        'daemonKey',
+        'unknown'
+      )}). ` +
+      'Servers are accepted automatically; if you did not install one, remove it from the server list.',
+  },
+  'server.key_replaced': {
+    label: "A server's daemon key was replaced",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) => `The daemon key on ${name(ctx, 'serverName', 'a server')} was replaced`,
+    body: (ctx) =>
+      `A re-enroll token issued for ${name(ctx, 'serverName', 'this server')} was used. ` +
+      `The old key ${name(ctx, 'oldKey', 'unknown')} was replaced by ${name(
+        ctx,
+        'newKey',
+        'unknown'
+      )}. ` +
+      'If you did not issue that token, revoke the server key and check the host.',
+  },
+  'panel.identity_next_changed': {
+    label: "The control plane's next key changed",
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'managers',
+    // The next key is what servers accept after a rotation: always urgent.
+    urgent: true,
+    title: (ctx) =>
+      ctx.cleared === true
+        ? 'The control plane next key was cleared'
+        : 'The control plane next key was changed',
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} ${
+        ctx.cleared === true ? 'cleared' : 'set'
+      } the next key${
+        typeof ctx.fingerprint === 'string' ? ` (${ctx.fingerprint})` : ''
+      }. Servers accept the next key after a rotation; if you did not expect this, check Control Plane Identity in Admin.`,
+  },
+  'panel.pin_mismatch': {
+    label: 'A server reported a different control plane key',
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) =>
+      `Server ${name(ctx, 'serverName', 'unknown')} reported a different control plane key`,
+    body: (ctx) =>
+      `The server holds ${name(ctx, 'reported', 'a key')} but this control plane signs with ${name(
+        ctx,
+        'expected',
+        'another key'
+      )}. Either the server was pointed at another control plane or something is impersonating this one; reinstall the server with a fresh command if you did not expect this.`,
+  },
+  'certificate.expiring': {
+    label: 'A control plane certificate could not be renewed',
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'managers',
+    // An expiring control plane certificate can cut every server off: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      const host = name(ctx, 'hostname', 'a control plane address')
+      if (ctx.kind === 'countdown' && typeof ctx.daysLeft === 'number') {
+        return `Control plane certificate for ${host} expires in ${ctx.daysLeft} ${ctx.daysLeft === 1 ? 'day' : 'days'}`
+      }
+      return `Control plane certificate for ${host} could not be renewed`
+    },
+    body: (ctx) =>
+      `${name(ctx, 'detail', 'The certificate authority did not issue a new certificate.')} ` +
+      'The current certificate keeps serving until it expires; after that, servers fall back to the Platform CA certificate. ' +
+      'See Certificates under Access in Admin.',
+  },
+  'server.pin_silent': {
+    label: 'A server is running but not connecting to this control plane',
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: false,
+    title: (ctx) =>
+      `${name(ctx, 'serverName', 'A server')} is running but not connected to this control plane`,
+    body: (ctx) =>
+      `It has been offline here for ${name(ctx, 'offlineMinutes', 'some')} minutes, and for the last half hour its TurboFabric peers have reached it. ` +
+      'Its daemon may have stopped or may not be able to sign in, it may have lost its route to this control plane, or it may no longer trust it. Check the server; if this lasts it is reported again as missing.',
+  },
+  'server.pin_missing': {
+    label: 'A server has been running for hours without connecting to this control plane',
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) =>
+      `${name(ctx, 'serverName', 'A server')} has been running for hours without connecting to this control plane`,
+    body: (ctx) =>
+      `It has been offline here for ${name(ctx, 'offlineMinutes', 'many')} minutes while its TurboFabric peers have reached it for six hours. ` +
+      'Check that its daemon is running and can sign in. If it is and you cannot explain the silence, it may be talking to something impersonating this control plane: reinstall it with a fresh command.',
+  },
+  // One stored code for two changes; `ctx.kind` picks the words: `update`
+  // (a target now points at another endpoint, bucket or keys) or `assign`
+  // (the organization default or a cluster now uses another target).
+  'backup.target_changed': {
+    label: 'Where backups are copied to changed',
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    // Sending copies somewhere else is a security change: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      if (ctx.kind === 'assign') {
+        const owner =
+          ctx.scope === 'cluster'
+            ? name(ctx, 'clusterName', 'a database cluster')
+            : 'the organization'
+        return ctx.afterNone === true
+          ? `Backups for ${owner} are no longer copied to a backup target`
+          : `Backups for ${owner} now go to ${name(ctx, 'after', 'another backup target')}`
+      }
+      return `Backup target ${name(ctx, 'targetName', 'unknown')} now points somewhere else`
+    },
+    body: (ctx) => {
+      const actor = name(ctx, 'actorEmail', 'An owner or manager')
+      const check = "If you did not expect this, check the organization's backup targets."
+      if (ctx.kind === 'assign') {
+        return `${actor} changed where backups are copied from ${name(
+          ctx,
+          'before',
+          'the previous setting'
+        )} to ${name(ctx, 'after', 'another backup target')}. ${check}`
+      }
+      return `${actor} changed the backup target ${name(ctx, 'targetName', 'unknown')}: ${targetChanges(
+        ctx
+      )}. Every backup copied from now on goes there. ${check}`
+    },
   },
 } as const satisfies Record<string, EventDefinition>
 

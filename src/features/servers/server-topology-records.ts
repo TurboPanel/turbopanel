@@ -13,8 +13,9 @@
  * Nothing a host operator or a daemon sends can make the value grow without
  * bound. Limits that hold whatever the daemon says:
  *
- * - `generation` and `bootGeneration` are integers that fit
- *   {@link MAX_TOPOLOGY_GENERATION}; the snapshot is at most 64 KiB
+ * - `generation` and `bootGeneration`, when an older daemon still sends them,
+ *   are integers that fit {@link MAX_TOPOLOGY_GENERATION}; newer daemons leave
+ *   them out (see `./topology-identity.ts`). The snapshot is at most 64 KiB
  *   (`validateDaemonInboundFrame`, before any write, on both the Workers and
  *   the Deno path).
  * - at most {@link MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR} generation changes
@@ -25,6 +26,10 @@
  * - a resend of the stored generation is throttled to one write per server per
  *   {@link TOPOLOGY_REWRITE_COOLDOWN_SECONDS} seconds.
  *
+ * A "generation change" is a report of a different topology: a different
+ * generation number while both sides carry one, else a different
+ * `topologyIdentityKey` (`./topology-identity.ts`).
+ *
  * Every report runs under a lock on the server's row, so concurrent reports
  * cannot slip past the counters together.
  */
@@ -32,6 +37,7 @@ import { eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { server } from '../../db/schema.ts'
 import type { TopologyLayoutPaths } from '../../contracts/topology-types.ts'
+import { reportIsSameTopology } from './topology-identity.ts'
 
 /** Largest generation number the value stores (a Postgres `integer`). */
 export const MAX_TOPOLOGY_GENERATION = 2_147_483_647
@@ -45,8 +51,10 @@ export const TOPOLOGY_REWRITE_COOLDOWN_SECONDS = 30
 const CHURN_STAMP_REFRESH_SECONDS = 300
 
 export type TopologyGenerationRecord = {
-  generation: number
-  bootGeneration: number
+  /** Deprecated: only reports from older daemons carry it. */
+  generation?: number
+  /** Deprecated: only reports from older daemons carry it. */
+  bootGeneration?: number
   snapshot: unknown
   appliedAt: string
   /** When the stored value was last written; it changes whenever the snapshot is rewritten, even at the same generation. */
@@ -61,8 +69,10 @@ type StoredHardware = TopologyGenerationRecord & {
 
 /** Parameters for {@link recordTopologyGeneration} — the daemon's own report, verbatim. */
 export type TopologyGenerationReport = {
-  generation: number
-  bootGeneration: number
+  /** Deprecated: older daemons send it, newer ones leave it out. */
+  generation?: number
+  /** Deprecated: older daemons send it, newer ones leave it out. */
+  bootGeneration?: number
   /** The daemon-reported topology object, stored as-is — never a wrapper around it. */
   snapshot: unknown
   /** The daemon's own report timestamp (`topology-report.at`) — never a control-plane receipt time. */
@@ -78,16 +88,11 @@ export function topologyRecordFromColumn(value: unknown): TopologyGenerationReco
 function parseStored(value: unknown): StoredHardware | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const raw = value as Record<string, unknown>
-  if (
-    typeof raw.generation !== 'number' ||
-    typeof raw.bootGeneration !== 'number' ||
-    typeof raw.appliedAt !== 'string'
-  ) {
-    return undefined
-  }
+  if (typeof raw.appliedAt !== 'string') return undefined
+  if (raw.generation !== undefined && typeof raw.generation !== 'number') return undefined
+  if (raw.bootGeneration !== undefined && typeof raw.bootGeneration !== 'number') return undefined
   return {
-    generation: raw.generation,
-    bootGeneration: raw.bootGeneration,
+    ...generationFields(raw.generation, raw.bootGeneration),
     snapshot: raw.snapshot ?? null,
     appliedAt: raw.appliedAt,
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : raw.appliedAt,
@@ -97,11 +102,21 @@ function parseStored(value: unknown): StoredHardware | undefined {
   }
 }
 
+/** The generation numbers that are present, and no key for one that is absent. */
+function generationFields(
+  generation: number | undefined,
+  bootGeneration: number | undefined
+): Pick<TopologyGenerationRecord, 'generation' | 'bootGeneration'> {
+  return {
+    ...(generation === undefined ? {} : { generation }),
+    ...(bootGeneration === undefined ? {} : { bootGeneration }),
+  }
+}
+
 function toRecord(stored: StoredHardware | undefined): TopologyGenerationRecord | undefined {
   if (!stored) return undefined
   return {
-    generation: stored.generation,
-    bootGeneration: stored.bootGeneration,
+    ...generationFields(stored.generation, stored.bootGeneration),
     snapshot: stored.snapshot,
     appliedAt: stored.appliedAt,
     updatedAt: stored.updatedAt,
@@ -147,8 +162,12 @@ export function resetTopologyChurnLogForTests(): void {
   churnLogAt.clear()
 }
 
-function fitsGeneration(value: number): boolean {
-  return Number.isInteger(value) && value >= 0 && value <= MAX_TOPOLOGY_GENERATION
+/** An absent number fits: newer daemons leave the generation numbers out. */
+function fitsGeneration(value: number | undefined): boolean {
+  return (
+    value === undefined ||
+    (Number.isInteger(value) && value >= 0 && value <= MAX_TOPOLOGY_GENERATION)
+  )
 }
 
 type Tx = Pick<Db, 'execute'>
@@ -170,10 +189,11 @@ async function writeHardware(db: Pick<Db, 'update'>, serverId: string, value: St
  * `capability-plan-records.ts`) so two reports for one server are handled one
  * after the other and the counters cannot be raced.
  *
- * - The stored generation sent again never counts as a change. Its snapshot is
- *   refreshed when it differs, at most once per
- *   {@link TOPOLOGY_REWRITE_COOLDOWN_SECONDS}.
- * - Any other generation number replaces the stored value if the hourly and
+ * - The stored topology sent again (`reportIsSameTopology`: the same
+ *   generation number from an older daemon, else the same identity key) never
+ *   counts as a change. Its snapshot is refreshed when it differs, at most
+ *   once per {@link TOPOLOGY_REWRITE_COOLDOWN_SECONDS}.
+ * - Any other topology replaces the stored value if the hourly and
  *   daily limits allow it. "Latest" is by write time, never by the daemon's own
  *   number, so a forged huge number cannot pin itself: an honest daemon
  *   reporting its own number replaces it (counted as a change).
@@ -200,16 +220,19 @@ export async function recordTopologyGeneration(
     const now = new Date()
     const nowIso = now.toISOString()
 
-    if (current?.generation === report.generation) {
+    if (current && reportIsSameTopology(current, report)) {
       const sinceWrite = now.getTime() - Date.parse(current.updatedAt)
       if (sinceWrite < TOPOLOGY_REWRITE_COOLDOWN_SECONDS * 1000) return 'unchanged'
       const same =
         JSON.stringify(current.snapshot ?? null) === JSON.stringify(report.snapshot ?? null) &&
+        current.generation === report.generation &&
         current.bootGeneration === report.bootGeneration
       if (same) return 'unchanged'
+      // The numbers follow the report: a daemon that stopped sending them
+      // clears them from the stored value.
       await writeHardware(tx, serverId, {
-        ...current,
-        bootGeneration: report.bootGeneration,
+        ...generationFields(report.generation, report.bootGeneration),
+        changes: current.changes,
         snapshot: report.snapshot ?? null,
         appliedAt: report.appliedAt,
         updatedAt: nowIso,
@@ -230,8 +253,7 @@ export async function recordTopologyGeneration(
     }
 
     await writeHardware(tx, serverId, {
-      generation: report.generation,
-      bootGeneration: report.bootGeneration,
+      ...generationFields(report.generation, report.bootGeneration),
       snapshot: report.snapshot ?? null,
       appliedAt: report.appliedAt,
       updatedAt: nowIso,
@@ -331,8 +353,8 @@ export async function getLatestTopologyGenerations(
 /**
  * Stamp `server.metadata.topologyResyncRequestedAt` — the durable signal
  * that `POST /api/daemon/v1/metrics` emits (see `api-routes.ts`) when a
- * sample's `metadata.topologyGeneration` has never been recorded via
- * {@link recordTopologyGeneration}. Ingest must never wake the Durable
+ * sample does not match the topology recorded via
+ * {@link recordTopologyGeneration} (`sampleMatchesRecordedTopology`). Ingest must never wake the Durable
  * Object to ask the daemon for a fresh `topology-report` directly, so this
  * marker is the hand-off point: a later phase's sweep reads it from a safe,
  * non-DO context and pushes the actual re-sync request to the connected
@@ -357,6 +379,7 @@ export async function markTopologyResyncRequested(db: Db, serverId: string): Pro
 /**
  * The stored topology when its generation is `generation`, else `undefined`:
  * older generations are not kept, so a sample naming one reads as unknown.
+ * A record from a daemon that sends no generation never matches here.
  */
 export async function getTopologyGeneration(
   db: Pick<Db, 'select'>,

@@ -41,7 +41,7 @@ export const networkSchemas = {
     type: 'object',
     required: ['error', 'cidr', 'conflictingCidr'],
     description:
-      'Every CIDR write goes through one collision authority (`src/features/net/cidr-collisions.ts`). Each pair is a hard **409**: `cidr_overlaps_fabric` (the org TurboFabric `tp0` range), `cidr_overlaps_fabric_pool` (`fabric.options.containerPool`, default `10.192.0.0/12`), `subnet_overlaps` (a site subnet anywhere in the organization — the org-wide default), `cidr_overlaps_gateway_advertised` (a site subnet in another datacenter when both datacenters have a gateway-role relay — the case that breaks WireGuard `AllowedIPs`), `cidr_overlaps_reserved` (an operator-reserved range), `cidr_overlaps_docker_network` (a docker/managed registration carrying a CIDR).',
+      'Every CIDR write goes through one collision authority (`src/features/net/cidr-collisions.ts`). Each pair is a hard **409**: `cidr_overlaps_fabric` (the org TurboFabric `tp0` range), `cidr_overlaps_fabric_pool` (`fabric.options.containerPool`, default `10.192.0.0/12`), `subnet_overlaps` (a site subnet anywhere in the organization — the org-wide default), `cidr_overlaps_gateway_advertised` (a site subnet in another datacenter network when both datacenter networks have a gateway-role relay — the case that breaks WireGuard `AllowedIPs`), `cidr_overlaps_reserved` (an operator-reserved range), `cidr_overlaps_docker_network` (a docker/managed registration carrying a CIDR).',
     properties: {
       error: {
         type: 'string',
@@ -67,7 +67,7 @@ export const networkSchemas = {
       datacenterId: {
         type: 'string',
         format: 'uuid',
-        description: 'Owning datacenter of the conflicting site subnet, when it is one.',
+        description: 'Owning datacenter network of the conflicting site subnet, when it is one.',
       },
     },
   },
@@ -115,7 +115,7 @@ export const networkSchemas = {
         type: 'string',
         enum: ['datacenter', 'docker', 'reserved'],
         description:
-          'Scope pairing: datacenter requires datacenterId (no serverId) — a datacenter may own multiple CIDR rows (one `network(kind=\'datacenter\')` per subnet); docker may optionally pin serverId for a host-local external network and must not set datacenterId; reserved is org-only (neither datacenterId nor serverId) and requires `cidr` — it declares a range TurboPanel must never allocate from or accept elsewhere, e.g. "Corp VPN — Chicago branch" (network_scope_required / network_single_scope_conflict / network_cidr_required on 400). The `compose` and `managed` kinds are platform-allocated and rejected here with `Invalid request`.',
+          'Scope pairing: datacenter requires datacenterId (no serverId) — a datacenter network may own multiple CIDR rows (one `network(kind=\'datacenter\')` per subnet); docker may optionally pin serverId for a host-local external network and must not set datacenterId; reserved is org-only (neither datacenterId nor serverId) and requires `cidr` — it declares a range TurboPanel must never allocate from or accept elsewhere, e.g. "Corp VPN — Chicago branch" (network_scope_required / network_single_scope_conflict / network_cidr_required on 400). The `compose` and `managed` kinds are platform-allocated and rejected here with `Invalid request`.',
       },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
       serverId: { type: ['string', 'null'], format: 'uuid' },
@@ -125,10 +125,7 @@ export const networkSchemas = {
       options: {
         description:
           'For kind=docker, must include dockerNetworkName (long-lived external Docker network).',
-        oneOf: [
-          { $ref: '#/components/schemas/DockerNetworkOptions' },
-          { type: 'object' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/DockerNetworkOptions' }, { type: 'object' }],
       },
     },
   },
@@ -173,7 +170,8 @@ export const networkPaths: Record<string, unknown> = {
         {
           name: 'organizationId',
           in: 'query',
-          description: 'Active organization (also accepted via X-Turbopanel-Organization-Id header)',
+          description:
+            'Active organization (also accepted via X-Turbopanel-Organization-Id header)',
           schema: { type: 'string', format: 'uuid' },
         },
         {

@@ -21,11 +21,13 @@ import {
   tenancy,
   user,
   workspace,
+  audit,
 } from '../../db/schema.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
 import { registerOrganizationPrincipalRoutes } from './org-routes.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -316,16 +318,58 @@ test('GET /organizations/:id/principals answers 404 to an outsider and 401 witho
   })
 })
 
+test('DELETE /organizations/:id/principals/:principalId needs the exact Hosting Account name', async () => {
+  await withFixtures(async ({ db, app, cookie, organizationId, tag }) => {
+    const orphan = await addPrincipal(db, organizationId, `typed_${tag}`, null)
+    const send = (query: string) =>
+      app.request(`/organizations/${organizationId}/principals/${orphan}${query}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie },
+      })
+    const remaining = async () =>
+      (await db.select().from(principal).where(eq(principal.id, orphan))).length
+
+    for (const query of [
+      '',
+      '?confirmName=',
+      `?confirmName=TYPED_${tag}`,
+      `?confirmName=typed_${tag}%20`,
+      `?confirmName=${orphan}`,
+    ]) {
+      const refused = await send(query)
+      assertEquals(refused.status, 400, query)
+      assertEquals(await refused.json(), {
+        error: 'confirm_name_required',
+        message: 'Type the Hosting Account name to delete this Hosting Account.',
+      })
+      assertEquals(await remaining(), 1)
+    }
+
+    const removed = await send(`?confirmName=typed_${tag}`)
+    assertEquals(removed.status, 200)
+    assertEquals(await remaining(), 0)
+    await db.delete(audit).where(eq(audit.targetId, orphan))
+  })
+})
+
 test('DELETE /organizations/:id/principals/:principalId removes an orphan and retires its placements', async () => {
   await withFixtures(async ({ db, app, cookie, organizationId, serverId, tag }) => {
     const orphan = await addPrincipal(db, organizationId, `gone_${tag}`, null)
     await db
       .insert(principalPlacement)
       .values({ principalId: orphan, serverId, state: 'present', home: '/h/g', source: 'manual' })
-    const res = await app.request(`/organizations/${organizationId}/principals/${orphan}`, {
-      method: 'DELETE',
-      headers: { Cookie: cookie },
-    })
+    const res = await app.request(
+      await confirmedPath(
+        db,
+        'principal',
+        orphan,
+        `/organizations/${organizationId}/principals/${orphan}`
+      ),
+      {
+        method: 'DELETE',
+        headers: { Cookie: cookie },
+      }
+    )
     assertEquals(res.status, 200)
     // The test app has no command queue: the reached server is reported, not queued.
     assertEquals(await res.json(), {
@@ -333,6 +377,17 @@ test('DELETE /organizations/:id/principals/:principalId removes an orphan and re
       reconciled: { queuedServerIds: [], failedServerIds: [serverId] },
     })
     assertEquals((await db.select().from(principal).where(eq(principal.id, orphan))).length, 0)
+    const trail = await db.select().from(audit).where(eq(audit.targetId, orphan))
+    try {
+      assertEquals(trail.length, 1)
+      assertEquals(trail[0]!.action, 'principal.delete')
+      assertEquals(trail[0]!.targetType, 'principal')
+      assertEquals(trail[0]!.organizationId, organizationId)
+      const context = trail[0]!.context as { username: string; appliedUsername: string }
+      assertEquals([context.username, context.appliedUsername], [`gone_${tag}`, `gone_${tag}`])
+    } finally {
+      await db.delete(audit).where(eq(audit.targetId, orphan))
+    }
     assertEquals(
       (await db.select().from(principalPlacement).where(eq(principalPlacement.principalId, orphan)))
         .length,
@@ -365,11 +420,19 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
         appliedUsername: `login_${tag}`,
       })
 
-      const del = (id: string) =>
-        app.request(`/organizations/${organizationId}/principals/${id}`, {
-          method: 'DELETE',
-          headers: { Cookie: cookie },
-        })
+      const del = async (id: string) =>
+        app.request(
+          await confirmedPath(
+            db,
+            'principal',
+            id,
+            `/organizations/${organizationId}/principals/${id}`
+          ),
+          {
+            method: 'DELETE',
+            headers: { Cookie: cookie },
+          }
+        )
 
       const a = await del(inProject)
       assertEquals(a.status, 409)
@@ -398,10 +461,18 @@ test('the active-organization header does not widen access to another organizati
     const headers = { Cookie: outsiderCookie, 'x-organization-id': organizationId }
     const list = await app.request(`/organizations/${organizationId}/principals`, { headers })
     assertEquals(list.status, 404)
-    const del = await app.request(`/organizations/${organizationId}/principals/${orphan}`, {
-      method: 'DELETE',
-      headers,
-    })
+    const del = await app.request(
+      await confirmedPath(
+        db,
+        'principal',
+        orphan,
+        `/organizations/${organizationId}/principals/${orphan}`
+      ),
+      {
+        method: 'DELETE',
+        headers,
+      }
+    )
     assertEquals(del.status, 404)
     assertEquals((await db.select().from(principal).where(eq(principal.id, orphan))).length, 1)
   })
@@ -410,20 +481,36 @@ test('the active-organization header does not widen access to another organizati
 test('DELETE /organizations/:id/principals/:principalId is org-scoped', async () => {
   await withFixtures(async ({ db, app, cookie, outsiderCookie, organizationId, tag }) => {
     const orphan = await addPrincipal(db, organizationId, `scoped_${tag}`, null)
-    const outsider = await app.request(`/organizations/${organizationId}/principals/${orphan}`, {
-      method: 'DELETE',
-      headers: { Cookie: outsiderCookie },
-    })
+    const outsider = await app.request(
+      await confirmedPath(
+        db,
+        'principal',
+        orphan,
+        `/organizations/${organizationId}/principals/${orphan}`
+      ),
+      {
+        method: 'DELETE',
+        headers: { Cookie: outsiderCookie },
+      }
+    )
     assertEquals(outsider.status, 404)
     // A principal of this org addressed through a different organization id.
     const [other] = await db
       .select({ id: organization.id })
       .from(organization)
       .where(eq(organization.name, `Other Org Principals ${tag}`))
-    const crossed = await app.request(`/organizations/${other!.id}/principals/${orphan}`, {
-      method: 'DELETE',
-      headers: { Cookie: outsiderCookie },
-    })
+    const crossed = await app.request(
+      await confirmedPath(
+        db,
+        'principal',
+        orphan,
+        `/organizations/${other!.id}/principals/${orphan}`
+      ),
+      {
+        method: 'DELETE',
+        headers: { Cookie: outsiderCookie },
+      }
+    )
     assertEquals(crossed.status, 404)
     const missing = await app.request(
       `/organizations/${organizationId}/principals/${crypto.randomUUID()}`,
@@ -521,10 +608,18 @@ test('the principal routes answer 403 to a member who cannot manage the organiza
     const orphan = await addPrincipal(db, organizationId, `member_${tag}`, null)
     const headers = { Cookie: memberCookie }
     const list = await app.request(`/organizations/${organizationId}/principals`, { headers })
-    const remove = await app.request(`/organizations/${organizationId}/principals/${orphan}`, {
-      method: 'DELETE',
-      headers,
-    })
+    const remove = await app.request(
+      await confirmedPath(
+        db,
+        'principal',
+        orphan,
+        `/organizations/${organizationId}/principals/${orphan}`
+      ),
+      {
+        method: 'DELETE',
+        headers,
+      }
+    )
     const onServer = await app.request(`/servers/${serverId}/principals`, { headers })
     assertEquals([list.status, remove.status, onServer.status], [403, 403, 403])
     assertEquals((await db.select().from(principal).where(eq(principal.id, orphan))).length, 1)
@@ -540,10 +635,18 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal a se
       .returning({ id: service.id })
     await db.insert(tenancy).values({ principalId: busy, serviceId: svc!.id })
 
-    const res = await app.request(`/organizations/${organizationId}/principals/${busy}`, {
-      method: 'DELETE',
-      headers: { Cookie: cookie },
-    })
+    const res = await app.request(
+      await confirmedPath(
+        db,
+        'principal',
+        busy,
+        `/organizations/${organizationId}/principals/${busy}`
+      ),
+      {
+        method: 'DELETE',
+        headers: { Cookie: cookie },
+      }
+    )
     assertEquals(res.status, 409)
     assertEquals(await res.json(), {
       error: 'principal_in_use',

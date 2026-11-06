@@ -63,7 +63,7 @@ test('createLicense stores a hashed token and returns plaintext once', async () 
       throw new TypeError('expected active license row')
     }
     assertEquals(active.organizationId, organizationId)
-    assertEquals(await verifyLicenseToken(created.licenseToken, active.token), true)
+    assertEquals(await verifyLicenseToken(created.licenseToken, active.token ?? ''), true)
 
     const listed = await listLicenses(db, organizationId)
     assertEquals(
@@ -242,7 +242,7 @@ test('createLicense inserts into mock store and lists active licenses', async ()
   if (!active) {
     throw new TypeError('expected mock lookupActiveLicense to return a row')
   }
-  assertEquals(await verifyLicenseToken(created.licenseToken, active.token), true)
+  assertEquals(await verifyLicenseToken(created.licenseToken, active.token ?? ''), true)
 })
 
 test('invalidateLicense revokes mock license and reports no bound servers', async () => {

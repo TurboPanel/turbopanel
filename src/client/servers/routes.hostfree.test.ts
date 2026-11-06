@@ -825,7 +825,7 @@ test('DELETE /servers/:id returns 403 for a self-host-pinned server', async () =
     withServerRow: true,
     executeQueue: [[{ allowed: true }], [{ server_id: SERVER_ID }]],
   })
-  const res = await app.request(`/servers/${SERVER_ID}`, {
+  const res = await app.request(`/servers/${SERVER_ID}?confirmName=${SERVER_ID}`, {
     method: 'DELETE',
     headers: sessionHeaders(cookie),
   })

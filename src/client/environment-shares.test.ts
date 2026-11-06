@@ -13,6 +13,7 @@ import {
   withFolderFixtures as withFixtures,
 } from '../test-fixtures/folder-world.test.support.ts'
 import { loadStorageMaterial } from './environments/deploy-prepare.ts'
+import { confirmedPath } from '../test-fixtures/confirm-name.test.support.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -144,10 +145,18 @@ test('a common service cannot be deleted while another environment uses it', asy
     assertMatch(String(refused.json.message), /Other environments still use/)
 
     // The environment that owns it, and its project, cannot go either.
-    const env = await send(ctx, 'DELETE', `/environments/${home.envId}`)
+    const env = await send(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'environment', home.envId, `/environments/${home.envId}`)
+    )
     assertEquals(env.status, 409)
     assertEquals(env.json.error, 'common_asset_in_use')
-    const proj = await send(ctx, 'DELETE', `/projects/${home.projectId}`)
+    const proj = await send(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'project', home.projectId, `/projects/${home.projectId}`)
+    )
     assertEquals(proj.status, 409)
     assertEquals(proj.json.error, 'common_asset_in_use')
 
@@ -174,7 +183,11 @@ test('deleting an environment stops its use of common assets, and the asset stay
       2
     )
 
-    const deleted = await send(ctx, 'DELETE', `/environments/${other.envId}`)
+    const deleted = await send(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'environment', other.envId, `/environments/${other.envId}`)
+    )
     assertEquals(deleted.status, 200)
     assertEquals(
       (await ctx.db.select().from(share)).filter((row) => row.environmentId === other.envId).length,

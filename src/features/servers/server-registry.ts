@@ -1,6 +1,9 @@
 import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { verifyDaemonLicense } from '../licenses/verify-daemon-license.ts'
+import {
+  type VerifiedDaemonLicense,
+  verifyDaemonLicense,
+} from '../licenses/verify-daemon-license.ts'
 import {
   mergeServerHostResources,
   osColumnsEqual,
@@ -27,7 +30,7 @@ import {
   timeSyncColumnPatch,
 } from './server-metadata.ts'
 import { license, server } from '../../db/schema.ts'
-import { applyReportedAddressRepin } from '../net/repin-apply.ts'
+import { applyReportedAddressRepin, stampServerRoutingFanout } from '../net/repin-apply.ts'
 import { serverIpsEquals } from '../../contracts/server-addresses.ts'
 import {
   parseServiceRunStates,
@@ -40,12 +43,13 @@ import {
 } from '../environments/service-run-state.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { daemonFeaturesColumnPatch } from './daemon-jsonb-write.ts'
-import { featuresMatch, parseServerDaemonState } from './daemon-state.ts'
+import { featuresMatch, isServerTrustPinnedBy, parseServerDaemonState } from './daemon-state.ts'
 import { ensureSystemHierarchy } from '../system/hierarchy.ts'
 import { applyAddServerTierAtEnroll, lockOrganizationRow } from '../tiers/assignment-records.ts'
 import { isUnusedKeyExpired } from '../licenses/key-expiry.ts'
 import { describeError } from '../../lib/describe-error.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { FABRIC_LAN_ROUTES_FEATURE } from '../../lib/version-wire.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
@@ -115,6 +119,8 @@ export type ServerHelloIdentity = {
   services?: ServiceRunState[]
   /** Hello only. `[]` when the daemon omitted `features`. Heartbeat leaves this unset. */
   features?: string[]
+  /** Hello only: how the daemon pinned the panel key. Unset leaves what is stored. */
+  panelPin?: { pinnedBy: string }
 }
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
@@ -341,6 +347,15 @@ async function updateServerKeepingMachineKey(
   }
 }
 
+/** Column patch for the pin kind the daemon reported when it differs from the stored one, else null. */
+function trustPinnedByPatch(
+  identity: ServerHelloIdentity,
+  stored: string | null
+): { trustPinnedBy: string } | null {
+  const reported = identity.panelPin?.pinnedBy
+  return isServerTrustPinnedBy(reported) && reported !== stored ? { trustPinnedBy: reported } : null
+}
+
 export async function touchServerMetadata(
   db: Db,
   serverId: string,
@@ -363,6 +378,7 @@ export async function touchServerMetadata(
       ntpServers: server.ntpServers,
       ntpLastSyncedAt: server.ntpLastSyncedAt,
       daemon: server.daemon,
+      trustPinnedBy: server.trustPinnedBy,
     })
     .from(server)
     .where(eq(server.id, serverId))
@@ -394,6 +410,7 @@ export async function touchServerMetadata(
   const metadataChanged = mergeServerMetadataIdentity(base, identity) !== null
   const hostnameChanged = Boolean(columns.hostname && columns.hostname !== row.hostname)
   const machineKeyChanged = Boolean(columns.machineKey && columns.machineKey !== row.machineKey)
+  const pinPatch = trustPinnedByPatch(identity, row.trustPinnedBy)
   const incomingFeatures = identity.features
   const currentProjection = parseServerDaemonState(row.daemon)?.projection
   const featuresChanged =
@@ -404,7 +421,8 @@ export async function touchServerMetadata(
     !machineKeyChanged &&
     !osPatch &&
     !timePatch &&
-    !featuresChanged
+    !featuresChanged &&
+    !pinPatch
   ) {
     return
   }
@@ -415,6 +433,7 @@ export async function touchServerMetadata(
   if (machineKeyChanged) update.machineKey = columns.machineKey
   if (osPatch) Object.assign(update, osPatch)
   if (timePatch) Object.assign(update, timePatch)
+  Object.assign(update, pinPatch)
   if (Object.keys(delta).length > 0) {
     update.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${JSON.stringify(
       delta
@@ -428,12 +447,51 @@ export async function touchServerMetadata(
 
   await updateServerKeepingMachineKey(db, serverId, update, machineKeyChanged)
 
+  if (featuresChanged && incomingFeatures !== undefined) {
+    await replanAfterLanRouteFeatureChange(
+      db,
+      serverId,
+      currentProjection?.features,
+      incomingFeatures
+    )
+  }
   await reconcileAfterHardwareReport(db, serverId, base, delta)
   await announceStoppedServices(
     deps,
     serverId,
     servicesNewlyStoppedAfterCrashes(base?.services, delta.services)
   )
+}
+
+/**
+ * The daemon started or stopped listing `fabric-lan-routes-v1`: the pair rule
+ * for this server changed, so its routing is re-planned. With TurboFabric
+ * running the mesh gives a former LAN pair its tunnel; with it off the pair
+ * loses its LAN routes and the TurboFabric page says why. Only a marker is
+ * written here (hello must not enqueue); the repin fan-out sweep does the
+ * rest. Best-effort: a failure must not reject the hello.
+ */
+async function replanAfterLanRouteFeatureChange(
+  db: Db,
+  serverId: string,
+  before: readonly string[] | undefined,
+  after: readonly string[]
+): Promise<void> {
+  const had = before?.includes(FABRIC_LAN_ROUTES_FEATURE) === true
+  const has = after.includes(FABRIC_LAN_ROUTES_FEATURE)
+  if (had === has) return
+  if (had) {
+    compatLogWarn(
+      'server-registry',
+      `daemon on ${serverId} stopped routing container networks over a LAN; its trusted LAN pairs need TurboFabric now`
+    )
+  }
+  await stampServerRoutingFanout(db, serverId, nowTs()).catch((err) => {
+    compatLogWarn(
+      'server-registry',
+      `routing re-plan marker failed for ${serverId}: ${describeError(err)}`
+    )
+  })
 }
 
 /**
@@ -721,16 +779,25 @@ async function insertLicensedServer(
   })
 }
 
+export type ResolveServerIdOptions = {
+  /** `identity.licenseId` + `licenseToken`, already checked by the caller. */
+  verifiedLicense?: VerifiedDaemonLicense
+}
+
 async function resolveLicensedServerId(
   db: Db,
   identity: ServerHelloIdentity,
-  fabricDeps?: FabricMembershipDeps
+  fabricDeps?: FabricMembershipDeps,
+  opts: ResolveServerIdOptions = {}
 ): Promise<string | null> {
   const licenseId = identity.licenseId?.trim()
   const licenseToken = identity.licenseToken?.trim()
   if (!licenseId || !licenseToken) return null
 
-  const verified = await verifyDaemonLicense(db, licenseId, licenseToken)
+  // The token check is an Argon2 hash; a caller that has just run it passes
+  // the result instead of paying for it twice. Revocation and expiry between
+  // the two are still caught by the latch below, which re-reads both.
+  const verified = opts.verifiedLicense ?? (await verifyDaemonLicense(db, licenseId, licenseToken))
   if (!verified) return null
 
   // Already latched: only the bound server may re-enroll (with matching serverId).
@@ -823,10 +890,11 @@ export async function findServerIdForIdentity(
 export async function resolveServerId(
   db: Db,
   identity: ServerHelloIdentity,
-  fabricDeps?: FabricMembershipDeps
+  fabricDeps?: FabricMembershipDeps,
+  opts: ResolveServerIdOptions = {}
 ): Promise<string | null> {
   if (identity.licenseId?.trim()) {
-    return resolveLicensedServerId(db, identity, fabricDeps)
+    return resolveLicensedServerId(db, identity, fabricDeps, opts)
   }
 
   const existing = await findExistingServerId(db, identity)

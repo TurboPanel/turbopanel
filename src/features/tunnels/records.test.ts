@@ -1,0 +1,295 @@
+/**
+ * Tunnel tables against a real database: deleting an organization removes
+ * everything including every sealed token, a tunnel takes its run token with
+ * it, a rotated token leaves no predecessor, and the new constraints hold.
+ * Skips without TURBOPANEL_DATABASE_URL.
+ */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
+import { assert, assertEquals, assertRejects } from '@std/assert'
+import { eq, sql } from 'drizzle-orm'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb, endDbConnection } from '../../db/connection.ts'
+import {
+  badge,
+  carrier,
+  datacenter,
+  doorway,
+  organization,
+  portal,
+  secret,
+  server,
+  tunnel,
+} from '../../db/schema.ts'
+import {
+  deleteTunnelRecord,
+  insertCarrier,
+  MAX_CARRIERS_PER_ORG,
+  replaceTunnelRunSecret,
+  TunnelLimitError,
+} from './records.ts'
+
+/**
+ * Jest/Mocha-shaped alias for {@link Deno.test}.
+ *
+ * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
+ * reports Deno suites as empty; keep this alias so analysis sees real tests.
+ */
+const test = Deno.test.bind(Deno)
+
+const dbUrl = getDatabaseUrl()
+type Db = ReturnType<typeof createDenoDb>
+
+async function seal(db: Db, organizationId: string, provider: string): Promise<string> {
+  const [row] = await db
+    .insert(secret)
+    .values({ organizationId, provider, name: 'sealed', secretEnvelope: 'tpsecret:test' })
+    .returning({ id: secret.id })
+  return row!.id
+}
+
+/** One organization with a carrier, a badge, a tunnel with its run token, a portal and a doorway. */
+async function seed(db: Db) {
+  const [org] = await db
+    .insert(organization)
+    .values({ name: `Tunnel Org ${crypto.randomUUID()}` })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+  const [srv] = await db
+    .insert(server)
+    .values({ name: 'Tunnel Server' })
+    .returning({ id: server.id })
+  const [c] = await db
+    .insert(carrier)
+    .values({ organizationId, provider: 'cloudflare', name: 'Main', externalAccountId: 'acct' })
+    .returning({ id: carrier.id })
+  const badgeSecret = await seal(db, organizationId, 'carrier_badge')
+  await db.insert(badge).values({
+    carrierId: c!.id,
+    secretId: badgeSecret,
+    label: 'Main',
+    lastFour: 'abcd',
+  })
+  const runSecret = await seal(db, organizationId, 'tunnel_run')
+  const [t] = await db
+    .insert(tunnel)
+    .values({
+      organizationId,
+      routingOrganizationId: organizationId,
+      carrierId: c!.id,
+      provider: 'cloudflare',
+      name: 'web',
+      externalId: 'ext-1',
+      placement: 'chosen',
+      secretId: runSecret,
+    })
+    .returning({ id: tunnel.id })
+  await db.insert(portal).values({ tunnelId: t!.id, serverId: srv!.id })
+  await db
+    .insert(doorway)
+    .values({ routingOrganizationId: organizationId, tunnelId: t!.id, hostname: 'a.example.com' })
+  return {
+    serverId: srv!.id,
+    organizationId,
+    carrierId: c!.id,
+    tunnelId: t!.id,
+    runSecret,
+    badgeSecret,
+  }
+}
+
+async function withDb(fn: (db: Db) => Promise<void>): Promise<void> {
+  if (!dbUrl) {
+    skipWithoutDatabase('tunnel record tests')
+    return
+  }
+  const db = createDenoDb()
+  try {
+    await fn(db)
+  } finally {
+    await endDbConnection(db)
+  }
+}
+
+test('deleting an organization removes its carriers, badges, tunnels, portals, doorways and every sealed token', async () => {
+  await withDb(async (db) => {
+    const s = await seed(db)
+    await db.delete(organization).where(eq(organization.id, s.organizationId))
+    assertEquals(
+      (await db.select().from(secret).where(eq(secret.organizationId, s.organizationId))).length,
+      0
+    )
+    assertEquals((await db.select().from(carrier).where(eq(carrier.id, s.carrierId))).length, 0)
+    assertEquals((await db.select().from(tunnel).where(eq(tunnel.id, s.tunnelId))).length, 0)
+    assertEquals((await db.select().from(portal).where(eq(portal.tunnelId, s.tunnelId))).length, 0)
+    assertEquals(
+      (await db.select().from(doorway).where(eq(doorway.tunnelId, s.tunnelId))).length,
+      0
+    )
+  })
+})
+
+test('deleting a tunnel deletes its run token, and replacing the token deletes the old one', async () => {
+  await withDb(async (db) => {
+    const s = await seed(db)
+    try {
+      await replaceTunnelRunSecret(db, {
+        tunnelId: s.tunnelId,
+        organizationId: s.organizationId,
+        name: 'web',
+        sealed: 'tpsecret:rotated',
+      })
+      assertEquals((await db.select().from(secret).where(eq(secret.id, s.runSecret))).length, 0)
+      const [row] = await db.select().from(tunnel).where(eq(tunnel.id, s.tunnelId))
+      const newSecret = row!.secretId!
+      assert(newSecret !== s.runSecret)
+      await deleteTunnelRecord(db, row!)
+      assertEquals((await db.select().from(secret).where(eq(secret.id, newSecret))).length, 0)
+      assertEquals((await db.select().from(tunnel).where(eq(tunnel.id, s.tunnelId))).length, 0)
+      assertEquals(
+        (await db.select().from(doorway).where(eq(doorway.tunnelId, s.tunnelId))).length,
+        0
+      )
+    } finally {
+      await db.delete(organization).where(eq(organization.id, s.organizationId))
+      await db.delete(server).where(eq(server.id, s.serverId))
+    }
+  })
+})
+
+test('the new constraints refuse duplicates and incomplete rows', async () => {
+  await withDb(async (db) => {
+    const s = await seed(db)
+    try {
+      // Two rows cannot stand for one provider tunnel.
+      await assertRejects(() =>
+        db.insert(tunnel).values({
+          organizationId: s.organizationId,
+          routingOrganizationId: s.organizationId,
+          carrierId: s.carrierId,
+          provider: 'cloudflare',
+          name: 'other',
+          externalId: 'ext-1',
+        })
+      )
+      // An `all` tunnel needs a datacenter.
+      await assertRejects(() =>
+        db.insert(tunnel).values({
+          organizationId: s.organizationId,
+          routingOrganizationId: s.organizationId,
+          provider: 'cloudflare',
+          name: 'everywhere',
+          placement: 'all',
+        })
+      )
+      const [dc] = await db
+        .insert(datacenter)
+        .values({ organizationId: s.organizationId, name: 'Tunnel DC' })
+        .returning({ id: datacenter.id })
+      await db.insert(tunnel).values({
+        organizationId: s.organizationId,
+        routingOrganizationId: s.organizationId,
+        provider: 'cloudflare',
+        name: 'everywhere',
+        placement: 'all',
+        datacenterId: dc!.id,
+      })
+      // One name sits on one doorway per routing organization, in lower case only.
+      await assertRejects(() =>
+        db.insert(doorway).values({
+          routingOrganizationId: s.organizationId,
+          tunnelId: s.tunnelId,
+          hostname: 'a.example.com',
+        })
+      )
+      await assertRejects(() =>
+        db.insert(doorway).values({
+          routingOrganizationId: s.organizationId,
+          tunnelId: s.tunnelId,
+          hostname: 'B.Example.com',
+        })
+      )
+      // Empty names are refused.
+      await assertRejects(() =>
+        db
+          .insert(carrier)
+          .values({ organizationId: s.organizationId, provider: 'cloudflare', name: '' })
+      )
+    } finally {
+      await db.delete(organization).where(eq(organization.id, s.organizationId))
+      await db.delete(server).where(eq(server.id, s.serverId))
+    }
+  })
+})
+
+test('the database itself refuses a carrier that still has tunnels and a secret that still has a badge', async () => {
+  await withDb(async (db) => {
+    const s = await seed(db)
+    try {
+      // Bypassing the route check: the deferred keys fail the delete at commit.
+      await assertRejects(() => db.delete(carrier).where(eq(carrier.id, s.carrierId)))
+      await assertRejects(() => db.delete(secret).where(eq(secret.id, s.badgeSecret)))
+      assertEquals((await db.select().from(carrier).where(eq(carrier.id, s.carrierId))).length, 1)
+      assertEquals((await db.select().from(secret).where(eq(secret.id, s.badgeSecret))).length, 1)
+      // Removing both sides in one transaction is allowed.
+      await db.transaction(async (tx) => {
+        await tx.delete(badge).where(eq(badge.secretId, s.badgeSecret))
+        await tx.delete(secret).where(eq(secret.id, s.badgeSecret))
+      })
+      assertEquals((await db.select().from(secret).where(eq(secret.id, s.badgeSecret))).length, 0)
+    } finally {
+      await db.delete(organization).where(eq(organization.id, s.organizationId))
+      await db.delete(server).where(eq(server.id, s.serverId))
+    }
+  })
+})
+
+test('concurrent carrier adds cannot pass the per-organization limit', async () => {
+  await withDb(async (db) => {
+    const [org] = await db
+      .insert(organization)
+      .values({ name: `Tunnel Limit Org ${crypto.randomUUID()}` })
+      .returning({ id: organization.id })
+    try {
+      const attempts = Array.from({ length: MAX_CARRIERS_PER_ORG + 4 }, (_, i) =>
+        insertCarrier(db, {
+          organizationId: org!.id,
+          provider: 'cloudflare',
+          name: `Account ${i}`,
+          externalAccountId: `acct-${i}`,
+        }).then(
+          () => 'ok',
+          (err: unknown) => (err instanceof TunnelLimitError ? 'limit' : 'other')
+        )
+      )
+      const outcomes = await Promise.all(attempts)
+      assertEquals(outcomes.filter((o) => o === 'ok').length, MAX_CARRIERS_PER_ORG)
+      assertEquals(outcomes.filter((o) => o === 'limit').length, 4)
+    } finally {
+      await db.delete(organization).where(eq(organization.id, org!.id))
+    }
+  })
+})
+
+test('the two links an organization delete depends on stay deferrable and initially deferred', async () => {
+  await withDb(async (db) => {
+    const result = await db.execute(
+      sql`select conname, condeferrable, condeferred from pg_constraint
+          where conname in ('badge_secret_id_secret_id_fk', 'tunnel_carrier_id_carrier_id_fk')
+          order by conname`
+    )
+    const rows = (
+      Array.isArray(result) ? result : ((result as { rows?: unknown[] }).rows ?? [])
+    ) as {
+      conname: string
+      condeferrable: boolean
+      condeferred: boolean
+    }[]
+    assertEquals(
+      rows.map((r) => [r.conname, r.condeferrable, r.condeferred]),
+      [
+        ['badge_secret_id_secret_id_fk', true, true],
+        ['tunnel_carrier_id_carrier_id_fk', true, true],
+      ]
+    )
+  })
+})

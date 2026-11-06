@@ -42,6 +42,12 @@ export type RehydrateDeploymentResult = {
   variableMaterial: EnvironmentDeployVariableMaterial[]
 }
 
+/** A requested deployment whose environment no longer exists in this project. */
+export type RehydrateGoneDeployment = {
+  projectId: string
+  environmentId: string
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -139,7 +145,9 @@ export async function buildDeploymentSecretsRehydrate(
   c: Context,
   db: Db,
   body: unknown
-): Promise<{ deployments: RehydrateDeploymentResult[] } | Response> {
+): Promise<
+  { deployments: RehydrateDeploymentResult[]; gone: RehydrateGoneDeployment[] } | Response
+> {
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   const secretsConfig = c.get('secretsConfig')
   if (!dataEncryptionSecrets || !secretsConfig) {
@@ -161,6 +169,7 @@ export async function buildDeploymentSecretsRehydrate(
   }
 
   const results: RehydrateDeploymentResult[] = []
+  const gone: RehydrateGoneDeployment[] = []
   await forEachSequential(requested, async (item) => {
     const result = await rehydrateOneDeployment(
       db,
@@ -170,10 +179,17 @@ export async function buildDeploymentSecretsRehydrate(
       dataEncryptionSecrets,
       secretsConfig
     )
-    if (result) results.push(result)
+    if (result === 'gone') {
+      // Definitive only: the environment row is absent (the project or
+      // environment was deleted). A live environment with no deployment row on
+      // this server, or a generation mismatch, is never reported as gone.
+      gone.push({ projectId: item.projectId, environmentId: item.environmentId })
+    } else if (result) {
+      results.push(result)
+    }
   })
 
-  return { deployments: results }
+  return { deployments: results, gone }
 }
 
 async function collectRehydrateVariableMaterial(
@@ -227,13 +243,14 @@ async function rehydrateOneDeployment(
   keyId: string,
   dataEncryptionSecrets: DerivedSecretsConfig,
   secretsConfig: SecretsConfig
-): Promise<RehydrateDeploymentResult | null> {
+): Promise<RehydrateDeploymentResult | 'gone' | null> {
   const [envRow] = await db
     .select({ id: environment.id, projectId: environment.projectId })
     .from(environment)
     .where(eq(environment.id, item.environmentId))
     .limit(1)
-  if (envRow?.projectId !== item.projectId) return null
+  if (!envRow) return 'gone'
+  if (envRow.projectId !== item.projectId) return null
 
   const [deployRow] = await db
     .select()

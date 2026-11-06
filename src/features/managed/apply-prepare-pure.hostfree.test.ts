@@ -14,6 +14,7 @@ import type { CommandRecord } from '../commands/command-records.ts'
 import type { CommandStatus } from '../commands/types.ts'
 import type { Db } from '../../db/connection.ts'
 import {
+  backupCredential,
   buildDatabaseOps,
   awaitCommandTerminal,
   buildManagedOrgTlsMaterial,
@@ -133,13 +134,13 @@ const ALL_PREPARE_ERRORS: Array<{
   },
   {
     error: {
-      kind: 'failover_requires_trusted_datacenter',
+      kind: 'untrusted_network_needs_fabric',
       fromServerId: 's1',
       toServerId: 's2',
       datacenterId: 'dc-a',
     },
     status: 422,
-    body: 'failover_requires_trusted_datacenter',
+    body: 'untrusted_network_needs_fabric',
   },
 ]
 
@@ -623,4 +624,23 @@ test('convertedDatabaseNames lists only databases the apply asked to move onto a
     ['first']
   )
   assertEquals(convertedDatabaseNames(undefined), [])
+})
+
+test('backupCredential sends the backup login as a user with every cluster database and no rights of its own', () => {
+  const sealed = ['tpdaemon', 'fixture'].join('.')
+  const credential = backupCredential({ id: 'login-1', appliedUsername: 'nightly' }, sealed, [
+    'app',
+    'shop',
+    'app',
+  ])
+  assertEquals(credential.principalId, 'login-1')
+  assertEquals(credential.username, 'nightly')
+  assertEquals(credential.role, 'user')
+  assertEquals(credential.kind, 'backup')
+  assertEquals(credential.databases, ['app', 'shop'])
+  assertEquals(credential.password === sealed, true)
+  // No privileges and no grant mode: an older daemon that drops `kind` makes a
+  // login with no rights rather than an ordinary read/write login.
+  assertEquals('privileges' in credential, false)
+  assertEquals('grantMode' in credential, false)
 })

@@ -76,6 +76,10 @@ export const deletePlanSchemas = {
           properties: {
             id: { type: 'string' },
             name: { type: ['string', 'null'] },
+            hostname: {
+              type: ['string', 'null'],
+              description: 'The hostname the server reported, for naming it when it has no name.',
+            },
             connected: { type: 'boolean' },
           },
         },

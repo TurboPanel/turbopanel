@@ -241,22 +241,49 @@ export function resolveDaemonWsInboundLimits(
   }
 }
 
+/**
+ * Most keys the process-local fallback holds at once. Its keys include
+ * per-address ones taken before any proof, so a flood from many addresses
+ * during a Redis outage must not grow the map without bound.
+ */
+export const LOCAL_TOKEN_BUCKET_MAX_KEYS = 10_000
+
 export function createLocalTokenBucketLimiter(opts: {
   limit: number
   periodSeconds: number
+  /** Defaults to {@link LOCAL_TOKEN_BUCKET_MAX_KEYS}; tests pass a small one. */
+  maxKeys?: number
 }): RateLimiter {
   const buckets = new Map<string, { tokens: number; lastMs: number }>()
   const capacity = opts.limit
   const msPerToken = (opts.periodSeconds * 1000) / opts.limit
+  const refillMs = capacity * msPerToken
+  const maxKeys = opts.maxKeys ?? LOCAL_TOKEN_BUCKET_MAX_KEYS
+
+  // A bucket untouched for a full refill is back at capacity, the same as no
+  // bucket at all, so dropping it changes no answer. Only when every bucket
+  // is still draining does the least recently used one go: every touch moves
+  // its key to the end, so Map order is last-use order.
+  const makeRoom = (now: number): void => {
+    for (const [key, bucket] of buckets) {
+      if (now - bucket.lastMs >= refillMs) buckets.delete(key)
+    }
+    if (buckets.size < maxKeys) return
+    const oldest = buckets.keys().next()
+    if (!oldest.done) buckets.delete(oldest.value)
+  }
 
   return {
     limit(args: { key: string }): Promise<{ success: boolean }> {
       const now = Date.now()
       let bucket = buckets.get(args.key)
-      if (!bucket) {
+      if (bucket) {
+        buckets.delete(args.key)
+      } else {
+        if (buckets.size >= maxKeys) makeRoom(now)
         bucket = { tokens: capacity, lastMs: now }
-        buckets.set(args.key, bucket)
       }
+      buckets.set(args.key, bucket)
       const elapsed = now - bucket.lastMs
       bucket.tokens = Math.min(capacity, bucket.tokens + elapsed / msPerToken)
       bucket.lastMs = now
@@ -273,13 +300,15 @@ export function createRedisRateLimiter(opts: {
   periodSeconds: number
   /**
    * Behaviour when Redis `eval` throws.
-   * - `'open'` (default): allow the request — used for daemon connect/REST so a
-   *   broker hiccup never locks out enrolled daemons.
+   * - `'open'` (default): allow the request. A Redis outage then makes the
+   *   surface unlimited, so nothing reachable before a proof uses it.
    * - `'closed'`: deny (`success: false`) — required for client-auth throttling
    *   so Redis failure cannot fail open into unthrottled login/OTP/install.
    * - `'local'`: fall through to a process-local token bucket with the same
-   *   limit/period. Used for webhook ingress so a Redis blip still throttles
-   *   per peer instead of making the surface unlimited.
+   *   limit/period. Used for daemon connect/REST/metrics and webhook ingress,
+   *   so a Redis blip still throttles per key instead of making the surface
+   *   unlimited, without locking out enrolled daemons the way `'closed'`
+   *   would.
    */
   onError?: 'open' | 'closed' | 'local'
 }): RateLimiter {

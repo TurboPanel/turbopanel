@@ -16,16 +16,19 @@
  * the session cannot reach is a 404, one without owner/manager rights a 403.
  * The path id alone drives the check, never the active-organization header.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDb } from '../../db/connection.ts'
-import { server } from '../../db/schema.ts'
+import { principal, server } from '../../db/schema.ts'
+import { refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import {
   listOrganizationPrincipals,
   listServerPrincipals,
 } from '../../features/principals/org-listing.ts'
 import { PRINCIPAL_IN_USE_ERROR } from '../../features/principals/store.ts'
+import { principalDeleteAuditEntry } from './delete-audit.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { isUuid } from '../access/routes-helpers.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -84,6 +87,15 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
     const principalId = c.req.param('principalId')
     if (!isUuid(principalId)) return c.json({ error: 'Not found' }, 404)
 
+    const [named] = await db
+      .select({ username: principal.username })
+      .from(principal)
+      .where(and(eq(principal.id, principalId), eq(principal.organizationId, organizationId)))
+      .limit(1)
+    if (!named) return c.json({ error: 'Not found' }, 404)
+    const needsName = refuseUnlessNameConfirmed(c, 'Hosting Account', named.username)
+    if (needsName) return needsName
+
     const outcome = await db.transaction((tx) =>
       deleteUnusedPrincipal(tx, { principalId, organizationId })
     )
@@ -100,9 +112,19 @@ export function registerOrganizationPrincipalRoutes(router: Hono<AppEnv>, opts: 
     }
     if (outcome.status !== 'deleted') return c.json({ error: 'Not found' }, 404)
 
+    await recordAudit(
+      db,
+      principalDeleteAuditEntry(
+        { organizationId, actorUserId: session.userId, actorEmail: session.email ?? null },
+        principalId,
+        outcome
+      )
+    )
+
     const reconciled = await retireDeletedPrincipal(
       db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: session.userId },
       { serverIds: outcome.serverIds, appliedUsername: outcome.appliedUsername }
     )

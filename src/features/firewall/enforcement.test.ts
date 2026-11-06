@@ -162,7 +162,10 @@ test('workers.ts and the Deno server pass the apply gate into the sweep and the 
     assertEquals(pattern.test(text.slice(at, at + 900)), true, call)
   }
   wired(workers, 'runOfflineSweep(', /firewallApplyGate:\s*firewallApplyGateFromEnv\(/)
-  wired(workers, 'processCommandEnvelope(', /\bfirewallApplyGate,/)
+  // The queue consumer builds one deps object for processing and for a failed
+  // delivery (`settleFailedDelivery`); the gate must be in it and it must be passed.
+  wired(workers, 'const deps = {', /\bfirewallApplyGate,/)
+  assertStringIncludes(workers, 'processCommandEnvelope(db, registry, envelope, deps)')
   assertStringIncludes(workers, 'const firewallApplyGate = firewallApplyGateFromEnv(')
   wired(server, 'startCommandConsumer({', /firewallApplyGate:\s*firewallApplyGateFromEnv\(/)
 })

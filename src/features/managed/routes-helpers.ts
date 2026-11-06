@@ -278,6 +278,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/users/:loginId',
     '/environments/:id/managed/users/:loginId/password',
     '/environments/:id/managed/users/:loginId/effective-permissions',
+    '/environments/:id/managed/backup-login',
     '/environments/:id/managed/databases',
     '/environments/:id/managed/databases/:databaseName',
     '/environments/:id/managed/databases/:databaseName/owner-role',
@@ -605,7 +606,25 @@ export function parseManagedUserCreateFields(
   | Response {
   const username = requireStringField(c, body, 'username')
   if (username instanceof Response) return username
+  const nameError = checkManagedLoginName(c, ctx, username, rootUsername, nameScheme)
+  if (nameError) return nameError
 
+  const grants = parseManagedLoginGrantFields(c, ctx, body, options)
+  if (grants instanceof Response) return grants
+  return { username, ...grants }
+}
+
+/**
+ * A typed login name the engine accepts under `nameScheme` and that is not a
+ * reserved name: `null` when fine, else the 400/422 answer.
+ */
+export function checkManagedLoginName(
+  c: Context,
+  ctx: ManagedContext,
+  username: string,
+  rootUsername: string | undefined,
+  nameScheme: PrincipalNameScheme
+): Response | null {
   const effectiveRoot = rootUsername ?? ctx.spec.rootUsername
   const { pattern, maxLength } = ctx.spec.userOperations.identifier
   const maxShortLength = maxTypedNameLength(nameScheme, maxLength)
@@ -621,10 +640,7 @@ export function parseManagedUserCreateFields(
       422
     )
   }
-
-  const grants = parseManagedLoginGrantFields(c, ctx, body, options)
-  if (grants instanceof Response) return grants
-  return { username, ...grants }
+  return null
 }
 
 /**
@@ -1161,36 +1177,44 @@ export type FailoverReplicaTransportError = {
 }
 
 /**
- * Failover replicas may only use local or datacenter transport — never
- * fabric/public.
- *
- * An untrusted shared datacenter is rejected **upstream** by the resolver
- * (`failover_requires_trusted_datacenter` from `resolvePrivateEndpoint`), so
- * a `datacenter` transport reaching this check is always trusted-derived.
+ * Failover replicas may use local, datacenter or fabric transport — never
+ * public. The resolver only returns fabric for a pair that shares untrusted
+ * datacenters, and answers `untrusted_network_needs_fabric` when the tunnel
+ * cannot carry the traffic, so a `datacenter` transport reaching this check
+ * is always trusted-derived.
  */
 export function assertFailoverReplicaTransportAllowed(
   transport: 'local' | 'datacenter' | 'fabric' | 'public'
 ): FailoverReplicaTransportError | null {
-  if (transport === 'fabric' || transport === 'public') {
+  if (transport === 'public') {
     return { kind: 'failover_replica_requires_datacenter_transport' }
   }
   return null
 }
 
 /**
+ * A new placement (replica create, class change) never lands on a path that
+ * fell to the public address on an untrusted network or on a tunnel with no
+ * recent handshake: TurboFabric has to carry it. Running traffic is untouched.
+ */
+export function placementNeedsHealthyFabric(
+  resolved: Readonly<{ untrustedPublic?: true; tunnelDown?: true }>
+): boolean {
+  return resolved.untrustedPublic === true || resolved.tunnelDown === true
+}
+
+/**
  * Whether placement still needs a ready datacenter CIDR after transport resolve.
- * Failover always needs a datacenter (fabric/public are rejected earlier).
- * Read replicas skip the CIDR check on fabric/public (already overlay/TLS).
- *
- * Only trusted-derived transports reach here: the resolver already refused an
- * untrusted-only failover pair with `failover_requires_trusted_datacenter`.
+ * Failover needs a datacenter unless it rides fabric (an untrusted-only pair;
+ * public is rejected earlier). Read replicas skip the CIDR check on
+ * fabric/public (already overlay/TLS).
  */
 export function replicaPlacementNeedsDatacenter(
   transport: 'local' | 'datacenter' | 'fabric' | 'public',
   replicaClass: 'failover' | 'read'
 ): boolean {
   if (replicaClass === 'failover') {
-    return true
+    return transport !== 'fabric'
   }
   return transport !== 'fabric' && transport !== 'public'
 }

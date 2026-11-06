@@ -11,7 +11,7 @@
  * organization's ACME opt-in, and must not touch any `tls` table row.
  */
 
-import { eq, isNotNull } from 'drizzle-orm'
+import { and, eq, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   hostname as siteHostname,
@@ -21,7 +21,17 @@ import {
 } from '../../db/schema.ts'
 import { normalizeHostForCompare } from '../../lib/hostname-compare.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
+import {
+  DEFAULT_PUBLIC_PORT,
+  isIngressMode,
+  fixedPublicPort,
+  isAllowedPublicPort,
+  isPublicPort,
+  SELF_HOSTED_PUBLIC_PORT_ERROR,
+  type IngressMode,
+} from './ingress-modes.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
+import type { InstanceHostnameCertSource } from '../../contracts/cell-protocol.ts'
 import { isLoopbackOrPrivateHostname } from './install-tls.ts'
 import {
   hostFromPublicUrlEntry,
@@ -30,9 +40,22 @@ import {
   publicUrlEntryToInstallOrigin,
 } from './public-urls.ts'
 
-export const INSTANCE_HOSTNAME_SOURCES = ['platform-ca', 'uploaded', 'lets-encrypt'] as const
+export const INSTANCE_HOSTNAME_SOURCES = [
+  'platform-ca',
+  'uploaded',
+  'acme-http-01',
+  'acme-dns-01',
+] as const
+
+/** `certificate.kind`: an operator's upload, or a pair the control plane issued over DNS-01. */
+export const CERTIFICATE_KINDS = ['uploaded', 'acme-dns-01'] as const
 
 export type InstanceHostnameSource = (typeof INSTANCE_HOSTNAME_SOURCES)[number]
+
+/** Sources issued by Let's Encrypt, over HTTP-01 or DNS-01. Both need accepted terms. */
+export function isAcmeHostnameSource(source: string): boolean {
+  return source === 'acme-http-01' || source === 'acme-dns-01'
+}
 
 export type InstanceHostnameStatus = 'ready' | 'pending' | 'failed' | 'expired'
 
@@ -45,6 +68,11 @@ export type InstanceHostnameRecord = {
   notAfter: string | null
   acmeLastAttemptAt: string | null
   acmeLastError: string | null
+  mode: IngressMode
+  publicPort: number
+  isPrimary: boolean
+  isDaemonDial: boolean
+  ingressId: string | null
 }
 
 export type InstanceHostnameFailure = {
@@ -57,9 +85,32 @@ export type InstanceHostnameEntry = {
   host: string
   source: InstanceHostnameSource
   uploadedCertId: string | null
+  /** Port visitors use; left out, the stored value (or 8443) stays. */
+  publicPort?: number
+  /** True makes this the primary and demotes the rest; left out, the stored value stays. */
+  isPrimary?: boolean
 }
 
-type StoredHostname = {
+/** How visitors reach a name; every existing row reads back the defaults. */
+type IngressFields = {
+  mode: IngressMode
+  publicPort: number
+  isPrimary: boolean
+  isDaemonDial: boolean
+  ingressId: string | null
+  ingressState: unknown
+}
+
+const DEFAULT_INGRESS_FIELDS: IngressFields = {
+  mode: 'direct',
+  publicPort: DEFAULT_PUBLIC_PORT,
+  isPrimary: false,
+  isDaemonDial: true,
+  ingressId: null,
+  ingressState: null,
+}
+
+type StoredHostname = IngressFields & {
   id: string
   host: string
   source: InstanceHostnameSource
@@ -67,11 +118,14 @@ type StoredHostname = {
   acmeLastAttemptAt: string | null
   acmeLastError: string | null
   notAfter: string | null
+  /** DNS-01 progress (`origin.acme_state`); null for every other source. */
+  acmeState: unknown
   createdAt: string
   updatedAt: string
 }
 
-type HostnameRow = {
+type HostnameRow = Omit<IngressFields, 'mode'> & {
+  mode: string
   id: string
   host: string
   source: string
@@ -79,12 +133,13 @@ type HostnameRow = {
   acmeLastAttemptAt: string | null
   acmeLastError: string | null
   notAfter: string | null
+  acmeState: unknown
   createdAt: string
   updatedAt: string
 }
 
 function isHostnameSource(value: string): value is InstanceHostnameSource {
-  return value === 'platform-ca' || value === 'uploaded' || value === 'lets-encrypt'
+  return (INSTANCE_HOSTNAME_SOURCES as readonly string[]).includes(value)
 }
 
 function asStringArray(value: unknown): string[] {
@@ -111,6 +166,14 @@ function mapStored(row: HostnameRow): StoredHostname {
     acmeLastAttemptAt: row.acmeLastAttemptAt,
     acmeLastError: row.acmeLastError,
     notAfter: row.notAfter,
+    acmeState: row.acmeState ?? null,
+    mode: isIngressMode(row.mode) ? row.mode : DEFAULT_INGRESS_FIELDS.mode,
+    // Self-hosted rows read as 8443 whatever an older save stored.
+    publicPort: fixedPublicPort() ?? row.publicPort,
+    isPrimary: row.isPrimary,
+    isDaemonDial: row.isDaemonDial,
+    ingressId: row.ingressId,
+    ingressState: row.ingressState,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   }
@@ -131,8 +194,35 @@ export function deriveInstanceHostnameStatus(
     if (!Number.isNaN(expiry) && expiry <= now) return 'expired'
     if (!Number.isNaN(expiry)) return 'ready'
   }
-  if (row.source === 'lets-encrypt') return 'pending'
+  if (isAcmeHostnameSource(row.source)) return 'pending'
   return 'ready'
+}
+
+/**
+ * The source the listener actually serves for a row. An `acme-dns-01` name with a
+ * live issued pair is served like an upload; before its first certificate, or
+ * once that one has expired, it falls back to the Platform CA leaf. Derived,
+ * never stored, so the row keeps `acme-dns-01` and the screens can say `expired`.
+ */
+export function effectiveCertificateSource(
+  row: { source: InstanceHostnameSource; uploadedCertId?: string | null; notAfter?: string | null },
+  now = Date.now()
+): ServedCertificateSource {
+  if (row.source !== 'acme-dns-01') return row.source
+  const expiry = Date.parse(row.notAfter ?? '')
+  const live = Boolean(row.uploadedCertId) && !Number.isNaN(expiry) && expiry > now
+  return live ? 'uploaded' : 'platform-ca'
+}
+
+/** A source the listener serves, as `effectiveCertificateSource` returns it. */
+export type ServedCertificateSource = Exclude<InstanceHostnameSource, 'acme-dns-01'>
+
+/**
+ * The daemon wire keeps its original names: `acme-http-01` travels as
+ * `lets-encrypt`, so the daemon contract does not change with the stored names.
+ */
+export function wireCertificateSource(source: ServedCertificateSource): InstanceHostnameCertSource {
+  return source === 'acme-http-01' ? 'lets-encrypt' : source
 }
 
 function toRecord(row: StoredHostname): InstanceHostnameRecord {
@@ -145,6 +235,11 @@ function toRecord(row: StoredHostname): InstanceHostnameRecord {
     notAfter: row.notAfter,
     acmeLastAttemptAt: row.acmeLastAttemptAt,
     acmeLastError: row.acmeLastError,
+    mode: row.mode,
+    publicPort: row.publicPort,
+    isPrimary: row.isPrimary,
+    isDaemonDial: row.isDaemonDial,
+    ingressId: row.ingressId,
   }
 }
 
@@ -164,7 +259,8 @@ export function validateHostnameSource(
       invalid: [host],
     }
   }
-  if (source !== 'lets-encrypt') return { ok: true }
+  if (source === 'acme-dns-01') return validateDns01Host(host, hostname)
+  if (source !== 'acme-http-01') return { ok: true }
   if (isLoopbackOrPrivateHostname(hostname)) {
     return {
       ok: false,
@@ -176,6 +272,28 @@ export function validateHostnameSource(
     return {
       ok: false,
       error: "Let's Encrypt cannot issue a certificate for a wildcard hostname",
+      invalid: [host],
+    }
+  }
+  return { ok: true }
+}
+
+const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/
+
+/**
+ * DNS-01 orders one exact public DNS name: a private name works (the record
+ * sits in a public zone), an address literal, `localhost` or a wildcard do not.
+ */
+function validateDns01Host(host: string, hostname: string): { ok: true } | InstanceHostnameFailure {
+  const lower = hostname.toLowerCase()
+  const literal = IPV4_LITERAL.test(lower) || lower.includes(':')
+  if (literal || lower === 'localhost' || !lower.includes('.')) {
+    return { ok: false, error: 'DNS-01 needs a public DNS name', invalid: [host] }
+  }
+  if (lower.startsWith('*.')) {
+    return {
+      ok: false,
+      error: 'DNS-01 orders one exact name; upload a wildcard instead',
       invalid: [host],
     }
   }
@@ -249,6 +367,8 @@ function newPlatformCaRow(host: string, index: number): StoredHostname {
     acmeLastAttemptAt: null,
     acmeLastError: null,
     notAfter: null,
+    acmeState: null,
+    ...DEFAULT_INGRESS_FIELDS,
     createdAt: stamp,
     updatedAt: stamp,
   }
@@ -281,7 +401,8 @@ async function loadUploadedCertificates(db: Db): Promise<UploadedCertHit[]> {
   const rows = await db
     .select()
     .from(instanceUploadedCertificate)
-    .where(isNotNull(instanceUploadedCertificate.id))
+    // An issued DNS-01 pair is never offered as an upload.
+    .where(eq(instanceUploadedCertificate.kind, 'uploaded'))
   return rows.map((row) => ({
     id: row.id,
     dnsNames: asStringArray(row.dnsNames),
@@ -446,12 +567,12 @@ export async function recordInstanceAcmeApplyTimeout(
   await db
     .update(instanceHostname)
     .set({ acmeLastAttemptAt: at, acmeLastError: message })
-    .where(eq(instanceHostname.source, 'lets-encrypt'))
+    .where(eq(instanceHostname.source, 'acme-http-01'))
 }
 
 /**
  * Record one instance Let's Encrypt probe. Matches `origin` rows whose
- * source is `lets-encrypt`. Does not touch an organization's `tls` rows.
+ * source is `acme-http-01`. Does not touch an organization's `tls` rows.
  * `notAfter` is written only on success. A failure leaves the stored expiry
  * in place. Changing the source away from Let's Encrypt clears it.
  */
@@ -471,7 +592,7 @@ export async function recordInstanceAcmeIssuance(
       host: instanceHostname.host,
     })
     .from(instanceHostname)
-    .where(eq(instanceHostname.source, 'lets-encrypt'))
+    .where(eq(instanceHostname.source, 'acme-http-01'))
   const match = rows.find(
     (row) => row.host === event.hostname || hostFromPublicUrlEntry(row.host) === event.hostname
   )
@@ -488,6 +609,83 @@ export async function recordInstanceAcmeIssuance(
   }
   if (event.ok && event.notAfter) patch.notAfter = event.notAfter
   await db.update(instanceHostname).set(patch).where(eq(instanceHostname.id, match.id))
+}
+
+/**
+ * Start of the error a DNS-01 row carries when its newly issued pair did not
+ * reach the daemon. Only a later apply that carries that same pair clears it.
+ */
+export const DAEMON_NOT_LOADED_PREFIX =
+  'The certificate was issued but the daemon has not loaded it yet: '
+
+export function daemonNotLoadedError(reason: string): string {
+  return `${DAEMON_NOT_LOADED_PREFIX}${reason}`
+}
+
+type CertificateErrorRow = {
+  id: string
+  source: string
+  uploadedCertId: string | null
+  acmeLastError: string | null
+}
+
+/**
+ * Rows whose "not loaded yet" error a successful apply has made stale: the
+ * apply carried the row's current certificate id. Any other error (a failed
+ * renewal while the old pair is still served) stays.
+ */
+export function certificateErrorsToClear(
+  rows: readonly CertificateErrorRow[],
+  applied: readonly { uploadedCertId?: string }[]
+): string[] {
+  const carried = new Set(applied.map((entry) => entry.uploadedCertId).filter(Boolean))
+  return rows
+    .filter(
+      (row) =>
+        row.source === 'acme-dns-01' &&
+        row.uploadedCertId !== null &&
+        carried.has(row.uploadedCertId) &&
+        row.acmeLastError?.startsWith(DAEMON_NOT_LOADED_PREFIX) === true
+    )
+    .map((row) => row.id)
+}
+
+/**
+ * Call only once the daemon applied `applied`: clears the "not loaded yet"
+ * error of each DNS-01 row whose certificate that apply carried.
+ */
+export async function clearInstalledCertificateErrors(
+  db: Db,
+  applied: readonly { uploadedCertId?: string }[] | undefined
+): Promise<void> {
+  if (!applied?.some((entry) => entry.uploadedCertId)) return
+  const rows = await db
+    .select({
+      id: instanceHostname.id,
+      source: instanceHostname.source,
+      uploadedCertId: instanceHostname.uploadedCertId,
+      acmeLastError: instanceHostname.acmeLastError,
+    })
+    .from(instanceHostname)
+    .where(eq(instanceHostname.source, 'acme-dns-01'))
+  const stale = new Set(certificateErrorsToClear(rows, applied))
+  // The write matches the values read, so a newer pair or error written meanwhile stays.
+  await Promise.all(
+    rows
+      .filter((row) => stale.has(row.id))
+      .map((row) =>
+        db
+          .update(instanceHostname)
+          .set({ acmeLastError: null })
+          .where(
+            and(
+              eq(instanceHostname.id, row.id),
+              eq(instanceHostname.uploadedCertId, row.uploadedCertId ?? ''),
+              eq(instanceHostname.acmeLastError, row.acmeLastError ?? '')
+            )
+          )
+      )
+  )
 }
 
 export async function getInstanceHostnamesLegacyShim(db: Db): Promise<string[]> {
@@ -534,21 +732,59 @@ export async function replacePublicUrlList(db: Db, urls: string[]): Promise<void
   )
 }
 
+type CarriedAcme = Pick<
+  StoredHostname,
+  'acmeLastAttemptAt' | 'acmeLastError' | 'notAfter' | 'acmeState' | 'uploadedCertId'
+>
+
+/**
+ * Attempt state survives a rewrite only while the source stays the same
+ * issuing source. An `acme-dns-01` row also keeps its issued pair and order state:
+ * both are owned by the control plane, never taken from a request body.
+ */
 function carryAcme(
   previous: StoredHostname | undefined,
   source: InstanceHostnameSource
-): Pick<StoredHostname, 'acmeLastAttemptAt' | 'acmeLastError' | 'notAfter'> {
-  if (!previous || source !== 'lets-encrypt' || previous.source !== 'lets-encrypt') {
+): CarriedAcme {
+  const issuing = isAcmeHostnameSource(source)
+  if (!previous || !issuing || previous.source !== source) {
     return {
       acmeLastAttemptAt: null,
       acmeLastError: null,
       notAfter: null,
+      acmeState: null,
+      uploadedCertId: null,
     }
   }
+  const dns01 = source === 'acme-dns-01'
   return {
     acmeLastAttemptAt: previous.acmeLastAttemptAt,
     acmeLastError: previous.acmeLastError,
     notAfter: previous.notAfter,
+    acmeState: dns01 ? previous.acmeState : null,
+    uploadedCertId: dns01 ? previous.uploadedCertId : null,
+  }
+}
+
+/** A name kept across a rewrite keeps how visitors reach it. */
+function carryIngress(
+  previous: StoredHostname | undefined,
+  entry: InstanceHostnameEntry
+): IngressFields {
+  if (!previous) {
+    return {
+      ...DEFAULT_INGRESS_FIELDS,
+      publicPort: entry.publicPort ?? DEFAULT_INGRESS_FIELDS.publicPort,
+      isPrimary: entry.isPrimary ?? DEFAULT_INGRESS_FIELDS.isPrimary,
+    }
+  }
+  return {
+    mode: previous.mode,
+    publicPort: entry.publicPort ?? previous.publicPort,
+    isPrimary: entry.isPrimary ?? previous.isPrimary,
+    isDaemonDial: previous.isDaemonDial,
+    ingressId: previous.ingressId,
+    ingressState: previous.ingressState,
   }
 }
 
@@ -560,15 +796,17 @@ function rowFromEntry(
 ): StoredHostname {
   const stamp = stampAt(index)
   const acme = carryAcme(previous, entry.source)
-  const expiry = entry.source === 'uploaded' ? notAfter : acme.notAfter
+  const uploaded = entry.source === 'uploaded'
   return {
     id: previous?.id ?? crypto.randomUUID(),
     host: entry.host,
     source: entry.source,
-    uploadedCertId: entry.source === 'uploaded' ? entry.uploadedCertId : null,
+    uploadedCertId: uploaded ? entry.uploadedCertId : acme.uploadedCertId,
     acmeLastAttemptAt: acme.acmeLastAttemptAt,
     acmeLastError: acme.acmeLastError,
-    notAfter: expiry,
+    notAfter: uploaded ? notAfter : acme.notAfter,
+    acmeState: acme.acmeState,
+    ...carryIngress(previous, entry),
     createdAt: previous?.createdAt ?? stamp,
     updatedAt: stamp,
   }
@@ -580,12 +818,17 @@ function rowFromEntry(
  */
 export function certificateSourceForInstallOrigin(
   origin: string,
-  hostnames: readonly { host: string; source: InstanceHostnameSource }[]
-): InstanceHostnameSource | undefined {
+  hostnames: readonly {
+    host: string
+    source: InstanceHostnameSource
+    uploadedCertId?: string | null
+    notAfter?: string | null
+  }[]
+): ServedCertificateSource | undefined {
   const wanted = hostFromPublicUrlEntry(origin)?.toLowerCase()
   if (!wanted) return undefined
   const match = hostnames.find((row) => hostFromPublicUrlEntry(row.host)?.toLowerCase() === wanted)
-  return match?.source
+  return match ? effectiveCertificateSource(match) : undefined
 }
 
 function normalizeEntryHost(
@@ -647,6 +890,8 @@ function takeUniqueHostname(
     host: hostResult.host,
     source: entry.source,
     uploadedCertId: entry.uploadedCertId,
+    publicPort: entry.publicPort,
+    isPrimary: entry.isPrimary,
   }
   const key = canonicalHostKey(normalized.host)
   const existing = byHost.get(key)
@@ -683,6 +928,51 @@ function previousHostname(
   return current.find((row) => canonicalHostKey(row.host) === key)
 }
 
+/** Port and primary choices that cannot be stored; null when they are fine. */
+function ingressChoiceFailure(
+  entries: readonly InstanceHostnameEntry[]
+): InstanceHostnameFailure | null {
+  const wrongPort = entries.filter(
+    (entry) => isPublicPort(entry.publicPort) && !isAllowedPublicPort(entry.publicPort)
+  )
+  if (wrongPort.length > 0) {
+    return {
+      ok: false,
+      error: SELF_HOSTED_PUBLIC_PORT_ERROR,
+      invalid: wrongPort.map((entry) => entry.host),
+    }
+  }
+  const badPort = entries.filter(
+    (entry) => entry.publicPort !== undefined && !isPublicPort(entry.publicPort)
+  )
+  if (badPort.length > 0) {
+    return {
+      ok: false,
+      error: 'Public port must be a whole number from 1 to 65535',
+      invalid: badPort.map((entry) => entry.host),
+    }
+  }
+  const primaries = entries.filter((entry) => entry.isPrimary)
+  if (primaries.length > 1) {
+    return {
+      ok: false,
+      error: 'Only one hostname can be the primary',
+      invalid: primaries.map((entry) => entry.host),
+    }
+  }
+  return null
+}
+
+/** The one entry that asks to be primary takes the flag from every other row. */
+function applyPrimaryChoice(
+  rows: StoredHostname[],
+  entries: readonly InstanceHostnameEntry[]
+): StoredHostname[] {
+  const chosen = entries.findIndex((entry) => entry.isPrimary)
+  if (chosen < 0) return rows
+  return rows.map((row, index) => ({ ...row, isPrimary: index === chosen }))
+}
+
 async function buildReplacementRows(
   db: Db,
   entries: InstanceHostnameEntry[],
@@ -690,6 +980,8 @@ async function buildReplacementRows(
 ): Promise<{ ok: true; rows: StoredHostname[] } | InstanceHostnameFailure> {
   const unique = uniqueHostnames(entries)
   if (!unique.ok) return unique
+  const badChoice = ingressChoiceFailure(unique.entries)
+  if (badChoice) return badChoice
 
   const failures: InstanceHostnameFailure[] = []
   const certs = await loadUploadedCertificates(db)
@@ -708,7 +1000,7 @@ async function buildReplacementRows(
     rows.push(rowFromEntry(entry, previous, index, notAfter))
   }
   if (failures.length > 0) return combineFailures(failures)
-  return { ok: true, rows }
+  return { ok: true, rows: applyPrimaryChoice(rows, unique.entries) }
 }
 
 export async function replaceInstanceHostnames(

@@ -53,13 +53,28 @@ export const NODE_APP_MODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
  * Build backend for a `x-turbopanel.source` binding.
  *
  * `native` (the default when omitted) is the checkout → build → promote
- * directory release the daemon has always produced. `railpack` swaps that
- * middle step for Railpack + BuildKit, which emits an OCI image instead of a
- * filesystem tree; the daemon then rewrites the service to carry that image tag
- * so it runs as an ordinary compose service. The wire contract carries a third
- * value (`static`) that compose never mints.
+ * directory release the daemon has always produced. `image` ("Container Image
+ * (Auto-Detected)") swaps that middle step for an auto-detected container image
+ * build, which emits an OCI image instead of a filesystem tree; the daemon then
+ * rewrites the service to carry that image tag so it runs as an ordinary
+ * compose service. This is the `x-turbopanel.source.buildKind` key, a different
+ * key from a service's own `image:`, which names an image to pull.
+ *
+ * Expand phase of the rename: documents saved before it spell the same thing
+ * with the old value ({@link LEGACY_IMAGE_BUILD_KIND}). Both are accepted; {@link readSourceBuildKind}
+ * normalizes the old value to `image`, so everything downstream of the parse
+ * sees one spelling. The wire contract carries a third value (`static`) that
+ * compose never mints.
  */
-export type ComposeSourceBuildKind = 'native' | 'railpack'
+export type ComposeSourceBuildKind = 'native' | 'image' | 'railpack'
+
+/** The old spelling of `image`, still accepted until the contract phase. */
+export const LEGACY_IMAGE_BUILD_KIND = 'railpack' as const
+
+/** True for either spelling of the image build kind. */
+export function isImageBuildKind(value: unknown): boolean {
+  return value === 'image' || value === LEGACY_IMAGE_BUILD_KIND
+}
 
 /** Max length for operator-facing service description metadata. */
 export const SERVICE_DESCRIPTION_MAX_LENGTH = 500
@@ -138,7 +153,7 @@ export type ComposeServiceSourceExtension = {
   /**
    * Which build backend produces the release. Omitted means `native`.
    *
-   * `railpack` is only meaningful on a container service — the host-native
+   * `image` is only meaningful on a container service — the host-native
    * kinds have their own build/runtime lanes — which
    * {@link validateSourceConsistency} enforces.
    */
@@ -518,7 +533,7 @@ const SITE_ENGINES = new Set<SiteEngine>([
   'openlitespeed',
   'nginx+apache',
 ])
-const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>(['native', 'railpack'])
+const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>(['native', 'image', 'railpack'])
 const NODE_PACKAGE_MANAGERS = new Set<NodePackageManager>(['npm', 'yarn', 'pnpm'])
 
 /** Where a site's content comes from. Omitted means `release`. */
@@ -592,7 +607,7 @@ function readSourceBuildKind(value: unknown): ComposeSourceBuildKind | undefined
   if (!SOURCE_BUILD_KINDS.has(trimmed as ComposeSourceBuildKind)) {
     return undefined
   }
-  return trimmed as ComposeSourceBuildKind
+  return trimmed === LEGACY_IMAGE_BUILD_KIND ? 'image' : (trimmed as ComposeSourceBuildKind)
 }
 
 function readNodeVersion(value: unknown): string | undefined {
@@ -912,7 +927,7 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
   },
   description: { kinds: ALL_SERVICE_KINDS },
   // No kind restriction on *having* a source: a source builds a release for any
-  // kind. `buildKind: railpack` is the one combination that contradicts a
+  // kind. `buildKind: image` is the one combination that contradicts a
   // host-native kind, and `validateSourceConsistency` owns that rule.
   source: { kinds: ALL_SERVICE_KINDS },
   // Legal on every kind: a container behind the edge, a site served by a host
@@ -1220,7 +1235,7 @@ function validateRawSourceFieldTypes(
   if ('buildKind' in rawSource && !readSourceBuildKind(rawSource.buildKind)) {
     issues.push({
       path: `${sourcePath}.buildKind`,
-      message: 'source.buildKind must be "native" or "railpack"',
+      message: 'source.buildKind must be "native" or "image"',
     })
   }
 
@@ -1623,7 +1638,7 @@ function validateRootConsistency(
  * yet depends on how the service is served, so an author may wire one anywhere.
  * The linter emits a non-blocking advisory saying exactly that instead.
  *
- * `buildKind: railpack` is the one exception. It produces an OCI image that
+ * `buildKind: image` is the one exception. It produces an OCI image that
  * only a container service can run — `site` and `node` already have
  * their own dedicated build and runtime lanes (host engine document roots,
  * supervised host processes), so asking for an image there is a contradiction
@@ -1648,10 +1663,10 @@ function validateSourceConsistency(
     })
   }
 
-  if (source.buildKind === 'railpack' && isHostNativeServiceKind(fields.serviceKind)) {
+  if (source.buildKind === 'image' && isHostNativeServiceKind(fields.serviceKind)) {
     issues.push({
       path: `${basePath}.source.buildKind`,
-      message: 'source.buildKind railpack is only valid when serviceKind is container',
+      message: 'source.buildKind image is only valid when serviceKind is container',
     })
   }
 

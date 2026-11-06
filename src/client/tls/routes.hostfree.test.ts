@@ -194,7 +194,7 @@ async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
   state.organizations.push({
     id: ORG_ID,
     name: 'TLS Hostfree Org',
-    options: { acmeEnabled: opts.acmeEnabled ?? true },
+    isAcmeEnabled: opts.acmeEnabled ?? true,
   })
 
   const authDb = createMockAuthDb(state)
@@ -874,6 +874,24 @@ test('DELETE /tls/:id covers uuid, not-found, children, and success', async () =
     headers: authHeaders(cookie),
   })
   await expectJson(ok, 200, { ok: true })
+})
+
+test('DELETE /tls/:id refuses the Organization CA, active or retired', async () => {
+  for (const caState of ['active', 'retired']) {
+    const { app, cookie } = await buildTlsApp({
+      tlsRows: [organizationCaRow({ caState })],
+      transaction: () => Promise.reject(new Error('the Organization CA must not be deleted')),
+    })
+    const res = await app.request(`/tls/${TLS_ID}`, {
+      method: 'DELETE',
+      headers: authHeaders(cookie),
+    })
+    await expectJson(res, 409, {
+      error: 'tls_organization_ca',
+      message:
+        "The Organization CA can't be deleted. Use Rotate on the Organization CA panel to replace it.",
+    })
+  }
 })
 
 test('POST /tls/ca/rotate returns 503 without encryption and 404 when the minted CA vanished', async () => {

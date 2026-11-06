@@ -1,7 +1,9 @@
+import { withConfirmNameOnDelete } from './shared.ts'
 import {
   SERVER_DELETE_BLOCKER_KIND_VALUES,
   SERVER_SERVICES_REMOVAL_KIND_VALUES,
 } from '../servers/delete-guards.ts'
+import { COLOCATED_REPAIR_REFUSAL_CODES } from '../authn/colocated-self-repair.ts'
 import {
   CLIENT_ADDRESS_PORT_KEYS,
   CLIENT_ADDRESS_SCOPES,
@@ -294,7 +296,7 @@ export const serverSchemas = {
       cidr: {
         type: 'string',
         description:
-          'Aligned interface network CIDR when known. Required to create a datacenter from a private address.',
+          'Aligned interface network CIDR when known. Required to create a datacenter network from a private address.',
       },
       interface: {
         type: 'string',
@@ -410,7 +412,7 @@ export const serverSchemas = {
   },
   Location: {
     description:
-      "Effective location: each field is the operator override, else Cloudflare's detected value (a server's connect-time geo; a datacenter's geo seeded from its source server at creation), else null.",
+      "Effective location: each field is the operator override, else Cloudflare's detected value (a server's connect-time geo; a datacenter network's geo seeded from its source server at creation), else null.",
     allOf: [
       { $ref: '#/components/schemas/LocationFields' },
       {
@@ -619,7 +621,7 @@ export const serverSchemas = {
       timezone: {
         type: ['string', 'null'],
         description:
-          'Effective timezone: datacenter enforce, else org enforce, else server.options.timezone, else daemon-reported server.timezone.',
+          'Effective timezone: datacenter network enforce, else org enforce, else server.options.timezone, else daemon-reported server.timezone.',
       },
       timezoneSource: {
         type: ['string', 'null'],
@@ -632,7 +634,7 @@ export const serverSchemas = {
         minimum: 1,
         maximum: 65535,
         description:
-          'Effective SSH listen port: server.options.sshPort, else datacenter, else organization, else 22.',
+          'Effective SSH listen port: server.options.sshPort, else datacenter network, else organization, else 22.',
       },
       sshPortSource: {
         type: ['string', 'null'],
@@ -666,6 +668,17 @@ export const serverSchemas = {
         description:
           'Which configured layer supplied hideWebServerNames (null when the default, on, is used).',
       },
+      sendViaHeader: {
+        type: 'boolean',
+        description:
+          'Effective Via header (Via: 1.1 Caddy on site responses): server.options.sendViaHeader, else the organization setting, else off.',
+      },
+      sendViaHeaderSource: {
+        type: ['string', 'null'],
+        enum: ['server', 'organization', 'datacenter', null],
+        description:
+          'Which configured layer supplied sendViaHeader (null when the default, off, is used).',
+      },
       colocatedWithInstance: {
         type: 'boolean',
         description:
@@ -682,7 +695,7 @@ export const serverSchemas = {
           },
         },
         description:
-          'Datacenter membership pins (`ip` rows with scope=datacenter). A server may belong to many sites.',
+          'Datacenter network membership pins (`ip` rows with scope=datacenter). A server may belong to many sites.',
       },
     },
   },
@@ -802,7 +815,7 @@ export const serverSchemas = {
     properties: {
       scope: { type: 'string', enum: [...CLIENT_ADDRESS_SCOPES] },
       datacenterId: { type: ['string', 'null'], format: 'uuid' },
-      label: { type: 'string', description: '`Public`, or the datacenter name.' },
+      label: { type: 'string', description: '`Public`, or the datacenter network name.' },
       saved: { type: 'boolean', description: 'An entry was saved for this side.' },
       hostname: { type: ['string', 'null'] },
       addressV4: {
@@ -824,7 +837,7 @@ export const serverSchemas = {
         type: 'array',
         items: { type: 'string', enum: ['postgres', 'mysql'] },
         description:
-          'The engines this side is main for: the entry marked primary, else public, else the first datacenter, each only with a host and a port not set to null.',
+          'The engines this side is main for: the entry marked primary, else public, else the first datacenter network, each only with a host and a port not set to null.',
       },
       effective: {
         type: 'object',
@@ -864,7 +877,7 @@ export const serverSchemas = {
       },
       addresses: {
         type: 'array',
-        description: 'The public side first, then each datacenter the server belongs to.',
+        description: 'The public side first, then each datacenter network the server belongs to.',
         items: { $ref: '#/components/schemas/ServerClientAddress' },
       },
     },
@@ -882,11 +895,12 @@ export const serverSchemas = {
       options: {
         type: 'object',
         description:
-          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames (boolean or null to inherit the organization setting) is a server option too.',
+          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames and sendViaHeader (boolean or null to inherit the organization setting) are server options too.',
         properties: {
           sshPort: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
           ntp: { type: ['object', 'null'] },
           hideWebServerNames: { type: ['boolean', 'null'] },
+          sendViaHeader: { type: ['boolean', 'null'] },
           hosting: {
             type: 'object',
             properties: { enabled: { type: 'boolean' } },
@@ -1614,7 +1628,7 @@ export const serverSchemas = {
   },
 }
 
-export const serverPaths: Record<string, unknown> = {
+const serverBasePaths: Record<string, unknown> = {
   '/api/client/v1/servers': {
     get: {
       tags: ['Servers'],
@@ -1835,8 +1849,8 @@ export const serverPaths: Record<string, unknown> = {
       summary: 'Retired: start a daemon update by hand',
       description:
         'Servers update automatically (the control plane checks once an hour). Always answers ' +
-        '410 `updates_automatic` with a `message`; an administrator can pause all updates in ' +
-        'Admin > Updates.',
+        '410 `updates_automatic` with a `message`; in Admin > Updates a superadmin can start ' +
+        'an update at once with Update Now, and an administrator can pause all updates.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1953,6 +1967,83 @@ export const serverPaths: Record<string, unknown> = {
               },
             },
           },
+        },
+      },
+    },
+  },
+  '/api/client/v1/servers/{id}/colocated-repair': {
+    post: {
+      tags: ['Servers'],
+      summary: 'Repair the connection of the server this control plane runs on',
+      description:
+        "Self-hosted only (409 `not_deno` on High Availability). Owner only, always behind step-up re-authentication (403 `reauth_required`, action `server.colocated_repair`), audited as `server.colocated_repair`. For the server this control plane runs on, whose daemon is refused with an invalid license or an already registered key: issues a new token on the existing co-located license (same license, same server; no server is created), clears this server's stored daemon key when the daemon no longer holds it, then writes the daemon's server id, license id and license token files, so the daemon enrolls the same server again. A revoked key is never touched (409 `daemon_key_revoked`). Any other server is refused (409 `not_colocated_server`). Refusals are audited too (`result: refused` with the code). A second press on the same server within a minute of one that ran is refused with 429 `too_soon` and `retryAfterSeconds` (also in `Retry-After`). The token is never returned or logged.",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      responses: {
+        '200': {
+          description:
+            'New credentials written. `reasons` says what was wrong with the files; `clearedKey` says whether the stored daemon key was cleared so the daemon could enroll again.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'serverId', 'reasons', 'clearedKey'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  serverId: { type: 'string', format: 'uuid' },
+                  reasons: { type: 'array', items: { type: 'string' } },
+                  clearedKey: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+        '403': {
+          description: 'Not the organization owner, or step-up required (`reauth_required`)',
+        },
+        '404': { description: 'Server not found in this organization' },
+        '429': {
+          description:
+            'Pressed again within a minute of a repair that ran on this server; nothing was changed.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error', 'code', 'retryAfterSeconds'],
+                properties: {
+                  error: { type: 'string' },
+                  code: { type: 'string', enum: ['too_soon'] },
+                  retryAfterSeconds: { type: 'integer', minimum: 1 },
+                },
+              },
+            },
+          },
+        },
+        '409': {
+          description: 'Refused; nothing was changed. `error` is a plain message.',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['error', 'code'],
+                properties: {
+                  error: { type: 'string' },
+                  code: { type: 'string', enum: [...COLOCATED_REPAIR_REFUSAL_CODES] },
+                },
+              },
+            },
+          },
+        },
+        '500': {
+          description:
+            "A new token was issued but the daemon's files could not be written (`write_failed`); try again.",
         },
       },
     },
@@ -2600,7 +2691,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Get the addresses clients use',
       description:
-        "Owners and managers only; a server of another organization is 404. One entry for the public side and one per datacenter the server belongs to, with what was saved and what the panel will use. Blank values fall back to the server's own address: a public address row, else the public interface address the server reports, and the datacenter pin.",
+        "Owners and managers only; a server of another organization is 404. One entry for the public side and one per datacenter network the server belongs to, with what was saved and what the panel will use. Blank values fall back to the server's own address: a public address row, else the public interface address the server reports, and the datacenter network pin.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -2806,3 +2897,10 @@ export const serverPaths: Record<string, unknown> = {
     },
   },
 }
+
+export const serverPaths = withConfirmNameOnDelete(
+  serverBasePaths,
+  '/api/client/v1/servers/{id}',
+  'server',
+  'its name, else its hostname, else its id'
+)

@@ -368,6 +368,7 @@ const PREVIEW_TRIGGER_COMMANDS: ReadonlySet<string> = new Set([
   'managed.ingress.reconcile',
   'managed.ha.reconcile',
   'server.fabric.reconcile',
+  'server.tunnel.routes',
 ])
 
 export function commandMayChangeFirewallPreview(type: string): boolean {

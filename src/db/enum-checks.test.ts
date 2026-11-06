@@ -17,7 +17,11 @@ import {
   NOTIFICATION_CHANNEL_SCOPES,
   NOTIFICATION_DELIVERY_STATUSES,
 } from '../features/notifications/records.ts'
-import { INSTANCE_HOSTNAME_SOURCES } from '../features/install/instance-hostnames.ts'
+import { INGRESS_MODES, INGRESS_PROVIDERS } from '../features/install/ingress-modes.ts'
+import {
+  CERTIFICATE_KINDS,
+  INSTANCE_HOSTNAME_SOURCES,
+} from '../features/install/instance-hostnames.ts'
 import {
   UPGRADE_PHASES,
   UPGRADE_SOURCES,
@@ -38,6 +42,8 @@ import {
   LOGIN_RECIPES,
 } from '../features/managed/logins.ts'
 import { PROJECT_ICONS, PROJECT_KINDS } from '../features/projects/vocabulary.ts'
+import { ICON_KEYS } from '../lib/icons.ts'
+import { FABRIC_PEER_KINDS, FABRIC_SERVER_ROLES } from '../features/fabric/membership-vocabulary.ts'
 import {
   DATACENTER_ADDRESS_PREFERENCES,
   DATACENTER_KINDS,
@@ -50,6 +56,7 @@ import {
 import {
   SERVER_DAEMON_UPDATE_STATUSES,
   SERVER_OFFLINE_REASONS,
+  SERVER_TRUST_PINNED_BY,
 } from '../features/servers/daemon-state.ts'
 import {
   FIREWALL_MODES,
@@ -62,8 +69,19 @@ import {
 import { PRINCIPAL_ACCESS_LEVELS } from '../features/principals/principal-access.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
-import { LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
+import { LEAF_KINDS, LEAF_STALE_CAUSES, LEAF_STATES } from '../features/tls/leaf-vocabulary.ts'
 import { CLIENT_ADDRESS_SCOPES } from '../features/net/client-addresses-pure.ts'
+import {
+  CARRIER_STATUSES,
+  DOORWAY_KINDS,
+  DOORWAY_STATUSES,
+  PORTAL_REPORTED_STATES,
+  PORTAL_WANTED_STATES,
+  TUNNEL_PLACEMENTS,
+  TUNNEL_PROVIDERS,
+  TUNNEL_STATUSES,
+} from '../features/tunnels/vocabulary.ts'
+import { NONCE_KINDS } from '../features/servers/daemon-nonce.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -83,11 +101,13 @@ const test = Deno.test.bind(Deno)
  * Widening a list later is `ADD CONSTRAINT … NOT VALID; VALIDATE` — the
  * allowed forward migration (decided 2026-09-11).
  */
+// A list may be followed by one ` OR (…)` alternative that is not a word
+// list, such as the emoji shape the icon CHECKs also allow.
 const schemaSource = await Deno.readTextFile(new URL('./schema.ts', import.meta.url))
 
 function checkValues(constraintName: string): string[] {
   const re = new RegExp(
-    String.raw`check\(\s*["']${constraintName}["'],\s*sql\x60(?:[a-z_]+ IS NULL OR )?[a-z_]+ IN \(([^)]*)\)\x60`
+    String.raw`check\(\s*["']${constraintName}["'],\s*sql\x60(?:[a-z_]+ IS NULL OR )?[a-z_]+ IN \(([^)]*)\)(?: OR \([^\x60]*\))?\x60`
   )
   const match = re.exec(schemaSource)
   if (!match) throw new TypeError(`schema.ts has no ${constraintName}`)
@@ -95,6 +115,16 @@ function checkValues(constraintName: string): string[] {
 }
 
 const CASES: Array<[constraint: string, values: readonly string[]]> = [
+  ['carrier_provider_check', TUNNEL_PROVIDERS],
+  ['carrier_status_check', CARRIER_STATUSES],
+  ['badge_status_check', CARRIER_STATUSES],
+  ['tunnel_provider_check', TUNNEL_PROVIDERS],
+  ['tunnel_placement_check', TUNNEL_PLACEMENTS],
+  ['tunnel_status_check', TUNNEL_STATUSES],
+  ['portal_wanted_check', PORTAL_WANTED_STATES],
+  ['portal_reported_check', PORTAL_REPORTED_STATES],
+  ['doorway_kind_check', DOORWAY_KINDS],
+  ['doorway_status_check', DOORWAY_STATUSES],
   ['command_status_check', COMMAND_STATUSES],
   ['command_actor_type_check', COMMAND_ACTOR_TYPES],
   ['container_status_check', CONTAINER_STATUSES],
@@ -110,8 +140,10 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['placement_source_check', PLACEMENT_SOURCES],
   ['project_kind_check', PROJECT_KINDS],
   ['project_icon_check', PROJECT_ICONS],
+  ['organization_icon_check', ICON_KEYS],
   ['folder_kind_check', FOLDER_KINDS],
   ['folder_state_check', FOLDER_STATES],
+  ['leaf_kind_check', LEAF_KINDS],
   ['leaf_state_check', LEAF_STATES],
   ['leaf_stale_cause_check', LEAF_STALE_CAUSES],
   ['address_scope_check', CLIENT_ADDRESS_SCOPES],
@@ -125,6 +157,10 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['attempt_severity_check', NOTIFICATION_SEVERITIES],
   ['attempt_status_check', NOTIFICATION_DELIVERY_STATUSES],
   ['origin_source_check', INSTANCE_HOSTNAME_SOURCES],
+  ['origin_mode_check', INGRESS_MODES],
+  ['certificate_kind_check', CERTIFICATE_KINDS],
+  ['ingress_provider_check', INGRESS_PROVIDERS],
+  ['nonce_kind_check', NONCE_KINDS],
   ['upgrade_source_check', UPGRADE_SOURCES],
   ['upgrade_status_check', UPGRADE_STATUSES],
   ['upgrade_phase_check', UPGRADE_PHASES],
@@ -145,6 +181,9 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['server_machine_class_source_check', SERVER_MACHINE_CLASS_SOURCES],
   ['server_os_architecture_check', SERVER_OS_ARCHITECTURES],
   ['server_offline_reason_check', SERVER_OFFLINE_REASONS],
+  ['server_fabric_role_check', FABRIC_SERVER_ROLES],
+  ['server_trust_pinned_by_check', SERVER_TRUST_PINNED_BY],
+  ['relay_kind_check', FABRIC_PEER_KINDS],
   ['server_daemon_update_status_check', SERVER_DAEMON_UPDATE_STATUSES],
   ['login_grant_mode_check', LOGIN_GRANT_MODES],
   ['login_recipe_check', LOGIN_RECIPES],

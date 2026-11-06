@@ -1,0 +1,302 @@
+/**
+ * Checks before the authority is asked for anything: the zone is on the
+ * connected account, the token can write a TXT record there, CAA allows the
+ * issuer, and the zone's nameservers are known. The same module later checks
+ * that the challenge record is visible on every authoritative nameserver.
+ */
+import type { DnsChallengeProvider } from '../../../../features/tls/dns-certificates/dns-provider.ts'
+import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
+import { type ProviderZone, zoneForName } from '../accounts.ts'
+import type { PreflightCheck } from '../provider.ts'
+import { check } from '../planner.ts'
+import type { Dns01Failure } from './state.ts'
+
+/** The record types this module asks for; a thin seam over `Deno.resolveDns`. */
+export type DnsLookup = {
+  caa(name: string): Promise<{ tag: string; value: string }[]>
+  ns(name: string): Promise<string[]>
+  addresses(name: string): Promise<string[]>
+  /** TXT values at `name` as one authoritative server (by address) answers. */
+  txtAt(name: string, server: string): Promise<string[]>
+}
+
+export type Dns01Preflight = {
+  ok: boolean
+  checks: PreflightCheck[]
+  failure: Dns01Failure | null
+  zone: ProviderZone | null
+  nameservers: string[]
+}
+
+/** Let's Encrypt's CAA identity; its staging directory uses the same one. */
+export const LETS_ENCRYPT_CAA = ['letsencrypt.org'] as const
+const LOOKUP_TIMEOUT_MS = 3_000
+
+function stop(
+  checks: PreflightCheck[],
+  failure: Dns01Failure,
+  zone: ProviderZone | null
+): Dns01Preflight {
+  return {
+    ok: false,
+    checks: [...checks, check(failure.cause, false, failure.detail)],
+    failure,
+    zone,
+    nameservers: [],
+  }
+}
+
+async function probeWrite(
+  provider: DnsChallengeProvider,
+  zone: ProviderZone,
+  host: string
+): Promise<boolean> {
+  const value = crypto.randomUUID()
+  let ref: Awaited<ReturnType<DnsChallengeProvider['present']>> | null = null
+  try {
+    ref = await provider.present({ zoneId: zone.id, name: `_turbopanel-probe.${host}`, value })
+    return true
+  } catch (err) {
+    if (
+      err instanceof TunnelProviderError &&
+      (err.code === 'unauthorized' || err.code === 'forbidden')
+    ) {
+      return false
+    }
+    throw err
+  } finally {
+    if (ref) await provider.remove(ref).catch(() => undefined)
+  }
+}
+
+/** Names from the host up to the zone apex, nearest first. */
+export function caaWalk(host: string, zoneName: string): string[] {
+  const labels = host.split('.')
+  const names: string[] = []
+  for (let i = 0; i < labels.length; i++) {
+    const name = labels.slice(i).join('.')
+    names.push(name)
+    if (name === zoneName) break
+  }
+  return names
+}
+
+function issuerOf(value: string): string {
+  return value.split(';')[0]!.trim().toLowerCase()
+}
+
+/** The first name with CAA records decides; no `issue` record there means any issuer. */
+export async function caaAllows(
+  dns: DnsLookup,
+  host: string,
+  zoneName: string,
+  identities: readonly string[]
+): Promise<{ ok: boolean; name: string | null }> {
+  for (const name of caaWalk(host, zoneName)) {
+    const records = await dns.caa(name).catch(() => [])
+    if (records.length === 0) continue
+    const issue = records.filter((record) => record.tag.toLowerCase() === 'issue')
+    if (issue.length === 0) return { ok: true, name }
+    return { ok: issue.some((record) => identities.includes(issuerOf(record.value))), name }
+  }
+  return { ok: true, name: null }
+}
+
+/**
+ * The zone's nameserver names: the provider's own list first, then this
+ * host's resolver. A resolver behind split DNS answers the zone locally and
+ * lists no nameservers (or its own), so it is only the fallback. A provider
+ * that cannot say, or refuses the read, leaves the resolver to answer.
+ * `answered` is true only when every source asked gave an answer (an empty
+ * list counts), so an empty list then means the zone has none, not that a
+ * lookup failed.
+ */
+async function nameserverNames(
+  provider: DnsChallengeProvider,
+  dns: DnsLookup,
+  zone: ProviderZone
+): Promise<{ names: string[]; answered: boolean }> {
+  let providerAnswered = true
+  if (provider.nameservers) {
+    try {
+      const listed = await provider.nameservers(zone.id)
+      if (listed.length > 0) return { names: listed, answered: true }
+    } catch {
+      providerAnswered = false
+    }
+  }
+  try {
+    return { names: await dns.ns(zone.name), answered: providerAnswered }
+  } catch {
+    return { names: [], answered: false }
+  }
+}
+
+/** Every address of every nameserver, through this host's resolver. */
+async function nameserverAddresses(dns: DnsLookup, servers: readonly string[]): Promise<string[]> {
+  const addresses = await Promise.all(
+    servers.map((server) => dns.addresses(server.replace(/\.$/, '')).catch(() => []))
+  )
+  return [...new Set(addresses.flat())]
+}
+
+/**
+ * Why no nameserver address was found. When the provider and the resolver
+ * both answered with no nameservers, the zone itself lists none
+ * (`no-nameservers`: fix the zone, so it counts like any other failure).
+ * Otherwise this is a lookup problem on this side (`dns-lookup`), never a
+ * refusal by the authority, so it backs off on its own schedule and does not
+ * count toward the failed-order limit.
+ */
+function lookupFailure(
+  zone: ProviderZone,
+  found: { names: readonly string[]; answered: boolean }
+): Dns01Failure {
+  const { names } = found
+  if (names.length === 0 && found.answered) {
+    return {
+      cause: 'no-nameservers',
+      detail: `The ${zone.name} zone lists no nameservers: the DNS provider listed none, and this server's resolver found no NS records. Check that the zone is delegated to its DNS provider.`,
+    }
+  }
+  const detail =
+    names.length === 0
+      ? `Could not look up the nameservers of ${zone.name}: the DNS provider or this server's resolver did not answer.`
+      : `Could not look up the addresses of the ${zone.name} nameservers (${names.join(', ')}) through this server's resolver.`
+  return { cause: 'dns-lookup', detail }
+}
+
+export async function preflightDns01(input: {
+  provider: DnsChallengeProvider
+  dns: DnsLookup
+  zones: readonly ProviderZone[]
+  host: string
+  identities?: readonly string[]
+}): Promise<Dns01Preflight> {
+  const { host, dns } = input
+  const zone = zoneForName(input.zones, host)
+  if (!zone) {
+    const detail = `The zone for ${host} is not on the connected Cloudflare account.`
+    return stop([], { cause: 'zone-not-on-provider', detail }, null)
+  }
+  const checks = [check('zone-on-provider', true, `${host} is in the ${zone.name} zone.`)]
+  if (!(await probeWrite(input.provider, zone, host))) {
+    return stop(
+      checks,
+      { cause: 'scope-missing', detail: `The token cannot edit DNS records in ${zone.name}.` },
+      zone
+    )
+  }
+  checks.push(check('scope-dns-write', true, `The token can write records in ${zone.name}.`))
+  const caa = await caaAllows(dns, host, zone.name, input.identities ?? LETS_ENCRYPT_CAA)
+  if (!caa.ok) {
+    const detail = `A CAA record on ${caa.name} does not allow this certificate authority.`
+    return stop(checks, { cause: 'caa-forbids', detail }, zone)
+  }
+  checks.push(check('caa', true, 'CAA records allow this certificate authority.'))
+  const found = await nameserverNames(input.provider, dns, zone)
+  const nameservers = await nameserverAddresses(dns, found.names)
+  if (nameservers.length === 0) return stop(checks, lookupFailure(zone, found), zone)
+  checks.push(check('nameservers', true, `Found ${nameservers.length} nameserver addresses.`))
+  return { ok: true, checks, failure: null, zone, nameservers }
+}
+
+/** What the authoritative servers said about the challenge value. */
+export type TxtVisibility = {
+  ok: boolean
+  /** Servers that answered with the value. */
+  confirmed: string[]
+  /** Servers that answered without the value: the record has not reached them yet. */
+  missing: string[]
+  /** Servers that gave no answer (unreachable from this host, such as IPv6 on an IPv4-only host, or timed out). */
+  unreachable: string[]
+}
+
+/**
+ * Whether the challenge value is visible on the authoritative servers. A server
+ * that answers without it holds the check back; a server this host cannot reach
+ * says nothing either way and is left out, as long as at least one answers with
+ * the value. An IPv4-only host would otherwise wait on every IPv6 address the
+ * zone lists until the order gave up.
+ */
+export async function txtVisibleOnAll(
+  dns: DnsLookup,
+  servers: readonly string[],
+  name: string,
+  value: string
+): Promise<TxtVisibility> {
+  const seen = await Promise.all(
+    servers.map(async (server) => {
+      try {
+        const values = await dns.txtAt(name, server)
+        return { server, outcome: values.includes(value) ? 'confirmed' : 'missing' }
+      } catch {
+        return { server, outcome: 'unreachable' }
+      }
+    })
+  )
+  const pick = (outcome: string) =>
+    seen.filter((item) => item.outcome === outcome).map((item) => item.server)
+  const confirmed = pick('confirmed')
+  const missing = pick('missing')
+  const unreachable = pick('unreachable')
+  return { ok: missing.length === 0 && confirmed.length > 0, confirmed, missing, unreachable }
+}
+
+/** The detail for a challenge record that is still not visible when the wait runs out. */
+export function txtNotVisibleDetail(visible: TxtVisibility): string {
+  if (visible.missing.length > 0) {
+    const answered = visible.missing.length + visible.confirmed.length
+    return `The challenge record is not visible on ${visible.missing.length} of ${answered} authoritative nameservers that answered yet.`
+  }
+  return `No authoritative nameserver could be reached to check the challenge record (${visible.unreachable.length} tried).`
+}
+
+type DenoCaa = { critical: boolean; tag: string; value: string }
+
+function withTimeout(): { signal: AbortSignal } {
+  return { signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) }
+}
+
+/**
+ * The real lookups. CAA, NS and addresses go through this host's resolver,
+ * which split DNS may answer locally; `txtAt` asks one authoritative server
+ * directly by address, because authoritative answers are the point there.
+ */
+export const denoDnsLookup: DnsLookup = {
+  caa: async (name) =>
+    ((await Deno.resolveDns(name, 'CAA', withTimeout())) as DenoCaa[]).map((record) => ({
+      tag: record.tag,
+      value: record.value,
+    })),
+  ns: async (name) => {
+    try {
+      return await Deno.resolveDns(name, 'NS', withTimeout())
+    } catch (err) {
+      // NotFound is an answer: the name has no NS records. Anything else is no answer.
+      if (err instanceof Deno.errors.NotFound) return []
+      throw err
+    }
+  },
+  addresses: async (name) => {
+    const [v4, v6] = await Promise.all([
+      Deno.resolveDns(name, 'A', withTimeout()).catch(() => []),
+      Deno.resolveDns(name, 'AAAA', withTimeout()).catch(() => []),
+    ])
+    return [...v4, ...v6]
+  },
+  txtAt: async (name, server) => {
+    try {
+      const answer = await Deno.resolveDns(name, 'TXT', {
+        ...withTimeout(),
+        nameServer: { ipAddr: server, port: 53 },
+      })
+      return answer.map((chunks) => chunks.join(''))
+    } catch (err) {
+      // NotFound is an answer: the server has no TXT record at the name.
+      // Anything else (unreachable network, timeout) is no answer and throws on.
+      if (err instanceof Deno.errors.NotFound) return []
+      throw err
+    }
+  },
+}

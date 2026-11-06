@@ -1,3 +1,4 @@
+import type { TlsPinError } from '../../lib/tls/types.ts'
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
 import { panelHostnameInUseMessage } from '../../features/hostings/panel-hostname-guard.ts'
 import { hostnameUnsupportedReason } from '../../features/hostings/hosting-certificate.ts'
@@ -100,8 +101,10 @@ export function composeProjectName(environmentId: string): string {
   return environmentId
 }
 
-export function tlsPinErrorCode(error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready'): string {
+export function tlsPinErrorCode(error: TlsPinError): string {
   switch (error) {
+    case 'pin_staging':
+      return 'tls_pin_staging'
     case 'pin_mismatch':
       return 'tls_pin_mismatch'
     case 'pin_not_ready':
@@ -119,6 +122,9 @@ export type PrepareErrorResponse = {
 export function fabricGateErrorResponse(
   outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>
 ): PrepareErrorResponse {
+  if (outcome.kind === 'turned_off') {
+    return { status: 409, body: { error: 'fabric_turned_off', message: outcome.message } }
+  }
   if (outcome.kind === 'failed') {
     return {
       status: 422,
@@ -424,7 +430,7 @@ function hostingLetsEncryptRefusedMessage(
     return `${asks}, but this organization does not allow Let's Encrypt certificates. An organization owner or manager can turn on ${LETS_ENCRYPT_SETTING_PLACE}. Or set tls.mode to "internal" for a self-signed certificate.`
   }
   if (prepared.reason === 'acme_requires_public_bind') {
-    return `${asks}, but the route is not reachable from the internet. Let's Encrypt needs bind.scope "public"; use tls.mode "internal" for a local or datacenter route.`
+    return `${asks}, but the route is not reachable from the internet. Let's Encrypt needs bind.scope "public"; use tls.mode "internal" for a local or datacenter network route.`
   }
   const unsupported = prepared.names.find((name) => hostnameUnsupportedReason(name) !== null)
   if (prepared.reason === 'letsencrypt_hostname_unsupported' && unsupported !== undefined) {
@@ -580,14 +586,14 @@ function mapPrincipalPrepareError(
     }
   }
   if (prepared.kind === 'principal_required_for_service_kind') {
-    const kindLabel = prepared.serviceKind === 'site' ? 'Site' : 'Node app'
+    const kindLabel = prepared.serviceKind === 'site' ? 'site' : 'Node app'
     return {
       status: 422,
       body: {
         error: 'principal_required_for_service_kind',
         composeServiceName: prepared.composeServiceName,
         serviceKind: prepared.serviceKind,
-        message: `${kindLabel} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
+        message: `This ${kindLabel} ("${prepared.composeServiceName}") needs a Hosting Account. Add one under Bindings first.`,
       },
     }
   }

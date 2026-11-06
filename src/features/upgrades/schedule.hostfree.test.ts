@@ -99,12 +99,13 @@ test('a last check in the future (clock moved back) never stalls the schedule pa
   )
 })
 
-test('an automatic run starts only on drift, with no run open and updates not paused', () => {
-  const base = { targetDiffers: true, runActive: false, paused: false }
+test('an automatic run starts only on drift, with no run open, updates not paused, outside development', () => {
+  const base = { targetDiffers: true, runActive: false, paused: false, development: false }
   assertEquals(shouldAutoStartRun(base), true)
   assertEquals(shouldAutoStartRun({ ...base, targetDiffers: false }), false)
   assertEquals(shouldAutoStartRun({ ...base, runActive: true }), false)
   assertEquals(shouldAutoStartRun({ ...base, paused: true }), false)
+  assertEquals(shouldAutoStartRun({ ...base, development: true }), false)
 })
 
 test('a test install with a 5 minute check keeps its own minute inside each 5 minutes', () => {
@@ -148,4 +149,15 @@ test('Check Now runs at most once a minute', () => {
   assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:41:00.000Z')), 0)
   // A press stamped in the future (clock moved back) still waits one minute at most.
   assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:00:00.000Z')), 60)
+})
+
+test('Update Now waits on its own field, apart from Check Now', () => {
+  const s = schedule({
+    lastManualCheckAt: '2026-10-27T10:40:00.000Z',
+    lastUpdateNowAt: '2026-10-27T10:30:00.000Z',
+  })
+  const now = at('2026-10-27T10:40:10.000Z')
+  assertEquals(manualCheckWaitSeconds(s, now), 50)
+  assertEquals(manualCheckWaitSeconds(s, now, 'lastUpdateNowAt'), 0)
+  assertEquals(manualCheckWaitSeconds(s, at('2026-10-27T10:30:20.000Z'), 'lastUpdateNowAt'), 40)
 })

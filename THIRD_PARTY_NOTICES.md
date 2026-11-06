@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:db7700ec855cd8560d61b13fa462c70c192a1c83abd316c4fc57e08a18e53d47
-pnpm-lock.yaml sha256:72b5543a438ed2b16df69fe14facc16eeab5c33a37a44a27c62afabbd3d5cd43
+deno.lock sha256:38f4600f955413ef9ce8429b1f8f3e21c68553d9adf88c5b542e81ab796b74de
+pnpm-lock.yaml sha256:aa36a0622c76d6941e45095a3ced90dffe3baac1ec741d99143b685b75b6e58d
 -->
 
 ## Production dependencies
@@ -20,6 +20,29 @@ pnpm-lock.yaml sha256:72b5543a438ed2b16df69fe14facc16eeab5c33a37a44a27c62afabbd3
 
 - License: MIT
 - Homepage: https://github.com/duckdb/duckdb-node-neo#readme
+
+### @duckdb/node-bindings-linux-x64@1.5.5-r.4
+
+- License: MIT
+- Homepage: https://github.com/duckdb/duckdb-node-neo#readme
+
+### @hpke/chacha20poly1305@1.8.0
+
+- License: MIT
+- Copyright: Ajitomi Daisuke
+- Homepage: https://github.com/dajiaji/hpke-js/tree/main/packages/chacha20poly1305#readme
+
+### @hpke/common@1.10.1
+
+- License: MIT
+- Copyright: Ajitomi Daisuke
+- Homepage: https://github.com/dajiaji/hpke-js/tree/main/common#readme
+
+### @hpke/core@1.9.0
+
+- License: MIT
+- Copyright: Ajitomi Daisuke
+- Homepage: https://github.com/dajiaji/hpke-js/tree/main/core#readme
 
 ### @ioredis/commands@1.10.0
 
@@ -120,6 +143,12 @@ pnpm-lock.yaml sha256:72b5543a438ed2b16df69fe14facc16eeab5c33a37a44a27c62afabbd3
 - License: MIT
 - Copyright: luin
 - Homepage: https://github.com/luin/asCallback#readme
+
+### supports-color@10.2.2
+
+- License: MIT
+- Copyright: Sindre Sorhus
+- Homepage: https://github.com/chalk/supports-color#readme
 
 ### yaml@2.9.0
 
@@ -264,11 +293,6 @@ These packages are used for development, test, or build tooling and are not bund
 - License: Apache-2.0
 - Copyright: Drizzle Team
 - Homepage: https://github.com/drizzle-team/brocli
-
-### @duckdb/node-bindings-linux-x64@1.5.5-r.4
-
-- License: MIT
-- Homepage: https://github.com/duckdb/duckdb-node-neo#readme
 
 ### @esbuild-kit/core-utils@3.3.2
 
@@ -799,12 +823,6 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/unjs/std-env#readme
 
-### supports-color@10.2.2
-
-- License: MIT
-- Copyright: Sindre Sorhus
-- Homepage: https://github.com/chalk/supports-color#readme
-
 ### supports-color@7.2.0
 
 - License: MIT
@@ -866,7 +884,7 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Andrey Sitnik
 - Homepage: https://github.com/browserslist/update-db#readme
 
-### vite@6.4.4
+### vite@6.4.5
 
 - License: MIT
 - Copyright: Evan You

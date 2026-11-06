@@ -11,6 +11,7 @@ import {
   type NtpDefaults,
   parseHideWebServerNames,
   parseNtpDefaults,
+  parseSendViaHeader,
   parseSshPort,
 } from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
@@ -408,6 +409,11 @@ export type ServerOptions = {
    */
   hideWebServerNames?: boolean
   /**
+   * Keep `Via: 1.1 Caddy` on site responses from this host. Omitted → the
+   * organization's setting, which is off unless it says otherwise.
+   */
+  sendViaHeader?: boolean
+  /**
    * Desired state for Docker-hosting provisioning; consumed by later phases to
    * choose self-heal vs report-only.
    */
@@ -437,6 +443,8 @@ export type ServerOptions = {
    * Set through `/servers/:id/managed-external-access`, never a server PATCH.
    */
   managedExternalAccess?: ManagedExternalAccess
+  /** `carry: false` = this server never runs a tunnel connector, whatever a tunnel's placement says. */
+  tunnels?: { carry: boolean }
 }
 
 const OS_FAMILIES = new Set<ServerOsFamily>(['linux', 'windows', 'freebsd', 'darwin'])
@@ -1911,9 +1919,11 @@ export function redactServerOptions<T>(value: T): T {
   return copy as T
 }
 
-function assignHideWebServerNames(options: ServerOptions, value: Record<string, unknown>): void {
+function assignWebServerSettings(options: ServerOptions, value: Record<string, unknown>): void {
   const hide = parseHideWebServerNames(value.hideWebServerNames)
   if (hide !== undefined) options.hideWebServerNames = hide
+  const via = parseSendViaHeader(value.sendViaHeader)
+  if (via !== undefined) options.sendViaHeader = via
 }
 
 /** Parse operator-controlled `server.options` jsonb. */
@@ -1934,7 +1944,7 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
-  assignHideWebServerNames(options, value)
+  assignWebServerSettings(options, value)
   if ('metricsCapabilityPlan' in value) {
     const metricsCapabilityPlan = parseServerMetricsCapabilityPlanOverride(
       value.metricsCapabilityPlan
@@ -1949,7 +1959,12 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if ('managedExternalAccess' in value) {
     options.managedExternalAccess = parseManagedExternalAccess(value.managedExternalAccess)
   }
+  assignTunnelCarry(options, value.tunnels)
   return Object.keys(options).length > 0 ? options : {}
+}
+
+function assignTunnelCarry(options: ServerOptions, value: unknown): void {
+  if (isRecord(value) && typeof value.carry === 'boolean') options.tunnels = { carry: value.carry }
 }
 
 function assignServerPhpModes(options: ServerOptions, value: unknown): void {

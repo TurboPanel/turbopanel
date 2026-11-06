@@ -28,9 +28,9 @@ import {
 } from '../../features/compose/compile-runtime.ts'
 import { sha256HexUtf8 } from '../../features/compose/desired-hash.ts'
 import { deployInputsDigest } from './deploy-inputs-digest.ts'
+import { sealPrincipalPasswordHashes } from './deploy-principal-password-seal.ts'
 import {
   parseOrganizationOptions,
-  resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveComposeRemoteBuildSourcesEnabled,
@@ -111,6 +111,8 @@ import {
   shellForAccessLevel,
 } from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
+import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
+import { resolveDeployNameLock } from '../../features/tunnels/name-lock.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
   type NativeAppNodeVersionView,
@@ -138,7 +140,9 @@ import {
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
 } from '../../features/bindings/host-run.ts'
-import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
+import { ACME_ISSUE_FEATURE, PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
+import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
+import { getDaemonSealingKey } from '../../features/servers/daemon-sealing-key.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -214,7 +218,10 @@ import {
   storageCopy,
   tls,
 } from '../../db/schema.ts'
-import { loadHideWebServerNames } from '../../features/servers/web-server-settings.ts'
+import {
+  loadWebServerSettings,
+  webServerDeployFields,
+} from '../../features/servers/web-server-settings.ts'
 import {
   checkResourceLimits,
   parseResourceLimits,
@@ -230,6 +237,7 @@ import {
 import { inetAddressToString } from '../../lib/ip-address.ts'
 import { loadServerDatacenterAddress } from '../../features/net/private-endpoint.ts'
 import { reconcileServicesFromCompose } from '../../features/deploy/reconcile-services.ts'
+import { precheckHeldLetsEncrypt } from '../hostings/letsencrypt-held.ts'
 import { type ComposeHostingError, reconcileHostingsFromCompose } from './reconcile-hostings.ts'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -869,7 +877,7 @@ function warningFromPrepareError(
     case 'principal_required_for_service_kind':
       return {
         code: 'principal_required_for_service_kind',
-        message: `${error.serviceKind} service "${error.composeServiceName}" has no principal — declare one under x-turbopanel.principals and name it with x-turbopanel.principal.`,
+        message: `This ${error.serviceKind === 'site' ? 'site' : 'Node app'} ("${error.composeServiceName}") needs a Hosting Account. Add one under Bindings first.`,
         details: {
           composeServiceName: error.composeServiceName,
           serviceKind: error.serviceKind,
@@ -918,6 +926,32 @@ async function resolveDaemonSealContext(
     dataEncryptionSecrets,
     recipient: { serverId, keyId: daemonState.key.id },
   }
+}
+
+/**
+ * The deploy's Hosting Accounts with their password hashes sealed for the
+ * daemon, or the material unchanged when no account has a hash, the deploy is a
+ * preview, or the server has no sealing key on file. The choice keys on the
+ * registered key, never on the unsigned hello `features` list (only a daemon
+ * with `daemon-sealed-secrets-v1` registers a key, and it signs the
+ * registration with the server's identity key).
+ */
+export async function sealPrincipalMaterialForDaemon(
+  c: Context<AppEnv>,
+  db: Db,
+  mode: DeployPrepareMode,
+  serverId: string,
+  material: EnvironmentDeployPrincipalMaterial[]
+): Promise<EnvironmentDeployPrincipalMaterial[] | Response> {
+  if (mode === 'preview' || material.every((entry) => entry.passwordHash === undefined)) {
+    return material
+  }
+  if (!(await getDaemonSealingKey(db, serverId))) return material
+  const sealing = await resolveDaemonSealContext(c, db, serverId)
+  if (sealing instanceof Response) return sealing
+  return await sealPrincipalPasswordHashes(material, (plaintext) =>
+    encryptSecretForDaemon(sealing.secretsConfig, sealing.recipient, plaintext)
+  )
 }
 
 async function sealVariableMaterialForDaemon(
@@ -2483,9 +2517,8 @@ async function resolveBindingMaterializationOutcome(
     bindResult.kind === 'binding_endpoint_unavailable' ||
     bindResult.kind === 'datacenter_ip_required' ||
     bindResult.kind === 'private_path_unavailable' ||
-    // `client-backend` never raises this; listed so the mapping over
-    // `PrivateEndpointError` stays total.
-    bindResult.kind === 'failover_requires_trusted_datacenter'
+    // An untrusted-only pair with nothing to ride; still a soft binding error.
+    bindResult.kind === 'untrusted_network_needs_fabric'
 
   const error: DeployPrepareError = { kind: 'binding_endpoint_unavailable' }
   if (isSoftBindingError) {
@@ -2853,6 +2886,11 @@ async function toPreparedDeployResult(
     variableMaterial: EnvironmentDeployVariableMaterial[]
     storageMaterial: EnvironmentDeployStorageMaterial[]
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    /**
+     * The accounts before their password hashes are sealed (a sealed envelope
+     * carries a fresh nonce on every send). The hash compares these.
+     */
+    hashPrincipalMaterial?: EnvironmentDeployPrincipalMaterial[]
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
     nativeAppVariables?: NativeAppVariablesView[]
@@ -2898,7 +2936,10 @@ async function toPreparedDeployResult(
       parts.composeYaml,
       parts.sourceMaterial,
       parts.nativeAppServices,
-      deployHashInputs(parts)
+      deployHashInputs({
+        ...parts,
+        principalMaterial: parts.hashPrincipalMaterial ?? parts.principalMaterial,
+      })
     ),
     replicaCounts: parts.replicaCounts,
     hooks: parts.hooks,
@@ -2932,6 +2973,7 @@ async function toPreparedDeployResult(
     ...(parts.edge?.hideWebServerNames === undefined
       ? {}
       : { hideWebServerNames: parts.edge.hideWebServerNames }),
+    ...(parts.edge?.sendViaHeader === undefined ? {} : { sendViaHeader: parts.edge.sendViaHeader }),
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
@@ -3170,6 +3212,19 @@ async function reconcileComposeDeclaredRows(
   if (!hostingReconcile.ok) {
     return { ok: false, failure: hostingReconcile.error }
   }
+  // Routes asking for Let's Encrypt pin nothing until the certificate
+  // pre-check passes, the same hold as a hostname added in the Hosting tab.
+  // Checked here, after the reconcile's transaction and before the fan-out
+  // reads the rows, so a name that is ready goes out with this deploy. A
+  // preview never probes; the sweep checks what it leaves waiting.
+  if (args.mode !== 'preview') {
+    await precheckHeldLetsEncrypt(
+      db,
+      args.organizationId,
+      hostingReconcile.letsEncryptWaiting,
+      c.get('letsEncryptPrecheck')
+    )
+  }
 
   // Re-materialize bindings so endpoint / CA / topology drift is picked up.
   const bindingOutcome = await resolveBindingMaterializationOutcome(
@@ -3261,6 +3316,13 @@ async function resolveManagedNetworkHostName(
     organizationId,
   })
   return network.hostName
+}
+
+/** A prepare step answered with a refusal (a `Response` or a `DeployPrepareError`) instead of its value. */
+function isPrepareStop<T>(value: T): value is Extract<T, Response | DeployPrepareError> {
+  return (
+    value instanceof Response || (typeof value === 'object' && value !== null && 'kind' in value)
+  )
 }
 
 /**
@@ -3606,7 +3668,7 @@ export async function prepareDeployCompose(
     application,
     principalResolution,
   })
-  if ('kind' in pipelineResolved || pipelineResolved instanceof Response) {
+  if (isPrepareStop(pipelineResolved)) {
     return pipelineResolved
   }
   const { pipeline, resolved } = pipelineResolved
@@ -3738,7 +3800,7 @@ export async function prepareDeployCompose(
     tasksByComposeName,
     localServiceNames: pipeline.localServiceNames,
   })
-  if ('kind' in nativeLanes || nativeLanes instanceof Response) {
+  if (isPrepareStop(nativeLanes)) {
     return nativeLanes
   }
   const { nativeVariables, localSourceMaterial, nodeVersions } = nativeLanes
@@ -3800,11 +3862,19 @@ export async function prepareDeployCompose(
     expansion: expansionToRecord(expansion),
     storageMaterial,
   })
-  if (edge instanceof Response) return edge
-  if ('kind' in edge) return edge
+  if (isPrepareStop(edge)) return edge
 
   const sourceMaterial = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
   if (!Array.isArray(sourceMaterial)) return toApplyVariablesPrepareError(sourceMaterial)
+
+  const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
+    c,
+    db,
+    mode,
+    params.serverId,
+    principalMaterial
+  )
+  if (sealedPrincipalMaterial instanceof Response) return sealedPrincipalMaterial
 
   return await toPreparedDeployResult(mode, {
     serverId: resolved.serverId,
@@ -3821,7 +3891,8 @@ export async function prepareDeployCompose(
     hooks,
     variableMaterial,
     storageMaterial,
-    principalMaterial,
+    principalMaterial: sealedPrincipalMaterial,
+    hashPrincipalMaterial: principalMaterial,
     sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
@@ -4218,6 +4289,8 @@ function isTlsSource(value: string): value is TlsSource {
 type OrgTlsCandidate = TlsCandidate & {
   certificatePem: string | null
   privateKeyPem: string | null
+  /** The stored pair was ordered by a serving server at the panel's request (see `http-issuance`). */
+  httpCentralPair?: boolean
 }
 
 export type HostingTlsWire =
@@ -4229,7 +4302,7 @@ export type HostingTlsWire =
  * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
  * fall back to `tls internal`, and they are excluded from `tlsMaterial`.
  *
- * `acmeEnabled` is the org's gate (`organization.options.acmeEnabled`, on for
+ * `acmeEnabled` is the org's gate (`organization.is_acme_enabled`, off for
  * new organizations) — checked here as defense in depth even though `POST
  * /tls` and the compose reconcile already refuse while the org is opted out,
  * because an `automatic` row can predate the org later disabling the gate.
@@ -4239,6 +4312,12 @@ export function hostingTlsWireFromResolved(params: {
   status: TlsStatus | undefined
   bindScope: HostingBindScope
   acmeEnabled: boolean
+  /**
+   * The row holds a pair this panel had a server order for it and the target
+   * daemon takes it as a pinned certificate: send the pair, and the server's own
+   * web server stops ordering. Never true for a pair a server captured itself.
+   */
+  centralPair?: boolean
 }): HostingTlsWire {
   if (params.status !== 'automatic') {
     return { ok: true, tlsId: params.tlsId }
@@ -4249,6 +4328,7 @@ export function hostingTlsWireFromResolved(params: {
   if (params.bindScope === 'local' || params.bindScope === 'datacenter') {
     return { ok: false, error: 'acme_requires_public_bind' }
   }
+  if (params.centralPair === true) return { ok: true, tlsId: params.tlsId }
   return { ok: true, tlsId: null, tlsMode: 'acme' }
 }
 
@@ -4296,16 +4376,19 @@ function tlsPinErrorResponse(
   const missing = hostingCertificateNames(hosting).filter(
     (name) => !coversAllHostnames(dnsNames, [name])
   )
-  const message =
-    error === 'pin_mismatch' && typedCovered && missing.length > 0
-      ? `The certificate on this hosting covers ${hosting.hostnames.join(
-          ', '
-        )} but not ${missing.join(
-          ', '
-        )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
-          ', '
-        )}".`
-      : undefined
+  let message: string | undefined
+  if (error === 'pin_mismatch' && typedCovered && missing.length > 0) {
+    message = `The certificate on this hosting covers ${hosting.hostnames.join(
+      ', '
+    )} but not ${missing.join(
+      ', '
+    )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
+      ', '
+    )}".`
+  } else if (error === 'pin_staging') {
+    message =
+      "The certificate on this hosting is a Test Certificate. Test certificates are only for trying out ordering. Browsers show a security warning for them, so they can't be attached to a site. Order a normal certificate instead."
+  }
   return Response.json(
     {
       error: tlsPinErrorCode(error),
@@ -4316,13 +4399,47 @@ function tlsPinErrorResponse(
   )
 }
 
+/** The 409 for a hosting whose tunnel names cannot be locked; `serverId` is named when the daemon is the problem. */
+function nameLockRefusalResponse(
+  refusal: { code: string; hostnames: string[] },
+  hostingId: string,
+  serverId: string
+): Response {
+  return Response.json(
+    {
+      error: refusal.code,
+      hostingId,
+      hostnames: refusal.hostnames,
+      ...(refusal.code === 'tunnel_daemon_too_old' ? { serverId } : {}),
+    },
+    { status: 409 }
+  )
+}
+
+/** The pinned row holds a pair ordered by this flow, and the target server's daemon lists the feature. */
+async function takesCentralPair(
+  db: Db,
+  pinned: OrgTlsCandidate | undefined,
+  serverId: string
+): Promise<boolean> {
+  if (!pinned?.httpCentralPair || !pinned.certificatePem || !pinned.privateKeyPem) return false
+  // One stored pair serves every site that pins the row, so it must cover all the
+  // row's names. A pair that covers only some of them (a daemon reports one
+  // certificate per name) stays with the server's own web server.
+  const stored = pinned.metadata.acme?.storedNames
+  if (!stored || !coversAllHostnames(stored, pinned.metadata.dnsNames)) return false
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
@@ -4364,6 +4481,7 @@ async function resolveHttpHostingEntry(
     status: pinned?.metadata.status,
     bindScope,
     acmeEnabled,
+    centralPair: await takesCentralPair(db, pinned, serverId),
   })
   if (!tlsWire.ok) {
     return {
@@ -4387,16 +4505,33 @@ async function resolveHttpHostingEntry(
 
   const web = await resolveHostingDeployWeb(db, h.id, h.options)
 
+  const lock = await resolveDeployNameLock(db, {
+    organizationId,
+    serverId,
+    hostingId: h.id,
+    siteHostnames: hostnames,
+    www,
+    tlsMode: tlsWire.tlsMode,
+  })
+  if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id, serverId) }
+
+  // A hosting whose names are all tunnel-only never asks for a public certificate,
+  // and keeps no Let's Encrypt row waiting on one.
+  if (lock.dropPublicCertificate === true) {
+    await settleTunnelOnlyHosting(db, { organizationId, hostingId: h.id })
+  }
+  const tlsMode = lock.dropPublicCertificate === true ? undefined : tlsWire.tlsMode
   return {
     entry: {
       hostingId: h.id,
       serviceId: svc.id,
       composeServiceName: svc.composeServiceName,
       hostnames,
+      ...(lock.tunnel === undefined ? {} : { tunnel: lock.tunnel }),
       pathPrefix: readPathPrefix(h.options),
       targetPort: readTargetPort(h.options),
       tlsId: tlsWire.tlsId,
-      ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
+      ...(tlsMode === undefined ? {} : { tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
       ...(www === 'off' ? {} : { www }),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
@@ -4453,7 +4588,8 @@ function resolveHostingEntry(
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
@@ -4462,7 +4598,7 @@ function resolveHostingEntry(
 > {
   const protocol = readHostingProtocol(h.options)
   if (protocol === 'http') {
-    return resolveHttpHostingEntry(db, h, svc, candidates, serverId, acmeEnabled)
+    return resolveHttpHostingEntry(db, h, svc, candidates, serverId, acmeEnabled, organizationId)
   }
   return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId)
 }
@@ -4501,6 +4637,7 @@ async function loadOrgTlsCandidates(db: Db, organizationId: string): Promise<Org
       ...(isTlsSource(row.source) ? { source: row.source } : {}),
       certificatePem: row.certificatePem,
       privateKeyPem: row.privateKeyPem,
+      httpCentralPair: readHttpIssuanceState(row.metadata)?.centralPair === true,
     })
   }
   return out
@@ -4511,7 +4648,8 @@ async function buildHostingsForService(
   svc: HostingServiceRow,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { hostings: DeployHostingPayload[]; tlsIds: string[] }
   | { error: Response }
@@ -4537,7 +4675,8 @@ async function buildHostingsForService(
       { id: svc.id, composeServiceName },
       candidates,
       serverId,
-      acmeEnabled
+      acmeEnabled,
+      organizationId
     )
     if ('skip' in result) continue
     if ('error' in result) return result
@@ -4566,16 +4705,23 @@ async function buildHostingPayload(
 
   const candidates = await loadOrgTlsCandidates(db, organizationId)
   const [orgRow] = await db
-    .select({ options: organization.options })
+    .select({ isAcmeEnabled: organization.isAcmeEnabled })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1)
-  const acmeEnabled = resolveAcmeEnabled(parseOrganizationOptions(orgRow?.options))
+  const acmeEnabled = orgRow?.isAcmeEnabled === true
   const hostingPayload: DeployHostingPayload[] = []
   const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
-    const built = await buildHostingsForService(db, svc, candidates, serverId, acmeEnabled)
+    const built = await buildHostingsForService(
+      db,
+      svc,
+      candidates,
+      serverId,
+      acmeEnabled,
+      organizationId
+    )
     if ('error' in built) return built
     if ('prepareError' in built) return built
     hostingPayload.push(...built.hostings)
@@ -4716,6 +4862,7 @@ type ServerEdgeDeployment = Pick<
   | 'hostingIngress'
   | 'hostingIngressNetwork'
   | 'hideWebServerNames'
+  | 'sendViaHeader'
 >
 
 /**
@@ -4800,10 +4947,13 @@ async function compileServerEdgeDeployment(
     listenerPorts,
     ...(hostingIngress ? { hostingIngress } : {}),
     ...(hostingIngressNetwork ? { hostingIngressNetwork } : {}),
-    hideWebServerNames: await loadHideWebServerNames(
-      db,
-      params.serverId,
-      params.serverOrganizationId ?? params.organizationId
+    ...webServerDeployFields(
+      await loadWebServerSettings(
+        db,
+        params.serverId,
+        params.serverOrganizationId ?? params.organizationId
+      ),
+      (await getServerDaemonStateByServerId(db, params.serverId))?.projection?.features
     ),
   }
 }

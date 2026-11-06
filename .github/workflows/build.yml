@@ -99,6 +99,9 @@ jobs:
       - name: Check vocabulary (no daemon-as-agent phrasing)
         run: pnpm run check:vocabulary
 
+      - name: Check contributor guide references
+        run: pnpm run check:guide-references
+
       # Shipped migrations are immutable once the freeze manifest is frozen:
       # the working tree must match migrations/meta/manifest.json (the Deno
       # suite proves that) and, against the base ref, migrations/ may only
@@ -130,6 +133,9 @@ jobs:
 
       - name: Check instance ACME boundary (instance ACME must not touch organization ACME)
         run: pnpm run check:instance-acme-boundary
+
+      - name: Check Workers ACME boundary (no Let's Encrypt client or directory host in the Workers build)
+        run: pnpm run check:workers-acme-boundary
 
       - name: Check import boundaries
         run: pnpm run check:import-boundaries
@@ -206,8 +212,20 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
+      - name: Seed the daemon state sentinel
+        # The default co-located daemon state dir, writable by the runner and
+        # filled with fixed stand-in files, so a test that wrote it would
+        # land and the check after the tests would fail.
+        run: |
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/turbopanel
+          node scripts/daemon-state-sentinel.mjs seed /var/lib/turbopanel
+
       - name: Test with coverage
         run: pnpm test:coverage
+
+      - name: Check no test wrote the daemon state dir
+        if: ${{ !cancelled() }}
+        run: node scripts/daemon-state-sentinel.mjs verify /var/lib/turbopanel
 
       - name: Upload Deno LCOV
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -260,11 +278,21 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
+      - name: Seed the daemon state sentinel
+        # Same sentinel as deno hostfree (scripts/daemon-state-sentinel.mjs).
+        run: |
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/turbopanel
+          node scripts/daemon-state-sentinel.mjs seed /var/lib/turbopanel
+
       - name: Apply database migrations
         run: pnpm migrate
 
       - name: Test with coverage
         run: pnpm test:coverage
+
+      - name: Check no test wrote the daemon state dir
+        if: ${{ !cancelled() }}
+        run: node scripts/daemon-state-sentinel.mjs verify /var/lib/turbopanel
 
       - name: Upload Deno LCOV
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -300,6 +328,12 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
+      - name: Seed the daemon state sentinel
+        # Same sentinel as deno hostfree (scripts/daemon-state-sentinel.mjs).
+        run: |
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/turbopanel
+          node scripts/daemon-state-sentinel.mjs seed /var/lib/turbopanel
+
       - name: Start Redis on a unix socket
         run: |
           mkdir -p /tmp/tp-redis
@@ -316,6 +350,10 @@ jobs:
 
       - name: Test the Redis daemon-cell suites
         run: deno test -A --no-check src/daemon/redis-cell.test.ts src/daemon/ws-handlers.test.ts
+
+      - name: Check no test wrote the daemon state dir
+        if: ${{ !cancelled() }}
+        run: node scripts/daemon-state-sentinel.mjs verify /var/lib/turbopanel
 
   # Test shards run with --no-check for speed, so this job is what type-checks
   # the Deno surface (entry points and every Deno test file).
@@ -409,12 +447,22 @@ jobs:
           && github.event_name == 'pull_request'
           && github.base_ref != 'staging'
           && github.base_ref != 'live'
-        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        uses: SonarSource/sonarqube-scan-action@4d1dc0c91ee400dcf8a6dddf2f705ac36542e304 # v8.4.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: >
             -Dsonar.qualitygate.wait=true
+
+      # A pull request from a fork (or from Dependabot) gets no repository
+      # secrets, so the code scan above is skipped. Say so in the run rather
+      # than staying silent; every other check in this run still gates ci-ok.
+      - name: Note a skipped code scan
+        if: github.event_name == 'pull_request' && env.SONAR_TOKEN == ''
+        run: |
+          msg="The code scanner did not run: pull requests from forks get no repository secrets, so the scan is skipped. Formatting, the vocabulary check, the secret scan and the tests run as usual. If a scan is needed, a maintainer will push this branch to the TurboPanel repository, where the scan runs."
+          echo "::notice title=Code scan skipped::${msg}"
+          printf '### Code scan skipped\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
 
       # The Sonar way gate fails only on ratings, so one new code smell passes
       # it; this fails the PR on any new issue (owner rule, 2026-09-30). Runs
@@ -444,20 +492,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.head_ref || github.ref_name }}
           BASE_REF: ${{ github.base_ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_BODY: ${{ github.event.pull_request.body }}
+          SIBLING_REPO: TurboPanel/turbopaneld
         run: |
           # A same-named feature branch, else the sibling's trunk. Never the
           # sibling's staging or live: promotion PRs (base staging/live) and
           # PRs from those branches carry commits that passed against trunk.
-          REF="$HEAD_REF"
-          case "$REF:$BASE_REF" in
-            staging:* | live:* | *:staging | *:live) REF=trunk ;;
-            *) ;;
-          esac
-          if gh api "repos/TurboPanel/turbopaneld/branches/${REF}" --silent; then
-            echo "ref=${REF}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=trunk" >> "$GITHUB_OUTPUT"
+          # A pull request may name the sibling branch instead with a
+          # `Sibling-Branch: <branch>` line in its description (a fork PR, or
+          # a twin with another name); the branch must exist in the org repo.
+          # The description is read fresh so an edit counts on a re-run, and
+          # it only reaches the resolver through the environment.
+          PR_BODY="$EVENT_BODY"
+          if [ -n "$PR_NUMBER" ]; then
+            PR_BODY="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.body // ""')" || PR_BODY="$EVENT_BODY"
           fi
+          export PR_BODY
+          resolved="$(node turbopanel/scripts/resolve-sibling-ref.mjs)" || { printf '%s\n' "$resolved"; exit 1; }
+          CANDIDATE="$(printf '%s\n' "$resolved" | sed -n 's/^candidate=//p')"
+          SOURCE="$(printf '%s\n' "$resolved" | sed -n 's/^source=//p')"
+          if gh api "repos/${SIBLING_REPO}/branches/${CANDIDATE}" --silent; then
+            REF="$CANDIDATE"
+          elif [ "$SOURCE" = override ]; then
+            echo "::error title=Sibling-Branch::the branch named in the description does not exist in ${SIBLING_REPO}; a maintainer has to push it there first"
+            exit 1
+          else
+            REF=trunk
+            SOURCE=trunk-fallback
+          fi
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          REF="$REF" SOURCE="$SOURCE" node turbopanel/scripts/resolve-sibling-ref.mjs summary >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check out turbopaneld (contract twin sibling)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

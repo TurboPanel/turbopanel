@@ -9,6 +9,7 @@ import {
 } from '../../features/deploy/deploy-engine.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -121,7 +122,9 @@ import {
 import {
   composeNetworkNamesByServer,
   type FabricSegmentMaterial,
+  FabricServerSwitchedOffError,
   getOrganizationFabric,
+  isFabricPaused,
   listEnvironmentComposeNetworks,
   listSubnetsForServers,
   materializeSpanningNetworks,
@@ -142,6 +145,8 @@ import {
   type PlannedDeploy,
 } from '../../features/schedule/index.ts'
 import { servicesMapping } from '../../features/schedule/plan-deploy.ts'
+import { hostAccessAuditEntry } from '../../features/schedule/host-access-audit.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { serverHasHostRunBinding } from '../../features/managed/ingress-bound-consumers.ts'
 import {
@@ -153,9 +158,12 @@ import type { ManagedIngressPorts } from '../../features/managed/ingress-ports.t
 import { ensureManagedIngressHierarchy } from '../../features/system/hierarchy.ts'
 import {
   composeServiceNetworkKeys,
+  participatingServerIdsForNetwork,
   type PlatformAttachment,
 } from '../../features/fabric/spanning.ts'
+import { findDeployLanPairRefusal } from '../../features/fabric/lan-pair-guard.ts'
 import { environment, project, server } from '../../db/schema.ts'
+import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import { principalHomeDir } from '../../lib/naming.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -233,11 +241,22 @@ async function loadSpanningNetworks(
     attachments: [],
     consumers: [],
   }
-  if (!planned.plan.ok || !planned.fabricEnabled) {
-    return empty
-  }
+  if (!planned.plan.ok) return empty
   const fabricRow = await getOrganizationFabric(db, organizationId)
-  if (!fabricRow) return empty
+  if (!planned.fabricEnabled || !fabricRow || isFabricPaused(fabricRow)) {
+    // TurboFabric off or paused: only authored networks whose servers all
+    // share a trusted LAN can span (the planner refused the rest); managed
+    // database attachments keep their non-spanning path.
+    const spanning = await materializeSpanningNetworks(db, {
+      organizationId,
+      environmentId,
+      fabric: null,
+      document: planned.merged,
+      slots: planned.plan.slots,
+      serviceRows: planned.serviceRows,
+    })
+    return { ...empty, spanning }
+  }
   const { attachments, consumers } = await loadManagedIngressPlatformAttachments(db, {
     environmentId,
     document: planned.merged,
@@ -548,6 +567,8 @@ type DeployCommandCreateParams = DeployActor & {
   hostingIngressNetwork?: string
   /** Effective web server name hiding for the server; sent to the daemon as is. */
   hideWebServerNames?: boolean
+  /** Effective Via header for the server; set only for a daemon that takes it. */
+  sendViaHeader?: boolean
   tlsMaterial: EnvironmentDeployTlsMaterial[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
@@ -751,6 +772,7 @@ async function createDeployCommand(
         hostingIngress: params.hostingIngress,
         hostingIngressNetwork: params.hostingIngressNetwork,
         hideWebServerNames: params.hideWebServerNames,
+        sendViaHeader: params.sendViaHeader,
         tlsMaterial: params.tlsMaterial,
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
@@ -918,6 +940,9 @@ function createParamsForPreparedServer(
     ...(row.prepared.hideWebServerNames === undefined
       ? {}
       : { hideWebServerNames: row.prepared.hideWebServerNames }),
+    ...(row.prepared.sendViaHeader === undefined
+      ? {}
+      : { sendViaHeader: row.prepared.sendViaHeader }),
     tlsMaterial: row.prepared.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: withVolumeFolders(row.prepared.storageMaterial, params.plannedFolders),
@@ -1657,7 +1682,8 @@ async function resolveHostAccessActor(
   db: Db,
   actor: DeployActor,
   organizationId: string,
-  recordApproval: boolean
+  recordApproval: boolean,
+  email: string | null = null
 ): Promise<HostAccessActor> {
   if (actor.actorType === 'system') return { kind: 'automated' }
   const isManager = await can(
@@ -1668,8 +1694,31 @@ async function resolveHostAccessActor(
     organizationId
   )
   return isManager
-    ? { kind: 'manager', userId: actor.actorId, recordApproval }
+    ? { kind: 'manager', userId: actor.actorId, email, recordApproval }
     : { kind: 'not_manager' }
+}
+
+/**
+ * The history row for an automated deploy that runs host-level content under a
+ * recorded approval (`PlannedDeploy.hostAccessUse`). Called once the deploy's
+ * rows are persisted; the approval it names is the one the planner matched.
+ */
+export async function recordHostAccessUse(
+  db: Db,
+  planned: Pick<PlannedDeploy, 'hostAccessUse' | 'projectId'>,
+  auth: Pick<DeployRequestAuth, 'organizationId' | 'actorId'>,
+  environmentId: string,
+  record: typeof recordAudit = recordAudit
+): Promise<void> {
+  if (!planned.hostAccessUse) return
+  await record(
+    db,
+    hostAccessAuditEntry(
+      planned.hostAccessUse,
+      { organizationId: auth.organizationId, environmentId, projectId: planned.projectId },
+      { userId: null, email: null, automatedActorId: auth.actorId }
+    )
+  )
 }
 
 async function resolveSuccessfulPlan(
@@ -1732,6 +1781,77 @@ export function deployParticipation(params: {
   return { attachmentServers, participating, drainedIds }
 }
 
+async function serversSwitchedOn(db: Db, serverIds: readonly string[]): Promise<string[]> {
+  if (serverIds.length === 0) return []
+  const rows = await db
+    .select({ id: server.id, isFabricEnabled: server.isFabricEnabled })
+    .from(server)
+    .where(inArray(server.id, [...serverIds]))
+  const off = new Set(rows.filter((row) => row.isFabricEnabled === false).map((row) => row.id))
+  return serverIds.filter((id) => !off.has(id))
+}
+
+/**
+ * Give LAN routes to the servers a running mesh does not reach: every server
+ * on a cross-server network when TurboFabric is off or paused, or the ones
+ * switched out of it. No wait: the deploy creates the bridges itself
+ * (`fabricNetworks` on `environment.deploy`); the routes follow on their own.
+ */
+async function deliverOutsideMeshNetworking(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    spanning: ReadonlyMap<string, string>
+    auth: DeployRequestAuth
+    dataEncryptionSecrets: DerivedSecretsConfig
+  }
+): Promise<void> {
+  if (params.spanning.size === 0) return
+  const secretsConfig = c.get('secretsConfig')
+  await reconcileServerNetworking({
+    db,
+    commandQueue,
+    actor: { type: params.auth.actorType, id: params.auth.actorId },
+    organizationId: params.auth.organizationId,
+    secrets: {
+      ...(secretsConfig ? { secretsConfig } : {}),
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    },
+    meshAlreadyConverging: true,
+  })
+}
+
+/**
+ * Re-check the pair rule after planning and materializing, before anything is
+ * delivered: a pair that stopped being a trusted LAN pair since planning is
+ * refused (422 `turbofabric_required`) unless TurboFabric carries it.
+ */
+async function recheckLanPairsBeforeDelivery(
+  c: Context<AppEnv>,
+  db: Db,
+  planned: SuccessfulPlannedDeploy,
+  spanningCtx: DeploySpanningContext,
+  auth: DeployRequestAuth
+): Promise<Response | null> {
+  if (spanningCtx.spanning.size === 0) return null
+  const refusal = await findDeployLanPairRefusal(db, {
+    organizationId: auth.organizationId,
+    networks: [...spanningCtx.spanning.keys()].map((key) => ({
+      key,
+      serverIds: participatingServerIdsForNetwork(
+        planned.merged,
+        planned.plan.slots,
+        planned.serviceRows,
+        key,
+        spanningCtx.attachments
+      ),
+    })),
+  })
+  if (!refusal) return null
+  return c.json({ error: 'turbofabric_required', message: refusal.message }, 422)
+}
+
 async function awaitDeployFabricGate(
   c: Context<AppEnv>,
   db: Db,
@@ -1750,7 +1870,12 @@ async function awaitDeployFabricGate(
     return null
   }
   const fabricRow = await getOrganizationFabric(db, params.auth.organizationId)
-  if (!fabricRow) return null
+  if (!fabricRow || isFabricPaused(fabricRow)) return null
+  // A server switched out of the mesh has no relay to converge; the planner
+  // only lets it join networks it reaches over a shared trusted LAN, and
+  // deliverOutsideMeshNetworking sends it its payload with no tunnel.
+  const meshServerIds = await serversSwitchedOn(db, fabricServerIds)
+  if (meshServerIds.length <= 1) return null
 
   const secretsConfig = c.get('secretsConfig')
   const fabricGate = await awaitParticipatingFabricConvergence({
@@ -1759,7 +1884,7 @@ async function awaitDeployFabricGate(
     actorType: params.auth.actorType,
     actorId: params.auth.actorId,
     fabric: fabricRow,
-    serverIds: fabricServerIds,
+    serverIds: meshServerIds,
     ...(secretsConfig ? { secretsConfig } : {}),
     dataEncryptionSecrets: params.dataEncryptionSecrets,
   })
@@ -2086,6 +2211,21 @@ async function loadDeploySpanningContext(
   return { spanning, attachments, consumers, enriched, listenerNames }
 }
 
+/** The spanning context, or a plain 422 when a needed server is switched out of TurboFabric. */
+async function loadDeploySpanningContextOrRefuse(
+  c: Context<AppEnv>,
+  ...args: Parameters<typeof loadDeploySpanningContext>
+): Promise<DeploySpanningContext | Response> {
+  try {
+    return await loadDeploySpanningContext(...args)
+  } catch (err) {
+    if (err instanceof FabricServerSwitchedOffError) {
+      return c.json({ error: 'turbofabric_required', message: err.message }, 422)
+    }
+    throw err
+  }
+}
+
 async function runEnvironmentDeploy(
   c: Context<AppEnv>,
   db: Db,
@@ -2099,19 +2239,29 @@ async function runEnvironmentDeploy(
     environmentId,
     auth.organizationId,
     // Applying hosting settings is not someone approving host-level Compose.
-    await resolveHostAccessActor(db, auth, auth.organizationId, auth.hostingsOnly !== true)
+    await resolveHostAccessActor(
+      db,
+      auth,
+      auth.organizationId,
+      auth.hostingsOnly !== true,
+      c.get('session')?.email ?? null
+    )
   )
   if (planned instanceof Response) return planned
 
   const priorNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   let spanningCommitted = false
   try {
-    const spanningCtx = await loadDeploySpanningContext(
+    const spanningCtx = await loadDeploySpanningContextOrRefuse(
+      c,
       db,
       planned,
       auth.organizationId,
       environmentId
     )
+    if (spanningCtx instanceof Response) return spanningCtx
+    const lanRefusal = await recheckLanPairsBeforeDelivery(c, db, planned, spanningCtx, auth)
+    if (lanRefusal) return lanRefusal
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
       return c.json({ error: 'Encryption unavailable' }, 503)
@@ -2124,6 +2274,11 @@ async function runEnvironmentDeploy(
       dataEncryptionSecrets,
     })
     if (fabricGateError) return fabricGateError
+    await deliverOutsideMeshNetworking(c, db, commandQueue, {
+      spanning: spanningCtx.spanning,
+      auth,
+      dataEncryptionSecrets,
+    })
 
     const preparedByServer = await prepareAllServerDeploys(c, db, {
       planned,
@@ -2176,6 +2331,7 @@ async function runEnvironmentDeploy(
     if (persisted instanceof Response) return persisted
     const created = persisted
     spanningCommitted = true
+    await recordHostAccessUse(db, planned, auth, environmentId)
     const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
       created,
       environmentId,
@@ -2202,6 +2358,7 @@ async function runEnvironmentDeploy(
       releasedListeners,
       ...spanningCtx,
     })
+    nudgeTunnelRoutesAfterResponse(c, auth.organizationId)
 
     return Response.json(
       queuedCommandsResponseBody(

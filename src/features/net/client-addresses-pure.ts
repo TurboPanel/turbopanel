@@ -24,6 +24,7 @@
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
 import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
 import {
+  canonicalIpAddress,
   ipAddressScope,
   isRoutableHostAddress,
   normalizeIpAddress,
@@ -110,6 +111,64 @@ export function isQualifiedHostname(value: string): boolean {
   return !/^\d+$/.test(last)
 }
 
+/** Reported public interface addresses on a link that is up and not a mesh tunnel. */
+function usablePublicReported(reported: readonly ServerReportedIp[]): ServerReportedIp[] {
+  return reported.filter(
+    (row) =>
+      row.link !== 'down' &&
+      !MESH_INTERFACE_RE.test(row.interface ?? '') &&
+      ipAddressScope(row.address) === 'public'
+  )
+}
+
+/**
+ * Every public address visitors may reach one server on, for checking where a
+ * site's DNS points: its public `ip` rows, the address overrides saved for its
+ * public side (a router or 1:1 NAT in front of it), and every public interface
+ * address the daemon reports (all of them, not one per family: a host with two
+ * IPv6 addresses may serve on either). Normalized and without repeats.
+ */
+export function servingPublicAddresses(facts: {
+  publicIps: readonly string[]
+  saved: readonly ClientAddressEntry[]
+  reportedIps: readonly ServerReportedIp[]
+}): string[] {
+  const overrides = facts.saved
+    .filter((entry) => entry.scope === 'public')
+    .flatMap((entry) => [entry.addressV4, entry.addressV6])
+  const reported = usablePublicReported(facts.reportedIps).map((row) => row.address)
+  const found = new Set<string>()
+  for (const raw of [...facts.publicIps, ...overrides, ...reported]) {
+    const address = canonicalIpAddress(raw)
+    if (address !== null && ipAddressScope(address) === 'public') found.add(address)
+  }
+  return [...found]
+}
+
+/**
+ * The addresses a site pinned to one of its server's addresses is reached on.
+ * A public pin is reached on itself only. A private pin is a LAN address behind
+ * a router that forwards ports to it, so the public-side addresses saved for
+ * the serving servers also count: that is where the site's DNS names point.
+ */
+export function pinnedSiteAddresses(
+  pinned: string,
+  saved: readonly ClientAddressEntry[]
+): string[] {
+  const own = canonicalIpAddress(pinned)
+  if (own === null) return []
+  if (ipAddressScope(own) !== 'private') return [own]
+  const found = new Set<string>([own])
+  for (const entry of saved) {
+    if (entry.scope !== 'public') continue
+    for (const raw of [entry.addressV4, entry.addressV6]) {
+      const address = raw === null ? null : canonicalIpAddress(raw)
+      if (address !== null && ipAddressScope(address) === 'public') found.add(address)
+    }
+  }
+  return [...found]
+}
+
 /**
  * Public interface addresses the daemon reported, by the control plane's
  * classification: CGNAT, link-local, private and mesh addresses are dropped,
@@ -119,12 +178,7 @@ export function detectedPublicAddresses(reported: readonly ServerReportedIp[]): 
   v4: string | null
   v6: string | null
 } {
-  const usable = reported.filter(
-    (row) =>
-      row.link !== 'down' &&
-      !MESH_INTERFACE_RE.test(row.interface ?? '') &&
-      ipAddressScope(row.address) === 'public'
-  )
+  const usable = usablePublicReported(reported)
   const ordered = [...usable.filter((row) => row.preferred), ...usable.filter((r) => !r.preferred)]
   const pick = (version: 4 | 6) => {
     const row = ordered.find((r) => parseIpVersion(r.address) === version)
@@ -505,7 +559,7 @@ function parseOneEntry(
   }
   const datacenterId = blankToNull(raw.datacenterId)
   if (scope === 'public' && datacenterId !== null) {
-    return fail('address_scope_invalid', 'The public address names no datacenter.', index)
+    return fail('address_scope_invalid', 'The public address names no datacenter network.', index)
   }
   if (
     scope === 'datacenter' &&
@@ -513,7 +567,7 @@ function parseOneEntry(
   ) {
     return fail(
       'address_datacenter_not_member',
-      'This server does not belong to that datacenter.',
+      'This server is not on that datacenter network.',
       index
     )
   }

@@ -372,6 +372,7 @@ const SAMPLES: Record<DaemonInboundEnvelope['kind'], DaemonInboundEnvelope> = {
   'managed-health-result': { kind: 'managed-health-result', ...common, ok: true },
   'managed-permissions-result': { kind: 'managed-permissions-result', ...common, ok: true },
   'server-network-check-result': { kind: 'server-network-check-result', ...common, ok: true },
+  'dev-host-action-result': { kind: 'dev-host-action-result', ...common, ok: true, jobId: 'job-1' },
   'container-logs-result': { kind: 'container-logs-result', ...common, logs: '' },
   'repo-read-result': { kind: 'repo-read-result', ...common, ok: true },
   'repo-default-branch-result': {

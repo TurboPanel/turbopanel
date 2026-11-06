@@ -104,17 +104,21 @@ export class SchemaStateError extends Error {
 
 type ManifestFile = { entries?: Array<{ sha256?: unknown }> }
 
-/** The frozen manifest's hashes, in order. */
-export async function readShippedMigrationHashes(
-  migrationsFolder: string = MIGRATIONS_FOLDER
-): Promise<string[]> {
-  const raw = await Deno.readTextFile(join(migrationsFolder, 'manifest.json'))
+/** The hashes in a `migrations/manifest.json` text, in order; throws when it has none. */
+export function parseMigrationManifest(raw: string): string[] {
   const manifest = JSON.parse(raw) as ManifestFile
   const hashes = (manifest.entries ?? []).map((entry) => entry.sha256)
   if (hashes.length === 0 || hashes.some((hash) => typeof hash !== 'string')) {
     throw new Error('migrations/manifest.json has no usable entries')
   }
   return hashes as string[]
+}
+
+/** The frozen manifest's hashes, in order. */
+export async function readShippedMigrationHashes(
+  migrationsFolder: string = MIGRATIONS_FOLDER
+): Promise<string[]> {
+  return parseMigrationManifest(await Deno.readTextFile(join(migrationsFolder, 'manifest.json')))
 }
 
 /** `public.migration.hash` in `created_at` order; `[]` when the table is absent. */

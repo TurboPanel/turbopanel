@@ -37,6 +37,7 @@ import {
 } from '../../db/schema.ts'
 import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { SYSTEM_WORKSPACE_DISPLAY_NAME } from '../../features/system/hierarchy.ts'
+import { useColocatedCredentialsTempDir } from '../../test-fixtures/colocated-credentials.test.support.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -149,6 +150,8 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
 
   let winnerOrgId: string | null = null
   let winnerUserId: string | null = null
+  // Install clears and writes daemon identity files: never the real state dir.
+  const credentials = await useColocatedCredentialsTempDir()
 
   try {
     const [resultA, resultB] = await Promise.allSettled([
@@ -246,6 +249,7 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
       throw new Error(`expected exactly one System workspace, got ${systemRows.length}`)
     }
   } finally {
+    await credentials.restore()
     if (winnerOrgId && winnerUserId) {
       await cleanupInstall(db, winnerOrgId, winnerUserId)
     }
@@ -267,6 +271,7 @@ it('install produces System workspace then Default Workspace', async () => {
   const suffix = crypto.randomUUID()
   let organizationId: string | null = null
   let userId: string | null = null
+  const credentials = await useColocatedCredentialsTempDir()
 
   try {
     const result = await completeInstanceInstall(db, {
@@ -277,13 +282,13 @@ it('install produces System workspace then Default Workspace', async () => {
     userId = result.userId
 
     const [orgRow] = await db
-      .select({ name: organization.name, options: organization.options })
+      .select({ name: organization.name, isAcmeEnabled: organization.isAcmeEnabled })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1)
     assertEquals(orgRow?.name, ROOT_ORGANIZATION_NAME)
-    // A new organization allows Let's Encrypt from the start.
-    assertEquals(orgRow?.options, { acmeEnabled: true })
+    // A new organization starts with Let's Encrypt off until it opts in.
+    assertEquals(orgRow?.isAcmeEnabled, false)
 
     const serverRows = await db
       .select({
@@ -319,13 +324,14 @@ it('install produces System workspace then Default Workspace', async () => {
     assertEquals(rows[1]?.name, DEFAULT_WORKSPACE_NAME)
     assertEquals(rows[1]?.kind, WORKSPACE_KIND_USER)
   } finally {
+    await credentials.restore()
     if (organizationId && userId) {
       await cleanupInstall(db, organizationId, userId)
     }
   }
 })
 
-it("createOrganizationForUser starts the organization with Let's Encrypt allowed", async () => {
+it("createOrganizationForUser starts the organization with Let's Encrypt off", async () => {
   if (!dbUrl) {
     skipWithoutDatabase('new organization options test')
     return
@@ -340,11 +346,11 @@ it("createOrganizationForUser starts the organization with Let's Encrypt allowed
     const created = await createOrganizationForUser(db, owner!.id, 'New Org')
     organizationId = created.organizationId
     const [row] = await db
-      .select({ options: organization.options })
+      .select({ isAcmeEnabled: organization.isAcmeEnabled })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1)
-    assertEquals(row?.options, { acmeEnabled: true })
+    assertEquals(row?.isAcmeEnabled, false)
   } finally {
     await db.delete(grant).where(eq(grant.actorId, owner!.id))
     await db.delete(teammate).where(eq(teammate.userId, owner!.id))
@@ -559,9 +565,8 @@ it('disk-credential recovery rewrites license files for an enrolled colocated se
 
   const db = createDenoDb()
   const now = new Date().toISOString()
-  const tempDir = await Deno.makeTempDir({ prefix: 'tp-colocated-license-' })
-  const previousStateDir = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')
-  Deno.env.set('TURBOPANEL_DAEMON_STATE_DIR', tempDir)
+  const credentials = await useColocatedCredentialsTempDir()
+  const tempDir = credentials.dir
 
   const insertedOrg = await db
     .insert(organization)
@@ -593,7 +598,7 @@ it('disk-credential recovery rewrites license files for an enrolled colocated se
 
   try {
     // Same steps as operator recovery: rotate colocated credentials and
-    // write license.id + license.token under TURBOPANEL_DAEMON_STATE_DIR.
+    // write the license id and token files into the (temp) credentials dir.
     const rotated = await rotateColocatedLicenseCredentials(db, organizationId)
     const wrote = await persistColocatedLicenseCredentials(rotated.licenseId, rotated.licenseToken)
     assertEquals(wrote, true)
@@ -615,12 +620,7 @@ it('disk-credential recovery rewrites license files for an enrolled colocated se
     assertEquals(row?.serverId, serverId)
     assertEquals(row?.revokedAt ?? null, null)
   } finally {
-    if (previousStateDir === undefined) {
-      Deno.env.delete('TURBOPANEL_DAEMON_STATE_DIR')
-    } else {
-      Deno.env.set('TURBOPANEL_DAEMON_STATE_DIR', previousStateDir)
-    }
-    await Deno.remove(tempDir, { recursive: true }).catch(() => {})
+    await credentials.restore()
     await db.delete(license).where(eq(license.id, boundId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(organization).where(eq(organization.id, organizationId))
