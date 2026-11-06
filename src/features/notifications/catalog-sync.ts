@@ -48,12 +48,15 @@ WHERE ("topic"."category_code", "topic"."name", "topic"."kind", "topic"."severit
   excluded."scope", excluded."audience", excluded."channels", excluded."is_urgent", NULL::timestamptz)`
 
 export const DEPRECATE_TOPICS_SQL = `UPDATE "topic" SET "deprecated_at" = now(), "updated_at" = now()
-WHERE "deprecated_at" IS NULL AND NOT ("code" = ANY($1::text[]))`
+WHERE "deprecated_at" IS NULL
+  AND "code" NOT IN (SELECT jsonb_array_elements_text($1::jsonb))`
 
 /** Bring `category` and `topic` in line with this build. Throws on a database error. */
 export async function syncNotificationCatalog(run: CatalogSqlRunner): Promise<void> {
   const { categories, topics } = notificationCatalogRows()
   await run(UPSERT_CATEGORIES_SQL, [JSON.stringify(categories)])
   await run(UPSERT_TOPICS_SQL, [JSON.stringify(topics)])
-  await run(DEPRECATE_TOPICS_SQL, [topics.map((t) => t.code)])
+  // Every list goes in as one JSON text parameter: a driver may expand a
+  // JavaScript array into a row of parameters, which no cast turns back.
+  await run(DEPRECATE_TOPICS_SQL, [JSON.stringify(topics.map((t) => t.code))])
 }

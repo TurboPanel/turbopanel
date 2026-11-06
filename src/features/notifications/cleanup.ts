@@ -19,6 +19,7 @@
  */
 import { type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   notification,
   notificationChannel,
@@ -112,11 +113,28 @@ export async function forgetMember(
 }
 
 /** One bounded pass of every retention rule. Returns rows removed per table. */
+const NOTHING_PRUNED = { inbox: 0, events: 0, ledger: 0, preferences: 0 }
+
+/** The maintenance phase: never throws, like every notification phase (a failed prune waits for the next tick). */
 export async function pruneNotificationHistory(
   db: Db,
   opts: { batch?: number } = {}
 ): Promise<{ inbox: number; events: number; ledger: number; preferences: number }> {
-  const batch = opts.batch ?? PRUNE_BATCH
+  try {
+    return await pruneOnce(db, opts.batch ?? PRUNE_BATCH)
+  } catch (error) {
+    compatLogWarn(
+      'notifications',
+      `history prune failed: ${error instanceof Error ? error.message : String(error)}`
+    )
+    return NOTHING_PRUNED
+  }
+}
+
+async function pruneOnce(
+  db: Db,
+  batch: number
+): Promise<{ inbox: number; events: number; ledger: number; preferences: number }> {
   const inbox = await db.execute(sql`
     DELETE FROM ${notification} WHERE id IN (
       SELECT id FROM ${notification}
