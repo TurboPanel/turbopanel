@@ -158,7 +158,10 @@ High Availability (Workers) must not contain any of it.
   confirm), answer, then finalize with a key made inside that step (never
   stored before the pair), store the pair sealed in `certificate` with
   `kind='acme-dns-01'`, point `origin.uploaded_cert_id` at it, remove the record and
-  push the hostname list to the daemon. Renewal time is a random moment in the
+  push the hostname list to the daemon (`dns01/apply.ts`: the same body as
+  Apply and the maintenance tick, built by `buildPublicUrlsPayload` with the
+  edge ranges, and recorded with `recordPublicUrlsApplied`, so a renewal never
+  drops `edgeTrust` and the tick does not resend it). Renewal time is a random moment in the
   ARI window, else a third of the lifetime before expiry (at least 7 days);
   renewals send `replaces`. Every issued name is public in certificate
   transparency logs. A failed push stores "The certificate was issued but the
