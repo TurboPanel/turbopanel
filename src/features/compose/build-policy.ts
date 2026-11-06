@@ -19,7 +19,7 @@
  * - `context`, `dockerfile` and `additional_contexts` that leave the service's
  *   directory (absolute, `~`, `..`, interpolated), or a remote context whose
  *   host is internal (a non-public IP literal, `localhost`, a single-label or
- *   reserved name).
+ *   reserved name, or a local network ending such as `.lan`).
  *
  * Lexical, like `./host-access.ts`: the daemon repeats these rules on the
  * resolved model and resolves every build path on the host, which is what

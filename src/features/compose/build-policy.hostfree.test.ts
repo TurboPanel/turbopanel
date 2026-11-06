@@ -240,6 +240,16 @@ const REFUSED: Array<[string, unknown, Array<[string, string]>, Record<string, u
     [[`${B}.context`, 'build_context_internal_url']],
   ],
   [
+    'URL on a local network ending',
+    { context: 'https://git.lan/x.git' },
+    [[`${B}.context`, 'build_context_internal_url']],
+  ],
+  [
+    'git@ on a local network ending',
+    { context: 'git@git.corp:x/y.git' },
+    [[`${B}.context`, 'build_context_internal_url']],
+  ],
+  [
     'ssh URL on a bare name',
     { context: 'ssh://gitlab/x.git' },
     [[`${B}.context`, 'build_context_internal_url']],
