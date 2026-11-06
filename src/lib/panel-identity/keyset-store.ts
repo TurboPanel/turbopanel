@@ -192,6 +192,14 @@ export async function readAwaitingKeyStatement(db: Db): Promise<StoredStatement 
  * Availability: the owner put the secret). True when one turned live.
  */
 export async function markAwaitingStatementLive(db: Db, loadedKid: string): Promise<boolean> {
+  // Read first: this runs on the public identity route, which must not write
+  // on every request.
+  const waiting = await db
+    .select({ keyset: statement.keyset })
+    .from(statement)
+    .where(and(eq(statement.state, 'awaiting_key'), eq(statement.currentKid, loadedKid)))
+    .limit(1)
+  if (waiting.length === 0) return false
   const updated = await db
     .update(statement)
     .set({ state: 'live', liveAt: new Date().toISOString() })

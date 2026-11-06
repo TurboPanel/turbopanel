@@ -299,23 +299,36 @@ export async function setPanelIdentityNext(db: Db, nextKid: string | null): Prom
     .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
 }
 
-async function requireStored(db: Db): Promise<StoredIdentityValue> {
-  const stored = await readStored(db)
-  if (!stored) {
+/** The parsed row and the exact stored value (the compare-and-set below matches on the latter). */
+type StoredRow = { stored: StoredIdentityValue; raw: Record<string, unknown> }
+
+async function requireStored(db: Db): Promise<StoredRow> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
+    .limit(1)
+  const raw = rows[0]?.value
+  if (!isRecord(raw)) {
     throw new Error('no panel identity yet; start the panel once first')
   }
-  return stored
+  return { stored: parseStoredValue(raw), raw }
 }
 
+/**
+ * Change some fields of the stored row, only if nobody changed it since it
+ * was read. Matches on the raw value: a row written before a field existed
+ * has no such key, and jsonb equality counts keys.
+ */
 async function writeStored(
   db: Db,
-  before: StoredIdentityValue,
-  value: StoredIdentityValue
+  row: StoredRow,
+  patch: Partial<StoredIdentityValue>
 ): Promise<void> {
   const updated = await db
     .update(setting)
-    .set({ value })
-    .where(and(eq(setting.key, PANEL_IDENTITY_SETTING_KEY), eq(setting.value, before)))
+    .set({ value: { ...row.raw, ...patch } })
+    .where(and(eq(setting.key, PANEL_IDENTITY_SETTING_KEY), eq(setting.value, row.raw)))
     .returning({ key: setting.key })
   if (updated.length === 0) {
     throw new Error('the control plane key changed while this ran; try again')
@@ -330,7 +343,8 @@ export async function ensurePendingIdentityKey(
   db: Db,
   secrets: DerivedSecretsConfig
 ): Promise<{ kid: string; pub: string }> {
-  const stored = await requireStored(db)
+  const row = await requireStored(db)
+  const { stored } = row
   const seeds = await openSeeds(stored, secrets)
   if (stored.pendingKid && seeds.pendingEd25519Seed) {
     const pending = await importEd25519Signer(decodeSeed(seeds.pendingEd25519Seed, 'pending'))
@@ -344,7 +358,7 @@ export async function ensurePendingIdentityKey(
     secrets,
     JSON.stringify({ ...seeds, pendingEd25519Seed: base64urlEncode(seed) })
   )
-  await writeStored(db, stored, { ...stored, pendingKid: pending.kid, sealed })
+  await writeStored(db, row, { pendingKid: pending.kid, sealed })
   return { kid: pending.kid, pub: base64urlEncode(pending.publicRaw) }
 }
 
@@ -358,7 +372,8 @@ export async function promotePendingIdentityKey(
   secrets: DerivedSecretsConfig,
   input: { kid: string; keyset: number }
 ): Promise<void> {
-  const stored = await requireStored(db)
+  const row = await requireStored(db)
+  const { stored } = row
   const seeds = await openSeeds(stored, secrets)
   if (stored.pendingKid !== input.kid || !seeds.pendingEd25519Seed) {
     throw new Error('the approved key is not the pending key')
@@ -367,8 +382,7 @@ export async function promotePendingIdentityKey(
     secrets,
     JSON.stringify({ ed25519Seed: seeds.pendingEd25519Seed, x25519Seed: seeds.x25519Seed })
   )
-  await writeStored(db, stored, {
-    ...stored,
+  await writeStored(db, row, {
     keyset: requireKeyset(input.keyset),
     currentKid: input.kid,
     nextKid: null,
@@ -379,9 +393,9 @@ export async function promotePendingIdentityKey(
 
 /** Record a new key set (a passkey change keeps the key). Never lowers it. */
 export async function raiseStoredIdentityKeyset(db: Db, keyset: number): Promise<void> {
-  const stored = await requireStored(db)
-  if (stored.keyset >= keyset) return
-  await writeStored(db, stored, { ...stored, keyset: requireKeyset(keyset) })
+  const row = await requireStored(db)
+  if (row.stored.keyset >= keyset) return
+  await writeStored(db, row, { keyset: requireKeyset(keyset) })
 }
 
 /** Base64url Ed25519 signature by the `current` key. */
