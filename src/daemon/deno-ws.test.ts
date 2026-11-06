@@ -111,7 +111,15 @@ function createSelectChain<T>(getRows: () => T[]) {
   return { from }
 }
 
-function createMockDb(keyId = 'key-test', trustLevel = 0, publicJwk?: JsonWebKey): Db {
+function createMockDb(
+  keyId = 'key-test',
+  trustLevel = 0,
+  publicJwk?: JsonWebKey,
+  options: {
+    trustReportsSignedAt?: string
+    onUpdate?: (values: Record<string, unknown>) => void
+  } = {}
+): Db {
   return {
     select: () =>
       createSelectChain(() => [
@@ -128,12 +136,19 @@ function createMockDb(keyId = 'key-test', trustLevel = 0, publicJwk?: JsonWebKey
           machineKey: null,
           connected: true,
           statusChangedAt: '2020-01-01T00:00:00.000Z',
+          trustReportsSignedAt: options.trustReportsSignedAt ?? null,
         },
       ]),
     update: () => ({
-      set: () => ({
-        where: () => Promise.resolve(undefined),
-      }),
+      set: (values: Record<string, unknown>) => {
+        options.onUpdate?.(values)
+        return {
+          where: () =>
+            Object.assign(Promise.resolve(undefined), {
+              returning: () => Promise.resolve([{ id: 'srv' }]),
+            }),
+        }
+      },
     }),
   } as unknown as Db
 }
@@ -3906,6 +3921,136 @@ test('signed session: a signed result is handled as sent, a badly signed one fai
       >
       assertEquals([good.ok, good.result], [true, { done: true }])
       assertEquals([forged.ok, forged.error], [false, 'signature_invalid'])
+    }
+  )
+})
+
+/** Open a signed session and return its id; `features` go on the presence hello. */
+async function openSignedReportSession(
+  port: number,
+  serverId: string,
+  secrets: Awaited<ReturnType<typeof createDaemonJwtSecrets>>,
+  features: string[]
+): Promise<{ ws: WebSocket; sessionId: string }> {
+  const ws = await openSignedSocket(port, serverId, secrets)
+  const frames = collectWsMessages(ws, 2)
+  ws.send(JSON.stringify({ type: 'hello-nonce', nonce: HELLO_NONCE }))
+  const [helloRaw] = await frames
+  const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
+  ws.send(JSON.stringify(presenceHello({ features })))
+  return { ws, sessionId }
+}
+
+function unsignedOutcome(id: string): string {
+  return JSON.stringify({
+    type: 'command-outcome',
+    id,
+    ok: true,
+    result: { done: true },
+    at: new Date().toISOString(),
+  })
+}
+
+async function signedOutcome(
+  id: string,
+  sessionId: string,
+  key: Awaited<ReturnType<typeof testDaemonKey>>
+): Promise<string> {
+  const unsigned = JSON.stringify({
+    type: 'command-outcome',
+    id,
+    ok: true,
+    result: { done: true },
+    at: new Date().toISOString(),
+    sessionId,
+    iat: Math.floor(Date.now() / 1000),
+    kid: 'key-test',
+  })
+  return appendSignature(unsigned, await key.sign(reportSigningInput('command-outcome', unsigned)))
+}
+
+type OutcomeEnvelope = Extract<DaemonInboundEnvelope, { kind: 'command-outcome' }>
+
+test('signed session: once the server has signed, an unsigned result fails the command even without the feature on the hello', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-reports-ratchet'
+  const identity = await fixturePanelIdentity()
+  const key = await testDaemonKey()
+  const tracking = createTrackingDaemonCell(serverId)
+  const inbound: DaemonInboundEnvelope[] = []
+  tracking.cell.handleInbound = (envelope) => {
+    inbound.push(envelope)
+    return Promise.resolve(null)
+  }
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb('key-test', 0, key.publicJwk, {
+        trustReportsSignedAt: '2026-11-05T12:00:00.000Z',
+      }),
+      registry: createTrackingRegistry(tracking.cell),
+      panelIdentity: () => Promise.resolve(identity),
+    },
+    async ({ port }) => {
+      // A proxy stripped the feature from the hello and the signature from the result.
+      const { ws } = await openSignedReportSession(port, serverId, secrets, [])
+      ws.send(unsignedOutcome('cmd-stripped'))
+      await waitForCondition(() => inbound.length >= 1)
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+      const stripped = inbound[0] as OutcomeEnvelope
+      assertEquals(
+        [stripped.requestId, stripped.ok, stripped.error],
+        ['cmd-stripped', false, 'signature_invalid']
+      )
+    }
+  )
+})
+
+test('signed session: the first verified signed result records that the server signs, then unsigned ones fail', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-reports-first-signed'
+  const identity = await fixturePanelIdentity()
+  const key = await testDaemonKey()
+  const tracking = createTrackingDaemonCell(serverId)
+  const inbound: DaemonInboundEnvelope[] = []
+  tracking.cell.handleInbound = (envelope) => {
+    inbound.push(envelope)
+    return Promise.resolve(null)
+  }
+  const updates: Record<string, unknown>[] = []
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb('key-test', 0, key.publicJwk, {
+        onUpdate: (values) => updates.push(values),
+      }),
+      registry: createTrackingRegistry(tracking.cell),
+      panelIdentity: () => Promise.resolve(identity),
+    },
+    async ({ port }) => {
+      const { ws, sessionId } = await openSignedReportSession(port, serverId, secrets, [
+        'signed-reports-v1',
+      ])
+      // Before any signed report an unsigned one is still accepted.
+      ws.send(unsignedOutcome('cmd-before'))
+      await waitForCondition(() => inbound.length >= 1)
+      ws.send(await signedOutcome('cmd-signed', sessionId, key))
+      await waitForCondition(() => inbound.length >= 2)
+      ws.send(unsignedOutcome('cmd-after'))
+      await waitForCondition(() => inbound.length >= 3)
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+      const byId = new Map(
+        inbound.map((envelope) => [envelope.requestId, envelope as OutcomeEnvelope])
+      )
+      assertEquals(byId.get('cmd-before')?.ok, true)
+      assertEquals(byId.get('cmd-signed')?.ok, true)
+      assertEquals(
+        [byId.get('cmd-after')?.ok, byId.get('cmd-after')?.error],
+        [false, 'signature_invalid']
+      )
+      assertEquals(updates.filter((values) => 'trustReportsSignedAt' in values).length, 1)
     }
   )
 })

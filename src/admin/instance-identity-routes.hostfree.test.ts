@@ -320,6 +320,8 @@ test('clearing a sealing key wipes the three columns once the name is typed', as
   assertEquals(update?.sealingKeyKid, null)
   assertEquals(update?.sealingKeyPub, null)
   assertEquals(update?.sealingKeyReportedAt, null)
+  // A sealing-only recovery keeps the identity key, so the signed-reports ratchet stays.
+  assertEquals('trustReportsSignedAt' in (update ?? {}), false)
 })
 
 test('clearing a sealing key is refused for a non-superadmin', async () => {

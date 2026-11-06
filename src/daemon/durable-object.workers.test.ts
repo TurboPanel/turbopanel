@@ -111,6 +111,8 @@ async function openDaemonWebSocket(
     trustLevel?: number
     /** Public `x` of the daemon key, stamped as the upgrade does (`<keyId>:<x>`). */
     daemonKeyX?: string
+    /** `server.trust_reports_signed_at` is set, stamped as the upgrade does. */
+    reportsSigned?: boolean
   } = {}
 ): Promise<{ ws: WebSocket; token: string; tokenId: string; keyId: string }> {
   const token = await issueTestDaemonJwt(serverId, keyId)
@@ -129,6 +131,9 @@ async function openDaemonWebSocket(
   }
   if (options.daemonKeyX) {
     headers['X-Turbopanel-Cell-Daemon-Key'] = `${keyId}:${options.daemonKeyX}`
+  }
+  if (options.reportsSigned) {
+    headers['X-Turbopanel-Cell-Reports-Signed'] = '1'
   }
   const response = await stub.fetch('https://do.internal/ws/daemon/v1', {
     headers,
@@ -4431,6 +4436,97 @@ describe('signed daemon session', () => {
     await vi.waitFor(async () => {
       expect(await requestStatus(stub, serverId, good)).toBe('done')
       expect(await requestStatus(stub, serverId, forged)).toBe('failed')
+    })
+    ws.close(1000, 'test done')
+  })
+
+  it('fails an unsigned result once the server signs, even without the feature on the hello', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-reports-ratchet'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const daemonKey = await testDaemonKey()
+    const keyId = crypto.randomUUID()
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+      firstFrame: null,
+      daemonKeyX: String(daemonKey.publicJwk.x),
+      reportsSigned: true,
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    await frames
+    // A proxy stripped the feature from the hello and the signature from the result.
+    ws.send(presenceHello({ features: [] }))
+    await vi.waitFor(async () => {
+      const attachment = (await readAttachment(stub)) as { awaitingAttach?: boolean }
+      expect(attachment.awaitingAttach).toBe(false)
+    })
+    const stripped = generateRequestId()
+    await enqueuePing(stub, serverId, stripped, generateDeliveryId())
+    ws.send(
+      JSON.stringify({
+        type: 'command-outcome',
+        id: stripped,
+        ok: true,
+        result: { pong: true },
+        at: new Date().toISOString(),
+      })
+    )
+    await vi.waitFor(async () => {
+      expect(await requestStatus(stub, serverId, stripped)).toBe('failed')
+    })
+    ws.close(1000, 'test done')
+  })
+
+  it('refuses unsigned results on the socket after its first verified signed one', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-reports-first-signed'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const daemonKey = await testDaemonKey()
+    const keyId = crypto.randomUUID()
+    const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+      firstFrame: null,
+      daemonKeyX: String(daemonKey.publicJwk.x),
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    const [helloRaw] = await frames
+    const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
+    ws.send(presenceHello({ features: ['signed-reports-v1'] }))
+    await vi.waitFor(async () => {
+      const attachment = (await readAttachment(stub)) as { signsReports?: boolean }
+      expect(attachment.signsReports).toBe(true)
+    })
+    const signedId = generateRequestId()
+    const unsignedId = generateRequestId()
+    await enqueuePing(stub, serverId, signedId, generateDeliveryId())
+    await enqueuePing(stub, serverId, unsignedId, generateDeliveryId())
+    const outcome = (id: string) => ({
+      type: 'command-outcome',
+      id,
+      ok: true,
+      result: { pong: true },
+      at: new Date().toISOString(),
+    })
+    const unsigned = JSON.stringify({
+      ...outcome(signedId),
+      sessionId,
+      iat: Math.floor(Date.now() / 1000),
+      kid: keyId,
+    })
+    ws.send(
+      appendSignature(
+        unsigned,
+        await daemonKey.sign(reportSigningInput('command-outcome', unsigned))
+      )
+    )
+    await vi.waitFor(async () => {
+      expect(await requestStatus(stub, serverId, signedId)).toBe('done')
+      const attachment = (await readAttachment(stub)) as { reportsSigned?: boolean }
+      expect(attachment.reportsSigned).toBe(true)
+    })
+    ws.send(JSON.stringify(outcome(unsignedId)))
+    await vi.waitFor(async () => {
+      expect(await requestStatus(stub, serverId, unsignedId)).toBe('failed')
     })
     ws.close(1000, 'test done')
   })

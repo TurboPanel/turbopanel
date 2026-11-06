@@ -54,6 +54,7 @@ function session(key: TestDaemonKey, extra: Partial<ReportSession> = {}): Report
     keyId: KEY_ID,
     publicJwk: key.publicJwk,
     daemonSignsReports: true,
+    serverSignsReports: false,
     nowMs: NOW_MS,
     ...extra,
   }
@@ -63,7 +64,13 @@ test('a signed report verifies and is handled without its envelope', async () =>
   const key = await testDaemonKey()
   for (const message of [OUTCOME, PEERS]) {
     const intake = await intakeSignedSessionReport(await signed(key, message), session(key))
-    assertEquals(intake, { raw: JSON.stringify(message), warning: null })
+    assertEquals(intake, { raw: JSON.stringify(message), warning: null, verdict: 'verified' })
+    // The same once the server is known to sign.
+    const again = await intakeSignedSessionReport(
+      await signed(key, message),
+      session(key, { serverSignsReports: true })
+    )
+    assertEquals(again.verdict, 'verified')
   }
 })
 
@@ -72,6 +79,7 @@ test('one changed byte fails, and a failed result is recorded as signature_inval
   const raw = (await signed(key, OUTCOME)).replace('fabric-key', 'fabric-kez')
   const intake = await intakeSignedSessionReport(raw, session(key))
   assertEquals(intake.warning, 'refused signed command-outcome id=cmd-1: signature invalid')
+  assertEquals(intake.verdict, 'refused')
   const replacement = JSON.parse(intake.raw!)
   assertEquals(replacement, {
     type: 'command-outcome',
@@ -92,6 +100,7 @@ test('a peer report that does not verify is dropped', async () => {
   assertEquals(intake, {
     raw: null,
     warning: 'refused signed fabric-peers-report: signature invalid',
+    verdict: 'refused',
   })
 })
 
@@ -109,7 +118,11 @@ test('another session, another key id, a stale iat or no stored key is refused',
       await signed(key, PEERS, envelope),
       session(key, ctx)
     )
-    assertEquals(intake, { raw: null, warning: `refused signed fabric-peers-report: ${reason}` })
+    assertEquals(intake, {
+      raw: null,
+      warning: `refused signed fabric-peers-report: ${reason}`,
+      verdict: 'refused',
+    })
   }
 })
 
@@ -129,11 +142,64 @@ test('an unsigned report is still accepted, with a warning only from a daemon th
   assertEquals(await intakeSignedSessionReport(raw, session(key)), {
     raw,
     warning: 'unsigned command-outcome from a daemon that signs reports',
+    verdict: 'unsigned',
   })
   assertEquals(await intakeSignedSessionReport(raw, session(key, { daemonSignsReports: false })), {
     raw,
     warning: null,
+    verdict: 'unsigned',
   })
+})
+
+test('once the server has signed, an unsigned result is refused as signature_invalid', async () => {
+  const key = await testDaemonKey()
+  const raw = JSON.stringify(OUTCOME)
+  // The hello's feature list does not matter: a proxy can strip it.
+  for (const daemonSignsReports of [true, false]) {
+    const intake = await intakeSignedSessionReport(
+      raw,
+      session(key, { serverSignsReports: true, daemonSignsReports })
+    )
+    assertEquals(intake.verdict, 'refused')
+    assertEquals(
+      intake.warning,
+      'refused unsigned command-outcome id=cmd-1: this server signs its reports'
+    )
+    assertEquals(JSON.parse(intake.raw!), {
+      type: 'command-outcome',
+      id: 'cmd-1',
+      ok: false,
+      error: REPORT_SIGNATURE_INVALID,
+      at: '2026-11-05T12:00:00.000Z',
+    })
+    assertEquals(validateDaemonInboundFrame(intake.raw!).ok, true)
+  }
+})
+
+test('once the server has signed, an unsigned peer report is dropped', async () => {
+  const key = await testDaemonKey()
+  const intake = await intakeSignedSessionReport(
+    JSON.stringify(PEERS),
+    session(key, { serverSignsReports: true, daemonSignsReports: false })
+  )
+  assertEquals(intake, {
+    raw: null,
+    warning: 'refused unsigned fabric-peers-report: this server signs its reports',
+    verdict: 'refused',
+  })
+})
+
+test('once the server has signed, frames that are not reports still pass', async () => {
+  const key = await testDaemonKey()
+  const ratcheted = session(key, { serverSignsReports: true })
+  const heartbeat = '{"type":"heartbeat","at":"2026-11-05T12:00:00.000Z"}'
+  assertEquals(await intakeSignedSessionReport(heartbeat, ratcheted), {
+    raw: heartbeat,
+    warning: null,
+    verdict: 'other',
+  })
+  const nested = JSON.stringify({ type: 'heartbeat', note: { type: 'command-outcome' } })
+  assertEquals((await intakeSignedSessionReport(nested, ratcheted)).raw, nested)
 })
 
 test('frames that are not reports pass as they are', async () => {
@@ -142,6 +208,7 @@ test('frames that are not reports pass as they are', async () => {
   assertEquals(await intakeSignedSessionReport(heartbeat, session(key)), {
     raw: heartbeat,
     warning: null,
+    verdict: 'other',
   })
   // A result nested in another frame does not make it a report.
   const nested = JSON.stringify({ type: 'heartbeat', note: { type: 'command-outcome' } })
@@ -150,6 +217,7 @@ test('frames that are not reports pass as they are', async () => {
   assertEquals(await intakeSignedSessionReport(signedHello, session(key)), {
     raw: signedHello,
     warning: null,
+    verdict: 'other',
   })
   const notJson = appendSignature('{not json}', 'abc')
   assertEquals((await intakeSignedSessionReport(notJson, session(key))).raw, notJson)

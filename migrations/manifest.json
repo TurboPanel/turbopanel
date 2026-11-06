@@ -170,6 +170,12 @@
       "tag": "0027_backup_target_notice",
       "when": 1793910434529,
       "sha256": "a0cd248ac436e06794cd0437d99c2b5b8c7c8b7a6528ee73316c8b83de4a801f"
+    },
+    {
+      "idx": 28,
+      "tag": "0028_server_reports_signed",
+      "when": 1793929485037,
+      "sha256": "1e92d134502d33d83c85a997d779ecfe251f2f14b744b489df82f08003ea12c6"
     }
   ]
 }

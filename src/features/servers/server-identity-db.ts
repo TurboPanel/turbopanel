@@ -37,6 +37,11 @@ export type ServerDaemonStateWithMetadata = ServerDaemonState & {
   metadata: ServerMetadata | null
   /** `server.trust_level` (0 unsigned, 1 signed frames, 2 with attach proof); absent in older fakes means 0. */
   trustLevel?: number
+  /**
+   * `server.trust_reports_signed_at` is set: the daemon has sent a verified
+   * signed report, so its unsigned ones are refused. Absent in older fakes means false.
+   */
+  reportsSigned?: boolean
 }
 
 const STATUS_COLUMNS = {
@@ -71,6 +76,7 @@ export async function getServerDaemonStateByServerId(
       hostname: server.hostname,
       machineKey: server.machineKey,
       trustLevel: server.trustLevel,
+      trustReportsSignedAt: server.trustReportsSignedAt,
       ...STATUS_COLUMNS,
       ...KEY_COLUMNS,
     })
@@ -91,6 +97,7 @@ export async function getServerDaemonStateByServerId(
     machineKey: row.machineKey ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
     trustLevel: row.trustLevel ?? 0,
+    reportsSigned: row.trustReportsSignedAt != null,
   }
 }
 
@@ -167,6 +174,17 @@ function clearedSealingKeyColumns() {
     sealingKeyPub: null,
     sealingKeyReportedAt: null,
   }
+}
+
+/**
+ * The signed-reports ratchet (`trust_reports_signed_at`) belongs to the
+ * daemon that signed with the old identity key, so it is reset whenever that
+ * key is replaced or removed (owner decision 2026-11-06): the new daemon
+ * starts again with unsigned reports accepted until its first verified
+ * signed one. Clearing only the sealing key does not touch it.
+ */
+function clearedTrustReportsColumns() {
+  return { trustReportsSignedAt: null }
 }
 
 /**
@@ -306,6 +324,7 @@ export async function attachDaemonStateToServer(
         daemon: null,
         ...clearedProjectionColumns(),
         ...clearedSealingKeyColumns(),
+        ...clearedTrustReportsColumns(),
         ...(hostname ? { hostname } : {}),
         ...(machineKey ? { machineKey } : {}),
         isConnected: defaultStatus.connected,
@@ -383,6 +402,7 @@ async function resetServerDaemonColumns(db: Db, serverId: string): Promise<void>
       daemon: null,
       ...clearedProjectionColumns(),
       ...clearedSealingKeyColumns(),
+      ...clearedTrustReportsColumns(),
       isConnected: defaultStatus.connected,
       statusChangedAt: defaultStatus.statusChangedAt,
       updatedAt: now,
