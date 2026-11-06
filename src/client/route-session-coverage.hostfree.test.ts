@@ -64,6 +64,10 @@ const PUBLIC_ROUTES: Record<string, string> = {
   'GET /status': 'install and sign-up state, read before anyone signs in',
   'GET /notification-channels/verify/:token':
     'emailed channel confirm link; token is the credential',
+  'POST /notification-unsubscribe/:token':
+    'one-click unsubscribe from a mail provider (RFC 8058); the sealed token is the credential',
+  'GET /notification-unsubscribe/:token':
+    'unsubscribe link opened by a person; sends them to the page',
   'GET /openapi.json': 'public API description',
   'GET /reference': 'public API reference page',
 }
