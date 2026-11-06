@@ -95,8 +95,9 @@ function readReport(value: unknown): ReportFields | null {
   if (typeof keyset !== 'number' || !Number.isSafeInteger(keyset) || keyset < 0) return null
   if (typeof iat !== 'number' || !Number.isSafeInteger(iat) || iat < 0) return null
   if (typeof sig !== 'string' || !SIG.test(sig)) return null
+  const base = { pinnedBy: pinnedBy as PinReportPinnedBy, current, keyset, iat, sig }
   const extra = readPasskeys(value as Record<string, unknown>)
-  return { pinnedBy: pinnedBy as PinReportPinnedBy, current, keyset, iat, sig, ...(extra ?? {}) }
+  return extra ? { ...base, ...extra } : base
 }
 
 /**
