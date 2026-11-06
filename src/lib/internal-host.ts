@@ -6,11 +6,12 @@
  * (`internalHostReason` in its `deploy/compose-build-policy.ts`).
  *
  * Loopback, link-local, private and ULA literals, cloud metadata endpoints,
- * numeric hosts (`2130706433`, `0x7f.1`), `localhost`, single-label names and
- * reserved suffixes are internal. A DNS name is not resolved: a pre-check could
- * be answered differently when the server looks the name up, so it would
- * promise more than it holds. Nor does it follow redirects: an https redirect
- * to another host on the same scheme is not stopped.
+ * numeric hosts (`2130706433`, `0x7f.1`), `localhost`, single-label names,
+ * reserved suffixes and common local network endings (`.lan`, `.corp`,
+ * `.intranet`, `.private`, `.home`) are internal. A DNS name is not resolved:
+ * a pre-check could be answered differently when the server looks the name
+ * up, so it would promise more than it holds. Nor does it follow redirects:
+ * an https redirect to another host on the same scheme is not stopped.
  *
  * Web APIs only, so it stays reachable from `src/workers.ts`.
  */
@@ -26,6 +27,15 @@ const METADATA_ADDRESSES: ReadonlySet<bigint> = new Set([
   0xfd000ec2000000000000000000000254n,
   0x646464c8n,
 ])
+
+/**
+ * Name endings home and office networks use for their own hosts (owner
+ * decision 2026-11-05). Not in `hostIsReserved`, which also gates forge and
+ * webhook URLs that a self-hosted install may point at its own network. The
+ * daemon refuses the same endings (`RESERVED_SUFFIXES` in its
+ * `deploy/compose-build-policy.ts`).
+ */
+const LOCAL_NETWORK_SUFFIXES = ['.lan', '.corp', '.intranet', '.private', '.home'] as const
 
 /** A host label spelled the way `inet_aton` reads a number (`0x7f`, `017`, `2130706433`). */
 const NUMERIC_LABEL_RE = /^(?:0x[0-9a-f]*|\d+)$/i
@@ -51,8 +61,8 @@ export function internalAddressReason(value: string): string | null {
 
 /**
  * Why a remote host is internal, or `null` when it may be fetched from. A
- * static check: IP literals, numeric hosts, `localhost`, single-label and
- * reserved-suffix names. A DNS name is not resolved.
+ * static check: IP literals, numeric hosts, `localhost`, single-label,
+ * reserved-suffix and local network names. A DNS name is not resolved.
  */
 export function internalHostReason(rawHost: string): string | null {
   const host = stripTrailingDots(unbracket(rawHost.toLowerCase()))
@@ -65,5 +75,8 @@ export function internalHostReason(rawHost: string): string | null {
   if (host.split('.').every((label) => NUMERIC_LABEL_RE.test(label))) {
     return 'is a numeric host that resolves to an address this check cannot see'
   }
-  return hostIsReserved(host) ? 'names an internal host' : null
+  if (hostIsReserved(host)) return 'names an internal host'
+  return LOCAL_NETWORK_SUFFIXES.some((suffix) => host.endsWith(suffix))
+    ? 'names a host on a local network'
+    : null
 }

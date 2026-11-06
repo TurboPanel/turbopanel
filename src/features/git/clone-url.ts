@@ -93,9 +93,10 @@ function allowedFormHost(cloneUrl: string): string | null {
  * `file:`, `git:`, `http:`, `ext::`, a bare path, an empty host, a value git
  * could take as an option, whitespace and backslashes are `invalid`. A host
  * that is internal by `internalHostReason` (private, loopback, link-local and
- * ULA literals, numeric hosts, `localhost`, single-label and reserved names) is
- * `host_not_public`. A DNS name is not resolved. The daemon checks the same
- * again before a read or a release checkout.
+ * ULA literals, numeric hosts, `localhost`, single-label and reserved names,
+ * and local network endings such as `.lan`, `.corp`, `.intranet`, `.private`
+ * and `.home`) is `host_not_public`. A DNS name is not resolved. The daemon
+ * checks the same again before a read or a release checkout.
  */
 export function cloneUrlRefusal(cloneUrl: string): CloneUrlRefusal | null {
   const host = allowedFormHost(cloneUrl)

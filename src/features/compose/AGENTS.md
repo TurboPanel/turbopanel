@@ -232,7 +232,8 @@ secret whose top-level `file` is outside (`build_secret_outside_project`),
 `extra_hosts` to `host-gateway`, loopback, link-local, unspecified or metadata
 addresses (`build_extra_host_internal`), a `context`, `dockerfile` or
 `additional_contexts` path outside (`build_context_outside_project`), and a
-remote context on a non-public IP or reserved name
+remote context on a non-public IP, a reserved name or a local network ending
+(`.lan`, `.corp`, `.intranet`, `.private`, `.home`; `src/lib/internal-host.ts`)
 (`build_context_internal_url`). One rule has an opt-in:
 a public remote `context` or `additional_contexts` entry (URL, `git@`,
 `github.com/...`) is `build_remote_source_refused` unless the organization

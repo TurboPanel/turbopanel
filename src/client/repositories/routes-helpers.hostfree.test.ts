@@ -548,6 +548,8 @@ test('validateRepositoryUrl refuses a repository that is not on a public git hos
     ['git', 'git@10.0.0.5:org/repo.git', CREDENTIAL_ID],
     ['git', 'git@gitserver:org/repo.git', null],
     ['git', 'ssh://git@[fd00::1]/org/repo.git', CREDENTIAL_ID],
+    ['git', 'https://git.lan/o/r.git', null],
+    ['git', 'git@git.home:org/repo.git', CREDENTIAL_ID],
     ['gitlab', 'https://localhost/org/repo.git', null],
     ['github', 'https://127.0.0.1/org/repo.git', null],
   ] as const) {
