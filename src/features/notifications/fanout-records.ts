@@ -99,14 +99,15 @@ export async function organizationManagerHolderIds(
         inArray(grant.permission, ['organization:own', 'organization:manage'])
       )
     )
+  // A grant to the organization itself makes every member a manager.
+  if (rows.some((row) => row.actorType === 'organization')) {
+    return (await memberIdsQuery(db, organizationId)).map((r) => r.userId)
+  }
   const ids = new Set<string>()
   const teamIds: string[] = []
   for (const row of rows) {
     if (row.actorType === 'user') ids.add(row.actorId)
     else if (row.actorType === 'team') teamIds.push(row.actorId)
-    else if (row.actorType === 'organization') {
-      return (await memberIdsQuery(db, organizationId)).map((r) => r.userId)
-    }
   }
   if (teamIds.length > 0) {
     const members = await db
@@ -365,10 +366,10 @@ export async function suppressedAddresses(
   addresses: readonly string[]
 ): Promise<Set<string>> {
   if (addresses.length === 0) return new Set()
-  const byHash = new Map<string, string>()
-  for (const address of addresses) {
-    byHash.set(await addressHash(address), address.trim().toLowerCase())
-  }
+  const hashes = await Promise.all(addresses.map((address) => addressHash(address)))
+  const byHash = new Map(
+    hashes.map((hash, i) => [hash, addresses[i]!.trim().toLowerCase()] as const)
+  )
   const rows = await db
     .select({ hash: notificationSuppression.addressHash })
     .from(notificationSuppression)

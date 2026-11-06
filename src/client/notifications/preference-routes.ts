@@ -101,76 +101,93 @@ function optionalUuid(body: Record<string, unknown>, key: string): string | null
   return value
 }
 
-/** Parse and shape-check one preference write; ownership is checked by the route. Pure. */
-export function parsePreferenceWrite(raw: unknown): { ok: true; value: PreferenceWrite } | Refusal {
-  if (typeof raw !== 'object' || raw === null) return { ok: false, error: 'body must be an object' }
-  const body = raw as Record<string, unknown>
-  const ids: Record<string, string | null> = {}
-  for (const key of [
-    'organizationId',
-    'projectId',
-    'environmentId',
-    'serviceId',
-    'serverId',
-    'destinationId',
-    'channelId',
-  ]) {
+const ID_KEYS = [
+  'organizationId',
+  'projectId',
+  'environmentId',
+  'serviceId',
+  'serverId',
+  'destinationId',
+  'channelId',
+] as const
+type IdKey = (typeof ID_KEYS)[number]
+type Ids = Record<IdKey, string | null>
+
+function parseIds(body: Record<string, unknown>): Ids | Refusal {
+  const ids = {} as Ids
+  for (const key of ID_KEYS) {
     const parsed = optionalUuid(body, key)
     if (parsed !== null && typeof parsed === 'object') return parsed
     ids[key] = parsed
   }
+  return ids
+}
+
+/** The value-set fields: level, kind, category, topic. */
+function vocabularyRefusal(body: Record<string, unknown>): string | null {
   const level = body.level
   if (typeof level !== 'string' || !(NOTIFICATION_LEVELS as readonly string[]).includes(level)) {
-    return { ok: false, error: `level must be one of ${NOTIFICATION_LEVELS.join(', ')}` }
+    return `level must be one of ${NOTIFICATION_LEVELS.join(', ')}`
   }
   const kind = body.kind ?? null
   if (kind !== null && !(SETTABLE_KINDS as readonly unknown[]).includes(kind)) {
-    return { ok: false, error: `kind must be one of ${SETTABLE_KINDS.join(', ')}` }
+    return `kind must be one of ${SETTABLE_KINDS.join(', ')}`
   }
-  const categoryCode = body.categoryCode ?? null
-  if (categoryCode !== null && !NOTIFICATION_CATEGORIES.some((c) => c.code === categoryCode)) {
-    return { ok: false, error: 'unknown categoryCode' }
+  const category = body.categoryCode ?? null
+  if (category !== null && !NOTIFICATION_CATEGORIES.some((c) => c.code === category)) {
+    return 'unknown categoryCode'
   }
-  const topicCode = body.topicCode ?? null
-  if (topicCode !== null && !(NOTIFICATION_EVENTS as readonly unknown[]).includes(topicCode)) {
-    return { ok: false, error: 'unknown topicCode' }
+  const topic = body.topicCode ?? null
+  if (topic !== null && !(NOTIFICATION_EVENTS as readonly unknown[]).includes(topic)) {
+    return 'unknown topicCode'
   }
-  if (categoryCode !== null && topicCode !== null) {
-    return { ok: false, error: 'name a category or a topic, not both' }
+  return null
+}
+
+/** How the fields combine: the same rules as the table's CHECKs, said in words. */
+function shapeRefusal(body: Record<string, unknown>, ids: Ids): string | null {
+  if ((body.categoryCode ?? null) !== null && (body.topicCode ?? null) !== null) {
+    return 'name a category or a topic, not both'
   }
-  if (ids.channelId !== null && kind !== null) {
-    return { ok: false, error: 'name a channel or a kind, not both' }
+  if (ids.channelId !== null && (body.kind ?? null) !== null) {
+    return 'name a channel or a kind, not both'
   }
   if (ids.projectId !== null && ids.organizationId === null) {
-    return { ok: false, error: 'a project needs its organizationId' }
+    return 'a project needs its organizationId'
   }
   if (ids.environmentId !== null && ids.projectId === null) {
-    return { ok: false, error: 'an environment needs its projectId' }
+    return 'an environment needs its projectId'
   }
   const resources = [ids.serviceId, ids.serverId, ids.destinationId].filter((v) => v !== null)
-  if (resources.length > 1) return { ok: false, error: 'name one resource at most' }
+  if (resources.length > 1) return 'name one resource at most'
   if (resources.length === 1 && ids.organizationId === null) {
-    return { ok: false, error: 'a resource needs its organizationId' }
+    return 'a resource needs its organizationId'
   }
   const endsAt = body.endsAt ?? null
   if (endsAt !== null && (typeof endsAt !== 'string' || Number.isNaN(Date.parse(endsAt)))) {
-    return { ok: false, error: 'endsAt must be an ISO time' }
+    return 'endsAt must be an ISO time'
   }
+  return null
+}
+
+/** Parse and shape-check one preference write; ownership is checked by the route. Pure. */
+export function parsePreferenceWrite(raw: unknown): { ok: true; value: PreferenceWrite } | Refusal {
+  if (typeof raw !== 'object' || raw === null) return { ok: false, error: 'body must be an object' }
+  const body = raw as Record<string, unknown>
+  const ids = parseIds(body)
+  if ('ok' in ids) return ids as Refusal
+  const refusal = vocabularyRefusal(body) ?? shapeRefusal(body, ids)
+  if (refusal) return { ok: false, error: refusal }
+  const endsAt = (body.endsAt ?? null) as string | null
   return {
     ok: true,
     value: {
-      organizationId: ids.organizationId!,
-      projectId: ids.projectId!,
-      environmentId: ids.environmentId!,
-      serviceId: ids.serviceId!,
-      serverId: ids.serverId!,
-      destinationId: ids.destinationId!,
-      channelId: ids.channelId!,
-      categoryCode: categoryCode as string | null,
-      topicCode: topicCode as string | null,
-      kind: kind as NotificationPreferenceKind | null,
-      level: level as NotificationLevel,
-      endsAt: endsAt === null ? null : new Date(endsAt as string).toISOString(),
+      ...ids,
+      categoryCode: (body.categoryCode ?? null) as string | null,
+      topicCode: (body.topicCode ?? null) as string | null,
+      kind: (body.kind ?? null) as NotificationPreferenceKind | null,
+      level: body.level as NotificationLevel,
+      endsAt: endsAt === null ? null : new Date(endsAt).toISOString(),
     },
   }
 }
@@ -180,7 +197,8 @@ export function sourceScope(row: PreferenceRow | null): string {
   if (row === null) return 'default'
   switch (scopeDepth(row)) {
     case 5:
-      return row.serviceId ? 'service' : row.serverId ? 'server' : 'destination'
+      if (row.serviceId) return 'service'
+      return row.serverId ? 'server' : 'destination'
     case 4:
       return 'environment'
     case 3:
@@ -450,22 +468,24 @@ async function postPreset(c: Ctx): Promise<Response> {
   )
   if (org instanceof Response) return org
   const levels = NOTIFICATION_PRESETS[preset as NotificationPreset]
-  for (const kind of ['inbox', 'email'] as const) {
-    await writePreference(db, sess.userId, {
-      organizationId: org,
-      projectId: null,
-      environmentId: null,
-      serviceId: null,
-      serverId: null,
-      destinationId: null,
-      categoryCode: null,
-      topicCode: null,
-      kind,
-      channelId: null,
-      level: levels[kind],
-      endsAt: null,
-    })
-  }
+  await Promise.all(
+    (['inbox', 'email'] as const).map((kind) =>
+      writePreference(db, sess.userId, {
+        organizationId: org,
+        projectId: null,
+        environmentId: null,
+        serviceId: null,
+        serverId: null,
+        destinationId: null,
+        categoryCode: null,
+        topicCode: null,
+        kind,
+        channelId: null,
+        level: levels[kind],
+        endsAt: null,
+      })
+    )
+  )
   return c.json({ ok: true })
 }
 

@@ -393,26 +393,41 @@ async function planCopies(
     })
   )
   const held = await heldReasons(tx, channels, event, nowMs)
+  const emailCheck = { accounts, memberEmails, suppressed }
   return channels.map((channel): LedgerCopy => {
     const base = { channelId: channel.id, userId: channel.scope === 'user' ? channel.userId : null }
-    const address = emailOf(channel)
-    if (channel.kind === 'email') {
-      const verified = channel.isPrimary
-        ? accounts.get(channel.userId ?? '')?.verified === true
-        : channel.verifiedAt !== null
-      if (!verified || address === null) {
-        return { ...base, status: 'abandoned', reason: 'unverified' }
-      }
-      if (channel.scope === 'organization' && !memberEmails.has(address.trim().toLowerCase())) {
-        return { ...base, status: 'abandoned', reason: 'no_access' }
-      }
-      if (suppressed.has(address.trim().toLowerCase())) {
-        return { ...base, status: 'suppressed', reason: 'bounced' }
-      }
-    }
+    const dropped = emailDrop(channel, emailOf(channel), emailCheck)
+    if (dropped) return { ...base, ...dropped }
     const reason = held.get(channel.id)
     return reason ? { ...base, status: 'held', reason } : { ...base, status: 'pending' }
   })
+}
+
+/**
+ * Why an email copy must not be sent, or null: an unverified address, an
+ * organization channel naming someone who is no longer a member, or an
+ * address on the suppression list.
+ */
+function emailDrop(
+  channel: NotificationChannelRecord,
+  address: string | null,
+  check: {
+    accounts: Map<string, { email: string; verified: boolean }>
+    memberEmails: Set<string>
+    suppressed: Set<string>
+  }
+): Pick<LedgerCopy, 'status' | 'reason'> | null {
+  if (channel.kind !== 'email') return null
+  const verified = channel.isPrimary
+    ? check.accounts.get(channel.userId ?? '')?.verified === true
+    : channel.verifiedAt !== null
+  if (!verified || address === null) return { status: 'abandoned', reason: 'unverified' }
+  const normalized = address.trim().toLowerCase()
+  if (channel.scope === 'organization' && !check.memberEmails.has(normalized)) {
+    return { status: 'abandoned', reason: 'no_access' }
+  }
+  if (check.suppressed.has(normalized)) return { status: 'suppressed', reason: 'bounced' }
+  return null
 }
 
 /** Email, chat and webhook channels can wait for a window (push is the store apps'; an unverified address gets nothing). */
