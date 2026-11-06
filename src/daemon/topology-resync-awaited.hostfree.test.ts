@@ -57,13 +57,20 @@ function heldWriteDb(rows: unknown[]) {
     }
     return []
   }
-  const db = {
+  return { db: fakeDb(rows, write), state, release }
+}
+
+/**
+ * A database whose reads return `rows` and whose writes (`execute` for the
+ * resync marker, `update` for the machine class) run `write(label)`.
+ */
+function fakeDb(rows: unknown[], write: (label: string) => () => Promise<unknown>): Db {
+  return {
     select: () => queryChain(() => Promise.resolve(rows)),
     execute: write('execute'),
     update: () => queryChain(write('update')),
     insert: () => queryChain(() => Promise.resolve([])),
   } as unknown as Db
-  return { db, state, release }
 }
 
 function durableSample(hardwareSignals: unknown[] = []): AuthenticatedMetricsSample {
@@ -123,18 +130,71 @@ test('the topology resync marker is written before ingest plan resolution return
   assertEquals(heldDb.state.failedAfterClose, 0, 'no write may run on the closed client')
 })
 
-test('a detected physical machine class is written before ingest plan resolution returns', async () => {
-  // A server row with no recorded topology and no declared machine class,
-  // whose resync marker was just stamped, so the machine class is the only write.
+/**
+ * A server row with no recorded topology and no declared machine class, whose
+ * resync marker was just stamped, so a sensor reading makes the machine class
+ * the only write.
+ */
+function undeclaredMachineClassRows(): unknown[] {
   const serverMetadata = { topologyResyncRequestedAt: new Date().toISOString() }
-  const heldDb = heldWriteDb([
+  return [
     { hardware: null, serverOptions: null, orgOptions: null, serverMetadata, machineClass: null },
-  ])
-  const sensor = { signalId: 'cpu.temperature' }
-  const { result, settledWhileHeld } = await resolveWithHeldWrites(heldDb, durableSample([sensor]))
+  ]
+}
+
+const SENSOR = { signalId: 'cpu.temperature' }
+
+test('a detected physical machine class is written before ingest plan resolution returns', async () => {
+  const heldDb = heldWriteDb(undeclaredMachineClassRows())
+  const { result, settledWhileHeld } = await resolveWithHeldWrites(heldDb, durableSample([SENSOR]))
 
   assertEquals(heldDb.state.writes, ['update'], 'a sensor reading records the machine class')
   assertEquals(settledWhileHeld, false, 'the request must wait for the machine class write')
   assert(result.plan !== undefined)
   assertEquals(heldDb.state.failedAfterClose, 0, 'no write may run on the closed client')
+})
+
+/**
+ * Resolve the ingest plan for `serverId` against a database whose writes all
+ * fail, and return what `console.warn` printed meanwhile.
+ */
+async function resolveWithFailingWrites(
+  serverId: string,
+  rows: unknown[],
+  sample: AuthenticatedMetricsSample
+) {
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(' '))
+  }
+  try {
+    const db = fakeDb(rows, () => () => Promise.reject(new Error('write CONNECTION_ENDED')))
+    const result = await resolveIngestPlanAndReconcileTopology(db, serverId, sample, 'self-hosted')
+    return { result, warnings }
+  } finally {
+    console.warn = originalWarn
+  }
+}
+
+test('a failed resync marker write logs and keeps the resolved plan', async () => {
+  const serverId = '00000000-0000-4000-8000-000000000002'
+  const { result, warnings } = await resolveWithFailingWrites(serverId, [], durableSample())
+
+  assert(result.plan !== undefined)
+  assertEquals(warnings.length, 1)
+  assert(warnings[0].includes('topology resync marker failed'), warnings[0])
+})
+
+test('a failed machine class write logs and keeps the resolved plan', async () => {
+  const serverId = '00000000-0000-4000-8000-000000000003'
+  const { result, warnings } = await resolveWithFailingWrites(
+    serverId,
+    undeclaredMachineClassRows(),
+    durableSample([SENSOR])
+  )
+
+  assert(result.plan !== undefined)
+  assertEquals(warnings.length, 1)
+  assert(warnings[0].includes('machine class record failed'), warnings[0])
 })
