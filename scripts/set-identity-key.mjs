@@ -66,6 +66,14 @@ export async function verifiedFingerprint(body, header) {
 }
 
 const NOT_CONFIGURED_ERROR = 'panel identity not configured'
+
+function hasRotationBlock(body) {
+  try {
+    return (JSON.parse(body).rotation?.passkeys?.length ?? 0) > 0
+  } catch {
+    return false
+  }
+}
 const NETWORK_ERROR = /fetch failed|ENOTFOUND|ECONN|ETIMEDOUT|EAI_AGAIN|network/i
 
 /**
@@ -86,7 +94,7 @@ async function readIdentity(deps, url) {
   }
   if (response.status !== 200) return { status: response.status }
   const kid = await verifiedFingerprint(body, response.headers.get(SIGNATURE_HEADER))
-  return { status: 200, kid }
+  return { status: 200, kid, hasRotationPasskeys: kid !== null && hasRotationBlock(body) }
 }
 
 function parseArgs(argv) {
@@ -124,6 +132,11 @@ async function checkExisting(deps, opts, url, label) {
     seen = {}
   }
   if (seen.unset) return
+  if (seen.kid && opts.replace && seen.hasRotationPasskeys) {
+    throw new Stop(
+      `${label} has rotation passkeys, so its servers only follow an approved key change. Nothing was changed. Use pnpm identity:rotate --env ${opts.env} instead.`
+    )
+  }
   if (seen.kid && opts.replace) {
     deps.out('Replacing the key: every server will need to re-learn it.')
     return
@@ -184,7 +197,7 @@ export async function setIdentityKey(argv, deps) {
   }
 }
 
-function realRun(args, input) {
+export function realRun(args, input) {
   const result = spawnSync(WRANGLER, args, { cwd: ROOT, input, encoding: 'utf8' })
   if (result.error?.code === 'ENOENT') {
     console.log('Run `pnpm install` first: wrangler is not installed here.')

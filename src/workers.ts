@@ -337,6 +337,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     metricsLimiter: rateLimiters.metrics,
     runtime: 'workers',
     panelIdentity: () => Promise.resolve(cachedPanelIdentity),
+    identityChain: true,
     identityUrls: () => Promise.resolve(platformControlPlaneOrigins(stringBindingEnv(env))),
   })
   registerWorkersDaemonWebSocket(daemonRoutes, {

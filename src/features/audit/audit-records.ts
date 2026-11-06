@@ -126,6 +126,11 @@ export const AUDIT_ACTIONS = [
   // changes); named here so the vocabulary is complete.
   'panel.identity.rotated',
   'panel.identity.revoked',
+  // A passkey-approved key-set statement: rotate, revoke, mark, unmark.
+  'panel.key.rotate',
+  'panel.key.revoke',
+  'panel.approver.mark',
+  'panel.approver.unmark',
   'server.panel_pin.reissued',
   'server.panel_pin.mismatch',
   'server.panel_pin.silent',

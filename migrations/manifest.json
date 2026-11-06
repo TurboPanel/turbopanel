@@ -176,6 +176,12 @@
       "tag": "0028_server_reports_signed",
       "when": 1793929485037,
       "sha256": "1e92d134502d33d83c85a997d779ecfe251f2f14b744b489df82f08003ea12c6"
+    },
+    {
+      "idx": 29,
+      "tag": "0029_control_plane_key_rotation",
+      "when": 1793973799317,
+      "sha256": "1c441b9616b6631e732cb8b5547cfdfe4caee4b5c8f893d75276c62846a0bcb4"
     }
   ]
 }

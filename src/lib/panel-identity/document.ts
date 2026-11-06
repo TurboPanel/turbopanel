@@ -2,6 +2,7 @@ import { base64urlDecode, base64urlEncode } from '../encoding/base64url.ts'
 import { fingerprintRawPublicKey } from './fingerprint.ts'
 import { httpSigningInput } from './frame-envelope.ts'
 import { signWithCurrent, type PanelIdentity } from './identity.ts'
+import type { RotationPasskey } from './keyset-statement.ts'
 
 export const IDENTITY_DOCUMENT_PATH = '/api/daemon/v1/instance/identity'
 export const IDENTITY_SIGNATURE_HEADER = 'X-TurboPanel-Signature'
@@ -20,9 +21,17 @@ export type IdentityDocument = {
   keys: IdentityDocumentKey[]
   seal: { kid: string; alg: 'X25519'; pub: string }
   keyset: number
+  /** The rotation passkeys servers pin once (first fill); absent until one is marked. */
+  rotation?: { rpId: string; passkeys: RotationPasskey[] }
   urls: string[]
   issued: string
   expires: string
+}
+
+/** Key-set chain facts the document carries: the live key set and the marked passkeys. */
+export type IdentityChainState = {
+  keyset: number
+  rotation: { rpId: string; passkeys: RotationPasskey[] } | null
 }
 
 /**
@@ -32,7 +41,8 @@ export type IdentityDocument = {
 export function buildIdentityDocument(
   identity: PanelIdentity,
   urls: string[],
-  now: Date
+  now: Date,
+  chain?: IdentityChainState
 ): IdentityDocument {
   const keys: IdentityDocumentKey[] = [
     {
@@ -53,7 +63,8 @@ export function buildIdentityDocument(
       alg: 'X25519',
       pub: base64urlEncode(identity.seal.publicRaw),
     },
-    keyset: identity.keyset,
+    keyset: Math.max(identity.keyset, chain?.keyset ?? 0),
+    ...(chain?.rotation ? { rotation: chain.rotation } : {}),
     urls,
     issued: now.toISOString(),
     expires: new Date(now.getTime() + IDENTITY_DOCUMENT_TTL_MS).toISOString(),
@@ -67,6 +78,14 @@ export function serializeIdentityDocument(doc: IdentityDocument): string {
     keys: doc.keys.map((k) => ({ kid: k.kid, alg: k.alg, pub: k.pub, role: k.role })),
     seal: { kid: doc.seal.kid, alg: doc.seal.alg, pub: doc.seal.pub },
     keyset: doc.keyset,
+    ...(doc.rotation
+      ? {
+          rotation: {
+            rpId: doc.rotation.rpId,
+            passkeys: doc.rotation.passkeys.map((p) => ({ id: p.id, alg: p.alg, pub: p.pub })),
+          },
+        }
+      : {}),
     urls: doc.urls,
     issued: doc.issued,
     expires: doc.expires,
@@ -84,9 +103,10 @@ export type SignedIdentityResponse = { body: string; signature: string; issued: 
 export async function signIdentityDocument(
   identity: PanelIdentity,
   urls: string[],
-  now: Date
+  now: Date,
+  chain?: IdentityChainState
 ): Promise<SignedIdentityResponse> {
-  const doc = buildIdentityDocument(identity, urls, now)
+  const doc = buildIdentityDocument(identity, urls, now, chain)
   const body = serializeIdentityDocument(doc)
   const sig = await signWithCurrent(identity, httpSigningBytes(IDENTITY_DOCUMENT_PATH, body))
   return { body, signature: `${identity.current.kid}:${sig}`, issued: doc.issued }

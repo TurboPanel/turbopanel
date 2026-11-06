@@ -14,6 +14,7 @@
     "deploy:workers": "pnpm run deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
     "identity:set": "node scripts/set-identity-key.mjs",
+    "identity:rotate": "node scripts/rotate-identity-key.mjs",
     "generate:secret": "node scripts/generate-secret.mjs",
     "generate": "drizzle-kit generate --config drizzle.config.mjs",
     "migrate": "node scripts/check-postgres-compat.mjs && node scripts/migrate-locked.mjs",

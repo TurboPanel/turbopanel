@@ -95,18 +95,83 @@ export const INSTANCE_ACCESS_PATHS = {
   [`${ADMIN_API_PREFIX}/instance/identity/next`]: {
     put: {
       tags: ['Instance'],
-      summary: "Set or clear the control plane's next key fingerprint",
+      summary: 'Retired: the next key',
       description:
-        'Body `{ fingerprint: string | null }` (43-character fingerprint, or null to clear). ' +
-        'Superadmin only, self-hosted only (Workers answers 422: the next key is the ' +
-        '`TURBOPANEL_IDENTITY_KEYS` binding), and behind step-up: a stale session gets 403 ' +
-        '`reauth_required`. Audited; superadmins are emailed.',
+        'Always answers 410 `next_key_retired`. Key changes are approved with rotation ' +
+        'passkeys (`/instance/identity/statements`).',
       security: [...cookieSecurity],
       responses: {
-        '200': { description: '`{ ok: true, next }`' },
+        '410': { description: '`{ ok: false, error: "next_key_retired" }`' },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/identity/rotation`]: {
+    get: {
+      tags: ['Instance'],
+      summary: 'Read rotation passkeys and the key-set chain',
+      description:
+        'Superadmin only. The rotation `rpId`, key set, every superadmin sign-in passkey with ' +
+        'whether it can approve key changes and whether it is marked, a waiting High ' +
+        'Availability statement, and the newest statements.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: '`{ ok: true, rpId, keyset, passkeys, statements, canRotate }`' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden' },
+        '404': { description: 'Control plane identity is off' },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/identity/statements/prepare`]: {
+    post: {
+      tags: ['Instance'],
+      summary: 'Prepare a key-set statement for passkey approval',
+      description:
+        'Body `{ kind: "rotate" | "revoke" | "passkeys", mark?, unmark?, newKey? }`. Returns ' +
+        'the exact statement bytes (base64url) and the WebAuthn challenge (SHA-256 of them). ' +
+        'Rotate and revoke need two marked passkeys; on High Availability `newKey` is the ' +
+        'public key the rotation command printed. Superadmin, step-up.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: '`{ ok: true, statement, challenge, rpId, keyset }`' },
         '401': { description: 'Unauthorized' },
         '403': { description: 'Forbidden, or `reauth_required`' },
-        '422': { description: 'Malformed fingerprint, or not available on this runtime' },
+        '409': { description: 'Not enough passkeys marked, or a change awaits its key' },
+        '422': { description: 'Malformed body or a passkey that cannot be marked' },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/identity/statements`]: {
+    post: {
+      tags: ['Instance'],
+      summary: 'Approve a key-set statement with passkey assertions',
+      description:
+        'Body `{ statement, approvals: [{ credentialId, authenticatorData, clientDataJSON, ' +
+        'signature }] }`. Checked exactly as servers check it, then stored; self-hosted moves ' +
+        'to the new key at once, High Availability waits for the secret. Audited; ' +
+        'superadmins are emailed. Superadmin, step-up.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: '`{ ok: true, keyset, kind, state, envelope }`' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden, or `reauth_required`' },
+        '409': { description: 'Another change was approved first, or the approval expired' },
+        '422': { description: 'The approvals do not verify' },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/identity/statements/{keyset}`]: {
+    get: {
+      tags: ['Instance'],
+      summary: 'Download one key-set statement',
+      description:
+        'The stored envelope, for hand-applying on a server with ' +
+        '`tp-host panel-identity-write statement`. Superadmin only.',
+      security: [...cookieSecurity],
+      parameters: [{ name: 'keyset', in: 'path', required: true, schema: { type: 'integer' } }],
+      responses: {
+        '200': { description: 'The envelope `{ statement, approvals }`' },
+        '404': { description: 'Not found' },
       },
     },
   },

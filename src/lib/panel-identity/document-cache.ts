@@ -1,4 +1,5 @@
 import {
+  type IdentityChainState,
   IDENTITY_DOCUMENT_RESIGN_AFTER_MS,
   signIdentityDocument,
   type SignedIdentityResponse,
@@ -11,33 +12,41 @@ type Entry = {
   keyset: number
   nextKid: string | null
   urlsKey: string
+  chainKey: string
 }
 
 /**
  * Keeps the signed document between requests and re-signs it when it is a
- * week old, the URL list changed, or the key set changed. Holds only the
+ * week old, the URL list changed, or the key set or rotation passkeys changed. Holds only the
  * signed bytes (no database client), so an isolate-scope instance is safe on
  * Workers.
  */
 export function createIdentityDocumentCache(now: () => Date = () => new Date()) {
   let entry: Entry | null = null
   return {
-    async get(identity: PanelIdentity, urls: string[]): Promise<SignedIdentityResponse> {
+    async get(
+      identity: PanelIdentity,
+      urls: string[],
+      chain?: IdentityChainState
+    ): Promise<SignedIdentityResponse> {
       const urlsKey = JSON.stringify(urls)
+      const chainKey = JSON.stringify(chain ?? null)
       const at = now()
       const stale =
         entry?.kid !== identity.current.kid ||
         entry?.keyset !== identity.keyset ||
         entry?.nextKid !== (identity.next?.kid ?? null) ||
         entry?.urlsKey !== urlsKey ||
+        entry?.chainKey !== chainKey ||
         at.getTime() - Date.parse(entry.response.issued) > IDENTITY_DOCUMENT_RESIGN_AFTER_MS
       if (stale) {
         entry = {
-          response: await signIdentityDocument(identity, urls, at),
+          response: await signIdentityDocument(identity, urls, at, chain),
           kid: identity.current.kid,
           keyset: identity.keyset,
           nextKid: identity.next?.kid ?? null,
           urlsKey,
+          chainKey,
         }
       }
       return entry!.response

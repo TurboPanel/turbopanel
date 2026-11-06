@@ -148,6 +148,46 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Argon2id PHC-format hash (`$argon2id$v=19$m=N,t=N,p=N$salt$digest`) on `credential` rows, set at sign-up, install and password reset; null on OAuth rows.',
     },
   },
+  approver: {
+    group: 'identity',
+    summary:
+      'A sign-in passkey a superadmin marked to approve control plane key changes, with the frozen key servers pin; kept as history once unmarked.',
+    columns: {
+      passkey_id:
+        'The marked sign-in passkey; ON DELETE RESTRICT so it cannot be deleted while marked, and cleared when the passkey is unmarked.',
+      pkid: 'Rotation passkey id servers pin: base64url SHA-256 of the raw credential id; unique among marked rows.',
+      alg: 'Signature algorithm of the pinned key, `ES256` or `EdDSA`.',
+      public_key_raw:
+        'Base64url raw public key servers verify approvals with: a 65-byte P-256 point or a 32-byte Ed25519 key, copied when marked.',
+      rp_id:
+        'WebAuthn relying party id the passkey belongs to: the primary hostname when the first passkey was marked.',
+      label: 'Passkey name and owner when marked, for mail and the audit trail.',
+      marked_keyset: 'Key set number of the statement that marked it.',
+      unmarked_keyset: 'Key set number of the statement that unmarked it; NULL while marked.',
+      unmarked_at: 'When it was unmarked; NULL while it still approves key changes.',
+    },
+  },
+  statement: {
+    group: 'identity',
+    summary:
+      'One approved key-set statement of the control plane: the chain every server follows to a new key or passkey set, kept forever in `keyset` order.',
+    columns: {
+      keyset:
+        'Key set number the statement moves servers to; unique and one above the previous statement.',
+      kind: 'What it changes: `rotate` or `revoke` the key, or `passkeys` (mark or unmark rotation passkeys).',
+      state:
+        '`live` when served to servers; `awaiting_key` while a High Availability secret does not hold the new key yet.',
+      prev_kid:
+        'Fingerprint of the key the statement replaces or keeps; servers apply it only when this is their pinned key.',
+      current_kid: 'Fingerprint of the key servers pin after the statement.',
+      body: 'Exact statement bytes as base64url; the passkey challenge is SHA-256 of these bytes, so they are never rebuilt.',
+      approvals:
+        'JSON array of the WebAuthn assertions that approved the statement, served to servers as written.',
+      approved_by_user_id:
+        'Superadmin who approved it; ON DELETE SET NULL so the chain outlives the account.',
+      live_at: 'When the statement started being served; NULL while `awaiting_key`.',
+    },
+  },
   passkey: {
     group: 'identity',
     summary:
@@ -157,7 +197,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Authenticator model AAGUID decoded from the attestation as a dashed lowercase UUID string; identifies the make, not the individual key.',
       name: 'User-chosen label given at registration (the device or authenticator it lives on); shown in the Security screen, never used for matching.',
       public_key:
-        "Credential public key as a JSON-serialised JWK (ES256 or RS256) converted from the attestation's COSE key; verifies sign-in assertions.",
+        "Credential public key as a JSON-serialised JWK (ES256, EdDSA or RS256) converted from the attestation's COSE key; verifies sign-in assertions.",
       credential_id:
         'Base64url credential id from the attestation; unique across the instance and the lookup key for passkey sign-in.',
       counter:
@@ -1730,6 +1770,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'When a signed daemon report from this server first verified; set once, and from then on its unsigned reports on a signed session are refused.',
       is_trust_pin_matching:
         "Whether the reported pin named this control plane's current or next key; false raises the pin mismatch alarm.",
+      trust_pin_passkeys:
+        'Base64url SHA-256 of the rotation passkeys line in the server pin, from its signed pin report; empty with none pinned, NULL when not reported.',
       container_prefix:
         'Container range of this server (a /16 from the org container pool), set when first needed; cross-server network subnets come from it, NULL until then.',
       metadata:

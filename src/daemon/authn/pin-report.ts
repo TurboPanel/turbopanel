@@ -20,6 +20,18 @@ import { REQUEST_MAX_SKEW_SECONDS } from './request-signature.ts'
 import { verifyDaemonSignature } from './server-key.ts'
 
 export const PIN_REPORT_PREFIX = 'tp-panel-pin\n'
+/**
+ * A newer daemon also reports the hash of its pinned rotation passkeys
+ * (`passkeys`, base64url SHA-256 of the pin's `passkeys=` line, or "" when
+ * none) with its own signature `passkeysSig` over
+ *
+ *   "tp-panel-pin-passkeys\n" + sessionId + "\n" + serverId + "\n" + keyId
+ *     + "\n" + passkeys + "\n" + iat
+ *
+ * A separate signature keeps the first one valid for a control plane that
+ * does not know the field (expand-only).
+ */
+export const PIN_PASSKEYS_REPORT_PREFIX = 'tp-panel-pin-passkeys\n'
 
 export type PinReportPinnedBy = VerifiedPinReport['pinnedBy']
 
@@ -47,7 +59,32 @@ export function pinReportSigningInput(params: {
   ].join('\n')
 }
 
-type ReportFields = VerifiedPinReport & { iat: number; sig: string }
+export function pinPasskeysSigningInput(params: {
+  sessionId: string
+  serverId: string
+  keyId: string
+  passkeys: string
+  iat: number
+}): string {
+  return [
+    `${PIN_PASSKEYS_REPORT_PREFIX}${params.sessionId}`,
+    params.serverId,
+    params.keyId,
+    params.passkeys,
+    String(params.iat),
+  ].join('\n')
+}
+
+type ReportFields = VerifiedPinReport & { iat: number; sig: string; passkeysSig?: string }
+
+function readPasskeys(
+  value: Record<string, unknown>
+): { passkeys: string; passkeysSig: string } | null {
+  const { passkeys, passkeysSig } = value
+  if (typeof passkeys !== 'string' || typeof passkeysSig !== 'string') return null
+  if (passkeys !== '' && !FINGERPRINT.test(passkeys)) return null
+  return SIG.test(passkeysSig) ? { passkeys, passkeysSig } : null
+}
 
 function readReport(value: unknown): ReportFields | null {
   if (typeof value !== 'object' || value === null) return null
@@ -58,7 +95,8 @@ function readReport(value: unknown): ReportFields | null {
   if (typeof keyset !== 'number' || !Number.isSafeInteger(keyset) || keyset < 0) return null
   if (typeof iat !== 'number' || !Number.isSafeInteger(iat) || iat < 0) return null
   if (typeof sig !== 'string' || !SIG.test(sig)) return null
-  return { pinnedBy: pinnedBy as PinReportPinnedBy, current, keyset, iat, sig }
+  const extra = readPasskeys(value as Record<string, unknown>)
+  return { pinnedBy: pinnedBy as PinReportPinnedBy, current, keyset, iat, sig, ...(extra ?? {}) }
 }
 
 /**
@@ -89,5 +127,21 @@ export async function verifyPinReport(
     iat: fields.iat,
   })
   if (!(await verifyDaemonSignature(ctx.publicJwk, input, fields.sig))) return null
-  return { pinnedBy: fields.pinnedBy, current: fields.current, keyset: fields.keyset }
+  const report: VerifiedPinReport = {
+    pinnedBy: fields.pinnedBy,
+    current: fields.current,
+    keyset: fields.keyset,
+  }
+  if (fields.passkeys === undefined || fields.passkeysSig === undefined) return report
+  const passkeysInput = pinPasskeysSigningInput({
+    sessionId: ctx.sessionId,
+    serverId: ctx.serverId,
+    keyId: ctx.keyId,
+    passkeys: fields.passkeys,
+    iat: fields.iat,
+  })
+  // A bad second signature drops only the passkeys part.
+  return (await verifyDaemonSignature(ctx.publicJwk, passkeysInput, fields.passkeysSig))
+    ? { ...report, passkeys: fields.passkeys }
+    : report
 }

@@ -61,9 +61,14 @@
   which also mounts `GET /api/developer/v1/dev-host/status` and the two
   actions for the Developer Console behind the developer access middleware; `GET /instance/identity` is the Panel Identity read (public fingerprints of the control
   plane's current, next and sealing keys, the install address, and each server's pinned-by state,
-  `none` until the server pin column exists); `PUT /instance/identity/next` sets or clears the next
-  fingerprint (superadmin, self-hosted only, always behind `requireInstanceStepUp`, audited as
-  `panel.identity_next.set|clear`, mails superadmins through `recordKeyEvent`);
+  `none` until the server pin column exists); `PUT /instance/identity/next` answers 410
+  `next_key_retired` on both runtimes (the offline next key is retired). Key changes are
+  `key-rotation-routes.ts`: `GET /instance/identity/rotation`, `POST /instance/identity/statements/prepare`
+  (exact statement bytes + WebAuthn challenge), `POST /instance/identity/statements` (assertions, checked
+  like a server checks them, then stored) and `GET /instance/identity/statements/:keyset` (download);
+  superadmin, step-up `panel.key.change`, audited `panel.key.rotate|revoke` and
+  `panel.approver.mark|unmark`, mailed through `recordKeyEvent`. `PUT /instance/hostnames` refuses (409
+  `rotation_rp_id_hostname`) a primary hostname other than the marked passkeys' `rp_id`;
   `GET /instance/identity/sealed-secrets` (superadmin) reports per server whether secrets still
   reach it in plaintext (feature, sealing key id, `plaintext_secrets_at`);
   `DELETE /instance/identity/sealed-secrets/:serverId/key` is Clear Sealing Key

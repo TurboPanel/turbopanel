@@ -28,6 +28,10 @@ export const AUDIT_EVENTS: Partial<Record<AuditAction, NotificationEvent>> = {
   'panel.identity_next.set': 'panel.identity_next_changed',
   'panel.identity_next.clear': 'panel.identity_next_changed',
   'server.panel_pin.mismatch': 'panel.pin_mismatch',
+  'panel.key.rotate': 'panel.key_changed',
+  'panel.key.revoke': 'panel.key_changed',
+  'panel.approver.mark': 'panel.approvers_changed',
+  'panel.approver.unmark': 'panel.approvers_changed',
 }
 
 /** The non-secret facts an event renders from: the audit context plus who acted. */

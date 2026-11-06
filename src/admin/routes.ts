@@ -235,8 +235,10 @@ export function registerAdminRoutes(
     panelIdentity?: () => Promise<PanelIdentity | null>
     /** The public origins the identity document lists (URL 0 is the install address). */
     identityUrls?: (db: NonNullable<ReturnType<typeof getDb>>) => Promise<string[]>
-    /** Self-hosted: the stored next key changed, so swap the in-memory identity. */
-    onIdentityNextChanged?: (fingerprint: string | null) => void
+    /** Self-hosted: the data-encryption key the identity seeds are sealed under. */
+    identityDataEncryption?: DerivedSecretsConfig
+    /** Self-hosted: the stored key changed, so reload the in-memory identity. */
+    onIdentityChanged?: () => Promise<void>
   }
 ) {
   const admin = new Hono<AppEnv>()
@@ -369,7 +371,8 @@ export function registerAdminRoutes(
     runtime: opts.runtime,
     ...(opts.panelIdentity ? { panelIdentity: opts.panelIdentity } : {}),
     ...(opts.identityUrls ? { identityUrls: opts.identityUrls } : {}),
-    ...(opts.onIdentityNextChanged ? { onNextChanged: opts.onIdentityNextChanged } : {}),
+    ...(opts.identityDataEncryption ? { dataEncryption: opts.identityDataEncryption } : {}),
+    ...(opts.onIdentityChanged ? { onIdentityChanged: opts.onIdentityChanged } : {}),
   })
 
   registerInstanceAccessAdminRoutes(admin, {
