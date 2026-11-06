@@ -12,7 +12,7 @@ import { createAdminAccessMiddleware } from '../client/authn/middleware.ts'
 import { deletePasskey, PasskeyMarkedError } from '../client/authn/passkeys.ts'
 import { createSession } from '../client/authn/session-store.ts'
 import { createDenoDb, type Db, endDbConnection } from '../db/connection.ts'
-import { approver, passkey, setting, statement, user } from '../db/schema.ts'
+import { custodian, passkey, setting, statement, user } from '../db/schema.ts'
 import { base64urlDecode, base64urlEncode } from '../lib/encoding/base64url.ts'
 import {
   ensurePanelIdentity,
@@ -106,7 +106,7 @@ test('marks, a rotation and the refusals around them', async () => {
       parseTestSecretsConfig('deno'),
       'data-encryption'
     )
-    await db.delete(approver)
+    await db.delete(custodian)
     await db.delete(statement)
     await db.delete(setting).where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
     let identity: PanelIdentity = await ensurePanelIdentity(db, dataEncryption)
@@ -206,7 +206,7 @@ test('marks, a rotation and the refusals around them', async () => {
     assertEquals(chain[1]!.statement, rotate.body.statement)
     assertEquals((await listLiveStatements(db, 2)).length, 1)
   } finally {
-    await db.delete(approver)
+    await db.delete(custodian)
     await db.delete(statement)
     if (createdUsers.length > 0) {
       await db.delete(passkey).where(inArray(passkey.userId, createdUsers))

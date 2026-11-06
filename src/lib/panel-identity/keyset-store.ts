@@ -1,12 +1,12 @@
 /**
- * Postgres side of key rotation: marked rotation passkeys (`approver`) and the
+ * Postgres side of key rotation: marked rotation passkeys (`custodian`) and the
  * key-set chain (`statement`). Public data only, so both runtimes keep it in
  * the database (High Availability has no writable key store). Every function
  * takes the caller's database client; nothing here holds one.
  */
 import { and, asc, desc, eq, gt, inArray, isNull, max } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { approver, statement } from '../../db/schema.ts'
+import { custodian, statement } from '../../db/schema.ts'
 import {
   type KeysetEnvelope,
   type KeysetPin,
@@ -18,7 +18,7 @@ import {
 } from './keyset-statement.ts'
 import type { PanelIdentity } from './identity.ts'
 
-export type MarkedApprover = RotationPasskey & {
+export type MarkedCustodian = RotationPasskey & {
   rowId: string
   passkeyId: string | null
   rpId: string
@@ -29,29 +29,29 @@ export type MarkedApprover = RotationPasskey & {
 export type RotationState = { rpId: string; passkeys: RotationPasskey[] }
 
 /** Rotation passkeys that approve key changes now, sorted by id. */
-export async function listMarkedApprovers(db: Db): Promise<MarkedApprover[]> {
+export async function listMarkedCustodians(db: Db): Promise<MarkedCustodian[]> {
   const rows = await db
     .select({
-      rowId: approver.id,
-      passkeyId: approver.passkeyId,
-      id: approver.pkid,
-      alg: approver.alg,
-      pub: approver.publicKeyRaw,
-      rpId: approver.rpId,
-      label: approver.label,
+      rowId: custodian.id,
+      passkeyId: custodian.passkeyId,
+      id: custodian.pkid,
+      alg: custodian.alg,
+      pub: custodian.publicKeyRaw,
+      rpId: custodian.rpId,
+      label: custodian.label,
     })
-    .from(approver)
-    .where(isNull(approver.unmarkedAt))
-    .orderBy(asc(approver.pkid))
+    .from(custodian)
+    .where(isNull(custodian.unmarkedAt))
+    .orderBy(asc(custodian.pkid))
   return rows.map((row) => ({ ...row, alg: row.alg === 'EdDSA' ? 'EdDSA' : 'ES256' }))
 }
 
-export function rotationStateOf(approvers: readonly MarkedApprover[]): RotationState | null {
-  const first = approvers[0]
+export function rotationStateOf(custodians: readonly MarkedCustodian[]): RotationState | null {
+  const first = custodians[0]
   if (!first) return null
   return {
     rpId: first.rpId,
-    passkeys: approvers.map((a) => ({ id: a.id, alg: a.alg, pub: a.pub })),
+    passkeys: custodians.map((a) => ({ id: a.id, alg: a.alg, pub: a.pub })),
   }
 }
 
@@ -77,15 +77,15 @@ export async function controlPlanePin(
   db: Db,
   identity: PanelIdentity,
   fallbackRpId: string
-): Promise<KeysetPin & { approvers: MarkedApprover[] }> {
-  const approvers = await listMarkedApprovers(db)
-  const state = rotationStateOf(approvers)
+): Promise<KeysetPin & { custodians: MarkedCustodian[] }> {
+  const custodians = await listMarkedCustodians(db)
+  const state = rotationStateOf(custodians)
   return {
     current: identity.current.kid,
     keyset: Math.max(identity.keyset, await maxKeyset(db, false)),
     rpId: state?.rpId ?? fallbackRpId,
     passkeys: state?.passkeys ?? [],
-    approvers,
+    custodians,
   }
 }
 
@@ -234,26 +234,26 @@ export async function insertStatement(db: Db, input: StatementInsert): Promise<v
   })
 }
 
-export type ApproverMark = RotationPasskey & {
+export type CustodianMark = RotationPasskey & {
   passkeyId: string
   rpId: string
   label: string | null
 }
 
 /** Apply a passkey statement's set: mark the added, unmark the removed. */
-export async function applyApproverChanges(
+export async function applyCustodianChanges(
   db: Db,
-  input: { keyset: number; mark: readonly ApproverMark[]; unmark: readonly string[] }
+  input: { keyset: number; mark: readonly CustodianMark[]; unmark: readonly string[] }
 ): Promise<void> {
   const now = new Date().toISOString()
   if (input.unmark.length > 0) {
     await db
-      .update(approver)
+      .update(custodian)
       .set({ unmarkedAt: now, unmarkedKeyset: input.keyset, passkeyId: null })
-      .where(and(inArray(approver.pkid, [...input.unmark]), isNull(approver.unmarkedAt)))
+      .where(and(inArray(custodian.pkid, [...input.unmark]), isNull(custodian.unmarkedAt)))
   }
   if (input.mark.length > 0) {
-    await db.insert(approver).values(
+    await db.insert(custodian).values(
       input.mark.map((m) => ({
         passkeyId: m.passkeyId,
         pkid: m.id,
@@ -270,9 +270,9 @@ export async function applyApproverChanges(
 /** The rp id the marked rotation passkeys belong to, or null when none is marked. */
 export async function markedRpId(db: Db): Promise<string | null> {
   const rows = await db
-    .select({ rpId: approver.rpId })
-    .from(approver)
-    .where(isNull(approver.unmarkedAt))
+    .select({ rpId: custodian.rpId })
+    .from(custodian)
+    .where(isNull(custodian.unmarkedAt))
     .limit(1)
   return rows[0]?.rpId ?? null
 }
@@ -280,18 +280,18 @@ export async function markedRpId(db: Db): Promise<string | null> {
 /** Ids of the sign-in passkeys marked now. */
 export async function markedPasskeyIds(db: Db): Promise<Set<string>> {
   const rows = await db
-    .select({ passkeyId: approver.passkeyId })
-    .from(approver)
-    .where(isNull(approver.unmarkedAt))
+    .select({ passkeyId: custodian.passkeyId })
+    .from(custodian)
+    .where(isNull(custodian.unmarkedAt))
   return new Set(rows.map((row) => row.passkeyId).filter((id): id is string => id !== null))
 }
 
 /** True when this sign-in passkey is marked (it must be unmarked before it can be deleted). */
 export async function isPasskeyMarked(db: Db, passkeyId: string): Promise<boolean> {
   const rows = await db
-    .select({ id: approver.id })
-    .from(approver)
-    .where(and(eq(approver.passkeyId, passkeyId), isNull(approver.unmarkedAt)))
+    .select({ id: custodian.id })
+    .from(custodian)
+    .where(and(eq(custodian.passkeyId, passkeyId), isNull(custodian.unmarkedAt)))
     .limit(1)
   return rows.length > 0
 }
@@ -306,12 +306,15 @@ export async function identityChainState(
   identity: PanelIdentity
 ): Promise<{ keyset: number; rotation: RotationState | null }> {
   await markAwaitingStatementLive(db, identity.current.kid)
-  const [keyset, approvers] = await Promise.all([liveKeyset(db, identity), listMarkedApprovers(db)])
-  return { keyset, rotation: rotationStateOf(approvers) }
+  const [keyset, custodians] = await Promise.all([
+    liveKeyset(db, identity),
+    listMarkedCustodians(db),
+  ])
+  return { keyset, rotation: rotationStateOf(custodians) }
 }
 
 /** Hash of the marked rotation passkeys (what a server's pin report should match), or null with none. */
 export async function markedPasskeysHash(db: Db): Promise<string | null> {
-  const approvers = await listMarkedApprovers(db)
-  return approvers.length > 0 ? await rotationPasskeysHash(approvers) : null
+  const custodians = await listMarkedCustodians(db)
+  return custodians.length > 0 ? await rotationPasskeysHash(custodians) : null
 }

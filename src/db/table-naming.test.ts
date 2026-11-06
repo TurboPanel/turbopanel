@@ -33,8 +33,6 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'account',
   'address',
   'allowance',
-  // A sign-in passkey marked to approve control plane key changes.
-  'approver',
   'archive',
   'attempt',
   'audit',
@@ -50,6 +48,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'connection',
   'container',
   'copy',
+  // A sign-in passkey marked to approve control plane key changes.
+  'custodian',
   'database',
   'datacenter',
   'delivery',

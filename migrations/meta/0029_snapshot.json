@@ -1,5 +1,5 @@
 {
-  "id": "ca649aa8-daf7-48af-806c-ba721ca0edd5",
+  "id": "454e2f41-57b1-4f9c-a11e-2964650b78eb",
   "prevId": "cb1ed0f7-27d4-4548-a8a4-a973a9cb5363",
   "version": "7",
   "dialect": "postgresql",
@@ -213,128 +213,6 @@
         "allowance_quantity_check": {
           "name": "allowance_quantity_check",
           "value": "quantity >= 1"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.approver": {
-      "name": "approver",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "passkey_id": {
-          "name": "passkey_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pkid": {
-          "name": "pkid",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "alg": {
-          "name": "alg",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "public_key_raw": {
-          "name": "public_key_raw",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "rp_id": {
-          "name": "rp_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "label": {
-          "name": "label",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "marked_keyset": {
-          "name": "marked_keyset",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "unmarked_keyset": {
-          "name": "unmarked_keyset",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "unmarked_at": {
-          "name": "unmarked_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "uniq_approver_marked_pkid": {
-          "name": "uniq_approver_marked_pkid",
-          "columns": [
-            {
-              "expression": "pkid",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "text_ops"
-            }
-          ],
-          "isUnique": true,
-          "where": "(unmarked_at IS NULL)",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "approver_passkey_id_passkey_id_fk": {
-          "name": "approver_passkey_id_passkey_id_fk",
-          "tableFrom": "approver",
-          "tableTo": "passkey",
-          "columnsFrom": [
-            "passkey_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "approver_alg_check": {
-          "name": "approver_alg_check",
-          "value": "alg IN ('ES256', 'EdDSA')"
-        },
-        "approver_marked_passkey_check": {
-          "name": "approver_marked_passkey_check",
-          "value": "(unmarked_at IS NOT NULL) OR (passkey_id IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -2952,6 +2830,128 @@
         "container_status_check": {
           "name": "container_status_check",
           "value": "status IN ('pending', 'created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead', 'unknown')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.custodian": {
+      "name": "custodian",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "passkey_id": {
+          "name": "passkey_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pkid": {
+          "name": "pkid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "alg": {
+          "name": "alg",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "public_key_raw": {
+          "name": "public_key_raw",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rp_id": {
+          "name": "rp_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "marked_keyset": {
+          "name": "marked_keyset",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unmarked_keyset": {
+          "name": "unmarked_keyset",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unmarked_at": {
+          "name": "unmarked_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "uniq_custodian_marked_pkid": {
+          "name": "uniq_custodian_marked_pkid",
+          "columns": [
+            {
+              "expression": "pkid",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops"
+            }
+          ],
+          "isUnique": true,
+          "where": "(unmarked_at IS NULL)",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "custodian_passkey_id_passkey_id_fk": {
+          "name": "custodian_passkey_id_passkey_id_fk",
+          "tableFrom": "custodian",
+          "tableTo": "passkey",
+          "columnsFrom": [
+            "passkey_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "custodian_alg_check": {
+          "name": "custodian_alg_check",
+          "value": "alg IN ('ES256', 'EdDSA')"
+        },
+        "custodian_marked_passkey_check": {
+          "name": "custodian_marked_passkey_check",
+          "value": "(unmarked_at IS NOT NULL) OR (passkey_id IS NOT NULL)"
         }
       },
       "isRLSEnabled": false

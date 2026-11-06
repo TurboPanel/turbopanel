@@ -148,7 +148,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Argon2id PHC-format hash (`$argon2id$v=19$m=N,t=N,p=N$salt$digest`) on `credential` rows, set at sign-up, install and password reset; null on OAuth rows.',
     },
   },
-  approver: {
+  custodian: {
     group: 'identity',
     summary:
       'A sign-in passkey a superadmin marked to approve control plane key changes, with the frozen key servers pin; kept as history once unmarked.',

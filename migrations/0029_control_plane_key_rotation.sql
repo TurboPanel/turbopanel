@@ -1,4 +1,4 @@
-CREATE TABLE "approver" (
+CREATE TABLE "custodian" (
 	"id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
 	"created_at" timestamp(3) with time zone DEFAULT now() NOT NULL,
 	"passkey_id" uuid,
@@ -10,8 +10,8 @@ CREATE TABLE "approver" (
 	"marked_keyset" integer NOT NULL,
 	"unmarked_keyset" integer,
 	"unmarked_at" timestamp(3) with time zone,
-	CONSTRAINT "approver_alg_check" CHECK (alg IN ('ES256', 'EdDSA')),
-	CONSTRAINT "approver_marked_passkey_check" CHECK ((unmarked_at IS NOT NULL) OR (passkey_id IS NOT NULL))
+	CONSTRAINT "custodian_alg_check" CHECK (alg IN ('ES256', 'EdDSA')),
+	CONSTRAINT "custodian_marked_passkey_check" CHECK ((unmarked_at IS NOT NULL) OR (passkey_id IS NOT NULL))
 );
 --> statement-breakpoint
 CREATE TABLE "statement" (
@@ -36,22 +36,22 @@ ALTER TABLE "notification" DROP CONSTRAINT "notification_event_check";--> statem
 ALTER TABLE "attempt" DROP CONSTRAINT "attempt_event_check";--> statement-breakpoint
 ALTER TABLE "rule" DROP CONSTRAINT "rule_event_check";--> statement-breakpoint
 ALTER TABLE "server" ADD COLUMN "trust_pin_passkeys" text;--> statement-breakpoint
-ALTER TABLE "approver" ADD CONSTRAINT "approver_passkey_id_passkey_id_fk" FOREIGN KEY ("passkey_id") REFERENCES "public"."passkey"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "custodian" ADD CONSTRAINT "custodian_passkey_id_passkey_id_fk" FOREIGN KEY ("passkey_id") REFERENCES "public"."passkey"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "statement" ADD CONSTRAINT "statement_approved_by_user_id_user_id_fk" FOREIGN KEY ("approved_by_user_id") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "uniq_approver_marked_pkid" ON "approver" USING btree ("pkid" text_ops) WHERE (unmarked_at IS NULL);--> statement-breakpoint
+CREATE UNIQUE INDEX "uniq_custodian_marked_pkid" ON "custodian" USING btree ("pkid" text_ops) WHERE (unmarked_at IS NULL);--> statement-breakpoint
 ALTER TABLE "notification" ADD CONSTRAINT "notification_event_check" CHECK (event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed', 'panel.key_changed', 'panel.approvers_changed'));--> statement-breakpoint
 ALTER TABLE "attempt" ADD CONSTRAINT "attempt_event_check" CHECK (event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed', 'panel.key_changed', 'panel.approvers_changed'));--> statement-breakpoint
 ALTER TABLE "rule" ADD CONSTRAINT "rule_event_check" CHECK (event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed', 'panel.key_changed', 'panel.approvers_changed'));--> statement-breakpoint
-COMMENT ON TABLE "approver" IS 'A sign-in passkey a superadmin marked to approve control plane key changes, with the frozen key servers pin; kept as history once unmarked.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."passkey_id" IS 'The marked sign-in passkey; ON DELETE RESTRICT so it cannot be deleted while marked, and cleared when the passkey is unmarked.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."pkid" IS 'Rotation passkey id servers pin: base64url SHA-256 of the raw credential id; unique among marked rows.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."alg" IS 'Signature algorithm of the pinned key, `ES256` or `EdDSA`.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."public_key_raw" IS 'Base64url raw public key servers verify approvals with: a 65-byte P-256 point or a 32-byte Ed25519 key, copied when marked.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."rp_id" IS 'WebAuthn relying party id the passkey belongs to: the primary hostname when the first passkey was marked.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."label" IS 'Passkey name and owner when marked, for mail and the audit trail.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."marked_keyset" IS 'Key set number of the statement that marked it.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."unmarked_keyset" IS 'Key set number of the statement that unmarked it; NULL while marked.';--> statement-breakpoint
-COMMENT ON COLUMN "approver"."unmarked_at" IS 'When it was unmarked; NULL while it still approves key changes.';--> statement-breakpoint
+COMMENT ON TABLE "custodian" IS 'A sign-in passkey a superadmin marked to approve control plane key changes, with the frozen key servers pin; kept as history once unmarked.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."passkey_id" IS 'The marked sign-in passkey; ON DELETE RESTRICT so it cannot be deleted while marked, and cleared when the passkey is unmarked.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."pkid" IS 'Rotation passkey id servers pin: base64url SHA-256 of the raw credential id; unique among marked rows.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."alg" IS 'Signature algorithm of the pinned key, `ES256` or `EdDSA`.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."public_key_raw" IS 'Base64url raw public key servers verify approvals with: a 65-byte P-256 point or a 32-byte Ed25519 key, copied when marked.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."rp_id" IS 'WebAuthn relying party id the passkey belongs to: the primary hostname when the first passkey was marked.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."label" IS 'Passkey name and owner when marked, for mail and the audit trail.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."marked_keyset" IS 'Key set number of the statement that marked it.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."unmarked_keyset" IS 'Key set number of the statement that unmarked it; NULL while marked.';--> statement-breakpoint
+COMMENT ON COLUMN "custodian"."unmarked_at" IS 'When it was unmarked; NULL while it still approves key changes.';--> statement-breakpoint
 COMMENT ON COLUMN "passkey"."public_key" IS 'Credential public key as a JSON-serialised JWK (ES256, EdDSA or RS256) converted from the attestation''s COSE key; verifies sign-in assertions.';--> statement-breakpoint
 COMMENT ON COLUMN "server"."trust_pin_passkeys" IS 'Base64url SHA-256 of the rotation passkeys line in the server pin, from its signed pin report; empty with none pinned, NULL when not reported.';--> statement-breakpoint
 COMMENT ON TABLE "statement" IS 'One approved key-set statement of the control plane: the chain every server follows to a new key or passkey set, kept forever in `keyset` order.';--> statement-breakpoint

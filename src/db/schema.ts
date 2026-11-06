@@ -432,8 +432,8 @@ export const passkey = pgTable(
  * marked (`unmarked_at` NULL) the passkey cannot be deleted (`RESTRICT`);
  * unmarking clears `passkey_id` and keeps the row as history.
  */
-export const approver = pgTable(
-  'approver',
+export const custodian = pgTable(
+  'custodian',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -453,17 +453,17 @@ export const approver = pgTable(
     unmarkedAt: timestamp('unmarked_at', { precision: 3, withTimezone: true, mode: 'string' }),
   },
   (table) => [
-    uniqueIndex('uniq_approver_marked_pkid')
+    uniqueIndex('uniq_custodian_marked_pkid')
       .using('btree', table.pkid.asc().nullsLast().op('text_ops'))
       .where(sql`(unmarked_at IS NULL)`),
     foreignKey({
       columns: [table.passkeyId],
       foreignColumns: [passkey.id],
-      name: 'approver_passkey_id_passkey_id_fk',
+      name: 'custodian_passkey_id_passkey_id_fk',
     }).onDelete('restrict'),
-    check('approver_alg_check', sql`alg IN ('ES256', 'EdDSA')`),
+    check('custodian_alg_check', sql`alg IN ('ES256', 'EdDSA')`),
     check(
-      'approver_marked_passkey_check',
+      'custodian_marked_passkey_check',
       sql`(unmarked_at IS NOT NULL) OR (passkey_id IS NOT NULL)`
     ),
   ]

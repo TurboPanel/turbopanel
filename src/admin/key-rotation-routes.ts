@@ -48,13 +48,13 @@ import {
   verifyKeysetEnvelope,
 } from '../lib/panel-identity/keyset-statement.ts'
 import {
-  applyApproverChanges,
-  type ApproverMark,
+  applyCustodianChanges,
+  type CustodianMark,
   controlPlanePin,
   insertStatement,
   listRecentStatements,
   markAwaitingStatementLive,
-  type MarkedApprover,
+  type MarkedCustodian,
   readAwaitingKeyStatement,
   readStatement,
 } from '../lib/panel-identity/keyset-store.ts'
@@ -123,7 +123,11 @@ function refuse(c: Context<AppEnv>, status: 404 | 409 | 422 | 503, error: string
   return c.json({ ok: false, error, message }, status)
 }
 
-type Loaded = { db: Db; identity: PanelIdentity; pin: KeysetPin & { approvers: MarkedApprover[] } }
+type Loaded = {
+  db: Db
+  identity: PanelIdentity
+  pin: KeysetPin & { custodians: MarkedCustodian[] }
+}
 
 async function load(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Loaded | Response> {
   const db = getDb(c)
@@ -278,8 +282,8 @@ async function planPasskeyChange(
 }
 
 /** Credential ids of the marked passkeys (the browser's `allowCredentials`). */
-async function approverCredentialIds(db: Db, approvers: MarkedApprover[]): Promise<string[]> {
-  const ids = approvers.map((a) => a.passkeyId).filter((id): id is string => id !== null)
+async function approverCredentialIds(db: Db, custodians: MarkedCustodian[]): Promise<string[]> {
+  const ids = custodians.map((a) => a.passkeyId).filter((id): id is string => id !== null)
   if (ids.length === 0) return []
   const rows = await db
     .select({ credentialId: passkey.credentialId })
@@ -330,14 +334,14 @@ async function addedMarks(
   userId: string,
   statement: KeysetStatement,
   pin: KeysetPin
-): Promise<ApproverMark[] | null> {
+): Promise<CustodianMark[] | null> {
   const added = statement.passkeys.filter((p) => !pin.passkeys.some((q) => q.id === p.id))
   if (added.length === 0) return []
   const rows = (await superadminPasskeys(db)).filter((r) => r.userId === userId)
   const candidates = await Promise.all(
     rows.map(async (row) => ({ row, key: await candidateKey(row) }))
   )
-  const marks: ApproverMark[] = []
+  const marks: CustodianMark[] = []
   for (const key of added) {
     const match = candidates.find(
       (c) => c.key?.id === key.id && c.key.alg === key.alg && c.key.pub === key.pub
@@ -348,7 +352,7 @@ async function addedMarks(
   return marks
 }
 
-function auditAction(statement: KeysetStatement, marks: ApproverMark[]) {
+function auditAction(statement: KeysetStatement, marks: CustodianMark[]) {
   if (statement.kind === 'rotate') return 'panel.key.rotate' as const
   if (statement.kind === 'revoke') return 'panel.key.revoke' as const
   return marks.length > 0 ? ('panel.approver.mark' as const) : ('panel.approver.unmark' as const)
@@ -392,7 +396,7 @@ type ApprovedChange = {
   parsed: KeysetStatement
   envelope: KeysetEnvelope
   state: 'awaiting_key' | 'live'
-  marks: ApproverMark[]
+  marks: CustodianMark[]
   unmark: string[]
   userId: string | null
 }
@@ -416,7 +420,7 @@ async function storeApproved(
         envelope,
         approvedByUserId: change.userId,
       })
-      await applyApproverChanges(txDb, { keyset: parsed.keyset, mark: marks, unmark })
+      await applyCustodianChanges(txDb, { keyset: parsed.keyset, mark: marks, unmark })
       if (opts.runtime !== 'deno') return
       if (!keyChanges) {
         await raiseStoredIdentityKeyset(txDb, parsed.keyset)
@@ -443,8 +447,8 @@ async function auditApproval(
   c: Context<AppEnv>,
   input: {
     parsed: KeysetStatement
-    pin: KeysetPin & { approvers: MarkedApprover[] }
-    marks: ApproverMark[]
+    pin: KeysetPin & { custodians: MarkedCustodian[] }
+    marks: CustodianMark[]
     unmark: string[]
     state: 'awaiting_key' | 'live'
     pinnedApprovals: string[]
@@ -452,8 +456,8 @@ async function auditApproval(
 ): Promise<void> {
   const { parsed, pin, marks, unmark } = input
   const session = c.get('session')
-  const approver = pin.approvers.find((a) => input.pinnedApprovals.includes(a.id))
-  const unmarkedLabels = pin.approvers.filter((a) => unmark.includes(a.id)).map((a) => a.label)
+  const approver = pin.custodians.find((a) => input.pinnedApprovals.includes(a.id))
+  const unmarkedLabels = pin.custodians.filter((a) => unmark.includes(a.id)).map((a) => a.label)
   await recordKeyEvent(c, {
     organizationId: null,
     actorUserId: session?.userId ?? null,
@@ -563,7 +567,7 @@ async function prepare(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Re
     kind: planned.statement.kind,
     oldFingerprint: planned.statement.prev,
     newFingerprint: planned.statement.current.kid,
-    approverCredentialIds: await approverCredentialIds(loaded.db, loaded.pin.approvers),
+    approverCredentialIds: await approverCredentialIds(loaded.db, loaded.pin.custodians),
     possessionCredentialIds: planned.possession,
   })
 }

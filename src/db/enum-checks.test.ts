@@ -120,7 +120,7 @@ function checkValues(constraintName: string): string[] {
 }
 
 const CASES: Array<[constraint: string, values: readonly string[]]> = [
-  ['approver_alg_check', ROTATION_PASSKEY_ALGS],
+  ['custodian_alg_check', ROTATION_PASSKEY_ALGS],
   ['statement_kind_check', KEYSET_STATEMENT_KINDS],
   ['statement_state_check', KEYSET_STATEMENT_STATES],
   ['carrier_provider_check', TUNNEL_PROVIDERS],
