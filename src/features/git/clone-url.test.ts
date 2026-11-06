@@ -301,6 +301,31 @@ test('cloneUrlRefusal refuses a host that is not a public git host', () => {
   assertEquals(cloneUrlRefusal('https://user:secret@10.0.0.5/o/r.git'), 'invalid')
 })
 
+test('cloneUrlRefusal refuses a host named with a local network ending', () => {
+  for (const url of [
+    'https://git.lan/o/r.git',
+    'https://GIT.LAN./o/r.git',
+    'https://git.example.corp/o/r.git',
+    'https://code.intranet/o/r.git',
+    'https://git.private/o/r.git',
+    'https://nas.home/o/r.git',
+    'ssh://git@git.lan:2222/o/r.git',
+    'git@git.corp:o/r.git',
+  ]) {
+    assertEquals(cloneUrlRefusal(url), 'host_not_public', url)
+    assertEquals(isDaemonReadableCloneUrl(url), false, url)
+  }
+  // Only the last label counts: these end in a public suffix.
+  for (const url of [
+    'https://git.lan.example.com/o/r.git',
+    'https://git.home.example.org/o/r.git',
+    'https://git.example.homes/o/r.git',
+    'git@corp.example.com:o/r.git',
+  ]) {
+    assertEquals(cloneUrlRefusal(url), null, url)
+  }
+})
+
 test('cloneUrlRefusal refuses a user, host or port git and the URL parser read differently', () => {
   for (const url of [
     'ssh://git@github.com#@127.0.0.1/a',
