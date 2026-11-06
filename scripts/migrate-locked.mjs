@@ -38,6 +38,7 @@ import {
   readAppliedMigrationHashes,
   readShippedMigrationHashes,
 } from './schema-state.mjs'
+import { syncNotificationCatalog } from '../src/features/notifications/catalog-sync.ts'
 
 // Arbitrary fixed two-int4 advisory-lock key, scoped to this repo's
 // migration runner specifically (not shared with any other lock use).
@@ -137,6 +138,10 @@ try {
     migrationsSchema: 'public',
   })
   console.log('migrate-locked: migrations applied successfully')
+  // The notification catalog is data written from code (events.ts), under the
+  // same lock: upserted by code, never deleted.
+  await syncNotificationCatalog((text, params) => client.unsafe(text, params))
+  console.log('migrate-locked: notification catalog in step')
 } catch (err) {
   console.error(`migrate-locked: ${err instanceof Error ? err.message : String(err)}`)
   // The migrator wraps the database's own error as "Failed query: …"; print what

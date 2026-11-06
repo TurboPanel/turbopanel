@@ -9,7 +9,15 @@ import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { grant, notificationDelivery, organization, team, teammate, user } from '../../db/schema.ts'
+import {
+  grant,
+  notificationDelivery,
+  notificationPreference,
+  organization,
+  team,
+  teammate,
+  user,
+} from '../../db/schema.ts'
 import type { EmailJob, EmailQueue } from '../email/types.ts'
 import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import { generateSecret } from '../../lib/secrets/generate-secret.ts'
@@ -85,10 +93,11 @@ async function withFixture(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     .values({ name: 'Digest Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
+  const memberEmail = `digest-member-${crypto.randomUUID()}@example.com`
   const [member] = await db
     .insert(user)
     .values({
-      email: `digest-member-${crypto.randomUUID()}@example.com`,
+      email: memberEmail,
       isEmailVerified: true,
       role: 'user',
     })
@@ -106,6 +115,9 @@ async function withFixture(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     actorId: memberId,
     permission: 'organization:manage',
   })
+  // Nothing arrives until a person turns it on (owner decision 2026-11-06):
+  // the member turned on the bell.
+  await db.insert(notificationPreference).values({ userId: memberId, kind: 'inbox', level: 'all' })
   const jobs: EmailJob[] = []
   const failEnqueue = { times: 0 }
   const queue: EmailQueue = {
@@ -215,15 +227,24 @@ async function withFixture(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
         userId: scope === 'user' ? memberId : null,
         kind: 'email',
         label: 'Digest channel',
-        address: `digest-${crypto.randomUUID()}@example.com`,
+        // An organization email channel reaches a member's address only.
+        address:
+          scope === 'organization' ? memberEmail : `digest-${crypto.randomUUID()}@example.com`,
         verifiedAt: new Date().toISOString(),
       })
-      await replaceRulesForChannel(db, c.id, [
-        {
-          event: '*',
-          minSeverity: 'info',
-        },
-      ])
+      if (scope === 'organization') {
+        await replaceRulesForChannel(db, c.id, [
+          {
+            event: '*',
+            minSeverity: 'info',
+          },
+        ])
+      } else {
+        // A personal channel is decided by the person's preferences.
+        await db
+          .insert(notificationPreference)
+          .values({ userId: memberId, channelId: c.id, level: 'all' })
+      }
       if (over.digestCadence !== undefined || over.quiet !== undefined) {
         await setChannelHoldSettings(db, c.id, {
           digestCadence: over.digestCadence ?? null,

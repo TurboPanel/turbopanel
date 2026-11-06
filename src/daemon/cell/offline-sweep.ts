@@ -87,6 +87,7 @@ import { cachedForEnv } from './notification-email-cache.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { pruneNotificationHistory } from '../../features/notifications/cleanup.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import {
   ALERT_DELIVERY_BUDGET_MS,
@@ -1697,6 +1698,22 @@ async function runOptionalCronPhases(
           allowPrivateTargets: true,
           email: await workersNotificationEmail(env, db, tlsRenewal),
         })
+      }
+    ))
+  ) {
+    return
+  }
+
+  // Inbox rows after 90 days, events and the ledger after 30, and settings of
+  // people who left an organization (features/notifications/cleanup.ts).
+  if (
+    !(await runOptionalPhase(
+      deadlineMs,
+      'notification-prune',
+      opts.scheduledTime,
+      phasesSkipped,
+      async () => {
+        await pruneNotificationHistory(db)
       }
     ))
   ) {
