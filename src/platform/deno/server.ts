@@ -101,7 +101,10 @@ import {
   effectiveCertificateSource,
   listInstanceHostnames,
 } from '../../features/install/instance-hostnames.ts'
-import { ensurePanelIdentityDetailed } from '../../lib/panel-identity/identity.ts'
+import {
+  ensurePanelIdentityDetailed,
+  resolvePanelIdentityFromDb,
+} from '../../lib/panel-identity/identity.ts'
 import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
@@ -728,6 +731,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       ),
     readPlatformCaPem,
     panelIdentity: () => Promise.resolve(panelIdentity),
+    identityChain: true,
     identityUrls: serverDialOrigins,
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
@@ -792,8 +796,10 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     ),
     panelIdentity: () => Promise.resolve(panelIdentity),
     identityUrls: serverDialOrigins,
-    onIdentityNextChanged: (fingerprint) => {
-      panelIdentity = { ...panelIdentity, next: fingerprint ? { kid: fingerprint } : null }
+    identityDataEncryption: dataEncryptionSecrets,
+    onIdentityChanged: async () => {
+      const reloaded = await resolvePanelIdentityFromDb(db, dataEncryptionSecrets)
+      if (reloaded) panelIdentity = reloaded
     },
     refreshEdgeRanges: (routeDb) => refreshEdgeRanges(routeDb),
     ...resolveMailDeadLetters(emailQueue),

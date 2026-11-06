@@ -22,6 +22,7 @@ import {
   buildPasskeyLoginOptions,
   buildPasskeyRegistrationOptions,
   deletePasskey,
+  PasskeyMarkedError,
   InvalidPasskeyCeremonyError,
   listPasskeys,
   type PasskeyCredentialAssertion,
@@ -244,7 +245,13 @@ export function registerPasskeyRoutes(auth: Hono<AppEnv>, opts: AuthRouteOpts) {
     if (reauth) return reauth
 
     const passkeyId = c.req.param('id')
-    const deleted = await deletePasskey(db, sessionData.userId, passkeyId)
+    let deleted: boolean
+    try {
+      deleted = await deletePasskey(db, sessionData.userId, passkeyId)
+    } catch (err) {
+      if (!(err instanceof PasskeyMarkedError)) throw err
+      return c.json({ ok: false, error: 'passkey_marked', message: err.message }, 409)
+    }
     if (!deleted) {
       return c.json({ ok: false, error: 'Not found' }, 404)
     }

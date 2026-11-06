@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { setting } from '../../db/schema.ts'
 import type { Db } from '../../db/connection.ts'
 import { base64urlEncode } from '../encoding/base64url.ts'
@@ -142,6 +142,8 @@ export type StoredIdentityValue = {
   currentKid: string
   sealKid: string
   nextKid: string | null
+  /** A new Ed25519 key waiting for a passkey-approved rotation; its seed rides inside `sealed`. */
+  pendingKid?: string | null
   sealed: string
 }
 
@@ -161,7 +163,31 @@ function parseStoredValue(value: unknown): StoredIdentityValue {
     currentKid: value.currentKid,
     sealKid: value.sealKid,
     nextKid: typeof value.nextKid === 'string' ? value.nextKid : null,
+    pendingKid: typeof value.pendingKid === 'string' ? value.pendingKid : null,
     sealed: value.sealed,
+  }
+}
+
+type StoredSeeds = { ed25519Seed: string; x25519Seed: string; pendingEd25519Seed?: string }
+
+async function openSeeds(
+  stored: StoredIdentityValue,
+  secrets: DerivedSecretsConfig
+): Promise<StoredSeeds> {
+  const seeds = parseJsonFixedError(await decryptSecret(secrets, stored.sealed))
+  if (
+    !isRecord(seeds) ||
+    typeof seeds.ed25519Seed !== 'string' ||
+    typeof seeds.x25519Seed !== 'string'
+  ) {
+    throw new TypeError(`${PANEL_IDENTITY_SETTING_KEY} seeds are malformed`)
+  }
+  return {
+    ed25519Seed: seeds.ed25519Seed,
+    x25519Seed: seeds.x25519Seed,
+    ...(typeof seeds.pendingEd25519Seed === 'string'
+      ? { pendingEd25519Seed: seeds.pendingEd25519Seed }
+      : {}),
   }
 }
 
@@ -169,10 +195,7 @@ async function openStored(
   stored: StoredIdentityValue,
   secrets: DerivedSecretsConfig
 ): Promise<PanelIdentity> {
-  const seeds = parseJsonFixedError(await decryptSecret(secrets, stored.sealed))
-  if (!isRecord(seeds)) {
-    throw new TypeError(`${PANEL_IDENTITY_SETTING_KEY} seeds are malformed`)
-  }
+  const seeds = await openSeeds(stored, secrets)
   const identity = await buildIdentity({
     keyset: stored.keyset,
     ed25519Seed: decodeSeed(seeds.ed25519Seed, 'ed25519Seed'),
@@ -274,6 +297,105 @@ export async function setPanelIdentityNext(db: Db, nextKid: string | null): Prom
     .update(setting)
     .set({ value: { ...stored, nextKid } })
     .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
+}
+
+/** The parsed row and the exact stored value (the compare-and-set below matches on the latter). */
+type StoredRow = { stored: StoredIdentityValue; raw: Record<string, unknown> }
+
+async function requireStored(db: Db): Promise<StoredRow> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
+    .limit(1)
+  const raw = rows[0]?.value
+  if (!isRecord(raw)) {
+    throw new Error('no panel identity yet; start the panel once first')
+  }
+  return { stored: parseStoredValue(raw), raw }
+}
+
+/**
+ * Change some fields of the stored row, only if nobody changed it since it
+ * was read. Matches on the raw value: a row written before a field existed
+ * has no such key, and jsonb equality counts keys.
+ */
+async function writeStored(
+  db: Db,
+  row: StoredRow,
+  patch: Partial<StoredIdentityValue>
+): Promise<void> {
+  const updated = await db
+    .update(setting)
+    .set({ value: { ...row.raw, ...patch } })
+    .where(and(eq(setting.key, PANEL_IDENTITY_SETTING_KEY), eq(setting.value, row.raw)))
+    .returning({ key: setting.key })
+  if (updated.length === 0) {
+    throw new Error('the control plane key changed while this ran; try again')
+  }
+}
+
+/**
+ * The key a self-hosted rotation moves to: the stored pending key, or a new
+ * random one sealed next to the current seeds. Only public values come back.
+ */
+export async function ensurePendingIdentityKey(
+  db: Db,
+  secrets: DerivedSecretsConfig
+): Promise<{ kid: string; pub: string }> {
+  const row = await requireStored(db)
+  const { stored } = row
+  const seeds = await openSeeds(stored, secrets)
+  if (stored.pendingKid && seeds.pendingEd25519Seed) {
+    const pending = await importEd25519Signer(decodeSeed(seeds.pendingEd25519Seed, 'pending'))
+    if (pending.kid === stored.pendingKid) {
+      return { kid: pending.kid, pub: base64urlEncode(pending.publicRaw) }
+    }
+  }
+  const seed = generateIdentitySeeds().ed25519Seed
+  const pending = await importEd25519Signer(seed)
+  const sealed = await encryptSecret(
+    secrets,
+    JSON.stringify({ ...seeds, pendingEd25519Seed: base64urlEncode(seed) })
+  )
+  await writeStored(db, row, { pendingKid: pending.kid, sealed })
+  return { kid: pending.kid, pub: base64urlEncode(pending.publicRaw) }
+}
+
+/**
+ * Make the pending key current (the sealing key is kept) and record the key
+ * set of the statement that approved it. Run inside the transaction that
+ * stores the statement.
+ */
+export async function promotePendingIdentityKey(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  input: { kid: string; keyset: number }
+): Promise<void> {
+  const row = await requireStored(db)
+  const { stored } = row
+  const seeds = await openSeeds(stored, secrets)
+  if (stored.pendingKid !== input.kid || !seeds.pendingEd25519Seed) {
+    throw new Error('the approved key is not the pending key')
+  }
+  const sealed = await encryptSecret(
+    secrets,
+    JSON.stringify({ ed25519Seed: seeds.pendingEd25519Seed, x25519Seed: seeds.x25519Seed })
+  )
+  await writeStored(db, row, {
+    keyset: requireKeyset(input.keyset),
+    currentKid: input.kid,
+    nextKid: null,
+    pendingKid: null,
+    sealed,
+  })
+}
+
+/** Record a new key set (a passkey change keeps the key). Never lowers it. */
+export async function raiseStoredIdentityKeyset(db: Db, keyset: number): Promise<void> {
+  const row = await requireStored(db)
+  if (row.stored.keyset >= keyset) return
+  await writeStored(db, row, { keyset: requireKeyset(keyset) })
 }
 
 /** Base64url Ed25519 signature by the `current` key. */

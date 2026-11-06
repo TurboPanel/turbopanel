@@ -48,6 +48,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'connection',
   'container',
   'copy',
+  // A sign-in passkey marked to approve control plane key changes.
+  'custodian',
   'database',
   'datacenter',
   'delivery',
@@ -112,6 +114,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'slot',
   'snapshot',
   'ssh',
+  // One approved control plane key-set statement (the chain servers follow).
+  'statement',
   'stage',
   'storage',
   'subnet',

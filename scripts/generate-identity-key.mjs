@@ -44,6 +44,13 @@ export async function newKey(algorithm) {
   return { kid: b64url(digest), priv: b64url(seed) }
 }
 
+/** The raw public key (base64url) of an Ed25519 seed made by {@link newKey}. */
+export async function ed25519PublicKey(priv) {
+  const pkcs8 = new Uint8Array([...PKCS8_PREFIX.Ed25519, ...Buffer.from(priv, 'base64url')])
+  const key = await subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, true, ['sign'])
+  return (await subtle.exportKey('jwk', key)).x
+}
+
 function argValue(flag) {
   const index = process.argv.indexOf(flag)
   return index === -1 ? undefined : process.argv[index + 1]

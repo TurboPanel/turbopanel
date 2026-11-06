@@ -1,7 +1,7 @@
 /**
  * Host-free coverage for the Panel Identity admin routes: the read carries
- * public values only, and the next-key write is superadmin-only, refuses bad
- * input, and asks for step-up before it changes anything.
+ * public values only, the retired next-key write answers 410, and key changes
+ * are superadmin-only, refuse bad input and ask for step-up first.
  */
 import { assert, assertEquals } from '@std/assert'
 import { Hono } from 'hono'
@@ -142,7 +142,14 @@ test('the read returns public fingerprints and no private material', async () =>
   assertEquals(body.seal.fingerprint, identity?.seal.kid)
   assertEquals(body.installUrl, 'https://panel.example.com')
   assertEquals(body.servers, [
-    { id: 'srv-1', name: 'alpha', organizationId: 'org-1', pinnedBy: 'none', pinReport: null },
+    {
+      id: 'srv-1',
+      name: 'alpha',
+      organizationId: 'org-1',
+      pinPasskeys: null,
+      pinnedBy: 'none',
+      pinReport: null,
+    },
   ])
   assert(!/priv|seed|secret/i.test(text), 'no key material in the answer')
 })
@@ -161,6 +168,7 @@ test("the read carries each server's signed pin report", async () => {
         trustPinKeyset: 2,
         trustPinReportedAt: new Date('2026-11-05T12:00:00.000Z'),
         isTrustPinMatching: false,
+        trustPinPasskeys: '',
       },
     ],
   })
@@ -170,6 +178,7 @@ test("the read carries each server's signed pin report", async () => {
       id: 'srv-1',
       name: 'alpha',
       organizationId: 'org-1',
+      pinPasskeys: '',
       pinnedBy: 'upgrade',
       pinReport: {
         fingerprint,
@@ -200,28 +209,61 @@ test('setting the next key is refused for a non-superadmin', async () => {
   assertEquals((await put(app, cookie, { fingerprint: FIXTURE_NEXT_FINGERPRINT })).status, 403)
 })
 
-test('a malformed fingerprint is refused before anything changes', async () => {
-  const { app, cookie } = await buildApp({})
-  for (const fingerprint of ['A'.repeat(42), 'A'.repeat(44), 7, undefined]) {
-    assertEquals((await put(app, cookie, { fingerprint })).status, 422, String(fingerprint))
+test('the next key is retired: both runtimes answer 410', async () => {
+  for (const runtime of ['deno', 'workers'] as const) {
+    const { app, cookie } = await buildApp({ runtime })
+    const res = await put(app, cookie, { fingerprint: FIXTURE_NEXT_FINGERPRINT })
+    assertEquals(res.status, 410)
+    assertEquals((await res.json()).error, 'next_key_retired')
   }
-  assertEquals((await put(app, cookie, 'nope')).status, 422)
 })
 
-test('a stale session is asked to re-authenticate', async () => {
+function post(app: Hono<AppEnv>, cookie: string, url: string, body: unknown) {
+  return app.request(url, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+const PREPARE_URL = `${IDENTITY_URL}/statements/prepare`
+const APPROVE_URL = `${IDENTITY_URL}/statements`
+
+test('key changes are superadmin-only', async () => {
+  const { app, cookie } = await buildApp({ role: 'admin' })
+  assertEquals((await post(app, cookie, PREPARE_URL, { kind: 'rotate' })).status, 403)
+  assertEquals(
+    (await post(app, cookie, APPROVE_URL, { statement: 'x', approvals: [] })).status,
+    403
+  )
+  assertEquals(
+    (await app.request(`${IDENTITY_URL}/rotation`, { headers: { Cookie: cookie } })).status,
+    403
+  )
+})
+
+test('a malformed key change is refused before anything is read', async () => {
+  const { app, cookie } = await buildApp({})
+  for (const body of [{ kind: 'nope' }, { kind: 'passkeys', mark: 'x' }, 'nope']) {
+    assertEquals((await post(app, cookie, PREPARE_URL, body)).status, 422, JSON.stringify(body))
+  }
+  for (const body of [{ statement: 1 }, { statement: 'x', approvals: [{ credentialId: 1 }] }]) {
+    assertEquals((await post(app, cookie, APPROVE_URL, body)).status, 422, JSON.stringify(body))
+  }
+})
+
+test('a stale session is asked to re-authenticate before a key change', async () => {
   const { app, cookie } = await buildApp({ createdAt: STALE })
-  const res = await put(app, cookie, { fingerprint: FIXTURE_NEXT_FINGERPRINT })
-  assertEquals(res.status, 403)
-  const body = await res.json()
-  assertEquals(body.error, 'reauth_required')
-  assertEquals(body.action, 'panel.identity_next.set')
-})
-
-test('the hosted runtime answers 422: its next key is a binding', async () => {
-  const { app, cookie } = await buildApp({ runtime: 'workers' })
-  const res = await put(app, cookie, { fingerprint: FIXTURE_NEXT_FINGERPRINT })
-  assertEquals(res.status, 422)
-  assert((await res.json()).error.includes('TURBOPANEL_IDENTITY_KEYS'))
+  for (const [url, body] of [
+    [PREPARE_URL, { kind: 'rotate' }],
+    [APPROVE_URL, { statement: 'x', approvals: [] }],
+  ] as const) {
+    const res = await post(app, cookie, url, body)
+    assertEquals(res.status, 403)
+    const answer = await res.json()
+    assertEquals(answer.error, 'reauth_required')
+    assertEquals(answer.action, 'panel.key.change')
+  }
 })
 
 const SEALED_URL = `${IDENTITY_URL}/sealed-secrets`

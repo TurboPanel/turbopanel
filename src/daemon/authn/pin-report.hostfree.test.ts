@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import { base64urlEncode } from '../../lib/encoding/base64url.ts'
-import { pinReportMatches } from '../../features/servers/pin-report.ts'
-import { pinReportSigningInput, verifyPinReport } from './pin-report.ts'
+import { pinPasskeysMatch, pinReportMatches } from '../../features/servers/pin-report.ts'
+import { pinPasskeysSigningInput, pinReportSigningInput, verifyPinReport } from './pin-report.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -27,7 +27,17 @@ async function daemonKey() {
         )
       )
     )
-  return { publicJwk, sign }
+  const signPasskeys = async (passkeys: string, iat: number) =>
+    base64urlEncode(
+      new Uint8Array(
+        await crypto.subtle.sign(
+          'Ed25519',
+          pair.privateKey,
+          new TextEncoder().encode(pinPasskeysSigningInput({ ...CTX, passkeys, iat }))
+        )
+      )
+    )
+  return { publicJwk, sign, signPasskeys }
 }
 
 test('the signing input is the documented bytes (the daemon twin builds the same)', () => {
@@ -96,4 +106,30 @@ test('a pin matches the control plane current or next key, never an empty one', 
     pinReportMatches({ pinnedBy: 'unsafe', current: '', keyset: 0 }, { current: FP_B, next: '' }),
     false
   )
+})
+
+test('the passkeys report has its own signature, documented bytes and match rule', async () => {
+  assertEquals(
+    pinPasskeysSigningInput({ ...CTX, passkeys: FP_B, iat: 1700000000 }),
+    `tp-panel-pin-passkeys\nsess-1\nsrv-1\nkey-1\n${FP_B}\n1700000000`
+  )
+  const key = await daemonKey()
+  const fields = { pinnedBy: 'upgrade', current: FP_A, keyset: 3, iat: IAT }
+  const sig = await key.sign(fields)
+  const ctx = { ...CTX, publicJwk: key.publicJwk }
+  const good = await verifyPinReport(
+    { ...fields, sig, passkeys: FP_B, passkeysSig: await key.signPasskeys(FP_B, IAT) },
+    ctx
+  )
+  assertEquals(good, { pinnedBy: 'upgrade', current: FP_A, keyset: 3, passkeys: FP_B })
+  // A forged passkeys part is dropped; the key report still stands.
+  const forged = await verifyPinReport(
+    { ...fields, sig, passkeys: FP_A, passkeysSig: await key.signPasskeys(FP_B, IAT) },
+    ctx
+  )
+  assertEquals(forged, { pinnedBy: 'upgrade', current: FP_A, keyset: 3 })
+  assertEquals(pinPasskeysMatch({ ...good!, passkeys: '' }, { current: FP_A }), true)
+  assertEquals(pinPasskeysMatch(good!, { current: FP_A, passkeys: FP_B }), true)
+  assertEquals(pinPasskeysMatch(good!, { current: FP_A, passkeys: null }), false)
+  assertEquals(pinPasskeysMatch(good!, { current: FP_A, passkeys: FP_A }), false)
 })

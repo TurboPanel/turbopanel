@@ -7,6 +7,7 @@
 import type { Db } from '../db/connection.ts'
 import { recordPinReport } from '../features/servers/pin-report.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { markedPasskeysHash } from '../lib/panel-identity/keyset-store.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { verifyPinReport } from './authn/pin-report.ts'
 
@@ -30,5 +31,10 @@ export async function intakeHelloPinReport(
   const identity = await ctx.identity().catch(() => null)
   if (!identity) return
   const kids = { current: identity.current.kid, next: identity.next?.kid ?? null }
-  await ctx.withDb((db) => recordPinReport(db, ctx.secrets, ctx.serverId, report, kids))
+  await ctx.withDb(async (db) => {
+    // Only a daemon that reports its rotation passkeys costs this read.
+    const passkeys =
+      report.passkeys === undefined ? null : await markedPasskeysHash(db).catch(() => null)
+    return await recordPinReport(db, ctx.secrets, ctx.serverId, report, { ...kids, passkeys })
+  })
 }

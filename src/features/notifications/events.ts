@@ -399,6 +399,47 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )}. Every backup copied from now on goes there. ${check}`
     },
   },
+  // A rotation or an emergency revoke: `ctx.kind` is `rotate` or `revoke`.
+  'panel.key_changed': {
+    label: "The control plane's key changed",
+    severity: 'critical',
+    scope: 'instance',
+    audience: 'managers',
+    // Every server follows the new key: always urgent.
+    urgent: true,
+    title: (ctx) =>
+      ctx.kind === 'revoke'
+        ? 'The control plane key was revoked and replaced'
+        : 'The control plane key was rotated',
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} approved key set ${name(
+        ctx,
+        'keyset',
+        'a new key set'
+      )} with the passkey ${name(ctx, 'passkey', 'unknown')}: the key ${name(
+        ctx,
+        'oldFingerprint',
+        'unknown'
+      )} was replaced by ${name(ctx, 'newFingerprint', 'unknown')}. ` +
+      'Every server moves to the new key as it sees this change. If you did not expect this, check Control Plane Identity in Admin.',
+  },
+  'panel.approvers_changed': {
+    label: 'The passkeys that approve key changes changed',
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'managers',
+    // These passkeys can move every server to a new key: always urgent.
+    urgent: true,
+    title: (ctx) =>
+      ctx.kind === 'unmark'
+        ? 'A passkey no longer approves control plane key changes'
+        : 'A passkey now approves control plane key changes',
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} ${
+        ctx.kind === 'unmark' ? 'unmarked' : 'marked'
+      } ${name(ctx, 'passkeys', 'a passkey')} (key set ${name(ctx, 'keyset', 'unknown')}). ` +
+      'Marked passkeys approve a change of the control plane key on every server. If you did not expect this, check Control Plane Identity in Admin.',
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS

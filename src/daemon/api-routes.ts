@@ -39,7 +39,15 @@ import { buildSecretsDecryptAnswer, databaseDecryptAnswerSource } from './secret
 import { registerDaemonSealingKey } from './sealing-key-registration.ts'
 import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
-import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
+import {
+  type IdentityChainState,
+  IDENTITY_SIGNATURE_HEADER,
+} from '../lib/panel-identity/document.ts'
+import {
+  identityChainState,
+  listLiveStatements,
+  markAwaitingStatementLive,
+} from '../lib/panel-identity/keyset-store.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import { signDaemonResponses } from '../lib/panel-identity/signed-response.ts'
 import {
@@ -1382,6 +1390,12 @@ function spendChallenge(db: Db, challenge: { nonce: string; at: string }): Promi
   )
 }
 
+/** `?after=` of the statements route: absent means 0. */
+function parseStatementsAfter(raw: string | undefined): number | null {
+  if (raw === undefined || raw === '') return 0
+  return /^\d{1,9}$/.test(raw) ? Number(raw) : null
+}
+
 type ProofRefusal = { status: 400 | 403; error: string }
 
 /** Read the proof version from the body and check it against this control plane's key. */
@@ -1558,6 +1572,12 @@ export function registerDaemonApiRoutes<E extends Env>(
     panelIdentity?: () => Promise<PanelIdentity | null>
     /** The panel's public origins for the identity document, from the request's database client. */
     identityUrls?: (db: Db) => Promise<string[]>
+    /**
+     * Key-set chain facts for the identity document and the public statement
+     * chain (`keyset-store.ts`). Absent: the document carries the identity's
+     * own key set and the statements route answers 404.
+     */
+    identityChain?: boolean
     /**
      * Called (fire and forget) after an enroll or session refusal that a
      * co-located daemon with stale credential files would get, and only when
@@ -1914,8 +1934,10 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
     const db = getDb(c)
     let urls: string[] = []
+    let chain: IdentityChainState | undefined
     try {
       urls = db && options.identityUrls ? await options.identityUrls(db) : []
+      chain = db && options.identityChain ? await identityChainState(db, identity) : undefined
     } catch (err) {
       // A connection dropped mid-flight is replayed once by the Workers entry.
       if (isConnectionClosedError(err)) throw err
@@ -1925,12 +1947,38 @@ export function registerDaemonApiRoutes<E extends Env>(
       logWarn('daemon-api', `identity: database unavailable: ${describeError(err)}`)
       return c.json({ error: 'database unavailable' }, 503)
     }
-    const signed = await identityDocumentCache.get(identity, urls)
+    const signed = await identityDocumentCache.get(identity, urls, chain)
     return c.body(signed.body, 200, {
       'content-type': 'application/json',
       'Cache-Control': 'public, max-age=3600',
       [IDENTITY_SIGNATURE_HEADER]: signed.signature,
     })
+  })
+
+  // Public, no auth: the key-set chain, ascending. Statements authenticate
+  // themselves (passkey approvals), so this answer is deliberately not on the
+  // signed-response list: a server that needs it holds a key this control
+  // plane no longer signs with.
+  daemon.get('/instance/identity/statements', async (c) => {
+    const identity = options.panelIdentity ? await options.panelIdentity() : null
+    const db = getDb(c)
+    if (!identity || !db || !options.identityChain) {
+      return c.json({ error: 'panel identity not configured' }, 404)
+    }
+    const after = parseStatementsAfter(c.req.query('after'))
+    if (after === null) return c.json({ error: 'after must be a non-negative integer' }, 400)
+    try {
+      await markAwaitingStatementLive(db, identity.current.kid)
+      const statements = await listLiveStatements(db, after)
+      return c.body(JSON.stringify({ statements }), 200, {
+        'content-type': 'application/json',
+        'Cache-Control': 'no-store',
+      })
+    } catch (err) {
+      if (isConnectionClosedError(err)) throw err
+      logWarn('daemon-api', `identity statements: database unavailable: ${describeError(err)}`)
+      return c.json({ error: 'database unavailable' }, 503)
+    }
   })
 
   // Private uploaded issuer for the dialed hostname. Distinct from the
