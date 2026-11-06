@@ -1183,8 +1183,8 @@ async function flagOverPlan(
  *
  * Every DB read/write here is best-effort: a failure logs and falls back to
  * {@link resolveDefaultMetricsCapabilityPlan} plus no slot mapping, rather
- * than rejecting an otherwise-valid sample or blocking the fire-and-forget
- * write path.
+ * than rejecting an otherwise-valid sample or blocking the route's
+ * fire-and-forget metrics store write.
  *
  * Every write here uses the request's client, so each one is awaited before
  * returning: an unawaited write on Workers races the client's close.
