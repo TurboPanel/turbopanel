@@ -90,6 +90,10 @@ async function withTwoOrganizations(
   try {
     await fn({ db, a, b, userId: u!.id, email })
   } finally {
+    // Environments and projects hold their parents with RESTRICT keys: children first.
+    await db.delete(environment).where(inArray(environment.projectId, [a.projectId, b.projectId]))
+    await db.delete(project).where(inArray(project.id, [a.projectId, b.projectId]))
+    await db.delete(workspace).where(inArray(workspace.organizationId, [a.id, b.id]))
     await db.delete(organization).where(inArray(organization.id, [a.id, b.id]))
     await db.delete(user).where(eq(user.id, u!.id))
     await endDbConnection(db)
