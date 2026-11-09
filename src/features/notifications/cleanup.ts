@@ -21,6 +21,7 @@
  */
 import { type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { eventAudience, NOTIFICATION_EVENTS } from './events.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   notification,
@@ -115,22 +116,32 @@ export async function dropUndeliverableCopies(
   // (no organization) is for administrators whatever the row says.
   const who = sql`a.user_id`
   const org = sql`a.organization_id`
-  const lostRole = await db.execute(sql`
-    UPDATE ${notificationDelivery} a
-    SET status = 'abandoned', reason = 'no_access', next_attempt_at = NULL, updated_at = now()
-    WHERE a.status IN ${OPEN_STATUSES} AND a.user_id IS NOT NULL AND (
-      EXISTS (SELECT 1 FROM "user" u WHERE u.id = ${who} AND u.is_disabled)
-      OR (a.organization_id IS NULL AND NOT ${isAdministrator(who)})
-      OR EXISTS (
-        SELECT 1 FROM topic t WHERE t.code = a.event AND (
-          (t.audience = 'admins' AND NOT ${isAdministrator(who)})
-          OR (t.audience = 'managers' AND a.organization_id IS NOT NULL
-            AND NOT ${stillManages(who, org)})
-        )
-      )
-    )
-  `)
-  return { scopeDeleted: rowCount(gone), noAccess: rowCount(left) + rowCount(lostRole) }
+  const codesFor = (audience: string) =>
+    JSON.stringify(NOTIFICATION_EVENTS.filter((event) => eventAudience(event) === audience))
+  const drop = (condition: SQL) =>
+    db.execute(sql`
+      UPDATE ${notificationDelivery} a
+      SET status = 'abandoned', reason = 'no_access', next_attempt_at = NULL, updated_at = now()
+      WHERE a.status IN ${OPEN_STATUSES} AND a.user_id IS NOT NULL AND ${condition}
+    `)
+  const disabled = await drop(
+    sql`EXISTS (SELECT 1 FROM "user" u WHERE u.id = ${who} AND u.is_disabled)`
+  )
+  const installOnly = await drop(sql`a.organization_id IS NULL AND NOT ${isAdministrator(who)}`)
+  const adminsOnly = await drop(
+    sql`a.event IN (SELECT jsonb_array_elements_text(${codesFor('admins')}::jsonb))
+      AND NOT ${isAdministrator(who)}`
+  )
+  const managersOnly = await drop(
+    sql`a.organization_id IS NOT NULL
+      AND a.event IN (SELECT jsonb_array_elements_text(${codesFor('managers')}::jsonb))
+      AND NOT ${stillManages(who, org)}`
+  )
+  const lostRole = [disabled, installOnly, adminsOnly, managersOnly].reduce(
+    (total, result) => total + rowCount(result),
+    0
+  )
+  return { scopeDeleted: rowCount(gone), noAccess: rowCount(left) + lostRole }
 }
 
 /**

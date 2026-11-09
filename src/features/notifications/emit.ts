@@ -871,7 +871,9 @@ export async function retryDueDeliveries(
   } catch (error) {
     compatLogWarn(
       'notifications',
-      `retry sweep failed: ${error instanceof Error ? error.message : String(error)}`
+      `retry sweep failed: ${error instanceof Error ? error.message : String(error)}${
+        error instanceof Error && error.cause ? ` (${String(error.cause)})` : ''
+      }`
     )
     return { attempted: 0, sent: 0, failed: 0 }
   }
