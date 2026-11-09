@@ -284,13 +284,14 @@ from a `HostAccessActor` the route resolves (`resolveHostAccessActor` in
 otherwise as `403 compose_host_access_requires_manager`. Every session route
 that reaches a deploy already requires that grant; the explicit check keeps a
 future lower deploy grant from inheriting host-level access. An **automated**
-deploy (the Git webhook, `actorType: 'system'`) has no person to check, so it
+deploy (`actorType: 'system'`: a git push delivered by the repository webhook,
+or a run the control plane starts itself) has no person to check, so it
 runs host-level content only when a manager or owner has deployed that exact
 host-level content before: each such deploy records
 `environment.metadata.composeHostAccessApproval = { fingerprint, approvedBy,
 approvedAt }`, where `fingerprint` is `hostAccessFingerprint` — SHA-256 over
 the sorted gated keys and host-path findings with their values — and the
-webhook deploy must match it, else `403
+automated deploy must match it, else `403
 compose_host_access_requires_approval`. An unrelated edit keeps the
 fingerprint; any change to what reaches the host voids it. A preview records
 nothing. Each new approval also writes a `compose.host_access.approve` audit
@@ -298,7 +299,14 @@ row (planner, right after the metadata write), and each automated deploy that
 runs under one writes `compose.host_access.use` (route, once the deploy is
 persisted), so the history survives the next approval
 (`src/features/schedule/host-access-audit.ts`: ids, fingerprint, paths, never
-values). The key is in `ENVIRONMENT_PROMOTED_METADATA_KEYS`, so no client
+values). The use row's context says what started the deploy: `trigger: 'push'`
+with the repository (`sourceId`), `branch` and `commitSha` the push named, or
+`trigger: 'system'` for any other run the control plane starts
+(`hostAccessUseTrigger`, the same "names a ref or a commit" rule as the
+deployment history). A **hostings-only** run (`hostingsOnly`, sent after a
+hosting gets a certificate) writes no use row: the host rewrites the web
+server config and certificates and never brings Compose up, so no host-level
+field is applied under the approval. The key is in `ENVIRONMENT_PROMOTED_METADATA_KEYS`, so no client
 create or patch can set it. The fingerprint's canonical form sorts in UTF-16
 code-unit order (never `localeCompare`) so it is byte-stable across hosts, and a
 test pins one known value — changing the canonical form voids every stored
