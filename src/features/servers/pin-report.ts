@@ -39,8 +39,8 @@ export type VerifiedPinReport = {
 export type ControlPlaneKids = {
   current: string
   next?: string | null
-  passkeys?: string | null | undefined
-  keyset?: number | undefined
+  passkeys?: string | null
+  keyset?: number
 }
 
 export type PinReportDeps = {
