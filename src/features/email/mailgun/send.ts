@@ -35,6 +35,10 @@ export async function sendMailgunJob(
     text: template.text,
     html: template.html,
   })
+  // Custom headers ride as `h:` fields (unsubscribe and filtering headers).
+  for (const [name, value] of Object.entries(template.headers ?? {})) {
+    body.append(`h:${name}`, value)
+  }
 
   const apiBase = (config.apiBase ?? 'https://api.mailgun.net/v3').replace(/\/$/, '')
   const domain = config.domain.trim()

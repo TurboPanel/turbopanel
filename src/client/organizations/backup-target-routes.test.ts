@@ -25,7 +25,7 @@ import {
   grant,
   key,
   managed,
-  notification,
+  notificationEvent,
   organization,
   project,
   retention,
@@ -270,14 +270,25 @@ async function call(
   return { status: res.status, body: (await res.json()) as Record<string, unknown> }
 }
 
-/** The `backup.target_changed` inbox rows of organization A. */
+/**
+ * The `backup.target_changed` events organization A raised, with their words.
+ * Who reads them depends on each person's preferences (nothing is on by
+ * default), so the raised event is what these tests pin.
+ */
 async function targetNotices(f: Fixture) {
-  return await f.db
-    .select({ title: notification.title, body: notification.body })
-    .from(notification)
+  const rows = await f.db
+    .select({ data: notificationEvent.data })
+    .from(notificationEvent)
     .where(
-      and(eq(notification.organizationId, f.orgA), eq(notification.event, 'backup.target_changed'))
+      and(
+        eq(notificationEvent.organizationId, f.orgA),
+        eq(notificationEvent.topicCode, 'backup.target_changed')
+      )
     )
+  return rows.map((r) => {
+    const data = r.data as { title?: string; body?: string | null }
+    return { title: data.title, body: data.body ?? null }
+  })
 }
 
 async function createTarget(f: Fixture, over: Record<string, unknown> = {}): Promise<string> {
@@ -444,9 +455,9 @@ test('an update keeps the secret unless a new one is sent, and clears the last t
     const [after] = await f.db.select().from(backupTarget).where(eq(backupTarget.id, id))
     assertNotEquals(after!.secretKeySealed, before!.secretKeySealed)
     assertEquals(after!.isLastTestOk, null)
-    // Owners and managers (and any instance administrator) hear about the move, without the secret.
+    // The move is raised once for owners and managers, without the secret.
     const notices = await targetNotices(f)
-    assert(notices.length >= 2, JSON.stringify(notices))
+    assertEquals(notices.length, 1, JSON.stringify(notices))
     for (const notice of notices) {
       assertEquals(notice.title, 'Backup target Renamed now points somewhere else')
       assert(notice.body?.includes('bucket tp-backups to another-bucket'))
@@ -479,7 +490,7 @@ test('a target in use cannot be deleted; after it is released it can', async () 
     )
     assertEquals(set.status, 200)
     const assigned = await targetNotices(f)
-    assert(assigned.length >= 2, JSON.stringify(assigned))
+    assertEquals(assigned.length, 1, JSON.stringify(assigned))
     for (const notice of assigned) {
       assertEquals(notice.title, 'Backups for the organization now go to Offsite')
     }

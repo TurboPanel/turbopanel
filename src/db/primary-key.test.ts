@@ -34,10 +34,14 @@ const test = Deno.test.bind(Deno)
  * | --- | --- | --- | --- |
  * | `dispatch` | `command_id` | `uuid` | 1:1 payload row keyed by the owning `command.id` (itself uuidv7); a second surrogate id would be dead weight |
  * | `nonce` | `value` | `text` | the used challenge or request nonce itself; the key is what makes a second insert of the same value fail |
+ * | `category` | `code` | `text` | the permanent notification category code written from the code catalogue; foreign keys stay readable and the code is the identity |
+ * | `topic` | `code` | `text` | the permanent notification event code written from the code catalogue; preferences, events and history name it |
  */
 const NATURAL_KEY_PRIMARY_KEYS = new Map<string, { column: string; type: string }>([
   ['dispatch', { column: 'command_id', type: 'uuid' }],
   ['nonce', { column: 'value', type: 'text' }],
+  ['category', { column: 'code', type: 'text' }],
+  ['topic', { column: 'code', type: 'text' }],
 ])
 
 const CREATE_TABLE_BLOCK_RE = /CREATE\s+TABLE\s+"([^"]+)"\s*\(([\s\S]*?)\n\);/gi
@@ -222,8 +226,9 @@ test('drizzle-orm migrator bookkeeping DDL matches the documented public.migrati
     }
   }
   // Pinned so a new natural-key exception forces this audit to be re-read:
-  // `dispatch.command_id` and `nonce.value` (the used value itself, 2026-11). (`backup.id` was a text natural key from
+  // `dispatch.command_id`, `nonce.value` (the used value itself, 2026-11), and the
+  // notification catalog codes `category.code` and `topic.code`. (`backup.id` was a text natural key from
   // migration 0011 until 0020 re-keyed it; the 2026-09-17 fold regenerated
   // 0000_base.sql without either file, so the historical entry is gone.)
-  assertEquals(NATURAL_KEY_PRIMARY_KEYS.size, 2)
+  assertEquals(NATURAL_KEY_PRIMARY_KEYS.size, 4)
 })

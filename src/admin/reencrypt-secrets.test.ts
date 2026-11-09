@@ -196,7 +196,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       is_2fa_enabled boolean DEFAULT false NOT NULL,
       is_disabled boolean DEFAULT false NOT NULL,
       role text DEFAULT 'user' NOT NULL,
-      time_zone varchar(64)
+      time_zone varchar(64),
+      is_all_organizations_notified boolean DEFAULT false NOT NULL
     )
   `)
   )
@@ -279,6 +280,9 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
   await tx.execute(sql.raw('CREATE TABLE relay (LIKE public.relay INCLUDING DEFAULTS)'))
   await tx.execute(sql.raw('CREATE TABLE destination (LIKE public.destination INCLUDING DEFAULTS)'))
   await tx.execute(sql.raw('CREATE TABLE ingress (LIKE public.ingress INCLUDING DEFAULTS)'))
+  // Notification channels too: rows other suites leave in `public.channel` would
+  // otherwise be scanned by the notifications stage and use up a bounded batch.
+  await tx.execute(sql.raw('CREATE TABLE channel (LIKE public.channel INCLUDING DEFAULTS)'))
 }
 
 async function withIsolatedFixture(

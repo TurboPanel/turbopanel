@@ -176,6 +176,12 @@
       "tag": "0028_server_reports_signed",
       "when": 1793929485037,
       "sha256": "1e92d134502d33d83c85a997d779ecfe251f2f14b744b489df82f08003ea12c6"
+    },
+    {
+      "idx": 29,
+      "tag": "0029_notification_preferences",
+      "when": 1793977275593,
+      "sha256": "7d254287a5b268456ce2ee47d8ec62ec00674b5e6919b89f9873d02a7a862afd"
     }
   ]
 }

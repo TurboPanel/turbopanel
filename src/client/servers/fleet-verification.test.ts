@@ -11,6 +11,7 @@ import {
   grant,
   license,
   notification,
+  notificationEvent,
   organization,
   project,
   server,
@@ -196,12 +197,18 @@ test('deleting a server fires server.deleted to the managers, frees its license 
     )
     assertEquals(res.status, 200)
 
-    const inbox = await ctx.db
-      .select({ context: notification.context })
-      .from(notification)
-      .where(and(eq(notification.userId, ctx.userId), eq(notification.event, 'server.deleted')))
-    assertEquals(inbox.length, 1)
-    assertEquals((inbox[0]!.context as { serverName?: string }).serverName, 'Delete Me')
+    // Raised once with the server's name (who reads it is each person's choice).
+    const raised = await ctx.db
+      .select({ data: notificationEvent.data })
+      .from(notificationEvent)
+      .where(
+        and(
+          eq(notificationEvent.organizationId, ctx.organizationId),
+          eq(notificationEvent.topicCode, 'server.deleted')
+        )
+      )
+    assertEquals(raised.length, 1)
+    assertEquals((raised[0]!.data as { serverName?: string }).serverName, 'Delete Me')
 
     const [licenseRow] = await ctx.db
       .select({ revokedAt: license.revokedAt })

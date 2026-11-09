@@ -1,7 +1,9 @@
 import { assertEquals } from '@std/assert'
 import {
+  SKIPPED_PAUSED_MESSAGE,
   UPGRADE_DEVELOPMENT,
   UPGRADE_PAUSED,
+  UPGRADE_PAUSED_MESSAGE,
   UPGRADE_RELEASE_UNREACHABLE,
   UPGRADE_RETRY_LATER,
   UPGRADE_RUN_ACTIVE,
@@ -106,4 +108,26 @@ test('an unreachable release server answers 503 release_unreachable, never up to
     status: 503,
     body: { ok: false, error: 'release_unreachable', message: UPDATE_NOW_UNREACHABLE_MESSAGE },
   })
+})
+
+test('the paused messages name the Pause All Updates switch and never say resume', () => {
+  assertEquals(
+    UPGRADE_PAUSED_MESSAGE,
+    'Updates are paused. Turn off Pause All Updates in Admin > Updates.'
+  )
+  assertEquals(
+    SKIPPED_PAUSED_MESSAGE,
+    'Updates were paused before this server started. It updates after Pause All Updates is turned off.'
+  )
+  assertEquals(
+    UPDATE_NOW_PAUSED_MESSAGE,
+    'Updates are paused. Turn off Pause All Updates to update now.'
+  )
+  for (const message of [
+    UPGRADE_PAUSED_MESSAGE,
+    SKIPPED_PAUSED_MESSAGE,
+    UPDATE_NOW_PAUSED_MESSAGE,
+  ]) {
+    assertEquals(/resume/i.test(message), false)
+  }
 })

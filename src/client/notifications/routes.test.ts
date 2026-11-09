@@ -14,7 +14,15 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { grant, notificationChannel, organization, team, teammate, user } from '../../db/schema.ts'
+import {
+  grant,
+  notificationChannel,
+  notificationPreference,
+  organization,
+  team,
+  teammate,
+  user,
+} from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { emitNotification } from '../../features/notifications/emit.ts'
@@ -126,6 +134,12 @@ async function withFixtures(
     actorId: manager!.id,
     permission: 'organization:manage',
   })
+  // Nothing arrives until a person turns it on (owner decision 2026-11-06):
+  // both turned on the bell.
+  await db.insert(notificationPreference).values([
+    { userId: manager!.id, kind: 'inbox', level: 'all' },
+    { userId: member!.id, kind: 'inbox', level: 'all' },
+  ])
   try {
     await fn({
       db,
@@ -234,16 +248,21 @@ test('a user channel is created sealed, described by origin, and never handed ba
     assertEquals(channel.scope, 'user')
     assertEquals(channel.address, 'https://hooks.slack.com')
     assertEquals(JSON.stringify(channel).includes('SECRETPATH'), false)
-    assertEquals(channel.rules, [{ event: '*', minSeverity: 'warning' }])
+    // A personal channel has no rules: the person's preferences decide it.
+    assertEquals(channel.rules, [])
     const [row] = await db
       .select({ address: notificationChannel.address })
       .from(notificationChannel)
       .where(eq(notificationChannel.id, channel.id))
     assertEquals(row!.address.startsWith('tpsecret.'), true)
 
-    // Only its owner sees or edits it.
+    // Only its owner sees or edits it; everyone has their own account email channel.
     const others = await json(app, managerCookie, 'GET', '/notification-channels?scope=user')
-    assertEquals(((await others.json()) as { channels: unknown[] }).channels.length, 0)
+    const theirs = ((await others.json()) as { channels: Array<{ isPrimary: boolean }> }).channels
+    assertEquals(
+      theirs.map((c) => c.isPrimary),
+      [true]
+    )
     assertEquals(
       (
         await json(app, managerCookie, 'PATCH', `/notification-channels/${channel.id}`, {
@@ -270,7 +289,7 @@ test('a user channel is created sealed, described by origin, and never handed ba
     ).channel
     assertEquals(p.label, 'Renamed')
     assertEquals(typeof p.disabledAt, 'string')
-    assertEquals(p.rules, [{ event: 'server.offline', minSeverity: 'info' }])
+    assertEquals(p.rules, [])
 
     assertEquals(
       (await json(app, memberCookie, 'DELETE', `/notification-channels/${channel.id}`)).status,
