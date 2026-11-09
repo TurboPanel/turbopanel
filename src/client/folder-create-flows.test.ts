@@ -536,13 +536,13 @@ test('a removing folder says in plain words that it waits for its server', async
     assertEquals(offline.status, 409)
     assertEquals(
       (offline.json.folders as Array<{ reason: string }>)[0]!.reason,
-      'being removed, waiting for server Alpha to come back'
+      'being removed, waiting for Alpha to come back'
     )
     await ctx.db.update(server).set({ isConnected: true }).where(eq(server.id, ctx.serverId))
     const online = await send(ctx, 'PATCH', `/environments/${envId}`, { name: 'staging' })
     assertEquals(
       (online.json.folders as Array<{ reason: string }>)[0]!.reason,
-      'being removed from server Alpha'
+      'being removed from Alpha'
     )
   })
 })
