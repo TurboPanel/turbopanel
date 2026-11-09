@@ -278,7 +278,7 @@ async function personalChannelSummaries(c: Ctx, db: Db, userId: string) {
       return {
         id: row.id,
         kind: row.kind,
-        label: row.label,
+        label: row.isPrimary && row.kind === 'email' ? 'Account Email' : row.label,
         isPrimary: row.isPrimary,
         verified: live ? live.verified : row.verifiedAt !== null,
         disabled: row.disabledAt !== null,

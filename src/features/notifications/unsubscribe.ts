@@ -23,7 +23,7 @@
  */
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { notificationChannel, teammate, team } from '../../db/schema.ts'
+import { notificationChannel, teammate, team, user } from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -32,6 +32,7 @@ import {
   preferenceRowsFor,
   upsertPreference,
 } from './fanout-records.ts'
+import { eventAudience, NOTIFICATION_EVENTS, type NotificationEvent } from './events.ts'
 import { type CopyTarget, decidingRows, type EventScope, type PreferenceRow } from './resolve.ts'
 
 /** The client API prefix; pinned to `CLIENT_API_PREFIX` in `app/surfaces.ts` by a test (features may not import surfaces). */
@@ -335,40 +336,61 @@ async function unsubscribeChannel(db: Db, claims: UnsubscribeClaims): Promise<Un
 }
 
 /**
- * Write the `none` rows the link asks for (`planUnsubscribe`). The person must
- * still belong to the organization it names (a former member's link changes
- * nothing, and their rows there are gone already). Idempotent: a second click
- * writes the same rows. Returns false when nothing could be written.
+ * Whether the person still hears this mail's organization: a member, an
+ * administrator who opted in to every organization, or (for an administrators'
+ * topic) any administrator. The same rule the send-time check uses.
+ */
+async function stillHears(db: Db, claims: UnsubscribeClaims): Promise<boolean> {
+  const [person] = await db
+    .select({ role: user.role, all: user.isAllOrganizationsNotified })
+    .from(user)
+    .where(eq(user.id, claims.userId))
+    .limit(1)
+  if (!person) return false
+  const admin = person.role === 'admin' || person.role === 'superadmin'
+  const topic = claims.topicCode as NotificationEvent | null
+  const adminsTopic =
+    topic !== null &&
+    (NOTIFICATION_EVENTS as readonly string[]).includes(topic) &&
+    eventAudience(topic) === 'admins'
+  if (admin && (adminsTopic || person.all)) return true
+  if (!claims.organizationId) return admin
+  const [member] = await db
+    .select({ id: teammate.id })
+    .from(teammate)
+    .innerJoin(team, eq(teammate.teamId, team.id))
+    .where(and(eq(teammate.userId, claims.userId), eq(team.organizationId, claims.organizationId)))
+    .limit(1)
+  return member !== undefined
+}
+
+/**
+ * Write the `none` rows the link asks for (`planUnsubscribe`), all in one
+ * transaction: either every row is written or none is, and false means none.
+ * The person must still hear that organization's mail (`stillHears`; a
+ * former member's link changes nothing, and their rows there are gone
+ * already). Idempotent: a second click writes the same rows.
  */
 export async function applyUnsubscribe(
   db: Db,
   claims: UnsubscribeClaims,
   nowMs: number = Date.now()
 ): Promise<boolean> {
-  if (!claims.everything && claims.organizationId) {
-    const [member] = await db
-      .select({ id: teammate.id })
-      .from(teammate)
-      .innerJoin(team, eq(teammate.teamId, team.id))
-      .where(
-        and(eq(teammate.userId, claims.userId), eq(team.organizationId, claims.organizationId))
-      )
-      .limit(1)
-    if (!member) return false
-  }
+  if (!claims.everything && !(await stillHears(db, claims))) return false
   try {
     const channel = await unsubscribeChannel(db, claims)
     const rows = claims.everything
       ? await listPreferenceRows(db, claims.userId)
       : await preferenceRowsFor(db, [claims.userId], claims.organizationId)
-    await Promise.all(
-      planUnsubscribe(rows, claims, channel, nowMs).map((cap) =>
-        upsertPreference(db, claims.userId, { ...cap, level: 'none', endsAt: null })
-      )
-    )
+    const caps = planUnsubscribe(rows, claims, channel, nowMs)
+    await db.transaction(async (tx) => {
+      for (const cap of caps) {
+        await upsertPreference(tx, claims.userId, { ...cap, level: 'none', endsAt: null })
+      }
+    })
     return true
   } catch {
-    // The project or channel is gone (foreign key): nothing left to stop.
+    // The project or channel is gone (foreign key): nothing was written.
     return false
   }
 }

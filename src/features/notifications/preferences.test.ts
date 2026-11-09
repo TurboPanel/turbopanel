@@ -25,7 +25,8 @@ import {
 } from '../../db/schema.ts'
 import { emitNotification, retryDueDeliveries } from './emit.ts'
 import { forgetMember } from './cleanup.ts'
-import { ensureNotificationCatalog } from './fanout-records.ts'
+import { ensureNotificationCatalog, listPreferenceRows } from './fanout-records.ts'
+import { resolveLevel } from './resolve.ts'
 import {
   createNotificationChannel,
   markNotificationsRead,
@@ -354,5 +355,53 @@ test('one-click unsubscribe writes one none row for email, and only for members'
     assertEquals(rows, [{ kind: 'email', level: 'none' }])
     await db.delete(teammate).where(eq(teammate.teamId, a.teamId))
     assertEquals(await applyUnsubscribe(db, { ...claims, categoryCode: 'access' }), false)
+  })
+})
+
+test('an administrator who opted in to every organization can unsubscribe without being a member', async () => {
+  await withTwoOrganizations(async ({ db, a }) => {
+    const [admin] = await db
+      .insert(user)
+      .values({
+        email: `prefs-admin-${crypto.randomUUID()}@example.com`,
+        isEmailVerified: true,
+        role: 'admin',
+        isAllOrganizationsNotified: true,
+      })
+      .returning({ id: user.id })
+    try {
+      await addRow(db, {
+        userId: admin!.id,
+        organizationId: a.id,
+        kind: 'email',
+        level: 'all',
+      })
+      const claims = unsubscribeClaims({
+        userId: admin!.id,
+        organizationId: a.id,
+        categoryCode: 'servers',
+      })
+      assertEquals(await applyUnsubscribe(db, claims), true)
+      const rows = await listPreferenceRows(db, admin!.id)
+      const scope = {
+        organizationId: a.id,
+        projectId: null,
+        environmentId: null,
+        serviceId: null,
+        serverId: null,
+        destinationId: null,
+        topicCode: 'server.offline',
+        categoryCode: 'servers',
+      }
+      assertEquals(
+        resolveLevel(rows, scope, { kind: 'email', channelId: null }, Date.now()).level,
+        'none'
+      )
+      // A person with neither membership nor the administrator opt-in changes nothing.
+      await db.update(user).set({ isAllOrganizationsNotified: false }).where(eq(user.id, admin!.id))
+      assertEquals(await applyUnsubscribe(db, claims), false)
+    } finally {
+      await db.delete(user).where(eq(user.id, admin!.id))
+    }
   })
 })

@@ -10,7 +10,7 @@
  * organization only when they belong to it or have switched on
  * `user.is_all_organizations_notified`.
  */
-import { and, eq, gt, inArray, isNull, lt, or, type SQL, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, inArray, isNull, lt, or, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import {
@@ -477,7 +477,8 @@ export type UnfannedEvent = {
 export async function listUnfannedEvents(
   db: Db,
   limit: number,
-  window: { graceMs: number; maxAgeMs: number }
+  window: { graceMs: number; maxAgeMs: number },
+  order: 'oldest' | 'newest' = 'oldest'
 ): Promise<UnfannedEvent[]> {
   const rows = await db
     .select()
@@ -495,7 +496,7 @@ export async function listUnfannedEvents(
         )
       )
     )
-    .orderBy(notificationEvent.createdAt)
+    .orderBy(order === 'oldest' ? notificationEvent.createdAt : desc(notificationEvent.createdAt))
     .limit(limit)
   return rows.map((row) => ({
     id: row.id,

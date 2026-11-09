@@ -89,7 +89,7 @@ async function presentNotificationChannel(c: NotificationCtx, channel: Notificat
     scope: channel.scope,
     organizationId: channel.organizationId,
     kind: channel.kind,
-    label: channel.label,
+    label: channel.isPrimary && channel.kind === 'email' ? 'Account Email' : channel.label,
     address:
       account?.email ??
       describeChannelAddress(channel.kind, await resolveChannelAddress(secrets, channel)),

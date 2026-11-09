@@ -418,6 +418,9 @@ async function fanOutEvent(tx: Db, e: StoredEvent, nowMs: number): Promise<FanOu
 /** How long an event may sit without `fanned_out_at` before the sweep takes it: well past any emit still running. */
 export const FAN_OUT_SWEEP_GRACE_MS = 5 * 60_000
 
+/** An event whose fan-out still throws after this long is marked done and logged. */
+export const FAN_OUT_GIVE_UP_MS = 6 * 60 * 60_000
+
 /** Past this age an unfinished event is left alone: day-old news is not sent. */
 export const FAN_OUT_SWEEP_MAX_AGE_MS = 24 * 60 * 60_000
 
@@ -449,9 +452,12 @@ export function storedEventFromRow(row: UnfannedEvent): StoredEvent | null {
 
 /**
  * Finish the fan-out of events an emit left half-written (the process died,
- * or a statement timed out, after the event row): a bounded batch, oldest
- * first. The copies it writes are `pending` and go out with the retry sweep
- * that runs right after it. Same never-throws contract as every phase here.
+ * or a statement timed out, after the event row): a bounded batch, half the
+ * oldest and half the newest, so events that keep failing cannot hold back
+ * newer ones. An event still failing after `FAN_OUT_GIVE_UP_MS` is marked
+ * done and logged. The copies it writes are `pending` with a retry time a
+ * couple of minutes ahead, so they go out on a later tick. Same never-throws
+ * contract as every phase here.
  */
 export async function finishInterruptedFanOuts(
   db: Db,
@@ -460,12 +466,14 @@ export async function finishInterruptedFanOuts(
 ): Promise<{ events: number; copies: number }> {
   const done = { events: 0, copies: 0 }
   try {
-    const stuck = await runWithDbTimeout(db, (tx) =>
-      listUnfannedEvents(tx, limit, {
-        graceMs: FAN_OUT_SWEEP_GRACE_MS,
-        maxAgeMs: FAN_OUT_SWEEP_MAX_AGE_MS,
-      })
-    )
+    const window = { graceMs: FAN_OUT_SWEEP_GRACE_MS, maxAgeMs: FAN_OUT_SWEEP_MAX_AGE_MS }
+    const half = Math.max(1, Math.ceil(limit / 2))
+    const [oldest, newest] = await runWithDbTimeout(db, async (tx) => [
+      await listUnfannedEvents(tx, half, window, 'oldest'),
+      await listUnfannedEvents(tx, half, window, 'newest'),
+    ])
+    const seen = new Set<string>()
+    const stuck = [...oldest, ...newest].filter((row) => !seen.has(row.id) && seen.add(row.id))
     await forEachSequential(stuck, async (row) => {
       try {
         const stored = storedEventFromRow(row)
@@ -478,12 +486,16 @@ export async function finishInterruptedFanOuts(
         done.events += 1
         done.copies += written.inbox + written.deliveries.length
       } catch (error) {
+        const gaveUp = (deps.now?.() ?? Date.now()) - Date.parse(row.createdAt) > FAN_OUT_GIVE_UP_MS
         compatLogWarn(
           'notifications',
-          `could not finish the fan-out of event ${row.id}: ${
+          `could not finish the fan-out of event ${row.id}${gaveUp ? ' (giving up)' : ''}: ${
             error instanceof Error ? error.message : String(error)
           }`
         )
+        if (gaveUp) {
+          await runWithDbTimeout(db, (tx) => markEventFannedOut(tx, row.id)).catch(() => undefined)
+        }
       }
     })
   } catch (error) {
