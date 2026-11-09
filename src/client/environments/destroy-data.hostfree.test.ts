@@ -4,6 +4,7 @@ import type { Db } from '../../db/connection.ts'
 import {
   outdatedServersMessage,
   parseDestroyRequest,
+  sameVolumeList,
   serversWithoutVolumeRemoval,
 } from './destroy-data.ts'
 
@@ -35,12 +36,31 @@ test('parseDestroyRequest keeps an empty body a plain Destroy', () => {
     deleteVolumes: false,
     confirmName: 'x',
   })
-  assertEquals(parseDestroyRequest({ deleteVolumes: true, confirmName: 'staging' }), {
-    deleteVolumes: true,
-    confirmName: 'staging',
-  })
+  assertEquals(
+    parseDestroyRequest({ deleteVolumes: true, confirmName: 'staging', volumeIds: ['a'] }),
+    { deleteVolumes: true, confirmName: 'staging', volumeIds: ['a'] }
+  )
   assertEquals(parseDestroyRequest({ deleteVolumes: 'yes' }), 'invalid')
-  assertEquals(parseDestroyRequest({ deleteVolumes: true, confirmName: 3 }), 'invalid')
+  assertEquals(
+    parseDestroyRequest({ deleteVolumes: true, confirmName: 3, volumeIds: [] }),
+    'invalid'
+  )
+  // Deleting data names the list that was shown.
+  assertEquals(parseDestroyRequest({ deleteVolumes: true, confirmName: 'staging' }), 'invalid')
+  assertEquals(
+    parseDestroyRequest({ deleteVolumes: true, confirmName: 'staging', volumeIds: [1] }),
+    'invalid'
+  )
+})
+
+test('sameVolumeList compares the shown ids as a set', () => {
+  const volumes = [{ storageId: 'a' }, { storageId: 'b' }]
+  assertEquals(sameVolumeList(['b', 'a'], volumes), true)
+  assertEquals(sameVolumeList(['a', 'a', 'b'], volumes), true)
+  assertEquals(sameVolumeList(['a'], volumes), false)
+  assertEquals(sameVolumeList(['a', 'b', 'c'], volumes), false)
+  assertEquals(sameVolumeList(undefined, []), true)
+  assertEquals(sameVolumeList([], []), true)
 })
 
 test('serversWithoutVolumeRemoval names each server whose daemon is too old', async () => {

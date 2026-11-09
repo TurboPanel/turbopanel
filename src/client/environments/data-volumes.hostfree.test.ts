@@ -26,6 +26,7 @@ function candidate(overrides: Partial<DataVolumeCandidate>): DataVolumeCandidate
     isCommon: false,
     metadata: { dockerVolumeName: overrides.storageId ?? A },
     copyOptions: { managed: true },
+    copyServerId: 'srv-1',
     usedElsewhere: false,
     ...overrides,
   }
@@ -65,8 +66,8 @@ test('classifyDataVolumes keeps common, shared, external and renamed volumes', (
     }),
   ])
   assertEquals(result.volumes, [
-    { storageId: A, name: 'db' },
-    { storageId: B, name: 'uploads' },
+    { storageId: A, name: 'db', copyServerIds: ['srv-1'] },
+    { storageId: B, name: 'uploads', copyServerIds: ['srv-1'] },
   ])
   assertEquals(
     result.kept.map(({ name, reason }) => [name, reason]),
@@ -91,19 +92,49 @@ test('classifyDataVolumes keeps a volume when any of its copies says so', () => 
   assertEquals(result.kept[0]?.reason, 'external')
 })
 
+test('classifyDataVolumes gathers every server holding a copy', () => {
+  const result = classifyDataVolumes([
+    candidate({ storageId: A, name: 'db', copyServerId: 'srv-2' }),
+    candidate({ storageId: A, name: 'db', copyServerId: 'srv-1' }),
+    candidate({ storageId: A, name: 'db', copyServerId: null }),
+  ])
+  assertEquals(result.volumes, [{ storageId: A, name: 'db', copyServerIds: ['srv-1', 'srv-2'] }])
+})
+
 test('listEnvironmentDataVolumes marks volumes another environment uses', async () => {
   const db = fakeDb([
     [{ id: 'svc-1' }],
     [
-      { storageId: A, name: 'db', isCommon: false, metadata: null, copyOptions: null },
-      { storageId: B, name: 'files', isCommon: false, metadata: null, copyOptions: null },
-      { storageId: C, name: 'cache', isCommon: false, metadata: null, copyOptions: null },
+      {
+        storageId: A,
+        name: 'db',
+        isCommon: false,
+        metadata: null,
+        copyOptions: null,
+        copyServerId: null,
+      },
+      {
+        storageId: B,
+        name: 'files',
+        isCommon: false,
+        metadata: null,
+        copyOptions: null,
+        copyServerId: null,
+      },
+      {
+        storageId: C,
+        name: 'cache',
+        isCommon: false,
+        metadata: null,
+        copyOptions: null,
+        copyServerId: null,
+      },
     ],
     [{ storageId: B }],
     [{ storageId: C }],
   ])
   const result = await listEnvironmentDataVolumes(db, 'env-1')
-  assertEquals(result.volumes, [{ storageId: A, name: 'db' }])
+  assertEquals(result.volumes, [{ storageId: A, name: 'db', copyServerIds: [] }])
   assertEquals(
     result.kept.map(({ name, reason }) => [name, reason]),
     [

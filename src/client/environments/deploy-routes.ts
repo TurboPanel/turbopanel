@@ -183,11 +183,11 @@ import {
 } from '../shared.ts'
 import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
 import {
+  type DestroyDataPlan,
   parseDestroyRequest,
   planDestroyData,
   registerEnvironmentDataVolumeRoutes,
 } from './destroy-data.ts'
-import type { EnvironmentDataVolumes } from './data-volumes.ts'
 
 type DeployHostingPayload = EnvironmentDeployHosting
 
@@ -2622,7 +2622,7 @@ async function recordDestroyDataAudit(
     organizationId: string
     userId: string
     environmentId: string
-    plan: EnvironmentDataVolumes
+    plan: DestroyDataPlan
     queued: readonly QueuedCommandRef[]
   }
 ): Promise<void> {
@@ -2635,7 +2635,13 @@ async function recordDestroyDataAudit(
     targetType: 'environment',
     targetId: params.environmentId,
     context: {
-      volumes: params.plan.volumes.map(({ storageId, name }) => ({ storageId, name })),
+      // Removed on the servers the commands went to; a copy on a server in `staysOn` stays.
+      volumes: params.plan.volumes.map(({ storageId, name, staysOn }) => ({
+        storageId,
+        name,
+        removedOn: params.queued.map(({ serverId }) => serverId),
+        staysOn: staysOn.map(({ serverId }) => serverId),
+      })),
       kept: params.plan.kept.map(({ storageId, name, reason }) => ({ storageId, name, reason })),
       commands: params.queued.map(({ commandId, serverId }) => ({ commandId, serverId })),
     },
@@ -2662,16 +2668,19 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     const auth = await authorizeEnvironmentManage(c, db, environmentId)
     if (auth instanceof Response) return auth
 
-    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'environment.stop')
-    if (stepUp) return stepUp
-
-    const commandQueue = assertDispatchInfrastructure(c)
-    if (commandQueue instanceof Response) return commandQueue
-
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
     const request = parseDestroyRequest(body)
     if (request === 'invalid') return c.json({ error: 'Invalid request' }, 400)
+
+    // The step-up names what is asked: deleting data says so.
+    const stepUp = request.deleteVolumes
+      ? await requireStepUpIfConfigured(c, auth.organizationId, 'environment.data.delete')
+      : await requireStepUpIfConfigured(c, auth.organizationId, 'environment.stop')
+    if (stepUp) return stepUp
+
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
 
     const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded

@@ -20,7 +20,9 @@
  *
  * Everything else is listed as kept, with the reason. Volumes are removed on
  * every server the stop goes to (a registered volume is created on each server
- * the environment deploys to); a server without it reports `absent`.
+ * the environment deploys to); a server without it reports `absent`. A Docker
+ * copy recorded on a server the stop does not go to (the environment moved
+ * away from it) stays there; `copyServerIds` lets the caller say so.
  */
 import { and, eq, inArray, ne, or } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -29,13 +31,18 @@ import { mount, service, share, storage, storageCopy } from '../../db/schema.ts'
 /** Why a registered volume stays when the data is deleted. */
 export type KeptVolumeReason = 'common' | 'shared' | 'external' | 'renamed'
 
-export type RemovableDataVolume = {
+export type NamedDataVolume = {
   storageId: string
   /** The name the person knows: the compose volume key or the name given in the web interface. */
   name: string
 }
 
-export type KeptDataVolume = RemovableDataVolume & {
+export type RemovableDataVolume = NamedDataVolume & {
+  /** Servers with a Docker copy of it on record, sorted. */
+  copyServerIds: string[]
+}
+
+export type KeptDataVolume = NamedDataVolume & {
   reason: KeptVolumeReason
   /** The reason in plain words, for the dialog. */
   message: string
@@ -53,12 +60,13 @@ export type DataVolumeCandidate = {
   isCommon: boolean
   metadata: unknown
   copyOptions: unknown
+  copyServerId: string | null
   /** Another environment uses it (a `share` row or a mount from one of its services). */
   usedElsewhere: boolean
 }
 
 const KEPT_MESSAGES: Record<KeptVolumeReason, string> = {
-  common: 'A shared volume. Delete it from its own page once nothing uses it.',
+  common: 'A shared volume other environments can use. Deleting data never removes it.',
   shared: 'Another environment uses this volume too.',
   external: 'An external volume your compose file names. TurboPanel did not create it.',
   renamed: 'Its Docker name is not the one TurboPanel gave it, so it is left alone.',
@@ -95,29 +103,36 @@ function keptReason(candidate: DataVolumeCandidate): KeptVolumeReason | null {
 export function classifyDataVolumes(
   candidates: readonly DataVolumeCandidate[]
 ): EnvironmentDataVolumes {
-  const byStorage = new Map<string, { name: string; reason: KeptVolumeReason | null }>()
+  type Seen = { name: string; reason: KeptVolumeReason | null; servers: Set<string> }
+  const byStorage = new Map<string, Seen>()
   for (const candidate of candidates) {
     const reason = keptReason(candidate)
-    const seen = byStorage.get(candidate.storageId)
+    let seen = byStorage.get(candidate.storageId)
     if (seen === undefined) {
-      byStorage.set(candidate.storageId, { name: candidate.name, reason })
+      seen = { name: candidate.name, reason, servers: new Set() }
+      byStorage.set(candidate.storageId, seen)
     } else if (seen.reason === null && reason !== null) {
       seen.reason = reason
     }
+    if (candidate.copyServerId !== null) seen.servers.add(candidate.copyServerId)
   }
   const volumes: RemovableDataVolume[] = []
   const kept: KeptDataVolume[] = []
   for (const [storageId, entry] of byStorage) {
-    if (entry.reason === null) volumes.push({ storageId, name: entry.name })
-    else
+    if (entry.reason === null) {
+      const copyServerIds = [...entry.servers]
+      copyServerIds.sort((a, b) => a.localeCompare(b))
+      volumes.push({ storageId, name: entry.name, copyServerIds })
+    } else {
       kept.push({
         storageId,
         name: entry.name,
         reason: entry.reason,
         message: KEPT_MESSAGES[entry.reason],
       })
+    }
   }
-  const byName = (a: RemovableDataVolume, b: RemovableDataVolume) =>
+  const byName = (a: NamedDataVolume, b: NamedDataVolume) =>
     a.name.localeCompare(b.name) || a.storageId.localeCompare(b.storageId)
   volumes.sort(byName)
   kept.sort(byName)
@@ -170,11 +185,13 @@ export async function listEnvironmentDataVolumes(
       isCommon: storage.isCommon,
       metadata: storage.metadata,
       copyOptions: storageCopy.options,
+      copyServerId: storageCopy.serverId,
     })
     .from(storage)
     .innerJoin(storageCopy, eq(storageCopy.storageId, storage.id))
     .where(
       and(
+        eq(storage.kind, 'volume'),
         eq(storageCopy.provider, 'docker'),
         or(
           eq(storage.environmentId, environmentId),
