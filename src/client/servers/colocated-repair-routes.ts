@@ -112,8 +112,17 @@ export function registerServerColocatedRepairRoutes(
   }
   router.use(COLOCATED_REPAIR_PATH, createSessionMiddleware(opts.secrets))
   const now = deps.now ?? Date.now
-  // Per server, in this process: the last press that reached the repair.
+  // Per server, in this process (on High Availability, per isolate): the last
+  // press that reached the repair or its refusal.
   const lastRun = new Map<string, number>()
+  /** The 429 while this server's cooldown runs, else null. Synchronous, so a check and its `claim` cannot interleave. */
+  const tooSoon = (c: Context<AppEnv>, serverId: string): Response | null => {
+    const waitMs = (lastRun.get(serverId) ?? -Infinity) + COLOCATED_REPAIR_COOLDOWN_MS - now()
+    if (waitMs <= 0) return null
+    const body = colocatedRepairTooSoon(waitMs / 1000)
+    c.header('Retry-After', String(body.retryAfterSeconds))
+    return c.json(body, 429)
+  }
 
   router.post(COLOCATED_REPAIR_PATH, async (c: Context<AppEnv>) => {
     const ctx = await requireServerOwnerContext(c)
@@ -130,23 +139,25 @@ export function registerServerColocatedRepairRoutes(
         context: auditContext(outcome),
       })
 
+    // Checked first, so repeated presses on High Availability do not each write an audit row.
+    const early = tooSoon(c, serverId)
+    if (early) return early
+
     if (opts.runtime === 'workers') {
+      lastRun.set(serverId, now())
       const outcome = { status: 'refused', code: 'not_deno' } as const
       await audited(outcome)
       return c.json(colocatedRepairResponse(outcome).body, 409)
-    }
-
-    const waitMs = (lastRun.get(serverId) ?? -Infinity) + COLOCATED_REPAIR_COOLDOWN_MS - now()
-    if (waitMs > 0) {
-      const body = colocatedRepairTooSoon(waitMs / 1000)
-      c.header('Retry-After', String(body.retryAfterSeconds))
-      return c.json(body, 429)
     }
 
     // Always on: this replaces the server's credentials.
     const stepUp = await requireInstanceStepUp(c, 'server.colocated_repair')
     if (stepUp) return stepUp
 
+    // Again after the step-up wait: two presses that both passed the first
+    // check must not both run. No await between this check and the claim.
+    const late = tooSoon(c, serverId)
+    if (late) return late
     lastRun.set(serverId, now())
     const store = (deps.store ?? createColocatedRepairStore)(db)
     const disk = (deps.disk ?? createColocatedRepairDisk)()

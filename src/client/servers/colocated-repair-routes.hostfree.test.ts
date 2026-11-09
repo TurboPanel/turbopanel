@@ -242,6 +242,30 @@ test('repair: a refusal on High Availability is audited', async () => {
   assertEquals(db.rows(audit)[0]?.context, { result: 'refused', code: 'not_deno' })
 })
 
+test('repair: repeated presses on High Availability are held by the cooldown, not audited each time', async () => {
+  const clock = { at: Date.parse(NOW) }
+  const { db, post } = await buildApp({ runtime: 'workers', stepUpDone: true, clock })
+  assertEquals((await post(COLOCATED)).status, 409)
+  clock.at += 1_000
+  assertEquals((await post(COLOCATED)).status, 429)
+  assertEquals((await post(COLOCATED)).status, 429)
+  assertEquals(db.rows(audit).length, 1)
+  clock.at += COLOCATED_REPAIR_COOLDOWN_MS
+  assertEquals((await post(COLOCATED)).status, 409)
+  assertEquals(db.rows(audit).length, 2)
+})
+
+test('repair: two presses at once run the repair only once', async () => {
+  const { db, post, events } = await buildApp({ stepUpDone: true })
+  const [first, second] = await Promise.all([post(COLOCATED), post(COLOCATED)])
+  assertEquals(
+    [first.status, second.status].sort((a, b) => a - b),
+    [200, 429]
+  )
+  assertEquals(events, ['lock', 'rotate', 'clear:key-stored'])
+  assertEquals(db.rows(audit).length, 1)
+})
+
 test('repair: a second press on the same server inside the cooldown is a plain 429', async () => {
   const clock = { at: Date.parse(NOW) }
   const { db, post, events } = await buildApp({ stepUpDone: true, clock })
