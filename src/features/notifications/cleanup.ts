@@ -73,7 +73,7 @@ function isAdministrator(who: SQL) {
  */
 function stillManages(who: SQL, org: SQL) {
   return sql`(EXISTS (
-      SELECT 1 FROM "grant" g
+      SELECT 1 FROM permission g
       WHERE g.entity_type = 'organization' AND g.entity_id = ${org}
         AND g.permission IN ('organization:own', 'organization:manage')
         AND (
