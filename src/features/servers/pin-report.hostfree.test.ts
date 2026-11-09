@@ -4,7 +4,7 @@ import { base64urlEncode } from '../../lib/encoding/base64url.ts'
 import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import { pinPasskeysSigningInput, pinReportSigningInput } from '../../daemon/authn/pin-report.ts'
 import { intakeHelloPinReport } from '../../daemon/pin-report-intake.ts'
-import { describeEvent } from '../notifications/events.ts'
+import { describeEvent, NOTIFICATION_EVENT_DEFINITIONS } from '../notifications/events.ts'
 import { pinPasskeysMatch, recordPinReport, type VerifiedPinReport } from './pin-report.ts'
 
 const test = Deno.test.bind(Deno)
@@ -16,6 +16,7 @@ const NOW = new Date('2026-11-05T12:00:00.000Z')
 type Row = {
   organizationId: string | null
   name: string | null
+  hostname?: string | null
   fingerprint: string | null
   matching: boolean | null
 }
@@ -159,6 +160,29 @@ test('another key raises one audit row and one notification, once per fingerprin
   )
   assertEquals(again.writes.length, 1)
   assertEquals([r.audits.length, r.emits.length], [1, 1])
+})
+
+test('the notice names a server that has only a hostname', async () => {
+  const title = NOTIFICATION_EVENT_DEFINITIONS['panel.pin_mismatch'].title
+  const cases: [string | null, string | null, string][] = [
+    [null, 'manvm', 'Server manvm reported a different control plane key'],
+    ['  ', 'manvm.lan', 'Server manvm.lan reported a different control plane key'],
+    ['kappa', 'manvm', 'Server kappa reported a different control plane key'],
+    [null, null, 'Server unknown reported a different control plane key'],
+  ]
+  for (const [name, hostname, expected] of cases) {
+    const { db } = fakeDb({
+      organizationId: 'o1',
+      name,
+      hostname,
+      fingerprint: null,
+      matching: null,
+    })
+    const r = recorder()
+    await recordPinReport(db, undefined, 's1', report(FP_B), { current: FP_A }, r.deps)
+    const sent = r.emits[0] as { context: Parameters<typeof title>[0] }
+    assertEquals(title(sent.context), expected)
+  }
 })
 
 test('a server with no organization is audited but not notified', async () => {

@@ -126,7 +126,14 @@ runs are redacted) before they are logged, audited, stored or returned.
 
 Say "API token" everywhere: a Global API Key is a different credential (it needs
 an email and is not a bearer token) and is refused by `tokenShapeProblem`
-(Cloudflare: `cfk_` prefix, or 37 to 45 lowercase hex characters). Checked
+(Cloudflare: `cfk_` prefix, or 37 to 45 lowercase hex characters). The same
+check refuses text that cannot be an API token at all: a tunnel run token
+(starts with `eyJ`) or anything with a space, line break or other stray
+character inside (`cloudflare-token-format.ts`). When Cloudflare itself says
+so (400 with error 6003 `Invalid request headers`, or 6111 in `error_chain`),
+both clients throw `TunnelProviderError` with code `token_format` and one
+plain sentence saying what to paste; routes answer that as `badge_rejected`
+(400), never as `provider_unavailable`, because Cloudflare was reached. Checked
 against Cloudflare's documentation: user-owned tokens verify at
 `GET /user/tokens/verify` and account-owned tokens at
 `GET /accounts/{account_id}/tokens/verify` (both return `id`, `status`,

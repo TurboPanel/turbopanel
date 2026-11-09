@@ -10,6 +10,11 @@ import type {
   DnsChallengeProvider,
 } from '../tls/dns-certificates/dns-provider.ts'
 import { CLOUDFLARE_API_BASE } from './cloudflare-client.ts'
+import {
+  CLOUDFLARE_TOKEN_FORMAT_MESSAGE,
+  type CloudflareApiError,
+  isTokenFormatRefusal,
+} from './cloudflare-token-format.ts'
 import { throttleWaitMs } from '../../lib/http/retry-after.ts'
 import { codeForStatus, TunnelProviderError } from './errors.ts'
 
@@ -17,7 +22,7 @@ const REQUEST_TIMEOUT_MS = 15_000
 
 type Envelope = {
   success?: boolean
-  errors?: { message?: string }[]
+  errors?: CloudflareApiError[]
   result?: { id?: string; content?: string; name_servers?: unknown } | { content?: string }[] | null
 }
 
@@ -54,6 +59,14 @@ export function createCloudflareDnsChallenge(options: {
     }
     const envelope = (await response.json().catch(() => null)) as Envelope | null
     if (!response.ok || envelope?.success === false) {
+      if (isTokenFormatRefusal(response.status, envelope?.errors)) {
+        throw new TunnelProviderError(
+          'token_format',
+          CLOUDFLARE_TOKEN_FORMAT_MESSAGE,
+          response.status,
+          [options.token]
+        )
+      }
       const detail = (envelope?.errors ?? [])
         .map((e) => e.message)
         .filter((m): m is string => typeof m === 'string' && m.length > 0)

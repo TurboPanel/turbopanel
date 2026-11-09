@@ -18,6 +18,7 @@ import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { recordAudit } from '../audit/audit-records.ts'
 import { emitNotification } from '../notifications/emit.ts'
+import { serverNoticeName } from './notice-name.ts'
 
 /** A pin report whose daemon signature verified: what the server says it pinned. */
 export type VerifiedPinReport = {
@@ -82,6 +83,7 @@ export async function recordPinReport(
       .select({
         organizationId: server.organizationId,
         name: server.name,
+        hostname: server.hostname,
         fingerprint: server.trustPinFingerprint,
         matching: server.isTrustPinMatching,
       })
@@ -136,7 +138,7 @@ export async function recordPinReport(
           event: 'panel.pin_mismatch',
           organizationId: row.organizationId,
           context: {
-            serverName: row.name,
+            serverName: serverNoticeName(row),
             reported: report.current,
             expected: kids.current,
             ...passkeysContext,
