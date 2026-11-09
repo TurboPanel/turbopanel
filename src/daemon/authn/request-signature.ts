@@ -29,6 +29,12 @@ export const EMPTY_BODY_SHA256_B64U = '47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSu
 /** Answer to a request whose `iat` is too far off: a 400, so the daemon does not refresh its token. */
 export const REQUEST_CLOCK_SKEW_ERROR = 'Request clock skew'
 export const SIGNED_REQUEST_REQUIRED_ERROR = 'Signed request required'
+/**
+ * Answer to a v2 `/auth/session` without the request signature its daemon
+ * always sends (removed on the path). Deliberately not in the daemon's list of
+ * permanent sign-in errors, so the daemon retries instead of parking.
+ */
+export const REQUEST_SIGNATURE_MISSING_ERROR = 'Request signature missing'
 
 const textEncoder = new TextEncoder()
 
