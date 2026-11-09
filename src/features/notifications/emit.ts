@@ -520,8 +520,9 @@ export async function mailHeadersFor(
   base: string | null | undefined,
   channel: NotificationChannelRecord,
   payload: DeliveryPayload,
-  opts: { categoryCode: string | null } = { categoryCode: payload.categoryCode ?? null }
+  opts?: { categoryCode: string | null }
 ): Promise<NotificationMailHeaders> {
+  const categoryCode = opts ? opts.categoryCode : (payload.categoryCode ?? null)
   const headers: NotificationMailHeaders = {
     organizationId: payload.organizationId,
     projectId: payload.projectId ?? null,
@@ -535,7 +536,7 @@ export async function mailHeadersFor(
     userId: channel.userId,
     organizationId: payload.organizationId,
     projectId: payload.organizationId ? (payload.projectId ?? null) : null,
-    categoryCode: opts.categoryCode,
+    categoryCode,
     channelId: channel.isPrimary ? null : channel.id,
   })
   headers.unsubscribeUrl = unsubscribeUrl(base, token)

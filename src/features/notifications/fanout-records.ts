@@ -10,7 +10,7 @@
  * organization only when they belong to it or have switched on
  * `user.is_all_organizations_notified`.
  */
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, or, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   environment,
@@ -198,22 +198,21 @@ export async function listPreferenceRows(
   userId: string,
   organizationId?: string | null
 ): Promise<PreferenceRow[]> {
+  // No organization argument: every row. `null`: the global rows only. An
+  // organization: its rows plus the global ones they sit on.
+  let scope: SQL | undefined
+  if (organizationId === null) {
+    scope = isNull(notificationPreference.organizationId)
+  } else if (organizationId !== undefined) {
+    scope = or(
+      isNull(notificationPreference.organizationId),
+      eq(notificationPreference.organizationId, organizationId)
+    )
+  }
   const rows = await db
     .select()
     .from(notificationPreference)
-    .where(
-      and(
-        eq(notificationPreference.userId, userId),
-        organizationId === undefined
-          ? undefined
-          : organizationId === null
-            ? isNull(notificationPreference.organizationId)
-            : or(
-                isNull(notificationPreference.organizationId),
-                eq(notificationPreference.organizationId, organizationId)
-              )
-      )
-    )
+    .where(and(eq(notificationPreference.userId, userId), scope))
     .orderBy(notificationPreference.createdAt)
   return rows.map(asPreference)
 }
