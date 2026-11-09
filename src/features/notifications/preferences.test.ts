@@ -32,7 +32,7 @@ import {
   replaceRulesForChannel,
   setChannelHoldSettings,
 } from './records.ts'
-import { applyUnsubscribe } from './unsubscribe.ts'
+import { applyUnsubscribe, unsubscribeClaims } from './unsubscribe.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -339,13 +339,12 @@ test('a held copy whose project was deleted is dropped, and reading in the bell 
 
 test('one-click unsubscribe writes one none row for email, and only for members', async () => {
   await withTwoOrganizations(async ({ db, a, userId }) => {
-    const claims = {
+    const claims = unsubscribeClaims({
       userId,
       organizationId: a.id,
       projectId: a.projectId,
       categoryCode: 'servers',
-      channelId: null,
-    }
+    })
     assertEquals(await applyUnsubscribe(db, claims), true)
     assertEquals(await applyUnsubscribe(db, claims), true)
     const rows = await db

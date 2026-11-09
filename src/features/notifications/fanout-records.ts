@@ -10,9 +10,11 @@
  * organization only when they belong to it or have switched on
  * `user.is_all_organizations_notified`.
  */
-import { and, eq, inArray, isNull, or, type SQL, sql } from 'drizzle-orm'
+import { and, eq, gt, inArray, isNull, lt, or, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import {
+  backupTarget,
   environment,
   grant,
   notificationChannel,
@@ -20,6 +22,7 @@ import {
   notificationPreference,
   notificationSuppression,
   project,
+  server,
   service,
   team,
   teammate,
@@ -53,10 +56,12 @@ let catalogInStep = false
  * Make sure `category` and `topic` hold this build's catalog, once per process.
  * Migrate already does it; this covers a database brought up any other way.
  * A module-level flag, not a cached client: the database is the caller's.
+ * Only migrate marks a code that left as deprecated: an older process running
+ * next to a newer one must not mark the newer one's codes.
  */
 export async function ensureNotificationCatalog(db: Db): Promise<void> {
   if (catalogInStep) return
-  await syncNotificationCatalog(drizzleCatalogRunner(db))
+  await syncNotificationCatalog(drizzleCatalogRunner(db), { deprecate: false })
   catalogInStep = true
 }
 
@@ -217,7 +222,107 @@ export async function listPreferenceRows(
   return rows.map(asPreference)
 }
 
-/** The built-in account email channel for each person who has none yet; the address follows the account. */
+/** The tuple `uniq_preference_scope` keys a preference row by, without the person. */
+export type PreferenceScopeKey = {
+  organizationId: string | null
+  projectId: string | null
+  environmentId: string | null
+  serviceId: string | null
+  serverId: string | null
+  destinationId: string | null
+  categoryCode: string | null
+  topicCode: string | null
+  kind: NotificationPreferenceKind | null
+  channelId: string | null
+}
+
+export type PreferenceUpsert = PreferenceScopeKey & {
+  level: NotificationLevel
+  endsAt: string | null
+}
+
+/** Upsert one row by its scope tuple. Throws on a foreign key the database refuses. */
+export async function upsertPreference(
+  db: Db,
+  userId: string,
+  value: PreferenceUpsert
+): Promise<string> {
+  const [row] = await db
+    .insert(notificationPreference)
+    .values({ userId, ...value })
+    .onConflictDoUpdate({
+      target: [
+        notificationPreference.userId,
+        notificationPreference.organizationId,
+        notificationPreference.projectId,
+        notificationPreference.environmentId,
+        notificationPreference.serviceId,
+        notificationPreference.serverId,
+        notificationPreference.destinationId,
+        notificationPreference.categoryCode,
+        notificationPreference.topicCode,
+        notificationPreference.kind,
+        notificationPreference.channelId,
+      ],
+      set: { level: value.level, endsAt: value.endsAt, updatedAt: sql`now()` },
+    })
+    .returning({ id: notificationPreference.id })
+  return row!.id
+}
+
+/** The service's environment and project when the service is in this organization. */
+async function serviceParents(
+  db: Db,
+  organizationId: string,
+  serviceId: string
+): Promise<{ environmentId: string; projectId: string } | null> {
+  const [row] = await db
+    .select({ environmentId: service.environmentId, projectId: environment.projectId })
+    .from(service)
+    .innerJoin(environment, eq(service.environmentId, environment.id))
+    .innerJoin(project, eq(environment.projectId, project.id))
+    .where(and(eq(service.id, serviceId), eq(project.organizationId, organizationId)))
+    .limit(1)
+  return row ?? null
+}
+
+/**
+ * True when the one resource a preference names (a service, server or backup
+ * target) is in this organization. An id from another organization reads the
+ * same as an id that does not exist.
+ */
+export async function resourceInOrganization(
+  db: Db,
+  organizationId: string,
+  ids: { serviceId: string | null; serverId: string | null; destinationId: string | null }
+): Promise<boolean> {
+  if (ids.serviceId && !(await serviceParents(db, organizationId, ids.serviceId))) return false
+  if (ids.serverId) {
+    const [row] = await db
+      .select({ id: server.id })
+      .from(server)
+      .where(and(eq(server.id, ids.serverId), eq(server.organizationId, organizationId)))
+      .limit(1)
+    if (!row) return false
+  }
+  if (ids.destinationId) {
+    const [row] = await db
+      .select({ id: backupTarget.id })
+      .from(backupTarget)
+      .where(
+        and(eq(backupTarget.id, ids.destinationId), eq(backupTarget.organizationId, organizationId))
+      )
+      .limit(1)
+    if (!row) return false
+  }
+  return true
+}
+
+/**
+ * The built-in account email channel for each person who has none yet; the
+ * address follows the account. `verified_at` is stamped only for an account
+ * whose address is verified; sends check the account itself either way.
+ */
 export async function ensurePrimaryEmailChannels(
   db: Db,
   userIds: readonly string[]
@@ -225,7 +330,8 @@ export async function ensurePrimaryEmailChannels(
   if (userIds.length === 0) return
   await db.execute(sql`
     INSERT INTO ${notificationChannel} (scope, user_id, kind, label, address, verified_at, is_primary, created_by_user_id)
-    SELECT 'user', u.id, 'email', 'Account email', u.email, now(), true, u.id
+    SELECT 'user', u.id, 'email', 'Account Email', u.email,
+      CASE WHEN u.is_email_verified THEN now() END, true, u.id
     FROM ${user} u
     WHERE u.id IN (${sql.join(
       userIds.map((id) => sql`${id}::uuid`),
@@ -277,12 +383,8 @@ export async function completeScope(
   }
   if (!organizationId) return out
   if (out.serviceId && !out.environmentId) {
-    const [row] = await db
-      .select({ environmentId: service.environmentId })
-      .from(service)
-      .where(eq(service.id, out.serviceId))
-      .limit(1)
-    out.environmentId = row?.environmentId ?? null
+    const parents = await serviceParents(db, organizationId, out.serviceId)
+    out.environmentId = parents?.environmentId ?? null
   }
   if (out.environmentId && !out.projectId) {
     const [row] = await db
@@ -313,6 +415,18 @@ export type EventInsert = {
  * its own event; the key is the seam for repeat limits.
  */
 export async function insertEvent(db: Db, input: EventInsert): Promise<string | null> {
+  try {
+    return await insertEventOnce(db, input)
+  } catch (error) {
+    // Another emit with the same key opened its event between the fold and
+    // the insert (`uniq_event_open_dedupe`): read the open event again, which
+    // folds this one into it or closes it, exactly as if it had come second.
+    if (!input.dedupe || !isUniqueViolationOn(error, 'uniq_event_open_dedupe')) throw error
+    return await insertEventOnce(db, input)
+  }
+}
+
+async function insertEventOnce(db: Db, input: EventInsert): Promise<string | null> {
   if (input.dedupe) {
     const folded = await db.execute(sql`
       UPDATE ${notificationEvent} e
@@ -341,6 +455,64 @@ export async function insertEvent(db: Db, input: EventInsert): Promise<string | 
     })
     .returning({ id: notificationEvent.id })
   return row?.id ?? null
+}
+
+/** An event whose copies were never all written (`fanned_out_at` is null). */
+export type UnfannedEvent = {
+  id: string
+  createdAt: string
+  organizationId: string | null
+  topicCode: string
+  scope: EventScopeIds
+  actorUserId: string | null
+  severity: NotificationSeverity
+  data: Record<string, unknown>
+}
+
+/**
+ * Events left without `fanned_out_at`, oldest first: older than `graceMs` (so
+ * an emit still running is never raced) and newer than `maxAgeMs` (late news
+ * is not sent). Reads `idx_event_unfanned`.
+ */
+export async function listUnfannedEvents(
+  db: Db,
+  limit: number,
+  window: { graceMs: number; maxAgeMs: number }
+): Promise<UnfannedEvent[]> {
+  const rows = await db
+    .select()
+    .from(notificationEvent)
+    .where(
+      and(
+        isNull(notificationEvent.fannedOutAt),
+        lt(
+          notificationEvent.createdAt,
+          sql`now() - make_interval(secs => ${Math.floor(window.graceMs / 1000)})`
+        ),
+        gt(
+          notificationEvent.createdAt,
+          sql`now() - make_interval(secs => ${Math.floor(window.maxAgeMs / 1000)})`
+        )
+      )
+    )
+    .orderBy(notificationEvent.createdAt)
+    .limit(limit)
+  return rows.map((row) => ({
+    id: row.id,
+    createdAt: row.createdAt,
+    organizationId: row.organizationId,
+    topicCode: row.topicCode,
+    scope: {
+      projectId: row.projectId,
+      environmentId: row.environmentId,
+      serviceId: row.serviceId,
+      serverId: row.serverId,
+      destinationId: row.destinationId,
+    },
+    actorUserId: row.actorUserId,
+    severity: row.severity as NotificationSeverity,
+    data: (row.data ?? {}) as Record<string, unknown>,
+  }))
 }
 
 export async function markEventFannedOut(db: Db, eventId: string): Promise<void> {
@@ -392,6 +564,19 @@ export async function suppressAddress(
     .insert(notificationSuppression)
     .values({ addressHash: await addressHash(address), reason, source })
     .onConflictDoNothing()
+}
+
+/**
+ * The person just proved the mailbox takes mail (a sign-in code or a
+ * verification link arrived): lift any suppression on it. Never throws, so
+ * the sign-in or verification it rides on cannot fail because of it.
+ */
+export async function clearSuppressionAfterProof(db: Db, address: string): Promise<void> {
+  try {
+    await clearSuppression(db, address)
+  } catch {
+    // Left in place: the next proof, or a confirmed channel, clears it.
+  }
 }
 
 /** A confirmed address is deliverable again. */

@@ -5,8 +5,10 @@
  * - `dropUndeliverableCopies` runs before every retry and digest sweep. A copy
  *   whose event names a project, environment, service, server or backup target
  *   that no longer exists is abandoned with reason `scope_deleted` (no mail
- *   after a delete); a personal copy for someone who no longer belongs to the
- *   organization is abandoned with `no_access`.
+ *   after a delete); a personal copy is abandoned with `no_access` when the
+ *   person no longer belongs to the organization, no longer holds the role
+ *   the topic's audience asks for (a manager made a plain member, a former
+ *   administrator), or their account is disabled.
  * - `forgetMember` runs inside the member-removal transaction: that
  *   organization's preference rows, mark-all-read row, organization email
  *   channels naming the person's address, and pending copies. Nothing in any
@@ -54,6 +56,38 @@ function stillBelongs(who: SQL, org: SQL) {
     ))`
 }
 
+/** True in SQL when `who` is an install administrator. */
+function isAdministrator(who: SQL) {
+  return sql`EXISTS (
+      SELECT 1 FROM "user" u WHERE u.id = ${who} AND u.role IN ('admin', 'superadmin')
+    )`
+}
+
+/**
+ * True in SQL when `who` may hear a managers-only topic of `org` now: they
+ * hold own or manage on it (directly, through a team they are in, or because
+ * the organization itself holds it), or they are an administrator hearing
+ * every organization. The same people `organizationManagerHolderIds` and the
+ * fan-out name; membership itself is `stillBelongs`.
+ */
+function stillManages(who: SQL, org: SQL) {
+  return sql`(EXISTS (
+      SELECT 1 FROM "grant" g
+      WHERE g.entity_type = 'organization' AND g.entity_id = ${org}
+        AND g.permission IN ('organization:own', 'organization:manage')
+        AND (
+          (g.actor_type = 'user' AND g.actor_id = ${who})
+          OR g.actor_type = 'organization'
+          OR (g.actor_type = 'team' AND EXISTS (
+            SELECT 1 FROM teammate gm WHERE gm.team_id = g.actor_id AND gm.user_id = ${who}
+          ))
+        )
+    ) OR EXISTS (
+      SELECT 1 FROM "user" u WHERE u.id = ${who}
+        AND u.role IN ('admin', 'superadmin') AND u.is_all_organizations_notified
+    ))`
+}
+
 export async function dropUndeliverableCopies(
   db: Db
 ): Promise<{ scopeDeleted: number; noAccess: number }> {
@@ -75,7 +109,28 @@ export async function dropUndeliverableCopies(
     WHERE a.status IN ${OPEN_STATUSES} AND a.user_id IS NOT NULL AND a.organization_id IS NOT NULL
       AND NOT ${stillBelongs(sql`a.user_id`, sql`a.organization_id`)}
   `)
-  return { scopeDeleted: rowCount(gone), noAccess: rowCount(left) }
+  // The audience is checked again at send time: a role or an account can
+  // change between the event and a held or retried copy. The topic's audience
+  // is read from the catalog by the copy's own event code; an install event
+  // (no organization) is for administrators whatever the row says.
+  const who = sql`a.user_id`
+  const org = sql`a.organization_id`
+  const lostRole = await db.execute(sql`
+    UPDATE ${notificationDelivery} a
+    SET status = 'abandoned', reason = 'no_access', next_attempt_at = NULL, updated_at = now()
+    WHERE a.status IN ${OPEN_STATUSES} AND a.user_id IS NOT NULL AND (
+      EXISTS (SELECT 1 FROM "user" u WHERE u.id = ${who} AND u.is_disabled)
+      OR (a.organization_id IS NULL AND NOT ${isAdministrator(who)})
+      OR EXISTS (
+        SELECT 1 FROM topic t WHERE t.code = a.event AND (
+          (t.audience = 'admins' AND NOT ${isAdministrator(who)})
+          OR (t.audience = 'managers' AND a.organization_id IS NOT NULL
+            AND NOT ${stillManages(who, org)})
+        )
+      )
+    )
+  `)
+  return { scopeDeleted: rowCount(gone), noAccess: rowCount(left) + rowCount(lostRole) }
 }
 
 /**

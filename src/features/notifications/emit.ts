@@ -27,6 +27,11 @@
  * Delivery runs inline, once, bounded; a failure leaves a `failed` ledger row
  * with a retry time that the maintenance tick (`retryDueDeliveries`) picks
  * up, up to the attempt cap. Push rows are never written (no transport yet).
+ *
+ * The fan-out is a run of bounded statements, not one transaction. An emit
+ * that dies after the event row leaves `fanned_out_at` null, and the same
+ * tick finishes it (`finishInterruptedFanOuts`); the unique keys on the inbox
+ * and the ledger make that second run write nothing twice.
  */
 import { and, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { type Db, runWithDbTimeout } from '../../db/connection.ts'
@@ -43,6 +48,7 @@ import {
   eventResource,
   eventScope,
   eventSeverity,
+  NOTIFICATION_EVENTS,
   type NotificationContext,
   type NotificationEvent,
   type NotificationSeverity,
@@ -73,9 +79,11 @@ import {
   ensurePrimaryEmailChannels,
   type EventScopeIds,
   insertEvent,
+  listUnfannedEvents,
   markEventFannedOut,
   preferenceRowsFor,
   suppressedAddresses,
+  type UnfannedEvent,
 } from './fanout-records.ts'
 import {
   type EventScope,
@@ -87,7 +95,12 @@ import {
 } from './resolve.ts'
 import { dropUndeliverableCopies } from './cleanup.ts'
 import { renderDetails, send, type SendOutcome } from './senders.ts'
-import { sealUnsubscribeToken, unsubscribePageUrl, unsubscribeUrl } from './unsubscribe.ts'
+import {
+  sealUnsubscribeToken,
+  unsubscribeClaims,
+  unsubscribePageUrl,
+  unsubscribeUrl,
+} from './unsubscribe.ts'
 import { shouldHoldNow } from './windows.ts'
 import type { EmailJob, EmailQueue, NotificationMailHeaders } from '../email/types.ts'
 import type { NotificationAttemptReason } from './vocabulary.ts'
@@ -257,6 +270,23 @@ async function personalChannels(
   return rows.map(asChannel)
 }
 
+/** An event row as the fan-out needs it: just written, or read back by the sweep. */
+export type StoredEvent = {
+  id: string
+  event: NotificationEvent
+  organizationId: string | null
+  scopeIds: EventScopeIds
+  actorUserId: string | null
+  severity: NotificationSeverity
+  title: string
+  body: string | null
+  context: NotificationContext
+  targetType: string | null
+  targetId: string | null
+  /** ISO time the event happened. */
+  at: string
+}
+
 /**
  * Phase one, in one bounded unit: the event row, the inbox rows, and a ledger
  * row for every copy (sent, held, or recorded as not sent with a reason).
@@ -264,51 +294,74 @@ async function personalChannels(
  */
 async function writeFanOut(tx: Db, f: FanOutInput): Promise<FanOutResult | null> {
   const { input, organizationId, context, severity, title, body } = f
-  const categoryCode = eventCategory(input.event)
   const scopeIds = await completeScope(tx, organizationId, targetScope(input))
+  const targetType = input.targetType ?? null
+  const targetId = input.targetId ?? null
+  const actorUserId = input.actorUserId ?? null
   const eventId = await insertEvent(tx, {
     organizationId,
     topicCode: input.event,
     scope: scopeIds,
-    actorUserId: input.actorUserId ?? null,
+    actorUserId,
     severity,
     dedupe: input.dedupe ?? null,
-    data: {
-      ...context,
-      title,
-      body,
-      targetType: input.targetType ?? null,
-      targetId: input.targetId ?? null,
-    },
+    data: { ...context, title, body, targetType, targetId },
   })
   if (eventId === null) return null
+  return await fanOutEvent(
+    tx,
+    {
+      id: eventId,
+      event: input.event,
+      organizationId,
+      scopeIds,
+      actorUserId,
+      severity,
+      title,
+      body,
+      context,
+      targetType,
+      targetId,
+      at: new Date(f.nowMs).toISOString(),
+    },
+    f.nowMs
+  )
+}
 
+/**
+ * Everything after the event row: who hears it now, their inbox rows and one
+ * ledger row per copy, then `fanned_out_at`. Safe to run again for the same
+ * event (`uniq_notification_event_user`, `uniq_attempt_copy`): only what is
+ * missing is written, and only those rows are returned.
+ */
+async function fanOutEvent(tx: Db, e: StoredEvent, nowMs: number): Promise<FanOutResult> {
+  const { organizationId, severity, title, body, context, scopeIds } = e
+  const categoryCode = eventCategory(e.event)
   const payload: DeliveryPayload = {
-    event: input.event,
+    event: e.event,
     severity,
     title,
     body,
     organizationId,
     organizationName: organizationId ? await organizationName(tx, organizationId) : null,
-    targetType: input.targetType ?? null,
-    targetId: input.targetId ?? null,
+    targetType: e.targetType,
+    targetId: e.targetId,
     context,
-    at: new Date(f.nowMs).toISOString(),
-    eventId,
+    at: e.at,
+    eventId: e.id,
     categoryCode,
     ...scopeIds,
   }
   const eventScopeForRules: EventScope = {
     organizationId,
     ...scopeIds,
-    topicCode: input.event,
+    topicCode: e.event,
     categoryCode,
   }
 
-  const actor = input.actorUserId ?? null
   const recipients = (
-    await audienceRecipientIds(tx, eventAudience(input.event), organizationId)
-  ).filter((id) => id !== actor)
+    await audienceRecipientIds(tx, eventAudience(e.event), organizationId)
+  ).filter((id) => id !== e.actorUserId)
   const preferences = rowsByUser(await preferenceRowsFor(tx, recipients, organizationId))
   // Nobody with no rows hears anything; only people with rows need channels.
   const listening = recipients.filter((id) => preferences.has(id))
@@ -324,7 +377,7 @@ async function writeFanOut(tx: Db, f: FanOutInput): Promise<FanOutResult | null>
         preferences.get(userId) ?? ([] as PreferenceRow[]),
         eventScopeForRules,
         { kind, channelId },
-        f.nowMs
+        nowMs
       ).level,
       severity
     )
@@ -335,14 +388,14 @@ async function writeFanOut(tx: Db, f: FanOutInput): Promise<FanOutResult | null>
     inboxFor.map((userId) => ({
       userId,
       organizationId,
-      event: input.event,
+      event: e.event,
       severity,
       title,
       body,
       targetType: payload.targetType,
       targetId: payload.targetId,
       context,
-      eventId,
+      eventId: e.id,
       ...scopeIds,
     }))
   )
@@ -354,12 +407,92 @@ async function writeFanOut(tx: Db, f: FanOutInput): Promise<FanOutResult | null>
       channel.id
     )
   )
-  const shared = await channelsForEvent(tx, input.event, severity, organizationId, categoryCode)
+  const shared = await channelsForEvent(tx, e.event, severity, organizationId, categoryCode)
   const channels = [...personal, ...shared]
-  const copies = await planCopies(tx, channels, organizationId, input.event, f.nowMs)
+  const copies = await planCopies(tx, channels, organizationId, e.event, nowMs)
   const deliveries = await insertDeliveries(tx, copies, payload)
-  await markEventFannedOut(tx, eventId)
+  await markEventFannedOut(tx, e.id)
   return { inbox, channels, deliveries }
+}
+
+/** How long an event may sit without `fanned_out_at` before the sweep takes it: well past any emit still running. */
+export const FAN_OUT_SWEEP_GRACE_MS = 5 * 60_000
+
+/** Past this age an unfinished event is left alone: day-old news is not sent. */
+export const FAN_OUT_SWEEP_MAX_AGE_MS = 24 * 60 * 60_000
+
+function textOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+/** The event as it was raised, rebuilt from its row; null when this build no longer has the code. */
+export function storedEventFromRow(row: UnfannedEvent): StoredEvent | null {
+  if (!(NOTIFICATION_EVENTS as readonly string[]).includes(row.topicCode)) return null
+  const event = row.topicCode as NotificationEvent
+  const { title, body, targetType, targetId, ...context } = row.data
+  const described = describeEvent(event, context as NotificationContext)
+  return {
+    id: row.id,
+    event,
+    organizationId: row.organizationId,
+    scopeIds: row.scope,
+    actorUserId: row.actorUserId,
+    severity: row.severity,
+    title: textOrNull(title) ?? described.title,
+    body: typeof title === 'string' ? textOrNull(body) : described.body,
+    context: context as NotificationContext,
+    targetType: textOrNull(targetType),
+    targetId: textOrNull(targetId),
+    at: new Date(row.createdAt).toISOString(),
+  }
+}
+
+/**
+ * Finish the fan-out of events an emit left half-written (the process died,
+ * or a statement timed out, after the event row): a bounded batch, oldest
+ * first. The copies it writes are `pending` and go out with the retry sweep
+ * that runs right after it. Same never-throws contract as every phase here.
+ */
+export async function finishInterruptedFanOuts(
+  db: Db,
+  deps: Pick<EmitDeps, 'now'> = {},
+  limit = 20
+): Promise<{ events: number; copies: number }> {
+  const done = { events: 0, copies: 0 }
+  try {
+    const stuck = await runWithDbTimeout(db, (tx) =>
+      listUnfannedEvents(tx, limit, {
+        graceMs: FAN_OUT_SWEEP_GRACE_MS,
+        maxAgeMs: FAN_OUT_SWEEP_MAX_AGE_MS,
+      })
+    )
+    await forEachSequential(stuck, async (row) => {
+      try {
+        const stored = storedEventFromRow(row)
+        if (stored === null) {
+          await runWithDbTimeout(db, (tx) => markEventFannedOut(tx, row.id))
+          return
+        }
+        const nowMs = deps.now?.() ?? Date.now()
+        const written = await runWithDbTimeout(db, (tx) => fanOutEvent(tx, stored, nowMs))
+        done.events += 1
+        done.copies += written.inbox + written.deliveries.length
+      } catch (error) {
+        compatLogWarn(
+          'notifications',
+          `could not finish the fan-out of event ${row.id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      }
+    })
+  } catch (error) {
+    compatLogWarn(
+      'notifications',
+      `fan-out sweep failed: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+  return done
 }
 
 /**
@@ -511,18 +644,19 @@ export function settingsUrlFor(base: string, organizationId: string | null): str
 
 /**
  * RFC 8058 unsubscribe and the filtering headers for one email copy. A
- * personal copy unsubscribes the person from that category's email in that
- * project (or organization); a shared channel's copy carries no unsubscribe
- * link (the organization's settings own it) but still says why it came.
+ * personal copy's link names where the event happened, its topic and its
+ * category, so the unsubscribe can find the row that sent it (`unsubscribe.ts`);
+ * a digest's link stops all notification email to that channel. A shared
+ * channel's copy carries no unsubscribe link (the organization's settings own
+ * it) but still says why it came.
  */
 export async function mailHeadersFor(
   secrets: DerivedSecretsConfig | undefined,
   base: string | null | undefined,
   channel: NotificationChannelRecord,
   payload: DeliveryPayload,
-  opts?: { categoryCode: string | null }
+  opts: { digest?: boolean } = {}
 ): Promise<NotificationMailHeaders> {
-  const categoryCode = opts ? opts.categoryCode : (payload.categoryCode ?? null)
   const headers: NotificationMailHeaders = {
     organizationId: payload.organizationId,
     projectId: payload.projectId ?? null,
@@ -532,13 +666,25 @@ export async function mailHeadersFor(
   if (!base) return headers
   headers.settingsUrl = settingsUrlFor(base, payload.organizationId)
   if (channel.scope !== 'user' || !channel.userId || !secrets) return headers
-  const token = await sealUnsubscribeToken(secrets, {
-    userId: channel.userId,
-    organizationId: payload.organizationId,
-    projectId: payload.organizationId ? (payload.projectId ?? null) : null,
-    categoryCode,
-    channelId: channel.isPrimary ? null : channel.id,
-  })
+  const channelId = channel.isPrimary ? null : channel.id
+  const inOrganization = payload.organizationId !== null
+  const token = await sealUnsubscribeToken(
+    secrets,
+    opts.digest
+      ? unsubscribeClaims({ userId: channel.userId, channelId, everything: true })
+      : unsubscribeClaims({
+          userId: channel.userId,
+          organizationId: payload.organizationId,
+          projectId: inOrganization ? (payload.projectId ?? null) : null,
+          environmentId: inOrganization ? (payload.environmentId ?? null) : null,
+          serviceId: inOrganization ? (payload.serviceId ?? null) : null,
+          serverId: inOrganization ? (payload.serverId ?? null) : null,
+          destinationId: inOrganization ? (payload.destinationId ?? null) : null,
+          topicCode: payload.event,
+          categoryCode: payload.categoryCode ?? null,
+          channelId,
+        })
+  )
   headers.unsubscribeUrl = unsubscribeUrl(base, token)
   headers.unsubscribePageUrl = unsubscribePageUrl(base, token)
   return headers
@@ -578,17 +724,33 @@ async function enqueueEmail(
 
 type AttemptOutcome = SendOutcome | { ok: false; error: string; drop: NotificationAttemptReason }
 
+type AddressNow = { address: string } | { address: null; drop?: NotificationAttemptReason }
+
 /**
  * The address a copy goes to now: the account's current sign-in address for
  * the built-in email channel, else the channel's own (unsealed). For an
  * organization email channel, null with `no_access` when the address no
- * longer belongs to a member (a person who left must stop getting mail).
+ * longer belongs to a member (a person who left must stop getting mail). An
+ * email address that was suppressed since the copy was written (a retried or
+ * held copy) is null with `bounced`.
  */
 export async function deliveryAddress(
   db: Db,
   secrets: DerivedSecretsConfig | undefined,
   channel: NotificationChannelRecord
-): Promise<{ address: string } | { address: null; drop?: NotificationAttemptReason }> {
+): Promise<AddressNow> {
+  const resolved = await addressOnRecord(db, secrets, channel)
+  if (resolved.address === null || channel.kind !== 'email') return resolved
+  const address = resolved.address
+  const suppressed = await runWithDbTimeout(db, (tx) => suppressedAddresses(tx, [address]))
+  return suppressed.size > 0 ? { address: null, drop: 'bounced' } : resolved
+}
+
+async function addressOnRecord(
+  db: Db,
+  secrets: DerivedSecretsConfig | undefined,
+  channel: NotificationChannelRecord
+): Promise<AddressNow> {
   if (channel.kind === 'email' && channel.isPrimary) {
     const accounts = await runWithDbTimeout(db, (tx) => accountEmails(tx, [channel.userId ?? '']))
     const account = accounts.get(channel.userId ?? '')
@@ -682,9 +844,11 @@ async function attemptDeliveries(
 }
 
 /**
- * The maintenance tick's phase: drop copies that must not go out any more
- * (their scope was deleted, the person left), then retry failed deliveries
- * whose time has come, a bounded batch per tick. Same never-throws contract.
+ * The maintenance tick's phase, on both runtimes: finish any fan-out an emit
+ * left half-written, drop copies that must not go out any more (their scope
+ * was deleted, the person left or lost the role), then retry failed
+ * deliveries whose time has come, a bounded batch per tick. Same never-throws
+ * contract.
  */
 export async function retryDueDeliveries(
   db: Db,
@@ -692,6 +856,7 @@ export async function retryDueDeliveries(
   deps: EmitDeps = {},
   limit = 50
 ): Promise<{ attempted: number; sent: number; failed: number }> {
+  await finishInterruptedFanOuts(db, deps)
   try {
     await runWithDbTimeout(db, (tx) => dropUndeliverableCopies(tx))
     const due = await runWithDbTimeout(db, (tx) =>

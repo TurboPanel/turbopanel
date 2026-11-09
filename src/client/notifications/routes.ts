@@ -48,7 +48,10 @@ import {
   eventSeverity,
   NOTIFICATION_EVENTS,
 } from '../../features/notifications/events.ts'
-import { ensurePrimaryEmailChannels } from '../../features/notifications/fanout-records.ts'
+import {
+  accountEmails,
+  ensurePrimaryEmailChannels,
+} from '../../features/notifications/fanout-records.ts'
 import { registerNotificationPreferenceRoutes } from './preference-routes.ts'
 import { applyHoldFields, presentChannelHold } from '../../features/notifications/hold-settings.ts'
 import {
@@ -74,15 +77,24 @@ async function presentNotificationChannel(c: NotificationCtx, channel: Notificat
       new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
     ),
   ])
+  // The account email channel sends to the account's address as it is now,
+  // not the snapshot taken when the channel row was made.
+  const account =
+    channel.isPrimary && channel.kind === 'email' && channel.userId
+      ? (await accountEmails(db, [channel.userId])).get(channel.userId)
+      : undefined
+  const verifiedAt = account?.verified ? (channel.verifiedAt ?? channel.createdAt) : null
   return {
     id: channel.id,
     scope: channel.scope,
     organizationId: channel.organizationId,
     kind: channel.kind,
     label: channel.label,
-    address: describeChannelAddress(channel.kind, await resolveChannelAddress(secrets, channel)),
+    address:
+      account?.email ??
+      describeChannelAddress(channel.kind, await resolveChannelAddress(secrets, channel)),
     signed: channel.signingSecret !== null,
-    verifiedAt: channel.verifiedAt,
+    verifiedAt: account ? verifiedAt : channel.verifiedAt,
     disabledAt: channel.disabledAt,
     createdAt: channel.createdAt,
     isPrimary: channel.isPrimary,
