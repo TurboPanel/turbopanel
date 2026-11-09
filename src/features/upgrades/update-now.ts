@@ -38,7 +38,8 @@ export type UpdateNowAnswer =
       }
     }
 
-export const UPDATE_NOW_PAUSED_MESSAGE = 'Updates are paused. Resume updates to update now.'
+export const UPDATE_NOW_PAUSED_MESSAGE =
+  'Updates are paused. Turn off Pause All Updates to update now.'
 
 export const UPDATE_NOW_DEVELOPMENT_MESSAGE =
   'A development install updates with Build and Push Daemon.'

@@ -282,7 +282,8 @@ export const UPGRADE_NOTHING_TO_UPDATE = 'upgrade_nothing_to_update'
 /** `start()` error while an administrator has paused all updates. */
 export const UPGRADE_PAUSED = 'upgrade_paused'
 
-export const UPGRADE_PAUSED_MESSAGE = 'Updates are paused. Resume them in Admin > Updates.'
+export const UPGRADE_PAUSED_MESSAGE =
+  'Updates are paused. Turn off Pause All Updates in Admin > Updates.'
 
 /**
  * `start()` error for an automatic run whose co-located daemon or control
@@ -293,7 +294,7 @@ export const UPGRADE_RETRY_LATER = 'upgrade_retry_later'
 
 /** Sentence on a step a pause settled before it was sent. */
 export const SKIPPED_PAUSED_MESSAGE =
-  'Updates were paused before this server started. It updates after they are resumed.'
+  'Updates were paused before this server started. It updates after Pause All Updates is turned off.'
 
 const ACTIVE = new Set<string>(UPGRADE_STEP_ACTIVE_STATUSES)
 

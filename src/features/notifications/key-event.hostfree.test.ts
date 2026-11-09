@@ -19,7 +19,7 @@ const test = Deno.test.bind(Deno)
 test('the next key event is an urgent warning for instance administrators', () => {
   assertEquals(eventScope('panel.identity_next_changed'), 'instance')
   assertEquals(eventSeverity('panel.identity_next_changed'), 'warning')
-  assertEquals(eventAudience('panel.identity_next_changed'), 'managers')
+  assertEquals(eventAudience('panel.identity_next_changed'), 'admins')
   assertEquals(eventIsUrgent('panel.identity_next_changed'), true)
   assertEquals(
     describeEvent('panel.identity_next_changed', { cleared: true }).title,

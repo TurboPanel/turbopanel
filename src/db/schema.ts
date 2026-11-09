@@ -24,6 +24,7 @@ import {
   foreignKey,
   index,
   integer,
+  interval,
   jsonb,
   pgTable,
   smallint,
@@ -2631,6 +2632,8 @@ export const project = pgTable(
       .where(sql`component IS NOT NULL`),
     /** Unique per organization. */
     unique('uniq_project_organization_slug').on(table.organizationId, table.slug),
+    /** Target of the composite keys that prove a notification scope's project belongs to its organization. */
+    unique('uniq_project_organization_id').on(table.organizationId, table.id),
     check('project_slug_check', sql.raw(`slug ~ '${PROJECT_SLUG_SQL}'`)),
     check('project_kind_check', sql`kind IS NULL OR kind IN ('compose', 'managed', 'system')`),
     check(
@@ -2709,6 +2712,8 @@ export const environment = pgTable(
   },
   (table) => [
     unique('uniq_environment_project_name').on(table.projectId, table.name),
+    /** Target of the composite keys that prove a notification scope's environment belongs to its project. */
+    unique('uniq_environment_project_id').on(table.projectId, table.id),
     uniqueIndex('uniq_environment_project_primary')
       .using('btree', table.projectId.asc().nullsLast().op('uuid_ops'))
       .where(sql`${table.isPrimary}`),
@@ -6950,6 +6955,8 @@ export const user = pgTable(
     role: text().default('user').notNull(),
     /** IANA zone the person's quiet hours are read in; null means UTC. */
     timeZone: varchar('time_zone', { length: 64 }),
+    /** An administrator's choice to hear every organization's notifications, not only those they belong to. */
+    isAllOrganizationsNotified: boolean('is_all_organizations_notified').default(false).notNull(),
   },
   (table) => [
     unique('user_email_unique').on(table.email),
@@ -7031,6 +7038,242 @@ export const verification = pgTable(
   (table) => [unique('verification_identifier_unique').on(table.identifier)]
 )
 
+const notificationTimestamps = () => ({
+  createdAt: timestamp('created_at', {
+    precision: 3,
+    withTimezone: true,
+    mode: 'string',
+  })
+    .defaultNow()
+    .notNull(),
+  updatedAt: timestamp('updated_at', {
+    precision: 3,
+    withTimezone: true,
+    mode: 'string',
+  })
+    .defaultNow()
+    .$onUpdate(() => sql`now()`)
+    .notNull(),
+})
+
+/**
+ * Notification catalog — what can happen, written from code. `category` groups
+ * topics for the settings screens; `topic` is one row per event code. Both are
+ * upserted from `src/features/notifications/events.ts` by the catalog sync
+ * step that `pnpm migrate` and `turbopanel migrate` run after the migrations,
+ * never deleted (a code that leaves the code base is stamped `deprecated_at`),
+ * and keyed by the code itself so foreign keys stay readable.
+ */
+export const notificationCategory = pgTable(
+  'category',
+  {
+    code: text().primaryKey().notNull(),
+    ...notificationTimestamps(),
+    /** What the settings screens call the group, in book title case. */
+    name: text().notNull(),
+    /** Sort order on the settings screens, smallest first. */
+    position: integer().default(0).notNull(),
+  },
+  () => [check('category_code_check', sql`code ~ '^[a-z][a-z_]{1,39}$'`)]
+)
+
+export const notificationTopic = pgTable(
+  'topic',
+  {
+    code: text().primaryKey().notNull(),
+    ...notificationTimestamps(),
+    categoryCode: text('category_code').notNull(),
+    /** The topic this one resolves (a recovery event names the failure it ends). */
+    resolvesCode: text('resolves_code'),
+    name: text().notNull(),
+    /** NOTIFICATION_TOPIC_KINDS: raised inside an organization, by the platform vendor, for the install's administrators, or about one account. */
+    kind: text().notNull(),
+    /** NOTIFICATION_SEVERITIES. */
+    severity: text().notNull(),
+    /** NOTIFICATION_TOPIC_SCOPES: the most specific resource an organization event names; null for every other kind. */
+    scope: text(),
+    /** NOTIFICATION_AUDIENCES: who may hear it, checked again at send time. */
+    audience: text().notNull(),
+    /** NOTIFICATION_PREFERENCE_KINDS the topic may be delivered on. */
+    channels: text().array().notNull(),
+    /** NOTIFICATION_LEVELS: the level used when no preference applies; `none` for every topic (nothing arrives until a person turns it on). */
+    level: text().default('none').notNull(),
+    /** How long a repeat of an open event with the same dedupe key is folded into it instead of sent. */
+    cooldown: interval().default('00:00:00').notNull(),
+    /** Version of the event payload in `event.data`. */
+    version: integer().default(1).notNull(),
+    deprecatedAt: timestamp('deprecated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** Never held by quiet hours or a digest (timing only; it can still be turned off). */
+    isUrgent: boolean('is_urgent').default(false).notNull(),
+    /** False means the person who caused the event is never told about it. */
+    isActorNotified: boolean('is_actor_notified').default(false).notNull(),
+  },
+  (table) => [
+    check('topic_code_check', sql`code ~ '^[a-z][a-z_]*[.][a-z][a-z_]*$'`),
+    check('topic_kind_check', sql`kind IN ('organization', 'platform', 'instance', 'account')`),
+    check('topic_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
+    check(
+      'topic_scope_check',
+      sql`scope IS NULL OR scope IN ('organization', 'project', 'environment', 'service', 'server', 'destination')`
+    ),
+    check('topic_scope_kind_check', sql`(kind = 'organization') = (scope IS NOT NULL)`),
+    check('topic_audience_check', sql`audience IN ('members', 'managers', 'admins')`),
+    check(
+      'topic_channels_check',
+      sql`channels <@ ARRAY['inbox', 'email', 'push', 'chat', 'webhook']::text[]`
+    ),
+    check('topic_level_check', sql`level IN ('all', 'warning', 'critical', 'none')`),
+    index('idx_topic_category_code').on(table.categoryCode),
+    index('idx_topic_resolves_code').on(table.resolvesCode),
+    foreignKey({
+      columns: [table.categoryCode],
+      foreignColumns: [notificationCategory.code],
+      name: 'topic_category_code_category_code_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.resolvesCode],
+      foreignColumns: [table.code],
+      name: 'topic_resolves_code_topic_code_fk',
+    }).onDelete('restrict'),
+  ]
+)
+
+/**
+ * One row per thing that happened — the outbox every inbox row and delivery
+ * hangs from. Scope ids are plain uuids with no foreign key, like
+ * `audit.actor_user_id`, so deleting a project never fails on or rewrites
+ * history; the dispatcher drops a pending copy whose scope is gone.
+ */
+export const notificationEvent = pgTable(
+  'event',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    ...notificationTimestamps(),
+    /** Null for an instance or platform event. */
+    organizationId: uuid('organization_id'),
+    topicCode: text('topic_code').notNull(),
+    /** Plain id (no foreign key): history outlives the project. */
+    projectId: uuid('project_id'),
+    /** Plain id (no foreign key): history outlives the environment. */
+    environmentId: uuid('environment_id'),
+    /** Plain id (no foreign key): history outlives the service. */
+    serviceId: uuid('service_id'),
+    /** Plain id (no foreign key): history outlives the server. */
+    serverId: uuid('server_id'),
+    /** Plain id of the backup target (`destination`), no foreign key: history outlives it. */
+    destinationId: uuid('destination_id'),
+    /** Who caused it, a plain id like `audit.actor_user_id`; that person is not told unless the topic says so. */
+    actorUserId: uuid('actor_user_id'),
+    /** NOTIFICATION_SEVERITIES, copied from the topic when raised. */
+    severity: text().notNull(),
+    /** Repeats of an open event with the same key inside the topic's cooldown are folded into it. */
+    dedupe: text(),
+    /** Payload version (`topic.version` when raised). */
+    version: integer().default(1).notNull(),
+    /** Repeats folded into this event inside the cooldown. */
+    repeats: integer().default(0).notNull(),
+    lastSeenAt: timestamp('last_seen_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    /** When the inbox rows and deliveries were written; null while that is still to do. */
+    fannedOutAt: timestamp('fanned_out_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** NOTIFICATION_EVENT_STATUSES. */
+    status: text().default('open').notNull(),
+    /** Small non-secret context the sentences render from, with names snapshotted so a deleted resource still reads in words. */
+    data: jsonb().default({}).notNull(),
+  },
+  (table) => [
+    check('event_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
+    check('event_status_check', sql`status IN ('open', 'resolved', 'closed')`),
+    uniqueIndex('uniq_event_open_dedupe')
+      .on(table.dedupe)
+      .where(sql`status = 'open' AND dedupe IS NOT NULL`),
+    index('idx_event_unfanned')
+      .on(table.createdAt)
+      .where(sql`fanned_out_at IS NULL`),
+    index('idx_event_created_at').on(table.createdAt),
+    index('idx_event_organization_id').on(table.organizationId),
+    index('idx_event_topic_code').on(table.topicCode),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'event_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.topicCode],
+      foreignColumns: [notificationTopic.code],
+      name: 'event_topic_code_topic_code_fk',
+    }).onDelete('restrict'),
+  ]
+)
+
+/**
+ * One phone or tablet that can receive push notifications for a person. The
+ * table lands before the push transport so the data model is whole; nothing
+ * writes it yet.
+ */
+export const notificationDevice = pgTable(
+  'device',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    ...notificationTimestamps(),
+    userId: uuid('user_id').notNull(),
+    /** What the person calls the device. */
+    name: text(),
+    /** NOTIFICATION_DEVICE_KINDS. */
+    kind: text().notNull(),
+    /** NOTIFICATION_DEVICE_STATUSES. */
+    status: text().default('active').notNull(),
+    /** NOTIFICATION_DEVICE_PROVIDERS: the push service the token belongs to. */
+    provider: text().notNull(),
+    /** Sealed (`tpsecret`) push token. */
+    token: text().notNull(),
+    /** SHA-256 of the plain token, so one token belongs to one row although the sealed value varies. */
+    tokenHash: text('token_hash').notNull(),
+    appVersion: text('app_version'),
+    locale: text(),
+    /** Why the push service refused the token, as its short error code. */
+    invalidReason: text('invalid_reason'),
+    lastSeenAt: timestamp('last_seen_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    check('device_kind_check', sql`kind IN ('ios', 'android')`),
+    check('device_status_check', sql`status IN ('active', 'paused', 'invalid')`),
+    check('device_provider_check', sql`provider IN ('expo')`),
+    unique('uniq_device_provider_token_hash').on(table.provider, table.tokenHash),
+    index('idx_device_user_id').on(table.userId),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'device_user_id_user_id_fk',
+    }).onDelete('cascade'),
+  ]
+)
+
 /**
  * Notifications — the tables behind "an event happened and someone should
  * hear about it". Four tables, added after the freeze (migration 0002, renamed to
@@ -7105,6 +7348,12 @@ export const notificationChannel = pgTable(
     quietStartMinute: smallint('quiet_start_minute'),
     /** Quiet hours end, minutes after local midnight (0-1439); the window may wrap midnight. */
     quietEndMinute: smallint('quiet_end_minute'),
+    /** Consecutive failed sends; reset by a success. */
+    failures: integer().default(0).notNull(),
+    /** NOTIFICATION_CHANNEL_PAUSED_REASONS: why sending stopped; null while it sends. */
+    pausedReason: text('paused_reason'),
+    /** A person's built-in account email channel: follows their sign-in address and cannot be deleted. */
+    isPrimary: boolean('is_primary').default(false).notNull(),
   },
   (table) => [
     check('channel_scope_check', sql`scope IN ('instance', 'organization', 'user')`),
@@ -7126,6 +7375,14 @@ export const notificationChannel = pgTable(
       'channel_quiet_hours_check',
       sql`(quiet_start_minute IS NULL AND quiet_end_minute IS NULL) OR (quiet_start_minute BETWEEN 0 AND 1439 AND quiet_end_minute BETWEEN 0 AND 1439 AND quiet_start_minute <> quiet_end_minute)`
     ),
+    check(
+      'channel_paused_reason_check',
+      sql`paused_reason IS NULL OR paused_reason IN ('manual', 'failing', 'bounced')`
+    ),
+    check('channel_primary_check', sql`NOT is_primary OR (scope = 'user' AND kind = 'email')`),
+    uniqueIndex('uniq_channel_primary')
+      .on(table.userId, table.kind)
+      .where(sql`is_primary`),
     index('idx_channel_organization').on(table.organizationId),
     index('idx_channel_user').on(table.userId),
     index('idx_channel_created_by_user_id').on(table.createdByUserId),
@@ -7166,14 +7423,98 @@ export const notificationRule = pgTable(
     event: text().notNull(),
     /** Deliver only at or above this — NOTIFICATION_SEVERITIES. */
     minSeverity: text('min_severity').default('info').notNull(),
+    /** The organization a shared route belongs to; with the scope columns below, it narrows the route. */
+    organizationId: uuid('organization_id'),
+    projectId: uuid('project_id'),
+    environmentId: uuid('environment_id'),
+    serviceId: uuid('service_id'),
+    serverId: uuid('server_id'),
+    /** A backup target (`destination`). */
+    destinationId: uuid('destination_id'),
+    categoryCode: text('category_code'),
+    topicCode: text('topic_code'),
+    /** A muted route sends nothing until this time. */
+    endsAt: timestamp('ends_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** A disabled route keeps its row and sends nothing. */
+    isEnabled: boolean('is_enabled').default(true).notNull(),
   },
   (table) => [
-    check(
-      'rule_event_check',
-      sql`event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed')`
-    ),
     check('rule_min_severity_check', sql`min_severity IN ('info', 'warning', 'critical')`),
     uniqueIndex('uniq_rule_channel_event').on(table.channelId, table.event),
+    check('rule_project_org_check', sql`project_id IS NULL OR organization_id IS NOT NULL`),
+    check('rule_env_project_check', sql`environment_id IS NULL OR project_id IS NOT NULL`),
+    check('rule_resource_one_check', sql`num_nonnulls(service_id, server_id, destination_id) <= 1`),
+    check(
+      'rule_resource_org_check',
+      sql`num_nonnulls(service_id, server_id, destination_id) = 0 OR organization_id IS NOT NULL`
+    ),
+    check('rule_subject_check', sql`num_nonnulls(category_code, topic_code) <= 1`),
+    index('idx_rule_organization_id').on(table.organizationId),
+    index('idx_rule_project_id')
+      .on(table.projectId)
+      .where(sql`project_id IS NOT NULL`),
+    index('idx_rule_environment_id')
+      .on(table.environmentId)
+      .where(sql`environment_id IS NOT NULL`),
+    index('idx_rule_service_id')
+      .on(table.serviceId)
+      .where(sql`service_id IS NOT NULL`),
+    index('idx_rule_server_id')
+      .on(table.serverId)
+      .where(sql`server_id IS NOT NULL`),
+    index('idx_rule_destination_id')
+      .on(table.destinationId)
+      .where(sql`destination_id IS NOT NULL`),
+    index('idx_rule_category_code')
+      .on(table.categoryCode)
+      .where(sql`category_code IS NOT NULL`),
+    index('idx_rule_topic_code')
+      .on(table.topicCode)
+      .where(sql`topic_code IS NOT NULL`),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'rule_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.organizationId, table.projectId],
+      foreignColumns: [project.organizationId, project.id],
+      name: 'rule_project_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.projectId, table.environmentId],
+      foreignColumns: [environment.projectId, environment.id],
+      name: 'rule_environment_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'rule_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'rule_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.destinationId],
+      foreignColumns: [backupTarget.id],
+      name: 'rule_destination_id_destination_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.categoryCode],
+      foreignColumns: [notificationCategory.code],
+      name: 'rule_category_code_category_code_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.topicCode],
+      foreignColumns: [notificationTopic.code],
+      name: 'rule_topic_code_topic_code_fk',
+    }).onDelete('cascade'),
     foreignKey({
       columns: [table.channelId],
       foreignColumns: [notificationChannel.id],
@@ -7221,12 +7562,21 @@ export const notification = pgTable(
       withTimezone: true,
       mode: 'string',
     }),
+    /** The `event` row this copy came from, a plain id: the inbox outlives the shorter event retention. */
+    eventId: uuid('event_id'),
+    topicCode: text('topic_code'),
+    /** Plain id (no foreign key), for filters and links; the row outlives the project. */
+    projectId: uuid('project_id'),
+    /** Plain id (no foreign key), for filters and links. */
+    environmentId: uuid('environment_id'),
+    /** Plain id (no foreign key), for filters and links. */
+    serviceId: uuid('service_id'),
+    /** Plain id (no foreign key), for filters and links. */
+    serverId: uuid('server_id'),
+    /** Plain id of the backup target (`destination`), for filters and links. */
+    destinationId: uuid('destination_id'),
   },
   (table) => [
-    check(
-      'notification_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed')`
-    ),
     check('notification_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     index('idx_notification_user_created').on(table.userId, table.createdAt.desc()),
     /** The unread count (polled every minute per open browser) and mark-all-read. */
@@ -7234,6 +7584,14 @@ export const notification = pgTable(
       .on(table.userId)
       .where(sql`${table.readAt} IS NULL AND ${table.dismissedAt} IS NULL`),
     index('idx_notification_organization_id').on(table.organizationId),
+    unique('uniq_notification_event_user').on(table.eventId, table.userId),
+    index('idx_notification_created_at').on(table.createdAt),
+    index('idx_notification_topic_code').on(table.topicCode),
+    foreignKey({
+      columns: [table.topicCode],
+      foreignColumns: [notificationTopic.code],
+      name: 'notification_topic_code_topic_code_fk',
+    }).onDelete('restrict'),
     foreignKey({
       columns: [table.userId],
       foreignColumns: [user.id],
@@ -7293,17 +7651,46 @@ export const notificationDelivery = pgTable(
     }),
     /** The last failure, as a short code or an HTTP status — never a body, never the address. */
     lastError: text('last_error'),
+    /** The `event` row this copy carries; deleting the event (retention) deletes its copies. */
+    eventId: uuid('event_id'),
+    /** The person this copy is for; null for a shared (organization or instance) channel. */
+    userId: uuid('user_id'),
+    /** The device a push copy goes to; null for every other kind. */
+    deviceId: uuid('device_id'),
+    topicCode: text('topic_code'),
+    /** NOTIFICATION_ATTEMPT_REASONS: why the copy was held, dropped or not sent. */
+    reason: text(),
+    /** The mail queue id or push ticket id, when the transport gave one. */
+    providerId: text('provider_id'),
   },
   (table) => [
-    check(
-      'attempt_event_check',
-      sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed')`
-    ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
     check(
       'attempt_status_check',
-      sql`status IN ('pending', 'sent', 'failed', 'abandoned', 'held')`
+      sql`status IN ('pending', 'sent', 'failed', 'abandoned', 'held', 'suppressed')`
     ),
+    check(
+      'attempt_reason_check',
+      sql`reason IS NULL OR reason IN ('quiet_hours', 'digest', 'muted', 'rate_limited', 'bounced', 'no_access', 'scope_deleted', 'read_in_app', 'unverified', 'channel_failing')`
+    ),
+    /** One copy per event, person, channel and device; a re-run fan-out inserts nothing twice. */
+    uniqueIndex('uniq_attempt_copy')
+      .on(
+        table.eventId,
+        sql`coalesce(${table.userId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        table.channelId,
+        sql`coalesce(${table.deviceId}, '00000000-0000-0000-0000-000000000000'::uuid)`
+      )
+      .where(sql`event_id IS NOT NULL`),
+    index('idx_attempt_event_id').on(table.eventId),
+    index('idx_attempt_user_id')
+      .on(table.userId)
+      .where(sql`user_id IS NOT NULL`),
+    index('idx_attempt_device_id')
+      .on(table.deviceId)
+      .where(sql`device_id IS NOT NULL`),
+    index('idx_attempt_topic_code').on(table.topicCode),
+    index('idx_attempt_created_at').on(table.createdAt),
     index('idx_attempt_pending').on(table.status, table.nextAttemptAt),
     // The digest sweep reads only the rows waiting for a window to end.
     index('idx_attempt_held')
@@ -7321,8 +7708,363 @@ export const notificationDelivery = pgTable(
       foreignColumns: [organization.id],
       name: 'attempt_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.eventId],
+      foreignColumns: [notificationEvent.id],
+      name: 'attempt_event_id_event_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'attempt_user_id_user_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.deviceId],
+      foreignColumns: [notificationDevice.id],
+      name: 'attempt_device_id_device_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.topicCode],
+      foreignColumns: [notificationTopic.code],
+      name: 'attempt_topic_code_topic_code_fk',
+    }).onDelete('restrict'),
   ]
 )
+/**
+ * One person's choice for one scope: a level (`all`, `warning`, `critical`,
+ * `none`) for every channel kind, one kind or one personal channel, optionally
+ * for one category or topic, until `ends_at`. Sparse: no row means the next
+ * wider scope decides, and with no row at all nothing is sent. Every scope
+ * column is a real foreign key with `ON DELETE CASCADE`, so deleting a project,
+ * environment, service, server or backup target removes only the rows that
+ * name it. Leaving an organization has no key to cascade from (membership is
+ * `teammate` rows); the member-removal route deletes that organization's rows.
+ */
+export const notificationPreference = pgTable(
+  'preference',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    ...notificationTimestamps(),
+    /** Null for a person's rule across every organization (and the install's own events). */
+    organizationId: uuid('organization_id'),
+    userId: uuid('user_id').notNull(),
+    projectId: uuid('project_id'),
+    environmentId: uuid('environment_id'),
+    serviceId: uuid('service_id'),
+    serverId: uuid('server_id'),
+    /** A backup target (`destination`). */
+    destinationId: uuid('destination_id'),
+    /** One personal channel; null with `kind` null means every channel. */
+    channelId: uuid('channel_id'),
+    categoryCode: text('category_code'),
+    topicCode: text('topic_code'),
+    /** A temporary mute or watch: the row stops applying at this time. */
+    endsAt: timestamp('ends_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** NOTIFICATION_PREFERENCE_KINDS; null means every kind. */
+    kind: text(),
+    /** NOTIFICATION_LEVELS: the lowest severity that gets through, or `none`. */
+    level: text().notNull(),
+  },
+  (table) => [
+    check(
+      'preference_kind_check',
+      sql`kind IS NULL OR kind IN ('inbox', 'email', 'push', 'chat', 'webhook')`
+    ),
+    check('preference_level_check', sql`level IN ('all', 'warning', 'critical', 'none')`),
+    check('preference_project_org_check', sql`project_id IS NULL OR organization_id IS NOT NULL`),
+    check('preference_env_project_check', sql`environment_id IS NULL OR project_id IS NOT NULL`),
+    check(
+      'preference_resource_one_check',
+      sql`num_nonnulls(service_id, server_id, destination_id) <= 1`
+    ),
+    check(
+      'preference_resource_org_check',
+      sql`num_nonnulls(service_id, server_id, destination_id) = 0 OR organization_id IS NOT NULL`
+    ),
+    check('preference_subject_check', sql`num_nonnulls(category_code, topic_code) <= 1`),
+    check('preference_target_check', sql`num_nonnulls(channel_id, kind) <= 1`),
+    unique('uniq_preference_scope')
+      .on(
+        table.userId,
+        table.organizationId,
+        table.projectId,
+        table.environmentId,
+        table.serviceId,
+        table.serverId,
+        table.destinationId,
+        table.categoryCode,
+        table.topicCode,
+        table.kind,
+        table.channelId
+      )
+      .nullsNotDistinct(),
+    index('idx_preference_user_organization').on(table.userId, table.organizationId),
+    index('idx_preference_organization_id').on(table.organizationId),
+    index('idx_preference_project_id')
+      .on(table.projectId)
+      .where(sql`project_id IS NOT NULL`),
+    index('idx_preference_environment_id')
+      .on(table.environmentId)
+      .where(sql`environment_id IS NOT NULL`),
+    index('idx_preference_service_id')
+      .on(table.serviceId)
+      .where(sql`service_id IS NOT NULL`),
+    index('idx_preference_server_id')
+      .on(table.serverId)
+      .where(sql`server_id IS NOT NULL`),
+    index('idx_preference_destination_id')
+      .on(table.destinationId)
+      .where(sql`destination_id IS NOT NULL`),
+    index('idx_preference_channel_id')
+      .on(table.channelId)
+      .where(sql`channel_id IS NOT NULL`),
+    index('idx_preference_category_code')
+      .on(table.categoryCode)
+      .where(sql`category_code IS NOT NULL`),
+    index('idx_preference_topic_code')
+      .on(table.topicCode)
+      .where(sql`topic_code IS NOT NULL`),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'preference_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'preference_user_id_user_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.organizationId, table.projectId],
+      foreignColumns: [project.organizationId, project.id],
+      name: 'preference_project_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.projectId, table.environmentId],
+      foreignColumns: [environment.projectId, environment.id],
+      name: 'preference_environment_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'preference_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'preference_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.destinationId],
+      foreignColumns: [backupTarget.id],
+      name: 'preference_destination_id_destination_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.channelId],
+      foreignColumns: [notificationChannel.id],
+      name: 'preference_channel_id_channel_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.categoryCode],
+      foreignColumns: [notificationCategory.code],
+      name: 'preference_category_code_category_code_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.topicCode],
+      foreignColumns: [notificationTopic.code],
+      name: 'preference_topic_code_topic_code_fk',
+    }).onDelete('cascade'),
+  ]
+)
+
+/**
+ * An organization's default level for its members, for everyone or one team,
+ * optionally for one project or environment, category or topic, and channel
+ * kind; `is_forced` stops members overriding it. Lands with the data model;
+ * the screens and the resolver step that read it come in a later release.
+ */
+export const notificationPolicy = pgTable(
+  'policy',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    ...notificationTimestamps(),
+    organizationId: uuid('organization_id').notNull(),
+    /** Null means every member of the organization. */
+    teamId: uuid('team_id'),
+    projectId: uuid('project_id'),
+    environmentId: uuid('environment_id'),
+    categoryCode: text('category_code'),
+    topicCode: text('topic_code'),
+    /** Who set the policy; null once that account is deleted. */
+    createdByUserId: uuid('created_by_user_id'),
+    /** NOTIFICATION_PREFERENCE_KINDS; null means every kind. */
+    kind: text(),
+    /** NOTIFICATION_LEVELS. */
+    level: text().notNull(),
+    /** Members cannot override a forced policy. */
+    isForced: boolean('is_forced').default(false).notNull(),
+  },
+  (table) => [
+    check(
+      'policy_kind_check',
+      sql`kind IS NULL OR kind IN ('inbox', 'email', 'push', 'chat', 'webhook')`
+    ),
+    check('policy_level_check', sql`level IN ('all', 'warning', 'critical', 'none')`),
+    check('policy_env_project_check', sql`environment_id IS NULL OR project_id IS NOT NULL`),
+    check('policy_subject_check', sql`num_nonnulls(category_code, topic_code) <= 1`),
+    unique('uniq_policy_scope')
+      .on(
+        table.organizationId,
+        table.teamId,
+        table.projectId,
+        table.environmentId,
+        table.categoryCode,
+        table.topicCode,
+        table.kind
+      )
+      .nullsNotDistinct(),
+    index('idx_policy_team_id')
+      .on(table.teamId)
+      .where(sql`team_id IS NOT NULL`),
+    index('idx_policy_project_id')
+      .on(table.projectId)
+      .where(sql`project_id IS NOT NULL`),
+    index('idx_policy_environment_id')
+      .on(table.environmentId)
+      .where(sql`environment_id IS NOT NULL`),
+    index('idx_policy_category_code')
+      .on(table.categoryCode)
+      .where(sql`category_code IS NOT NULL`),
+    index('idx_policy_topic_code')
+      .on(table.topicCode)
+      .where(sql`topic_code IS NOT NULL`),
+    index('idx_policy_created_by_user_id').on(table.createdByUserId),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'policy_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.teamId],
+      foreignColumns: [team.id],
+      name: 'policy_team_id_team_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.organizationId, table.projectId],
+      foreignColumns: [project.organizationId, project.id],
+      name: 'policy_project_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.projectId, table.environmentId],
+      foreignColumns: [environment.projectId, environment.id],
+      name: 'policy_environment_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.categoryCode],
+      foreignColumns: [notificationCategory.code],
+      name: 'policy_category_code_category_code_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.topicCode],
+      foreignColumns: [notificationTopic.code],
+      name: 'policy_topic_code_topic_code_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.createdByUserId],
+      foreignColumns: [user.id],
+      name: 'policy_created_by_user_id_user_id_fk',
+    }).onDelete('set null'),
+  ]
+)
+
+/**
+ * An email address nothing is sent to: it bounced for good or the provider
+ * refused it as undeliverable. Keyed by a hash of the lower-cased address, so
+ * the table holds no address. Checked before every notification email; a
+ * confirmed verification of the address clears it (`cleared_at`).
+ */
+export const notificationSuppression = pgTable(
+  'suppression',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    ...notificationTimestamps(),
+    /** SHA-256 hex of the trimmed, lower-cased address. */
+    addressHash: text('address_hash').notNull(),
+    /** NOTIFICATION_SUPPRESSION_REASONS. */
+    reason: text().notNull(),
+    /** NOTIFICATION_SUPPRESSION_SOURCES: the mail path that reported it. */
+    source: text().notNull(),
+    /** When the address was confirmed again; null while it is suppressed. */
+    clearedAt: timestamp('cleared_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+  },
+  (table) => [
+    check('suppression_reason_check', sql`reason IN ('bounced', 'complained', 'rejected')`),
+    check('suppression_source_check', sql`source IN ('smtp', 'mailgun', 'mailpit', 'manual')`),
+    check('suppression_address_hash_check', sql`address_hash ~ '^[0-9a-f]{64}$'`),
+    uniqueIndex('uniq_suppression_active_address')
+      .on(table.addressHash)
+      .where(sql`cleared_at IS NULL`),
+  ]
+)
+
+/**
+ * Mark-all-read without rewriting every row: inbox rows created at or before
+ * `read_through` read as read. One row per person and organization (null for
+ * every organization).
+ */
+export const notificationWatermark = pgTable(
+  'watermark',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    ...notificationTimestamps(),
+    /** Null means the mark covers every organization and the install's own events. */
+    organizationId: uuid('organization_id'),
+    userId: uuid('user_id').notNull(),
+    /** Inbox rows created at or before this time read as read. */
+    readThrough: timestamp('read_through', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+  },
+  (table) => [
+    unique('uniq_watermark_user_organization')
+      .on(table.userId, table.organizationId)
+      .nullsNotDistinct(),
+    index('idx_watermark_organization_id').on(table.organizationId),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'watermark_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [user.id],
+      name: 'watermark_user_id_user_id_fk',
+    }).onDelete('cascade'),
+  ]
+)
+
 /**
  * One firewall rule an operator typed, in the vocabulary of the
  * `server.firewall.reconcile` wire contract (`scope`, `action`, `proto`,

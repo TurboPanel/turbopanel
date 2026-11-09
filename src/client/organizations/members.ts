@@ -15,8 +15,9 @@ import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import { getDb } from '../../db/connection.ts'
-import { grant, team, teammate } from '../../db/schema.ts'
+import { grant, team, teammate, user } from '../../db/schema.ts'
 import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
+import { forgetMember } from '../../features/notifications/cleanup.ts'
 import { isUuid } from '../access/routes-helpers.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -36,7 +37,13 @@ type MemberFootprint = {
 }
 
 type RemovalOutcome =
-  { status: 'removed'; grantsRemoved: number; teamsLeft: number } | { status: 'last_owner' }
+  | {
+      status: 'removed'
+      grantsRemoved: number
+      teamsLeft: number
+      memberEmail: string | null
+    }
+  | { status: 'last_owner' }
 
 async function inOrganizationTeams(db: Db, userId: string, organizationId: string) {
   return await db
@@ -125,7 +132,20 @@ async function removeMemberRows(
             .delete(grant)
             .where(and(inArray(grant.id, grantIds), eq(grant.actorId, userId)))
             .returning({ id: grant.id })
-    return { status: 'removed' as const, grantsRemoved: revoked.length, teamsLeft: left.length }
+    // Their notification settings and copies in this organization go with
+    // them; every other organization's rows are untouched.
+    const [account] = await tx
+      .select({ email: user.email })
+      .from(user)
+      .where(eq(user.id, userId))
+      .limit(1)
+    await forgetMember(tx, organizationId, userId, account?.email ?? null)
+    return {
+      status: 'removed' as const,
+      grantsRemoved: revoked.length,
+      teamsLeft: left.length,
+      memberEmail: account?.email ?? null,
+    }
   })
 }
 
@@ -218,7 +238,7 @@ export function registerOrganizationMemberRoutes(router: Hono<AppEnv>, opts: Aut
           teamsLeft: outcome.teamsLeft,
         },
       },
-      { permissionKey: 'organization membership', subjectKind: 'user', subjectId: memberId }
+      { memberEmail: outcome.memberEmail }
     )
     return c.json({ ok: true as const })
   })
