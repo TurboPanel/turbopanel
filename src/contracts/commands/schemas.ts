@@ -5009,6 +5009,26 @@ export type EnvironmentStopCommandPayload = {
    * environment never loses that data.
    */
   removeDeploymentDir?: true
+  /**
+   * Registered Docker volumes to remove after the stack is down, by storage id
+   * (the volume's exact Docker name). Only a Destroy with "Also Delete the Data
+   * Volumes" sets it, and only to a daemon that lists
+   * `environment-stop-remove-volumes-v1`. The daemon keeps a volume any
+   * container still uses.
+   */
+  removeVolumes?: StopVolumeRemoval[]
+}
+
+/** One registered Docker volume a stop removes, by its storage id (its exact Docker name). */
+export type StopVolumeRemoval = { storageId: string }
+
+/** What the host did with one volume a stop was asked to remove. */
+export type EnvironmentStopVolumeState = {
+  storageId: string
+  /** `removed`, `absent` (not on that server), `kept` (still in use, or no Docker) or `failed`. */
+  state: 'removed' | 'absent' | 'kept' | 'failed'
+  /** Why the volume stayed, in plain words. Present only for `kept` and `failed`. */
+  reason?: string
 }
 
 export type EnvironmentStopCommandResult = {
@@ -5021,6 +5041,8 @@ export type EnvironmentStopCommandResult = {
    * Only present when the payload carried `siteReleases` with a `folder`.
    */
   folders?: EnvironmentStopFolderState[]
+  /** One entry per volume in `removeVolumes`; only present when the payload named volumes. */
+  volumes?: EnvironmentStopVolumeState[]
 }
 
 /** One reclaimed (or not) service folder, by its components. */
@@ -5061,6 +5083,61 @@ function parseStopFolderStates(value: unknown): EnvironmentStopFolderState[] | u
     }
   }
   return states
+}
+
+const STOP_VOLUME_STATES: ReadonlySet<string> = new Set(['removed', 'absent', 'kept', 'failed'])
+
+function parseStopVolumeStates(value: unknown): EnvironmentStopVolumeState[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const states: EnvironmentStopVolumeState[] = []
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      !isString(entry.storageId) ||
+      !STOP_VOLUME_STORAGE_ID_RE.test(entry.storageId) ||
+      !isString(entry.state) ||
+      !STOP_VOLUME_STATES.has(entry.state)
+    ) {
+      // A result is a report; one malformed entry is left out.
+      continue
+    }
+    const state = entry.state as EnvironmentStopVolumeState['state']
+    const kept = state === 'kept' || state === 'failed'
+    states.push({
+      storageId: entry.storageId,
+      state,
+      ...(kept && isString(entry.reason) ? { reason: clipReason(entry.reason) } : {}),
+    })
+  }
+  return states
+}
+
+/** A storage id as the daemon accepts it: the exact name of the volume registered for it. */
+const STOP_VOLUME_STORAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/** The most volumes one stop may name; twin of the daemon parser's limit. */
+export const MAX_STOP_REMOVE_VOLUMES = 200
+
+function parseStopVolumeRemovals(value: unknown): StopVolumeRemoval[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_STOP_REMOVE_VOLUMES) {
+    throw new TypeError('Invalid environment.stop removeVolumes')
+  }
+  const seen = new Set<string>()
+  const out: StopVolumeRemoval[] = []
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      !isString(entry.storageId) ||
+      !STOP_VOLUME_STORAGE_ID_RE.test(entry.storageId)
+    ) {
+      throw new Error('Invalid environment.stop removeVolumes entry')
+    }
+    if (seen.has(entry.storageId)) continue
+    seen.add(entry.storageId)
+    out.push({ storageId: entry.storageId })
+  }
+  return out
 }
 
 function parseStopIngressServices(value: unknown): Array<{ serviceId: string }> | undefined {
@@ -5176,6 +5253,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
   const siteReleases = parseStopSiteReleases(value.siteReleases)
   const releaseCleanup = parseStopSiteReleases(value.releaseCleanup, 'releaseCleanup')
   const retirePrincipals = parseRetirePrincipals(value.retirePrincipals)
+  const removeVolumes = parseStopVolumeRemovals(value.removeVolumes)
   return {
     environmentId,
     projectId,
@@ -5186,6 +5264,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
     ...(releaseCleanup !== undefined ? { releaseCleanup } : {}),
     ...(retirePrincipals !== undefined ? { retirePrincipals } : {}),
     ...(value.removeDeploymentDir === true ? { removeDeploymentDir: true as const } : {}),
+    ...(removeVolumes !== undefined ? { removeVolumes } : {}),
   }
 }
 
@@ -5201,6 +5280,8 @@ export function parseEnvironmentStopResult(value: unknown): EnvironmentStopComma
   if (containers !== undefined) result.containers = containers
   const folders = parseStopFolderStates(value.folders)
   if (folders !== undefined) result.folders = folders
+  const volumes = parseStopVolumeStates(value.volumes)
+  if (volumes !== undefined) result.volumes = volumes
   return result
 }
 

@@ -439,6 +439,14 @@ snippet, reclaims listed `siteReleases[]` trees, deletes the deployment dir, and
 `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets` tree
 (`turbopaneld/src/commands/stop-environment.ts`).
 
+**`removeVolumes[]` (`{ storageId }[]`) deletes data, only when asked.** A
+Destroy with "Also Delete the Data Volumes" names the environment's registered
+Docker volumes by storage id (their exact Docker name). The daemon removes each
+after the stack is down, keeps any a container still uses, and reports
+`volumes[]` (`removed`, `absent`, `kept` or `failed`, with `reason`). Sent only
+to daemons that list `environment-stop-remove-volumes-v1`. See
+`src/client/AGENTS.md` (Deploy hash and Destroy).
+
 **`siteReleases[]` (`{ serviceId, username, folder? }[]`) is generic host reclaim, not a
 site detail.** It names `<principalHome>/sites/<serviceId>` — the tree the Git
 release engine publishes into (`releases/`, `current`, `shared/`) and the one

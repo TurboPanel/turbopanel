@@ -82,6 +82,7 @@ export const AUDIT_ACTIONS = [
   'folder.remove',
   'environment.primary.set',
   'environment.delete',
+  'environment.data.delete',
   'project.delete',
   'principal.delete',
   'managed.database.owner_role.move',
