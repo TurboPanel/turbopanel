@@ -50,6 +50,7 @@ import type {
   EnvironmentDeploySite,
   EnvironmentDeployVariableMaterial,
   EnvironmentLifecycleAction,
+  StopVolumeRemoval,
 } from '../../contracts/commands/schemas.ts'
 import {
   buildDeployPreviewContainers,
@@ -181,7 +182,6 @@ import {
   parseJsonBody,
 } from '../shared.ts'
 import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
-import type { StopVolumeRemoval } from '../../contracts/commands/schemas.ts'
 import {
   parseDestroyRequest,
   planDestroyData,
