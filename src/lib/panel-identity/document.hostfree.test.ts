@@ -42,8 +42,10 @@ test('serialized bytes keep the declared key order and a 30 day lifetime', async
     'urls',
     'issued',
     'expires',
+    'sealedLicense',
     'boundSessions',
   ])
+  assertEquals(parsed.sealedLicense, 1)
   assertEquals(parsed.boundSessions, 1)
   assertEquals(Object.keys(parsed.keys[0]), ['kid', 'alg', 'pub', 'role'])
   assertEquals(Date.parse(parsed.expires) - Date.parse(parsed.issued), IDENTITY_DOCUMENT_TTL_MS)

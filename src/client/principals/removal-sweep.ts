@@ -222,16 +222,22 @@ async function removalStep(tx: Db, principalId: string): Promise<RemovalStep> {
   return { result: 'retiring', serverIds: ready, retried, appliedUsername: row.appliedUsername }
 }
 
+/** The person whose own delete removes the principal; the audit entry names them. */
+export type PrincipalRemovalActor = Readonly<{ userId: string; email: string | null }>
+
 /**
  * Take one requested removal one step further (see the module comment). The
  * ask goes out after the transaction commits; a server whose ask could not be
- * queued keeps its placement `retiring` and is asked again later.
+ * queued keeps its placement `retiring` and is asked again later. `actor` is
+ * the person when their own delete gets this far; the sweep passes none, and
+ * its audit entry has a null actor.
  */
 export async function removeRequestedPrincipal(
   db: Db,
   queue: CommandQueue | undefined,
   secretsConfig: SecretsConfig | undefined,
-  principalId: string
+  principalId: string,
+  actor: PrincipalRemovalActor | null = null
 ): Promise<PrincipalRemovalResult> {
   const step = await db.transaction((tx) => removalStep(tx, principalId))
   if (step.result === 'removed') {
@@ -240,7 +246,11 @@ export async function removeRequestedPrincipal(
     await recordAudit(
       db,
       principalDeleteAuditEntry(
-        { organizationId, actorUserId: null, actorEmail: null },
+        {
+          organizationId,
+          actorUserId: actor?.userId ?? null,
+          actorEmail: actor?.email ?? null,
+        },
         principalId,
         account
       )
@@ -272,18 +282,22 @@ export async function removeRequestedPrincipal(
   return 'retiring'
 }
 
-/** Try each of these principals once (the project delete, for its own). Never throws. */
+/**
+ * Try each of these principals once (the project delete, for its own, passes
+ * the person as `actor`; the sweep passes none). Never throws.
+ */
 export async function removeRequestedPrincipals(
   db: Db,
   queue: CommandQueue | undefined,
   secretsConfig: SecretsConfig | undefined,
-  principalIds: readonly string[]
+  principalIds: readonly string[],
+  actor: PrincipalRemovalActor | null = null
 ): Promise<{ removed: number }> {
   let removed = 0
   await forEachSequential(principalIds, async (principalId) => {
     try {
-      if ((await removeRequestedPrincipal(db, queue, secretsConfig, principalId)) === 'removed')
-        removed += 1
+      const result = await removeRequestedPrincipal(db, queue, secretsConfig, principalId, actor)
+      if (result === 'removed') removed += 1
     } catch (err) {
       compatLogWarn('principals', `removal of principal ${principalId} failed: ${String(err)}`)
     }

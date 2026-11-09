@@ -18,16 +18,22 @@ function headerValue(value: string, max = 200): string {
   return value.replaceAll(/[\r\n\t]/g, ' ').slice(0, max)
 }
 
+/** RFC 8058 asks for an HTTPS link; a plain-http base URL gets no one-click header. */
+function isHttpsUrl(value: string): boolean {
+  return value.slice(0, 8).toLowerCase() === 'https://'
+}
+
 /**
  * The RFC 8058 one-click pair (one HTTPS link, `List-Unsubscribe=One-Click`)
- * and the filtering headers, for a notification or digest email.
+ * and the filtering headers, for a notification or digest email. The pair is
+ * left out when the link is not HTTPS (the footer link still works).
  */
 export function notificationMailHeaders(
   mail: NotificationMailHeaders | undefined
 ): Record<string, string> {
   const headers: Record<string, string> = {}
   if (!mail) return headers
-  if (mail.unsubscribeUrl) {
+  if (mail.unsubscribeUrl && isHttpsUrl(mail.unsubscribeUrl)) {
     headers['List-Unsubscribe'] = `<${headerValue(mail.unsubscribeUrl, 2000)}>`
     headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
   }

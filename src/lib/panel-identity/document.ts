@@ -23,6 +23,8 @@ export type IdentityDocument = {
   urls: string[]
   issued: string
   expires: string
+  /** 1: this control plane takes the license sealed on enroll (`sealed-enroll.ts`). */
+  sealedLicense: 1
   /**
    * 1: this control plane signs the server id and daemon key id into every
    * session hello (`panel-bound-session-v1`; frames name them too when the
@@ -65,6 +67,7 @@ export function buildIdentityDocument(
     urls,
     issued: now.toISOString(),
     expires: new Date(now.getTime() + IDENTITY_DOCUMENT_TTL_MS).toISOString(),
+    sealedLicense: 1,
     boundSessions: 1,
   }
 }
@@ -79,6 +82,7 @@ export function serializeIdentityDocument(doc: IdentityDocument): string {
     urls: doc.urls,
     issued: doc.issued,
     expires: doc.expires,
+    sealedLicense: doc.sealedLicense,
     boundSessions: doc.boundSessions,
   })
 }
