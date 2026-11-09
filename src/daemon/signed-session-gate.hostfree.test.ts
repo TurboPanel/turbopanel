@@ -77,9 +77,6 @@ test('the session names the server and key only when the daemon offered the bind
   assert(plain.kind === 'signed')
   assertEquals(plain.session.bind, undefined)
 })
-  assert(noBinding.kind === 'signed')
-  assertEquals(noBinding.session.bind, undefined)
-})
 
 test('the hello is bound for every signed session, offer or not; frames only on the offer', async () => {
   const id = await identity()
