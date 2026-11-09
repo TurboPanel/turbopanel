@@ -226,10 +226,26 @@ export class FakeRedisCellClient {
       if (mkstream) return
       throw new Error('BUSYGROUP Consumer Group name already exists')
     }
+    // As in Redis: `$` starts after the last entry the stream holds now.
+    const lastId = state.entries.at(-1)?.id ?? '0-0'
     state.groups.set(group, {
-      lastDeliveredId: startId === '$' ? '0-0' : startId,
+      lastDeliveredId: startId === '$' ? lastId : startId,
       pending: new Map(),
     })
+  }
+
+  /** Redis refuses a group read when the stream key or the group is missing. */
+  #groupOrNoGroup(
+    key: string,
+    group: string,
+    command: string
+  ): { state: StreamState; groupState: StreamGroupState } {
+    const state = this.#streams.get(key)
+    const groupState = state?.groups.get(group)
+    if (!state || !groupState) {
+      throw new Error(`NOGROUP No such key '${key}' or consumer group '${group}' in ${command}`)
+    }
+    return { state, groupState }
   }
 
   async xreadgroup(
@@ -240,10 +256,11 @@ export class FakeRedisCellClient {
     _blockMs?: number,
     streamId: '>' | '0' = '>'
   ): Promise<StreamEntry[]> {
-    const state = this.#streams.get(streamKey)
-    if (!state) return []
-    const groupState = state.groups.get(group)
-    if (!groupState) return []
+    const { state, groupState } = this.#groupOrNoGroup(
+      streamKey,
+      group,
+      'XREADGROUP with GROUP option'
+    )
     if (streamId === '0') {
       return this.#readPendingForConsumer(state, groupState, consumer, count)
     }
@@ -319,9 +336,7 @@ export class FakeRedisCellClient {
     _startId: string,
     count: number
   ): Promise<StreamEntry[]> {
-    const state = this.#streams.get(key)
-    const groupState = state?.groups.get(group)
-    if (!state || !groupState) return []
+    const { state, groupState } = this.#groupOrNoGroup(key, group, 'XAUTOCLAIM')
     const reclaimed: StreamEntry[] = []
     const at = nowMs()
     for (const [entryId, pending] of groupState.pending.entries()) {

@@ -59,7 +59,7 @@ import {
 } from '../features/commands/command-recovery.ts'
 import { getDb } from '../db/connection.ts'
 import type { Db } from '../db/connection.ts'
-import { compatLogError, compatLogWarn } from '../lib/log-compat.ts'
+import { compatLogError, compatLogInfo, compatLogWarn } from '../lib/log-compat.ts'
 import { forEachSequential } from '../lib/sequential.ts'
 import { cellTrace, daemonCellLog, logWarn } from '../lib/logger.ts'
 import {
@@ -128,6 +128,21 @@ import { raiseServerTrustLevel, recordServerSignsReports } from '../features/ser
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250
 
+/** Longest wait between two failed outbox pump turns. */
+const OUTBOX_PUMP_MAX_BACKOFF_MS = 5_000
+
+/**
+ * How long the outbox pump waits before its next turn after `consecutiveFailures`
+ * failed turns in a row: nothing while it is healthy, then 250 ms doubling up to
+ * five seconds. A failed read can come back at once (Redis answers an error
+ * before any block), so without this wait one lasting error spins the pump and
+ * fills the log.
+ */
+export function outboxPumpBackoffMs(consecutiveFailures: number): number {
+  if (consecutiveFailures <= 0) return 0
+  return Math.min(OUTBOX_PUMP_BLOCK_MS * 2 ** (consecutiveFailures - 1), OUTBOX_PUMP_MAX_BACKOFF_MS)
+}
+
 /** Decode a Hono/Deno WS frame (`string | Blob | ArrayBufferLike`) to UTF-8 text. */
 export async function wsMessageDataToString(
   data: string | Blob | ArrayBufferLike
@@ -168,14 +183,29 @@ async function assertDaemonKeyStillActive(
   return true
 }
 
-type DaemonOutboxPumpParams = {
-  cell: ReturnType<DaemonCellRegistry['getCell']>
+export type DaemonOutboxPumpParams = {
+  cell: Pick<
+    ReturnType<DaemonCellRegistry['getCell']>,
+    'readOutboxBatch' | 'markSent' | 'ackOutbox' | 'putSnapshot'
+  >
   serverId: string
   connectionId: string
   consumer: string
   /** The socket's sender: plain JSON, or a signed envelope once the session is signed. */
   send: (wire: { type: string }) => Promise<void>
   abortRef: { abort: boolean }
+  /** Waits out the pause after a failed turn. Tests pass their own; the default is a timer. */
+  sleep?: (ms: number) => Promise<void>
+}
+
+/** Failed turns in a row, and the error already logged for this run of failures. */
+type OutboxPumpHealth = { failures: number; loggedError: string | null }
+
+function sleepForOutboxPump(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    // A pause must never keep the process alive on its own at shutdown.
+    Deno.unrefTimer(setTimeout(resolve, ms))
+  })
 }
 
 /** Send one outbox batch to the socket: mark sent, send, then ack, one envelope at a time. */
@@ -207,10 +237,15 @@ async function sendOutboxBatch(
 /**
  * One turn of the outbox pump: read a batch and send it. True when the pump
  * must keep going, false once it was aborted or the connection is closed. A
- * failed turn is logged and the pump goes on.
+ * failed turn is counted in `health` and the pump goes on; the error is logged
+ * when it first appears or changes, never once per turn, and one line marks the
+ * recovery.
  */
-async function pumpOutboxOnce(params: DaemonOutboxPumpParams): Promise<boolean> {
-  const { cell, consumer, abortRef } = params
+async function pumpOutboxOnce(
+  params: DaemonOutboxPumpParams,
+  health: OutboxPumpHealth
+): Promise<boolean> {
+  const { cell, consumer, abortRef, serverId } = params
   try {
     const batch = await cell.readOutboxBatch({
       consumer,
@@ -218,6 +253,14 @@ async function pumpOutboxOnce(params: DaemonOutboxPumpParams): Promise<boolean> 
       blockMs: OUTBOX_PUMP_BLOCK_MS,
     })
     await sendOutboxBatch(params, batch)
+    if (health.failures > 0) {
+      compatLogInfo(
+        'ws',
+        `outbox pump for ${serverId} recovered after ${health.failures} failed turn(s)`
+      )
+      health.failures = 0
+      health.loggedError = null
+    }
     return true
   } catch (err) {
     if (abortRef.abort) return false
@@ -225,20 +268,39 @@ async function pumpOutboxOnce(params: DaemonOutboxPumpParams): Promise<boolean> 
       abortRef.abort = true
       return false
     }
-    compatLogWarn('ws', `outbox pump error: ${String(err)}`)
+    health.failures += 1
+    const message = String(err)
+    if (health.loggedError !== message) {
+      health.loggedError = message
+      compatLogWarn(
+        'ws',
+        `outbox pump error for ${serverId}, retrying with a growing pause (repeats are not logged): ${message}`
+      )
+    }
     return true
   }
 }
 
 /**
  * Nothing awaits the pump: it lives as long as the socket, so each turn
- * schedules the next one detached instead of looping inside one promise.
+ * schedules the next one detached instead of looping inside one promise. After
+ * a failed turn the next one waits `outboxPumpBackoffMs` first.
+ *
+ * Exported for tests.
  */
-function startDaemonOutboxPump(params: DaemonOutboxPumpParams): void {
-  if (params.abortRef.abort) return
-  void pumpOutboxOnce(params).then((keepGoing) => {
-    if (keepGoing) startDaemonOutboxPump(params)
-  })
+export function startDaemonOutboxPump(params: DaemonOutboxPumpParams): void {
+  const health: OutboxPumpHealth = { failures: 0, loggedError: null }
+  const sleep = params.sleep ?? sleepForOutboxPump
+  const turn = (): void => {
+    if (params.abortRef.abort) return
+    void pumpOutboxOnce(params, health).then(async (keepGoing) => {
+      if (!keepGoing) return
+      const pauseMs = outboxPumpBackoffMs(health.failures)
+      if (pauseMs > 0) await sleep(pauseMs)
+      turn()
+    })
+  }
+  turn()
 }
 
 function detachDaemonSocketSafe(
@@ -927,6 +989,8 @@ export type DaemonWebSocketOptions = {
    * not touch the database: the attach path calls it once per connection.
    */
   heartbeatSeconds?: () => number
+  /** Waits out the pause after a failed outbox pump turn. Tests pass their own; the default is a timer. */
+  outboxPumpSleep?: (ms: number) => Promise<void>
   /** The identity key; null or absent = no signed sessions (a pinned daemon is refused). */
   panelIdentity?: () => Promise<PanelIdentity | null>
   /** The control plane's public origins, sent in the signed hello. */
@@ -1092,6 +1156,7 @@ export function registerDaemonWebSocket<E extends Env>(
           consumer: `ws:${connectionId}`,
           send: (wire) => send.send(wire),
           abortRef: pumpControl,
+          sleep: options.outboxPumpSleep,
         })
       }
 

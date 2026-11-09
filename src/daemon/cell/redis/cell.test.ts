@@ -968,6 +968,171 @@ test('readOutboxBatch serves xautoclaimed entries on attach', async () => {
   }
 })
 
+function pingDispatch(commandId: string) {
+  return {
+    kind: 'command-dispatch' as const,
+    deliveryId: generateDeliveryId(),
+    requestId: generateRequestId(),
+    at: new Date().toISOString(),
+    commandId,
+    commandType: 'daemon.ping',
+    payload: {},
+  }
+}
+
+test('readOutboxBatch creates the outbox group again after Redis lost it and delivers what was queued meanwhile', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const attached = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const consumer = `ws:${attached.connectionId}`
+
+    // Redis restarted without its data: the stream and its group are gone
+    // while the socket stays open.
+    await client.del(outboxKey(serverId))
+    await assertRejects(
+      () => client.xreadgroup(OUTBOX_GROUP, consumer, outboxKey(serverId), 1),
+      Error,
+      'NOGROUP'
+    )
+
+    // A command queued before any read recreates the stream without a group.
+    const queued = pingDispatch('after-loss')
+    await cell.enqueue(queued)
+
+    const batch = await cell.readOutboxBatch({ consumer, count: 10 })
+    assertEquals(
+      batch.map((entry) => entry.requestId),
+      [queued.requestId]
+    )
+
+    // Delivery goes on as before: ack, then the next command.
+    await cell.ackOutbox([queued.deliveryId], consumer)
+    assertEquals(await client.xlen(outboxKey(serverId)), 0)
+    const next = pingDispatch('next')
+    await cell.enqueue(next)
+    const second = await cell.readOutboxBatch({ consumer, count: 10 })
+    assertEquals(
+      second.map((entry) => entry.requestId),
+      [next.requestId]
+    )
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
+test('readOutboxBatch on an idle server recovers a lost outbox group with nothing queued', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const attached = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const consumer = `ws:${attached.connectionId}`
+    await client.del(outboxKey(serverId))
+
+    assertEquals(await cell.readOutboxBatch({ consumer, count: 10 }), [])
+    // The group exists again, so the next read is an ordinary one.
+    assertEquals(await client.xreadgroup(OUTBOX_GROUP, consumer, outboxKey(serverId), 1), [])
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
+test('an unacknowledged entry is delivered again after the outbox group was lost', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const attached = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const consumer = `ws:${attached.connectionId}`
+    const sent = pingDispatch('sent-not-acked')
+    await cell.enqueue(sent)
+    assertEquals((await cell.readOutboxBatch({ consumer, count: 10 })).length, 1)
+
+    // Only the group is gone (the stream kept its entry): the entry was read
+    // but never acknowledged, so it is owed to the server once more.
+    const entries = await client.xrange(outboxKey(serverId), '-', '+')
+    await client.del(outboxKey(serverId))
+    await client.xadd(outboxKey(serverId), entries[0]!.id, entries[0]!.fields)
+
+    const again = await cell.readOutboxBatch({ consumer, count: 10 })
+    assertEquals(
+      again.map((entry) => entry.requestId),
+      [sent.requestId]
+    )
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
+test('attach delivers entries queued while no outbox group existed', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    // Queued with no group at all (Redis lost its data while the server was
+    // away): the first attach must not skip it.
+    const queued = pingDispatch('before-attach')
+    await cell.enqueue(queued)
+
+    const attached = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const batch = await cell.readOutboxBatch({
+      consumer: `ws:${attached.connectionId}`,
+      count: 10,
+    })
+    assertEquals(
+      batch.map((entry) => entry.requestId),
+      [queued.requestId]
+    )
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
+test('a purged cell does not bring its outbox back until the next attach', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const attached = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const consumer = `ws:${attached.connectionId}`
+    await cell.purge()
+
+    await assertRejects(() => cell.readOutboxBatch({ consumer, count: 10 }), Error, 'NOGROUP')
+    assertEquals(await client.scanKeys(cellKeyPattern(serverId)), [])
+
+    const again = await cell.attachDaemonSocket({ keyId: 'key-2' })
+    assertEquals(
+      await cell.readOutboxBatch({
+        consumer: `ws:${again.connectionId}`,
+        count: 10,
+      }),
+      []
+    )
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
+test('a read error other than a missing group is passed on unchanged', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const attached = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const xreadgroup = client.xreadgroup.bind(client)
+    let groupCreates = 0
+    const xgroupCreate = client.xgroupCreate.bind(client)
+    client.xgroupCreate = (...args: Parameters<typeof xgroupCreate>) => {
+      groupCreates += 1
+      return xgroupCreate(...args)
+    }
+    client.xreadgroup = () => Promise.reject(new Error('WRONGTYPE Operation against a key'))
+    await assertRejects(
+      () =>
+        cell.readOutboxBatch({
+          consumer: `ws:${attached.connectionId}`,
+          count: 10,
+        }),
+      Error,
+      'WRONGTYPE'
+    )
+    assertEquals(groupCreates, 0)
+    client.xreadgroup = xreadgroup
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
 test('getSnapshot falls back to meta and ignores invalid JSON snapshot', async () => {
   const { client, cell, serverId } = createTestCell()
   try {
