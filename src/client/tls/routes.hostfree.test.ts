@@ -279,7 +279,7 @@ function authHeaders(cookie: string, extra: Record<string, string> = {}): Record
 async function expectJson(
   response: Response,
   status: number,
-  body: Record<string, unknown>
+  body: Record<string, unknown> | null
 ): Promise<void> {
   assertEquals(response.status, status)
   assertEquals(await response.json(), body)
@@ -920,7 +920,8 @@ test('GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals', asyn
   const missing = await app.request('/tls/ca/rotation', {
     headers: authHeaders(cookie),
   })
-  await expectJson(missing, 404, { error: 'Not found' })
+  // No rotation yet is an ordinary answer, not a 404 the browser logs as an error.
+  await expectJson(missing, 200, null)
 
   const retire = await app.request('/tls/ca/retire', {
     method: 'POST',
