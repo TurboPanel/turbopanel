@@ -516,6 +516,12 @@ export const deploySchemas = {
         description:
           'The deploy engine this attempt ran. Null for attempts queued before it was recorded.',
       },
+      action: {
+        type: ['string', 'null'],
+        enum: ['hostings', null],
+        description:
+          "`hostings` when this attempt only rewrote the web server config and certificates on a server already running the environment (no build, no restart), as after a hosting gets a Let's Encrypt certificate. Null for a full deploy.",
+      },
       strategyOutcome: {
         type: ['string', 'null'],
         enum: ['rolled_back', 'needs_attention', null],
