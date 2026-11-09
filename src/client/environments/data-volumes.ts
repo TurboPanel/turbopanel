@@ -119,7 +119,9 @@ export function classifyDataVolumes(
   }
   const byName = (a: RemovableDataVolume, b: RemovableDataVolume) =>
     a.name.localeCompare(b.name) || a.storageId.localeCompare(b.storageId)
-  return { volumes: volumes.sort(byName), kept: kept.sort(byName) }
+  volumes.sort(byName)
+  kept.sort(byName)
+  return { volumes, kept }
 }
 
 /** The storage ids, among `storageIds`, that another environment uses. */
