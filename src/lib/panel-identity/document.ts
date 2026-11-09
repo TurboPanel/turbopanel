@@ -23,6 +23,8 @@ export type IdentityDocument = {
   urls: string[]
   issued: string
   expires: string
+  /** 1: this control plane takes the license sealed on enroll (`sealed-enroll.ts`). */
+  sealedLicense: 1
 }
 
 /**
@@ -57,6 +59,7 @@ export function buildIdentityDocument(
     urls,
     issued: now.toISOString(),
     expires: new Date(now.getTime() + IDENTITY_DOCUMENT_TTL_MS).toISOString(),
+    sealedLicense: 1,
   }
 }
 
@@ -70,6 +73,7 @@ export function serializeIdentityDocument(doc: IdentityDocument): string {
     urls: doc.urls,
     issued: doc.issued,
     expires: doc.expires,
+    sealedLicense: doc.sealedLicense,
   })
 }
 

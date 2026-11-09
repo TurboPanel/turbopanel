@@ -325,14 +325,18 @@ async function keepAfterUnknownRead(
   return await recordFailure(deps, row, failure, mapped.stopUntil, priorStarts, 'keep')
 }
 
-/** Give up a kept order that cannot be picked up again, before a new one opens. */
+/**
+ * Give up a kept order that cannot be picked up again, before a new one
+ * opens. Its record is left to the caller ({@link removeRecord}), inside the
+ * caller's failure path: a throw there must fail on the row without the
+ * order, or the failure path would deactivate it a second time.
+ */
 async function dropKept(deps: Dns01Deps, row: Dns01Row): Promise<Dns01Row> {
   const kept = row.state.order
   if (!kept) return row
   const abandonedTimes = kept.answeredAt
     ? row.state.abandonedTimes
     : await abandon(deps, row.state, kept.authzUrl)
-  await removeRecord(deps, row, kept)
   return { ...row, state: { ...row.state, order: null, abandonedTimes } }
 }
 
@@ -407,6 +411,7 @@ async function startWith(
   if (resumed) return resumed
   const fresh = await dropKept(deps, row)
   try {
+    await removeRecord(deps, row, row.state.order)
     if (orderCapReached(fresh.state, deps.now())) return await holdForCap(deps, fresh, priorStarts)
     return await openOrder(deps, fresh, provider, checked.zone.id, checked.nameservers)
   } catch (err) {

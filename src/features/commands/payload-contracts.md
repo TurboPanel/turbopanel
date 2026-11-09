@@ -309,7 +309,10 @@ the per-server prepare fan-out, and the same allocator is threaded through every
 `prepareDeployCompose()` call in that deploy. So a service scheduled onto three
 servers writes three `command` rows carrying the _same_ release id, and
 `listServiceReleases` folds them back into one environment-scoped record whose
-status is the aggregate over all of them. Minting the id inside the per-host
+status is the aggregate over all of them. A row whose result says
+`unchanged: true` (the host found nothing to change and built nothing) is left
+out: its release id was never put on that host, so offering it would only lead
+to a rollback the daemon refuses. Minting the id inside the per-host
 prepare instead would make each host's release id different, and a rollback
 naming one of them would fail the daemon's `promoteExistingRelease()`
 missing-release check on every other host.
@@ -704,7 +707,7 @@ CA ensure-or-create **`GET /tls/ca`** (`{ tls, trustBundlePem }`), rotate
 **`POST /tls/ca/rotate`** (lease-guarded journal + fan-out of existing
 **`managed.apply`** / **`managed.ingress.reconcile`** plus binding rematerialize
 — no new command type, no `environment.deploy`; see `../tls/AGENTS.md`), status
-**`GET /tls/ca/rotation`**, retire-gate **`POST /tls/ca/retire`** (revokes
+**`GET /tls/ca/rotation`** (JSON `null` when no rotation ever ran), retire-gate **`POST /tls/ca/retire`** (revokes
 retired generations only after every tracked command `succeeded` and binding
 rematerialize rows are not failed; `PATCH /tls/:id` `revoke:true` cannot revoke
 an Organization CA), PEM-only download **`GET /tls/ca/download`** (concatenated

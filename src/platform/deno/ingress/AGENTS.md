@@ -192,7 +192,9 @@ High Availability (Workers) must not contain any of it.
   reachable while waiting for the record) is this host's problem, not the
   authority's refusal. When both the provider and this host's resolver answer
   that the zone lists no nameservers (an empty list, or NotFound from the
-  resolver, with neither read failing), the cause is `no-nameservers` instead:
+  resolver, with neither read failing; a provider with no nameserver read, or
+  a zone answer that carries no list, is no answer), the cause is
+  `no-nameservers` instead:
   the zone needs fixing, so it counts like any other cause. A `dns-lookup`
   backs off 1, 5, 15, 60 minutes, then hourly
   (`DNS01_LOOKUP_BACKOFF_MS`, counted in `lookupFailures`), never reaches

@@ -41,6 +41,7 @@ import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
 import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { parseClientNonce, resolveEnrollLicenseToken } from './authn/sealed-enroll.ts'
 import { signDaemonResponses } from '../lib/panel-identity/signed-response.ts'
 import {
   getDaemonCellRegistry,
@@ -193,10 +194,15 @@ import {
   type ProofVersion,
 } from './authn/proof-version.ts'
 import { markChallengeUsed, markRequestNonceUsed } from '../features/servers/daemon-nonce.ts'
-import { raiseServerTrustLevel } from '../features/servers/trust-level.ts'
+import {
+  effectiveTrustLevel,
+  raiseServerTrustLevel,
+  recordTrustDowngradeRefused,
+} from '../features/servers/trust-level.ts'
 import {
   DAEMON_SIGNATURE_HEADER,
   REQUEST_MAX_SKEW_SECONDS,
+  REQUEST_SIGNATURE_MISSING_ERROR,
   SIGNED_REQUEST_REQUIRED_ERROR,
   daemonKeyThumbprint,
   verifyDaemonRequest,
@@ -395,6 +401,9 @@ type EnrollFields = {
   publicJwk: JsonWebKey
   machineKey: string | undefined
   serverIdBody: string | undefined
+  /** A pinned daemon's license token sealed to this control plane (then `licenseToken` is empty). */
+  sealedLicenseToken: unknown
+  clientNonce: string | undefined
 }
 
 /**
@@ -411,7 +420,9 @@ function ed25519PublicJwk(jwk: JsonWebKey): JsonWebKey {
 /** Parses and validates the `POST /enroll` body, keeping every field check in one place. */
 function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFields> {
   const licenseId = normalizeRequiredString(body.licenseId)
-  const licenseToken = normalizeRequiredString(body.licenseToken)
+  const sealedLicenseToken = body.sealedLicenseToken
+  const licenseToken =
+    sealedLicenseToken === undefined ? normalizeRequiredString(body.licenseToken) : ''
   const machineKeyRaw = normalizeRequiredString(body.machineKey)
   const hostname = normalizeRequiredString(body.hostname)
   const challengeId = normalizeRequiredString(body.challengeId)
@@ -421,8 +432,11 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
     : null
 
   // Keep malformed or omitted auth credentials on the same unauthorized path.
-  if (!licenseId || !licenseToken) {
+  if (!licenseId || licenseToken === null) {
     return { ok: false, status: 401, error: 'Invalid license' }
+  }
+  if (sealedLicenseToken !== undefined && body.licenseToken !== undefined) {
+    return { ok: false, status: 400, error: 'send licenseToken or sealedLicenseToken, not both' }
   }
   if (!hostname || !challengeId || !signature || !publicJwk) {
     return { ok: false, status: 400, error: 'Missing required enroll fields' }
@@ -441,6 +455,8 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
       publicJwk,
       machineKey: machineKeyResult.value,
       serverIdBody: normalizeRequiredString(body.serverId) ?? undefined,
+      sealedLicenseToken,
+      clientNonce: parseClientNonce(body.clientNonce),
     },
   }
 }
@@ -846,6 +862,28 @@ function parseAuthSessionFields(body: Record<string, unknown>): FieldResult<Auth
       machineKey: machineKeyResult.value,
     },
   }
+}
+
+/**
+ * A verified v2 sign-in proof came without the request signature its daemon
+ * always sends: raise the server to level 2 (the proof was the daemon key's),
+ * log one warning and audit it (`recordTrustDowngradeRefused`, rate-limited
+ * per server). Best effort: the refusal stands whatever fails here.
+ */
+async function refuseSessionDowngrade(db: Db, serverId: string, trustLevel: number): Promise<void> {
+  logWarn(
+    'daemon',
+    `auth/session refused for ${serverId}: v2 proof without a request signature (level ${trustLevel})`
+  )
+  if (trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
+    await raiseServerTrustLevel(db, serverId, DAEMON_PROOF_TRUST_LEVEL).catch((err) => {
+      logWarn('daemon', `trust level raise failed for ${serverId}: ${String(err)}`)
+    })
+  }
+  await recordTrustDowngradeRefused(db, serverId, {
+    stage: 'auth-session',
+    reason: 'request signature missing',
+  })
 }
 
 /** Loads the server's daemon key and confirms it matches `keyId` and is active. */
@@ -1429,11 +1467,15 @@ async function readEnrollTrustLevel(
   const serverId = credential.kind === 'reenroll' ? credential.ticket.serverId : serverIdBody
   if (!serverId || !UUID_PATTERN.test(serverId)) return 0
   const [row] = await db
-    .select({ trustLevel: server.trustLevel })
+    .select({
+      trustLevel: server.trustLevel,
+      trustPinFingerprint: server.trustPinFingerprint,
+      trustPinReportedAt: server.trustPinReportedAt,
+    })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  return row?.trustLevel ?? 0
+  return row ? effectiveTrustLevel(row) : 0
 }
 
 /** Bind the key for a verified enroll and answer; a replaced key purges the old cell. */
@@ -1659,6 +1701,9 @@ export function registerDaemonApiRoutes<E extends Env>(
         nonce: challenge.nonce,
         at: challenge.at,
         expiresAt: challengeExpiresAt(challenge.at, authStore.ttlMs),
+        // Said in the signed body so an auth answer cannot pass for an enroll one.
+        kind: 'auth',
+        sealedLicense: 1,
       },
       200
     )
@@ -1752,22 +1797,38 @@ export function registerDaemonApiRoutes<E extends Env>(
    * `/auth/session` signed by the daemon key: the token is bound to that key
    * (`cnf`) and the server is raised to `trust_level` 2, after which every
    * request must be signed. Unsigned stays a bearer token, unless the server
-   * already proved itself (then refused).
+   * already proved itself or the proof is v2 (then refused, see below).
+   *
+   * A verified v2 proof is itself a proof by the daemon key that names this
+   * control plane, and a daemon that sends one always signs the request too.
+   * So a v2 proof without the header means something on the path removed it
+   * to get an unbound token: the server is raised to level 2 anyway (an
+   * unbound token it already holds stops working, and its socket must carry
+   * the attach proof from now on), the refusal is audited, and the answer is
+   * an error the daemon retries rather than one it treats as permanent.
    */
   const bindSessionToDaemonKey = async (
     c: Context<DaemonApiEnv>,
     db: Db,
     serverId: string,
     state: ServerDaemonStateWithMetadata,
-    bodyText: string
+    request: { bodyText: string; proof: ProofVersion }
   ): Promise<{ jkt?: string } | { refusal: { status: 400 | 403 | 503; error: string } }> => {
     const trustLevel = state.trustLevel ?? 0
     if (!c.req.header(DAEMON_SIGNATURE_HEADER)) {
+      if (request.proof.version === 2) {
+        await refuseSessionDowngrade(db, serverId, trustLevel)
+        return { refusal: { status: 403, error: REQUEST_SIGNATURE_MISSING_ERROR } }
+      }
       return trustLevel >= DAEMON_PROOF_TRUST_LEVEL
         ? { refusal: { status: 403, error: SIGNED_REQUEST_REQUIRED_ERROR } }
         : {}
     }
-    const verified = await checkRequestSignature(c, state, new TextEncoder().encode(bodyText))
+    const verified = await checkRequestSignature(
+      c,
+      state,
+      new TextEncoder().encode(request.bodyText)
+    )
     if (!verified.ok) {
       // 401 would send the daemon into a token refresh, so a bad proof here is
       // a 403; and a header that is present but unreadable is a bad signature,
@@ -1990,12 +2051,13 @@ export function registerDaemonApiRoutes<E extends Env>(
     const bodyRead = await readBoundedJsonBody(c, MAX_AUTH_CHALLENGE_BODY_BYTES)
     if (!bodyRead.ok) return bodyRead.response
 
-    let body: { serverId?: string; keyId?: string } = {}
+    let body: { serverId?: string; keyId?: string; clientNonce?: unknown } = {}
     if (bodyRead.text.trim()) {
       try {
         body = JSON.parse(bodyRead.text) as {
           serverId?: string
           keyId?: string
+          clientNonce?: unknown
         }
       } catch {
         body = {}
@@ -2018,12 +2080,20 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Challenge unavailable' }, 503)
     }
     const challenge = await enrollStore.issue()
+    // `kind` and `sealedLicense` are in every challenge answer, whatever the request
+    // carried, so an impostor that strips the daemon's nonce cannot make
+    // this control plane look like one that takes the license in clear. The
+    // nonce is echoed when sent; the answer is signed, so neither is strippable.
+    const clientNonce = parseClientNonce(body.clientNonce)
     return c.json(
       {
         challengeId: challenge.id,
         nonce: challenge.nonce,
         at: challenge.at,
         expiresAt: challengeExpiresAt(challenge.at, enrollStore.ttlMs),
+        kind: 'enroll',
+        sealedLicense: 1,
+        ...(clientNonce === undefined ? {} : { clientNonce }),
       },
       200
     )
@@ -2050,13 +2120,14 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
     const {
       licenseId,
-      licenseToken,
       hostname,
       challengeId,
       signature,
       publicJwk,
       machineKey,
       serverIdBody,
+      sealedLicenseToken,
+      clientNonce,
     } = parsedFields.value
 
     const enrollLimited = await enforceDaemonRestLimit(
@@ -2072,6 +2143,20 @@ export function registerDaemonApiRoutes<E extends Env>(
     if (!challenge) {
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
     }
+
+    const fingerprint = await computePublicKeyFingerprint(publicJwk)
+    const opened = await resolveEnrollLicenseToken(
+      { plain: parsedFields.value.licenseToken, sealed: sealedLicenseToken },
+      options.panelIdentity,
+      {
+        challengeId,
+        challengeNonce: challenge.nonce,
+        clientNonce,
+        publicKeyFingerprint: fingerprint,
+      }
+    )
+    if (!opened.ok) return c.json({ ok: false, error: opened.error }, opened.status)
+    const licenseToken = opened.licenseToken
 
     // The per-license bucket is charged before the token check: verifying it
     // is an Argon2 hash, so charging after let a wrong token buy one hash per
@@ -2101,7 +2186,6 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
     const enrollProof = enrollProofResult.proof
 
-    const fingerprint = await computePublicKeyFingerprint(publicJwk)
     const payload = enrollProofPayload(enrollProof, {
       challengeId,
       nonce: challenge.nonce,
@@ -2213,13 +2297,10 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: licenseState.error }, licenseState.status)
     }
 
-    const binding = await bindSessionToDaemonKey(
-      c,
-      db,
-      serverId,
-      keyState.daemonState,
-      bodyRead.text
-    )
+    const binding = await bindSessionToDaemonKey(c, db, serverId, keyState.daemonState, {
+      bodyText: bodyRead.text,
+      proof: sessionProofResult.proof,
+    })
     if ('refusal' in binding) {
       return c.json({ ok: false, error: binding.refusal.error }, binding.refusal.status)
     }

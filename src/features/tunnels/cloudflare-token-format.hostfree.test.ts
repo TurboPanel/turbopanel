@@ -33,7 +33,15 @@ const refusing = (body: unknown, status: number): typeof fetch => {
 /** Token-shaped text built from fragments at run time, so no such literal sits in the file. */
 const HALF = 'Ab01'.repeat(5)
 const PLAIN = `${HALF}${HALF}`
-const RUN_TOKEN = ['eyJ', 'hIjoi', 'YWJj', 'Iiwid', 'CI6Im', 'Rl'].join('')
+/** A run token is base64 of a JSON object and long; built here from parts. */
+const RUN_TOKEN = btoa(JSON.stringify({ a: 'x'.repeat(30), t: 'y'.repeat(20) })).replaceAll('=', '')
+/** A real 40-character API token that happens to start with the same three letters. */
+const EYJ_API_TOKEN = `eyJ${PLAIN.slice(3)}`
+
+test('a real-shaped run token is refused', () => {
+  assertEquals(RUN_TOKEN.startsWith('eyJ') && RUN_TOKEN.length >= 60, true)
+  assertEquals(cloudflareTokenFormatProblem(RUN_TOKEN), CLOUDFLARE_TOKEN_FORMAT_MESSAGE)
+})
 
 test('a tunnel run token or text with a stray character is not an API token', () => {
   assertEquals(cloudflareTokenFormatProblem(RUN_TOKEN), CLOUDFLARE_TOKEN_FORMAT_MESSAGE)
@@ -51,6 +59,8 @@ test('text that could be an API token passes, with space around it ignored', () 
   assertEquals(cloudflareTokenFormatProblem(`cfat_${PLAIN}`), null)
   assertEquals(cloudflareTokenFormatProblem(`${HALF}-${HALF}_${HALF}`), null)
   assertEquals(cloudflareTokenFormatProblem(`  ${PLAIN}\n`), null)
+  assertEquals(EYJ_API_TOKEN.length, 40)
+  assertEquals(cloudflareTokenFormatProblem(EYJ_API_TOKEN), null)
 })
 
 test('the format refusal is read from the error code, the error chain or the wording', () => {

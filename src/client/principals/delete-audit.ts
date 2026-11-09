@@ -3,9 +3,11 @@ import type { AuditEntry } from '../../features/audit/audit-records.ts'
 /**
  * The audit entry for deleting a Hosting Account (a principal). `username` is
  * the account's short name; `appliedUsername` is the Linux user on the servers.
+ * A null actor is the removal sweep, which deletes the row on nobody's behalf;
+ * a delete that removes the account at once names the person who asked.
  */
 export function principalDeleteAuditEntry(
-  who: { organizationId: string; actorUserId: string; actorEmail: string | null },
+  who: { organizationId: string; actorUserId: string | null; actorEmail: string | null },
   principalId: string,
   account: {
     username: string

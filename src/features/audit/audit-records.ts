@@ -130,6 +130,7 @@ export const AUDIT_ACTIONS = [
   'server.panel_pin.mismatch',
   'server.panel_pin.silent',
   'server.panel_pin.missing',
+  'server.trust_downgrade.refused',
   'instance.tunnel_token.set',
   'instance.ingress_account.added',
   'instance.ingress_account.removed',

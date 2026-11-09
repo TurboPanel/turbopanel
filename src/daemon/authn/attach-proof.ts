@@ -24,6 +24,11 @@ export const DAEMON_PROOF_TRUST_LEVEL = 2
 /** Close code and reason for a hello whose attach proof is missing or wrong. */
 export const ATTACH_PROOF_CLOSE_CODE = 1008
 export const ATTACH_PROOF_REFUSED_REASON = 'attach-proof-refused'
+/**
+ * Refusal reason for a hello with no proof from a server that already proved
+ * itself: a downgrade, audited by both runtimes (`recordTrustDowngradeRefused`).
+ */
+export const ATTACH_PROOF_MISSING_REASON = 'attach proof missing'
 
 export type AttachProofFields = { keyId: string; iat: number; sig: string }
 
@@ -76,7 +81,7 @@ export async function decideAttachProof(
 ): Promise<AttachDecision> {
   if (attach === undefined) {
     return ctx.trustLevel >= DAEMON_PROOF_TRUST_LEVEL
-      ? { kind: 'refused', reason: 'attach proof missing' }
+      ? { kind: 'refused', reason: ATTACH_PROOF_MISSING_REASON }
       : { kind: 'absent' }
   }
   const fields = readAttach(attach)

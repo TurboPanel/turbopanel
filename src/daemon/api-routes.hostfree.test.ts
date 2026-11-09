@@ -153,6 +153,34 @@ test('anonymous challenge issues a token from the stateless store', async () => 
   }
 })
 
+test('an enroll challenge echoes a well-formed client nonce and nothing else', async () => {
+  const challengeSigningSecrets = await deriveSecretsConfig(
+    parseTestSecretsConfig(),
+    'daemon-challenge-signing'
+  )
+  const app = daemonApp({ challengeSigningSecrets })
+  const ask = async (clientNonce: unknown) => {
+    const response = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientNonce }),
+    })
+    assertEquals(response.status, 200)
+    return (await response.json()) as { clientNonce?: unknown; sealedLicense?: unknown }
+  }
+  assertEquals((await ask('AAAAAAAAAAAAAAAAAAAAAAAA')).clientNonce, 'AAAAAAAAAAAAAAAAAAAAAAAA')
+  assertEquals((await ask('not a nonce')).clientNonce, undefined)
+  // The marker is there whatever the request carried, so stripping the nonce changes nothing.
+  assertEquals((await ask('not a nonce')).sealedLicense, 1)
+  const bare = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
+    method: 'POST',
+    headers: { 'content-length': '0' },
+  })
+  const bareBody = (await bare.json()) as { sealedLicense?: unknown; kind?: unknown }
+  assertEquals(bareBody.sealedLicense, 1)
+  assertEquals(bareBody.kind, 'enroll')
+})
+
 test('auth challenge with only serverId does not query the database', async () => {
   const app = daemonApp()
   const response = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {

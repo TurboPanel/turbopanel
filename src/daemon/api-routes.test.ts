@@ -1,7 +1,7 @@
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals, assertExists } from '@std/assert'
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { deriveSecretsConfig } from '../lib/secrets/secrets.ts'
@@ -24,6 +24,7 @@ import {
 import { getDatabaseUrl } from '../db/url.ts'
 import { createDenoDb, endDbConnection } from '../db/connection.ts'
 import {
+  audit,
   container,
   environment,
   key as keyTable,
@@ -643,7 +644,13 @@ async function issueAuthChallenge(
   const body = (await response.json()) as {
     challengeId: string
     nonce: string
+    kind?: unknown
+    sealedLicense?: unknown
   }
+  // An auth answer says what it is and carries the sealing marker, so it cannot
+  // pass for an enrollment answer of an older control plane.
+  assertEquals(body.kind, 'auth')
+  assertEquals(body.sealedLicense, 1)
   return body
 }
 
@@ -4540,6 +4547,32 @@ function postSessionBody(app: Hono<AppEnv>, body: string): Promise<Response> {
   )
 }
 
+/** `/auth/session` with the daemon's request signature, as a pinned daemon sends it. */
+async function postSignedSessionBody(
+  app: Hono<AppEnv>,
+  fixture: Pick<EnrollFixture, 'keyId' | 'key'>,
+  body: string,
+  panelFingerprint: string
+): Promise<Response> {
+  return await app.request('/api/daemon/v1/auth/session', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      [DAEMON_SIGNATURE_HEADER]: await daemonSignatureHeader(
+        fixture.key.privateKey,
+        fixture.keyId,
+        {
+          method: 'POST',
+          pathname: '/api/daemon/v1/auth/session',
+          body,
+          panelFingerprint,
+        }
+      ),
+    },
+    body,
+  })
+}
+
 async function fixtureIdentity(): Promise<PanelIdentity> {
   const identity = await resolvePanelIdentityFromBinding(await fixtureBindingJson())
   if (!identity) throw new TypeError('fixture identity missing')
@@ -4561,9 +4594,11 @@ test('POST /auth/session takes a v2 proof naming this key and refuses another ke
     const identity = await fixtureIdentity()
     const app = await createTestApp(fixture.db, 'workers', identity)
     const iat = Math.floor(Date.now() / 1000)
-    const accepted = await postSessionBody(
+    const accepted = await postSignedSessionBody(
       app,
-      await signedSessionBody(app, fixture, { panelFingerprint: identity.current.kid, iat })
+      fixture,
+      await signedSessionBody(app, fixture, { panelFingerprint: identity.current.kid, iat }),
+      identity.current.kid
     )
     assertEquals(accepted.status, 200)
     assertEquals(
@@ -4706,6 +4741,64 @@ test('POST /auth/session without a request signature is refused once the server 
       })
     )
     assertEquals(refused.status, 403)
-    assertEquals(((await refused.json()) as { error: string }).error, 'Signed request required')
+    assertEquals(((await refused.json()) as { error: string }).error, 'Request signature missing')
+  })
+})
+
+test('a v2 /auth/session with its request signature removed is refused, raises the level and is audited once', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const identity = await fixtureIdentity()
+    const app = await createTestApp(fixture.db, 'workers', identity)
+    const stripped = () =>
+      signedSessionBody(app, fixture, {
+        panelFingerprint: identity.current.kid,
+        iat: Math.floor(Date.now() / 1000),
+      }).then((body) => postSessionBody(app, body))
+
+    const first = await stripped()
+    assertEquals(first.status, 403)
+    assertEquals(((await first.json()) as { error: string }).error, 'Request signature missing')
+    assertEquals((await readDaemonState(fixture.db, fixture.serverId))?.trustLevel, 2)
+    assertEquals((await stripped()).status, 403)
+
+    const downgrades = await fixture.db
+      .select({ context: audit.context })
+      .from(audit)
+      .where(
+        and(
+          eq(audit.targetId, fixture.serverId),
+          eq(audit.action, 'server.trust_downgrade.refused')
+        )
+      )
+    assertEquals(downgrades.length, 1, 'one audit row per server per hour')
+    assertEquals((downgrades[0]?.context as { stage?: string } | null)?.stage, 'auth-session')
+
+    // The daemon's own signed retry still signs in, bound to its key.
+    const signed = await postSignedSessionBody(
+      app,
+      fixture,
+      await signedSessionBody(app, fixture, {
+        panelFingerprint: identity.current.kid,
+        iat: Math.floor(Date.now() / 1000),
+      }),
+      identity.current.kid
+    )
+    assertEquals(signed.status, 200)
+  })
+})
+
+test('a server with a verified pin report is held to level 2 even when its level was never raised', async () => {
+  await withEnrollFixture(async (fixture) => {
+    await fixture.db
+      .update(server)
+      .set({ trustPinFingerprint: 'P'.repeat(43), trustPinReportedAt: new Date() })
+      .where(eq(server.id, fixture.serverId))
+    assertEquals((await readDaemonState(fixture.db, fixture.serverId))?.trustLevel, 2)
+    const refused = await postSessionBody(
+      fixture.app,
+      await signedSessionBody(fixture.app, fixture)
+    )
+    assertEquals(refused.status, 403)
+    assertEquals(((await refused.json()) as { error: string }).error, 'Signed proof required')
   })
 })

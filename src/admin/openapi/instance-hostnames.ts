@@ -1,4 +1,5 @@
 import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
+import { INSTANCE_HOSTNAME_SOURCES } from '../../features/install/instance-hostnames.ts'
 
 const cookieSecurity = [{ cookieAuth: [] }] as const
 
@@ -27,15 +28,93 @@ export const INSTANCE_HOSTNAME_PATHS = {
       tags: ['Instance'],
       summary: 'Replace the control-plane hostname set',
       description:
-        'Body `{ hostnames: [{ host, source, uploadedCertId? }] }`. ' +
+        'Body `{ hostnames: [{ host, source, uploadedCertId?, publicPort?, isPrimary? }] }`. ' +
+        'Left out, `publicPort` and `isPrimary` keep the stored value (8443 and false for a new name). ' +
         "Let's Encrypt is refused for loopback, private, and wildcard names. " +
         'An `uploaded` source must name a stored pair whose names cover the host. ' +
         "An `acme-http-01` or `acme-dns-01` row is refused while Let's Encrypt terms are not " +
-        'accepted, so a row every later apply would reject is never stored.',
+        'accepted, so a row every later apply would reject is never stored. ' +
+        'When the save moves the primary public address, the answer carries `warnings`, ' +
+        '`previousPrimaryOrigin` and `primaryOrigin`, and the move is written to the activity log.',
       security: [...cookieSecurity],
-      requestBody: { required: true },
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['hostnames'],
+              properties: {
+                hostnames: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    required: ['host', 'source'],
+                    properties: {
+                      host: { type: 'string' },
+                      source: {
+                        type: 'string',
+                        enum: [...INSTANCE_HOSTNAME_SOURCES],
+                      },
+                      uploadedCertId: { type: ['string', 'null'] },
+                      publicPort: {
+                        type: 'integer',
+                        minimum: 1,
+                        maximum: 65535,
+                        description:
+                          'The port visitors use. A self-hosted control plane accepts only 8443.',
+                      },
+                      isPrimary: {
+                        type: 'boolean',
+                        description: 'True makes this name the primary and demotes the others.',
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       responses: {
-        '200': { description: '`{ ok, hostnames }`' },
+        '200': {
+          description: '`{ ok, hostnames }`, plus the primary change fields when it moved',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'hostnames'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  hostnames: { type: 'array', items: { type: 'object' } },
+                  warnings: {
+                    type: 'array',
+                    description:
+                      '`primary-host-changed`: the primary name moved, so links, OAuth ' +
+                      'callbacks, webhook URLs and every registered passkey follow it. ' +
+                      '`primary-origin-changed`: only its public port moved. Absent when ' +
+                      'the primary address did not change.',
+                    items: {
+                      type: 'string',
+                      enum: ['primary-host-changed', 'primary-origin-changed'],
+                    },
+                  },
+                  previousPrimaryOrigin: {
+                    type: 'string',
+                    description:
+                      'The primary public address before the save. Absent when unchanged.',
+                  },
+                  primaryOrigin: {
+                    type: ['string', 'null'],
+                    description:
+                      'The primary public address after the save, or null when no name is left. ' +
+                      'Absent when unchanged.',
+                  },
+                },
+              },
+            },
+          },
+        },
         '400': { description: 'Invalid request body' },
         '401': { description: 'Unauthorized' },
         '403': { description: 'Forbidden — requires the superadmin role' },

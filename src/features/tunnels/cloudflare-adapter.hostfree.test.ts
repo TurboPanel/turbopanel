@@ -289,7 +289,9 @@ test('a tunnel run token or text with a space inside is refused as not an API to
   const words =
     'This is not a Cloudflare API token. Create an API token in Cloudflare (My Profile > API Tokens); a Global API Key or a tunnel run token does not work here.'
   // Built from fragments at run time so no token-shaped literal sits in the file.
-  const runToken = ['eyJ', 'hIjoi', 'YWJj', 'Iiwid', 'CI6Im', 'Rl'].join('')
+  const runToken = btoa(
+    JSON.stringify({ a: 'ab'.repeat(16), t: 'cd'.repeat(18), s: 'ef'.repeat(22) })
+  )
   assertEquals(cloudflareTokenProblem(runToken), words)
   assertEquals(cloudflareTokenProblem(`${'Ab'.repeat(10)} ${'cd'.repeat(10)}`), words)
 })
