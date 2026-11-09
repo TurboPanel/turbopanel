@@ -137,7 +137,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ['Authentication'],
       summary: 'Request an enrollment or auth challenge',
       description:
-        'Without body: issues enrollment challenge. With `{ serverId, keyId }`: issues auth challenge after verifying server.daemon.key (active, matching keyId) on the server row.',
+        'Without body: issues enrollment challenge. With `{ serverId, keyId }`: issues auth challenge after verifying server.daemon.key (active, matching keyId) on the server row. A pinned daemon may add `clientNonce` to the enrollment request; it is echoed in the (signed) answer, which tells the daemon this control plane takes a sealed license.',
       responses: {
         '200': {
           description: 'Challenge issued',
@@ -155,7 +155,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ['Authentication'],
       summary: 'Enroll a daemon with a license and Ed25519 proof',
       description:
-        'Writes server.daemon.key with the submitted Ed25519 public key. Re-enrollment or recovery with a valid license replaces server.daemon entirely; old daemon keys are not kept for MVP.',
+        'Writes server.daemon.key with the submitted Ed25519 public key. Re-enrollment or recovery with a valid license replaces server.daemon entirely; old daemon keys are not kept for MVP. A pinned daemon sends `sealedLicenseToken` (an HPKE envelope sealed to the control plane sealing key) with `clientNonce` instead of `licenseToken`.',
       responses: {
         '200': {
           description: 'Enrollment accepted',

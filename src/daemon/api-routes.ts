@@ -41,6 +41,7 @@ import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
 import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { openSealedLicenseToken, parseClientNonce } from './authn/sealed-enroll.ts'
 import { signDaemonResponses } from '../lib/panel-identity/signed-response.ts'
 import {
   getDaemonCellRegistry,
@@ -395,6 +396,9 @@ type EnrollFields = {
   publicJwk: JsonWebKey
   machineKey: string | undefined
   serverIdBody: string | undefined
+  /** A pinned daemon's license token sealed to this control plane (then `licenseToken` is empty). */
+  sealedLicenseToken: unknown
+  clientNonce: string | undefined
 }
 
 /**
@@ -411,7 +415,9 @@ function ed25519PublicJwk(jwk: JsonWebKey): JsonWebKey {
 /** Parses and validates the `POST /enroll` body, keeping every field check in one place. */
 function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFields> {
   const licenseId = normalizeRequiredString(body.licenseId)
-  const licenseToken = normalizeRequiredString(body.licenseToken)
+  const sealedLicenseToken = body.sealedLicenseToken
+  const licenseToken =
+    sealedLicenseToken === undefined ? normalizeRequiredString(body.licenseToken) : ''
   const machineKeyRaw = normalizeRequiredString(body.machineKey)
   const hostname = normalizeRequiredString(body.hostname)
   const challengeId = normalizeRequiredString(body.challengeId)
@@ -421,8 +427,11 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
     : null
 
   // Keep malformed or omitted auth credentials on the same unauthorized path.
-  if (!licenseId || !licenseToken) {
+  if (!licenseId || licenseToken === null) {
     return { ok: false, status: 401, error: 'Invalid license' }
+  }
+  if (sealedLicenseToken !== undefined && body.licenseToken !== undefined) {
+    return { ok: false, status: 400, error: 'send licenseToken or sealedLicenseToken, not both' }
   }
   if (!hostname || !challengeId || !signature || !publicJwk) {
     return { ok: false, status: 400, error: 'Missing required enroll fields' }
@@ -441,6 +450,8 @@ function parseEnrollFields(body: Record<string, unknown>): FieldResult<EnrollFie
       publicJwk,
       machineKey: machineKeyResult.value,
       serverIdBody: normalizeRequiredString(body.serverId) ?? undefined,
+      sealedLicenseToken,
+      clientNonce: parseClientNonce(body.clientNonce),
     },
   }
 }
@@ -1990,12 +2001,13 @@ export function registerDaemonApiRoutes<E extends Env>(
     const bodyRead = await readBoundedJsonBody(c, MAX_AUTH_CHALLENGE_BODY_BYTES)
     if (!bodyRead.ok) return bodyRead.response
 
-    let body: { serverId?: string; keyId?: string } = {}
+    let body: { serverId?: string; keyId?: string; clientNonce?: unknown } = {}
     if (bodyRead.text.trim()) {
       try {
         body = JSON.parse(bodyRead.text) as {
           serverId?: string
           keyId?: string
+          clientNonce?: unknown
         }
       } catch {
         body = {}
@@ -2018,12 +2030,16 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Challenge unavailable' }, 503)
     }
     const challenge = await enrollStore.issue()
+    // Echoed so a pinned daemon knows this control plane takes a sealed
+    // license; the answer is signed, so an impostor cannot strip it.
+    const clientNonce = parseClientNonce(body.clientNonce)
     return c.json(
       {
         challengeId: challenge.id,
         nonce: challenge.nonce,
         at: challenge.at,
         expiresAt: challengeExpiresAt(challenge.at, enrollStore.ttlMs),
+        ...(clientNonce === undefined ? {} : { clientNonce }),
       },
       200
     )
@@ -2050,14 +2066,16 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
     const {
       licenseId,
-      licenseToken,
       hostname,
       challengeId,
       signature,
       publicJwk,
       machineKey,
       serverIdBody,
+      sealedLicenseToken,
+      clientNonce,
     } = parsedFields.value
+    let licenseToken = parsedFields.value.licenseToken
 
     const enrollLimited = await enforceDaemonRestLimit(
       c,
@@ -2071,6 +2089,22 @@ export function registerDaemonApiRoutes<E extends Env>(
     const challenge = await enrollStore.consume({ challengeId })
     if (!challenge) {
       return c.json({ ok: false, error: 'Invalid or expired challenge' }, 400)
+    }
+
+    const fingerprint = await computePublicKeyFingerprint(publicJwk)
+    if (sealedLicenseToken !== undefined) {
+      const opened = await openSealedLicenseToken(
+        sealedLicenseToken,
+        options.panelIdentity ? await options.panelIdentity() : null,
+        {
+          challengeId,
+          challengeNonce: challenge.nonce,
+          clientNonce,
+          publicKeyFingerprint: fingerprint,
+        }
+      )
+      if (!opened.ok) return c.json({ ok: false, error: opened.error }, opened.status)
+      licenseToken = opened.licenseToken
     }
 
     // The per-license bucket is charged before the token check: verifying it
@@ -2101,7 +2135,6 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
     const enrollProof = enrollProofResult.proof
 
-    const fingerprint = await computePublicKeyFingerprint(publicJwk)
     const payload = enrollProofPayload(enrollProof, {
       challengeId,
       nonce: challenge.nonce,
