@@ -205,10 +205,15 @@ import {
   type ProofVersion,
 } from './authn/proof-version.ts'
 import { markChallengeUsed, markRequestNonceUsed } from '../features/servers/daemon-nonce.ts'
-import { raiseServerTrustLevel } from '../features/servers/trust-level.ts'
+import {
+  effectiveTrustLevel,
+  raiseServerTrustLevel,
+  recordTrustDowngradeRefused,
+} from '../features/servers/trust-level.ts'
 import {
   DAEMON_SIGNATURE_HEADER,
   REQUEST_MAX_SKEW_SECONDS,
+  REQUEST_SIGNATURE_MISSING_ERROR,
   SIGNED_REQUEST_REQUIRED_ERROR,
   daemonKeyThumbprint,
   verifyDaemonRequest,
@@ -860,6 +865,28 @@ function parseAuthSessionFields(body: Record<string, unknown>): FieldResult<Auth
   }
 }
 
+/**
+ * A verified v2 sign-in proof came without the request signature its daemon
+ * always sends: raise the server to level 2 (the proof was the daemon key's),
+ * log one warning and audit it (`recordTrustDowngradeRefused`, rate-limited
+ * per server). Best effort: the refusal stands whatever fails here.
+ */
+async function refuseSessionDowngrade(db: Db, serverId: string, trustLevel: number): Promise<void> {
+  logWarn(
+    'daemon',
+    `auth/session refused for ${serverId}: v2 proof without a request signature (level ${trustLevel})`
+  )
+  if (trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
+    await raiseServerTrustLevel(db, serverId, DAEMON_PROOF_TRUST_LEVEL).catch((err) => {
+      logWarn('daemon', `trust level raise failed for ${serverId}: ${String(err)}`)
+    })
+  }
+  await recordTrustDowngradeRefused(db, serverId, {
+    stage: 'auth-session',
+    reason: 'request signature missing',
+  })
+}
+
 /** Loads the server's daemon key and confirms it matches `keyId` and is active. */
 async function loadActiveDaemonKeyState(
   db: Db,
@@ -1449,11 +1476,15 @@ async function readEnrollTrustLevel(
   const serverId = credential.kind === 'reenroll' ? credential.ticket.serverId : serverIdBody
   if (!serverId || !UUID_PATTERN.test(serverId)) return 0
   const [row] = await db
-    .select({ trustLevel: server.trustLevel })
+    .select({
+      trustLevel: server.trustLevel,
+      trustPinFingerprint: server.trustPinFingerprint,
+      trustPinReportedAt: server.trustPinReportedAt,
+    })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  return row?.trustLevel ?? 0
+  return row ? effectiveTrustLevel(row) : 0
 }
 
 /** Bind the key for a verified enroll and answer; a replaced key purges the old cell. */
@@ -1779,22 +1810,38 @@ export function registerDaemonApiRoutes<E extends Env>(
    * `/auth/session` signed by the daemon key: the token is bound to that key
    * (`cnf`) and the server is raised to `trust_level` 2, after which every
    * request must be signed. Unsigned stays a bearer token, unless the server
-   * already proved itself (then refused).
+   * already proved itself or the proof is v2 (then refused, see below).
+   *
+   * A verified v2 proof is itself a proof by the daemon key that names this
+   * control plane, and a daemon that sends one always signs the request too.
+   * So a v2 proof without the header means something on the path removed it
+   * to get an unbound token: the server is raised to level 2 anyway (an
+   * unbound token it already holds stops working, and its socket must carry
+   * the attach proof from now on), the refusal is audited, and the answer is
+   * an error the daemon retries rather than one it treats as permanent.
    */
   const bindSessionToDaemonKey = async (
     c: Context<DaemonApiEnv>,
     db: Db,
     serverId: string,
     state: ServerDaemonStateWithMetadata,
-    bodyText: string
+    request: { bodyText: string; proof: ProofVersion }
   ): Promise<{ jkt?: string } | { refusal: { status: 400 | 403 | 503; error: string } }> => {
     const trustLevel = state.trustLevel ?? 0
     if (!c.req.header(DAEMON_SIGNATURE_HEADER)) {
+      if (request.proof.version === 2) {
+        await refuseSessionDowngrade(db, serverId, trustLevel)
+        return { refusal: { status: 403, error: REQUEST_SIGNATURE_MISSING_ERROR } }
+      }
       return trustLevel >= DAEMON_PROOF_TRUST_LEVEL
         ? { refusal: { status: 403, error: SIGNED_REQUEST_REQUIRED_ERROR } }
         : {}
     }
-    const verified = await checkRequestSignature(c, state, new TextEncoder().encode(bodyText))
+    const verified = await checkRequestSignature(
+      c,
+      state,
+      new TextEncoder().encode(request.bodyText)
+    )
     if (!verified.ok) {
       // 401 would send the daemon into a token refresh, so a bad proof here is
       // a 403; and a header that is present but unreadable is a bad signature,
@@ -2327,13 +2374,10 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: licenseState.error }, licenseState.status)
     }
 
-    const binding = await bindSessionToDaemonKey(
-      c,
-      db,
-      serverId,
-      keyState.daemonState,
-      bodyRead.text
-    )
+    const binding = await bindSessionToDaemonKey(c, db, serverId, keyState.daemonState, {
+      bodyText: bodyRead.text,
+      proof: sessionProofResult.proof,
+    })
     if ('refusal' in binding) {
       return c.json({ ok: false, error: binding.refusal.error }, binding.refusal.status)
     }

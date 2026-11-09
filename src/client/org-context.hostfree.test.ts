@@ -8,6 +8,8 @@ import type { Db } from '../db/connection.ts'
 import {
   canAccessOrganization,
   listAccessibleOrganizations,
+  namedOrgIdFromRequest,
+  namesAnotherOrganization,
   ORG_ID_HEADER,
   parseOrgIdFromRequest,
   resolveOrgId,
@@ -48,24 +50,38 @@ function mockContext(input: {
   } as unknown as Context
 }
 
+test('a path organization needs no header or query, and another one named there is caught', () => {
+  const org = '11111111-1111-4111-8111-111111111111'
+  const other = '22222222-2222-4222-8222-222222222222'
+  assertEquals(namedOrgIdFromRequest(mockContext({})), null)
+  assertEquals(namedOrgIdFromRequest(mockContext({ query: { organizationId: ` ${org} ` } })), org)
+  assertEquals(namesAnotherOrganization(mockContext({}), org), false)
+  assertEquals(
+    namesAnotherOrganization(mockContext({ headers: { [ORG_ID_HEADER]: org.toUpperCase() } }), org),
+    false
+  )
+  assertEquals(
+    namesAnotherOrganization(mockContext({ headers: { [ORG_ID_HEADER]: other } }), org),
+    true
+  )
+  assertEquals(
+    namesAnotherOrganization(mockContext({ query: { organizationId: other } }), org),
+    true
+  )
+})
+
 test('parseOrgIdFromRequest accepts header and rejects invalid UUIDs', () => {
   const ok = mockContext({
     headers: {
       [ORG_ID_HEADER]: '00000000-0000-4000-8000-000000000010',
     },
   })
-  assertEquals(
-    parseOrgIdFromRequest(ok),
-    '00000000-0000-4000-8000-000000000010',
-  )
+  assertEquals(parseOrgIdFromRequest(ok), '00000000-0000-4000-8000-000000000010')
 
   const fromQuery = mockContext({
     query: { organizationId: '00000000-0000-4000-8000-000000000011' },
   })
-  assertEquals(
-    parseOrgIdFromRequest(fromQuery),
-    '00000000-0000-4000-8000-000000000011',
-  )
+  assertEquals(parseOrgIdFromRequest(fromQuery), '00000000-0000-4000-8000-000000000011')
 
   const missingResult = parseOrgIdFromRequest(mockContext({}))
   assertEquals(missingResult instanceof Response, true)
@@ -74,7 +90,7 @@ test('parseOrgIdFromRequest accepts header and rejects invalid UUIDs', () => {
   const invalidResult = parseOrgIdFromRequest(
     mockContext({
       headers: { [ORG_ID_HEADER]: 'not-a-uuid' },
-    }),
+    })
   )
   assertEquals(invalidResult instanceof Response, true)
   assertEquals((invalidResult as Response).status, 400)

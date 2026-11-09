@@ -22,7 +22,7 @@ import {
   validateDaemonInboundEnvelope,
 } from '../../../contracts/cell-protocol.ts'
 import { deriveInboundOutcome } from '../inbound-outcome.ts'
-import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from '../../../lib/logger.ts'
+import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo, logWarn } from '../../../lib/logger.ts'
 import { onDaemonUpdateExpired } from '../control-plane-monitor.ts'
 import type { Db } from '../../../db/connection.ts'
 import { forEachSequential } from '../../../lib/sequential.ts'
@@ -45,6 +45,21 @@ import {
 import { COMPARE_AND_DELETE, COMPARE_AND_RENEW, RECONCILE_STALE_SOCKET_PRESENCE } from './lua.ts'
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>(['done', 'failed', 'expired'])
+
+/**
+ * Where a newly created outbox group starts reading. An acknowledged entry is
+ * deleted from the stream and an expired request takes its entries with it, so
+ * whatever the stream holds is still owed to the server: the group starts at
+ * the beginning and never at `$`, which would skip everything queued while no
+ * group existed.
+ */
+const OUTBOX_GROUP_START_ID = '0'
+
+/** Redis answers `NOGROUP` when the stream key or its consumer group is gone. */
+export function isNoGroupError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return message.includes('NOGROUP')
+}
 
 function createInitialCellDiagnostics(): CellDiagnostics {
   return {
@@ -306,6 +321,8 @@ export class RedisDaemonCell implements DaemonCell {
   readonly #wrappedClients = new Map<string, RedisCellClient>()
   #lastInboundMs = 0
   #connectedHint = false
+  /** Set by `purge()`: a purged cell does not bring its outbox back until the next attach. */
+  #outboxPurged = false
 
   constructor(client: RedisCellClient, serverId: string, db?: Db) {
     this.#rawClient = client
@@ -524,7 +541,8 @@ export class RedisDaemonCell implements DaemonCell {
     })
 
     const outbox = outboxKey(this.#serverId)
-    await redis.xgroupCreate(outbox, OUTBOX_GROUP, '$', true)
+    this.#outboxPurged = false
+    await this.#ensureOutboxGroup('attachDaemonSocket')
 
     const consumer = `ws:${connectionId}`
     const reclaimed = await redis.xautoclaim(outbox, OUTBOX_GROUP, consumer, 60_000, '0-0', 100)
@@ -1205,13 +1223,52 @@ export class RedisDaemonCell implements DaemonCell {
     })
   }
 
+  /** Create the outbox group if it is missing; an existing group is left as it is. */
+  async #ensureOutboxGroup(callSite: string): Promise<void> {
+    await this.#redis(callSite).xgroupCreate(
+      outboxKey(this.#serverId),
+      OUTBOX_GROUP,
+      OUTBOX_GROUP_START_ID,
+      true
+    )
+  }
+
+  /**
+   * Read from the outbox group. The group is created at attach, so a Redis
+   * that lost its keys under an open socket (a restart without persistence)
+   * answers `NOGROUP` from then on: the group is created again and the read
+   * repeated once, which also delivers everything queued in the meantime. A
+   * purged cell is left alone, so a deleted server gets no outbox back.
+   */
+  async #readOutboxGroup(
+    consumer: string,
+    count: number,
+    blockMs: number | undefined,
+    streamId: '>' | '0'
+  ): Promise<StreamEntry[]> {
+    const redis = this.#redis('readOutboxBatch')
+    const read = () =>
+      redis.xreadgroup(OUTBOX_GROUP, consumer, outboxKey(this.#serverId), count, blockMs, streamId)
+    try {
+      return await read()
+    } catch (err) {
+      if (this.#outboxPurged || !isNoGroupError(err)) throw err
+      await this.#ensureOutboxGroup('readOutboxBatch')
+      logWarn(
+        'daemon-cell',
+        `outbox group was missing for ${this.#serverId}; created it again and resumed delivery`
+      )
+      cellTrace('outbox-group-recreated', { serverId: this.#serverId, consumer })
+      return await read()
+    }
+  }
+
   async readOutboxBatch(params: {
     consumer: string
     count: number
     blockMs?: number
   }): Promise<DaemonOutboundEnvelope[]> {
     this.#bumpMethodRoute('readOutboxBatch')
-    const redis = this.#redis('readOutboxBatch')
     const envelopes: DaemonOutboundEnvelope[] = []
     let remaining = params.count
 
@@ -1224,14 +1281,7 @@ export class RedisDaemonCell implements DaemonCell {
     }
 
     if (remaining > 0) {
-      const pending = await redis.xreadgroup(
-        OUTBOX_GROUP,
-        params.consumer,
-        outboxKey(this.#serverId),
-        remaining,
-        undefined,
-        '0'
-      )
+      const pending = await this.#readOutboxGroup(params.consumer, remaining, undefined, '0')
       if (pending.length > 0) {
         envelopes.push(...this.#entriesToEnvelopes(pending))
         remaining = params.count - envelopes.length
@@ -1239,14 +1289,7 @@ export class RedisDaemonCell implements DaemonCell {
     }
 
     if (remaining > 0) {
-      const fresh = await redis.xreadgroup(
-        OUTBOX_GROUP,
-        params.consumer,
-        outboxKey(this.#serverId),
-        remaining,
-        params.blockMs,
-        '>'
-      )
+      const fresh = await this.#readOutboxGroup(params.consumer, remaining, params.blockMs, '>')
       envelopes.push(...this.#entriesToEnvelopes(fresh))
     }
 
@@ -1380,6 +1423,7 @@ export class RedisDaemonCell implements DaemonCell {
   async purge(): Promise<void> {
     this.#bumpMethodRoute('purge')
     const redis = this.#redis('purge')
+    this.#outboxPurged = true
     await redis.deleteByPattern(cellKeyPattern(this.#serverId))
     await redis.srem(onlineSetKey(), this.#serverId)
 

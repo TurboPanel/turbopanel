@@ -355,7 +355,7 @@ function mapComposeHostAccessActorError(
   const message =
     prepared.kind === 'compose_host_access_requires_manager'
       ? `This compose document reaches the host through ${paths}. Only an organization manager or owner can deploy host-level Compose features.`
-      : `This compose document reaches the host through ${paths}, and no organization manager or owner has deployed it in this form yet. Deploy it once from the console to approve it; automated deploys of the same content will then run.`
+      : `This compose document reaches the host through ${paths}, and no organization manager or owner has deployed it in this form yet. Deploy it once from the web interface to approve it; automated deploys of the same content will then run.`
   return {
     status: 403,
     body: { error: prepared.kind, issues: prepared.issues, message },
@@ -839,7 +839,7 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
     case 'compose_field_requires_org_opt_in':
       return mapComposeOptInError(prepared)
     // The organization has host-level features on, but this actor may not use
-    // them — a person without organization:manage, or a webhook deploy of
+    // them — a person without organization:manage, or an automated deploy of
     // host-level content no manager or owner has deployed in this form.
     case 'compose_host_access_requires_manager':
     case 'compose_host_access_requires_approval':

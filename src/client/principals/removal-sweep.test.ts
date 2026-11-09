@@ -8,6 +8,7 @@ import { eq, inArray, sql } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import {
+  audit,
   command,
   environment,
   folder,
@@ -134,6 +135,7 @@ async function withWorld(fn: (world: World) => Promise<void>): Promise<void> {
       await db.delete(project).where(inArray(project.id, projectIds))
     }
     await db.delete(principal).where(eq(principal.organizationId, organizationId))
+    await db.delete(audit).where(eq(audit.organizationId, organizationId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(workspace).where(eq(workspace.id, ws!.id))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -261,8 +263,20 @@ test('the removal waits for the folders, the server and the stop, retries an unc
 
     // The host reports it retired (the command consumer marks it absent): the row goes.
     await markPlacementsAbsent(db, serverId, [await appliedName(db, owner)])
+    const retiredName = await appliedName(db, owner)
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 1 })
     assertEquals(await readPrincipal(db, owner), undefined)
+    // The activity log keeps the delete, with no person as its actor.
+    const audited = await db
+      .select({ actorUserId: audit.actorUserId, context: audit.context })
+      .from(audit)
+      .where(eq(audit.targetId, owner))
+    assertEquals(audited, [
+      {
+        actorUserId: null,
+        context: { username: retiredName, appliedUsername: retiredName, serverIds: [serverId] },
+      },
+    ])
     const commands = await db
       .select({ name: command.name })
       .from(command)

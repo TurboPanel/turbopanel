@@ -83,17 +83,22 @@ test('a matching report is stored and raises nothing', async () => {
     await recordPinReport(db, undefined, 's1', report(FP_A), { current: FP_A }, r.deps),
     false
   )
-  assertEquals(writes, [
-    {
-      trustPinFingerprint: FP_A,
-      trustPinKeyset: 2,
-      trustPinReportedAt: NOW,
-      isTrustPinMatching: true,
-      trustSilenceStage: null,
-      trustSilenceSince: null,
-      trustSilenceAliveAt: null,
-    },
-  ])
+  const [{ trustLevel, ...written } = {}] = writes
+  assertEquals(trustLevel !== undefined, true, 'a report naming a key holds the server at level 2')
+  assertEquals(
+    [written],
+    [
+      {
+        trustPinFingerprint: FP_A,
+        trustPinKeyset: 2,
+        trustPinReportedAt: NOW,
+        isTrustPinMatching: true,
+        trustSilenceStage: null,
+        trustSilenceSince: null,
+        trustSilenceAliveAt: null,
+      },
+    ]
+  )
   assertEquals([r.audits.length, r.emits.length], [0, 0])
 })
 
@@ -122,6 +127,8 @@ test('an unsafe pin counts as matching (it has its own badge)', async () => {
     false
   )
   assertEquals(writes[0]?.isTrustPinMatching, true)
+  // An empty pin proves no pin: the level is left alone.
+  assertEquals(writes[0] !== undefined && 'trustLevel' in writes[0], false)
   assertEquals(r.emits.length, 0)
 })
 

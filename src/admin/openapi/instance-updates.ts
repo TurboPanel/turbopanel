@@ -136,8 +136,8 @@ export const INSTANCE_UPDATES_PATHS = {
   },
   [`${ADMIN_API_PREFIX}/instance/updates/pause`]: pauseRoute(
     'Pause all updates',
-    'Stops new updates of the control plane, the UI and every daemon until Resume. A run in ' +
-      'progress finishes the servers it is already updating; its other servers are `skipped` ' +
+    'Stops new updates of the control plane, the UI and every daemon until Pause All Updates ' +
+      'is turned off. A run in progress finishes the servers it is already updating; its other servers are `skipped` ' +
       '(`updates_paused`) and the run ends `cancelled` with `error` `updates_paused`. Pausing ' +
       'again keeps the first pause. Recorded in the activity log (`upgrade.pause`).'
   ),

@@ -106,17 +106,18 @@ export async function caaAllows(
  * The zone's nameserver names: the provider's own list first, then this
  * host's resolver. A resolver behind split DNS answers the zone locally and
  * lists no nameservers (or its own), so it is only the fallback. A provider
- * that cannot say, or refuses the read, leaves the resolver to answer.
- * `answered` is true only when every source asked gave an answer (an empty
- * list counts), so an empty list then means the zone has none, not that a
- * lookup failed.
+ * that cannot say (it has no nameserver read), or refuses the read, leaves the
+ * resolver to answer. `answered` is true only when the provider and the
+ * resolver both gave an answer (an empty list counts), so an empty list then
+ * means the zone has none, not that a lookup failed. The resolver alone never
+ * settles it: behind split DNS it answers the zone locally with no NS records.
  */
 async function nameserverNames(
   provider: DnsChallengeProvider,
   dns: DnsLookup,
   zone: ProviderZone
 ): Promise<{ names: string[]; answered: boolean }> {
-  let providerAnswered = true
+  let providerAnswered = provider.nameservers !== undefined
   if (provider.nameservers) {
     try {
       const listed = await provider.nameservers(zone.id)
@@ -161,7 +162,7 @@ function lookupFailure(
   }
   const detail =
     names.length === 0
-      ? `Could not look up the nameservers of ${zone.name}: the DNS provider or this server's resolver did not answer.`
+      ? `Could not look up the nameservers of ${zone.name}: the DNS provider could not list them, or this server's resolver did not answer.`
       : `Could not look up the addresses of the ${zone.name} nameservers (${names.join(', ')}) through this server's resolver.`
   return { cause: 'dns-lookup', detail }
 }
