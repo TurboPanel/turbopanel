@@ -361,9 +361,11 @@ export async function applyUnsubscribe(
     const rows = claims.everything
       ? await listPreferenceRows(db, claims.userId)
       : await preferenceRowsFor(db, [claims.userId], claims.organizationId)
-    for (const cap of planUnsubscribe(rows, claims, channel, nowMs)) {
-      await upsertPreference(db, claims.userId, { ...cap, level: 'none', endsAt: null })
-    }
+    await Promise.all(
+      planUnsubscribe(rows, claims, channel, nowMs).map((cap) =>
+        upsertPreference(db, claims.userId, { ...cap, level: 'none', endsAt: null })
+      )
+    )
     return true
   } catch {
     // The project or channel is gone (foreign key): nothing left to stop.
