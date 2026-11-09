@@ -71,7 +71,7 @@ sealing key, and the signed identity document served at
   move needs an old-set approval plus possession under the new id. Genesis (nothing marked) is
   control-plane only. Shared vectors: `src/test-fixtures/keyset-statement-vectors.json` (public data,
   byte-identical copy in the daemon repo; regenerate both together). Rotation passkeys are marked
-  sign-in passkeys (`custodian` table, `keyset-store.ts`); the chain is the `statement` table, served
+  sign-in passkeys (`custodian` table, `keyset-store.ts`); the chain is the `rotation` table, served
   publicly at `GET /api/daemon/v1/instance/identity/statements?after=n` and deliberately **not** on
   the signed-response list (a server that needs it holds a key this control plane no longer signs
   with). The document gains `rotation:{rpId,passkeys}` once something is marked and its `keyset` is

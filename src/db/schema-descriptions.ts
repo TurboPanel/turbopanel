@@ -167,7 +167,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       unmarked_at: 'When it was unmarked; NULL while it still approves key changes.',
     },
   },
-  statement: {
+  rotation: {
     group: 'identity',
     summary:
       'One approved key-set statement of the control plane: the chain every server follows to a new key or passkey set, kept forever in `keyset` order.',

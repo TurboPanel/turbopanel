@@ -180,8 +180,8 @@
     {
       "idx": 29,
       "tag": "0029_control_plane_key_rotation",
-      "when": 1793981051590,
-      "sha256": "1732a45ef427afb0627491a8443b4c940b92cd637f407ca4063466cfac69e08b"
+      "when": 1794249210787,
+      "sha256": "6a7af468d66137d46fb46537a493811357d55b500fe086b2879569bef9fc72df"
     }
   ]
 }

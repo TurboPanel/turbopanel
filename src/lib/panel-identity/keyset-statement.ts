@@ -16,7 +16,7 @@ export const KEYSET_STATEMENT_KINDS = ['rotate', 'revoke', 'passkeys'] as const
 export type KeysetStatementKind = (typeof KEYSET_STATEMENT_KINDS)[number]
 export const ROTATION_PASSKEY_ALGS = ['ES256', 'EdDSA'] as const
 export type RotationPasskeyAlg = (typeof ROTATION_PASSKEY_ALGS)[number]
-/** `statement.state`: `awaiting_key` until a High Availability secret holds the new key. */
+/** `rotation.state`: `awaiting_key` until a High Availability secret holds the new key. */
 export const KEYSET_STATEMENT_STATES = ['awaiting_key', 'live'] as const
 export type KeysetStatementState = (typeof KEYSET_STATEMENT_STATES)[number]
 /** Envelope cap; tp-host refuses anything larger. */

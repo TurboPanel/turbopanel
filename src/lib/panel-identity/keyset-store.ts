@@ -1,12 +1,12 @@
 /**
  * Postgres side of key rotation: marked rotation passkeys (`custodian`) and the
- * key-set chain (`statement`). Public data only, so both runtimes keep it in
+ * key-set chain (`rotation`). Public data only, so both runtimes keep it in
  * the database (High Availability has no writable key store). Every function
  * takes the caller's database client; nothing here holds one.
  */
 import { and, asc, desc, eq, gt, inArray, isNull, max } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { custodian, statement } from '../../db/schema.ts'
+import { custodian, rotation } from '../../db/schema.ts'
 import {
   type KeysetEnvelope,
   type KeysetPin,
@@ -58,9 +58,9 @@ export function rotationStateOf(custodians: readonly MarkedCustodian[]): Rotatio
 /** Highest key set of a statement in the given state set (0 with none). */
 async function maxKeyset(db: Db, liveOnly: boolean): Promise<number> {
   const rows = await db
-    .select({ keyset: max(statement.keyset) })
-    .from(statement)
-    .where(liveOnly ? eq(statement.state, 'live') : undefined)
+    .select({ keyset: max(rotation.keyset) })
+    .from(rotation)
+    .where(liveOnly ? eq(rotation.state, 'live') : undefined)
   return rows[0]?.keyset ?? 0
 }
 
@@ -108,15 +108,15 @@ function envelopeOf(row: { body: string; approvals: string }): KeysetEnvelope {
 }
 
 const STATEMENT_COLUMNS = {
-  keyset: statement.keyset,
-  kind: statement.kind,
-  state: statement.state,
-  prevKid: statement.prevKid,
-  currentKid: statement.currentKid,
-  body: statement.body,
-  approvals: statement.approvals,
-  createdAt: statement.createdAt,
-  liveAt: statement.liveAt,
+  keyset: rotation.keyset,
+  kind: rotation.kind,
+  state: rotation.state,
+  prevKid: rotation.prevKid,
+  currentKid: rotation.currentKid,
+  body: rotation.body,
+  approvals: rotation.approvals,
+  createdAt: rotation.createdAt,
+  liveAt: rotation.liveAt,
 }
 
 function toStored(row: {
@@ -149,10 +149,10 @@ export async function listLiveStatements(
   limit = 100
 ): Promise<KeysetEnvelope[]> {
   const rows = await db
-    .select({ body: statement.body, approvals: statement.approvals })
-    .from(statement)
-    .where(and(eq(statement.state, 'live'), gt(statement.keyset, after)))
-    .orderBy(asc(statement.keyset))
+    .select({ body: rotation.body, approvals: rotation.approvals })
+    .from(rotation)
+    .where(and(eq(rotation.state, 'live'), gt(rotation.keyset, after)))
+    .orderBy(asc(rotation.keyset))
     .limit(limit)
   return rows.map(envelopeOf)
 }
@@ -161,8 +161,8 @@ export async function listLiveStatements(
 export async function listRecentStatements(db: Db, limit = 20): Promise<StoredStatement[]> {
   const rows = await db
     .select(STATEMENT_COLUMNS)
-    .from(statement)
-    .orderBy(desc(statement.keyset))
+    .from(rotation)
+    .orderBy(desc(rotation.keyset))
     .limit(limit)
   return rows.map(toStored)
 }
@@ -170,8 +170,8 @@ export async function listRecentStatements(db: Db, limit = 20): Promise<StoredSt
 export async function readStatement(db: Db, keyset: number): Promise<StoredStatement | null> {
   const rows = await db
     .select(STATEMENT_COLUMNS)
-    .from(statement)
-    .where(eq(statement.keyset, keyset))
+    .from(rotation)
+    .where(eq(rotation.keyset, keyset))
     .limit(1)
   return rows[0] ? toStored(rows[0]) : null
 }
@@ -180,9 +180,9 @@ export async function readStatement(db: Db, keyset: number): Promise<StoredState
 export async function readAwaitingKeyStatement(db: Db): Promise<StoredStatement | null> {
   const rows = await db
     .select(STATEMENT_COLUMNS)
-    .from(statement)
-    .where(eq(statement.state, 'awaiting_key'))
-    .orderBy(desc(statement.keyset))
+    .from(rotation)
+    .where(eq(rotation.state, 'awaiting_key'))
+    .orderBy(desc(rotation.keyset))
     .limit(1)
   return rows[0] ? toStored(rows[0]) : null
 }
@@ -195,16 +195,16 @@ export async function markAwaitingStatementLive(db: Db, loadedKid: string): Prom
   // Read first: this runs on the public identity route, which must not write
   // on every request.
   const waiting = await db
-    .select({ keyset: statement.keyset })
-    .from(statement)
-    .where(and(eq(statement.state, 'awaiting_key'), eq(statement.currentKid, loadedKid)))
+    .select({ keyset: rotation.keyset })
+    .from(rotation)
+    .where(and(eq(rotation.state, 'awaiting_key'), eq(rotation.currentKid, loadedKid)))
     .limit(1)
   if (waiting.length === 0) return false
   const updated = await db
-    .update(statement)
+    .update(rotation)
     .set({ state: 'live', liveAt: new Date().toISOString() })
-    .where(and(eq(statement.state, 'awaiting_key'), eq(statement.currentKid, loadedKid)))
-    .returning({ keyset: statement.keyset })
+    .where(and(eq(rotation.state, 'awaiting_key'), eq(rotation.currentKid, loadedKid)))
+    .returning({ keyset: rotation.keyset })
   return updated.length > 0
 }
 
@@ -221,7 +221,7 @@ export type StatementInsert = {
 /** Store an approved statement. The unique key set refuses a second one for the same step. */
 export async function insertStatement(db: Db, input: StatementInsert): Promise<void> {
   const approvals = JSON.parse(serializeKeysetEnvelope(input.envelope)).approvals as unknown[]
-  await db.insert(statement).values({
+  await db.insert(rotation).values({
     keyset: input.keyset,
     kind: input.kind,
     state: input.state,

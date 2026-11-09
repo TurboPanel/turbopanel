@@ -100,6 +100,10 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'replica',
   'repository',
   'retention',
+  // One approved control plane key-set statement (the chain servers follow).
+  // The word was retired when the Organization CA journal became `changeover`;
+  // no migration creates that old table any more, so it is free for this one.
+  'rotation',
   'rule',
   'seat',
   'scope',
@@ -114,8 +118,6 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'slot',
   'snapshot',
   'ssh',
-  // One approved control plane key-set statement (the chain servers follow).
-  'statement',
   'stage',
   'storage',
   'subnet',
@@ -169,7 +171,6 @@ const RETIRED_TABLE_NAMES = new Set<string>([
   'credential',
   'node',
   'segment',
-  'rotation',
   'backuppolicy',
   'backuprun',
   'volumebackup',

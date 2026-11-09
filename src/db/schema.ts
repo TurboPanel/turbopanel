@@ -473,8 +473,8 @@ export const custodian = pgTable(
  * forever and served to servers in `keyset` order. `body` is the exact
  * statement bytes (base64url); `approvals` the WebAuthn assertions over them.
  */
-export const statement = pgTable(
-  'statement',
+export const rotation = pgTable(
+  'rotation',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -494,15 +494,15 @@ export const statement = pgTable(
     liveAt: timestamp('live_at', { precision: 3, withTimezone: true, mode: 'string' }),
   },
   (table) => [
-    unique('uniq_statement_keyset').on(table.keyset),
+    unique('uniq_rotation_keyset').on(table.keyset),
     foreignKey({
       columns: [table.approvedByUserId],
       foreignColumns: [user.id],
-      name: 'statement_approved_by_user_id_user_id_fk',
+      name: 'rotation_approved_by_user_id_user_id_fk',
     }).onDelete('set null'),
-    check('statement_kind_check', sql`kind IN ('rotate', 'revoke', 'passkeys')`),
-    check('statement_state_check', sql`state IN ('awaiting_key', 'live')`),
-    check('statement_live_at_check', sql`(state = 'live') = (live_at IS NOT NULL)`),
+    check('rotation_kind_check', sql`kind IN ('rotate', 'revoke', 'passkeys')`),
+    check('rotation_state_check', sql`state IN ('awaiting_key', 'live')`),
+    check('rotation_live_at_check', sql`(state = 'live') = (live_at IS NOT NULL)`),
   ]
 )
 /**

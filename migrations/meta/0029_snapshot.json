@@ -1,5 +1,5 @@
 {
-  "id": "454e2f41-57b1-4f9c-a11e-2964650b78eb",
+  "id": "956f7d2f-d270-4be6-9557-292dc0afa335",
   "prevId": "cb1ed0f7-27d4-4548-a8a4-a973a9cb5363",
   "version": "7",
   "dialect": "postgresql",
@@ -11696,6 +11696,122 @@
       },
       "isRLSEnabled": false
     },
+    "public.rotation": {
+      "name": "rotation",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "keyset": {
+          "name": "keyset",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prev_kid": {
+          "name": "prev_kid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "current_kid": {
+          "name": "current_kid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "body": {
+          "name": "body",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approvals": {
+          "name": "approvals",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "approved_by_user_id": {
+          "name": "approved_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "live_at": {
+          "name": "live_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "rotation_approved_by_user_id_user_id_fk": {
+          "name": "rotation_approved_by_user_id_user_id_fk",
+          "tableFrom": "rotation",
+          "tableTo": "user",
+          "columnsFrom": [
+            "approved_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_rotation_keyset": {
+          "name": "uniq_rotation_keyset",
+          "nullsNotDistinct": false,
+          "columns": [
+            "keyset"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "rotation_kind_check": {
+          "name": "rotation_kind_check",
+          "value": "kind IN ('rotate', 'revoke', 'passkeys')"
+        },
+        "rotation_state_check": {
+          "name": "rotation_state_check",
+          "value": "state IN ('awaiting_key', 'live')"
+        },
+        "rotation_live_at_check": {
+          "name": "rotation_live_at_check",
+          "value": "(state = 'live') = (live_at IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.scope": {
       "name": "scope",
       "schema": "",
@@ -13811,122 +13927,6 @@
         "stage_status_check": {
           "name": "stage_status_check",
           "value": "status IN ('pending', 'waiting', 'dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying', 'done', 'failed', 'rolled_back', 'needs_attention', 'skipped')"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.statement": {
-      "name": "statement",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "uuidv7()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "keyset": {
-          "name": "keyset",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prev_kid": {
-          "name": "prev_kid",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "current_kid": {
-          "name": "current_kid",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "body": {
-          "name": "body",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approvals": {
-          "name": "approvals",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approved_by_user_id": {
-          "name": "approved_by_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "live_at": {
-          "name": "live_at",
-          "type": "timestamp(3) with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "statement_approved_by_user_id_user_id_fk": {
-          "name": "statement_approved_by_user_id_user_id_fk",
-          "tableFrom": "statement",
-          "tableTo": "user",
-          "columnsFrom": [
-            "approved_by_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uniq_statement_keyset": {
-          "name": "uniq_statement_keyset",
-          "nullsNotDistinct": false,
-          "columns": [
-            "keyset"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {
-        "statement_kind_check": {
-          "name": "statement_kind_check",
-          "value": "kind IN ('rotate', 'revoke', 'passkeys')"
-        },
-        "statement_state_check": {
-          "name": "statement_state_check",
-          "value": "state IN ('awaiting_key', 'live')"
-        },
-        "statement_live_at_check": {
-          "name": "statement_live_at_check",
-          "value": "(state = 'live') = (live_at IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
