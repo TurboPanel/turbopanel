@@ -97,6 +97,20 @@ function buildTransport(
   })
 }
 
+/**
+ * True when the receiving server refused the recipient itself (`RCPT TO`
+ * answered 550, 551 or 553): the address does not exist or takes no mail. Not
+ * an authentication or relay problem, which says nothing about the address.
+ */
+export function isRecipientRejected(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const e = error as { responseCode?: unknown; command?: unknown }
+  return (
+    e.command === 'RCPT TO' &&
+    (e.responseCode === 550 || e.responseCode === 551 || e.responseCode === 553)
+  )
+}
+
 function isPermanentSmtpError(error: unknown): boolean {
   if (error instanceof PermanentSendError) return true
   if (!error || typeof error !== 'object') return false
@@ -222,12 +236,18 @@ export class MailerSmtpSender {
         subject: template.subject,
         html: template.html,
         text: template.text ?? this.stripHtml(template.html),
+        ...(template.headers ? { headers: template.headers } : {}),
       })
       return { success: true }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e)
       logError('mailer', `send failed: ${errMsg}`)
-      return { success: false, error: errMsg, permanent: isPermanentSmtpError(e) }
+      return {
+        success: false,
+        error: errMsg,
+        permanent: isPermanentSmtpError(e),
+        recipientRejected: isRecipientRejected(e),
+      }
     }
   }
 }

@@ -127,5 +127,6 @@ test('runMigrateCommand passes both gates and is a no-op on an already-migrated 
     }),
     'lock acquired, applying migrations…',
     'migrations applied successfully',
+    'notification catalog in step',
   ])
 })

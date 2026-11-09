@@ -93,6 +93,7 @@ type Db = ReturnType<typeof createDenoDb>
 const NOT_OBJECT_ID_ROUTES: readonly RegExp[] = [
   /^\/api\/client\/v1\/auth\//, // tokens and provider names, not objects
   /^\/api\/client\/v1\/notification-channels\/verify\//, // an emailed one-time token, not an object id
+  /^\/api\/client\/v1\/notification-unsubscribe\//, // a sealed one-click unsubscribe token, not an object id
 ]
 
 /**

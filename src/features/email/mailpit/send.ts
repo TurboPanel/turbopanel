@@ -32,6 +32,9 @@ export async function sendMailpitJob(
     Subject: template.subject,
     HTML: template.html,
     Text: template.text ?? template.html,
+    ...(template.headers && Object.keys(template.headers).length > 0
+      ? { Headers: template.headers }
+      : {}),
   }
 
   try {
