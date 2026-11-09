@@ -325,3 +325,22 @@ test('a deploy that was asked to cancel says so, whether it stopped or finished 
     ]
   )
 })
+
+test('a certificate-only run is told apart from a full deploy', async () => {
+  const certificatesOnly = {
+    ...deployRow,
+    id: '00000000-0000-4000-8000-000000000120',
+    context: { ...deployRow.context, action: 'hostings' },
+  }
+  const unknownAction = {
+    ...deployRow,
+    id: '00000000-0000-4000-8000-000000000121',
+    context: { ...deployRow.context, action: 'something-else' },
+  }
+  const db = createHistoryDb({ commandRows: [certificatesOnly, unknownAction, deployRow] })
+  const { deployments } = await listEnvironmentDeploymentHistory(db, envId)
+  assertEquals(
+    deployments.map((d) => d.action),
+    ['hostings', null, null]
+  )
+})
