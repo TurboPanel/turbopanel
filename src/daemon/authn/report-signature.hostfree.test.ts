@@ -228,3 +228,50 @@ test('the hello feature list says whether the daemon signs reports', () => {
   assertEquals(helloListsSignedReports(['dev-host-v1']), false)
   assertEquals(helloListsSignedReports(undefined), false)
 })
+
+const OUTCOME_TEXT = '"command-outcome"'
+const UNSIGNED_VARIANTS: Array<[string, string]> = [
+  ['one space after the colon', `{"type": ${OUTCOME_TEXT},"id":"cmd-1","ok":true,"at":"x"}`],
+  ['tabs and newlines', `{\n\t"type"\t:\n${OUTCOME_TEXT},"id":"cmd-1","ok":true,"at":"x"}`],
+  ['type after other keys', `{"id":"cmd-1","ok":true,"type":${OUTCOME_TEXT},"at":"x"}`],
+  [
+    'type after other keys, spaced',
+    `{ "id" : "cmd-1" , "type" : ${OUTCOME_TEXT} , "ok" : true, "at":"x" }`,
+  ],
+  [
+    'a duplicate type key, last one wins',
+    `{"type":"hello","id":"cmd-1","ok":true,"at":"x","type":${OUTCOME_TEXT}}`,
+  ],
+  [
+    'a unicode-escaped type value',
+    '{"type":"command\\u002doutcome","id":"cmd-1","ok":true,"at":"x"}',
+  ],
+  ['a unicode-escaped type key', `{"\\u0074ype":${OUTCOME_TEXT},"id":"cmd-1","ok":true,"at":"x"}`],
+]
+
+for (const [name, text] of UNSIGNED_VARIANTS) {
+  test(`once the server has signed, an unsigned result with ${name} is refused`, async () => {
+    const key = await testDaemonKey()
+    const intake = await intakeSignedSessionReport(text, session(key, { serverSignsReports: true }))
+    assertEquals(intake.verdict, 'refused')
+    assertEquals(JSON.parse(intake.raw ?? 'null').error, REPORT_SIGNATURE_INVALID)
+  })
+}
+
+test('an unsigned peer report with spaced JSON is refused once the server has signed', async () => {
+  const key = await testDaemonKey()
+  const intake = await intakeSignedSessionReport(
+    '{"peers": [], "type": "fabric-peers-report", "at": "x"}',
+    session(key, { serverSignsReports: true })
+  )
+  assertEquals(intake.verdict, 'refused')
+  assertEquals(intake.raw, null)
+})
+
+test('a duplicate type key that ends as another type is not a report', async () => {
+  const key = await testDaemonKey()
+  const text = `{"type":${OUTCOME_TEXT},"id":"cmd-1","type":"hello"}`
+  const intake = await intakeSignedSessionReport(text, session(key, { serverSignsReports: true }))
+  assertEquals(intake.verdict, 'other')
+  assertEquals(intake.raw, text)
+})

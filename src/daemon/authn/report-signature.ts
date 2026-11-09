@@ -44,8 +44,6 @@ const LOGGABLE_ID = /^[A-Za-z0-9_-]{1,64}$/
 
 const REPORT_ENVELOPE_FIELDS = ['sessionId', 'iat', 'kid', 'sig'] as const
 
-const TYPE_MARKERS = [...SIGNED_REPORT_TYPES].map((type) => `"type":${JSON.stringify(type)}`)
-
 export type ReportSession = {
   /** The session id in this socket's signed hello. */
   sessionId: string
@@ -160,9 +158,9 @@ function refusedReplacement(
 }
 
 function unsignedIntake(raw: string, ctx: ReportSession): ReportIntake {
-  if (!TYPE_MARKERS.some((marker) => raw.includes(marker))) {
-    return { raw, warning: null, verdict: 'other' }
-  }
+  // Classify from the parsed frame, never from the raw text: whitespace, key
+  // order, duplicate keys and \u escapes all change the text but not the type
+  // the validator will read (JSON.parse, last duplicate wins).
   const report = parseRecord(raw)
   const type = reportType(report)
   if (!report || !type) return { raw, warning: null, verdict: 'other' }
@@ -200,7 +198,9 @@ export async function intakeSignedSessionReport(
   if (!split) return unsignedIntake(raw, ctx)
   const report = parseRecord(split.unsigned)
   const type = reportType(report)
-  if (!report || !type) return { raw, warning: null, verdict: 'other' }
+  // Not a report by its signed part: still classify the whole frame, so a
+  // marker-shaped tail inside a nested value cannot hide a report.
+  if (!report || !type) return unsignedIntake(raw, ctx)
   const reason = await refusalReason(report, split, type, ctx)
   if (reason === null) return { raw: withoutEnvelope(report), warning: null, verdict: 'verified' }
   return {
