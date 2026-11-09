@@ -29,12 +29,20 @@ import { DAEMON_CELL_PING, DAEMON_CELL_PONG } from '../contracts/cell-protocol.t
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import { materializeDaemonJsonbWrite } from '../test-fixtures/daemon-jsonb-simulator.ts'
 import {
+  type DaemonOutboxPumpParams,
   dispatchDaemonInboundMessage,
   handleDaemonCellPing,
   isClosedConnectionError,
+  outboxPumpBackoffMs,
   registerDaemonWebSocket,
+  startDaemonOutboxPump,
   wsMessageDataToString,
 } from './deno-ws.ts'
+import { RedisDaemonCell } from './cell/redis/cell.ts'
+import type { RedisCellClient } from './cell/redis/client.ts'
+import { createFakeRedisCellClient } from './cell/redis/fake-redis-cell-client.ts'
+import { outboxKey } from './cell/redis/keys.ts'
+import { generateDeliveryId, generateRequestId } from '../contracts/cell-protocol.ts'
 
 /**
  * Workers / Miniflare put the client half of a 101 upgrade on
@@ -1667,6 +1675,8 @@ async function withLiveDaemonServer(
     setDbOnContext?: Db
     heartbeatSeconds?: () => number
     panelIdentity?: () => Promise<PanelIdentity | null>
+    /** Skip the pause after a failed outbox pump turn; only for a cell that fails once. */
+    outboxPumpSleep?: (ms: number) => Promise<void>
   },
   fn: (ctx: { port: number; origin: string }) => Promise<void>
 ): Promise<void> {
@@ -1690,6 +1700,7 @@ async function withLiveDaemonServer(
     sessionSecrets: options.sessionSecrets,
     heartbeatSeconds: options.heartbeatSeconds,
     panelIdentity: options.panelIdentity,
+    outboxPumpSleep: options.outboxPumpSleep,
     identityUrls: () => Promise.resolve(['https://panel.example.test']),
   })
 
@@ -3082,6 +3093,7 @@ test('live WS outbox pump logs non-closed errors and continues', async () => {
       secrets,
       db: createMockDb(),
       registry: createTrackingRegistry(tracking.cell),
+      outboxPumpSleep: () => Promise.resolve(),
     },
     async ({ port }) => {
       const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
@@ -3148,7 +3160,13 @@ async function outboxEventsAfterAttach(params: {
   const secrets = await createDaemonJwtSecrets()
   const { tracking, events } = outboxCellWithBatch(params.serverId, params.first, params.failAckOf)
   await withLiveDaemonServer(
-    { secrets, db: createMockDb(), registry: createTrackingRegistry(tracking.cell) },
+    {
+      secrets,
+      db: createMockDb(),
+      registry: createTrackingRegistry(tracking.cell),
+      // The scripted cell fails at most once, so the pause after it is skipped.
+      outboxPumpSleep: () => Promise.resolve(),
+    },
     async ({ port }) => {
       const issued = await issueDaemonJwt({ sub: params.serverId, kid: 'key-test' }, secrets)
       const ws = await openLiveDaemonWs({ port, token: issued.token, remoteIp: LIVE_REMOTE_IP })
@@ -4167,4 +4185,323 @@ test('signed session: an unsigned first frame from a server that used signed mod
       assertEquals(event.reason, 'signed-mode-required')
     }
   )
+})
+
+const NOGROUP_ERROR =
+  "ReplyError: NOGROUP No such key 'tp:cell:srv:outbox' or consumer group 'daemon' in XREADGROUP with GROUP option"
+
+/** Captures the structured WARN and INFO lines the pump writes, without printing them. */
+function captureStructuredLogs(): { warns: string[]; infos: string[]; restore: () => void } {
+  const decoder = new TextDecoder()
+  const warns: string[] = []
+  const infos: string[] = []
+  const stderr = stub(Deno.stderr, 'writeSync', (bytes: Uint8Array) => {
+    warns.push(decoder.decode(bytes))
+    return bytes.length
+  })
+  const stdout = stub(Deno.stdout, 'writeSync', (bytes: Uint8Array) => {
+    infos.push(decoder.decode(bytes))
+    return bytes.length
+  })
+  return {
+    warns,
+    infos,
+    restore: () => {
+      stderr.restore()
+      stdout.restore()
+    },
+  }
+}
+
+/**
+ * Runs the outbox pump over a scripted `readOutboxBatch`. The pump stops when
+ * the script sets `abortRef.abort`; `finished` resolves on that turn. Pauses
+ * are recorded and return at once, so no test waits on a real timer.
+ */
+function runScriptedOutboxPump(
+  read: (call: number, abortRef: { abort: boolean }) => Promise<DaemonOutboundEnvelope[]>
+) {
+  const abortRef = { abort: false }
+  const pauses: number[] = []
+  const sent: { type: string }[] = []
+  const acked: string[] = []
+  let reads = 0
+  let finish: () => void = () => undefined
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve
+  })
+  const params: DaemonOutboxPumpParams = {
+    cell: {
+      readOutboxBatch: async () => {
+        reads += 1
+        try {
+          return await read(reads, abortRef)
+        } finally {
+          if (abortRef.abort) finish()
+        }
+      },
+      markSent: () => Promise.resolve(),
+      ackOutbox: (deliveryIds) => {
+        acked.push(...deliveryIds)
+        return Promise.resolve()
+      },
+      putSnapshot: (patch) =>
+        Promise.resolve({
+          serverId: 'srv',
+          version: 1,
+          updatedAt: new Date().toISOString(),
+          connected: true,
+          ...patch,
+        }),
+    },
+    serverId: 'srv',
+    connectionId: 'conn-1',
+    consumer: 'ws:conn-1',
+    send: (wire) => {
+      sent.push(wire)
+      return Promise.resolve()
+    },
+    abortRef,
+    sleep: (ms) => {
+      pauses.push(ms)
+      return Promise.resolve()
+    },
+  }
+  startDaemonOutboxPump(params)
+  return { finished, pauses, sent, acked, reads: () => reads, abortRef }
+}
+
+/** Lets the turn that ended the pump finish its own bookkeeping (the recovery line). */
+async function settleOutboxPump(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0))
+}
+
+function pingDispatchEnvelope(commandId: string): DaemonOutboundEnvelope {
+  return {
+    kind: 'command-dispatch',
+    deliveryId: generateDeliveryId(),
+    requestId: generateRequestId(),
+    at: new Date().toISOString(),
+    commandId,
+    commandType: 'daemon.ping',
+    payload: {},
+  }
+}
+
+test('outboxPumpBackoffMs is zero while healthy, then doubles from 250 ms to a five second cap', () => {
+  assertEquals(
+    [0, 1, 2, 3, 4, 5, 6, 7, 1000].map((failures) => outboxPumpBackoffMs(failures)),
+    [0, 250, 500, 1000, 2000, 4000, 5000, 5000, 5000]
+  )
+})
+
+test('outbox pump: a lasting read error pauses longer each turn and is logged once, then once on recovery', async () => {
+  const logs = captureStructuredLogs()
+  try {
+    const pump = runScriptedOutboxPump((call, abortRef) => {
+      if (call <= 7) return Promise.reject(new Error(NOGROUP_ERROR))
+      abortRef.abort = true
+      return Promise.resolve([])
+    })
+    await pump.finished
+    await settleOutboxPump()
+
+    assertEquals(pump.reads(), 8)
+    assertEquals(pump.pauses, [250, 500, 1000, 2000, 4000, 5000, 5000])
+    const pumpWarns = logs.warns.filter((line) => line.includes('outbox pump error'))
+    assertEquals(pumpWarns.length, 1)
+    assertStringIncludes(pumpWarns[0] ?? '', 'NOGROUP')
+    const recovered = logs.infos.filter((line) => line.includes('recovered after 7 failed turn(s)'))
+    assertEquals(recovered.length, 1)
+  } finally {
+    logs.restore()
+  }
+})
+
+test('outbox pump: the next read waits for the pause after a failed turn', async () => {
+  const logs = captureStructuredLogs()
+  try {
+    const abortRef = { abort: false }
+    let reads = 0
+    let releasePause: () => void = () => undefined
+    let pauseStarted: () => void = () => undefined
+    const pausing = new Promise<void>((resolve) => {
+      pauseStarted = resolve
+    })
+    let secondRead: () => void = () => undefined
+    const readAgain = new Promise<void>((resolve) => {
+      secondRead = resolve
+    })
+    startDaemonOutboxPump({
+      cell: {
+        readOutboxBatch: () => {
+          reads += 1
+          if (reads === 1) return Promise.reject(new Error(NOGROUP_ERROR))
+          abortRef.abort = true
+          secondRead()
+          return Promise.resolve([])
+        },
+        markSent: () => Promise.resolve(),
+        ackOutbox: () => Promise.resolve(),
+        putSnapshot: () => Promise.reject(new Error('not used')),
+      },
+      serverId: 'srv',
+      connectionId: 'conn-1',
+      consumer: 'ws:conn-1',
+      send: () => Promise.resolve(),
+      abortRef,
+      sleep: (ms) => {
+        assertEquals(ms, 250)
+        pauseStarted()
+        return new Promise<void>((resolve) => {
+          releasePause = resolve
+        })
+      },
+    })
+
+    await pausing
+    // The pause is still open: however many turns of the event loop pass, no second read happens.
+    for (let i = 0; i < 50; i += 1) await Promise.resolve()
+    assertEquals(reads, 1)
+
+    releasePause()
+    await readAgain
+    assertEquals(reads, 2)
+    await settleOutboxPump()
+  } finally {
+    logs.restore()
+  }
+})
+
+test('outbox pump: a socket closed during the pause stops the pump without another read', async () => {
+  const logs = captureStructuredLogs()
+  try {
+    const abortRef = { abort: false }
+    let reads = 0
+    let releasePause: () => void = () => undefined
+    let pauseStarted: () => void = () => undefined
+    const pausing = new Promise<void>((resolve) => {
+      pauseStarted = resolve
+    })
+    startDaemonOutboxPump({
+      cell: {
+        readOutboxBatch: () => {
+          reads += 1
+          return Promise.reject(new Error(NOGROUP_ERROR))
+        },
+        markSent: () => Promise.resolve(),
+        ackOutbox: () => Promise.resolve(),
+        putSnapshot: () => Promise.reject(new Error('not used')),
+      },
+      serverId: 'srv',
+      connectionId: 'conn-1',
+      consumer: 'ws:conn-1',
+      send: () => Promise.resolve(),
+      abortRef,
+      sleep: () => {
+        pauseStarted()
+        return new Promise<void>((resolve) => {
+          releasePause = resolve
+        })
+      },
+    })
+    await pausing
+    abortRef.abort = true
+    releasePause()
+    for (let i = 0; i < 50; i += 1) await Promise.resolve()
+    assertEquals(reads, 1)
+  } finally {
+    logs.restore()
+  }
+})
+
+test('outbox pump: a changed error is logged again and a delivered batch resets the pause', async () => {
+  const logs = captureStructuredLogs()
+  try {
+    const envelope = pingDispatchEnvelope('after-errors')
+    const pump = runScriptedOutboxPump((call, abortRef) => {
+      if (call <= 2) return Promise.reject(new Error(NOGROUP_ERROR))
+      if (call === 3)
+        return Promise.reject(new Error('LOADING Redis is loading the dataset in memory'))
+      if (call === 4) return Promise.resolve([envelope])
+      if (call === 5) return Promise.reject(new Error(NOGROUP_ERROR))
+      abortRef.abort = true
+      return Promise.resolve([])
+    })
+    await pump.finished
+    await settleOutboxPump()
+
+    assertEquals(pump.pauses, [250, 500, 1000, 250])
+    assertEquals(pump.sent.length, 1)
+    assertEquals(pump.acked, [envelope.deliveryId])
+    const pumpWarns = logs.warns.filter((line) => line.includes('outbox pump error'))
+    assertEquals(pumpWarns.length, 3)
+    assertStringIncludes(pumpWarns[1] ?? '', 'LOADING')
+    assertEquals(logs.infos.filter((line) => line.includes('recovered after')).length, 2)
+  } finally {
+    logs.restore()
+  }
+})
+
+test('outbox pump: a command queued after Redis lost the outbox group still reaches the server, once', async () => {
+  const logs = captureStructuredLogs()
+  const client = createFakeRedisCellClient()
+  const serverId = `srv-pump-${crypto.randomUUID()}`
+  const cell = new RedisDaemonCell(client as unknown as RedisCellClient, serverId)
+  try {
+    const attached = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    // Redis came back empty under the open socket, then a command was queued.
+    await client.del(outboxKey(serverId))
+    const envelope = pingDispatchEnvelope('after-loss')
+    await cell.enqueue(envelope)
+
+    const abortRef = { abort: false }
+    const sent: { type: string }[] = []
+    const pauses: number[] = []
+    let finish: () => void = () => undefined
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    startDaemonOutboxPump({
+      cell: {
+        readOutboxBatch: (params) => {
+          // The fake Redis never blocks: stop once the command went out.
+          if (sent.length > 0) {
+            abortRef.abort = true
+            finish()
+            return Promise.resolve([])
+          }
+          return cell.readOutboxBatch(params)
+        },
+        markSent: (...args) => cell.markSent(...args),
+        ackOutbox: (...args) => cell.ackOutbox(...args),
+        putSnapshot: (...args) => cell.putSnapshot(...args),
+      },
+      serverId,
+      connectionId: attached.connectionId,
+      consumer: `ws:${attached.connectionId}`,
+      send: (wire) => {
+        sent.push(wire)
+        return Promise.resolve()
+      },
+      abortRef,
+      sleep: (ms) => {
+        pauses.push(ms)
+        return Promise.resolve()
+      },
+    })
+    await finished
+    await settleOutboxPump()
+
+    assertEquals(sent.length, 1)
+    assertEquals((sent[0] as { commandId?: string }).commandId, 'after-loss')
+    // Acknowledged and removed: nothing is left to deliver twice.
+    assertEquals(await client.xlen(outboxKey(serverId)), 0)
+    // The cell healed the group inside the read, so the pump never failed a turn.
+    assertEquals(pauses, [])
+    assertEquals(logs.warns.filter((line) => line.includes('outbox pump error')).length, 0)
+  } finally {
+    logs.restore()
+    await cell.purge()
+  }
 })

@@ -62,6 +62,10 @@ Workers DO mechanics with **no Redis analog** (document only): hibernation API, 
 - Idempotent maintenance / retries (`maintain()` is already `.catch`'d at the `deno.ts` timer)
 - Always-await; no non-atomic race windows across external I/O; write-as-you-go
 
+**Outbox group after a Redis data loss (Redis only):** the outbox consumer group is created at attach, starting at `0`. An acknowledged entry is deleted from the stream and an expired request takes its entries with it (`#purgeRequestRecord`), so whatever the stream holds is still owed to the server; never create the group at `$`, which skips everything queued while no group existed. When Redis comes back without its keys under an open socket (a restart without persistence), `XREADGROUP` answers `NOGROUP`: `readOutboxBatch` creates the group again, repeats the read once and logs one line, so commands queued in the meantime are delivered and delivery goes on without a control plane restart. An entry that was sent but not acknowledged can go out a second time; the server drops a command id it has already seen. Commands already `sent` whose request record was lost with Redis are not re-sent from Postgres: the stale sweep ends them, as for any lost answer. A purged cell (`purge()`) does not bring its outbox back until the next attach. The Durable Object keeps its outbox in SQLite and has no such state to lose.
+
+**Outbox pump pause (Deno):** `startDaemonOutboxPump` in `deno-ws.ts` waits `outboxPumpBackoffMs` after a failed turn (250 ms doubling to 5 s, back to none after a good turn) and logs an error when it first appears or changes plus one recovery line, never once per turn. A Redis error reply comes back before any block, so without the pause one lasting error spins the pump and floods the log. Any new error path in the pump must go through the same count.
+
 Any DO behavioral change must be checked against `src/contracts/cell.ts` (`DaemonCell`) and the Redis implementation updated in the same change. User-facing API and status semantics stay identical on both runtimes (see Parity callout under Daemon Cell).
 
 ### Checklist — creating a new Durable Object
