@@ -6,18 +6,22 @@ import { signWithCurrent, type PanelIdentity } from './identity.ts'
  * One signed daemon session: the control plane proves itself with a signed
  * `hello` that echoes the daemon's nonce, then wraps every later frame in an
  * envelope `{sessionId, seq, iat, kid}` plus `sig`. `seq` starts at 1 and the
- * daemon refuses anything but last+1. When the daemon offered
- * `panel-bound-session-v1`, the hello and every frame also carry `forServer`
+ * daemon refuses anything but last+1. The hello always carries `forServer`
  * and `forKey` (the server id and daemon key id the socket authenticated as),
- * so a session signed for one server is useless on another. Workers-safe: no I/O, no Deno APIs.
+ * and every frame carries the hello's random session id, so a session signed
+ * for one server never verifies on another. When the daemon offered
+ * `panel-bound-session-v1`, every frame names the two as well (an older daemon
+ * would pass extra frame members on, so they are not sent unasked). Workers-safe: no I/O, no Deno APIs.
  */
 export type SignedSessionBinding = { serverId: string; keyId: string }
 export type SignedSessionState = {
   sessionId: string
   nextSeq: number
   kid: string
-  /** Set when the daemon offered `panel-bound-session-v1`: the hello and every frame name these. */
+  /** Set when the daemon offered `panel-bound-session-v1`: every frame names these. */
   bind?: SignedSessionBinding
+  /** The hello's binding: set for every signed session, offer or not (falls back to `bind`). */
+  helloBind?: SignedSessionBinding
 }
 
 /** Envelope members every signed frame carries; no wire message may use these names. */
@@ -31,12 +35,17 @@ export const SIGNED_ENVELOPE_FIELDS = [
   'sig',
 ] as const
 
-export function newSignedSession(kid: string, bind?: SignedSessionBinding): SignedSessionState {
+export function newSignedSession(
+  kid: string,
+  bind?: SignedSessionBinding,
+  helloBind?: SignedSessionBinding
+): SignedSessionState {
   return {
     sessionId: base64urlEncode(crypto.getRandomValues(new Uint8Array(16))),
     nextSeq: 1,
     kid,
     ...(bind ? { bind } : {}),
+    ...(helloBind ? { helloBind } : {}),
   }
 }
 
@@ -53,7 +62,7 @@ function unixSeconds(nowMs: number): number {
 export async function buildSignedHello(
   identity: PanelIdentity,
   nonce: string,
-  session: Pick<SignedSessionState, 'sessionId' | 'bind'>,
+  session: Pick<SignedSessionState, 'sessionId' | 'bind' | 'helloBind'>,
   opts: { heartbeatSeconds: number; urls: string[]; nowMs?: number }
 ): Promise<string> {
   const unsigned = JSON.stringify({
@@ -61,7 +70,7 @@ export async function buildSignedHello(
     nonce,
     sessionId: session.sessionId,
     kid: identity.current.kid,
-    ...bindingMembers(session.bind),
+    ...bindingMembers(session.helloBind ?? session.bind),
     keyset: identity.keyset,
     heartbeatSeconds: opts.heartbeatSeconds,
     urls: opts.urls,

@@ -6,8 +6,8 @@
  * The control plane sends nothing until the daemon's first frame arrives. A
  * `hello-nonce` starts a signed session: the answer is a `hello` signed by the
  * identity key, then every frame carries a signed envelope with `seq` 1, 2,
- * ... When the daemon offers `panel-bound-session-v1` the hello and envelopes
- * also name the server and daemon key. Any other first frame is an older (or unpinned) daemon: it gets today's
+ * ... The hello always names the server and daemon key; envelopes do too when
+ * the daemon offers `panel-bound-session-v1`. Any other first frame is an older (or unpinned) daemon: it gets today's
  * unsigned session, unless this server has already used a signed one
  * (`server.trust_level` 1 or more), which closes the socket with 4403.
  */
@@ -24,6 +24,7 @@ import {
 export const PANEL_IDENTITY_CLOSE_CODE = 4403
 export const SIGNED_MODE_REQUIRED_REASON = 'signed-mode-required'
 export const PANEL_IDENTITY_UNAVAILABLE_REASON = 'panel-identity-unavailable'
+export const SESSION_BINDING_UNAVAILABLE_REASON = 'session-binding-unavailable'
 export const SIGNED_SEND_FAILED_REASON = 'signed-send-failed'
 
 export type DaemonSessionPhase = 'await-first-frame' | 'legacy' | 'signed'
@@ -39,7 +40,7 @@ export async function decideFirstFrame(
   ctx: {
     trustLevel: number
     panelIdentity?: () => Promise<PanelIdentity | null>
-    /** The server and daemon key the socket's token named; bound sessions sign them. */
+    /** The server and daemon key the socket's token named; the hello always signs them. */
     binding?: SignedSessionBinding
   }
 ): Promise<FirstFrameDecision> {
@@ -47,10 +48,17 @@ export async function decideFirstFrame(
   if (nonceFrame) {
     const identity = ctx.panelIdentity ? await ctx.panelIdentity() : null
     if (!identity) return { kind: 'refused', reason: PANEL_IDENTITY_UNAVAILABLE_REASON }
+    // The hello always names the server and key, offer or not: every frame carries the hello's
+    // random session id, so a session whose hello names one server never verifies on another.
+    if (!ctx.binding) return { kind: 'refused', reason: SESSION_BINDING_UNAVAILABLE_REASON }
     return {
       kind: 'signed',
       identity,
-      session: newSignedSession(identity.current.kid, nonceFrame.bound ? ctx.binding : undefined),
+      session: newSignedSession(
+        identity.current.kid,
+        nonceFrame.bound ? ctx.binding : undefined,
+        ctx.binding
+      ),
       nonce: nonceFrame.nonce,
     }
   }

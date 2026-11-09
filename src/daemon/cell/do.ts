@@ -255,6 +255,14 @@ function parseCellDaemonKey(value: string | null): { id: string; x: string } | u
  * from hibernation continues the count. A socket from an older build has no
  * `phase` and is treated as unsigned.
  */
+/** The server and key a socket's signed hello names; none (refused) when no key id was kept. */
+function sessionBindingOf(
+  attachment: Pick<SocketSessionAttachment, 'serverId' | 'tokenKeyId' | 'daemonKey'>
+): { serverId: string; keyId: string } | undefined {
+  const keyId = attachment.tokenKeyId ?? attachment.daemonKey?.id
+  return keyId ? { serverId: attachment.serverId, keyId } : undefined
+}
+
 type SocketSessionAttachment = {
   connectionId: string
   serverId: string
@@ -1811,9 +1819,7 @@ export class DaemonCellObject {
     const decision = await decideFirstFrame(raw, {
       trustLevel: attachment.trustLevel ?? 0,
       panelIdentity: () => this.#getPanelIdentity(),
-      binding: attachment.tokenKeyId
-        ? { serverId: attachment.serverId, keyId: attachment.tokenKeyId }
-        : undefined,
+      binding: sessionBindingOf(attachment),
     })
     if (decision.kind === 'refused') {
       console.warn(

@@ -5,7 +5,11 @@ import {
   type PanelIdentity,
   resolvePanelIdentityFromBinding,
 } from '../lib/panel-identity/identity.ts'
-import { newSignedSession } from '../lib/panel-identity/signed-session.ts'
+import {
+  buildSignedHello,
+  envelopeFrame,
+  newSignedSession,
+} from '../lib/panel-identity/signed-session.ts'
 import { fixtureBindingJson } from '../test-fixtures/panel-identity-fixture.ts'
 import { createDaemonSessionSender, decideFirstFrame } from './signed-session-gate.ts'
 
@@ -50,6 +54,7 @@ test('a hello-nonce opens a signed session with a fresh session at seq 1', async
   const decision = await decideFirstFrame(NONCE_FRAME, {
     trustLevel: 0,
     panelIdentity: () => Promise.resolve(id),
+    binding: BINDING,
   })
   assertEquals(decision.kind, 'signed')
   if (decision.kind !== 'signed') return
@@ -71,9 +76,40 @@ test('the session names the server and key only when the daemon offered the bind
   const plain = await decideFirstFrame(NONCE_FRAME, ctx)
   assert(plain.kind === 'signed')
   assertEquals(plain.session.bind, undefined)
-  const noBinding = await decideFirstFrame(BOUND_NONCE_FRAME, { ...ctx, binding: undefined })
+})
   assert(noBinding.kind === 'signed')
   assertEquals(noBinding.session.bind, undefined)
+})
+
+test('the hello is bound for every signed session, offer or not; frames only on the offer', async () => {
+  const id = await identity()
+  const ctx = { trustLevel: 2, panelIdentity: () => Promise.resolve(id), binding: BINDING }
+  const stripped = await decideFirstFrame(NONCE_FRAME, ctx)
+  assert(stripped.kind === 'signed')
+  assertEquals(stripped.session.bind, undefined)
+  assertEquals(stripped.session.helloBind, BINDING)
+  const hello = JSON.parse(
+    await buildSignedHello(id, NONCE, stripped.session, { heartbeatSeconds: 45, urls: [] })
+  )
+  assertEquals([hello.forServer, hello.forKey], ['server-a', 'key-a'])
+  const frame = JSON.parse(await envelopeFrame(id, stripped.session, { type: 'version' }, 1))
+  assertEquals(frame.forServer, undefined)
+  const offered = await decideFirstFrame(BOUND_NONCE_FRAME, ctx)
+  assert(offered.kind === 'signed')
+  assertEquals(offered.session.bind, BINDING)
+  const framed = JSON.parse(await envelopeFrame(id, offered.session, { type: 'version' }, 1))
+  assertEquals([framed.forServer, framed.forKey], ['server-a', 'key-a'])
+})
+
+test('a signed session with no server and key to name is refused', async () => {
+  const id = await identity()
+  assertEquals(
+    await decideFirstFrame(NONCE_FRAME, {
+      trustLevel: 0,
+      panelIdentity: () => Promise.resolve(id),
+    }),
+    { kind: 'refused', reason: 'session-binding-unavailable' }
+  )
 })
 
 test('a hello-nonce with no identity key is refused, at any trust level', async () => {

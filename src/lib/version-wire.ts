@@ -545,11 +545,11 @@ export const INSTALL_TOKEN_V2_FEATURE: DaemonWireFeature = 'install-token-v2'
 export const PANEL_IDENTITY_FEATURE: DaemonWireFeature = 'panel-identity-v1'
 
 /**
- * The daemon offers this in its `hello-nonce` frame. The control plane then
- * names the server id and the daemon key id inside the signed hello and every
- * signed frame (`forServer`, `forKey`), and the daemon refuses anything signed
- * for another server or key. The offer is unsigned, so nothing here decides
- * enforcement for an older peer: no offer means today's unbound session.
+ * The daemon offers this in its `hello-nonce` frame. The signed hello always
+ * names the server id and the daemon key id (`forServer`, `forKey`), offer or
+ * not, and the daemon refuses a hello naming another server or key. With the
+ * offer, every signed frame names them too. Stripping the offer therefore
+ * cannot downgrade a session: the hello is bound anyway.
  */
 export const PANEL_BOUND_SESSION_FEATURE: DaemonWireFeature = 'panel-bound-session-v1'
 

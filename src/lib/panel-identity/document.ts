@@ -23,6 +23,13 @@ export type IdentityDocument = {
   urls: string[]
   issued: string
   expires: string
+  /**
+   * 1: this control plane signs the server id and daemon key id into every
+   * session hello and frame (`panel-bound-session-v1`). A pinned daemon that
+   * reads it from a verified document refuses any unbound hello or frame, so
+   * stripping the daemon's offer cannot downgrade a session.
+   */
+  boundSessions: 1
 }
 
 /**
@@ -57,6 +64,7 @@ export function buildIdentityDocument(
     urls,
     issued: now.toISOString(),
     expires: new Date(now.getTime() + IDENTITY_DOCUMENT_TTL_MS).toISOString(),
+    boundSessions: 1,
   }
 }
 
@@ -70,6 +78,7 @@ export function serializeIdentityDocument(doc: IdentityDocument): string {
     urls: doc.urls,
     issued: doc.issued,
     expires: doc.expires,
+    boundSessions: doc.boundSessions,
   })
 }
 
