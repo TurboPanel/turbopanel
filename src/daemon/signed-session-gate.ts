@@ -50,7 +50,9 @@ export async function decideFirstFrame(
     if (!identity) return { kind: 'refused', reason: PANEL_IDENTITY_UNAVAILABLE_REASON }
     // The hello always names the server and key, offer or not: every frame carries the hello's
     // random session id, so a session whose hello names one server never verifies on another.
-    if (!ctx.binding) return { kind: 'refused', reason: SESSION_BINDING_UNAVAILABLE_REASON }
+    if (!ctx.binding?.serverId || !ctx.binding.keyId) {
+      return { kind: 'refused', reason: SESSION_BINDING_UNAVAILABLE_REASON }
+    }
     return {
       kind: 'signed',
       identity,

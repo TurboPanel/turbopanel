@@ -255,14 +255,6 @@ function parseCellDaemonKey(value: string | null): { id: string; x: string } | u
  * from hibernation continues the count. A socket from an older build has no
  * `phase` and is treated as unsigned.
  */
-/** The server and key a socket's signed hello names; none (refused) when no key id was kept. */
-function sessionBindingOf(
-  attachment: Pick<SocketSessionAttachment, 'serverId' | 'tokenKeyId' | 'daemonKey'>
-): { serverId: string; keyId: string } | undefined {
-  const keyId = attachment.tokenKeyId ?? attachment.daemonKey?.id
-  return keyId ? { serverId: attachment.serverId, keyId } : undefined
-}
-
 type SocketSessionAttachment = {
   connectionId: string
   serverId: string
@@ -285,6 +277,14 @@ type SocketSessionAttachment = {
   reportsSigned?: boolean
   /** The unsigned-report warning was logged on this socket (once per connection). */
   warnedUnsigned?: boolean
+}
+
+/** The server and key a socket's signed hello names; none (refused) when no key id was kept. */
+function sessionBindingOf(
+  attachment: Pick<SocketSessionAttachment, 'serverId' | 'tokenKeyId' | 'daemonKey'>
+): { serverId: string; keyId: string } | undefined {
+  const keyId = attachment.tokenKeyId || attachment.daemonKey?.id
+  return keyId ? { serverId: attachment.serverId, keyId } : undefined
 }
 /** Schema stamp in `_cell_schema.version` — bump when `#ensureSchema` DDL changes.
  * DO SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`); `#readSchemaVersion`

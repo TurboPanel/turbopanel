@@ -65,12 +65,16 @@ export async function buildSignedHello(
   session: Pick<SignedSessionState, 'sessionId' | 'bind' | 'helloBind'>,
   opts: { heartbeatSeconds: number; urls: string[]; nowMs?: number }
 ): Promise<string> {
+  const helloBind = session.helloBind ?? session.bind
+  if (!helloBind?.serverId || !helloBind.keyId) {
+    throw new TypeError('a signed hello must name the server and daemon key')
+  }
   const unsigned = JSON.stringify({
     type: 'hello',
     nonce,
     sessionId: session.sessionId,
     kid: identity.current.kid,
-    ...bindingMembers(session.helloBind ?? session.bind),
+    ...bindingMembers(helloBind),
     keyset: identity.keyset,
     heartbeatSeconds: opts.heartbeatSeconds,
     urls: opts.urls,

@@ -63,7 +63,10 @@ test('signing inputs carry the per-kind prefix', () => {
 
 test('the hello echoes the nonce, names the key and verifies over tp-hello plus its exact bytes', async () => {
   const id = await identity()
-  const session = newSignedSession(id.current.kid)
+  const session = newSignedSession(id.current.kid, undefined, {
+    serverId: 'server-a',
+    keyId: 'key-a',
+  })
   const raw = await buildSignedHello(id, NONCE, session, {
     heartbeatSeconds: 45,
     urls: ['https://a.example.test'],
@@ -77,11 +80,32 @@ test('the hello echoes the nonce, names the key and verifies over tp-hello plus 
     nonce: NONCE,
     sessionId: session.sessionId,
     kid: id.current.kid,
+    forServer: 'server-a',
+    forKey: 'key-a',
     keyset: id.keyset,
     heartbeatSeconds: 45,
     urls: ['https://a.example.test'],
     iat: NOW_MS / 1000,
   })
+})
+
+test('a hello with no server or key to name is never signed', async () => {
+  const id = await identity()
+  const opts = { heartbeatSeconds: 45, urls: [], nowMs: NOW_MS }
+  for (const bind of [
+    undefined,
+    { serverId: 'server-a', keyId: '' },
+    { serverId: '', keyId: 'k' },
+  ]) {
+    const session = newSignedSession(id.current.kid, undefined, bind)
+    let threw = false
+    try {
+      await buildSignedHello(id, NONCE, session, opts)
+    } catch (err) {
+      threw = err instanceof TypeError
+    }
+    assertEquals(threw, true)
+  }
 })
 
 test('an enveloped frame keeps the message, appends the envelope and verifies over its type', async () => {

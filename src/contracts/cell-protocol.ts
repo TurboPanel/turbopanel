@@ -3117,8 +3117,8 @@ const HELLO_NONCE_PATTERN = /^[A-Za-z0-9_-]{43}$/
  * bytes, base64url>}` and nothing else about itself. The control plane must
  * answer with a signed `hello` echoing the nonce before the daemon sends
  * anything more, except an optional `features` list: `panel-bound-session-v1`
- * asks for a hello and frames that name the server and key. Checked before `validateDaemonInboundFrame`, which does not
- * know the type. Extra members are ignored. Null for anything else.
+ * asks for frames that name the server and key (the hello always does).
+ * Checked before `validateDaemonInboundFrame`, which does not know the type. Extra members are ignored. Null for anything else.
  */
 export function parseHelloNonceFrame(raw: string): { nonce: string; bound: boolean } | null {
   if (raw.length > HELLO_NONCE_MAX_BYTES || !raw.includes('"hello-nonce"')) return null

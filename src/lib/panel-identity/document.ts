@@ -25,9 +25,10 @@ export type IdentityDocument = {
   expires: string
   /**
    * 1: this control plane signs the server id and daemon key id into every
-   * session hello and frame (`panel-bound-session-v1`). A pinned daemon that
-   * reads it from a verified document refuses any unbound hello or frame, so
-   * stripping the daemon's offer cannot downgrade a session.
+   * session hello (`panel-bound-session-v1`; frames name them too when the
+   * daemon offered). A pinned daemon that reads it from a verified document
+   * refuses an unbound hello. Frames carry the hello's session id, so an
+   * unbound frame in a bound session is fine.
    */
   boundSessions: 1
 }

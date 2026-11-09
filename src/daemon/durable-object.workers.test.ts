@@ -4263,7 +4263,9 @@ describe('signed daemon session', () => {
     setDaemonCellPanelIdentityBindingForTests(binding)
     const serverId = 'test-srv-signed-hello'
     const stub = env.DAEMON_CELL.getByName(serverId)
-    const { ws } = await openDaemonWebSocket(stub, serverId, undefined, { firstFrame: null })
+    const { ws, keyId } = await openDaemonWebSocket(stub, serverId, undefined, {
+      firstFrame: null,
+    })
     const frames = collectFrames(ws, 2)
     ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
     const [helloRaw, versionRaw] = await frames
@@ -4273,6 +4275,9 @@ describe('signed daemon session', () => {
     expect(helloBody.type).toBe('hello')
     expect(helloBody.nonce).toBe(NONCE)
     expect(helloBody.kid).toBe(identity!.current.kid)
+    // Named whether or not the daemon offered the binding: the server and the token's key id.
+    expect(helloBody.forServer).toBe(serverId)
+    expect(helloBody.forKey).toBe(keyId)
     expect(
       await verifies(identity!.current.publicRaw, helloSigningInput(hello.unsigned), hello.sig)
     ).toBe(true)
