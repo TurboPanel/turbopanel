@@ -5,6 +5,11 @@
  * of it before it leaves this file.
  */
 import { throttleWaitMs } from '../../lib/http/retry-after.ts'
+import {
+  CLOUDFLARE_TOKEN_FORMAT_MESSAGE,
+  type CloudflareApiError,
+  isTokenFormatRefusal,
+} from './cloudflare-token-format.ts'
 import { codeForRefusal, TunnelProviderError } from './errors.ts'
 
 export const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4'
@@ -14,7 +19,7 @@ const MAX_PAGES = 10
 
 type Envelope<T> = {
   success?: boolean
-  errors?: { code?: number; message?: string }[]
+  errors?: CloudflareApiError[]
   result?: T
   result_info?: { total_pages?: number }
 }
@@ -131,6 +136,14 @@ export class CloudflareClient {
       envelope = null
     }
     if (!response.ok || envelope?.success === false) {
+      if (isTokenFormatRefusal(response.status, envelope?.errors)) {
+        throw new TunnelProviderError(
+          'token_format',
+          CLOUDFLARE_TOKEN_FORMAT_MESSAGE,
+          response.status,
+          [this.#token]
+        )
+      }
       const detail = (envelope?.errors ?? [])
         .map((e) => e.message)
         .filter((m): m is string => typeof m === 'string' && m.length > 0)

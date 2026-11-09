@@ -13,6 +13,7 @@ import {
 } from './vocabulary.ts'
 import type { CredentialReport, DeclaredZoneResult, TunnelAdapter } from './adapter.ts'
 import { CloudflareClient, type CloudflareIngressRule } from './cloudflare-client.ts'
+import { cloudflareTokenFormatProblem } from './cloudflare-token-format.ts'
 import { TunnelProviderError } from './errors.ts'
 
 /** Names of the permissions a token needs, as Cloudflare words them. */
@@ -35,6 +36,11 @@ function isPermissionFailure(err: unknown): boolean {
   return (
     err instanceof TunnelProviderError && (err.code === 'forbidden' || err.code === 'unauthorized')
   )
+}
+
+/** The provider said the text sent is not an API token: never a missing permission or a bad zone id. */
+function isNotAToken(err: unknown): boolean {
+  return err instanceof TunnelProviderError && err.code === 'token_format'
 }
 
 /** Run a read probe: true when it works, false when the token lacks access, rethrow anything else. */
@@ -83,6 +89,7 @@ async function reachableCertificateZones(
     try {
       return await probe(() => api.probeCertificates(zoneId))
     } catch (err) {
+      if (isNotAToken(err)) throw err
       if (err instanceof TunnelProviderError && (err.code === 'not_found' || err.status === 400)) {
         return false
       }
@@ -105,7 +112,7 @@ async function probeNamedZone(api: CloudflareClient, zoneId: string): Promise<bo
     await api.probeDns(zoneId)
     return true
   } catch (err) {
-    if (!(err instanceof TunnelProviderError)) throw err
+    if (!(err instanceof TunnelProviderError) || isNotAToken(err)) throw err
     if (isPermissionFailure(err) || err.code === 'not_found' || err.status === 400) return false
     throw err
   }
@@ -161,13 +168,14 @@ function mergeZones(
  * A Global API Key is a different credential (it needs an email and is not a
  * bearer token). Legacy keys are 37 to 45 lowercase hex characters and new ones
  * start with `cfk_`. API tokens are 40 alphanumeric characters or start with
- * `cfut_` (user-owned) or `cfat_` (account-owned).
+ * `cfut_` (user-owned) or `cfat_` (account-owned). A tunnel run token or text
+ * with a stray character inside is not an API token either.
  */
 export function cloudflareTokenProblem(token: string): string | null {
   if (token.startsWith('cfk_') || /^[0-9a-f]{37,45}$/.test(token)) {
     return 'This looks like a Global API Key, which does not work here. Create an API Token in Cloudflare and paste that instead.'
   }
-  return null
+  return cloudflareTokenFormatProblem(token)
 }
 
 function kindFromPrefix(token: string): TokenKind | null {

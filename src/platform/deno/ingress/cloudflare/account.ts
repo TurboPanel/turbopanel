@@ -12,6 +12,7 @@ import {
   CloudflareClient,
   type CloudflareTokenVerify,
 } from '../../../../features/tunnels/cloudflare-client.ts'
+import { cloudflareTokenFormatProblem } from '../../../../features/tunnels/cloudflare-token-format.ts'
 import { TunnelProviderError } from '../../../../features/tunnels/errors.ts'
 import { clip, scrubSecrets } from '../../../../features/tunnels/scrub.ts'
 import { firstSequential } from '../../../../lib/sequential.ts'
@@ -72,7 +73,7 @@ export function cloudflareTokenShapeProblem(token: string): string | null {
   if (token.startsWith('cfk_') || /^[0-9a-f]{37,45}$/.test(token)) {
     return 'This looks like a Global API Key. Create an API token in Cloudflare and paste that instead.'
   }
-  return null
+  return cloudflareTokenFormatProblem(token)
 }
 
 /** Refusals that say nothing about the token: the answer is unknown, not no. */
@@ -80,6 +81,16 @@ const TRANSIENT_CODES = new Set(['rate_limited', 'provider_error', 'unreachable'
 
 function isTransient(err: unknown): boolean {
   return err instanceof TunnelProviderError && TRANSIENT_CODES.has(err.code)
+}
+
+/** Cloudflare said the text is not an API token: no later check can pass, so it ends the preflight. */
+function isNotAToken(err: unknown): err is TunnelProviderError {
+  return err instanceof TunnelProviderError && err.code === 'token_format'
+}
+
+/** Failures a probe must not turn into a plain "no": the answer is unknown, or the text is no token. */
+function endsPreflight(err: unknown): boolean {
+  return isTransient(err) || isNotAToken(err)
 }
 
 async function tryVerify(
@@ -90,7 +101,7 @@ async function tryVerify(
     if (result.status !== undefined && result.status !== 'active') return undefined
     return { expiresOn: result.expires_on ?? null, tokenId: result.id ?? null }
   } catch (err) {
-    if (isTransient(err)) throw err
+    if (endsPreflight(err)) throw err
     return undefined
   }
 }
@@ -100,7 +111,7 @@ async function listAccountIds(api: CloudflareClient): Promise<string[] | null> {
   try {
     return (await api.listAccounts()).map((account) => account.id)
   } catch (err) {
-    if (isTransient(err)) throw err
+    if (endsPreflight(err)) throw err
     return null
   }
 }
@@ -184,7 +195,7 @@ async function readable(probe: () => Promise<void>): Promise<boolean> {
     await probe()
     return true
   } catch (err) {
-    if (isTransient(err)) throw err
+    if (endsPreflight(err)) throw err
     return false
   }
 }
@@ -389,6 +400,12 @@ export async function checkCloudflareToken(
   try {
     return await evaluateToken(api, token, now, storedAccountId)
   } catch (err) {
+    if (isNotAToken(err)) {
+      // Cloudflare was reached and refused the text itself, so this is the format check failing.
+      // A stored token passed that check once: on a recheck the answer is unknown, not no.
+      const preflight = emptyPreflight([check('token-shape', false, err.message)])
+      return { preflight, keepStored: storedAccountId !== null }
+    }
     const preflight = emptyPreflight([check('provider', false, failure(err, token))])
     return { preflight, keepStored: isTransient(err) }
   }

@@ -285,6 +285,15 @@ test('a Global API Key is refused in both its old and new formats, an API token 
   assert(cloudflareTokenProblem('AbCd0123456789abcdef0123456789abcdef0123') === null) // mixed case
 })
 
+test('a tunnel run token or text with a space inside is refused as not an API token', () => {
+  const words =
+    'This is not a Cloudflare API token. Create an API token in Cloudflare (My Profile > API Tokens); a Global API Key or a tunnel run token does not work here.'
+  // Built from fragments at run time so no token-shaped literal sits in the file.
+  const runToken = ['eyJ', 'hIjoi', 'YWJj', 'Iiwid', 'CI6Im', 'Rl'].join('')
+  assertEquals(cloudflareTokenProblem(runToken), words)
+  assertEquals(cloudflareTokenProblem(`${'Ab'.repeat(10)} ${'cd'.repeat(10)}`), words)
+})
+
 test('an account-owned token is verified at the account endpoint and its expiry is reported', async () => {
   const expires = '2027-03-01T00:00:00Z'
   const { impl, calls } = fakeFetch({

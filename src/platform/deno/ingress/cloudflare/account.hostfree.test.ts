@@ -1,4 +1,5 @@
 import { assert, assertEquals } from '@std/assert'
+import { CLOUDFLARE_TOKEN_FORMAT_MESSAGE } from '../../../../features/tunnels/cloudflare-token-format.ts'
 import { scrubSecrets } from '../../../../features/tunnels/scrub.ts'
 import {
   accountsDueForRecheck,
@@ -448,6 +449,58 @@ test('a Global API Key is refused by shape before any request', async () => {
   assertEquals(result.checks[0]?.id, 'token-shape')
   assertEquals(cf.log.length, 0)
   assertEquals(cloudflareTokenShapeProblem(' '), 'Paste a Cloudflare API token.')
+})
+
+test('a tunnel run token or a token with a space inside is refused by shape before any request', async () => {
+  const cf = createFakeCloudflare({ token: TOKEN })
+  // Built from fragments at run time so no token-shaped literal sits in the file.
+  const runToken = ['eyJ', 'hIjoi', 'YWJj', 'Iiwid', 'CI6Im', 'Rl'].join('')
+  const spaced = `cfut_${'ab'.repeat(8)} ${'cd'.repeat(8)}`
+  for (const pasted of [runToken, spaced]) {
+    const result = await preflightCloudflareToken(pasted, cf.fetch, NOW)
+    assertEquals(result.ok, false)
+    assertEquals(
+      result.checks.map((item) => [item.id, item.detail]),
+      [['token-shape', CLOUDFLARE_TOKEN_FORMAT_MESSAGE]]
+    )
+  }
+  assertEquals(cf.log.length, 0)
+})
+
+/** Cloudflare's answer to an Authorization value that is not shaped like an API token. */
+const notAToken: typeof fetch = () =>
+  Promise.resolve(
+    Response.json(
+      {
+        success: false,
+        errors: [
+          {
+            code: 6003,
+            message: 'Invalid request headers',
+            error_chain: [{ code: 6111, message: 'Invalid format for Authorization header' }],
+          },
+        ],
+      },
+      { status: 400 }
+    )
+  )
+
+test('text Cloudflare calls no token fails the format check, not the reachable check', async () => {
+  const result = await preflightCloudflareToken(TOKEN, notAToken, NOW)
+  assertEquals(result.ok, false)
+  assertEquals(
+    result.checks.map((item) => [item.id, item.ok, item.detail]),
+    [['token-shape', false, CLOUDFLARE_TOKEN_FORMAT_MESSAGE]]
+  )
+  for (const item of result.checks) assertEquals(item.detail.includes(TOKEN), false)
+})
+
+test('a stored token that suddenly reads as no token keeps its last answer on a recheck', async () => {
+  const fresh = await checkCloudflareToken(TOKEN, notAToken, NOW, null)
+  assertEquals(fresh.keepStored, false)
+  const stored = await checkCloudflareToken(TOKEN, notAToken, NOW, 'acct-1')
+  assertEquals(stored.keepStored, true)
+  assertEquals(stored.preflight.checks[0]?.id, 'token-shape')
 })
 
 test('scrubSecrets hides a short prefixed Cloudflare token', () => {

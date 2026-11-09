@@ -525,6 +525,9 @@ export function providerRefusal(err: unknown): unknown {
     if (err.code === 'unauthorized') {
       return new TunnelRefusal('badge_rejected', 400, 'The provider did not accept this API Token.')
     }
+    if (err.code === 'token_format') {
+      return new TunnelRefusal('badge_rejected', 400, err.message)
+    }
     if (err.code === 'zone_not_found') {
       return new TunnelRefusal('zone_not_found', 409, err.message)
     }
