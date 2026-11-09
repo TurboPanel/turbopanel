@@ -43,11 +43,12 @@ const PROVEN_TRUST_LEVEL = 2
 
 /**
  * The trust level every gate reads: `server.trust_level`, or 2 when a signed
- * pin report naming a key has verified for this server. That report is only
- * taken after a verified attach proof, so it proves the server held its key
- * and a pin even where raising the level failed; a server that proved that
- * once is never accepted at a lower level again. An `unsafe` report (empty
- * pin) proves nothing about a pin and does not count.
+ * pin report naming a key has verified for this server. That report is
+ * signed by the daemon key over a signed session's id, so it proves the
+ * server held its key and a pin; `recordPinReport` raises the column with it,
+ * and this covers rows recorded before that. A server that proved it once is
+ * never accepted at a lower level again. An `unsafe` report (empty pin)
+ * proves nothing about a pin and does not count.
  */
 export function effectiveTrustLevel(row: {
   trustLevel: number | null
