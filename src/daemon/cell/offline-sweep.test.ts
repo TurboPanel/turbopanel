@@ -9,6 +9,8 @@
 import { DENY_FIREWALL_APPLY } from '../../features/firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
+import type { SQL } from 'drizzle-orm'
+import { PgDialect } from 'drizzle-orm/pg-core'
 import type {
   DaemonCell,
   DaemonCellLiveness,
@@ -1679,8 +1681,17 @@ it('queued cron: system reconcile execute throw is isolated as system-reconcile-
 it('queued cron: leaf renewal and managed-ingress orphan failures are isolated after reconcile succeeds', async () => {
   const db = billingSweepDb({ withPayer: true })
   let executeCalls = 0
+  const dialect = new PgDialect()
   Object.assign(db, {
-    execute: () => {
+    execute: (query: SQL) => {
+      // The notification phases' own statements (copies to drop, history to
+      // prune) answer empty and are not counted: this test is about the
+      // reconcile, leaf and orphan sweeps.
+      if (
+        /"(attempt|notification|event|preference|watermark)"/.test(dialect.sqlToQuery(query).sql)
+      ) {
+        return Promise.resolve([])
+      }
       executeCalls += 1
       if (executeCalls === 1) return Promise.resolve([])
       return Promise.reject(new TypeError('orphan boom'))

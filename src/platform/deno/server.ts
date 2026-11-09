@@ -35,6 +35,7 @@ import { getAuditRetentionMonths } from '../../features/settings/audit-retention
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { resolveSelfHostedConsoleBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { pruneNotificationHistory } from '../../features/notifications/cleanup.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
 import {
@@ -992,6 +993,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         await runCleanupPhase('audit history prune', async () =>
           pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
         )
+        // Workers parity (offline-sweep cron): inbox after 90 days, events and
+        // the ledger after 30, and settings of people who left an organization.
+        await runCleanupPhase('notification history prune', () => pruneNotificationHistory(db))
       }
       // Edge address ranges for proxy modes: the fetch itself runs at most once
       // a day inside the tick. The daemon hears only about a changed body

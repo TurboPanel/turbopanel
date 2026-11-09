@@ -41,6 +41,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'binding',
   'bulwark',
   'carrier',
+  // A group of notification topics for the settings screens.
+  'category',
   'certificate',
   'changeover',
   'channel',
@@ -56,10 +58,14 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'deployment',
   // An organization's S3-compatible place to copy finished backups to.
   'destination',
+  // A phone or tablet that can receive push notifications for one person.
+  'device',
   'dispatch',
   'doorway',
   'edict',
   'environment',
+  // One thing that happened, the outbox notification copies hang from.
+  'event',
   'fabric',
   // One service or volume directory per server under a site owner's tree.
   'folder',
@@ -92,7 +98,11 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'permission',
   // `principal` × `server`: where a system principal is a Linux account (2026-10-13).
   'placement',
+  // An organization's default notification level for its members or a team.
+  'policy',
   'portal',
+  // One person's notification level for one scope.
+  'preference',
   'principal',
   'project',
   'recovery',
@@ -122,6 +132,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'storage',
   'subnet',
   'subscription',
+  // An email address no notification is sent to.
+  'suppression',
   'tag',
   'task',
   'team',
@@ -130,6 +142,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'ticket',
   'tier',
   'tls',
+  // One notification event type in the catalog.
+  'topic',
   'totp',
   'tunnel',
   'upgrade',
@@ -137,6 +151,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'variable',
   'verification',
   'watch',
+  // Mark-all-read time for one person's inbox.
+  'watermark',
   'workspace',
 ])
 

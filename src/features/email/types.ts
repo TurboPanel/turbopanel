@@ -72,6 +72,8 @@ export type EmailJob =
       /** Where to look, when the event has a target the console can show. */
       consoleUrl: string | null
       at: string
+      /** Unsubscribe and filtering headers; absent on jobs queued by an older build. */
+      mail?: NotificationMailHeaders
     }
   | {
       /** One summary of the events a channel held for a digest window or quiet hours. */
@@ -89,7 +91,29 @@ export type EmailJob =
       consoleUrl: string | null
       /** ISO time the digest was built. */
       at: string
+      /** Unsubscribe and filtering headers; absent on jobs queued by an older build. */
+      mail?: NotificationMailHeaders
     }
+
+/**
+ * What a notification email says about itself beyond its body: the RFC 8058
+ * one-click unsubscribe link (a POST target, never redirected), the page a
+ * person opens from the footer, and the facts large organizations filter mail
+ * by. Every field is optional, so an older job still parses.
+ */
+export type NotificationMailHeaders = {
+  /** `List-Unsubscribe` target; set only on a personal copy. */
+  unsubscribeUrl?: string | null
+  /** The footer's unsubscribe page in the web interface. */
+  unsubscribePageUrl?: string | null
+  /** The footer's "manage all settings" link. */
+  settingsUrl?: string | null
+  organizationId?: string | null
+  projectId?: string | null
+  event?: string | null
+  /** Why the copy came: `preference`, `organization-channel` or `instance-channel`. */
+  reason?: string | null
+}
 
 export type NotificationDigestItem = {
   title: string

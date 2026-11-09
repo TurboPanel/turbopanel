@@ -15,6 +15,7 @@ import { and, count, eq, gt, inArray, isNull, like, lte, sql } from 'drizzle-orm
 import type { Db } from '../../db/connection.ts'
 import { notificationChannel, notificationDelivery, verification } from '../../db/schema.ts'
 import { deriveLinkTokenVerifier, generateLinkToken } from '../authn/link-token.ts'
+import { clearSuppression } from '../../features/notifications/fanout-records.ts'
 
 /** A verification link works for one day. */
 export const CHANNEL_VERIFICATION_EXPIRES_IN_MS = 24 * 60 * 60 * 1000
@@ -136,9 +137,11 @@ export async function confirmChannelVerification(
         isNull(notificationChannel.verifiedAt)
       )
     )
-    .returning({ id: notificationChannel.id })
+    .returning({ id: notificationChannel.id, address: notificationChannel.address })
   if (stamped.length === 0) return null
   await abandonUnverifiedDeliveries(db, channelId, now)
+  // A confirmed address is deliverable again, even after an earlier bounce.
+  await clearSuppression(db, stamped[0]!.address)
   return channelId
 }
 

@@ -32,16 +32,10 @@ CREATE TABLE "rotation" (
 	CONSTRAINT "rotation_live_at_check" CHECK ((state = 'live') = (live_at IS NOT NULL))
 );
 --> statement-breakpoint
-ALTER TABLE "notification" DROP CONSTRAINT "notification_event_check";--> statement-breakpoint
-ALTER TABLE "attempt" DROP CONSTRAINT "attempt_event_check";--> statement-breakpoint
-ALTER TABLE "rule" DROP CONSTRAINT "rule_event_check";--> statement-breakpoint
 ALTER TABLE "server" ADD COLUMN "trust_pin_passkeys" text;--> statement-breakpoint
 ALTER TABLE "custodian" ADD CONSTRAINT "custodian_passkey_id_passkey_id_fk" FOREIGN KEY ("passkey_id") REFERENCES "public"."passkey"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "rotation" ADD CONSTRAINT "rotation_approved_by_user_id_user_id_fk" FOREIGN KEY ("approved_by_user_id") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "uniq_custodian_marked_pkid" ON "custodian" USING btree ("pkid" text_ops) WHERE (unmarked_at IS NULL);--> statement-breakpoint
-ALTER TABLE "notification" ADD CONSTRAINT "notification_event_check" CHECK (event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed', 'panel.key_changed', 'panel.approvers_changed'));--> statement-breakpoint
-ALTER TABLE "attempt" ADD CONSTRAINT "attempt_event_check" CHECK (event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed', 'panel.key_changed', 'panel.approvers_changed'));--> statement-breakpoint
-ALTER TABLE "rule" ADD CONSTRAINT "rule_event_check" CHECK (event IN ('*', 'server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked', 'certificate.renewal_failed', 'folder.orphans_found', 'server.repo_key_changed', 'server.enrolled', 'server.key_replaced', 'panel.identity_next_changed', 'panel.pin_mismatch', 'certificate.expiring', 'server.pin_silent', 'server.pin_missing', 'backup.target_changed', 'panel.key_changed', 'panel.approvers_changed'));--> statement-breakpoint
 COMMENT ON TABLE "custodian" IS 'A sign-in passkey a superadmin marked to approve control plane key changes, with the frozen key servers pin; kept as history once unmarked.';--> statement-breakpoint
 COMMENT ON COLUMN "custodian"."passkey_id" IS 'The marked sign-in passkey; ON DELETE RESTRICT so it cannot be deleted while marked, and cleared when the passkey is unmarked.';--> statement-breakpoint
 COMMENT ON COLUMN "custodian"."pkid" IS 'Rotation passkey id servers pin: base64url SHA-256 of the raw credential id; unique among marked rows.';--> statement-breakpoint

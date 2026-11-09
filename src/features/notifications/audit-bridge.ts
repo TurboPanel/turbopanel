@@ -24,7 +24,9 @@ export const AUDIT_EVENTS: Partial<Record<AuditAction, NotificationEvent>> = {
   'server.delete': 'server.deleted',
   'grant.create': 'access.grant_created',
   'grant.delete': 'access.grant_revoked',
-  'member.remove': 'access.grant_revoked',
+  // Its own event, so the words say a person left or was removed.
+  'member.remove': 'member.removed',
+  'server.license_tier.set': 'server.license_tier_changed',
   'panel.identity_next.set': 'panel.identity_next_changed',
   'panel.identity_next.clear': 'panel.identity_next_changed',
   'server.panel_pin.mismatch': 'panel.pin_mismatch',
@@ -105,6 +107,7 @@ export async function notifyFromAudit(
       context: contextFor(entry, extra),
       targetType: entry.targetType,
       targetId: entry.targetId ?? null,
+      actorUserId: entry.actorUserId ?? null,
     },
     { allowPrivateTargets: true, email }
   )
