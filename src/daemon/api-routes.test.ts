@@ -643,7 +643,13 @@ async function issueAuthChallenge(
   const body = (await response.json()) as {
     challengeId: string
     nonce: string
+    kind?: unknown
+    sealedLicense?: unknown
   }
+  // An auth answer says what it is and carries the sealing marker, so it cannot
+  // pass for an enrollment answer of an older control plane.
+  assertEquals(body.kind, 'auth')
+  assertEquals(body.sealedLicense, 1)
   return body
 }
 
