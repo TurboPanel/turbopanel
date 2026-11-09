@@ -91,8 +91,16 @@ export async function startDeleteCleanup(
   await sendFolderRemovalsAfterDelete(db, queue, userId, cleanup.folderServerIds)
   if (!cleanup.principals) return { folderServerIds: cleanup.folderServerIds }
   const removedNow = new Set<string>()
+  // The person deleting is known here, so a Hosting Account removed now is audited as theirs.
+  const actor = { userId, email: c.get('session')?.email ?? null }
   await forEachSequential(cleanup.principals.removed, async (row) => {
-    const { removed } = await removeRequestedPrincipals(db, queue, c.get('secretsConfig'), [row.id])
+    const { removed } = await removeRequestedPrincipals(
+      db,
+      queue,
+      c.get('secretsConfig'),
+      [row.id],
+      actor
+    )
     if (removed > 0) removedNow.add(row.id)
   })
   return {
