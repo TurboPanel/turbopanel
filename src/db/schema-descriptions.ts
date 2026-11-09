@@ -202,6 +202,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       is_disabled:
         'Sign-in gate read by every authn path (password, OTP, passkey, OAuth) and refused with `account_disabled`; no control-plane route writes it today.',
       role: 'Instance role `user`, `admin` or `superadmin`; sign-ups get `user`, the install wizard mints the one `superadmin`, and admins bypass org grants.',
+      is_all_organizations_notified:
+        'An administrator chose to hear every organization, not only those they belong to; their own preferences still decide what arrives.',
     },
   },
   verification: {
@@ -2000,6 +2002,17 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       sent_at: 'When a send succeeded; NULL until then.',
       last_error:
         'Short failure code from the last attempt (`http_503`, `timeout`, `network`, `address_scheme_not_https`), never a body or the address.',
+      event_id:
+        'The `event` row this copy carries; deleting the event at the end of its 30-day retention deletes its copies. NULL on rows written before it existed.',
+      user_id:
+        'The person a personal copy is for, checked again for access before it is sent; NULL for an organization or instance channel.',
+      device_id:
+        'The device a push copy goes to; NULL for every other kind (push is not sent yet).',
+      topic_code: 'The catalogue topic of the event, written beside the older `event` column.',
+      reason:
+        'Why the copy was held or not sent: `quiet_hours`, `digest`, `no_access`, `scope_deleted`, `read_in_app`, `unverified`, `bounced` and others; NULL when sent.',
+      provider_id:
+        'Id the mail queue or push service gave the send, when it gives one; NULL otherwise.',
     },
   },
   channel: {
@@ -2031,6 +2044,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Quiet hours start as minutes after local midnight (0-1439), set together with `quiet_end_minute`; NULL means no quiet hours.',
       quiet_end_minute:
         'Quiet hours end as minutes after local midnight (0-1439); the window may wrap midnight, and held events go out as one summary when it ends.',
+      failures:
+        'Consecutive failed sends, reset by a success; reserved for pausing a failing shared channel.',
+      paused_reason:
+        'Why sending stopped: `manual`, `failing` or `bounced`; NULL while the channel sends.',
+      is_primary:
+        "True for a person's built-in account email channel, which follows their sign-in address and cannot be deleted; one per person.",
     },
   },
   notification: {
@@ -2058,6 +2077,19 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'When the recipient marked it read (Mark all read); NULL while unread and counted in the badge.',
       dismissed_at:
         'When the recipient dismissed the row from the bell; NULL while it is still shown.',
+      event_id:
+        'The `event` row this copy came from, a plain id with no foreign key so the 90-day inbox outlives the 30-day event retention.',
+      topic_code: 'The catalogue topic, written beside the older `event` column.',
+      project_id:
+        'Project the event was about, a plain id with no foreign key so the row outlives the project; used for links and filters.',
+      environment_id:
+        'Environment the event was about, a plain id with no foreign key so the row outlives the environment.',
+      service_id:
+        'Service the event was about, a plain id with no foreign key so the row outlives the service.',
+      server_id:
+        'Server the event was about, a plain id with no foreign key so the row outlives the server.',
+      destination_id:
+        'Backup target the event was about, a plain id with no foreign key so the row outlives the target.',
     },
   },
   rule: {
@@ -2068,6 +2100,180 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       event: 'One catalogue event code, or `*` for every event; unique per channel.',
       min_severity:
         "Severity floor `info` (default), `warning` or `critical`; delivered only when the event's severity ranks at or above it.",
+      organization_id:
+        'Organization a shared route belongs to, set with the scope columns that narrow it; NULL on routes written before scoped routes.',
+      project_id: 'Project the route is limited to; deleting the project deletes the route.',
+      environment_id:
+        'Environment the route is limited to; deleting the environment deletes the route.',
+      service_id: 'Service the route is limited to; deleting the service deletes the route.',
+      server_id: 'Server the route is limited to; deleting the server deletes the route.',
+      destination_id:
+        'Backup target the route is limited to; deleting the target deletes the route.',
+      category_code:
+        'Catalogue category the route is limited to; NULL with `topic_code` NULL means every topic.',
+      topic_code:
+        'One catalogue topic the route is limited to; NULL means the `event` column or the category decides.',
+      ends_at: 'A muted route sends nothing until this time; NULL means not muted.',
+      is_enabled: 'False keeps the route and sends nothing through it.',
+    },
+  },
+  category: {
+    group: 'notifications',
+    summary:
+      'A group of notification topics for the settings screens, written from the code catalogue by the catalog sync in migrate and never deleted.',
+    columns: {
+      code: 'Permanent key such as `servers` or `security`; a code is never reused with a new meaning.',
+      name: 'Group name shown on the settings screens, in book title case.',
+      position: 'Sort order on the settings screens, smallest first.',
+    },
+  },
+  topic: {
+    group: 'notifications',
+    summary:
+      'One row per notification event type, upserted from `events.ts` by the catalog sync in migrate; a code that leaves the code base gets `deprecated_at`.',
+    columns: {
+      code: 'Permanent event code such as `server.offline`; preferences, events and history name it, so it is never reused.',
+      category_code: 'The `category` the topic is listed under.',
+      resolves_code:
+        'The topic this one resolves, such as a recovery naming the failure it ends; NULL for most topics.',
+      name: 'What a person picks the topic by on the settings screens.',
+      kind: '`organization` (raised in an organization), `platform` (vendor notices), `instance` (for administrators) or `account` (one sign-in).',
+      severity:
+        '`info`, `warning` or `critical`; a preference level is a floor compared against it.',
+      scope:
+        'For an organization topic, the most specific resource it names: `organization`, `project`, `environment`, `service`, `server` or `destination`.',
+      audience:
+        'Who may hear it, checked again at send time: `members` of the organization, its `managers` (own or manage grants), or `admins` of the install.',
+      channels:
+        'Channel kinds the topic may use, a subset of `inbox`, `email`, `push`, `chat` and `webhook`.',
+      level:
+        'Level used when no preference applies; `none` for every topic, so nothing arrives until a person turns it on.',
+      cooldown:
+        'How long a repeat of an open event with the same dedupe key is folded into it rather than sent again; zero means never.',
+      version: 'Version of the payload shape in `event.data`.',
+      deprecated_at:
+        'When the code left the code base; old rows keep naming it and no new events use it.',
+      is_urgent:
+        'True when quiet hours and digests never hold it; this is timing only, a person can still turn it off.',
+      is_actor_notified: 'False means the person who caused the event is never told about it.',
+    },
+  },
+  event: {
+    group: 'notifications',
+    summary:
+      'One row per thing that happened, the outbox every inbox row and delivery hangs from; scope ids are plain uuids so deletes never touch history.',
+    columns: {
+      organization_id:
+        'Organization the event was raised in; NULL for an instance or platform event.',
+      topic_code: 'The catalogue topic.',
+      project_id:
+        'Project the event is about, a plain id with no foreign key; a pending copy is dropped once the project is gone.',
+      environment_id:
+        'Environment the event is about, a plain id with no foreign key; a pending copy is dropped once it is gone.',
+      service_id:
+        'Service the event is about, a plain id with no foreign key; a pending copy is dropped once it is gone.',
+      server_id:
+        'Server the event is about, a plain id with no foreign key; a pending copy is dropped once it is gone.',
+      destination_id:
+        'Backup target the event is about, a plain id with no foreign key; a pending copy is dropped once it is gone.',
+      actor_user_id:
+        'Who caused the event, a plain id like `audit.actor_user_id`; that person is not told unless the topic says so.',
+      severity: '`info`, `warning` or `critical`, copied from the topic when the event was raised.',
+      dedupe:
+        'Key that folds repeats of an open event inside the topic cooldown into one row; NULL means every occurrence is its own event.',
+      version: 'Payload version, the topic version when the event was raised.',
+      repeats: 'How many repeats were folded into this event inside the cooldown.',
+      last_seen_at: 'When the event, or its latest folded repeat, happened.',
+      fanned_out_at:
+        'When its inbox rows and deliveries were written; NULL while that is still to do.',
+      status: '`open`, `resolved` (its recovery event arrived) or `closed`.',
+      data: 'Small non-secret context the sentences render from, with resource names snapshotted so a deleted resource still reads in words.',
+    },
+  },
+  preference: {
+    group: 'notifications',
+    summary:
+      "One person's notification level for one scope, channel and subject; sparse, most specific row wins, and no row at all means nothing is sent.",
+    columns: {
+      organization_id:
+        'Organization the choice is for; NULL means every organization the person belongs to and the install events.',
+      project_id:
+        'Project the choice is for; a composite key with `organization_id` proves the project is in that organization, and deleting it deletes the row.',
+      environment_id:
+        'Environment the choice is for; a composite key with `project_id` proves it is in that project, and deleting it deletes the row.',
+      service_id: 'Service the choice is for; deleting the service deletes the row.',
+      server_id: 'Server the choice is for; deleting the server deletes the row.',
+      destination_id: 'Backup target the choice is for; deleting the target deletes the row.',
+      channel_id:
+        'One personal channel the choice is for; NULL with `kind` NULL means every channel.',
+      category_code:
+        'Catalogue category the choice is for; NULL with `topic_code` NULL means every topic.',
+      topic_code: 'One catalogue topic the choice is for.',
+      ends_at:
+        'A temporary mute or watch: the row stops applying at this time; NULL means it lasts.',
+      kind: 'Channel kind the choice is for: `inbox`, `email`, `push`, `chat` (Slack, Discord, Telegram) or `webhook`; NULL means every kind.',
+      level: '`all`, `warning` (warnings and critical), `critical` or `none`.',
+    },
+  },
+  policy: {
+    group: 'notifications',
+    summary:
+      "An organization's default notification level for its members or one team, optionally locked; the data model is in place, the screens come later.",
+    columns: {
+      team_id: 'Team the default is for; NULL means every member.',
+      project_id:
+        'Project the default is for; a composite key with `organization_id` proves the project is in that organization, and deleting it deletes the row.',
+      environment_id:
+        'Environment the default is for; a composite key with `project_id` proves it is in that project, and deleting it deletes the row.',
+      category_code:
+        'Catalogue category the default is for; NULL with `topic_code` NULL means every topic.',
+      topic_code: 'One catalogue topic the default is for.',
+      created_by_user_id: 'Who set the default; NULL once that account is deleted.',
+      kind: 'Channel kind the default is for: `inbox`, `email`, `push`, `chat` or `webhook`; NULL means every kind.',
+      level: '`all`, `warning`, `critical` or `none`.',
+      is_forced: 'True means members cannot override the default.',
+    },
+  },
+  device: {
+    group: 'notifications',
+    summary:
+      'A phone or tablet that can receive push notifications for one person; the table is in place before the push transport, and nothing writes it yet.',
+    columns: {
+      name: 'What the person calls the device.',
+      kind: '`ios` or `android`.',
+      status:
+        '`active` (default), `paused` by the person, or `invalid` once the push service refused the token.',
+      provider: 'Push service the token belongs to; `expo` only for now.',
+      token: 'Sealed `tpsecret` push token.',
+      token_hash:
+        'SHA-256 of the plain token, unique per provider, so one token belongs to one row although the sealed value varies.',
+      app_version: 'App version the device last registered with.',
+      locale: 'Language tag the device last registered with.',
+      invalid_reason:
+        'Short error code the push service gave when it refused the token; NULL while the token works.',
+      last_seen_at: 'When the app last registered the device; old tokens are retired by a sweep.',
+    },
+  },
+  suppression: {
+    group: 'notifications',
+    summary:
+      'An email address no notification is sent to because it bounced or was refused, keyed by a hash so the address is never stored here.',
+    columns: {
+      address_hash: 'SHA-256 hex of the trimmed, lower-cased address; one active row per address.',
+      reason:
+        '`bounced`, `complained` or `rejected` (the provider refused the recipient for good).',
+      source: 'Mail path that reported it: `smtp`, `mailgun`, `mailpit` or `manual`.',
+      cleared_at: 'When the address was confirmed again; NULL while it is suppressed.',
+    },
+  },
+  watermark: {
+    group: 'notifications',
+    summary:
+      'Mark-all-read without rewriting rows: one per person and organization, and inbox rows created at or before `read_through` read as read.',
+    columns: {
+      organization_id:
+        'Organization the mark covers; NULL means every organization and the install events.',
+      read_through: 'Inbox rows created at or before this time read as read.',
     },
   },
   tunnel: {

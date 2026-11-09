@@ -1,9 +1,67 @@
-import type { EmailJob, NotificationDigestGroup, OtpType } from './types.ts'
+import type {
+  EmailJob,
+  NotificationDigestGroup,
+  NotificationMailHeaders,
+  OtpType,
+} from './types.ts'
 
 export interface TemplateResult {
   subject: string
   html: string
   text: string
+  /** Extra message headers every sender adds (unsubscribe and filtering headers). */
+  headers?: Record<string, string>
+}
+
+/** Header values must stay on one line and printable. */
+function headerValue(value: string, max = 200): string {
+  return value.replaceAll(/[\r\n\t]/g, ' ').slice(0, max)
+}
+
+/**
+ * The RFC 8058 one-click pair (one HTTPS link, `List-Unsubscribe=One-Click`)
+ * and the filtering headers, for a notification or digest email.
+ */
+export function notificationMailHeaders(
+  mail: NotificationMailHeaders | undefined
+): Record<string, string> {
+  const headers: Record<string, string> = {}
+  if (!mail) return headers
+  if (mail.unsubscribeUrl) {
+    headers['List-Unsubscribe'] = `<${headerValue(mail.unsubscribeUrl, 2000)}>`
+    headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click'
+  }
+  if (mail.organizationId) {
+    headers['List-Id'] = `<${headerValue(mail.organizationId)}.notifications.turbopanel>`
+    headers['X-TurboPanel-Organization'] = headerValue(mail.organizationId)
+  }
+  if (mail.projectId) headers['X-TurboPanel-Project'] = headerValue(mail.projectId)
+  if (mail.event) headers['X-TurboPanel-Event'] = headerValue(mail.event)
+  if (mail.reason) headers['X-TurboPanel-Reason'] = headerValue(mail.reason)
+  return headers
+}
+
+/** The footer lines: why the mail came, and how to stop it. */
+function footerLinks(mail: NotificationMailHeaders | undefined): { html: string; text: string } {
+  const html: string[] = []
+  const text: string[] = []
+  if (mail?.unsubscribePageUrl) {
+    html.push(
+      `<a href="${escapeHtml(mail.unsubscribePageUrl)}" style="color:#999;">Unsubscribe from these emails</a>`
+    )
+    text.push(`Unsubscribe from these emails: ${mail.unsubscribePageUrl}`)
+  }
+  if (mail?.settingsUrl) {
+    html.push(
+      `<a href="${escapeHtml(mail.settingsUrl)}" style="color:#999;">Manage all notification settings</a>`
+    )
+    text.push(`Manage all notification settings: ${mail.settingsUrl}`)
+  }
+  if (html.length === 0) return { html: '', text: '' }
+  return {
+    html: `<p style="margin:16px 0 0;font-size:12px;color:#999;">${html.join(' · ')}</p>`,
+    text: `\n\n${text.join('\n')}`,
+  }
 }
 
 const OTP_SUBJECTS: Record<OtpType, string> = {
@@ -285,6 +343,7 @@ export function createNotificationEmail(
     .map((d) => `<li style="margin:0 0 4px;">${escapeHtml(d)}</li>`)
     .join('')
   const safeUrl = job.consoleUrl ? escapeHtml(job.consoleUrl) : null
+  const footer = footerLinks(job.mail)
   const html = `
 <!DOCTYPE html>
 <html>
@@ -306,6 +365,7 @@ export function createNotificationEmail(
     }
     <p style="margin:0;font-size:12px;color:#999;">${escapeHtml(job.event)} · ${escapeHtml(job.at)}</p>
     <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
+    ${footer.html}
   </div>
 </body>
 </html>
@@ -314,8 +374,8 @@ export function createNotificationEmail(
     `${subject}\n\n${job.body ?? ''}${job.body ? '\n\n' : ''}` +
     (job.details.length > 0 ? `${job.details.join('\n')}\n\n` : '') +
     (job.consoleUrl ? `Open: ${job.consoleUrl}\n\n` : '') +
-    `${job.event} · ${job.at}\n\nTurboPanel`
-  return { subject, html, text }
+    `${job.event} · ${job.at}\n\nTurboPanel${footer.text}`
+  return { subject, html, text, headers: notificationMailHeaders(job.mail) }
 }
 
 const DIGEST_SUBJECT = {
@@ -365,6 +425,7 @@ export function createNotificationDigestEmail(
   const open = job.consoleUrl
     ? `<p style="margin:24px 0;"><a href="${escapeHtml(job.consoleUrl)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Open TurboPanel</a></p>`
     : ''
+  const digestFooter = footerLinks(job.mail)
   const html = `
 <!DOCTYPE html>
 <html>
@@ -381,6 +442,7 @@ export function createNotificationDigestEmail(
     ${moreKindsHtml}
     ${open}
     <p style="margin:16px 0 0;font-size:12px;color:#999;">${escapeHtml(job.at)} · TurboPanel</p>
+    ${digestFooter.html}
   </div>
 </body>
 </html>
@@ -388,8 +450,13 @@ export function createNotificationDigestEmail(
   const textParts = [subject, ...job.groups.map(digestGroupText)]
   if (moreKinds) textParts.push(moreKinds)
   if (job.consoleUrl) textParts.push(`Open: ${job.consoleUrl}`)
-  textParts.push(`${job.at}\nTurboPanel`)
-  return { subject, html, text: textParts.join('\n\n') }
+  textParts.push(`${job.at}\nTurboPanel${digestFooter.text}`)
+  return {
+    subject,
+    html,
+    text: textParts.join('\n\n'),
+    headers: notificationMailHeaders(job.mail),
+  }
 }
 
 function escapeHtml(s: string): string {

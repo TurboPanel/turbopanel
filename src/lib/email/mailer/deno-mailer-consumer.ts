@@ -8,7 +8,8 @@ import {
   type ResolvedEmailSettings,
   resolveEmailSettings,
 } from '../../../features/settings/email-settings.ts'
-import type { MailerSender } from '../../../features/email/sender-types.ts'
+import type { MailerSender, MailerSendResult } from '../../../features/email/sender-types.ts'
+import { suppressAddress } from '../../../features/notifications/fanout-records.ts'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_DEAD_QUEUE,
@@ -55,6 +56,26 @@ import { redactUrlCredentials } from './redact-url.ts'
  * channel the broker already took away is swallowed — RabbitMQ redelivers
  * every unacknowledged message on the rebuilt session.
  */
+
+/**
+ * A notification email whose recipient the receiving server refused for good
+ * puts the address on the suppression list, so no more notification mail is
+ * tried until the address is confirmed again. Sign-in and verification mail
+ * is never suppressed. Never throws.
+ */
+async function suppressRejectedNotificationAddress(
+  db: Db | undefined,
+  job: EmailJob,
+  result: MailerSendResult
+): Promise<void> {
+  if (!db || result.success || !result.recipientRejected) return
+  if (job.type !== 'notification' && job.type !== 'notification-digest') return
+  try {
+    await suppressAddress(db, job.to, 'rejected', 'smtp')
+  } catch (error) {
+    logError('mailer', `could not record a refused address: ${errorMessage(error)}`)
+  }
+}
 
 type AmqpConnection = Awaited<ReturnType<typeof amqplib.connect>>
 type AmqpChannel = Awaited<ReturnType<AmqpConnection['createChannel']>>
@@ -512,6 +533,7 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
         disposition = 'ack'
       } else if (result.permanent) {
         logError('mailer', `permanent error: ${result.error}`)
+        await suppressRejectedNotificationAddress(opts.db, job, result)
         disposition = deadLetterPermanent(owner, msg, job.type, result.error)
       } else {
         disposition = retryOrDeadLetter(owner, msg, job.type, result.error)

@@ -36,6 +36,10 @@ const NOT_SEALED: Readonly<Record<string, string>> = {
   'label.key': 'label name',
   'setting.key': 'setting name',
   'variable.key': 'variable name',
+  'device.token_hash': 'SHA-256 hash of the push token',
+  // Nothing writes `device` yet: the push transport that seals tokens adds its
+  // re-encrypt stage in the same change and removes this entry.
+  'device.token': 'no writer yet; the push transport adds the sweep stage',
 }
 
 const NAME_PATTERN = /envelope|secret|preshared|private_key|key_pem|password|token/i

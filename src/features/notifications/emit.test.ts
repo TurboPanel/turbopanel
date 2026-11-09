@@ -17,6 +17,7 @@ import {
   notification,
   notificationChannel,
   notificationDelivery,
+  notificationPreference,
   organization,
   team,
   teammate,
@@ -50,11 +51,27 @@ async function secrets() {
   )
 }
 
+/**
+ * Nothing arrives until a person turns something on (owner decision
+ * 2026-11-06): give someone every event at every level on the given kinds,
+ * across every organization.
+ */
+async function listen(
+  db: ReturnType<typeof createDenoDb>,
+  userId: string,
+  kinds: ReadonlyArray<'inbox' | 'email' | 'chat' | 'webhook'>
+): Promise<void> {
+  await db
+    .insert(notificationPreference)
+    .values(kinds.map((kind) => ({ userId, kind, level: 'all' })))
+}
+
 async function withFixture(
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
     organizationId: string
     memberId: string
+    memberEmail: string
     outsiderId: string
   }) => Promise<void>
 ): Promise<void> {
@@ -68,10 +85,11 @@ async function withFixture(
     .values({ name: 'Notify Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
+  const memberEmail = `notify-member-${crypto.randomUUID()}@example.com`
   const [member] = await db
     .insert(user)
     .values({
-      email: `notify-member-${crypto.randomUUID()}@example.com`,
+      email: memberEmail,
       isEmailVerified: true,
       role: 'user',
     })
@@ -97,6 +115,7 @@ async function withFixture(
       db,
       organizationId,
       memberId: member!.id,
+      memberEmail,
       outsiderId: outsider!.id,
     })
   } finally {
@@ -136,6 +155,10 @@ test('an organization event lands in every member inbox and reaches a routed cha
       await resolveChannelAddress(enc, channel),
       'https://hooks.slack.com/services/T0/B0/SECRET'
     )
+    // The member turned the bell on; the outsider turned on everything but
+    // belongs to no team here, so hears nothing.
+    await listen(db, memberId, ['inbox'])
+    await listen(db, outsiderId, ['inbox', 'email'])
     await replaceRulesForChannel(db, channel.id, [
       {
         event: '*',
@@ -169,8 +192,10 @@ test('an organization event lands in every member inbox and reaches a routed cha
     assertEquals(inbox[0]!.severity, 'critical')
     assertEquals(await countUnreadForUser(db, memberId), 1)
     assertEquals(await listNotificationsForUser(db, outsiderId), [])
-    assertEquals(await markNotificationsRead(db, memberId, []), 1)
+    // Mark-all-read is one watermark row, not a rewrite of every row.
+    assertEquals(await markNotificationsRead(db, memberId, []), 0)
     assertEquals(await countUnreadForUser(db, memberId), 0)
+    assertEquals((await listNotificationsForUser(db, memberId))[0]!.readAt !== null, true)
 
     // The ledger says sent.
     const [delivery] = await db
@@ -224,21 +249,16 @@ test('an organization event lands in every member inbox and reaches a routed cha
 test("a managers-only event never reaches a plain member's personal channel", async () => {
   await withFixture(async ({ db, organizationId, memberId }) => {
     const enc = await secrets()
-    // The member's own channel, subscribed to everything from info up: the
-    // severity floor lets every event through, so only the audience decides.
-    const personal = await createNotificationChannel(db, enc, {
+    // The member's own channel, and a preference that lets every event
+    // through on webhooks: only the audience decides.
+    await createNotificationChannel(db, enc, {
       scope: 'user',
       userId: memberId,
       kind: 'webhook',
       label: 'Mine',
       address: 'https://member.example.com/hook',
     })
-    await replaceRulesForChannel(db, personal.id, [
-      {
-        event: '*',
-        minSeverity: 'info',
-      },
-    ])
+    await listen(db, memberId, ['webhook'])
 
     const captured: Captured[] = []
     const hidden = await emitNotification(
@@ -503,14 +523,16 @@ test('a failed delivery is a failed ledger row with a retry time, then the sweep
 })
 
 test('email rows stay pending for the mailer; a disabled channel gets nothing; a LAN target obeys the policy', async () => {
-  await withFixture(async ({ db, organizationId }) => {
+  await withFixture(async ({ db, organizationId, memberEmail }) => {
     const enc = await secrets()
+    // An organization email channel reaches only an address that still
+    // belongs to a member, checked again at every send.
     const email = await createNotificationChannel(db, enc, {
       scope: 'organization',
       organizationId,
       kind: 'email',
       label: 'Ops mail',
-      address: 'ops@example.com',
+      address: memberEmail,
       verifiedAt: new Date().toISOString(),
     })
     await replaceRulesForChannel(db, email.id, [
@@ -519,7 +541,7 @@ test('email rows stay pending for the mailer; a disabled channel gets nothing; a
         minSeverity: 'info',
       },
     ])
-    // An unverified address is never delivered to: its row stays pending.
+    // An unverified address is never delivered to: its copy is recorded and dropped.
     const stranger = await createNotificationChannel(db, enc, {
       scope: 'organization',
       organizationId,
@@ -592,7 +614,7 @@ test('email rows stay pending for the mailer; a disabled channel gets nothing; a
       .where(eq(notificationDelivery.organizationId, organizationId))
     const byChannel = new Map(rows.map((r) => [r.channelId, r]))
     assertEquals(byChannel.get(email.id)?.status, 'pending')
-    assertEquals(byChannel.get(stranger.id)?.status, 'pending')
+    assertEquals(byChannel.get(stranger.id)?.status, 'abandoned')
     assertEquals(byChannel.get(lan.id)?.status, 'failed')
     assertEquals(byChannel.get(lan.id)?.lastError, 'address_address_not_public')
     assertEquals(byChannel.has(off.id), false)
@@ -625,13 +647,13 @@ test('email rows stay pending for the mailer; a disabled channel gets nothing; a
         },
       }
     )
-    // The LAN receiver and the verified email; the stranger's stays pending.
+    // The LAN receiver and the verified email; the stranger's is dropped.
     assertEquals(selfHosted.sent, 2)
     assertEquals(captured[0]!.url, 'https://10.0.0.5/alerts')
     assertEquals(jobs.length, 1)
     const job = jobs[0] as Record<string, unknown>
     assertEquals(job.type, 'notification')
-    assertEquals(job.to, 'ops@example.com')
+    assertEquals(job.to, memberEmail)
     assertEquals(job.title, 'Server db-2 went offline')
     assertEquals(job.organizationName, 'Notify Org')
     assertEquals(

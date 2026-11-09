@@ -26,37 +26,38 @@
  * working directory, and readable by the embedded-file VFS regardless of the
  * binary's `--allow-read` pins.
  */
-import postgres from "postgres";
-import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { resolvePostgresConnection } from "../db/url.ts";
+import postgres from 'postgres'
+import { drizzle } from 'drizzle-orm/postgres-js'
+import { migrate } from 'drizzle-orm/postgres-js/migrator'
+import { resolvePostgresConnection } from '../db/url.ts'
 import {
   compareSchemaState,
   describeSchemaState,
   MIGRATIONS_FOLDER,
   readShippedMigrationHashes,
-} from "../db/schema-state.ts";
+} from '../db/schema-state.ts'
+import { syncNotificationCatalog } from '../features/notifications/catalog-sync.ts'
 
-export { MIGRATIONS_FOLDER };
+export { MIGRATIONS_FOLDER }
 
 /** Stable two-int4 advisory-lock key ('TBPC', 'MIGR') — scripts/migrate-locked.mjs. */
-export const MIGRATION_LOCK_KEY_1 = 0x54425043;
-export const MIGRATION_LOCK_KEY_2 = 0x4d494752;
+export const MIGRATION_LOCK_KEY_1 = 0x54425043
+export const MIGRATION_LOCK_KEY_2 = 0x4d494752
 /** drizzle.config.mjs's bookkeeping table — scripts/migrate-locked.mjs. */
-export const MIGRATIONS_TABLE = "migration";
-export const MIGRATIONS_SCHEMA = "public";
+export const MIGRATIONS_TABLE = 'migration'
+export const MIGRATIONS_SCHEMA = 'public'
 /** scripts/check-postgres-compat.mjs. */
-export const MINIMUM_POSTGRES_MAJOR = 18;
+export const MINIMUM_POSTGRES_MAJOR = 18
 
 export type MigrateIo = {
-  env?: Record<string, string | undefined>;
-  log?: (line: string) => void;
-  error?: (line: string) => void;
-};
+  env?: Record<string, string | undefined>
+  log?: (line: string) => void
+  error?: (line: string) => void
+}
 
 export class MigrateError extends Error {}
 
-type SqlClient = ReturnType<typeof postgres>;
+type SqlClient = ReturnType<typeof postgres>
 
 function openClient(url: string, connectTimeoutSeconds: number): SqlClient {
   const options = {
@@ -64,53 +65,53 @@ function openClient(url: string, connectTimeoutSeconds: number): SqlClient {
     prepare: false,
     connect_timeout: connectTimeoutSeconds,
     onnotice: () => {},
-  };
-  const connection = resolvePostgresConnection(url);
-  return typeof connection === "string"
+  }
+  const connection = resolvePostgresConnection(url)
+  return typeof connection === 'string'
     ? postgres(connection, options)
-    : postgres({ ...connection, ...options });
+    : postgres({ ...connection, ...options })
 }
 
 /** Gate 1 — the same refusal as scripts/check-postgres-compat.mjs. */
 export async function assertPostgresCompatible(
   sql: SqlClient,
-  warn: (line: string) => void,
+  warn: (line: string) => void
 ): Promise<void> {
-  let serverVersion: { version: string; version_num: number };
+  let serverVersion: { version: string; version_num: number }
   try {
     const [row] = await sql<{ version: string; version_num: number }[]>`
       select current_setting('server_version') as version,
-             current_setting('server_version_num')::int as version_num`;
-    serverVersion = row;
+             current_setting('server_version_num')::int as version_num`
+    serverVersion = row
   } catch (error) {
     throw new MigrateError(
       `cannot reach the target PostgreSQL server (${
         error instanceof Error ? error.message : String(error)
-      }) — check TURBOPANEL_DATABASE_URL before running migrations`,
-    );
+      }) — check TURBOPANEL_DATABASE_URL before running migrations`
+    )
   }
-  let uuidv7Available = true;
+  let uuidv7Available = true
   try {
-    await sql`select uuidv7()`;
+    await sql`select uuidv7()`
   } catch {
-    uuidv7Available = false;
+    uuidv7Available = false
   }
   if (!uuidv7Available) {
     throw new MigrateError(
       `the connected server is PostgreSQL ${serverVersion.version} and has no uuidv7() — ` +
         `turbopanel migrations require PostgreSQL ${MINIMUM_POSTGRES_MAJOR} or newer ` +
-        "(the schema defaults primary keys to the built-in uuidv7()). " +
-        "Upgrade the server; the orchestration pin is postgres:18 " +
-        "(turbopaneld/orchestration/roles/postgres/defaults/main.yml).",
-    );
+        '(the schema defaults primary keys to the built-in uuidv7()). ' +
+        'Upgrade the server; the orchestration pin is postgres:18 ' +
+        '(turbopaneld/orchestration/roles/postgres/defaults/main.yml).'
+    )
   }
   if (serverVersion.version_num < MINIMUM_POSTGRES_MAJOR * 10000) {
     warn(
       `warning — PostgreSQL ${serverVersion.version} is below the documented minimum ` +
-        `${MINIMUM_POSTGRES_MAJOR}, but uuidv7() is available; proceeding`,
-    );
+        `${MINIMUM_POSTGRES_MAJOR}, but uuidv7() is available; proceeding`
+    )
   } else {
-    warn(`PostgreSQL ${serverVersion.version} with uuidv7() — ok`);
+    warn(`PostgreSQL ${serverVersion.version} with uuidv7() — ok`)
   }
 }
 
@@ -124,72 +125,76 @@ export async function assertPostgresCompatible(
 export async function assertSchemaMigratable(
   sql: SqlClient,
   log: (line: string) => void,
-  migrationsFolder: string = MIGRATIONS_FOLDER,
+  migrationsFolder: string = MIGRATIONS_FOLDER
 ): Promise<void> {
   const [present] = await sql<
     { present: boolean }[]
-  >`select to_regclass('public.migration') is not null as present`;
+  >`select to_regclass('public.migration') is not null as present`
   const applied = present?.present
-    ? (await sql<{ hash: string }[]>`select hash from public.migration order by created_at, id`)
-      .map((row) => row.hash)
-    : [];
-  const state = compareSchemaState(applied, await readShippedMigrationHashes(migrationsFolder));
-  if (state.status === "ahead" || state.status === "diverged") {
-    throw new MigrateError(describeSchemaState(state));
+    ? (
+        await sql<{ hash: string }[]>`select hash from public.migration order by created_at, id`
+      ).map((row) => row.hash)
+    : []
+  const state = compareSchemaState(applied, await readShippedMigrationHashes(migrationsFolder))
+  if (state.status === 'ahead' || state.status === 'diverged') {
+    throw new MigrateError(describeSchemaState(state))
   }
-  log(describeSchemaState(state));
+  log(describeSchemaState(state))
 }
 
 /** Gate 3 + the migrator — the same shape as scripts/migrate-locked.mjs. */
 export async function runLockedMigration(
   sql: SqlClient,
   log: (line: string) => void,
-  migrationsFolder: string = MIGRATIONS_FOLDER,
+  migrationsFolder: string = MIGRATIONS_FOLDER
 ): Promise<void> {
-  const db = drizzle(sql);
-  log("waiting for the migration advisory lock…");
-  await sql`select pg_advisory_lock(${MIGRATION_LOCK_KEY_1}, ${MIGRATION_LOCK_KEY_2})`;
+  const db = drizzle(sql)
+  log('waiting for the migration advisory lock…')
+  await sql`select pg_advisory_lock(${MIGRATION_LOCK_KEY_1}, ${MIGRATION_LOCK_KEY_2})`
   try {
-    await assertSchemaMigratable(sql, log, migrationsFolder);
-    log("lock acquired, applying migrations…");
+    await assertSchemaMigratable(sql, log, migrationsFolder)
+    log('lock acquired, applying migrations…')
     await migrate(db, {
       migrationsFolder,
       migrationsTable: MIGRATIONS_TABLE,
       migrationsSchema: MIGRATIONS_SCHEMA,
-    });
-    log("migrations applied successfully");
+    })
+    log('migrations applied successfully')
+    // The notification catalog is data written from code (events.ts), under
+    // the same lock: upserted by code, never deleted.
+    await syncNotificationCatalog((text, params) => sql.unsafe(text, params as never[]))
+    log('notification catalog in step')
   } finally {
-    await sql`select pg_advisory_unlock(${MIGRATION_LOCK_KEY_1}, ${MIGRATION_LOCK_KEY_2})`;
+    await sql`select pg_advisory_unlock(${MIGRATION_LOCK_KEY_1}, ${MIGRATION_LOCK_KEY_2})`
   }
 }
 
 /** Entry for the `migrate` subcommand. Returns the process exit code. */
 export async function runMigrateCommand(io: MigrateIo = {}): Promise<number> {
-  const env = io.env ?? Deno.env.toObject();
-  const log = io.log ?? ((line: string) => console.log(`migrate: ${line}`));
-  const error = io.error ??
-    ((line: string) => console.error(`migrate: ${line}`));
+  const env = io.env ?? Deno.env.toObject()
+  const log = io.log ?? ((line: string) => console.log(`migrate: ${line}`))
+  const error = io.error ?? ((line: string) => console.error(`migrate: ${line}`))
 
-  const url = env.TURBOPANEL_DATABASE_URL?.trim();
+  const url = env.TURBOPANEL_DATABASE_URL?.trim()
   if (!url) {
-    error("TURBOPANEL_DATABASE_URL is required");
-    return 1;
+    error('TURBOPANEL_DATABASE_URL is required')
+    return 1
   }
-  let sql: SqlClient;
+  let sql: SqlClient
   try {
-    sql = openClient(url, 15);
+    sql = openClient(url, 15)
   } catch (err) {
-    error(err instanceof Error ? err.message : String(err));
-    return 1;
+    error(err instanceof Error ? err.message : String(err))
+    return 1
   }
   try {
-    await assertPostgresCompatible(sql, log);
-    await runLockedMigration(sql, log);
-    return 0;
+    await assertPostgresCompatible(sql, log)
+    await runLockedMigration(sql, log)
+    return 0
   } catch (err) {
-    error(err instanceof Error ? err.message : String(err));
-    return 1;
+    error(err instanceof Error ? err.message : String(err))
+    return 1
   } finally {
-    await sql.end({ timeout: 5 });
+    await sql.end({ timeout: 5 })
   }
 }
