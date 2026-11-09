@@ -43,6 +43,7 @@ import { recordAudit } from '../features/audit/audit-records.ts'
 import { type PairTunnelHealth, pairTunnelHealth } from '../features/fabric/peer-health.ts'
 import type { RelayMetadata } from '../features/fabric/fabric-records.ts'
 import { type EmitEmail, emitNotification } from '../features/notifications/emit.ts'
+import { serverNoticeName } from '../features/servers/notice-name.ts'
 import { compatLogWarn } from '../lib/log-compat.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { mapSequential } from '../lib/sequential.ts'
@@ -121,6 +122,7 @@ export type PinSilenceDeps = {
 type ServerRow = {
   id: string
   name: string | null
+  hostname: string | null
   organizationId: string | null
   isConnected: boolean
   statusChangedAt: string | null
@@ -174,6 +176,7 @@ export async function sweepPinSilence(
       .select({
         id: server.id,
         name: server.name,
+        hostname: server.hostname,
         organizationId: server.organizationId,
         isConnected: server.isConnected,
         statusChangedAt: server.statusChangedAt,
@@ -330,7 +333,7 @@ async function raise(
     {
       event,
       organizationId: row.organizationId,
-      context: { serverName: row.name, offlineMinutes: String(offlineMinutes) },
+      context: { serverName: serverNoticeName(row), offlineMinutes: String(offlineMinutes) },
       targetType: 'server',
       targetId: row.id,
     },
