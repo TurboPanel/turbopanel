@@ -131,6 +131,8 @@ export const AUDIT_ACTIONS = [
   'panel.key.revoke',
   'panel.approver.mark',
   'panel.approver.unmark',
+  // A High Availability key change cancelled while it waited for its key.
+  'panel.key.cancel',
   'server.panel_pin.reissued',
   'server.panel_pin.mismatch',
   'server.panel_pin.silent',

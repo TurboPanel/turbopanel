@@ -57,7 +57,24 @@ type EventDefinition = {
 
 function name(ctx: NotificationContext, key: string, fallback: string): string {
   const value = ctx[key]
+  // A number (a key set, a count) reads as its digits, not as the fallback.
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
   return typeof value === 'string' && value.length > 0 ? value : fallback
+}
+
+function has(ctx: NotificationContext, key: string): boolean {
+  const value = ctx[key]
+  return typeof value === 'string' && value.length > 0
+}
+
+const CHECK_IDENTITY = 'If you did not expect this, check Control Plane Identity in Admin.'
+
+/** What a passkey statement did, in words: marked some, unmarked some, or both. */
+function approverChange(ctx: NotificationContext): string {
+  const marked = `marked ${name(ctx, 'marked', 'a passkey')}`
+  const unmarked = `unmarked ${name(ctx, 'unmarked', 'a passkey')}`
+  if (has(ctx, 'marked') && has(ctx, 'unmarked')) return `${marked} and ${unmarked}`
+  return has(ctx, 'unmarked') ? unmarked : marked
 }
 
 /**
@@ -304,6 +321,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         typeof ctx.fingerprint === 'string' ? ` (${ctx.fingerprint})` : ''
       }. Servers accept the next key after a rotation; if you did not expect this, check Control Plane Identity in Admin.`,
   },
+  // `ctx.reportedPasskeys` is set when the key matches but the rotation passkeys do not.
   'panel.pin_mismatch': {
     label: 'A server reported a different control plane key',
     severity: 'critical',
@@ -311,13 +329,25 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     audience: 'managers',
     urgent: true,
     title: (ctx) =>
-      `Server ${name(ctx, 'serverName', 'unknown')} reported a different control plane key`,
-    body: (ctx) =>
-      `The server holds ${name(ctx, 'reported', 'a key')} but this control plane signs with ${name(
+      has(ctx, 'reportedPasskeys')
+        ? `Server ${name(ctx, 'serverName', 'unknown')} reported different rotation passkeys`
+        : `Server ${name(ctx, 'serverName', 'unknown')} reported a different control plane key`,
+    body: (ctx) => {
+      const advice =
+        'Either the server was pointed at another control plane or something is impersonating this one; reinstall the server with a fresh command if you did not expect this.'
+      if (has(ctx, 'reportedPasskeys')) {
+        return `The server holds the control plane key ${name(ctx, 'reported', 'unknown')}, but its rotation passkeys (${name(
+          ctx,
+          'reportedPasskeys',
+          'unknown'
+        )}) are not the ones marked on this control plane (${name(ctx, 'expectedPasskeys', 'none')}). ${advice}`
+      }
+      return `The server holds ${name(ctx, 'reported', 'a key')} but this control plane signs with ${name(
         ctx,
         'expected',
         'another key'
-      )}. Either the server was pointed at another control plane or something is impersonating this one; reinstall the server with a fresh command if you did not expect this.`,
+      )}. ${advice}`
+    },
   },
   'certificate.expiring': {
     label: 'A control plane certificate could not be renewed',
@@ -400,6 +430,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     },
   },
   // A rotation or an emergency revoke: `ctx.kind` is `rotate` or `revoke`.
+  // `ctx.state` is `awaiting_key` on High Availability until the new key is stored.
   'panel.key_changed': {
     label: "The control plane's key changed",
     severity: 'critical',
@@ -407,10 +438,12 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     audience: 'managers',
     // Every server follows the new key: always urgent.
     urgent: true,
-    title: (ctx) =>
-      ctx.kind === 'revoke'
+    title: (ctx) => {
+      if (ctx.state === 'awaiting_key') return 'A control plane key change was approved'
+      return ctx.kind === 'revoke'
         ? 'The control plane key was revoked and replaced'
-        : 'The control plane key was rotated',
+        : 'The control plane key was rotated'
+    },
     body: (ctx) =>
       `${name(ctx, 'actorEmail', 'An administrator')} approved key set ${name(
         ctx,
@@ -420,9 +453,13 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         ctx,
         'oldFingerprint',
         'unknown'
-      )} was replaced by ${name(ctx, 'newFingerprint', 'unknown')}. ` +
-      'Every server moves to the new key as it sees this change. If you did not expect this, check Control Plane Identity in Admin.',
+      )} ${ctx.state === 'awaiting_key' ? 'will be' : 'was'} replaced by ${name(ctx, 'newFingerprint', 'unknown')}. ` +
+      (ctx.state === 'awaiting_key'
+        ? 'The change takes effect when the rotation command stores the new key; every server then moves to it. '
+        : 'Every server moves to the new key as it sees this change. ') +
+      CHECK_IDENTITY,
   },
+  // `ctx.marked` and `ctx.unmarked` name the passkeys; one statement can do both.
   'panel.approvers_changed': {
     label: 'The passkeys that approve key changes changed',
     severity: 'warning',
@@ -430,15 +467,20 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     audience: 'managers',
     // These passkeys can move every server to a new key: always urgent.
     urgent: true,
-    title: (ctx) =>
-      ctx.kind === 'unmark'
+    title: (ctx) => {
+      if (has(ctx, 'marked') && has(ctx, 'unmarked')) {
+        return 'The passkeys that approve control plane key changes changed'
+      }
+      return has(ctx, 'unmarked')
         ? 'A passkey no longer approves control plane key changes'
-        : 'A passkey now approves control plane key changes',
+        : 'A passkey now approves control plane key changes'
+    },
     body: (ctx) =>
-      `${name(ctx, 'actorEmail', 'An administrator')} ${
-        ctx.kind === 'unmark' ? 'unmarked' : 'marked'
-      } ${name(ctx, 'passkeys', 'a passkey')} (key set ${name(ctx, 'keyset', 'unknown')}). ` +
-      'Marked passkeys approve a change of the control plane key on every server. If you did not expect this, check Control Plane Identity in Admin.',
+      `${name(ctx, 'actorEmail', 'An administrator')} ${approverChange(ctx)} (key set ${name(
+        ctx,
+        'keyset',
+        'unknown'
+      )}). Marked passkeys approve a change of the control plane key on every server. ${CHECK_IDENTITY}`,
   },
 } as const satisfies Record<string, EventDefinition>
 

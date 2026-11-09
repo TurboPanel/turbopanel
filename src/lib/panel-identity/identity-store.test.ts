@@ -12,7 +12,6 @@ import {
   PANEL_IDENTITY_SETTING_KEY,
   promotePendingIdentityKey,
   raiseStoredIdentityKeyset,
-  setPanelIdentityNext,
 } from './identity.ts'
 
 const test = Deno.test.bind(Deno)
@@ -49,14 +48,14 @@ test('ensurePanelIdentity inserts once, reopens the same key, and seals the seed
       'x25519Seed',
     ])
 
-    await assertRejects(() => setPanelIdentityNext(db, 'short'), TypeError)
-    await assertRejects(() => setPanelIdentityNext(db, first.current.kid), TypeError)
-    await setPanelIdentityNext(db, 'A'.repeat(43))
+    // The next key is retired and nothing writes it; a row that still holds one is read.
+    await db
+      .update(setting)
+      .set({ value: { ...(row!.value as Record<string, unknown>), nextKid: 'A'.repeat(43) } })
+      .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
     const withNext = await ensurePanelIdentity(db, secrets)
     assertEquals(withNext.next, { kid: 'A'.repeat(43) })
     assertNotEquals(withNext.next?.kid, withNext.current.kid)
-    await setPanelIdentityNext(db, null)
-    assertEquals((await ensurePanelIdentity(db, secrets)).next, null)
   } finally {
     await db.delete(setting).where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
     await endDbConnection(db)
@@ -83,9 +82,15 @@ test('a pending key is sealed beside the seeds, reused, and promoted with the se
     await assertRejects(() =>
       promotePendingIdentityKey(db, secrets, { kid: first.current.kid, keyset: 2 })
     )
-    await promotePendingIdentityKey(db, secrets, { kid: pending.kid, keyset: 3 })
+    // Emergency Revoke never moves to a key an earlier prepare left behind.
+    const fresh = await ensurePendingIdentityKey(db, secrets, { fresh: true })
+    assertNotEquals(fresh.kid, pending.kid)
+    await assertRejects(() =>
+      promotePendingIdentityKey(db, secrets, { kid: pending.kid, keyset: 3 })
+    )
+    await promotePendingIdentityKey(db, secrets, { kid: fresh.kid, keyset: 3 })
     const after = await ensurePanelIdentity(db, secrets)
-    assertEquals(after.current.kid, pending.kid)
+    assertEquals(after.current.kid, fresh.kid)
     assertEquals(after.seal.kid, first.seal.kid)
     assertEquals(after.keyset, 3)
     await raiseStoredIdentityKeyset(db, 2)

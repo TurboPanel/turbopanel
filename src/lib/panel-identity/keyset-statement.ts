@@ -64,6 +64,26 @@ export type KeysetPin = {
   passkeys: RotationPasskey[]
 }
 
+/** Why an envelope is refused. Internal words: the admin route turns them into owner-facing text. */
+export const KEYSET_REFUSAL_REASONS = [
+  'statement is not base64url',
+  'statement is malformed',
+  'current kid is not the fingerprint of its key',
+  'prev is not the pinned key',
+  'keyset is not above the pinned one',
+  'iat is in the future',
+  'kind does not match whether the key changes',
+  'an approval is repeated',
+  'an approval does not verify',
+  'no rotation passkey is pinned',
+  'every marked passkey must prove possession',
+  'no pinned passkey approved',
+  'every passkey under the new rpId must prove possession',
+  'a removal needs a passkey that stays',
+  'an added passkey must prove possession',
+] as const
+export type KeysetRefusalReason = (typeof KEYSET_REFUSAL_REASONS)[number]
+
 export type KeysetVerification =
   | {
       ok: true
@@ -74,7 +94,7 @@ export type KeysetVerification =
       /** Ids of statement passkeys that proved possession. */
       possessionApprovals: string[]
     }
-  | { ok: false; reason: string }
+  | { ok: false; reason: KeysetRefusalReason }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -128,7 +148,8 @@ export async function rotationPasskeysHash(passkeys: readonly RotationPasskey[])
   return base64urlEncode(await sha256(textEncoder.encode(rotationPasskeysLine(passkeys))))
 }
 
-function strictDecode(value: unknown): Uint8Array | null {
+/** Decode unpadded base64url; null for anything else (never throws). */
+export function decodeBase64urlStrict(value: unknown): Uint8Array | null {
   if (typeof value !== 'string' || !B64URL.test(value)) return null
   try {
     return base64urlDecode(value)
@@ -141,7 +162,7 @@ function parsePasskey(value: unknown): RotationPasskey | null {
   if (!isRecord(value) || Object.keys(value).length !== 3) return null
   const { id, alg, pub } = value
   if (typeof id !== 'string' || !isPanelFingerprint(id)) return null
-  const raw = strictDecode(pub)
+  const raw = decodeBase64urlStrict(pub)
   if (!raw || typeof pub !== 'string') return null
   if (alg === 'ES256' && raw.length === 65 && raw[0] === 0x04) return { id, alg, pub }
   if (alg === 'EdDSA' && raw.length === 32) return { id, alg, pub }
@@ -191,7 +212,8 @@ export function parseKeysetStatement(bytes: Uint8Array): KeysetStatement | null 
   if (!isRpId(rpId)) return null
   if (!isRecord(current) || Object.keys(current).join(',') !== 'kid,pub') return null
   if (typeof current.kid !== 'string' || !isPanelFingerprint(current.kid)) return null
-  if (typeof current.pub !== 'string' || strictDecode(current.pub)?.length !== 32) return null
+  if (typeof current.pub !== 'string' || decodeBase64urlStrict(current.pub)?.length !== 32)
+    return null
   if (typeof iat !== 'number' || !Number.isSafeInteger(iat) || iat < 0) return null
   const list = parsePasskeyList(passkeys)
   if (!list) return null
@@ -351,9 +373,9 @@ export async function assertionVerifies(
   rpId: string,
   challenge: string
 ): Promise<boolean> {
-  const authData = strictDecode(approval.authenticatorData)
-  const clientDataBytes = strictDecode(approval.clientDataJSON)
-  const signature = strictDecode(approval.signature)
+  const authData = decodeBase64urlStrict(approval.authenticatorData)
+  const clientDataBytes = decodeBase64urlStrict(approval.clientDataJSON)
+  const signature = decodeBase64urlStrict(approval.signature)
   if (!authData || !clientDataBytes || !signature) return false
   if (authData.length < AUTH_DATA_MIN_BYTES) return false
   if (!bytesEqual(authData.subarray(0, 32), await sha256(textEncoder.encode(rpId)))) return false
@@ -379,7 +401,7 @@ function samePasskey(a: RotationPasskey, b: RotationPasskey): boolean {
   return a.id === b.id && a.alg === b.alg && a.pub === b.pub
 }
 
-function fail(reason: string): KeysetVerification {
+function fail(reason: KeysetRefusalReason): KeysetVerification {
   return { ok: false, reason }
 }
 
@@ -387,7 +409,7 @@ function checkHeader(
   statement: KeysetStatement,
   pin: KeysetPin,
   nowSeconds: number
-): string | null {
+): KeysetRefusalReason | null {
   if (statement.prev !== pin.current) return 'prev is not the pinned key'
   if (statement.keyset <= pin.keyset) return 'keyset is not above the pinned one'
   if (statement.iat > nowSeconds + KEYSET_STATEMENT_MAX_FUTURE_SECONDS) {
@@ -400,7 +422,8 @@ function checkHeader(
   return null
 }
 
-type ApprovalOutcome = { pinned: Set<string>; possession: Set<string> } | { reason: string }
+type ApprovalOutcome =
+  { pinned: Set<string>; possession: Set<string> } | { reason: KeysetRefusalReason }
 
 async function checkApprovals(
   envelope: KeysetEnvelope,
@@ -439,7 +462,7 @@ function checkRules(
   statement: KeysetStatement,
   pin: KeysetPin,
   approvals: { pinned: Set<string>; possession: Set<string> }
-): string | null {
+): KeysetRefusalReason | null {
   const isGenesis = pin.passkeys.length === 0
   if (isGenesis) {
     if (statement.kind !== 'passkeys') return 'no rotation passkey is pinned'
@@ -475,10 +498,18 @@ export async function verifyKeysetEnvelope(
   pin: KeysetPin,
   nowSeconds: number
 ): Promise<KeysetVerification> {
-  const bytes = strictDecode(envelope.statement)
-  if (!bytes) return fail('statement is not base64url')
+  const bytes = decodeBase64urlStrict(envelope.statement)
+  if (!bytes || base64urlEncode(bytes) !== envelope.statement) {
+    return fail('statement is not base64url')
+  }
   const statement = parseKeysetStatement(bytes)
   if (!statement) return fail('statement is malformed')
+  // Servers take only the exact bytes this control plane builds: no other
+  // number form (`4.0`), member order, spacing, escape or leading mark. The
+  // comparison is on bytes, because decoding drops a byte order mark.
+  if (!bytesEqual(bytes, textEncoder.encode(serializeKeysetStatement(statement)))) {
+    return fail('statement is malformed')
+  }
   if (
     (await fingerprintRawPublicKey(base64urlDecode(statement.current.pub))) !==
     statement.current.kid

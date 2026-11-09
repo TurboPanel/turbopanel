@@ -281,24 +281,6 @@ export async function ensurePanelIdentityDetailed(
   return { identity: winner, created: winner.current.kid === created.identity.current.kid }
 }
 
-/** Store (or clear with `null`) the `next` fingerprint. Only the fingerprint is stored. */
-export async function setPanelIdentityNext(db: Db, nextKid: string | null): Promise<void> {
-  if (nextKid !== null && !isPanelFingerprint(nextKid)) {
-    throw new TypeError('next must be a 43-character fingerprint')
-  }
-  const stored = await readStored(db)
-  if (!stored) {
-    throw new Error('no panel identity yet; start the panel once first')
-  }
-  if (nextKid !== null && nextKid === stored.currentKid) {
-    throw new TypeError('next must differ from the current key')
-  }
-  await db
-    .update(setting)
-    .set({ value: { ...stored, nextKid } })
-    .where(eq(setting.key, PANEL_IDENTITY_SETTING_KEY))
-}
-
 /** The parsed row and the exact stored value (the compare-and-set below matches on the latter). */
 type StoredRow = { stored: StoredIdentityValue; raw: Record<string, unknown> }
 
@@ -337,16 +319,20 @@ async function writeStored(
 
 /**
  * The key a self-hosted rotation moves to: the stored pending key, or a new
- * random one sealed next to the current seeds. Only public values come back.
+ * random one sealed next to the current seeds. `fresh` (Emergency Revoke)
+ * always makes a new one: a pending key left by an earlier, abandoned prepare
+ * may sit in an old backup, and a revoke must not move to a key someone else
+ * could hold. Only public values come back.
  */
 export async function ensurePendingIdentityKey(
   db: Db,
-  secrets: DerivedSecretsConfig
+  secrets: DerivedSecretsConfig,
+  options: { fresh?: boolean } = {}
 ): Promise<{ kid: string; pub: string }> {
   const row = await requireStored(db)
   const { stored } = row
   const seeds = await openSeeds(stored, secrets)
-  if (stored.pendingKid && seeds.pendingEd25519Seed) {
+  if (!options.fresh && stored.pendingKid && seeds.pendingEd25519Seed) {
     const pending = await importEd25519Signer(decodeSeed(seeds.pendingEd25519Seed, 'pending'))
     if (pending.kid === stored.pendingKid) {
       return { kid: pending.kid, pub: base64urlEncode(pending.publicRaw) }
@@ -362,6 +348,9 @@ export async function ensurePendingIdentityKey(
   return { kid: pending.kid, pub: base64urlEncode(pending.publicRaw) }
 }
 
+/** Thrown (as the message) when the approved key is not the sealed pending key. */
+export const PENDING_KEY_MISMATCH = 'the approved key is not the pending key'
+
 /**
  * Make the pending key current (the sealing key is kept) and record the key
  * set of the statement that approved it. Run inside the transaction that
@@ -375,8 +364,13 @@ export async function promotePendingIdentityKey(
   const row = await requireStored(db)
   const { stored } = row
   const seeds = await openSeeds(stored, secrets)
-  if (stored.pendingKid !== input.kid || !seeds.pendingEd25519Seed) {
-    throw new Error('the approved key is not the pending key')
+  // The fingerprint comes from the sealed seed itself, not from the plain
+  // `pendingKid` beside it, which anyone who can write the row could change.
+  const pending = seeds.pendingEd25519Seed
+    ? await importEd25519Signer(decodeSeed(seeds.pendingEd25519Seed, 'pending'))
+    : null
+  if (pending?.kid !== input.kid || !seeds.pendingEd25519Seed) {
+    throw new Error(PENDING_KEY_MISMATCH)
   }
   const sealed = await encryptSecret(
     secrets,

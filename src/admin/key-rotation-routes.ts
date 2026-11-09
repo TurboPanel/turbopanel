@@ -12,30 +12,40 @@
  *
  * `GET /instance/identity/rotation` is the screen's read;
  * `GET /instance/identity/statements/:keyset` downloads one envelope (root
- * on a cut-off server can hand-apply it).
+ * on a cut-off server can hand-apply it);
+ * `DELETE /instance/identity/statements/:keyset` cancels a High Availability
+ * change that still waits for its key (the rotation command stopped before it
+ * stored one). While a change waits, nothing else can be prepared or approved.
  */
 import type { Context, Hono } from 'hono'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { AppEnv } from '../app/app.ts'
 import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import { webauthnOriginsFor } from '../client/authn/passkeys-http.ts'
 import { parseStoredPasskeyJwk, rotationKeyFromJwk } from '../client/authn/passkey-keys.ts'
 import { requireInstanceStepUp } from '../client/authn/step-up.ts'
 import { type Db, getDb } from '../db/connection.ts'
 import { passkey, user } from '../db/schema.ts'
 import { isPostgresUniqueViolation } from '../db/unique-violation.ts'
+import { type AuditEntry, recordAudit } from '../features/audit/audit-records.ts'
 import { recordKeyEvent } from '../features/notifications/key-event.ts'
-import { resolvePublicBaseUrl } from '../features/install/resolve-public-base-url.ts'
-import { base64urlDecode, base64urlEncode } from '../lib/encoding/base64url.ts'
+import { resolveConfiguredOrigin } from '../features/install/resolve-public-base-url.ts'
+import { base64urlEncode } from '../lib/encoding/base64url.ts'
+import { logWarn } from '../lib/logger.ts'
 import { fingerprintRawPublicKey } from '../lib/panel-identity/fingerprint.ts'
 import {
   ensurePendingIdentityKey,
   type PanelIdentity,
+  PENDING_KEY_MISMATCH,
   promotePendingIdentityKey,
   raiseStoredIdentityKeyset,
 } from '../lib/panel-identity/identity.ts'
 import {
+  decodeBase64urlStrict,
+  KEYSET_ENVELOPE_MAX_BYTES,
   type KeysetEnvelope,
   type KeysetPin,
+  type KeysetRefusalReason,
   type KeysetStatement,
   type KeysetStatementKind,
   keysetStatementChallenge,
@@ -51,6 +61,7 @@ import {
   applyCustodianChanges,
   type CustodianMark,
   controlPlanePin,
+  deleteAwaitingStatement,
   insertStatement,
   listRecentStatements,
   markAwaitingStatementLive,
@@ -73,9 +84,40 @@ export type KeyRotationOptions = {
   dataEncryption?: DerivedSecretsConfig
   /** Self-hosted: the stored key changed, reload the in-memory identity. */
   onIdentityChanged?: () => Promise<void>
+  /** Test seam: this control plane's configured origin (default {@link resolveConfiguredOrigin}). */
+  configuredOrigin?: (c: Context<AppEnv>) => Promise<string | null>
 }
 
 const NO_KEY_STORE = 'This control plane cannot store a new key.'
+const AWAITING_KEY_MESSAGE =
+  'A key change is waiting for its new key. Finish the command in your terminal, or cancel the waiting change, first.'
+const NO_HOSTNAME_MESSAGE =
+  'Set a primary hostname in Admin, under Access, before you mark a passkey: rotation passkeys belong to that hostname.'
+const START_AGAIN = 'Start again.'
+
+/** What the owner reads for each reason the verifier refuses an approval. */
+const REFUSAL_WORDS: Record<KeysetRefusalReason, string> = {
+  'statement is not base64url': `The change did not arrive intact. ${START_AGAIN}`,
+  'statement is malformed': `The change did not arrive intact. ${START_AGAIN}`,
+  'current kid is not the fingerprint of its key': `The new key does not match its fingerprint. ${START_AGAIN}`,
+  'prev is not the pinned key': `The control plane key changed after this was prepared. ${START_AGAIN}`,
+  'keyset is not above the pinned one': `Another change was approved first. ${START_AGAIN}`,
+  'iat is in the future': `The change is dated in the future. Check this control plane's clock, then start again.`,
+  'kind does not match whether the key changes': `The change did not arrive intact. ${START_AGAIN}`,
+  'an approval is repeated': `The same passkey approved twice. ${START_AGAIN}`,
+  'an approval does not verify': `A passkey approval did not check out. Use a marked passkey on this control plane's hostname and start again.`,
+  'no rotation passkey is pinned': 'Mark a rotation passkey before you change the key.',
+  'every marked passkey must prove possession': `Each passkey you mark has to approve the change itself. ${START_AGAIN}`,
+  'no pinned passkey approved': `A marked passkey has to approve this change. ${START_AGAIN}`,
+  'every passkey under the new rpId must prove possession': `Each passkey has to approve the change itself. ${START_AGAIN}`,
+  'a removal needs a passkey that stays': `Unmarking needs approval from a passkey that stays marked. ${START_AGAIN}`,
+  'an added passkey must prove possession': `Each passkey you mark has to approve the change itself. ${START_AGAIN}`,
+}
+
+/** The owner-facing sentence for a verifier refusal (the internal reason goes to the log). */
+export function refusalWords(reason: KeysetRefusalReason): string {
+  return REFUSAL_WORDS[reason]
+}
 
 type CandidateRow = {
   passkeyId: string
@@ -115,10 +157,6 @@ function labelOf(row: CandidateRow): string {
   return `${row.name ?? 'Passkey'} (${row.email})`
 }
 
-async function rpIdOf(c: Context<AppEnv>): Promise<string> {
-  return new URL(await resolvePublicBaseUrl(c)).hostname
-}
-
 function refuse(c: Context<AppEnv>, status: 404 | 409 | 422 | 503, error: string, message: string) {
   return c.json({ ok: false, error, message }, status)
 }
@@ -126,7 +164,10 @@ function refuse(c: Context<AppEnv>, status: 404 | 409 | 422 | 503, error: string
 type Loaded = {
   db: Db
   identity: PanelIdentity
+  /** `pin.rpId` is empty only with nothing marked and no primary hostname configured. */
   pin: KeysetPin & { custodians: MarkedCustodian[] }
+  /** The origins a browser on this control plane reports for the rotation hostname. */
+  origins: readonly string[]
 }
 
 async function load(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Loaded | Response> {
@@ -137,8 +178,13 @@ async function load(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Loade
     return refuse(c, 404, 'identity_off', 'Control plane identity is off.')
   }
   await markAwaitingStatementLive(db, identity.current.kid)
-  const pin = await controlPlanePin(db, identity, await rpIdOf(c))
-  return { db, identity, pin }
+  // The hostname comes from this control plane's own configuration only,
+  // never from the request: the first mark freezes it on every server.
+  const configured = await (opts.configuredOrigin ?? resolveConfiguredOrigin)(c)
+  const pin = await controlPlanePin(db, identity, configured ? new URL(configured).hostname : null)
+  const origins =
+    configured && pin.rpId !== '' ? await webauthnOriginsFor(c, configured, pin.rpId) : []
+  return { db, identity, pin, origins }
 }
 
 type PrepareBody = {
@@ -176,15 +222,14 @@ async function newKeyFor(
 ): Promise<{ kid: string; pub: string } | Response> {
   if (opts.runtime === 'deno') {
     if (!opts.dataEncryption) return refuse(c, 503, 'no_key_store', NO_KEY_STORE)
-    return await ensurePendingIdentityKey(loaded.db, opts.dataEncryption)
+    // Emergency Revoke always moves to a key made now, never to one an
+    // earlier prepare left behind.
+    return await ensurePendingIdentityKey(loaded.db, opts.dataEncryption, {
+      fresh: body.kind === 'revoke',
+    })
   }
   // High Availability: the owner's terminal made the key; only its public half comes here.
-  let raw: Uint8Array | null = null
-  try {
-    raw = body.newKey ? base64urlDecode(body.newKey) : null
-  } catch {
-    raw = null
-  }
+  const raw = decodeBase64urlStrict(body.newKey)
   if (raw?.length !== 32) {
     return refuse(
       c,
@@ -235,6 +280,7 @@ async function planPasskeyChange(
   loaded: Loaded,
   body: PrepareBody
 ): Promise<Planned | Response> {
+  if (loaded.pin.rpId === '') return refuse(c, 409, 'no_primary_hostname', NO_HOSTNAME_MESSAGE)
   const session = c.get('session')
   const rows = body.mark.length > 0 ? await superadminPasskeys(loaded.db, body.mark) : []
   const added: RotationPasskey[] = []
@@ -302,30 +348,76 @@ type ApproveBody = {
   }[]
 }
 
-function parseApproveBody(body: unknown): ApproveBody | null {
+const B64URL_FIELD = /^[A-Za-z0-9_-]+$/
+
+/**
+ * The approve body, or null. Sizes are capped here, before anything is
+ * hashed or decoded: at most ten approvals, every field unpadded base64url,
+ * and the whole thing within the envelope cap servers enforce.
+ */
+export function parseApproveBody(body: unknown): ApproveBody | null {
   if (typeof body !== 'object' || body === null) return null
   const record = body as Record<string, unknown>
   if (typeof record.statement !== 'string' || !Array.isArray(record.approvals)) return null
+  if (record.approvals.length > MAX_ROTATION_PASSKEYS * 2) return null
+  let size = record.statement.length
   const approvals: ApproveBody['approvals'] = []
   for (const entry of record.approvals) {
     if (typeof entry !== 'object' || entry === null) return null
     const a = entry as Record<string, unknown>
-    if (
-      typeof a.credentialId !== 'string' ||
-      typeof a.authenticatorData !== 'string' ||
-      typeof a.clientDataJSON !== 'string' ||
-      typeof a.signature !== 'string'
-    ) {
+    const fields = [a.credentialId, a.authenticatorData, a.clientDataJSON, a.signature]
+    if (!fields.every((f): f is string => typeof f === 'string' && B64URL_FIELD.test(f))) {
       return null
     }
+    const [credentialId, authenticatorData, clientDataJSON, signature] = fields
+    size += fields.reduce((sum, f) => sum + f.length, 0)
+    if (size > KEYSET_ENVELOPE_MAX_BYTES) return null
     approvals.push({
-      credentialId: a.credentialId,
-      authenticatorData: a.authenticatorData,
-      clientDataJSON: a.clientDataJSON,
-      signature: a.signature,
+      credentialId: credentialId!,
+      authenticatorData: authenticatorData!,
+      clientDataJSON: clientDataJSON!,
+      signature: signature!,
     })
   }
-  return { statement: record.statement, approvals }
+  return B64URL_FIELD.test(record.statement) ? { statement: record.statement, approvals } : null
+}
+
+/** The approvals keyed by rotation passkey id, or null when a credential id does not decode. */
+async function approvalsById(body: ApproveBody): Promise<KeysetEnvelope['approvals'] | null> {
+  try {
+    return await Promise.all(
+      body.approvals.map(async (a) => ({
+        id: await rotationPasskeyId(a.credentialId),
+        authenticatorData: a.authenticatorData,
+        clientDataJSON: a.clientDataJSON,
+        signature: a.signature,
+      }))
+    )
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether every approval was made on one of this control plane's own
+ * addresses. Servers accept any port or subdomain of the hostname (they
+ * cannot know the port), so the stricter check lives here, where the
+ * approval is taken.
+ */
+export function approvalsFromOwnOrigin(
+  approvals: readonly { clientDataJSON: string }[],
+  origins: readonly string[]
+): boolean {
+  return approvals.every((approval) => {
+    const bytes = decodeBase64urlStrict(approval.clientDataJSON)
+    if (!bytes) return false
+    try {
+      const clientData = JSON.parse(new TextDecoder().decode(bytes)) as { origin?: unknown }
+      return typeof clientData.origin === 'string' && origins.includes(clientData.origin)
+    } catch {
+      return false
+    }
+  })
 }
 
 /** Added passkeys must be the session user's own sign-in passkeys with the same key. */
@@ -365,6 +457,7 @@ function refuseBeforeVerify(
   pin: KeysetPin,
   nowSeconds: number
 ): Response | null {
+  if (pin.rpId === '') return refuse(c, 409, 'no_primary_hostname', NO_HOSTNAME_MESSAGE)
   // The chain has no gaps: every statement is exactly one above the last.
   if (parsed.keyset !== pin.keyset + 1) {
     return refuse(c, 409, 'statement_conflict', 'Another change was approved first. Start again.')
@@ -388,7 +481,25 @@ function refuseBeforeVerify(
       'Mark at least two rotation passkeys before changing the key.'
     )
   }
+  // A key change keeps the passkeys as they are. On High Availability it
+  // waits for its key, and a waiting change must be cancellable by removing
+  // one row, with no mark to undo.
+  if (parsed.kind !== 'passkeys' && !samePasskeySet(parsed.passkeys, pin.passkeys)) {
+    return refuse(
+      c,
+      422,
+      'passkeys_in_key_change',
+      'A key change cannot mark or unmark passkeys. Do that as its own change.'
+    )
+  }
   return null
+}
+
+function samePasskeySet(a: readonly RotationPasskey[], b: readonly RotationPasskey[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((p) => b.some((q) => q.id === p.id && q.alg === p.alg && q.pub === p.pub))
+  )
 }
 
 type ApprovedChange = {
@@ -434,7 +545,7 @@ async function storeApproved(
     })
   } catch (err) {
     if (isPostgresUniqueViolation(err)) return 'conflict'
-    if (err instanceof Error && err.message === 'the approved key is not the pending key') {
+    if (err instanceof Error && err.message === PENDING_KEY_MISMATCH) {
       return 'pending_key_changed'
     }
     throw err
@@ -442,38 +553,111 @@ async function storeApproved(
   return 'stored'
 }
 
-/** Audit row, notification and mail to every superadmin for an approved change. */
-async function auditApproval(
-  c: Context<AppEnv>,
-  input: {
-    parsed: KeysetStatement
-    pin: KeysetPin & { custodians: MarkedCustodian[] }
-    marks: CustodianMark[]
-    unmark: string[]
-    state: 'awaiting_key' | 'live'
-    pinnedApprovals: string[]
-  }
-): Promise<void> {
+type ApprovalFacts = {
+  parsed: KeysetStatement
+  pin: KeysetPin & { custodians: MarkedCustodian[] }
+  marks: CustodianMark[]
+  unmark: string[]
+  state: 'awaiting_key' | 'live'
+  pinnedApprovals: string[]
+}
+
+/**
+ * The audit action and context of an approved change; the mail to every
+ * superadmin renders from this context (`panel.key_changed`,
+ * `panel.approvers_changed`). `marked` and `unmarked` name the passkeys each
+ * way, so a statement that does both says both. Pure, so tests render it.
+ */
+export function approvalAudit(input: ApprovalFacts): Pick<AuditEntry, 'action' | 'context'> {
   const { parsed, pin, marks, unmark } = input
-  const session = c.get('session')
   const approver = pin.custodians.find((a) => input.pinnedApprovals.includes(a.id))
-  const unmarkedLabels = pin.custodians.filter((a) => unmark.includes(a.id)).map((a) => a.label)
-  await recordKeyEvent(c, {
-    organizationId: null,
-    actorUserId: session?.userId ?? null,
-    actorEmail: session?.email ?? null,
+  const unmarked = pin.custodians
+    .filter((a) => unmark.includes(a.id))
+    .map((a) => a.label ?? 'a passkey')
+  const marked = marks.map((m) => m.label ?? 'a passkey')
+  return {
     action: auditAction(parsed, marks),
-    targetType: 'instance',
     context: {
       kind: parsed.kind,
       keyset: parsed.keyset,
       oldFingerprint: parsed.prev,
       newFingerprint: parsed.current.kid,
       passkey: approver?.label ?? marks[0]?.label ?? null,
-      passkeys: (marks.length > 0 ? marks.map((m) => m.label) : unmarkedLabels).join(', '),
+      marked: marked.length > 0 ? marked.join(', ') : null,
+      unmarked: unmarked.length > 0 ? unmarked.join(', ') : null,
       state: input.state,
     },
+  }
+}
+
+/** Audit row, notification and mail to every superadmin for an approved change. */
+async function auditApproval(c: Context<AppEnv>, input: ApprovalFacts): Promise<void> {
+  const session = c.get('session')
+  await recordKeyEvent(c, {
+    organizationId: null,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    targetType: 'instance',
+    ...approvalAudit(input),
   })
+}
+
+/**
+ * Self-hosted: swap the running key for the stored one. The change is already
+ * committed, so a failure here must not skip the audit row and the mail; it
+ * is logged, and the control plane signs with the old key until it restarts.
+ */
+async function reloadIdentity(opts: KeyRotationOptions, keyset: number): Promise<void> {
+  if (opts.runtime !== 'deno') return
+  try {
+    await opts.onIdentityChanged?.()
+  } catch (err) {
+    logWarn(
+      'key-rotation',
+      `key set ${keyset} is stored but the running control plane did not reload its key (${
+        err instanceof Error ? err.name : 'unknown'
+      }); restart the control plane`
+    )
+  }
+}
+
+type CheckedApproval = {
+  envelope: KeysetEnvelope
+  parsed: KeysetStatement
+  pinnedApprovals: string[]
+}
+
+/** Every check between the request body and the store; a Response is the refusal. */
+async function checkApproval(
+  c: Context<AppEnv>,
+  body: ApproveBody,
+  loaded: Loaded
+): Promise<CheckedApproval | Response> {
+  const { pin } = loaded
+  const approvals = await approvalsById(body)
+  const envelope = approvals ? parseKeysetEnvelope({ statement: body.statement, approvals }) : null
+  const bytes = envelope ? decodeBase64urlStrict(envelope.statement) : null
+  const parsed = bytes ? parseKeysetStatement(bytes) : null
+  if (!envelope || !parsed) {
+    return refuse(c, 422, 'invalid_statement', 'The change did not arrive intact. Start again.')
+  }
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const early = refuseBeforeVerify(c, parsed, pin, nowSeconds)
+  if (early) return early
+  if (!approvalsFromOwnOrigin(envelope.approvals, loaded.origins)) {
+    return refuse(
+      c,
+      422,
+      'approval_origin',
+      "Approve this change on this control plane's own address, then start again."
+    )
+  }
+  const verified = await verifyKeysetEnvelope(envelope, pin, nowSeconds)
+  if (!verified.ok) {
+    logWarn('key-rotation', `key set ${parsed.keyset} not approved: ${verified.reason}`)
+    return refuse(c, 422, 'approval_refused', refusalWords(verified.reason))
+  }
+  return { envelope, parsed, pinnedApprovals: verified.pinnedApprovals }
 }
 
 async function approve(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Response> {
@@ -484,25 +668,15 @@ async function approve(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Re
   const loaded = await load(c, opts)
   if (loaded instanceof Response) return loaded
   const { db, pin } = loaded
-  const session = c.get('session')
-  const approvals = await Promise.all(
-    body.approvals.map(async (a) => ({
-      id: await rotationPasskeyId(a.credentialId),
-      authenticatorData: a.authenticatorData,
-      clientDataJSON: a.clientDataJSON,
-      signature: a.signature,
-    }))
-  )
-  const envelope = parseKeysetEnvelope({ statement: body.statement, approvals })
-  const parsed = envelope ? parseKeysetStatement(base64urlDecode(envelope.statement)) : null
-  if (!envelope || !parsed) {
-    return refuse(c, 422, 'invalid_statement', 'The statement is malformed.')
+  // A waiting key change owns the next key set: anything approved now would
+  // go live ahead of it and the waiting change could then never apply.
+  if (await readAwaitingKeyStatement(db)) {
+    return refuse(c, 409, 'awaiting_key', AWAITING_KEY_MESSAGE)
   }
-  const nowSeconds = Math.floor(Date.now() / 1000)
-  const early = refuseBeforeVerify(c, parsed, pin, nowSeconds)
-  if (early) return early
-  const verified = await verifyKeysetEnvelope(envelope, pin, nowSeconds)
-  if (!verified.ok) return refuse(c, 422, 'approval_refused', `Not approved: ${verified.reason}.`)
+  const checked = await checkApproval(c, body, loaded)
+  if (checked instanceof Response) return checked
+  const { envelope, parsed } = checked
+  const session = c.get('session')
   const marks = await addedMarks(db, session?.userId ?? '', parsed, pin)
   if (!marks) return refuse(c, 422, 'passkey_not_yours', 'Mark one of your own sign-in passkeys.')
   const unmark = pin.passkeys
@@ -525,16 +699,60 @@ async function approve(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Re
   if (stored === 'pending_key_changed') {
     return refuse(c, 409, 'pending_key_changed', 'The new key changed. Start again.')
   }
-  if (opts.runtime === 'deno') await opts.onIdentityChanged?.()
+  await reloadIdentity(opts, parsed.keyset)
   await auditApproval(c, {
     parsed,
     pin,
     marks,
     unmark,
     state,
-    pinnedApprovals: verified.pinnedApprovals,
+    pinnedApprovals: checked.pinnedApprovals,
   })
   return c.json({ ok: true, keyset: parsed.keyset, kind: parsed.kind, state, envelope })
+}
+
+/**
+ * Cancel a High Availability key change that waits for its key. Allowed only
+ * while this control plane does not sign with that key: the delete itself
+ * carries the condition, so a change that just went live is never removed.
+ * It cannot see a key the terminal stored a moment ago that this isolate has
+ * not loaded yet, which is why the screen asks the owner to cancel only when
+ * the rotation command did not store the key.
+ */
+async function cancelWaiting(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Response> {
+  const keyset = Number(c.req.param('keyset'))
+  if (!Number.isSafeInteger(keyset)) return refuse(c, 404, 'not_found', 'Not found')
+  const stepUp = await requireInstanceStepUp(c, 'panel.key.change')
+  if (stepUp) return stepUp
+  const loaded = await load(c, opts)
+  if (loaded instanceof Response) return loaded
+  const { db, identity } = loaded
+  const removed = await deleteAwaitingStatement(db, keyset, identity.current.kid)
+  if (!removed) {
+    const found = await readStatement(db, keyset)
+    if (!found) return refuse(c, 404, 'not_found', 'Not found')
+    return refuse(
+      c,
+      409,
+      'not_waiting',
+      'This change is already in use by servers and cannot be cancelled.'
+    )
+  }
+  const session = c.get('session')
+  await recordAudit(db, {
+    organizationId: null,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    action: 'panel.key.cancel',
+    targetType: 'instance',
+    context: {
+      kind: removed.kind,
+      keyset: removed.keyset,
+      oldFingerprint: removed.prevKid,
+      newFingerprint: removed.currentKid,
+    },
+  })
+  return c.json({ ok: true, keyset: removed.keyset, cancelled: true })
 }
 
 async function prepare(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Response> {
@@ -545,12 +763,7 @@ async function prepare(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Re
   const loaded = await load(c, opts)
   if (loaded instanceof Response) return loaded
   if (await readAwaitingKeyStatement(loaded.db)) {
-    return refuse(
-      c,
-      409,
-      'awaiting_key',
-      'A key change is waiting for its new key. Finish the command in your terminal first.'
-    )
+    return refuse(c, 409, 'awaiting_key', AWAITING_KEY_MESSAGE)
   }
   const planned =
     body.kind === 'passkeys'
@@ -606,7 +819,9 @@ async function readRotation(c: Context<AppEnv>, opts: KeyRotationOptions): Promi
     canRotate: pin.passkeys.length >= MIN_PASSKEYS_TO_ROTATE && awaiting === null,
     hasDeviceBound: marked.some((c) => c.isDeviceBound),
     passkeys: candidates,
-    awaitingKey: awaiting ? { keyset: awaiting.keyset, newFingerprint: awaiting.currentKid } : null,
+    awaitingKey: awaiting
+      ? { keyset: awaiting.keyset, kind: awaiting.kind, newFingerprint: awaiting.currentKid }
+      : null,
     statements: statements.map((s) => ({
       keyset: s.keyset,
       kind: s.kind,
@@ -632,4 +847,5 @@ export function registerKeyRotationRoutes(admin: Hono<AppEnv>, opts: KeyRotation
     c.header('content-disposition', `attachment; filename="key-set-${found.keyset}.json"`)
     return c.json(found.envelope)
   })
+  admin.delete('/instance/identity/statements/:keyset', rootOnly, (c) => cancelWaiting(c, opts))
 }

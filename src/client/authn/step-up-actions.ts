@@ -63,7 +63,6 @@ export const STEP_UP_ACTIONS = {
  * routes under `src/admin/` and `src/platform/deno/ingress/`.
  */
 export const INSTANCE_STEP_UP_ACTIONS = {
-  'panel.identity_next.set': "Change the control plane's next key",
   'panel.key.change': "Change the control plane's key or the passkeys that approve it",
   'server.sealing_key.clear': "Clear a server's sealing key",
   'instance.tunnel_token.set': 'Change the tunnel token',

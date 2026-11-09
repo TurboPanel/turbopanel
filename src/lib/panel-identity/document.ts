@@ -35,8 +35,10 @@ export type IdentityChainState = {
 }
 
 /**
- * The document for `identity`. The panel holds no public key for `next`, only
- * its fingerprint, so that entry has an empty `pub` and daemons pin by `kid`.
+ * The document for `identity`. Only the current key is listed: the `next`
+ * key is retired (key changes are key-set statements), so a stored one is no
+ * longer written here and servers stop accepting it at their next read.
+ * Readers still take a document that lists `role: "next"`.
  */
 export function buildIdentityDocument(
   identity: PanelIdentity,
@@ -52,9 +54,6 @@ export function buildIdentityDocument(
       role: 'current',
     },
   ]
-  if (identity.next) {
-    keys.push({ kid: identity.next.kid, alg: 'Ed25519', pub: '', role: 'next' })
-  }
   return {
     v: 1,
     keys,

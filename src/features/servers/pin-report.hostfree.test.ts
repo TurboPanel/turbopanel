@@ -1,10 +1,11 @@
-import { assertEquals } from '@std/assert'
+import { assert, assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { base64urlEncode } from '../../lib/encoding/base64url.ts'
 import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
-import { pinReportSigningInput } from '../../daemon/authn/pin-report.ts'
+import { pinPasskeysSigningInput, pinReportSigningInput } from '../../daemon/authn/pin-report.ts'
 import { intakeHelloPinReport } from '../../daemon/pin-report-intake.ts'
-import { recordPinReport, type VerifiedPinReport } from './pin-report.ts'
+import { describeEvent } from '../notifications/events.ts'
+import { pinPasskeysMatch, recordPinReport, type VerifiedPinReport } from './pin-report.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -231,4 +232,130 @@ test('the hello intake verifies the report, then reads the identity and records 
   // No identity loaded: nothing to compare with, nothing written.
   await intakeHelloPinReport({ ...fields, sig }, { ...base, identity: () => Promise.resolve(null) })
   assertEquals(writes.length, 1)
+})
+
+const HASH_OLD = 'o'.repeat(43)
+const HASH_NOW = 'n'.repeat(43)
+
+test('rotation passkeys: behind, unknown and unreported are not a mismatch', () => {
+  const at = (keyset: number, passkeys?: string): VerifiedPinReport => ({
+    pinnedBy: 'install',
+    current: FP_A,
+    keyset,
+    ...(passkeys === undefined ? {} : { passkeys }),
+  })
+  const kids = { current: FP_A, passkeys: HASH_NOW, keyset: 3 }
+  // An older daemon, and a server that has not learned the passkeys yet.
+  assertEquals(pinPasskeysMatch(at(3), kids), true)
+  assertEquals(pinPasskeysMatch(at(3, ''), kids), true)
+  // Behind: it holds an earlier key set and catches up on its daily read.
+  assertEquals(pinPasskeysMatch(at(2, HASH_OLD), kids), true)
+  // At the live key set with another set: a real mismatch.
+  assertEquals(pinPasskeysMatch(at(3, HASH_OLD), kids), false)
+  assertEquals(pinPasskeysMatch(at(3, HASH_NOW), kids), true)
+  // The marked set could not be read: unknown is never a mismatch.
+  assertEquals(pinPasskeysMatch(at(3, HASH_OLD), { current: FP_A, keyset: 3 }), true)
+  // None marked here, yet the server pinned some: a mismatch.
+  assertEquals(
+    pinPasskeysMatch(at(3, HASH_OLD), { current: FP_A, passkeys: null, keyset: 3 }),
+    false
+  )
+})
+
+test('a passkeys mismatch says both sides, in the audit row and in the mail', async () => {
+  const { db, writes } = fakeDb({
+    organizationId: 'o1',
+    name: 'kappa',
+    fingerprint: null,
+    matching: null,
+  })
+  const r = recorder()
+  const pinned = { ...report(FP_A), keyset: 3, passkeys: HASH_OLD }
+  const kids = { current: FP_A, passkeys: HASH_NOW, keyset: 3 }
+  assertEquals(await recordPinReport(db, undefined, 's1', pinned, kids, r.deps), true)
+  assertEquals(writes[0]?.isTrustPinMatching, false)
+  const audit = r.audits[0] as { context: Record<string, unknown> }
+  assertEquals(audit.context, {
+    reported: FP_A,
+    expected: FP_A,
+    keyset: 3,
+    expectedKeyset: 3,
+    reportedPasskeys: HASH_OLD,
+    expectedPasskeys: HASH_NOW,
+  })
+  const emitted = r.emits[0] as { context: Record<string, string> }
+  assertEquals(emitted.context, {
+    serverName: 'kappa',
+    reported: FP_A,
+    expected: FP_A,
+    reportedPasskeys: HASH_OLD,
+    expectedPasskeys: HASH_NOW,
+  })
+  const mail = describeEvent('panel.pin_mismatch', emitted.context)
+  assertEquals(mail.title, 'Server kappa reported different rotation passkeys')
+  const body = mail.body ?? ''
+  assert(body.includes(HASH_OLD) && body.includes(HASH_NOW), body)
+  // The wrong-key mail still names the two keys.
+  const otherKey = describeEvent('panel.pin_mismatch', {
+    serverName: 'kappa',
+    reported: FP_B,
+    expected: FP_A,
+  })
+  assertEquals(otherKey.title, 'Server kappa reported a different control plane key')
+  const otherBody = otherKey.body ?? ''
+  assert(otherBody.includes(FP_B) && otherBody.includes(FP_A), otherBody)
+
+  // The same server one key set behind: recorded as matching, nothing raised.
+  const behind = fakeDb({ organizationId: 'o1', name: 'kappa', fingerprint: null, matching: null })
+  const quiet = recorder()
+  assertEquals(
+    await recordPinReport(behind.db, undefined, 's1', { ...pinned, keyset: 2 }, kids, quiet.deps),
+    false
+  )
+  assertEquals(behind.writes[0]?.isTrustPinMatching, true)
+  assertEquals(behind.writes[0]?.trustPinPasskeys, HASH_OLD)
+  assertEquals([quiet.audits.length, quiet.emits.length], [0, 0])
+})
+
+test('the hello intake: a failed read of the marked passkeys does not flag the server', async () => {
+  const pair = (await crypto.subtle.generateKey('Ed25519', true, [
+    'sign',
+    'verify',
+  ])) as CryptoKeyPair
+  const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
+  const iat = Math.floor(Date.now() / 1000)
+  const ctx = { sessionId: 'sess-1', serverId: 's1', keyId: 'key-1' }
+  const fields = { pinnedBy: 'install', current: FP_A, keyset: 2, iat }
+  const sign = async (input: string) =>
+    base64urlEncode(
+      new Uint8Array(
+        await crypto.subtle.sign('Ed25519', pair.privateKey, new TextEncoder().encode(input))
+      )
+    )
+  const sig = await sign(pinReportSigningInput({ ...ctx, ...fields }))
+  const passkeysSig = await sign(pinPasskeysSigningInput({ ...ctx, passkeys: HASH_OLD, iat }))
+  // This double has no `orderBy`, so the marked passkeys read throws.
+  const { db, writes } = fakeDb({
+    organizationId: 'o1',
+    name: 'kappa',
+    fingerprint: null,
+    matching: null,
+  })
+  await intakeHelloPinReport(
+    { ...fields, sig, passkeys: HASH_OLD, passkeysSig },
+    {
+      ...ctx,
+      publicJwk,
+      secrets: undefined,
+      identity: () =>
+        Promise.resolve({
+          current: { kid: FP_A },
+          next: null,
+          keyset: 2,
+        } as unknown as PanelIdentity),
+      withDb: (fn: (db: Db) => Promise<boolean>) => fn(db),
+    }
+  )
+  assertEquals(writes[0]?.trustPinPasskeys, HASH_OLD)
+  assertEquals(writes[0]?.isTrustPinMatching, true)
 })

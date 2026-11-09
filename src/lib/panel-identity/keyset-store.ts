@@ -4,7 +4,7 @@
  * the database (High Availability has no writable key store). Every function
  * takes the caller's database client; nothing here holds one.
  */
-import { and, asc, desc, eq, gt, inArray, isNull, max } from 'drizzle-orm'
+import { and, asc, desc, eq, gt, inArray, isNull, max, ne } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { custodian, rotation } from '../../db/schema.ts'
 import {
@@ -76,14 +76,16 @@ export async function liveKeyset(db: Db, identity: PanelIdentity): Promise<numbe
 export async function controlPlanePin(
   db: Db,
   identity: PanelIdentity,
-  fallbackRpId: string
+  /** The configured primary hostname, used until the first mark freezes one; null with none. */
+  fallbackRpId: string | null
 ): Promise<KeysetPin & { custodians: MarkedCustodian[] }> {
   const custodians = await listMarkedCustodians(db)
   const state = rotationStateOf(custodians)
   return {
     current: identity.current.kid,
     keyset: Math.max(identity.keyset, await maxKeyset(db, false)),
-    rpId: state?.rpId ?? fallbackRpId,
+    // Empty only with nothing marked and no hostname configured: the routes refuse a mark then.
+    rpId: state?.rpId ?? fallbackRpId ?? '',
     passkeys: state?.passkeys ?? [],
     custodians,
   }
@@ -206,6 +208,37 @@ export async function markAwaitingStatementLive(db: Db, loadedKid: string): Prom
     .where(and(eq(rotation.state, 'awaiting_key'), eq(rotation.currentKid, loadedKid)))
     .returning({ keyset: rotation.keyset })
   return updated.length > 0
+}
+
+/**
+ * Cancel a key change that waits for its key (High Availability, when the
+ * rotation command stopped before it stored the key). One conditional delete:
+ * it removes nothing once the statement is live, or when the loaded key is
+ * already its new key. Servers never saw a waiting statement, and a key
+ * change marks or unmarks nothing, so no other row refers to it.
+ */
+export async function deleteAwaitingStatement(
+  db: Db,
+  keyset: number,
+  loadedKid: string
+): Promise<{ keyset: number; kind: string; prevKid: string; currentKid: string } | null> {
+  const deleted = await db
+    .delete(rotation)
+    .where(
+      and(
+        eq(rotation.keyset, keyset),
+        eq(rotation.state, 'awaiting_key'),
+        ne(rotation.kind, 'passkeys'),
+        ne(rotation.currentKid, loadedKid)
+      )
+    )
+    .returning({
+      keyset: rotation.keyset,
+      kind: rotation.kind,
+      prevKid: rotation.prevKid,
+      currentKid: rotation.currentKid,
+    })
+  return deleted[0] ?? null
 }
 
 export type StatementInsert = {

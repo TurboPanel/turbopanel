@@ -4,7 +4,8 @@
  * The daemon signs what its pin file holds (`src/daemon/authn/pin-report.ts`);
  * only a verified report reaches here. The columns record what it said and
  * whether that key is this control plane's current or next key. A report
- * that does not match raises `panel.pin_mismatch` (audit `server.panel_pin.mismatch`)
+ * that does not match (another key, or other rotation passkeys at the live
+ * key set) raises `panel.pin_mismatch` (audit `server.panel_pin.mismatch`)
  * once per reported fingerprint, not once per connect. Never throws into the
  * session: a failed write or alert is logged and the next report retries.
  *
@@ -30,9 +31,16 @@ export type VerifiedPinReport = {
 
 /**
  * The control plane keys a server may have pinned: current, and next when
- * set; `passkeys` is the hash of the marked rotation passkeys (null with none).
+ * set. `passkeys` is the hash of the marked rotation passkeys: null with none
+ * marked, undefined when it could not be read (unknown is never a mismatch).
+ * `keyset` is the live key set, when known.
  */
-export type ControlPlaneKids = { current: string; next?: string | null; passkeys?: string | null }
+export type ControlPlaneKids = {
+  current: string
+  next?: string | null
+  passkeys?: string | null | undefined
+  keyset?: number | undefined
+}
 
 export type PinReportDeps = {
   /** Test seams. */
@@ -49,10 +57,14 @@ export function pinReportMatches(report: VerifiedPinReport, kids: ControlPlaneKi
 /**
  * Whether the reported rotation passkeys are this control plane's. A server
  * that has not learned them yet ("") or does not report them is not a
- * mismatch: it simply cannot follow a rotation yet.
+ * mismatch: it simply cannot follow a rotation yet. Neither is a server whose
+ * key set is below the live one: it is behind (it re-reads the document once
+ * a day) and will catch up.
  */
 export function pinPasskeysMatch(report: VerifiedPinReport, kids: ControlPlaneKids): boolean {
   if (report.passkeys === undefined || report.passkeys === '') return true
+  if (kids.passkeys === undefined) return true
+  if (kids.keyset !== undefined && report.keyset < kids.keyset) return true
   return report.passkeys === (kids.passkeys ?? '')
 }
 
@@ -78,9 +90,12 @@ export async function recordPinReport(
       .limit(1)
     if (!row) return false
     // An unsafe install pins nothing: that is shown as its own state, not a mismatch.
-    const matching =
-      report.pinnedBy === 'unsafe' ||
-      (pinReportMatches(report, kids) && pinPasskeysMatch(report, kids))
+    const keyMatches = pinReportMatches(report, kids)
+    const matching = report.pinnedBy === 'unsafe' || (keyMatches && pinPasskeysMatch(report, kids))
+    // With the right key, the alarm is about the passkeys: say both sides of that.
+    const passkeysContext = keyMatches
+      ? { reportedPasskeys: report.passkeys ?? '', expectedPasskeys: kids.passkeys ?? '' }
+      : {}
     await db
       .update(server)
       .set({
@@ -108,7 +123,9 @@ export async function recordPinReport(
         reported: report.current,
         expected: kids.current,
         keyset: report.keyset,
-        ...(report.passkeys ? { reportedPasskeys: report.passkeys } : {}),
+        ...(kids.keyset === undefined ? {} : { expectedKeyset: kids.keyset }),
+        ...(report.passkeys && !keyMatches ? { reportedPasskeys: report.passkeys } : {}),
+        ...passkeysContext,
       },
     })
     if (row.organizationId) {
@@ -118,7 +135,12 @@ export async function recordPinReport(
         {
           event: 'panel.pin_mismatch',
           organizationId: row.organizationId,
-          context: { serverName: row.name, reported: report.current, expected: kids.current },
+          context: {
+            serverName: row.name,
+            reported: report.current,
+            expected: kids.current,
+            ...passkeysContext,
+          },
           targetType: 'server',
           targetId: serverId,
         },

@@ -40,14 +40,13 @@ test('serialized bytes keep the declared key order and a 30 day lifetime', async
   assertEquals(parsed.urls, URLS)
 })
 
-test('next has its fingerprint as kid and an empty pub', async () => {
+test('the retired next key is not written: only the current key is listed', async () => {
   const doc = buildIdentityDocument(await fixtureIdentity(true), URLS, NOW)
-  assertEquals(doc.keys[1], {
-    kid: FIXTURE_NEXT_FINGERPRINT,
-    alg: 'Ed25519',
-    pub: '',
-    role: 'next',
-  })
+  assertEquals(
+    doc.keys.map((key) => key.role),
+    ['current']
+  )
+  assert(!serializeIdentityDocument(doc).includes(FIXTURE_NEXT_FINGERPRINT))
   assertEquals(buildIdentityDocument(await fixtureIdentity(), URLS, NOW).keys.length, 1)
 })
 

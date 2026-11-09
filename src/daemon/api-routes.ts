@@ -38,7 +38,10 @@ import { resolveIssuedPrivateKey } from './issued-private-key.ts'
 import { buildSecretsDecryptAnswer, databaseDecryptAnswerSource } from './secrets-decrypt-answer.ts'
 import { registerDaemonSealingKey } from './sealing-key-registration.ts'
 import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
-import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
+import {
+  createIdentityChainCache,
+  createIdentityDocumentCache,
+} from '../lib/panel-identity/document-cache.ts'
 import {
   type IdentityChainState,
   IDENTITY_SIGNATURE_HEADER,
@@ -46,8 +49,9 @@ import {
 import {
   identityChainState,
   listLiveStatements,
-  markAwaitingStatementLive,
+  readAwaitingKeyStatement,
 } from '../lib/panel-identity/keyset-store.ts'
+import { isPanelFingerprint } from '../lib/panel-identity/fingerprint.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import { signDaemonResponses } from '../lib/panel-identity/signed-response.ts'
 import {
@@ -1391,6 +1395,8 @@ function spendChallenge(db: Db, challenge: { nonce: string; at: string }): Promi
 }
 
 /** `?after=` of the statements route: absent means 0. */
+const NO_STATEMENTS_BODY = JSON.stringify({ statements: [] })
+
 function parseStatementsAfter(raw: string | undefined): number | null {
   if (raw === undefined || raw === '') return 0
   return /^\d{1,9}$/.test(raw) ? Number(raw) : null
@@ -1593,6 +1599,7 @@ export function registerDaemonApiRoutes<E extends Env>(
   const { secrets, challengeSigningSecrets, secretsConfig } = options
   const runtime = options.runtime ?? 'workers'
   const identityDocumentCache = createIdentityDocumentCache()
+  const identityChainCache = createIdentityChainCache()
   daemon.use('*', signDaemonResponses(options.panelIdentity))
   if (options.onCredentialRefusal) {
     daemon.use('*', credentialRefusalMiddleware(options.onCredentialRefusal))
@@ -1937,7 +1944,12 @@ export function registerDaemonApiRoutes<E extends Env>(
     let chain: IdentityChainState | undefined
     try {
       urls = db && options.identityUrls ? await options.identityUrls(db) : []
-      chain = db && options.identityChain ? await identityChainState(db, identity) : undefined
+      // Anonymous route: the chain is read from the database at most once per
+      // cache window (data only is kept; the client is this request's own).
+      chain =
+        db && options.identityChain
+          ? await identityChainCache.state(identity, () => identityChainState(db, identity))
+          : undefined
     } catch (err) {
       // A connection dropped mid-flight is replayed once by the Workers entry.
       if (isConnectionClosedError(err)) throw err
@@ -1967,13 +1979,67 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
     const after = parseStatementsAfter(c.req.query('after'))
     if (after === null) return c.json({ error: 'after must be a non-negative integer' }, 400)
+    const answer = (body: string) =>
+      c.body(body, 200, { 'content-type': 'application/json', 'Cache-Control': 'no-store' })
     try {
-      await markAwaitingStatementLive(db, identity.current.kid)
-      const statements = await listLiveStatements(db, after)
-      return c.body(JSON.stringify({ statements }), 200, {
-        'content-type': 'application/json',
-        'Cache-Control': 'no-store',
-      })
+      // Reading the chain state also turns a waiting statement live once the
+      // loaded key is its new key.
+      const chain = await identityChainCache.state(identity, () => identityChainState(db, identity))
+      if (after >= chain.keyset) return answer(NO_STATEMENTS_BODY)
+      const held = identityChainCache.page(identity, after)
+      if (held !== null) return answer(held)
+      // Only a page nobody asked for lately reaches the database, and that is
+      // charged to the caller's address.
+      const limited = await enforceDaemonRestLimit(
+        c,
+        daemonPreProofRateLimitKey('identity-statements', preProofPeer(c))
+      )
+      if (limited) return limited
+      const body = JSON.stringify({ statements: await listLiveStatements(db, after) })
+      identityChainCache.keepPage(identity, after, body)
+      return answer(body)
+    } catch (err) {
+      if (isConnectionClosedError(err)) throw err
+      logWarn('daemon-api', `identity statements: database unavailable: ${describeError(err)}`)
+      return c.json({ error: 'database unavailable' }, 503)
+    }
+  })
+
+  // Public, no auth: whether an approved key change waits for the key with
+  // this fingerprint (High Availability). The rotation command asks before it
+  // stores the key, so it never stores one no approved change leads to. Only
+  // someone who already holds the new key's fingerprint can ask about it, and
+  // the answer carries no approval.
+  daemon.get('/instance/identity/statements/waiting/:fingerprint', async (c) => {
+    const identity = options.panelIdentity ? await options.panelIdentity() : null
+    const db = getDb(c)
+    if (!identity || !db || !options.identityChain) {
+      return c.json({ error: 'panel identity not configured' }, 404)
+    }
+    const fingerprint = c.req.param('fingerprint')
+    if (!isPanelFingerprint(fingerprint)) return c.json({ error: 'not a fingerprint' }, 400)
+    const limited = await enforceDaemonRestLimit(
+      c,
+      daemonPreProofRateLimitKey('identity-statements', preProofPeer(c))
+    )
+    if (limited) return limited
+    try {
+      const waiting = await readAwaitingKeyStatement(db)
+      if (waiting?.currentKid !== fingerprint) {
+        return c.json({ error: 'no change waits for this key' }, 404, {
+          'Cache-Control': 'no-store',
+        })
+      }
+      return c.json(
+        {
+          keyset: waiting.keyset,
+          kind: waiting.kind,
+          prev: waiting.prevKid,
+          current: waiting.currentKid,
+        },
+        200,
+        { 'Cache-Control': 'no-store' }
+      )
     } catch (err) {
       if (isConnectionClosedError(err)) throw err
       logWarn('daemon-api', `identity statements: database unavailable: ${describeError(err)}`)

@@ -136,7 +136,10 @@ export const INSTANCE_ACCESS_PATHS = {
         '200': { description: '`{ ok: true, statement, challenge, rpId, keyset }`' },
         '401': { description: 'Unauthorized' },
         '403': { description: 'Forbidden, or `reauth_required`' },
-        '409': { description: 'Not enough passkeys marked, or a change awaits its key' },
+        '409': {
+          description:
+            'Not enough passkeys marked, a change awaits its key, or no primary hostname is set',
+        },
         '422': { description: 'Malformed body or a passkey that cannot be marked' },
       },
     },
@@ -155,7 +158,10 @@ export const INSTANCE_ACCESS_PATHS = {
         '200': { description: '`{ ok: true, keyset, kind, state, envelope }`' },
         '401': { description: 'Unauthorized' },
         '403': { description: 'Forbidden, or `reauth_required`' },
-        '409': { description: 'Another change was approved first, or the approval expired' },
+        '409': {
+          description:
+            'Another change was approved first, the approval expired, or a change awaits its key',
+        },
         '422': { description: 'The approvals do not verify' },
       },
     },
@@ -172,6 +178,23 @@ export const INSTANCE_ACCESS_PATHS = {
       responses: {
         '200': { description: 'The envelope `{ statement, approvals }`' },
         '404': { description: 'Not found' },
+      },
+    },
+    delete: {
+      tags: ['Instance'],
+      summary: 'Cancel a key change that waits for its key',
+      description:
+        'High Availability: removes an approved rotate or revoke statement that still waits ' +
+        'for the rotation command to store its key, so a new change can be prepared. Refused ' +
+        'once the control plane signs with that key. Audited. Superadmin, step-up.',
+      security: [...cookieSecurity],
+      parameters: [{ name: 'keyset', in: 'path', required: true, schema: { type: 'integer' } }],
+      responses: {
+        '200': { description: '`{ ok: true, keyset, cancelled: true }`' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden, or `reauth_required`' },
+        '404': { description: 'Not found' },
+        '409': { description: 'The change is live and cannot be cancelled' },
       },
     },
   },

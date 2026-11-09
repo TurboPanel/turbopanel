@@ -453,6 +453,14 @@ export async function listPasskeys(
 
 /** Delete one of the user's passkeys; a marked rotation passkey throws {@link PasskeyMarkedError}. */
 export async function deletePasskey(db: Db, userId: string, passkeyId: string): Promise<boolean> {
+  // Ownership first: the mark check must not tell a caller whether someone
+  // else's passkey is marked.
+  const own = await db
+    .select({ id: passkey.id })
+    .from(passkey)
+    .where(and(eq(passkey.id, passkeyId), eq(passkey.userId, userId)))
+    .limit(1)
+  if (own.length === 0) return false
   if (await isPasskeyMarked(db, passkeyId)) throw new PasskeyMarkedError()
   const deleted = await db
     .delete(passkey)

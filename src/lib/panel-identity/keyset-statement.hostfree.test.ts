@@ -26,13 +26,15 @@ import vectors from '../../test-fixtures/keyset-statement-vectors.json' with { t
 const test = Deno.test.bind(Deno)
 const encoder = new TextEncoder()
 const NOW = vectors.now
+/** The JSON escape for the letter p, built so no tool rewrites it. */
+const ESCAPED_P = `${String.fromCodePoint(92)}u0070`
 
 test('the shared vectors: every forged envelope is refused', async () => {
   for (const vector of vectors.refused) {
     const envelope = parseKeysetEnvelope(vectorEnvelope(vector.envelope))
     assert(envelope, vector.name)
     const result = await verifyKeysetEnvelope(envelope, vector.pin as KeysetPin, NOW)
-    assertEquals(result, { ok: false, reason: vector.reason }, vector.name)
+    assertEquals<unknown>(result, { ok: false, reason: vector.reason }, vector.name)
   }
 })
 
@@ -231,4 +233,92 @@ test('the passkey line and its hash are order independent', async () => {
     await rotationPasskeysHash([a.passkey, b.passkey]),
     await rotationPasskeysHash([b.passkey, a.passkey])
   )
+})
+
+test('only the exact statement bytes verify: other forms of the same JSON are refused', async () => {
+  const [a, b] = [await createSoftPasskey('ES256'), await createSoftPasskey('EdDSA')]
+  const k1 = await softPanelKey()
+  const rpId = 'cp.example.test'
+  const pin: KeysetPin = { current: k1.kid, keyset: 1, rpId, passkeys: [] }
+  const text = serializeKeysetStatement({
+    keyset: 2,
+    prev: k1.kid,
+    kind: 'passkeys',
+    rpId,
+    current: k1,
+    passkeys: [a.passkey, b.passkey],
+    iat: NOW,
+  })
+  // Each approval signs the bytes it is sent with, so only the form is wrong.
+  const verify = async (bytes: Uint8Array) => {
+    const challenge = await keysetStatementChallenge(bytes)
+    return await verifyKeysetEnvelope(
+      {
+        statement: base64urlEncode(bytes),
+        approvals: [
+          await softAssert(a, { rpId, challenge }),
+          await softAssert(b, { rpId, challenge }),
+        ],
+      },
+      pin,
+      NOW
+    )
+  }
+  assert((await verify(encoder.encode(text))).ok)
+
+  const first = [a.passkey, b.passkey].sort((x, y) => (x.id < y.id ? -1 : 1))[0]!
+  const member = `{"id":"${first.id}","alg":"${first.alg}","pub":"${first.pub}"}`
+  const reordered = `{"alg":"${first.alg}","id":"${first.id}","pub":"${first.pub}"}`
+  assertStringIncludes(text, member)
+  const withMark = new Uint8Array([0xef, 0xbb, 0xbf, ...encoder.encode(text)])
+  const variants: [string, Uint8Array][] = [
+    ['a decimal key set', encoder.encode(text.replace('"keyset":2,', '"keyset":2.0,'))],
+    ['an exponent key set', encoder.encode(text.replace('"keyset":2,', '"keyset":2e0,'))],
+    ['passkey members in another order', encoder.encode(text.replace(member, reordered))],
+    ['a leading byte order mark', withMark],
+    ['a trailing newline', encoder.encode(`${text}\n`)],
+    ['a space after a colon', encoder.encode(text.replace('"v":1', '"v": 1'))],
+    [
+      'an escaped letter',
+      encoder.encode(text.replace('"kind":"passkeys"', `"kind":"${ESCAPED_P}asskeys"`)),
+    ],
+    ['a repeated member', encoder.encode(text.replace('{"type":', '{"type":"x","type":'))],
+  ]
+  for (const [name, bytes] of variants) {
+    // Parsing alone takes these: the exact-bytes rule is what refuses them.
+    assert(parseKeysetStatement(bytes) !== null, name)
+    assertEquals(await verify(bytes), { ok: false, reason: 'statement is malformed' }, name)
+  }
+})
+
+test('a statement in base64url with stray trailing bits is refused', async () => {
+  const a = await createSoftPasskey('ES256')
+  const k1 = await softPanelKey()
+  const rpId = 'cp.example.test'
+  const bytes = encoder.encode(
+    serializeKeysetStatement({
+      keyset: 2,
+      prev: k1.kid,
+      kind: 'passkeys',
+      rpId,
+      current: k1,
+      passkeys: [a.passkey],
+      iat: NOW,
+    })
+  )
+  const challenge = await keysetStatementChallenge(bytes)
+  const approvals = [await softAssert(a, { rpId, challenge })]
+  const pin: KeysetPin = { current: k1.kid, keyset: 1, rpId, passkeys: [] }
+  const canonical = base64urlEncode(bytes)
+  assert((await verifyKeysetEnvelope({ statement: canonical, approvals }, pin, NOW)).ok)
+  // Find a spelling that decodes to the same bytes but is not the one an encoder writes.
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+  const last = alphabet.indexOf(canonical.at(-1)!)
+  const padBits = canonical.length % 4 === 2 ? 4 : canonical.length % 4 === 3 ? 2 : 0
+  if (padBits === 0) return
+  const stray = canonical.slice(0, -1) + alphabet[last + 1]!
+  assertEquals(await verifyKeysetEnvelope({ statement: stray, approvals }, pin, NOW), {
+    ok: false,
+    reason: 'statement is not base64url',
+  })
 })
