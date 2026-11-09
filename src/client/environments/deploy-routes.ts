@@ -2692,6 +2692,16 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     // So the trees go out as `releaseCleanup`, never as `siteReleases`.
     const releaseCleanup = await resolveEnvironmentSiteReleases(db, environmentId)
     const queued: QueuedCommandRef[] = []
+    const auditDeletedData = async () => {
+      if (dataPlan === null || removeVolumes.length === 0 || queued.length === 0) return
+      await recordDestroyDataAudit(c, db, {
+        organizationId: auth.organizationId,
+        userId: auth.userId,
+        environmentId,
+        plan: dataPlan,
+        queued,
+      })
+    }
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueStopCommand(db, commandQueue, {
         serverId,
@@ -2708,18 +2718,14 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
         releaseCleanup,
         removeVolumes,
       })
-      if (enqueued instanceof Response) return enqueued
+      if (enqueued instanceof Response) {
+        // A server already asked to delete data is recorded even when a later one fails.
+        await auditDeletedData()
+        return enqueued
+      }
       queued.push(enqueued)
     }
-    if (dataPlan !== null && dataPlan.volumes.length > 0) {
-      await recordDestroyDataAudit(c, db, {
-        organizationId: auth.organizationId,
-        userId: auth.userId,
-        environmentId,
-        plan: dataPlan,
-        queued,
-      })
-    }
+    await auditDeletedData()
     await purgeEnvironmentComposeNetworks(db, environmentId)
     const secretsConfig = c.get('secretsConfig')
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
