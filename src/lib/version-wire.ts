@@ -226,6 +226,7 @@ export const DAEMON_WIRE_FEATURES = [
   'dev-host-v1',
   'topology-generation-optional-v1',
   'signed-reports-v1',
+  'panel-bound-session-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -542,6 +543,15 @@ export const INSTALL_TOKEN_V2_FEATURE: DaemonWireFeature = 'install-token-v2'
  * `server.trust_level` do, because the list arrives unsigned.
  */
 export const PANEL_IDENTITY_FEATURE: DaemonWireFeature = 'panel-identity-v1'
+
+/**
+ * The daemon offers this in its `hello-nonce` frame. The control plane then
+ * names the server id and the daemon key id inside the signed hello and every
+ * signed frame (`forServer`, `forKey`), and the daemon refuses anything signed
+ * for another server or key. The offer is unsigned, so nothing here decides
+ * enforcement for an older peer: no offer means today's unbound session.
+ */
+export const PANEL_BOUND_SESSION_FEATURE: DaemonWireFeature = 'panel-bound-session-v1'
 
 /** Informational only: every frame after the hello carries a signed envelope. */
 export const PANEL_SIGNED_FRAMES_FEATURE: DaemonWireFeature = 'panel-signed-frames-v1'

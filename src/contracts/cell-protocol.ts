@@ -3116,10 +3116,11 @@ const HELLO_NONCE_PATTERN = /^[A-Za-z0-9_-]{43}$/
  * A pinned daemon's first frame: `{"type":"hello-nonce","nonce":<32 random
  * bytes, base64url>}` and nothing else about itself. The control plane must
  * answer with a signed `hello` echoing the nonce before the daemon sends
- * anything more. Checked before `validateDaemonInboundFrame`, which does not
+ * anything more, except an optional `features` list: `panel-bound-session-v1`
+ * asks for a hello and frames that name the server and key. Checked before `validateDaemonInboundFrame`, which does not
  * know the type. Extra members are ignored. Null for anything else.
  */
-export function parseHelloNonceFrame(raw: string): { nonce: string } | null {
+export function parseHelloNonceFrame(raw: string): { nonce: string; bound: boolean } | null {
   if (raw.length > HELLO_NONCE_MAX_BYTES || !raw.includes('"hello-nonce"')) return null
   let parsed: unknown
   try {
@@ -3128,9 +3129,11 @@ export function parseHelloNonceFrame(raw: string): { nonce: string } | null {
     return null
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
-  const frame = parsed as { type?: unknown; nonce?: unknown }
+  const frame = parsed as { type?: unknown; nonce?: unknown; features?: unknown }
   if (frame.type !== 'hello-nonce' || typeof frame.nonce !== 'string') return null
-  return HELLO_NONCE_PATTERN.test(frame.nonce) ? { nonce: frame.nonce } : null
+  if (!HELLO_NONCE_PATTERN.test(frame.nonce)) return null
+  const bound = Array.isArray(frame.features) && frame.features.includes('panel-bound-session-v1')
+  return { nonce: frame.nonce, bound }
 }
 
 /** Per-outbox-entry identity for queue send/ack/resend semantics. */

@@ -6,7 +6,8 @@
  * The control plane sends nothing until the daemon's first frame arrives. A
  * `hello-nonce` starts a signed session: the answer is a `hello` signed by the
  * identity key, then every frame carries a signed envelope with `seq` 1, 2,
- * ... Any other first frame is an older (or unpinned) daemon: it gets today's
+ * ... When the daemon offers `panel-bound-session-v1` the hello and envelopes
+ * also name the server and daemon key. Any other first frame is an older (or unpinned) daemon: it gets today's
  * unsigned session, unless this server has already used a signed one
  * (`server.trust_level` 1 or more), which closes the socket with 4403.
  */
@@ -15,6 +16,7 @@ import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import {
   envelopeFrame,
   newSignedSession,
+  type SignedSessionBinding,
   type SignedSessionState,
 } from '../lib/panel-identity/signed-session.ts'
 
@@ -34,7 +36,12 @@ export type FirstFrameDecision =
 /** What the first daemon frame on a socket starts. Reads the identity only for a `hello-nonce`. */
 export async function decideFirstFrame(
   raw: string,
-  ctx: { trustLevel: number; panelIdentity?: () => Promise<PanelIdentity | null> }
+  ctx: {
+    trustLevel: number
+    panelIdentity?: () => Promise<PanelIdentity | null>
+    /** The server and daemon key the socket's token named; bound sessions sign them. */
+    binding?: SignedSessionBinding
+  }
 ): Promise<FirstFrameDecision> {
   const nonceFrame = parseHelloNonceFrame(raw)
   if (nonceFrame) {
@@ -43,7 +50,7 @@ export async function decideFirstFrame(
     return {
       kind: 'signed',
       identity,
-      session: newSignedSession(identity.current.kid),
+      session: newSignedSession(identity.current.kid, nonceFrame.bound ? ctx.binding : undefined),
       nonce: nonceFrame.nonce,
     }
   }

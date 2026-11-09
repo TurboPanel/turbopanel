@@ -6,15 +6,43 @@ import { signWithCurrent, type PanelIdentity } from './identity.ts'
  * One signed daemon session: the control plane proves itself with a signed
  * `hello` that echoes the daemon's nonce, then wraps every later frame in an
  * envelope `{sessionId, seq, iat, kid}` plus `sig`. `seq` starts at 1 and the
- * daemon refuses anything but last+1. Workers-safe: no I/O, no Deno APIs.
+ * daemon refuses anything but last+1. When the daemon offered
+ * `panel-bound-session-v1`, the hello and every frame also carry `forServer`
+ * and `forKey` (the server id and daemon key id the socket authenticated as),
+ * so a session signed for one server is useless on another. Workers-safe: no I/O, no Deno APIs.
  */
-export type SignedSessionState = { sessionId: string; nextSeq: number; kid: string }
+export type SignedSessionBinding = { serverId: string; keyId: string }
+export type SignedSessionState = {
+  sessionId: string
+  nextSeq: number
+  kid: string
+  /** Set when the daemon offered `panel-bound-session-v1`: the hello and every frame name these. */
+  bind?: SignedSessionBinding
+}
 
 /** Envelope members every signed frame carries; no wire message may use these names. */
-export const SIGNED_ENVELOPE_FIELDS = ['sessionId', 'seq', 'iat', 'kid', 'sig'] as const
+export const SIGNED_ENVELOPE_FIELDS = [
+  'sessionId',
+  'seq',
+  'iat',
+  'kid',
+  'forServer',
+  'forKey',
+  'sig',
+] as const
 
-export function newSignedSession(kid: string): SignedSessionState {
-  return { sessionId: base64urlEncode(crypto.getRandomValues(new Uint8Array(16))), nextSeq: 1, kid }
+export function newSignedSession(kid: string, bind?: SignedSessionBinding): SignedSessionState {
+  return {
+    sessionId: base64urlEncode(crypto.getRandomValues(new Uint8Array(16))),
+    nextSeq: 1,
+    kid,
+    ...(bind ? { bind } : {}),
+  }
+}
+
+/** The signed members that tie a hello or frame to one server and daemon key (none when unbound). */
+function bindingMembers(bind: SignedSessionBinding | undefined): Record<string, string> {
+  return bind ? { forServer: bind.serverId, forKey: bind.keyId } : {}
 }
 
 function unixSeconds(nowMs: number): number {
@@ -25,7 +53,7 @@ function unixSeconds(nowMs: number): number {
 export async function buildSignedHello(
   identity: PanelIdentity,
   nonce: string,
-  session: Pick<SignedSessionState, 'sessionId'>,
+  session: Pick<SignedSessionState, 'sessionId' | 'bind'>,
   opts: { heartbeatSeconds: number; urls: string[]; nowMs?: number }
 ): Promise<string> {
   const unsigned = JSON.stringify({
@@ -33,6 +61,7 @@ export async function buildSignedHello(
     nonce,
     sessionId: session.sessionId,
     kid: identity.current.kid,
+    ...bindingMembers(session.bind),
     keyset: identity.keyset,
     heartbeatSeconds: opts.heartbeatSeconds,
     urls: opts.urls,
@@ -44,7 +73,7 @@ export async function buildSignedHello(
 /** `wire` with the envelope appended and signed; `session` is not changed (the caller owns `seq`). */
 export async function envelopeFrame(
   identity: PanelIdentity,
-  session: Pick<SignedSessionState, 'sessionId'>,
+  session: Pick<SignedSessionState, 'sessionId' | 'bind'>,
   wire: { type: string },
   seq: number,
   nowMs: number = Date.now()
@@ -61,6 +90,7 @@ export async function envelopeFrame(
     seq,
     iat: unixSeconds(nowMs),
     kid: identity.current.kid,
+    ...bindingMembers(session.bind),
   })
   return appendSignature(
     unsigned,

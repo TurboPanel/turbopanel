@@ -14,6 +14,13 @@ const test = Deno.test.bind(Deno)
 const NONCE = 'b'.repeat(43)
 const NONCE_FRAME = JSON.stringify({ type: 'hello-nonce', nonce: NONCE })
 
+const BOUND_NONCE_FRAME = JSON.stringify({
+  type: 'hello-nonce',
+  nonce: NONCE,
+  features: ['panel-bound-session-v1'],
+})
+const BINDING = { serverId: 'server-a', keyId: 'key-a' }
+
 async function identity(): Promise<PanelIdentity> {
   const loaded = await resolvePanelIdentityFromBinding(await fixtureBindingJson())
   assert(loaded)
@@ -21,10 +28,16 @@ async function identity(): Promise<PanelIdentity> {
 }
 
 test('hello-nonce parses only with type hello-nonce and a 43-character base64url nonce', () => {
-  assertEquals(parseHelloNonceFrame(NONCE_FRAME), { nonce: NONCE })
+  assertEquals(parseHelloNonceFrame(NONCE_FRAME), { nonce: NONCE, bound: false })
   assertEquals(parseHelloNonceFrame(JSON.stringify({ type: 'hello-nonce', nonce: NONCE, x: 1 })), {
     nonce: NONCE,
+    bound: false,
   })
+  assertEquals(parseHelloNonceFrame(BOUND_NONCE_FRAME), { nonce: NONCE, bound: true })
+  assertEquals(
+    parseHelloNonceFrame(JSON.stringify({ type: 'hello-nonce', nonce: NONCE, features: 'x' })),
+    { nonce: NONCE, bound: false }
+  )
   assertEquals(parseHelloNonceFrame(JSON.stringify({ t: 'hello-nonce', nonce: NONCE })), null)
   assertEquals(parseHelloNonceFrame(JSON.stringify({ type: 'hello-nonce', nonce: 'short' })), null)
   assertEquals(parseHelloNonceFrame(JSON.stringify({ type: 'hello', nonce: NONCE })), null)
@@ -43,6 +56,24 @@ test('a hello-nonce opens a signed session with a fresh session at seq 1', async
   assertEquals(decision.nonce, NONCE)
   assertEquals(decision.session.nextSeq, 1)
   assertEquals(decision.session.kid, id.current.kid)
+})
+
+test('the session names the server and key only when the daemon offered the binding', async () => {
+  const id = await identity()
+  const ctx = {
+    trustLevel: 0,
+    panelIdentity: () => Promise.resolve(id),
+    binding: BINDING,
+  }
+  const offered = await decideFirstFrame(BOUND_NONCE_FRAME, ctx)
+  assert(offered.kind === 'signed')
+  assertEquals(offered.session.bind, BINDING)
+  const plain = await decideFirstFrame(NONCE_FRAME, ctx)
+  assert(plain.kind === 'signed')
+  assertEquals(plain.session.bind, undefined)
+  const noBinding = await decideFirstFrame(BOUND_NONCE_FRAME, { ...ctx, binding: undefined })
+  assert(noBinding.kind === 'signed')
+  assertEquals(noBinding.session.bind, undefined)
 })
 
 test('a hello-nonce with no identity key is refused, at any trust level', async () => {

@@ -260,6 +260,8 @@ type SocketSessionAttachment = {
   phase?: DaemonSessionPhase
   trustLevel?: number
   session?: SignedSessionState
+  /** The key id the upgrade's token named (`kid`); a bound signed session signs it. */
+  tokenKeyId?: string
   /** The server's daemon key at upgrade (id and public `x`), for the attach proof. */
   daemonKey?: { id: string; x: string }
   /** Signed session: the outbox waits for the daemon's hello and its attach proof. */
@@ -1734,6 +1736,7 @@ export class DaemonCellObject {
       ...(remoteAddress ? { remoteAddress } : {}),
       ...(geo ? { geo } : {}),
       phase: 'await-first-frame',
+      tokenKeyId: keyId,
       trustLevel: Number(request.headers.get(CELL_TRUST_LEVEL_HEADER) ?? '0') || 0,
       daemonKey: parseCellDaemonKey(request.headers.get(CELL_DAEMON_KEY_HEADER)),
       ...(request.headers.get(CELL_REPORTS_SIGNED_HEADER) === '1' ? { reportsSigned: true } : {}),
@@ -1806,6 +1809,9 @@ export class DaemonCellObject {
     const decision = await decideFirstFrame(raw, {
       trustLevel: attachment.trustLevel ?? 0,
       panelIdentity: () => this.#getPanelIdentity(),
+      binding: attachment.tokenKeyId
+        ? { serverId: attachment.serverId, keyId: attachment.tokenKeyId }
+        : undefined,
     })
     if (decision.kind === 'refused') {
       console.warn(

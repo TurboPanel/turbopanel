@@ -80,7 +80,10 @@ sealing key, and the signed identity document served at
   cell writes the next `seq` to the socket attachment before each signed send and sends one frame at a
   time per socket; Deno keeps it in the socket's sender. Any other first frame gets today's unsigned
   session unless `server.trust_level` is 1 or more (close 4403). Nothing reads the feature list to
-  decide. In a signed session the outbox waits for the daemon's first presence `hello`; the
+  decide. **Bound session** (`panel-bound-session-v1`): a daemon that lists it in its `hello-nonce`
+  gets `forServer` and `forKey` (the JWT `sub` and `kid`) inside the signed hello and every signed
+  frame, so a session signed for one server cannot be replayed to another; both are reserved
+  envelope members. No offer, no members (older daemon unchanged). In a signed session the outbox waits for the daemon's first presence `hello`; the
   `version` frame does not.
 - **Daemon proofs and `trust_level`** (`src/daemon/authn/`). Only the daemon's own key raises
   `server.trust_level`, and only to 2: a verified attach proof on the first presence `hello` of a

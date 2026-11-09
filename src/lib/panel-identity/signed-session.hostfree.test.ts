@@ -104,10 +104,39 @@ test('an enveloped frame keeps the message, appends the envelope and verifies ov
   assertEquals(session.nextSeq, 1)
 })
 
+test('a bound hello and frame carry the server and key inside the signed bytes', async () => {
+  const id = await identity()
+  const bind = { serverId: 'server-a', keyId: 'key-a' }
+  const session = newSignedSession(id.current.kid, bind)
+  const hello = splitSignature(
+    await buildSignedHello(id, NONCE, session, { heartbeatSeconds: 45, urls: [], nowMs: NOW_MS })
+  )
+  assert(hello)
+  assertEquals(await verifies(id, helloSigningInput(hello.unsigned), hello.sig), true)
+  const helloBody = JSON.parse(hello.unsigned)
+  assertEquals([helloBody.forServer, helloBody.forKey], ['server-a', 'key-a'])
+  assertEquals(
+    Object.keys(helloBody),
+    ['type', 'nonce', 'sessionId', 'kid', 'forServer', 'forKey', 'keyset'].concat(
+      'heartbeatSeconds',
+      'urls',
+      'iat'
+    )
+  )
+  const frame = splitSignature(await envelopeFrame(id, session, { type: 'version' }, 1, NOW_MS))
+  assert(frame)
+  assertEquals(await verifies(id, frameSigningInput('version', frame.unsigned), frame.sig), true)
+  const body = JSON.parse(frame.unsigned)
+  assertEquals([body.forServer, body.forKey], ['server-a', 'key-a'])
+  // The members are inside the signed bytes: another server's text does not verify.
+  const swapped = frame.unsigned.replace('server-a', 'server-v')
+  assertEquals(await verifies(id, frameSigningInput('version', swapped), frame.sig), false)
+})
+
 test('a message that already uses an envelope member is refused, not overwritten', async () => {
   const id = await identity()
   const session = newSignedSession(id.current.kid)
-  for (const field of ['sessionId', 'seq', 'iat', 'kid', 'sig']) {
+  for (const field of ['sessionId', 'seq', 'iat', 'kid', 'forServer', 'forKey', 'sig']) {
     let threw = false
     try {
       await envelopeFrame(id, session, { type: 'x', [field]: 1 } as { type: string }, 1, NOW_MS)
