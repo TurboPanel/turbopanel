@@ -156,6 +156,9 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   `updates_paused`; steps already sent, and their retries, finish. The run then
   ends `cancelled` with `error` `updates_paused`. Resume just deletes the row;
   the next check starts what is waiting.
+  The sentences people read (`UPGRADE_PAUSED_MESSAGE`, `SKIPPED_PAUSED_MESSAGE`,
+  `UPDATE_NOW_PAUSED_MESSAGE`) name the Pause All Updates switch, never "resume":
+  the web interface has a switch, not a Resume button.
 - **Automatic retry with backoff** (`retry-backoff.ts`). An automatic start
   reads, in one grouped query, earlier `failed` / `rolled_back` /
   `needs_attention` steps at the target commits. A fleet server still inside its
