@@ -384,9 +384,11 @@ export async function applyUnsubscribe(
       : await preferenceRowsFor(db, [claims.userId], claims.organizationId)
     const caps = planUnsubscribe(rows, claims, channel, nowMs)
     await db.transaction(async (tx) => {
-      for (const cap of caps) {
-        await upsertPreference(tx, claims.userId, { ...cap, level: 'none', endsAt: null })
-      }
+      await Promise.all(
+        caps.map((cap) =>
+          upsertPreference(tx, claims.userId, { ...cap, level: 'none', endsAt: null })
+        )
+      )
     })
     return true
   } catch {
