@@ -67,7 +67,13 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   is the manual **Build and Push Daemon** action in Admin > Updates
   (`GET /instance/updates/development`, `POST …/development/push`, see
   `../../admin/AGENTS.md`): it rebuilds the daemon overlay from the local
-  checkout and pushes `update` to the connected remote servers. The developer
+  checkout and pushes `update` to the connected remote servers. The rebuild
+  spawns `deno task release:dev` with the spelling of the runtime path that
+  the unit's `--allow-run` names (`resolveDenoBinary` in
+  `../../developer/dev-update-overlay.ts` asks the permission set): Deno
+  matches the allow-list against the path as spawned and does not follow
+  symlinks, and `Deno.execPath()` is the versioned file behind the unit's
+  `vendor/deno/current/deno`, so spawning it directly is refused. The developer
   surface route (`../../developer/update-routes.ts`, the dev console's
   **Rebuild daemon and upgrade connected servers**) shares its fan-out
   (`../../developer/daemon-update-fanout.ts`). The dev update overlay gives
