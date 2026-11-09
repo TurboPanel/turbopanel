@@ -17,6 +17,7 @@ import {
   grant,
   invitation,
   notification,
+  notificationEvent,
   organization,
   project,
   server,
@@ -317,12 +318,12 @@ test('revoking a grant refuses the former manager at once and records the access
     )
 
     const notes = await fx.db
-      .select({ event: notification.event })
-      .from(notification)
+      .select({ topic: notificationEvent.topicCode })
+      .from(notificationEvent)
       .where(
         and(
-          eq(notification.organizationId, fx.organizationId),
-          eq(notification.event, 'access.grant_revoked')
+          eq(notificationEvent.organizationId, fx.organizationId),
+          eq(notificationEvent.topicCode, 'access.grant_revoked')
         )
       )
     assert(notes.length >= 1, 'a revoke must raise an access.grant_revoked notification')
@@ -492,15 +493,15 @@ test('removing a member deletes the membership and every grant, refuses their ne
     assertEquals(await readsOrganization(fx, fx.owner), 200, 'the owner keeps access')
 
     const [note] = await fx.db
-      .select({ event: notification.event })
-      .from(notification)
+      .select({ topic: notificationEvent.topicCode })
+      .from(notificationEvent)
       .where(
         and(
-          eq(notification.organizationId, fx.organizationId),
-          eq(notification.event, 'access.grant_revoked')
+          eq(notificationEvent.organizationId, fx.organizationId),
+          eq(notificationEvent.topicCode, 'member.removed')
         )
       )
-    assert(note, 'removal raises the existing access.grant_revoked notification')
+    assert(note, 'removal raises its own member.removed notification')
     const [auditRow] = await fx.db
       .select({ action: audit.action, targetId: audit.targetId })
       .from(audit)

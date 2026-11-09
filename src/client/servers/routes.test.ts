@@ -22,6 +22,8 @@ import {
   license,
   managed,
   network,
+  notificationEvent,
+  notificationPreference,
   organization,
   login,
   principal,
@@ -4639,8 +4641,10 @@ test('DELETE /servers/:id with forgetResources tears down every system environme
   )
 })
 
-test("DELETE /servers/:id raises server.deleted once, with the server's name, to the managers' bell", async () => {
+test("DELETE /servers/:id raises server.deleted once, with the server's name, and does not tell the person who did it", async () => {
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    // They turned the bell on; the person who acted is still not told.
+    await db.insert(notificationPreference).values({ userId, kind: 'inbox', level: 'all' })
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(
       await confirmedPath(db, 'server', serverId, `/servers/${serverId}`),
@@ -4652,14 +4656,21 @@ test("DELETE /servers/:id raises server.deleted once, with the server's name, to
     assertEquals(res.status, 200)
 
     const inbox = await listNotificationsForUser(db, userId)
-    const deleted = inbox.filter((n) => n.event === 'server.deleted')
-    assertEquals(deleted.length, 1)
-    assertEquals(deleted[0]!.title, 'Server Delete Me was deleted')
+    assertEquals(
+      inbox.filter((n) => n.event === 'server.deleted'),
+      []
+    )
+    const events = await raisedEvents(db, organizationId, 'server.deleted')
+    assertEquals(events.length, 1)
+    assertEquals(events[0]!.title, 'Server Delete Me was deleted')
+    // Scoped to the organization, so it outlives the deleted server.
+    assertEquals(events[0]!.serverId, null)
   })
 })
 
 test("POST /servers/:id/daemon-key/revoke raises server.daemon_key_revoked with the server's name", async () => {
   await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await db.insert(notificationPreference).values({ userId, kind: 'inbox', level: 'all' })
     await enrollFixtureServer(db, serverId)
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request(`/servers/${serverId}/daemon-key/revoke`, {
@@ -4668,13 +4679,41 @@ test("POST /servers/:id/daemon-key/revoke raises server.daemon_key_revoked with 
     })
     assertEquals(res.status, 200)
 
+    // The person who revoked it is not told; the event names the server.
     const inbox = await listNotificationsForUser(db, userId)
-    const revoked = inbox.filter((n) => n.event === 'server.daemon_key_revoked')
-    assertEquals(revoked.length, 1)
-    assertEquals(revoked[0]!.title, 'Daemon key revoked on Delete Me')
-    assertEquals(revoked[0]!.severity, 'warning')
+    assertEquals(
+      inbox.filter((n) => n.event === 'server.daemon_key_revoked'),
+      []
+    )
+    const events = await raisedEvents(db, organizationId, 'server.daemon_key_revoked')
+    assertEquals(events.length, 1)
+    assertEquals(events[0]!.title, 'Daemon key revoked on Delete Me')
+    assertEquals(events[0]!.severity, 'warning')
+    assertEquals(events[0]!.serverId, serverId)
   })
 })
+
+/** The `event` rows one organization raised for one topic, with the rendered title. */
+async function raisedEvents(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+  topicCode: string
+) {
+  const rows = await db
+    .select()
+    .from(notificationEvent)
+    .where(
+      and(
+        eq(notificationEvent.organizationId, organizationId),
+        eq(notificationEvent.topicCode, topicCode)
+      )
+    )
+  return rows.map((r) => ({
+    title: (r.data as { title?: string }).title,
+    severity: r.severity,
+    serverId: r.serverId,
+  }))
+}
 
 /**
  * Two placed principals: one free, one still stewarding a service. The

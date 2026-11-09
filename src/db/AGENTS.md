@@ -89,8 +89,20 @@ single words in `0003_notification_table_names`, 2026-09-18; `table-naming.test.
 folds `ALTER TABLE … RENAME TO` in journal order so a shipped file never has to change) are owned by `src/features/notifications/records.ts` and documented in
 `src/features/notifications/AGENTS.md`. A channel's `address` is a sealed `tpsecret`
 for every kind but `email`, `signing_secret` always is, and both are a stage of
-the re-encrypt sweep; every fixed-value column carries a CHECK pinned by
-`enum-checks.test.ts` to the catalogue in `events.ts`.
+the re-encrypt sweep. Migration `0029_notification_preferences` (2026-11)
+added the scoped-preference model beside them: `category` and `topic` (the
+catalog, natural text keys, written from `events.ts` by the catalog sync that
+`pnpm migrate` and `turbopanel migrate` run after the migrations), `event` (the
+outbox; scope ids are plain uuids so history never blocks a delete),
+`preference` (per person, every scope column a cascading foreign key; the
+project and environment columns use composite keys onto the new
+`uniq_project_organization_id` and `uniq_environment_project_id`, so a row's
+project is provably in its organization), `policy`, `device`, `suppression` and
+`watermark`, and nullable columns on the four older tables. It dropped the
+three `*_event_check` CHECKs: the `topic_code` foreign keys replace them, and
+`notification.event`, `attempt.event` and `rule.event` are written beside
+`topic_code` until the planned reset removes them. The new fixed-value columns
+carry CHECKs pinned by `enum-checks.test.ts` to `notifications/vocabulary.ts`.
 
 **The `folder` table** (`0035_folder_table_and_slugs`) holds one row per service
 or volume directory per server. It carries no `metadata` / `options` pair: every

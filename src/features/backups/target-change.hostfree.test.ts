@@ -263,6 +263,7 @@ function fakeDb(inserted: Inserted[], failInserts = false): Db {
     }),
     select: () => chain,
     selectDistinct: () => chain,
+    execute: () => Promise.resolve([]),
     transaction: (fn: (tx: unknown) => unknown) => fn(undefined),
   } as unknown as Db
 }
@@ -301,11 +302,15 @@ test('a change with a notice is audited and raises the event', async () => {
     }
   )
   assertEquals(inserted[0]?.action, 'backup_target.update')
-  const raised = inserted.filter((row) => row.event === BACKUP_TARGET_CHANGED_EVENT)
-  assert(raised.length > 0, JSON.stringify(inserted))
-  for (const row of raised) {
-    assertEquals(row.title, 'Backup target Offsite now points somewhere else')
-  }
+  // One event row, with its words; who reads it is each person's choice.
+  const raised = inserted.filter(
+    (row) => (row as { topicCode?: string }).topicCode === BACKUP_TARGET_CHANGED_EVENT
+  )
+  assertEquals(raised.length, 1, JSON.stringify(inserted))
+  assertEquals(
+    (raised[0] as { data?: { title?: string } }).data?.title,
+    'Backup target Offsite now points somewhere else'
+  )
 })
 
 test('a failing database never fails the request', async () => {
