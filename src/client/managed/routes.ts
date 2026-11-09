@@ -118,7 +118,9 @@ import { getCommandQueue } from '../../features/commands/queue.ts'
 import { cancelOpenReturnFenceStops } from '../../features/commands/command-records.ts'
 import { cancelStopsOnceQueued } from '../../features/managed/ha-return-fence.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
-import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
+import { assertCanManageOr403, parseJsonBody, requireStringField } from '../shared.ts'
+import { isUuid } from '../access/routes-helpers.ts'
+import { namesAnotherOrganization } from '../org-context.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
 import {
   privateEndpointErrorResponse,
@@ -4381,9 +4383,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    if (orgResult !== organizationId) {
+    // The path names the organization, so the header or query value is not
+    // needed as well; one that names another organization is refused.
+    if (!isUuid(organizationId) || namesAnotherOrganization(c, organizationId)) {
       return c.json({ error: 'Not found' }, 404)
     }
 
