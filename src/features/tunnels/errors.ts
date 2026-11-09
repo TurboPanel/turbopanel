@@ -10,6 +10,8 @@ export type TunnelErrorCode =
   | 'unreachable'
   | 'unsupported'
   | 'zone_not_found'
+  /** What was sent is not an API token at all; the message says so in plain words. */
+  | 'token_format'
 
 /**
  * A failure talking to a tunnel provider. The message is scrubbed on

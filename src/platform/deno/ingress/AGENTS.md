@@ -62,7 +62,12 @@ High Availability (Workers) must not contain any of it.
   value opens it. There is no confirm step: an older `EDGE_GATE_CONFIRMED`
   setting row is never read, and the audit action `instance.edge_gate.set`
   stays only for old audit rows.
-- **Provider account.** `cloudflare/account.ts` checks a pasted token: verify
+- **Provider account.** `cloudflare/account.ts` checks a pasted token. Text
+  that is not an API token (a Global API Key, a tunnel run token, a stray
+  character inside) fails `token-shape` before any request; when Cloudflare
+  itself says so (400, error 6003 or 6111, `token_format` from the client)
+  the failed check is also `token-shape` with the same sentence, not
+  `provider`, because Cloudflare was reached. Then: verify
   (the answer carries the token id), then read the token's own policies
   (`GET /accounts/{id}/tokens/{token_id}` for an account-owned token, needing
   Account › Account API Tokens › Read; `GET /user/tokens/{token_id}` for a

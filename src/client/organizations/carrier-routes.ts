@@ -159,6 +159,10 @@ export function providerFailure(c: Context<AppEnv>, err: TunnelProviderError): R
       400
     )
   }
+  // The provider was reached and said the text is not an API token: the message says what to paste.
+  if (err.code === 'token_format') {
+    return c.json({ error: 'badge_rejected', message: err.message }, 400)
+  }
   return c.json({ error: 'provider_unavailable', message: err.message }, 502)
 }
 
