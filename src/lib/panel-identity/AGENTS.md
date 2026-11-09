@@ -29,7 +29,7 @@ sealing key, and the signed identity document served at
   does. Nothing here runs crypto at module load.
 - **Signed pin report.** On the first presence hello of a signed session a newer daemon signs its
   `panelPin` (`src/daemon/authn/pin-report.ts`, `"tp-panel-pin\n" + sessionId + serverId + keyId +
-  pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the prefix is pinned in
+pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the prefix is pinned in
   the daemon's drift script). `src/daemon/pin-report-intake.ts` verifies it on both runtimes in the
   background and `src/features/servers/pin-report.ts` stores it in `server.trust_pin_fingerprint`,
   `trust_pin_keyset`, `trust_pin_reported_at` and `is_trust_pin_matching` (current or next key of
@@ -85,16 +85,25 @@ sealing key, and the signed identity document served at
 - **Daemon proofs and `trust_level`** (`src/daemon/authn/`). Only the daemon's own key raises
   `server.trust_level`, and only to 2: a verified attach proof on the first presence `hello` of a
   signed session (`attach-proof.ts`, `"tp-attach\n" + sessionId + panelFingerprint + serverId +
-  keyId + iat`, joined by `\n`), or a `/auth/session` request signed with the daemon key. Nothing
+keyId + iat`, joined by `\n`), or a `/auth/session` request signed with the daemon key. Nothing
   writes 1 (a bare `hello-nonce` proves nothing, so a stolen token cannot lock a server in). A
   hello with no attach proof is accepted below 2 (daemons from before it); a bad proof, or none
-  at 2, closes 1008 `attach-proof-refused`. The cell checks the proof without a database read:
+  at 2, closes 1008 `attach-proof-refused`. Every gate reads the level through
+  `effectiveTrustLevel` (`features/servers/trust-level.ts`): a server with a verified pin report
+  naming a key counts as 2 even if raising the column failed. A verified v2 `/auth/session` proof
+  is itself a daemon-key proof naming this control plane, and a daemon that sends it always signs
+  the request: without the header the server is raised to 2 anyway and the request is refused 403
+  `Request signature missing` (not in the daemon's permanent list, so it retries). That refusal and
+  a missing attach proof at 2 write audit `server.trust_downgrade.refused` (stage `auth-session` or
+  `attach`, at most one per server per hour) plus one warning; both runtimes do the same. Only
+  canary daemons built 2026-11-02 to 2026-11-05 sent v2 without signing the request.
+  The cell checks the proof without a database read:
   `workers-ws.ts` stamps `<keyId>:<x>` of the daemon key on the upgrade (internal header) and the
   socket attachment keeps it.
 - **Daemon-signed requests** (`request-signature.ts`). Header
   `X-TurboPanel-Daemon-Signature: <keyId>:<nonce>:<iat>:<sig>` over
   `"tp-request\n" + METHOD + "\n" + pathname + "\n" + panelFingerprint + "\n" + nonce + "\n" +
-  base64url(SHA-256(body)) + "\n" + iat`. A signed `/auth/session` gets a token with `cnf.jkt`
+base64url(SHA-256(body)) + "\n" + iat`. A signed `/auth/session` gets a token with `cnf.jkt`
   (base64url of the daemon key's SHA-256 thumbprint digest). A request must be signed when its token
   has `cnf` or the server is at level 2: REST in the key gate of `api-routes.ts` (which reads the
   body once, within the route's limit, and hands it on), and the `/ws/daemon/v1` upgrade

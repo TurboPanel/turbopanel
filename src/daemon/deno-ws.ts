@@ -118,12 +118,17 @@ import { verifyLocalConsoleAuthorization } from '../developer/local-console-auth
 import { refuseUnsignedDaemonUpgrade } from './authn/upgrade-signature.ts'
 import {
   ATTACH_PROOF_CLOSE_CODE,
+  ATTACH_PROOF_MISSING_REASON,
   ATTACH_PROOF_REFUSED_REASON,
   DAEMON_PROOF_TRUST_LEVEL,
   decideAttachProof,
 } from './authn/attach-proof.ts'
 import { helloListsSignedReports, intakeSignedSessionReport } from './authn/report-signature.ts'
-import { raiseServerTrustLevel, recordServerSignsReports } from '../features/servers/trust-level.ts'
+import {
+  raiseServerTrustLevel,
+  recordServerSignsReports,
+  recordTrustDowngradeRefused,
+} from '../features/servers/trust-level.ts'
 
 /** Max idle block for outbox pump reads — keep low so new commands aren't stuck behind a long sleep. */
 const OUTBOX_PUMP_BLOCK_MS = 250
@@ -1203,6 +1208,12 @@ export function registerDaemonWebSocket<E extends Env>(
           daemonCellLog('WARN', payload.sub, connectionId, `attach refused: ${decision.reason}`)
           pumpControl.abort = true
           ws.close(ATTACH_PROOF_CLOSE_CODE, ATTACH_PROOF_REFUSED_REASON)
+          if (decision.reason === ATTACH_PROOF_MISSING_REASON) {
+            await recordTrustDowngradeRefused(db, payload.sub, {
+              stage: 'attach',
+              reason: decision.reason,
+            })
+          }
           return false
         }
         if (decision.kind === 'verified' && trustLevel < DAEMON_PROOF_TRUST_LEVEL) {

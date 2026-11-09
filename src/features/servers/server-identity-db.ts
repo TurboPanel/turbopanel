@@ -13,6 +13,7 @@ import {
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from './daemon-state.ts'
+import { effectiveTrustLevel } from './trust-level.ts'
 
 /** `["daemon-sealed-secrets-v1"]`, for a jsonb containment check on the stored hello features. */
 const SEALED_SECRETS_FEATURE_JSON = JSON.stringify([DAEMON_SEALED_SECRETS_FEATURE])
@@ -35,7 +36,11 @@ export type ServerDaemonStateWithMetadata = ServerDaemonState & {
   hostname: string | null
   machineKey: string | null
   metadata: ServerMetadata | null
-  /** `server.trust_level` (0 unsigned, 1 signed frames, 2 with attach proof); absent in older fakes means 0. */
+  /**
+   * `server.trust_level` (0 unsigned, 1 signed frames, 2 with attach proof),
+   * or 2 once a signed pin report verified (`effectiveTrustLevel`); absent in
+   * older fakes means 0.
+   */
   trustLevel?: number
   /**
    * `server.trust_reports_signed_at` is set: the daemon has sent a verified
@@ -76,6 +81,8 @@ export async function getServerDaemonStateByServerId(
       hostname: server.hostname,
       machineKey: server.machineKey,
       trustLevel: server.trustLevel,
+      trustPinFingerprint: server.trustPinFingerprint,
+      trustPinReportedAt: server.trustPinReportedAt,
       trustReportsSignedAt: server.trustReportsSignedAt,
       ...STATUS_COLUMNS,
       ...KEY_COLUMNS,
@@ -96,7 +103,7 @@ export async function getServerDaemonStateByServerId(
     hostname: row.hostname ?? null,
     machineKey: row.machineKey ?? null,
     metadata: (row.metadata ?? null) as ServerMetadata | null,
-    trustLevel: row.trustLevel ?? 0,
+    trustLevel: effectiveTrustLevel(row),
     reportsSigned: row.trustReportsSignedAt != null,
   }
 }
