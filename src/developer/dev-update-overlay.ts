@@ -18,7 +18,7 @@
  * Deno-only: shells out to `git` and the `deno` binary and reads the daemon
  * working tree — never imported by `deno.ts` or the Workers build.
  */
-import { join } from '@std/path'
+import { basename, dirname, join } from '@std/path'
 import { encodeHex } from '@std/encoding/hex'
 import { getDaemonRepoPath } from '../daemon/version.ts'
 import {
@@ -88,13 +88,45 @@ function defaultReadManifestText(repo: string): Promise<string> {
   return Deno.readTextFile(join(repo, 'dist', 'manifest.json'))
 }
 
-function resolveDenoBinary(): string {
-  const execPath = Deno.execPath()
-  const base = execPath.split('/').at(-1) ?? ''
-  // A compiled instance binary must not re-exec itself as "deno"; fall back to
-  // PATH (vendored deno), where a missing run permission fails the rebuild
-  // cleanly instead.
-  return base === 'deno' ? execPath : 'deno'
+export type DenoBinaryDeps = {
+  /** Path of the running executable; `Deno.execPath()` by default. */
+  execPath?: () => string
+  /** Whether this process may run `command`; asks the permission set by default. */
+  mayRun?: (command: string) => boolean
+}
+
+function defaultMayRun(command: string): boolean {
+  return Deno.permissions.querySync({ name: 'run', command }).state === 'granted'
+}
+
+/**
+ * The `deno` to spawn for the overlay rebuild: the first spelling of this
+ * runtime that the process is allowed to run.
+ *
+ * `--allow-run` is matched against the path as spawned, and symlinks are not
+ * followed. The unit starts `<vendor>/deno/current/deno` and allows that same
+ * path, while `Deno.execPath()` reports the versioned file the link points at
+ * (`<vendor>/deno/<version>/deno`), which the allow-list does not name. So the
+ * choice is made by asking the permission set, never by assuming one spelling:
+ * the executable path, the `current` and `bin` links next to its version
+ * folder, then `deno` on PATH. With none allowed the executable path is
+ * returned, so the rebuild fails with a message that names it.
+ *
+ * A compiled control plane binary must not re-exec itself as "deno": it only
+ * ever tries `deno` on PATH.
+ */
+export function resolveDenoBinary(deps?: DenoBinaryDeps): string {
+  const execPath = deps?.execPath ? deps.execPath() : Deno.execPath()
+  if (basename(execPath) !== 'deno') return 'deno'
+  const mayRun = deps?.mayRun ?? defaultMayRun
+  const runtimeRoot = dirname(dirname(execPath))
+  const candidates = [
+    execPath,
+    join(runtimeRoot, 'current', 'deno'),
+    join(runtimeRoot, 'bin', 'deno'),
+    'deno',
+  ]
+  return candidates.find((candidate) => mayRun(candidate)) ?? execPath
 }
 
 async function defaultRunRebuild(repo: string): Promise<RebuildOutput> {

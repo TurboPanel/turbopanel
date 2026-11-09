@@ -147,6 +147,16 @@ function contextBag(value: unknown): Record<string, unknown> {
 }
 
 /**
+ * True when the host found nothing to change and built nothing
+ * (`unchanged: true` in its deploy result). The release id that deploy was
+ * given was never put on that host, so a rollback to it would fail there; it
+ * is not a release of that host.
+ */
+export function deployBuiltNothing(result: unknown): boolean {
+  return contextBag(result).unchanged === true
+}
+
+/**
  * Image identity for one image-built release, as the daemon reported it.
  *
  * It cannot come from `context.releases[]`: that array is written when the
@@ -341,6 +351,7 @@ export async function listServiceReleases(
   const folded = new Map<string, ServiceReleaseRecord>()
   const order: string[] = []
   for (const row of rows) {
+    if (deployBuiltNothing(row.resultSummary)) continue
     const releases = normalizeContextReleases(contextBag(row.context).releases)
     if (!releases) continue
     const identities = imageIdentitiesFromResult(row.resultSummary)

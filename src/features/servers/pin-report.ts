@@ -10,7 +10,7 @@
  *
  * Workers-safe: one database client handed in by the caller, nothing cached.
  */
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { server } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -73,6 +73,10 @@ export async function recordPinReport(
         trustPinKeyset: report.keyset,
         trustPinReportedAt: deps.now?.() ?? new Date(),
         isTrustPinMatching: matching,
+        // A report naming a key is signed by the daemon key for this session:
+        // the server proved it holds its key and a pin, so it is held to
+        // level 2 from now on (`effectiveTrustLevel` reads the same rule).
+        ...(report.current === '' ? {} : { trustLevel: sql`greatest(${server.trustLevel}, 2)` }),
         // A signed report proves the server talks to this control plane: any
         // pin silence alarm for it is over.
         trustSilenceStage: null,

@@ -63,7 +63,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  *   (and a `compose.host_access.approve` audit row, stamped with `email`);
  *   a preview leaves it off because it changes nothing.
  * - `not_manager` — a person without that grant.
- * - `automated` — no person: the Git webhook.
+ * - `automated` — no person: a git push, or a run the control plane starts
+ *   itself (applying a hosting's new certificate).
  */
 export type HostAccessActor =
   | { kind: 'manager'; userId: string; email?: string | null; recordApproval: boolean }
@@ -186,8 +187,9 @@ export type PlannedDeploy = {
   /**
    * Set when an automated deploy passed the host-level gate on a recorded
    * approval: the route writes it as a `compose.host_access.use` audit row once
-   * the deploy is persisted. Absent for people and for documents that reach
-   * nothing on the host.
+   * the deploy is persisted, unless the run is hostings-only (Compose is not
+   * brought up, so nothing is used). Absent for people and for documents that
+   * reach nothing on the host.
    */
   hostAccessUse?: HostAccessAuditEvent
   /**

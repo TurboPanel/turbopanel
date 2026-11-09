@@ -21,10 +21,25 @@ export type OrganizationSummary = {
   isEmojiIconAllowed: boolean
 }
 
-export function parseOrgIdFromRequest(c: Context): string | Response {
+/** The organization a request names in the header or the query; null when it names none. */
+export function namedOrgIdFromRequest(c: Context): string | null {
   const fromHeader = c.req.header(ORG_ID_HEADER)?.trim()
   const fromQuery = c.req.query('organizationId')?.trim()
-  const organizationId = fromHeader || fromQuery
+  return fromHeader || fromQuery || null
+}
+
+/**
+ * For a route whose path already names the organization: the header or query
+ * value is optional there, but one that names another organization is a
+ * mistake the caller should hear about. Access is still the route's own check.
+ */
+export function namesAnotherOrganization(c: Context, pathOrganizationId: string): boolean {
+  const named = namedOrgIdFromRequest(c)
+  return named !== null && named.toLowerCase() !== pathOrganizationId.toLowerCase()
+}
+
+export function parseOrgIdFromRequest(c: Context): string | Response {
+  const organizationId = namedOrgIdFromRequest(c)
 
   if (!organizationId) {
     return c.json({ error: 'organizationId required' }, 400)

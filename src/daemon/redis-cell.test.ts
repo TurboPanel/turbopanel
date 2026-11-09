@@ -32,6 +32,7 @@ import {
   leaseKey,
   metaKey,
   onlineSetKey,
+  OUTBOX_GROUP,
   outboxKey,
   requestKey,
   snapshotKey,
@@ -381,6 +382,51 @@ test(
     assertEquals(batch.length, 2)
     assertEquals(batch[0]?.requestId, firstId)
     assertEquals(batch[1]?.requestId, secondId)
+  })
+)
+
+test(
+  'readOutboxBatch creates a lost outbox group again and delivers what was queued meanwhile',
+  withRedisCell(async ({ cell, client, serverId }) => {
+    const attached = await cell.attachDaemonSocket({
+      keyId: crypto.randomUUID(),
+    })
+    const consumer = `ws:${attached.connectionId}`
+
+    // What a Redis restart without its data leaves behind under an open
+    // socket: no stream and no group.
+    await client.del(outboxKey(serverId))
+    await assertRejects(
+      () => client.xreadgroup(OUTBOX_GROUP, consumer, outboxKey(serverId), 1),
+      Error,
+      'NOGROUP'
+    )
+
+    // Idle server: the read heals the group and returns nothing.
+    assertEquals(await cell.readOutboxBatch({ consumer, count: 10, blockMs: 20 }), [])
+
+    // Lost again, and this time a command is queued before the next read.
+    await client.del(outboxKey(serverId))
+    const requestId = generateRequestId()
+    const deliveryId = generateDeliveryId()
+    await cell.enqueue({
+      kind: 'command-dispatch',
+      deliveryId,
+      requestId,
+      at: new Date().toISOString(),
+      commandId: 'cmd-after-loss',
+      commandType: 'daemon.ping',
+      payload: {},
+    })
+
+    const batch = await cell.readOutboxBatch({ consumer, count: 10, blockMs: 20 })
+    assertEquals(
+      batch.map((entry) => entry.requestId),
+      [requestId]
+    )
+    await cell.ackOutbox([deliveryId], consumer)
+    assertEquals(await client.xlen(outboxKey(serverId)), 0)
+    assertEquals(await cell.readOutboxBatch({ consumer, count: 10, blockMs: 20 }), [])
   })
 )
 

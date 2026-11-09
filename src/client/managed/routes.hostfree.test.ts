@@ -2401,6 +2401,49 @@ test('GET org managed returns 404 when the path org does not match the session',
   )
 })
 
+test('GET org managed needs no organization header or query: the path names it', async () => {
+  const { app, cookie } = await buildApp({ db: fakeDb({ managedRows: [] }) })
+  await expectJson(
+    await app.request(`/organizations/${ORG_ID}/managed`, { headers: { Cookie: cookie } }),
+    200,
+    { managed: [] }
+  )
+  await expectJson(
+    await app.request(`/organizations/${ORG_ID}/managed?organizationId=${ORG_ID}`, {
+      headers: { Cookie: cookie },
+    }),
+    200,
+    { managed: [] }
+  )
+})
+
+test('GET org managed refuses a query or path that names another organization', async () => {
+  const { app, cookie } = await buildApp({ db: fakeDb() })
+  await expectJson(
+    await app.request(`/organizations/${ORG_ID}/managed?organizationId=${OTHER_ORG}`, {
+      headers: { Cookie: cookie },
+    }),
+    404,
+    { error: 'Not found' }
+  )
+  await expectJson(
+    await app.request('/organizations/not-an-id/managed', { headers: { Cookie: cookie } }),
+    404,
+    { error: 'Not found' }
+  )
+})
+
+test('GET org managed without the header still answers 403 when manage is denied', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({ executeRows: [{ allowed: false, organization_id: ORG_ID }] }),
+  })
+  await expectJson(
+    await app.request(`/organizations/${ORG_ID}/managed`, { headers: { Cookie: cookie } }),
+    403,
+    { error: 'Forbidden' }
+  )
+})
+
 test('GET org managed returns 401 without a session even when a cookie is stale', async () => {
   const { app } = await buildApp({ db: fakeDb() })
   await expectJson(

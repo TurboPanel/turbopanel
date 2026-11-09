@@ -11,8 +11,9 @@
  * straight in on the control plane's Unix socket (`isDirectLocalSocketRequest`
  * in `src/lib/peer-address.ts`): only local processes in group `tp` (the
  * daemon among them) can open that socket and connect back that way, while
- * public traffic reaches the same socket through Caddy and is never counted. A parked daemon retries every few minutes, which
- * brings the next refusal; there is no boot-time check. When the files do not
+ * public traffic reaches the same socket through Caddy and is never counted.
+ * A parked daemon retries every few minutes, which brings the next refusal;
+ * there is no boot-time check. When the files do not
  * match it:
  *
  * 1. re-issues the token on the EXISTING bound license (same id, same seat),

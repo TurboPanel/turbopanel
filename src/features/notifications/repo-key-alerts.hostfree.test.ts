@@ -2,7 +2,14 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { describeEvent, eventAudience, eventIsUrgent, eventScope, eventSeverity } from './events.ts'
 import type { emitNotification } from './emit.ts'
-import { handleRepoKeyChanged, shortFingerprint, shortFingerprintList } from './repo-key-alerts.ts'
+import {
+  handleRepoKeyChanged,
+  REPO_KEY_NOTICE_WINDOW_MS,
+  REPO_KEY_NOTICES_PER_WINDOW,
+  RepoKeyNoticeThrottle,
+  shortFingerprint,
+  shortFingerprintList,
+} from './repo-key-alerts.ts'
 
 /** Sonar typescript:S2187 only recognizes `test()`; keep this alias. */
 const test = Deno.test.bind(Deno)
@@ -120,4 +127,42 @@ test('a failing emitter never throws into the inbound path', async () => {
     { emit: () => Promise.reject(new Error('boom')) }
   )
   assertEquals(raised, false)
+})
+
+test('one server raises at most the hourly number of notices, and the count clears after an hour', async () => {
+  const throttle = new RepoKeyNoticeThrottle()
+  const sent: string[] = []
+  const report = (nowMs: number, serverId = 'srv-1') =>
+    handleRepoKeyChanged(
+      fakeDb([{ organizationId: 'org-1', name: 'web-1' }]),
+      undefined,
+      serverId,
+      { keyName: 'docker', expected: [OLD], got: `${nowMs}` },
+      {
+        throttle,
+        nowMs,
+        emit: (_db, _secrets, payload) => {
+          sent.push(payload.targetId ?? '')
+          return Promise.resolve(undefined as never)
+        },
+      }
+    )
+  for (let i = 0; i < REPO_KEY_NOTICES_PER_WINDOW; i += 1) {
+    assertEquals(await report(1_000 + i), true)
+  }
+  assertEquals(await report(2_000), false)
+  // Another server has its own count.
+  assertEquals(await report(2_000, 'srv-2'), true)
+  assertEquals(await report(1_000 + REPO_KEY_NOTICE_WINDOW_MS), true)
+  assertEquals(sent.length, REPO_KEY_NOTICES_PER_WINDOW + 2)
+})
+
+test('only the first held-back notice in an hour is logged', () => {
+  const throttle = new RepoKeyNoticeThrottle()
+  for (let i = 0; i < REPO_KEY_NOTICES_PER_WINDOW; i += 1) throttle.take('srv-1', i)
+  assertEquals(throttle.take('srv-1', 10), { allowed: false, firstDrop: true })
+  assertEquals(throttle.take('srv-1', 11), { allowed: false, firstDrop: false })
+  const later = 10 + REPO_KEY_NOTICE_WINDOW_MS
+  for (let i = 0; i < REPO_KEY_NOTICES_PER_WINDOW; i += 1) throttle.take('srv-1', later + i)
+  assertEquals(throttle.take('srv-1', later + 10), { allowed: false, firstDrop: true })
 })

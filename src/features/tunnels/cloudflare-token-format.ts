@@ -21,10 +21,25 @@ const INVALID_REQUEST_HEADERS = 6003
 const INVALID_AUTHORIZATION_FORMAT = 6111
 const FORMAT_WORDING = /invalid request headers|invalid format for authorization header/i
 
-/** A tunnel run token is base64 JSON, so it starts with `eyJ`; an API token never does. */
+/**
+ * A tunnel run token is base64 JSON, so it starts with `eyJ` and is long. A real
+ * API token is 40 characters and can, rarely, start with `eyJ` as well, so the
+ * prefix alone is not enough: it must also be long and decode to JSON text.
+ */
 const RUN_TOKEN_PREFIX = 'eyJ'
+const RUN_TOKEN_MIN_LENGTH = 60
 /** Whitespace, control characters or anything outside printable ASCII cannot be part of an API token. */
 const NOT_TOKEN_TEXT = /[^\x21-\x7e]/
+
+function looksLikeRunToken(text: string): boolean {
+  if (!text.startsWith(RUN_TOKEN_PREFIX) || text.length < RUN_TOKEN_MIN_LENGTH) return false
+  try {
+    const head = text.slice(0, 8).replaceAll('-', '+').replaceAll('_', '/')
+    return atob(head).startsWith('{')
+  } catch {
+    return false
+  }
+}
 
 /**
  * A shape Cloudflare would refuse as "not a token", found without asking it:
@@ -33,7 +48,7 @@ const NOT_TOKEN_TEXT = /[^\x21-\x7e]/
  */
 export function cloudflareTokenFormatProblem(token: string): string | null {
   const text = token.trim()
-  if (text.startsWith(RUN_TOKEN_PREFIX) || NOT_TOKEN_TEXT.test(text)) {
+  if (looksLikeRunToken(text) || NOT_TOKEN_TEXT.test(text)) {
     return CLOUDFLARE_TOKEN_FORMAT_MESSAGE
   }
   return null

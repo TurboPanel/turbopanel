@@ -2,8 +2,10 @@
  * `repo-key-changed`: a daemon saw that a package source's signing key is not
  * one TurboPanel expects (feature `repo-key-report-v1`), and the control plane
  * tells the organization's managers once. The daemon remembers what it has
- * reported per key name and fingerprint, so this holds no state of its own and
- * a repeat of the same report is the daemon's to prevent, not ours.
+ * reported per key name and fingerprint, so a repeat of the same report is the
+ * daemon's to prevent. A daemon that sends a new fingerprint in every frame
+ * (a compromised host) is held back here: each server raises at most
+ * {@link REPO_KEY_NOTICES_PER_WINDOW} notices per hour, counted in memory.
  *
  * Fire-and-forget and never throws into the inbound path: the install already
  * went on (package signatures are still checked), so a failed alert only means
@@ -26,7 +28,50 @@ export type RepoKeyChangedReport = {
 export type RepoKeyAlertDeps = {
   /** Test seam: the emitter. */
   emit?: typeof emitNotification
+  /** Test seam: the per-server cap (one per process by default). */
+  throttle?: RepoKeyNoticeThrottle
+  /** Test seam: the clock, in milliseconds. */
+  nowMs?: number
 }
+
+/** Notices one server may raise in {@link REPO_KEY_NOTICE_WINDOW_MS}. */
+export const REPO_KEY_NOTICES_PER_WINDOW = 5
+
+export const REPO_KEY_NOTICE_WINDOW_MS = 60 * 60_000
+
+/** Upper bound on servers one throttle remembers; the oldest is forgotten first. */
+const THROTTLE_MAX_SERVERS = 10_000
+
+/**
+ * In-memory cap on the notices one server raises, checked before any database
+ * read. The Durable Object isolate and the Deno process each keep one; a
+ * restart starts the count again, which is fine for a bell and channel notice.
+ */
+export class RepoKeyNoticeThrottle {
+  readonly #seen = new Map<string, { sentAt: number[]; warnedAt: number | null }>()
+
+  /** `allowed` when the notice may go; `firstDrop` on the first one held back in an hour. */
+  take(serverId: string, nowMs: number): { allowed: boolean; firstDrop: boolean } {
+    const inWindow = (at: number) => nowMs - at < REPO_KEY_NOTICE_WINDOW_MS
+    const last = this.#seen.get(serverId)
+    const sentAt = (last?.sentAt ?? []).filter(inWindow)
+    const prior = last?.warnedAt ?? null
+    const warnedAt = prior !== null && inWindow(prior) ? prior : null
+    this.#seen.delete(serverId)
+    if (this.#seen.size >= THROTTLE_MAX_SERVERS) {
+      const oldest = this.#seen.keys().next().value
+      if (oldest !== undefined) this.#seen.delete(oldest)
+    }
+    if (sentAt.length >= REPO_KEY_NOTICES_PER_WINDOW) {
+      this.#seen.set(serverId, { sentAt, warnedAt: warnedAt ?? nowMs })
+      return { allowed: false, firstDrop: warnedAt === null }
+    }
+    this.#seen.set(serverId, { sentAt: [...sentAt, nowMs], warnedAt })
+    return { allowed: true, firstDrop: false }
+  }
+}
+
+const processThrottle = new RepoKeyNoticeThrottle()
 
 /** Fingerprints shown in the sentence. */
 const FINGERPRINTS_LISTED = 2
@@ -51,6 +96,16 @@ export async function handleRepoKeyChanged(
   report: RepoKeyChangedReport,
   deps: RepoKeyAlertDeps = {}
 ): Promise<boolean> {
+  const gate = (deps.throttle ?? processThrottle).take(serverId, deps.nowMs ?? Date.now())
+  if (!gate.allowed) {
+    if (gate.firstDrop) {
+      compatLogWarn(
+        'repo-key-alerts',
+        `server ${serverId} reported more than ${REPO_KEY_NOTICES_PER_WINDOW} changed signing keys in an hour; further notices are held back`
+      )
+    }
+    return false
+  }
   try {
     const [row] = await db
       .select({ organizationId: server.organizationId, name: server.name })

@@ -9,6 +9,7 @@ import {
   REBUILD_TAIL_LINES,
   rebuildOutputTail,
   resetDevOverlayCacheForTests,
+  resolveDenoBinary,
   resolveDevTrunkManifest,
 } from './dev-update-overlay.ts'
 
@@ -279,4 +280,69 @@ test('readDevOverlayIdentity rejects non-object manifests', async () => {
 
 test('computeDaemonSourceFingerprint uses the default git runner', async () => {
   await assertRejects(() => computeDaemonSourceFingerprint('/tmp/turbopanel-missing-overlay-repo'))
+})
+
+const VERSIONED_DENO = '/opt/turbopanel/vendor/deno/2.9.8/deno'
+const CURRENT_DENO = '/opt/turbopanel/vendor/deno/current/deno'
+const BIN_DENO = '/opt/turbopanel/vendor/deno/bin/deno'
+
+/** Resolve with the executable at `execPath` and only `allowed` in the run allow-list. */
+function resolveWithAllowed(
+  execPath: string,
+  allowed: string[]
+): { chosen: string; asked: string[] } {
+  const asked: string[] = []
+  const chosen = resolveDenoBinary({
+    execPath: () => execPath,
+    mayRun: (command) => {
+      asked.push(command)
+      return allowed.includes(command)
+    },
+  })
+  return { chosen, asked }
+}
+
+test('resolveDenoBinary: spawns the executable path when the allow-list names it', () => {
+  const { chosen, asked } = resolveWithAllowed(VERSIONED_DENO, [VERSIONED_DENO, CURRENT_DENO])
+  assertEquals(chosen, VERSIONED_DENO)
+  assertEquals(asked, [VERSIONED_DENO])
+})
+
+test('resolveDenoBinary: spawns the current link when only that spelling is allowed', () => {
+  // The development unit: started through `current`, allow-list names `current`,
+  // while the executable path is the versioned file the link points at.
+  const { chosen } = resolveWithAllowed(VERSIONED_DENO, [CURRENT_DENO])
+  assertEquals(chosen, CURRENT_DENO)
+})
+
+test('resolveDenoBinary: spawns the bin link when only that spelling is allowed', () => {
+  const { chosen } = resolveWithAllowed(VERSIONED_DENO, [BIN_DENO])
+  assertEquals(chosen, BIN_DENO)
+})
+
+test('resolveDenoBinary: falls back to deno on PATH when only the bare name is allowed', () => {
+  const { chosen, asked } = resolveWithAllowed(VERSIONED_DENO, ['deno'])
+  assertEquals(chosen, 'deno')
+  assertEquals(asked, [VERSIONED_DENO, CURRENT_DENO, BIN_DENO, 'deno'])
+})
+
+test('resolveDenoBinary: names the executable path when nothing is allowed', () => {
+  // The spawn then fails with "Requires run access to <that path>", which the
+  // rebuild reports as it is.
+  const { chosen } = resolveWithAllowed(VERSIONED_DENO, [])
+  assertEquals(chosen, VERSIONED_DENO)
+})
+
+test('resolveDenoBinary: a compiled control plane never re-execs itself', () => {
+  const { chosen, asked } = resolveWithAllowed('/opt/turbopanel/bin/turbopanel', [
+    '/opt/turbopanel/bin/turbopanel',
+  ])
+  assertEquals(chosen, 'deno')
+  assertEquals(asked, [])
+})
+
+test('resolveDenoBinary: asks this process for its own run permission by default', () => {
+  // The executable path is the first choice when it may be run and the
+  // fallback when nothing may be, so it is the answer with or without a grant.
+  assertEquals(resolveDenoBinary(), Deno.execPath())
 })

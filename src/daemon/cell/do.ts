@@ -94,6 +94,7 @@ import { HEARTBEAT_SECONDS_DEFAULT } from '../../features/install/heartbeat-poli
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
 import {
   ATTACH_PROOF_CLOSE_CODE,
+  ATTACH_PROOF_MISSING_REASON,
   ATTACH_PROOF_REFUSED_REASON,
   DAEMON_PROOF_TRUST_LEVEL,
   decideAttachProof,
@@ -107,6 +108,7 @@ import {
 import {
   raiseServerTrustLevel,
   recordServerSignsReports,
+  recordTrustDowngradeRefused,
 } from '../../features/servers/trust-level.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { inboundHeartbeatProjectionDue } from './postgres-projection.ts'
@@ -1985,6 +1987,18 @@ export class DaemonCellObject {
         `daemon-cell event=attach-refused serverId=${attachment.serverId} reason=${decision.reason}`
       )
       ws.close(ATTACH_PROOF_CLOSE_CODE, ATTACH_PROOF_REFUSED_REASON)
+      if (decision.reason === ATTACH_PROOF_MISSING_REASON) {
+        this.#runBoundedBackground(
+          'trust-downgrade-audit',
+          attachment.serverId,
+          this.#withProjectionDb('trust-downgrade-audit', attachment.serverId, async (db) => {
+            await recordTrustDowngradeRefused(db, attachment.serverId, {
+              stage: 'attach',
+              reason: decision.reason,
+            })
+          })
+        )
+      }
       return false
     }
     // The row first: the socket says level 2 only once the database does
