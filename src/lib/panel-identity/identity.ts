@@ -297,6 +297,9 @@ async function requireStored(db: Db): Promise<StoredRow> {
   return { stored: parseStoredValue(raw), raw }
 }
 
+/** Thrown by a compare-and-set that lost: the stored row changed since it was read. */
+export const STORED_IDENTITY_CHANGED = 'the control plane key changed while this ran; try again'
+
 /**
  * Change some fields of the stored row, only if nobody changed it since it
  * was read. Matches on the raw value: a row written before a field existed
@@ -313,7 +316,7 @@ async function writeStored(
     .where(and(eq(setting.key, PANEL_IDENTITY_SETTING_KEY), eq(setting.value, row.raw)))
     .returning({ key: setting.key })
   if (updated.length === 0) {
-    throw new Error('the control plane key changed while this ran; try again')
+    throw new Error(STORED_IDENTITY_CHANGED)
   }
 }
 

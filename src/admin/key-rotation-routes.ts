@@ -39,6 +39,7 @@ import {
   PENDING_KEY_MISMATCH,
   promotePendingIdentityKey,
   raiseStoredIdentityKeyset,
+  STORED_IDENTITY_CHANGED,
 } from '../lib/panel-identity/identity.ts'
 import {
   decodeBase64urlStrict,
@@ -544,13 +545,25 @@ async function storeApproved(
       })
     })
   } catch (err) {
-    if (isPostgresUniqueViolation(err)) return 'conflict'
-    if (err instanceof Error && err.message === PENDING_KEY_MISMATCH) {
-      return 'pending_key_changed'
-    }
+    const outcome = approvalStoreFailure(err)
+    if (outcome) return outcome
     throw err
   }
   return 'stored'
+}
+
+/**
+ * What a failed store of an approved change tells the owner, or null for a
+ * real fault (a 500). Another approval taking the key set first and a lost
+ * compare-and-set on the stored key (something changed it while this ran)
+ * are both a 409 "start again"; so is a pending key that moved on.
+ */
+export function approvalStoreFailure(err: unknown): 'conflict' | 'pending_key_changed' | null {
+  if (isPostgresUniqueViolation(err)) return 'conflict'
+  if (!(err instanceof Error)) return null
+  if (err.message === STORED_IDENTITY_CHANGED) return 'conflict'
+  if (err.message === PENDING_KEY_MISMATCH) return 'pending_key_changed'
+  return null
 }
 
 type ApprovalFacts = {

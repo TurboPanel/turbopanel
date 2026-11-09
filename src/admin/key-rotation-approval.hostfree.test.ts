@@ -14,8 +14,10 @@ import {
   type RotationPasskey,
 } from '../lib/panel-identity/keyset-statement.ts'
 import type { CustodianMark, MarkedCustodian } from '../lib/panel-identity/keyset-store.ts'
+import { PENDING_KEY_MISMATCH, STORED_IDENTITY_CHANGED } from '../lib/panel-identity/identity.ts'
 import {
   approvalAudit,
+  approvalStoreFailure,
   approvalsFromOwnOrigin,
   parseApproveBody,
   refusalWords,
@@ -266,4 +268,16 @@ test("an approval counts only from this control plane's own address", () => {
   assertEquals(approvalsFromOwnOrigin([{ clientDataJSON: 'not base64!' }], own), false)
   // No configured address: nothing can be approved.
   assertEquals(approvalsFromOwnOrigin([from(own[0])], []), false)
+})
+
+test('a store that loses the compare-and-set on the stored key is a 409 start again, not a 500', () => {
+  // writeStored's compare-and-set lost a race while the approval was stored.
+  assertEquals(approvalStoreFailure(new Error(STORED_IDENTITY_CHANGED)), 'conflict')
+  // Another approval took the key set first (unique violation, wrapped as drizzle does).
+  const unique = Object.assign(new Error('duplicate key'), { code: '23505' })
+  assertEquals(approvalStoreFailure(new Error('query failed', { cause: unique })), 'conflict')
+  assertEquals(approvalStoreFailure(new Error(PENDING_KEY_MISMATCH)), 'pending_key_changed')
+  // Anything else stays a real fault.
+  assertEquals(approvalStoreFailure(new Error('connection reset')), null)
+  assertEquals(approvalStoreFailure('not an error'), null)
 })
