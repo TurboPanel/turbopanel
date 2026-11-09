@@ -41,7 +41,7 @@ import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import { createIdentityDocumentCache } from '../lib/panel-identity/document-cache.ts'
 import { IDENTITY_SIGNATURE_HEADER } from '../lib/panel-identity/document.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
-import { openSealedLicenseToken, parseClientNonce } from './authn/sealed-enroll.ts'
+import { parseClientNonce, resolveEnrollLicenseToken } from './authn/sealed-enroll.ts'
 import { signDaemonResponses } from '../lib/panel-identity/signed-response.ts'
 import {
   getDaemonCellRegistry,
@@ -2075,7 +2075,6 @@ export function registerDaemonApiRoutes<E extends Env>(
       sealedLicenseToken,
       clientNonce,
     } = parsedFields.value
-    let licenseToken = parsedFields.value.licenseToken
 
     const enrollLimited = await enforceDaemonRestLimit(
       c,
@@ -2092,20 +2091,18 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
 
     const fingerprint = await computePublicKeyFingerprint(publicJwk)
-    if (sealedLicenseToken !== undefined) {
-      const opened = await openSealedLicenseToken(
-        sealedLicenseToken,
-        options.panelIdentity ? await options.panelIdentity() : null,
-        {
-          challengeId,
-          challengeNonce: challenge.nonce,
-          clientNonce,
-          publicKeyFingerprint: fingerprint,
-        }
-      )
-      if (!opened.ok) return c.json({ ok: false, error: opened.error }, opened.status)
-      licenseToken = opened.licenseToken
-    }
+    const opened = await resolveEnrollLicenseToken(
+      { plain: parsedFields.value.licenseToken, sealed: sealedLicenseToken },
+      options.panelIdentity,
+      {
+        challengeId,
+        challengeNonce: challenge.nonce,
+        clientNonce,
+        publicKeyFingerprint: fingerprint,
+      }
+    )
+    if (!opened.ok) return c.json({ ok: false, error: opened.error }, opened.status)
+    const licenseToken = opened.licenseToken
 
     // The per-license bucket is charged before the token check: verifying it
     // is an Argon2 hash, so charging after let a wrong token buy one hash per

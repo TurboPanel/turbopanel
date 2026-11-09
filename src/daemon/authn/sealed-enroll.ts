@@ -81,3 +81,17 @@ export async function openSealedLicenseToken(
     return { ok: false, status: 400, error: 'envelope_open_failed' }
   }
 }
+
+/** The token an enroll body carries: sealed (opened here) or, from an older daemon, plain. */
+export async function resolveEnrollLicenseToken(
+  token: { plain: string; sealed: unknown },
+  panelIdentity: (() => Promise<PanelIdentity | null>) | undefined,
+  bound: Parameters<typeof openSealedLicenseToken>[2]
+): Promise<OpenedEnrollLicense> {
+  if (token.sealed === undefined) return { ok: true, licenseToken: token.plain }
+  return await openSealedLicenseToken(
+    token.sealed,
+    panelIdentity ? await panelIdentity() : null,
+    bound
+  )
+}
