@@ -74,7 +74,8 @@ export function blockingReason(
   serverConnected: boolean | null,
   removalNote: string | null = null
 ): string | null {
-  const where = serverName ? `server ${serverName}` : 'its server'
+  // The name alone: a server named "this server" would otherwise read "server this server".
+  const where = serverName || 'its server'
   if (state === 'removing') {
     const base =
       serverConnected === false

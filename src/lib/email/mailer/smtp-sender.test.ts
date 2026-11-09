@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import nodemailer from 'nodemailer'
 import type { EmailJob } from '../../../features/email/types.ts'
-import { createMailerSmtpSender, MailerSmtpSender } from './smtp-sender.ts'
+import { createMailerSmtpSender, isRecipientRejected, MailerSmtpSender } from './smtp-sender.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -340,4 +340,38 @@ test('sendJob treats a throwing settings db as a transient failure', async () =>
   const failure = assertFailure(result)
   assertEquals(failure.permanent, false)
   assertEquals(failure.error, 'db down')
+})
+
+test('only a refused recipient with a dead-address status code counts as rejected', () => {
+  const refused = (response: string, responseCode = 550, command = 'RCPT TO') =>
+    Object.assign(new Error('refused'), { response, responseCode, command })
+  // Unknown mailbox or domain, on one line or spread over a multi-line reply.
+  assertEquals(isRecipientRejected(refused('550 5.1.1 <a@example.com>: User unknown')), true)
+  assertEquals(
+    isRecipientRejected(
+      refused('550-5.1.1 The address does not exist.\n550 5.1.1 Check for typos.')
+    ),
+    true
+  )
+  assertEquals(isRecipientRejected(refused('550 5.1.2 Host unknown')), true)
+  assertEquals(isRecipientRejected(refused('551 5.1.6 User has moved')), true)
+  assertEquals(isRecipientRejected(refused('553 5.1.3 Bad recipient address syntax')), true)
+  // A policy or relay refusal says nothing about the address.
+  assertEquals(isRecipientRejected(refused('550 5.7.1 Relaying denied')), false)
+  assertEquals(
+    isRecipientRejected(refused('550 5.7.26 Unauthenticated email is not accepted')),
+    false
+  )
+  // A bare 550 with no enhanced code, a sender-address code, another command, another code.
+  assertEquals(isRecipientRejected(refused('550 Mailbox unavailable')), false)
+  assertEquals(isRecipientRejected(refused('550 5.1.8 Sender address rejected')), false)
+  assertEquals(isRecipientRejected(refused('550 5.1.1 no', 550, 'MAIL FROM')), false)
+  assertEquals(isRecipientRejected(refused('450 4.1.1 try later', 450)), false)
+  assertEquals(
+    isRecipientRejected(
+      Object.assign(new Error('no reply text'), { responseCode: 550, command: 'RCPT TO' })
+    ),
+    false
+  )
+  assertEquals(isRecipientRejected(null), false)
 })

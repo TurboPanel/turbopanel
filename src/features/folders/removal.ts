@@ -12,7 +12,7 @@
  * Every enqueue here is best-effort and never throws: it runs after the write
  * that deleted the asset, and that write has succeeded. A server that misses
  * the command (offline, queue down) keeps its rows `removing`, which shows to
- * the person as "waiting for server X", and the sweep asks again once the
+ * the person as "waiting for X", and the sweep asks again once the
  * server is connected.
  */
 import { and, eq, sql } from 'drizzle-orm'

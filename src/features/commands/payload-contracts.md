@@ -715,7 +715,7 @@ CA ensure-or-create **`GET /tls/ca`** (`{ tls, trustBundlePem }`), rotate
 **`POST /tls/ca/rotate`** (lease-guarded journal + fan-out of existing
 **`managed.apply`** / **`managed.ingress.reconcile`** plus binding rematerialize
 — no new command type, no `environment.deploy`; see `../tls/AGENTS.md`), status
-**`GET /tls/ca/rotation`**, retire-gate **`POST /tls/ca/retire`** (revokes
+**`GET /tls/ca/rotation`** (JSON `null` when no rotation ever ran), retire-gate **`POST /tls/ca/retire`** (revokes
 retired generations only after every tracked command `succeeded` and binding
 rematerialize rows are not failed; `PATCH /tls/:id` `revoke:true` cannot revoke
 an Organization CA), PEM-only download **`GET /tls/ca/download`** (concatenated
