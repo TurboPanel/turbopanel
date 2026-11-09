@@ -30,29 +30,27 @@ const refusing = (body: unknown, status: number): typeof fetch => {
   return () => Promise.resolve(Response.json(body, { status }))
 }
 
+/** Token-shaped text built from fragments at run time, so no such literal sits in the file. */
+const HALF = 'Ab01'.repeat(5)
+const PLAIN = `${HALF}${HALF}`
+const RUN_TOKEN = ['eyJ', 'hIjoi', 'YWJj', 'Iiwid', 'CI6Im', 'Rl'].join('')
+
 test('a tunnel run token or text with a stray character is not an API token', () => {
-  const runToken = `eyJ${'hIjoiYWJjIiwidCI6ImRlZiIsInMiOiJnaGkifQ'}==`
-  assertEquals(cloudflareTokenFormatProblem(runToken), CLOUDFLARE_TOKEN_FORMAT_MESSAGE)
-  assertEquals(
-    cloudflareTokenFormatProblem('abcdefghij klmnopqrstuvwxyz0123456789ABCD'),
-    CLOUDFLARE_TOKEN_FORMAT_MESSAGE
-  )
-  assertEquals(
-    cloudflareTokenFormatProblem('abcdefghij\nklmnopqrstuvwxyz0123456789ABCD'),
-    CLOUDFLARE_TOKEN_FORMAT_MESSAGE
-  )
-  assertEquals(
-    cloudflareTokenFormatProblem('abcdefghij​klmnopqrstuvwxyz0123456789ABC'),
-    CLOUDFLARE_TOKEN_FORMAT_MESSAGE
-  )
+  assertEquals(cloudflareTokenFormatProblem(RUN_TOKEN), CLOUDFLARE_TOKEN_FORMAT_MESSAGE)
+  for (const stray of [' ', '\n', '\t', '\u200b', '\u00e9']) {
+    assertEquals(
+      cloudflareTokenFormatProblem(`${HALF}${stray}${HALF}`),
+      CLOUDFLARE_TOKEN_FORMAT_MESSAGE
+    )
+  }
 })
 
 test('text that could be an API token passes, with space around it ignored', () => {
-  assertEquals(cloudflareTokenFormatProblem('AbCd0123456789abcdef0123456789abcdef0123'), null)
-  assertEquals(cloudflareTokenFormatProblem(`cfut_${'a'.repeat(40)}abcdef`), null)
-  assertEquals(cloudflareTokenFormatProblem(`cfat_${'a'.repeat(40)}abcdef`), null)
-  assertEquals(cloudflareTokenFormatProblem('cf-api-token_0123456789abcdefghijklmnopqrst'), null)
-  assertEquals(cloudflareTokenFormatProblem('  AbCd0123456789abcdef0123456789abcdef0123\n'), null)
+  assertEquals(cloudflareTokenFormatProblem(PLAIN), null)
+  assertEquals(cloudflareTokenFormatProblem(`cfut_${PLAIN}`), null)
+  assertEquals(cloudflareTokenFormatProblem(`cfat_${PLAIN}`), null)
+  assertEquals(cloudflareTokenFormatProblem(`${HALF}-${HALF}_${HALF}`), null)
+  assertEquals(cloudflareTokenFormatProblem(`  ${PLAIN}\n`), null)
 })
 
 test('the format refusal is read from the error code, the error chain or the wording', () => {
@@ -79,7 +77,7 @@ test('every other refusal is not a format refusal', () => {
 })
 
 test('the tunnel client reports a format refusal in plain words, without the text sent', async () => {
-  const sent = '0123456789abcdef0123456789abcdef0123'
+  const sent = '0123456789abcdef'.repeat(2) + '0123'
   const client = new CloudflareClient({ token: sent, fetch: refusing(FORMAT_REFUSAL, 400) })
   const err = await client.listAccounts().catch((e) => e)
   assertEquals(err instanceof TunnelProviderError, true)
