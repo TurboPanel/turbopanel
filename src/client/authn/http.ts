@@ -64,6 +64,7 @@ import {
   MAX_AUTH_PASSWORD_CHARS,
 } from './auth-body-limits.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
+import { clearSuppressionAfterProof } from '../../features/notifications/fanout-records.ts'
 import { buildCookieHeader, requestTls } from './request-context.ts'
 
 export type AuthRouteOpts = {
@@ -953,6 +954,8 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
         404
       )
     }
+    // The link arrived, so the mailbox takes mail again.
+    await clearSuppressionAfterProof(db, normalizedEmail)
 
     return c.json({ ok: true }, 200)
   })

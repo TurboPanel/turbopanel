@@ -189,8 +189,11 @@ async function sendDigestTo(
       deliveries: claimed,
       nowMs,
     })
-    // A digest spans categories (and, for a personal channel, organizations):
-    // its unsubscribe stops this channel's notification email altogether.
+    // A digest spans categories and, for a personal channel, organizations.
+    // Its link carries no scope of its own: the unsubscribe turns off every
+    // row of the person that sends email to this channel, wherever it sits
+    // (a single `none` row for every organization would lose to the
+    // organization, project or server rows that turned the mail on).
     const first = claimed[0]?.payload
     if (first) {
       job.mail = await mailHeadersFor(
@@ -198,7 +201,7 @@ async function sendDigestTo(
         deps.email.consoleBaseUrl,
         channel,
         { ...first, organizationId: channel.organizationId, projectId: null },
-        { categoryCode: null }
+        { digest: true }
       )
       delete job.mail.event
     }

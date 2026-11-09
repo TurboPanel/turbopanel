@@ -1705,13 +1705,16 @@ async function runOptionalCronPhases(
   }
 
   // Inbox rows after 90 days, events and the ledger after 30, and settings of
-  // people who left an organization (features/notifications/cleanup.ts).
+  // people who left an organization (features/notifications/cleanup.ts). On
+  // the upgrade-history 15-minute window, like the self-hosted tick: the
+  // settings pass reads the whole preference table.
   if (
-    !(await runOptionalPhase(
+    !(await runScheduledOptionalPhase(
       deadlineMs,
       'notification-prune',
       opts.scheduledTime,
       phasesSkipped,
+      shouldSweepUpgradeHistory,
       async () => {
         await pruneNotificationHistory(db)
       }

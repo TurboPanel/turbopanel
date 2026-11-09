@@ -142,15 +142,21 @@ try {
   // Loaded lazily: it is TypeScript, which needs a Node that strips types. A
   // build without that skips the step, and the control plane writes the
   // catalog itself before its first notification.
+  // Only a module that cannot be loaded is a warning: a database error from
+  // the sync itself fails the migrate like any other statement.
+  let syncNotificationCatalog = null
   try {
-    const { syncNotificationCatalog } =
-      await import('../src/features/notifications/catalog-sync.ts')
-    await syncNotificationCatalog((text, params) => client.unsafe(text, params))
-    console.log('migrate-locked: notification catalog in step')
+    ;({ syncNotificationCatalog } = await import('../src/features/notifications/catalog-sync.ts'))
   } catch (err) {
     console.warn(
       `migrate-locked: notification catalog not synced (${err instanceof Error ? err.message : String(err)}); the control plane writes it on first use`
     )
+  }
+  if (syncNotificationCatalog) {
+    await syncNotificationCatalog((text, params) => client.unsafe(text, params), {
+      deprecate: true,
+    })
+    console.log('migrate-locked: notification catalog in step')
   }
 } catch (err) {
   console.error(`migrate-locked: ${err instanceof Error ? err.message : String(err)}`)
