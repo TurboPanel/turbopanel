@@ -65,9 +65,18 @@
   `next_key_retired` on both runtimes (the offline next key is retired). Key changes are
   `key-rotation-routes.ts`: `GET /instance/identity/rotation`, `POST /instance/identity/statements/prepare`
   (exact statement bytes + WebAuthn challenge), `POST /instance/identity/statements` (assertions, checked
-  like a server checks them, then stored) and `GET /instance/identity/statements/:keyset` (download);
+  like a server checks them, then stored), `GET /instance/identity/statements/:keyset` (download) and
+  `DELETE /instance/identity/statements/:keyset` (cancel a High Availability change that still waits
+  for its key: one conditional delete, audited `panel.key.cancel`, 409 `not_waiting` once live);
   superadmin, step-up `panel.key.change`, audited `panel.key.rotate|revoke` and
-  `panel.approver.mark|unmark`, mailed through `recordKeyEvent`. `PUT /instance/hostnames` refuses (409
+  `panel.approver.mark|unmark`, mailed through `recordKeyEvent` (context from `approvalAudit`: `marked`
+  and `unmarked` name the passkeys, so a statement that does both says both). While a change waits,
+  prepare and approve answer 409 `awaiting_key`. Approve also takes only assertions made on this
+  control plane's own origins (`approvalsFromOwnOrigin`, the sign-in passkey origin list; servers
+  accept any port of the hostname), refuses a key change that also changes the passkeys, and turns
+  the verifier's internal reasons into owner words (`refusalWords`). The first mark needs a
+  configured primary hostname (409 `no_primary_hostname`; never the request's host), and Emergency
+  Revoke always moves to a key made for it. `PUT /instance/hostnames` refuses (409
   `rotation_rp_id_hostname`) a primary hostname other than the marked passkeys' `rp_id`;
   `GET /instance/identity/sealed-secrets` (superadmin) reports per server whether secrets still
   reach it in plaintext (feature, sealing key id, `plaintext_secrets_at`);
