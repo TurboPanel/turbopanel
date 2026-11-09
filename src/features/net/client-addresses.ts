@@ -108,7 +108,9 @@ export async function loadClientAddressDatacenterPins(
   }
   return [...byDatacenter].map(([datacenterId, pins]) => ({
     datacenterId,
-    datacenterName: pins[0]!.name ?? 'Datacenter',
+    // An unnamed datacenter has no name to show: the web interface then says
+    // just "Datacenter Network" instead of repeating the word after it.
+    datacenterName: pins[0]!.name?.trim() || '',
     addressPreference: pins[0]!.addressPreference === 'ipv4' ? 'ipv4' : 'ipv6',
     priority: pins[0]!.priority,
     // A pin whose network link is down is not where clients arrive, the same
