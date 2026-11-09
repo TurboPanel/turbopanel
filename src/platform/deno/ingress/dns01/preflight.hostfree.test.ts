@@ -149,7 +149,7 @@ test('a lookup that failed while the provider listed none is a lookup problem', 
   assertEquals(result.failure, {
     cause: 'dns-lookup',
     detail:
-      "Could not look up the nameservers of example.com: the DNS provider or this server's resolver did not answer.",
+      "Could not look up the nameservers of example.com: the DNS provider could not list them, or this server's resolver did not answer.",
   })
 })
 
@@ -178,6 +178,17 @@ test('a zone that both the provider and the resolver say has no nameservers is i
     detail:
       "The example.com zone lists no nameservers: the DNS provider listed none, and this server's resolver found no NS records. Check that the zone is delegated to its DNS provider.",
   })
+})
+
+test('a provider that cannot list nameservers leaves an empty resolver answer a lookup problem', async () => {
+  const { provider } = fakeProvider()
+  const result = await preflightDns01({
+    provider,
+    dns: { ...fakeDns(), ns: () => Promise.resolve([]) },
+    zones: ZONES,
+    host: 'panel.example.com',
+  })
+  assertEquals(result.failure?.cause, 'dns-lookup')
 })
 
 test('nameserver names with no address fail as a lookup problem and name them', async () => {

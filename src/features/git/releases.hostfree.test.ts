@@ -3,6 +3,7 @@ import { describe, it } from '@std/testing/bdd'
 import {
   aggregateReleaseStatus,
   applyResolvedCommitSha,
+  deployBuiltNothing,
   isReleaseMaterializedEverywhere,
   markLiveReleases,
   imageIdentitiesFromResult,
@@ -244,5 +245,14 @@ describe('applyResolvedCommitSha', () => {
     const release = record('main')
     applyResolvedCommitSha(release, undefined)
     assertEquals(release.commitSha, 'main')
+  })
+})
+
+describe('deployBuiltNothing', () => {
+  it('is true only when the host said it found nothing to change', () => {
+    assertEquals(deployBuiltNothing({ projectName: 'p', unchanged: true }), true)
+    assertEquals(deployBuiltNothing({ projectName: 'p', unchanged: 'yes' }), false)
+    assertEquals(deployBuiltNothing({ projectName: 'p', releases: [] }), false)
+    assertEquals(deployBuiltNothing(null), false)
   })
 })
