@@ -10,6 +10,7 @@ import {
   parseKeysetStatement,
   pinAfter,
   rotationPasskeysHash,
+  type RotationPasskey,
   rotationPasskeysLine,
   serializeKeysetStatement,
   verifyKeysetEnvelope,
@@ -233,6 +234,13 @@ test('the passkey line and its hash are order independent', async () => {
     await rotationPasskeysHash([a.passkey, b.passkey]),
     await rotationPasskeysHash([b.passkey, a.passkey])
   )
+})
+
+test('the shared passkeys line vector: sorted by id in code-unit order, then hashed', async () => {
+  const { passkeys, line, hash } = vectors.passkeysLine
+  const set = passkeys as RotationPasskey[]
+  assertEquals(rotationPasskeysLine(set), line)
+  assertEquals(await rotationPasskeysHash(set), hash)
 })
 
 test('only the exact statement bytes verify: other forms of the same JSON are refused', async () => {
