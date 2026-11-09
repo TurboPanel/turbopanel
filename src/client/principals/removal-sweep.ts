@@ -36,8 +36,10 @@ import {
   isPrincipalReferenced,
   type PrincipalReferences,
 } from '../../features/principals/store.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { principalDeleteAuditEntry } from './delete-audit.ts'
 import { enqueuePrincipalsReconcile, serversForPrincipal } from './reconcile.ts'
 
 /** Principals one sweep tick looks at, at most. */
@@ -139,14 +141,27 @@ async function serversReadyToRetire(
   return candidates.filter((row) => !stopping.has(row.serverId)).map((row) => row.serverId)
 }
 
+/** What the activity log keeps about a row the sweep deleted. */
+type RemovedPrincipal = {
+  organizationId: string
+  username: string
+  appliedUsername: string
+  serverIds: string[]
+}
+
 type RemovalStep =
-  | { result: 'removed' | 'waiting' | 'kept' }
+  | { result: 'waiting' | 'kept' }
+  | { result: 'removed'; removed: RemovedPrincipal }
   | { result: 'retiring'; serverIds: string[]; retried: string[]; appliedUsername: string }
 
 /** One step for one principal, in a transaction with its row locked. */
 async function removalStep(tx: Db, principalId: string): Promise<RemovalStep> {
   const [row] = await tx
-    .select({ appliedUsername: principal.appliedUsername })
+    .select({
+      organizationId: principal.organizationId,
+      username: principal.username,
+      appliedUsername: principal.appliedUsername,
+    })
     .from(principal)
     .where(and(eq(principal.id, principalId), isNotNull(principal.removalRequestedAt)))
     .limit(1)
@@ -178,8 +193,14 @@ async function removalStep(tx: Db, principalId: string): Promise<RemovalStep> {
       and(eq(principalPlacement.principalId, principalId), ne(principalPlacement.state, 'absent'))
     )
   if (placements.length === 0) {
+    // Every placement left is `absent`: the servers it was retired on.
+    const retiredOn = await tx
+      .select({ serverId: principalPlacement.serverId })
+      .from(principalPlacement)
+      .where(eq(principalPlacement.principalId, principalId))
     await tx.delete(principal).where(eq(principal.id, principalId))
-    return { result: 'removed' }
+    const serverIds = retiredOn.map((entry) => entry.serverId)
+    return { result: 'removed', removed: { ...row, serverIds } }
   }
 
   const ready = await serversReadyToRetire(tx, placements)
@@ -213,6 +234,19 @@ export async function removeRequestedPrincipal(
   principalId: string
 ): Promise<PrincipalRemovalResult> {
   const step = await db.transaction((tx) => removalStep(tx, principalId))
+  if (step.result === 'removed') {
+    // After the commit, so a failed audit write never rolls the delete back.
+    const { organizationId, ...account } = step.removed
+    await recordAudit(
+      db,
+      principalDeleteAuditEntry(
+        { organizationId, actorUserId: null, actorEmail: null },
+        principalId,
+        account
+      )
+    )
+    return 'removed'
+  }
   if (step.result !== 'retiring') return step.result
   for (const serverId of step.retried) {
     compatLogWarn(
