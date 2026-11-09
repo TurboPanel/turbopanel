@@ -145,7 +145,10 @@ import {
   type PlannedDeploy,
 } from '../../features/schedule/index.ts'
 import { servicesMapping } from '../../features/schedule/plan-deploy.ts'
-import { hostAccessAuditEntry } from '../../features/schedule/host-access-audit.ts'
+import {
+  hostAccessAuditEntry,
+  hostAccessUseTrigger,
+} from '../../features/schedule/host-access-audit.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { serverHasHostRunBinding } from '../../features/managed/ingress-bound-consumers.ts'
@@ -1675,8 +1678,9 @@ type DeploySpanningContext = {
  * the grant model, rather than inferred from the route: every session route
  * that reaches a deploy already requires `organization:manage`, and this check
  * is what keeps a future, lower deploy grant from inheriting host-level access
- * with it. The webhook has no person behind it and is judged on a recorded
- * approval instead (see `HostAccessActor`).
+ * with it. An automated deploy (a push, or one the control plane starts) has no
+ * person behind it and is judged on a recorded approval instead (see
+ * `HostAccessActor`).
  */
 async function resolveHostAccessActor(
   db: Db,
@@ -1701,22 +1705,32 @@ async function resolveHostAccessActor(
 /**
  * The history row for an automated deploy that runs host-level content under a
  * recorded approval (`PlannedDeploy.hostAccessUse`). Called once the deploy's
- * rows are persisted; the approval it names is the one the planner matched.
+ * rows are persisted; the approval it names is the one the planner matched, and
+ * the row says what started the deploy (a push, or the control plane itself).
+ *
+ * A hostings-only run writes nothing: the host rewrites the web server config
+ * and certificates and never brings Compose up, so no host-level field is
+ * applied under the approval and there is no use to record.
  */
 export async function recordHostAccessUse(
   db: Db,
   planned: Pick<PlannedDeploy, 'hostAccessUse' | 'projectId'>,
-  auth: Pick<DeployRequestAuth, 'organizationId' | 'actorId'>,
+  auth: Pick<DeployRequestAuth, 'organizationId' | 'actorId' | 'selection' | 'hostingsOnly'>,
   environmentId: string,
   record: typeof recordAudit = recordAudit
 ): Promise<void> {
-  if (!planned.hostAccessUse) return
+  if (!planned.hostAccessUse || auth.hostingsOnly === true) return
   await record(
     db,
     hostAccessAuditEntry(
       planned.hostAccessUse,
       { organizationId: auth.organizationId, environmentId, projectId: planned.projectId },
-      { userId: null, email: null, automatedActorId: auth.actorId }
+      {
+        userId: null,
+        email: null,
+        automatedActorId: auth.actorId,
+        trigger: hostAccessUseTrigger(auth.selection),
+      }
     )
   )
 }
