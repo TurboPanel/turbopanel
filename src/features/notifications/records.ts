@@ -733,11 +733,23 @@ export async function countUnreadForUser(db: Db, userId: string): Promise<number
 
 /**
  * Cancel the held (quiet hours or digest) email copies of what the person has
- * now read in the bell (owner decision 2026-11-06). Only their own copies;
- * a shared channel's copy is the team's and stays.
+ * now read in the bell (owner decision 2026-11-06). Only their own copies (a
+ * shared channel's copy is the team's and stays), only email (a held chat or
+ * webhook copy still goes out), and only for events that have a bell row for
+ * them: with `'all'`, every event in their bell, never a held copy of an
+ * event the bell did not show (the bell off and an email digest on is a legal
+ * setup).
  */
 async function cancelHeldCopies(db: Db, userId: string, eventIds: readonly string[] | 'all') {
   if (eventIds !== 'all' && eventIds.length === 0) return
+  const inBell = db
+    .select({ eventId: notification.eventId })
+    .from(notification)
+    .where(and(eq(notification.userId, userId), isNotNull(notification.eventId)))
+  const emailChannels = db
+    .select({ id: notificationChannel.id })
+    .from(notificationChannel)
+    .where(and(eq(notificationChannel.userId, userId), eq(notificationChannel.kind, 'email')))
   await db
     .update(notificationDelivery)
     .set({ status: 'abandoned', reason: 'read_in_app', nextAttemptAt: null })
@@ -745,7 +757,10 @@ async function cancelHeldCopies(db: Db, userId: string, eventIds: readonly strin
       and(
         eq(notificationDelivery.userId, userId),
         eq(notificationDelivery.status, 'held'),
-        eventIds === 'all' ? undefined : inArray(notificationDelivery.eventId, [...eventIds])
+        inArray(notificationDelivery.channelId, emailChannels),
+        eventIds === 'all'
+          ? inArray(notificationDelivery.eventId, inBell)
+          : inArray(notificationDelivery.eventId, [...eventIds])
       )
     )
 }
@@ -951,6 +966,11 @@ function asDelivery(row: typeof notificationDelivery.$inferSelect): Notification
   }
 }
 
+/** A copy dropped because its address is suppressed reads `suppressed`; any other drop is `abandoned`. */
+function droppedStatus(reason: NotificationAttemptReason): 'suppressed' | 'abandoned' {
+  return reason === 'bounced' ? 'suppressed' : 'abandoned'
+}
+
 /**
  * Record one attempt's outcome. The counter is bumped in SQL, not read then
  * written, so two recorders for one row can never both count as attempt 1;
@@ -959,9 +979,7 @@ function asDelivery(row: typeof notificationDelivery.$inferSelect): Notification
 export async function recordDeliveryAttempt(
   db: Db,
   id: string,
-  outcome:
-    | { ok: true }
-    | { ok: false; error: string; drop?: NotificationAttemptReason; suppressed?: boolean }
+  outcome: { ok: true } | { ok: false; error: string; drop?: NotificationAttemptReason }
 ): Promise<void> {
   if (!outcome.ok && outcome.drop) {
     // Not a failure to retry: the copy must not go out (no access any more,
@@ -969,7 +987,7 @@ export async function recordDeliveryAttempt(
     await db
       .update(notificationDelivery)
       .set({
-        status: outcome.suppressed ? 'suppressed' : 'abandoned',
+        status: droppedStatus(outcome.drop),
         reason: outcome.drop,
         nextAttemptAt: null,
         lastError: outcome.error.slice(0, 200),
@@ -1037,7 +1055,7 @@ export async function claimDueDeliveries(
   const now = new Date().toISOString()
   const kindFilter = opts.includeEmail
     ? or(
-        and(eq(notificationChannel.kind, 'email'), isNotNull(notificationChannel.verifiedAt)),
+        and(eq(notificationChannel.kind, 'email'), emailChannelIsSendable()),
         notInArray(notificationChannel.kind, ['email', 'push'])
       )
     : notInArray(notificationChannel.kind, ['email', 'push'])
@@ -1062,6 +1080,15 @@ export async function claimDueDeliveries(
 }
 
 /**
+ * An email channel the sweeps may pick: a confirmed address, or the built-in
+ * account email channel, whose address and verification are the account's and
+ * are checked at send (`deliveryAddress`).
+ */
+function emailChannelIsSendable() {
+  return or(isNotNull(notificationChannel.verifiedAt), eq(notificationChannel.isPrimary, true))
+}
+
+/**
  * Enabled channels that have at least one held delivery — the digest sweep's batch.
  * Chat and webhook channels keep their addresses sealed, so a tick without the
  * data-encryption secrets leaves them out (`includeChat: false`): their rows
@@ -1080,7 +1107,7 @@ export async function listChannelsWithHeldDeliveries(
         // Chat and webhook channels need nothing but the sweep; an email
         // channel also needs a verified address and a tick with a mail queue.
         opts.includeEmail
-          ? or(ne(notificationChannel.kind, 'email'), isNotNull(notificationChannel.verifiedAt))
+          ? or(ne(notificationChannel.kind, 'email'), emailChannelIsSendable())
           : ne(notificationChannel.kind, 'email'),
         ne(notificationChannel.kind, 'push'),
         opts.includeChat === false ? eq(notificationChannel.kind, 'email') : undefined,
@@ -1154,7 +1181,7 @@ export async function finishDigestDeliveries(
   if (!outcome.ok && outcome.drop) {
     await db
       .update(notificationDelivery)
-      .set({ status: 'abandoned', reason: outcome.drop, nextAttemptAt: null })
+      .set({ status: droppedStatus(outcome.drop), reason: outcome.drop, nextAttemptAt: null })
       .where(where)
     return
   }

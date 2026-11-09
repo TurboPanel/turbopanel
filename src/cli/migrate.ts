@@ -162,7 +162,9 @@ export async function runLockedMigration(
     log('migrations applied successfully')
     // The notification catalog is data written from code (events.ts), under
     // the same lock: upserted by code, never deleted.
-    await syncNotificationCatalog((text, params) => sql.unsafe(text, params as never[]))
+    await syncNotificationCatalog((text, params) => sql.unsafe(text, params as never[]), {
+      deprecate: true,
+    })
     log('notification catalog in step')
   } finally {
     await sql`select pg_advisory_unlock(${MIGRATION_LOCK_KEY_1}, ${MIGRATION_LOCK_KEY_2})`

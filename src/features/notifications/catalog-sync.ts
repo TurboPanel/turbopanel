@@ -6,8 +6,8 @@
  * up any other way still has the rows its foreign keys need.
  *
  * Upserts by code and never deletes: preferences and history keep naming a
- * code that left the code base, which is stamped `deprecated_at` instead (and
- * cleared again if the code comes back).
+ * code that left the code base, which migrate stamps `deprecated_at` instead
+ * (and any sync clears again if the code comes back).
  *
  * Plain SQL over a caller-supplied runner, so the Node migrate script, the
  * Deno CLI and drizzle can all use it. No imports beyond the catalogue.
@@ -51,11 +51,21 @@ export const DEPRECATE_TOPICS_SQL = `UPDATE "topic" SET "deprecated_at" = now(),
 WHERE "deprecated_at" IS NULL
   AND "code" NOT IN (SELECT jsonb_array_elements_text($1::jsonb))`
 
-/** Bring `category` and `topic` in line with this build. Throws on a database error. */
-export async function syncNotificationCatalog(run: CatalogSqlRunner): Promise<void> {
+/**
+ * Bring `category` and `topic` in line with this build. Throws on a database
+ * error. `deprecate` also stamps the codes this build no longer has: migrate
+ * passes true (one writer, under the migration lock); a running process passes
+ * false, because during a rolling update an older process would stamp the
+ * codes only the newer build knows.
+ */
+export async function syncNotificationCatalog(
+  run: CatalogSqlRunner,
+  opts: { deprecate: boolean }
+): Promise<void> {
   const { categories, topics } = notificationCatalogRows()
   await run(UPSERT_CATEGORIES_SQL, [JSON.stringify(categories)])
   await run(UPSERT_TOPICS_SQL, [JSON.stringify(topics)])
+  if (!opts.deprecate) return
   // Every list goes in as one JSON text parameter: a driver may expand a
   // JavaScript array into a row of parameters, which no cast turns back.
   await run(DEPRECATE_TOPICS_SQL, [JSON.stringify(topics.map((t) => t.code))])
