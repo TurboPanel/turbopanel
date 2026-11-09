@@ -564,7 +564,7 @@ test('POST /api/admin/v1/secrets/reencrypt returns 409 when a sweep is already r
   })
 })
 
-test('Pause all updates holds updates until Resume, shows who paused, and is in the activity log', async () => {
+test('Pause all updates holds updates until Pause All Updates is turned off, shows who paused, and is in the activity log', async () => {
   await withRoleUser('admin', async ({ app, cookie }) => {
     const db = createDenoDb()
     const headers = { Cookie: cookie, 'content-type': 'application/json' }
