@@ -39,6 +39,16 @@ export function enrollSealAad(parts: {
   ].join('\n')
 }
 
+/** A sealed token is small: the encapsulated key is exactly 32 bytes, the ciphertext a few KiB at most. */
+const MAX_SEALED_CT_CHARS = 6 * 1024
+const X25519_ENC_BASE64URL_CHARS = 43
+
+function hasSaneSize(envelope: { enc: string; ct: string }): boolean {
+  return (
+    envelope.enc.length === X25519_ENC_BASE64URL_CHARS && envelope.ct.length <= MAX_SEALED_CT_CHARS
+  )
+}
+
 export type OpenedEnrollLicense =
   { ok: true; licenseToken: string } | { ok: false; status: 400 | 503; error: string }
 
@@ -53,7 +63,7 @@ export async function openSealedLicenseToken(
     publicKeyFingerprint: string
   }
 ): Promise<OpenedEnrollLicense> {
-  if (!isHpkeEnvelope(envelope) || bound.clientNonce === undefined) {
+  if (!isHpkeEnvelope(envelope) || bound.clientNonce === undefined || !hasSaneSize(envelope)) {
     return { ok: false, status: 400, error: 'sealedLicenseToken is not valid' }
   }
   if (!identity) {

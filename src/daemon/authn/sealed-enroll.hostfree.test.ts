@@ -82,6 +82,19 @@ test('a malformed envelope, a missing client nonce or no identity is refused', a
   })
 })
 
+test('an envelope with an oversized ciphertext or a wrong-size key is refused before opening', async () => {
+  const id = await identity()
+  const envelope = await sealTo(id, BOUND)
+  assertEquals(
+    (await openSealedLicenseToken({ ...envelope, ct: 'A'.repeat(7000) }, id, BOUND)).ok,
+    false
+  )
+  assertEquals(
+    (await openSealedLicenseToken({ ...envelope, enc: 'A'.repeat(60) }, id, BOUND)).ok,
+    false
+  )
+})
+
 test('a client nonce is accepted only in the expected shape', () => {
   assertEquals(parseClientNonce('AAAAAAAAAAAAAAAAAAAAAAAA'), 'AAAAAAAAAAAAAAAAAAAAAAAA')
   assertEquals(parseClientNonce('short'), undefined)

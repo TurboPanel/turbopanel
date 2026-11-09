@@ -137,7 +137,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ['Authentication'],
       summary: 'Request an enrollment or auth challenge',
       description:
-        'Without body: issues enrollment challenge. With `{ serverId, keyId }`: issues auth challenge after verifying server.daemon.key (active, matching keyId) on the server row. A pinned daemon may add `clientNonce` to the enrollment request; it is echoed in the (signed) answer, which tells the daemon this control plane takes a sealed license.',
+        'Without body: issues enrollment challenge. With `{ serverId, keyId }`: issues auth challenge after verifying server.daemon.key (active, matching keyId) on the server row. A pinned daemon may add `clientNonce` to the enrollment request; it is echoed in the (signed) answer. Every enrollment answer carries `sealedLicense: 1`, which tells the daemon this control plane takes a sealed license.',
       responses: {
         '200': {
           description: 'Challenge issued',

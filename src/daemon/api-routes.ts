@@ -2030,8 +2030,10 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Challenge unavailable' }, 503)
     }
     const challenge = await enrollStore.issue()
-    // Echoed so a pinned daemon knows this control plane takes a sealed
-    // license; the answer is signed, so an impostor cannot strip it.
+    // `sealedLicense` is in every enrollment answer, whatever the request
+    // carried, so an impostor that strips the daemon's nonce cannot make
+    // this control plane look like one that takes the license in clear. The
+    // nonce is echoed when sent; the answer is signed, so neither is strippable.
     const clientNonce = parseClientNonce(body.clientNonce)
     return c.json(
       {
@@ -2039,6 +2041,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         nonce: challenge.nonce,
         at: challenge.at,
         expiresAt: challengeExpiresAt(challenge.at, enrollStore.ttlMs),
+        sealedLicense: 1,
         ...(clientNonce === undefined ? {} : { clientNonce }),
       },
       200

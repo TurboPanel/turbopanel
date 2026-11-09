@@ -166,10 +166,17 @@ test('an enroll challenge echoes a well-formed client nonce and nothing else', a
       body: JSON.stringify({ clientNonce }),
     })
     assertEquals(response.status, 200)
-    return (await response.json()) as { clientNonce?: unknown }
+    return (await response.json()) as { clientNonce?: unknown; sealedLicense?: unknown }
   }
   assertEquals((await ask('AAAAAAAAAAAAAAAAAAAAAAAA')).clientNonce, 'AAAAAAAAAAAAAAAAAAAAAAAA')
   assertEquals((await ask('not a nonce')).clientNonce, undefined)
+  // The marker is there whatever the request carried, so stripping the nonce changes nothing.
+  assertEquals((await ask('not a nonce')).sealedLicense, 1)
+  const bare = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
+    method: 'POST',
+    headers: { 'content-length': '0' },
+  })
+  assertEquals(((await bare.json()) as { sealedLicense?: unknown }).sealedLicense, 1)
 })
 
 test('auth challenge with only serverId does not query the database', async () => {
