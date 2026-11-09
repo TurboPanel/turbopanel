@@ -34,7 +34,17 @@ test('serialized bytes keep the declared key order and a 30 day lifetime', async
   const doc = buildIdentityDocument(await fixtureIdentity(true), URLS, NOW)
   const body = serializeIdentityDocument(doc)
   const parsed = JSON.parse(body)
-  assertEquals(Object.keys(parsed), ['v', 'keys', 'seal', 'keyset', 'urls', 'issued', 'expires'])
+  assertEquals(Object.keys(parsed), [
+    'v',
+    'keys',
+    'seal',
+    'keyset',
+    'urls',
+    'issued',
+    'expires',
+    'sealedLicense',
+  ])
+  assertEquals(parsed.sealedLicense, 1)
   assertEquals(Object.keys(parsed.keys[0]), ['kid', 'alg', 'pub', 'role'])
   assertEquals(Date.parse(parsed.expires) - Date.parse(parsed.issued), IDENTITY_DOCUMENT_TTL_MS)
   assertEquals(parsed.urls, URLS)

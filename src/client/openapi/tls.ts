@@ -366,15 +366,15 @@ export const tlsPaths = {
       security: [{ cookieAuth: [] }],
       responses: {
         200: {
-          description: 'Latest rotation journal (command statuses overlaid when known)',
+          description:
+            'Latest rotation journal (command statuses overlaid when known), or `null` when no rotation has been started for this organization',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/TlsCaRotationStatus' },
+              schema: {
+                oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/TlsCaRotationStatus' }],
+              },
             },
           },
-        },
-        404: {
-          description: 'No rotation has been started for this organization',
         },
       },
     },

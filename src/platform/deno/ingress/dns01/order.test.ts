@@ -564,6 +564,38 @@ test('a kept order given up before a new order that fails is given up once', asy
   }
 })
 
+test('a kept order whose record cannot be removed is still given up once', async () => {
+  if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
+  const db = createDenoDb()
+  const host = `panel-${crypto.randomUUID().slice(0, 8)}.example.com`
+  const w = await world(db, host, { authzExpires: '2026-11-01T01:00:00Z' })
+  try {
+    await startOrder(w.deps, (await loadDns01Row(db, w.hostnameId))!)
+    await advanceOrder(unreachableLater(w.deps), (await loadDns01Row(db, w.hostnameId))!)
+    const provider = await w.deps.challengeProvider({} as never)
+    let calls = 0
+    const failed = await startOrder(
+      {
+        ...w.deps,
+        now: () => new Date(NOW.getTime() + 2 * 60 * 60_000),
+        // The preflight gets the provider; removing the kept order's record then fails.
+        challengeProvider: () =>
+          ++calls === 2 ? Promise.reject(new Error('provider down')) : Promise.resolve(provider),
+      },
+      (await loadDns01Row(db, w.hostnameId))!
+    )
+    assert(!('ok' in failed))
+    assertEquals(failed.stage, 'backoff')
+    assertEquals(failed.order, null)
+    assertEquals(w.ca.orders.length, 1)
+    assertEquals(w.ca.deactivationAsked.length, 1)
+    assertEquals(failed.abandonedTimes.length, 1)
+  } finally {
+    await cleanup(db, w.hostnameId)
+    await endDbConnection(db)
+  }
+})
+
 test('a kept order whose authorization cannot be read right now stays kept', async () => {
   if (!dbUrl) return skipWithoutDatabase('DNS-01 order tests')
   const db = createDenoDb()

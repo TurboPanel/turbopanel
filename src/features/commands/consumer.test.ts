@@ -3870,7 +3870,7 @@ test('processCommandEnvelope compares a reconcile listing with the folder rows a
         ])
         assertEquals(
           blocking.folders.find((row) => row.slug === 'stranger')?.reason,
-          'no service or volume owns this folder on server Consumer Test Server'
+          'no service or volume owns this folder on Consumer Test Server'
         )
       }
     )

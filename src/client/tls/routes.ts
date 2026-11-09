@@ -820,7 +820,8 @@ export function registerTlsRoutes(
     if (denied) return denied
 
     const journal = await loadLatestCaRotation(db, organizationId)
-    if (!journal) return c.json({ error: 'Not found' }, 404)
+    // No rotation has run yet: a plain answer, not a missing route.
+    if (!journal) return c.json(null)
 
     const { rows, records } = await loadReconciledRotationWithCommandRecords(
       db,
