@@ -1670,6 +1670,9 @@ export function registerDaemonApiRoutes<E extends Env>(
         nonce: challenge.nonce,
         at: challenge.at,
         expiresAt: challengeExpiresAt(challenge.at, authStore.ttlMs),
+        // Said in the signed body so an auth answer cannot pass for an enroll one.
+        kind: 'auth',
+        sealedLicense: 1,
       },
       200
     )
@@ -2030,7 +2033,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Challenge unavailable' }, 503)
     }
     const challenge = await enrollStore.issue()
-    // `sealedLicense` is in every enrollment answer, whatever the request
+    // `kind` and `sealedLicense` are in every challenge answer, whatever the request
     // carried, so an impostor that strips the daemon's nonce cannot make
     // this control plane look like one that takes the license in clear. The
     // nonce is echoed when sent; the answer is signed, so neither is strippable.
@@ -2041,6 +2044,7 @@ export function registerDaemonApiRoutes<E extends Env>(
         nonce: challenge.nonce,
         at: challenge.at,
         expiresAt: challengeExpiresAt(challenge.at, enrollStore.ttlMs),
+        kind: 'enroll',
         sealedLicense: 1,
         ...(clientNonce === undefined ? {} : { clientNonce }),
       },

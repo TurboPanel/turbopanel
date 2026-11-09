@@ -39,8 +39,8 @@ export function enrollSealAad(parts: {
   ].join('\n')
 }
 
-/** A sealed token is small: the encapsulated key is exactly 32 bytes, the ciphertext a few KiB at most. */
-const MAX_SEALED_CT_CHARS = 6 * 1024
+/** A sealed token is small: the encapsulated key is exactly 32 bytes (43 base64url characters), the ciphertext at most 4096 characters. */
+const MAX_SEALED_CT_CHARS = 4096
 const X25519_ENC_BASE64URL_CHARS = 43
 
 function hasSaneSize(envelope: { enc: string; ct: string }): boolean {

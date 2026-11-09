@@ -176,7 +176,9 @@ test('an enroll challenge echoes a well-formed client nonce and nothing else', a
     method: 'POST',
     headers: { 'content-length': '0' },
   })
-  assertEquals(((await bare.json()) as { sealedLicense?: unknown }).sealedLicense, 1)
+  const bareBody = (await bare.json()) as { sealedLicense?: unknown; kind?: unknown }
+  assertEquals(bareBody.sealedLicense, 1)
+  assertEquals(bareBody.kind, 'enroll')
 })
 
 test('auth challenge with only serverId does not query the database', async () => {
