@@ -119,9 +119,9 @@ export function createCloudflareDnsChallenge(options: {
       const envelope = await call('GET', `/zones/${encodeURIComponent(zoneId)}`)
       const zone = envelope?.result
       const listed = zone && !Array.isArray(zone) ? zone.name_servers : undefined
-      return Array.isArray(listed)
-        ? listed.filter((name): name is string => typeof name === 'string' && name.length > 0)
-        : []
+      // No list at all is no answer, not "the zone has none".
+      if (!Array.isArray(listed)) throw new Error('the zone answer carries no nameserver list')
+      return listed.filter((name): name is string => typeof name === 'string' && name.length > 0)
     },
 
     async present(input: ChallengeRecordInput): Promise<ChallengeRecordRef> {

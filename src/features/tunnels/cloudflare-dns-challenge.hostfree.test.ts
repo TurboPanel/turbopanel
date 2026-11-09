@@ -135,7 +135,7 @@ test('the zone check is a cheap read and the TXT read-back strips quotes', async
   ])
 })
 
-test("the zone's nameservers come from the zone read, and a zone without the field lists none", async () => {
+test("the zone's nameservers come from the zone read, and a zone without the field is no answer", async () => {
   const api = recorder((call) =>
     call.url.endsWith('/zones/z1')
       ? ok({ id: 'z1', name_servers: ['ns-a.example.net', 'ns-b.example.net', 7] })
@@ -144,5 +144,6 @@ test("the zone's nameservers come from the zone read, and a zone without the fie
   const dns = createCloudflareDnsChallenge({ token: TOKEN, fetch: api.fetch })
   assertEquals(await dns.nameservers!('z1'), ['ns-a.example.net', 'ns-b.example.net'])
   assertEquals(api.calls[0]!.method, 'GET')
-  assertEquals(await dns.nameservers!('z2'), [])
+  // No list is not "the zone has none": preflight then falls back to the resolver.
+  await assertRejects(() => dns.nameservers!('z2'))
 })
