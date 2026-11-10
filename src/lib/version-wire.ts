@@ -229,6 +229,7 @@ export const DAEMON_WIRE_FEATURES = [
   'panel-bound-session-v1',
   'panel-keyset-statements-v1',
   'environment-stop-remove-volumes-v1',
+  'acme-issue-one-cert-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -325,6 +326,14 @@ export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
  * its key; the finished pair goes through `POST /api/daemon/v1/tls/issued`.
  */
 export const ACME_ISSUE_FEATURE: DaemonWireFeature = 'acme-issue-v1'
+
+/**
+ * The daemon places a server-placed order with its own ACME client and gets one
+ * certificate that covers every name of the request, reported once per name. A
+ * request with several names (apex and www, or more) goes only to a daemon that
+ * lists this feature; an older one would get one certificate per name.
+ */
+export const ACME_ISSUE_ONE_CERT_FEATURE: DaemonWireFeature = 'acme-issue-one-cert-v1'
 
 /**
  * The daemon keeps each command's final result on the host until this control

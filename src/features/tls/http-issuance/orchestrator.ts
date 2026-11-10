@@ -25,7 +25,7 @@ import {
 import type { DaemonOutboundEnvelope } from '../../../contracts/cell-protocol.ts'
 import { generateDeliveryId, generateRequestId } from '../../../contracts/cell-protocol.ts'
 import { loadServerPublicAddresses } from '../../net/client-addresses.ts'
-import { ACME_ISSUE_FEATURE } from '../../../lib/version-wire.ts'
+import { readHostingWwwMode } from '../../hostings/hosting-options.ts'
 import { forEachSequential } from '../../../lib/sequential.ts'
 import { type DnsLookup, resolveNameAddresses } from '../../hostings/hosting-dns-check.ts'
 import type { TlsAcmeMetadata } from '../../../lib/tls/types.ts'
@@ -52,6 +52,7 @@ import {
   withHttpIssuanceState,
 } from './state.ts'
 import { waitingText } from './status-text.ts'
+import { orderNamesFor, type PinningSite, takesOrderFor } from './names.ts'
 
 export type HttpIssuanceDeps = {
   db: Db
@@ -83,6 +84,31 @@ function namesOf(metadata: unknown): string[] {
   return Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string') : []
 }
 
+function hostnamesOf(options: unknown): string[] {
+  const names = (options as { hostnames?: unknown } | null)?.hostnames
+  return Array.isArray(names)
+    ? names.filter((n): n is string => typeof n === 'string' && n.length > 0)
+    : []
+}
+
+/** The typed names and www mode of every site that pins the row. */
+async function loadPinningSites(db: Db, tlsId: string): Promise<PinningSite[]> {
+  const rows = await db
+    .select({ options: hosting.options })
+    .from(hosting)
+    .where(eq(hosting.tlsId, tlsId))
+  return rows.map((row) => ({
+    hostnames: hostnamesOf(row.options),
+    www: readHostingWwwMode(row.options),
+  }))
+}
+
+/** What an order for the row asks for (see `names.ts`); the row's own names when it cannot be ordered here. */
+async function orderNamesOf(db: Db, tlsId: string, metadata: unknown): Promise<string[]> {
+  const typed = namesOf(metadata)
+  return orderNamesFor(typed, await loadPinningSites(db, tlsId)) ?? typed
+}
+
 async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
   const [row] = await tx
     .select({
@@ -100,7 +126,7 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
   return {
     id: row.id,
     organizationId: row.organizationId,
-    names: namesOf(row.metadata),
+    names: await orderNamesOf(tx, row.id, row.metadata),
     hasPair: row.hasKey === true,
     metadata: (row.metadata ?? {}) as Record<string, unknown>,
   }
@@ -171,7 +197,8 @@ async function loadServingServers(db: Db, tlsId: string): Promise<ServingRow[]> 
 
 async function describeServers(
   deps: HttpIssuanceDeps,
-  rows: ServingRow[]
+  rows: ServingRow[],
+  names: readonly string[]
 ): Promise<ServingServer[]> {
   return await Promise.all(
     rows.map(async (r) => {
@@ -184,7 +211,8 @@ async function describeServers(
         serverId: r.serverId,
         label: r.label,
         online,
-        hasFeature: features.includes(ACME_ISSUE_FEATURE),
+        // Several names need a daemon that gets one certificate for all of them.
+        hasFeature: takesOrderFor(features, names),
         addresses,
       }
     })
@@ -250,14 +278,12 @@ function orderEnvelope(
 }
 
 /**
- * Whether a row may be ordered centrally at all: exactly one plain name. A
- * wildcard needs the DNS proof, and a row with several names (apex and www)
- * would get one certificate per name from the daemon, which the panel cannot
- * yet store or send as one pin; such a row stays with each server's own web
- * server and is never touched here.
+ * Whether names may be ordered centrally at all: at least one, and no wildcard
+ * (that needs the DNS proof). Several names are fine; who may take such an
+ * order is `takesOrderFor`.
  */
 export function isHttpOrderable(names: readonly string[]): boolean {
-  return names.length === 1 && !names[0].includes('*')
+  return names.length >= 1 && names.every((name) => !name.includes('*'))
 }
 
 export type StartOutcome =
@@ -275,7 +301,7 @@ async function gather(
   row: Pick<RowFacts, 'id' | 'names'>,
   previous: HttpIssuanceState | null
 ): Promise<{ choice: Choice; servers: ServingServer[] }> {
-  const servers = await describeServers(deps, await loadServingServers(deps.db, row.id))
+  const servers = await describeServers(deps, await loadServingServers(deps.db, row.id), row.names)
   // Nothing to choose from until the first pass over the servers: skip the DNS lookup.
   if (!servers.some((s) => s.hasFeature)) {
     return { choice: { ok: false, reason: 'no_servers', skipped: [] }, servers }
@@ -468,7 +494,7 @@ export async function startHttpIssuance(
     .where(eq(tls.id, tlsId))
     .limit(1)
   if (peek?.source !== 'lets_encrypt' || peek.status !== 'automatic') return 'not_eligible'
-  const names = namesOf(peek.metadata)
+  const names = await orderNamesOf(deps.db, tlsId, peek.metadata)
   if (!isHttpOrderable(names)) return 'not_eligible'
   const previous = readHttpIssuanceState(peek.metadata)
   if (previous?.endedAt === null) return 'not_due'
@@ -483,7 +509,7 @@ export async function startHttpIssuance(
   if (!mayStartAttempt(attempts, now).ok) return 'backoff'
   const contactEmail = await deps.contactEmail(peek.organizationId)
   if (contactEmail === null || contactEmail.trim() === '') {
-    return await waitForContact(deps, peek.organizationId, tlsId, now)
+    return await waitForContact(deps, peek.organizationId, tlsId, now, names)
   }
   const { choice, servers } = await gather(deps, { id: tlsId, names }, previous)
   // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
@@ -505,11 +531,12 @@ async function waitForContact(
   deps: HttpIssuanceDeps,
   organizationId: string,
   tlsId: string,
-  now: Date
+  now: Date,
+  names: readonly string[]
 ): Promise<StartOutcome> {
   const serving = await loadServingServers(deps.db, tlsId)
   const lists = await Promise.all(
-    serving.map(async (s) => (await deps.daemonFeatures(s.serverId)).includes(ACME_ISSUE_FEATURE))
+    serving.map(async (s) => takesOrderFor(await deps.daemonFeatures(s.serverId), names))
   )
   if (!lists.some(Boolean)) return 'not_eligible'
   await deps.db.transaction(async (tx0) => {

@@ -4420,14 +4420,17 @@ function nameLockRefusalResponse(
 async function takesCentralPair(
   db: Db,
   pinned: OrgTlsCandidate | undefined,
-  serverId: string
+  serverId: string,
+  site: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
 ): Promise<boolean> {
   if (!pinned?.httpCentralPair || !pinned.certificatePem || !pinned.privateKeyPem) return false
   // One stored pair serves every site that pins the row, so it must cover all the
-  // row's names. A pair that covers only some of them (a daemon reports one
-  // certificate per name) stays with the server's own web server.
+  // row's names, and every name this site answers on (its www mode adds the other
+  // spelling, which a pinned pair serves too). A pair that covers only some of
+  // them stays with the server's own web server.
   const stored = pinned.metadata.acme?.storedNames
   if (!stored || !coversAllHostnames(stored, pinned.metadata.dnsNames)) return false
+  if (!coversAllHostnames(stored, hostingCertificateNames(site))) return false
   const state = await getServerDaemonStateByServerId(db, serverId)
   return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
 }
@@ -4481,7 +4484,7 @@ async function resolveHttpHostingEntry(
     status: pinned?.metadata.status,
     bindScope,
     acmeEnabled,
-    centralPair: await takesCentralPair(db, pinned, serverId),
+    centralPair: await takesCentralPair(db, pinned, serverId, { hostnames, www }),
   })
   if (!tlsWire.ok) {
     return {
