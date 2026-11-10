@@ -1174,6 +1174,12 @@ What the control plane actually checks, in order (`handleManagedHaEvent` →
 check here** — Raft only matters to whether Orchestrator raises DeadPrimary at
 all:
 
+0. The event's signature verified on a signed session (`signed-ha-events-v1`,
+   `src/daemon/AGENTS.md` → Signed HA events). Anything else is refused before
+   any other check: a terminal `blocked` row with a plain reason
+   (`metadata.reportRefused` = `unsigned`, `invalid` or `session-unsigned`)
+   when the reporter hosts a member in the cluster's organization, else a log
+   line; a refused boot-hold report is only logged.
 1. The detector covers the cluster's engine.
 2. **Every** event (with or without `detector`): the reporting server — the
    authenticated cell session's `serverId`, never a payload field — hosts a
@@ -1220,7 +1226,15 @@ all:
    standby) was under 64 MiB. Seconds since the last commit are not used: on
    an idle cluster they grow while nothing is behind. The failure start is event receipt
    minus the detector's `evidence.spanMs` (its first hard failure); no usable span, no probe answer, or
-   any missing field refuses. The daemon (turbopaneld `pg-standby-sampler.ts`)
+   any missing field refuses. The span only moves the failure start later: it
+   is never earlier than `DETECTION_ALLOWANCE_MS` (90 s, the daemons' own
+   detection time) before the control plane's first recorded report of the
+   incident (`anchoredFailureStartedAtMs`, `firstIncidentReportAt`: the
+   oldest automatic-failover row for this primary in the last 20 min, after
+   the last accepted failover, not counting refused, stale or host-loss rows).
+   A primary first reported long after it died (for example inside the
+   daemon's 10 min 30 s quiet window after an apply) is therefore refused
+   with `receipt_stale` unless a standby streamed that late. The daemon (turbopaneld `pg-standby-sampler.ts`)
    reads its standbys every 2 s and reports `lastStreaming.ageMs` on its
    monotonic clock, so no cross-host clock is compared. The outcome per replica
    is recorded as `metadata.freshStandby`; a refusal is `blocked` with

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -94,6 +94,46 @@ export async function findLatestAcceptedAutomaticFailover(
     .limit(1)
   const row = rows[0]
   return row ? serializeRow(row) : null
+}
+
+/** Most journal rows {@link firstIncidentReportAt} reads. */
+const INCIDENT_ROWS_MAX = 50
+
+/**
+ * When the control plane first recorded a dead-primary report for the current
+ * incident of this primary: the oldest automatic-failover row for it since
+ * `sinceIso` and after the last accepted failover of the cluster (an earlier
+ * incident). Rows for refused or stale reports and whole-host-loss alerts do
+ * not count. A refusal repeated later folds into its first row, so this stays
+ * put while the daemon re-sends. `null` when there is none yet.
+ */
+export async function firstIncidentReportAt(
+  db: Db,
+  params: { managedId: string; sourcePrimaryMemberId: string; sinceIso: string }
+): Promise<string | null> {
+  const lastAccepted = await findLatestAcceptedAutomaticFailover(db, params.managedId)
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(
+      and(
+        eq(recovery.managedId, params.managedId),
+        eq(recovery.kind, 'automatic-failover'),
+        eq(recovery.sourcePrimaryMemberId, params.sourcePrimaryMemberId),
+        gte(recovery.startedAt, params.sinceIso)
+      )
+    )
+    .orderBy(asc(recovery.startedAt))
+    .limit(INCIDENT_ROWS_MAX)
+  for (const row of rows) {
+    const record = serializeRow(row)
+    if (!record || record.targetMemberId !== null) continue
+    if (lastAccepted && record.startedAt <= lastAccepted.startedAt) continue
+    const metadata = record.metadata
+    if (metadata.reportRefused || metadata.stale || metadata.detector === 'host-loss') continue
+    return record.startedAt
+  }
+  return null
 }
 
 type InsertRecoveryParams = {

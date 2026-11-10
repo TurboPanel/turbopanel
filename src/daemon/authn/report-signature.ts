@@ -37,6 +37,19 @@ export const SIGNED_REPORT_TYPES: ReadonlySet<string> = new Set([
   'fabric-peers-report',
 ])
 
+/**
+ * Frames this control plane acts on only when signed, on every session and
+ * whatever the server's ratchet says (`signed-ha-events-v1`): a dead-primary
+ * report fences and promotes database members, and a boot-hold report can
+ * start a stopped primary. An unsigned one, one with a bad signature, and any
+ * one on a session that is not signed are handed on marked as such, so the
+ * receiver can refuse it and say why (`features/managed/ha-event.ts`).
+ */
+export const SIGNATURE_REQUIRED_TYPES: ReadonlySet<string> = new Set(['managed-ha-event'])
+
+/** What the signature check found for one frame. `none`: not a signed or signature-required type. */
+export type ReportSignature = 'verified' | 'unsigned' | 'invalid' | 'none'
+
 /** The error a command gets when its result arrived with a bad signature. */
 export const REPORT_SIGNATURE_INVALID = 'signature_invalid'
 
@@ -75,6 +88,7 @@ export type ReportIntake = {
   raw: string | null
   warning: string | null
   verdict: ReportVerdict
+  signature: ReportSignature
 }
 
 export type ReportVerdict = 'verified' | 'refused' | 'unsigned' | 'other'
@@ -101,7 +115,8 @@ function parseRecord(text: string): Record<string, unknown> | null {
 
 function reportType(record: Record<string, unknown> | null): string | null {
   const type = record?.type
-  return typeof type === 'string' && SIGNED_REPORT_TYPES.has(type) ? type : null
+  if (typeof type !== 'string') return null
+  return SIGNED_REPORT_TYPES.has(type) || SIGNATURE_REQUIRED_TYPES.has(type) ? type : null
 }
 
 /** Why a signed report is refused, or null when it verifies. */
@@ -163,19 +178,25 @@ function unsignedIntake(raw: string, ctx: ReportSession): ReportIntake {
   // the validator will read (JSON.parse, last duplicate wins).
   const report = parseRecord(raw)
   const type = reportType(report)
-  if (!report || !type) return { raw, warning: null, verdict: 'other' }
+  if (!report || !type) return { raw, warning: null, verdict: 'other', signature: 'none' }
+  // Handed on marked unsigned; the receiver refuses it and records why.
+  if (SIGNATURE_REQUIRED_TYPES.has(type)) {
+    return { raw, warning: null, verdict: 'other', signature: 'unsigned' }
+  }
   // Not gated on the hello's feature list: a proxy can strip that too.
   if (ctx.serverSignsReports) {
     return {
       raw: refusedReplacement(report, type, ctx.nowMs),
       warning: `refused unsigned ${type}${loggableId(report)}: this server signs its reports`,
       verdict: 'refused',
+      signature: 'unsigned',
     }
   }
   return {
     raw,
     warning: ctx.daemonSignsReports ? `unsigned ${type} from a daemon that signs reports` : null,
     verdict: 'unsigned',
+    signature: 'unsigned',
   }
 }
 
@@ -186,7 +207,8 @@ function loggableId(report: Record<string, unknown>): string {
 
 /**
  * Check one inbound frame of a signed session. Frames that are not reports
- * pass as they are. An unsigned report is refused once the server has signed
+ * pass as they are. A {@link SIGNATURE_REQUIRED_TYPES} frame is never
+ * dropped here: it is handed on with what its signature check found. An unsigned report is refused once the server has signed
  * one; before that it is still accepted (older daemons), with a warning when
  * this daemon said it signs them.
  */
@@ -202,10 +224,23 @@ export async function intakeSignedSessionReport(
   // marker-shaped tail inside a nested value cannot hide a report.
   if (!report || !type) return unsignedIntake(raw, ctx)
   const reason = await refusalReason(report, split, type, ctx)
-  if (reason === null) return { raw: withoutEnvelope(report), warning: null, verdict: 'verified' }
+  if (reason === null) {
+    return {
+      raw: withoutEnvelope(report),
+      warning: null,
+      verdict: 'verified',
+      signature: 'verified',
+    }
+  }
+  const warning = `refused signed ${type}${loggableId(report)}: ${reason}`
+  if (SIGNATURE_REQUIRED_TYPES.has(type)) {
+    // Handed on (without the envelope) marked invalid, so the refusal can be recorded.
+    return { raw: withoutEnvelope(report), warning, verdict: 'refused', signature: 'invalid' }
+  }
   return {
     raw: refusedReplacement(report, type, ctx.nowMs),
-    warning: `refused signed ${type}${loggableId(report)}: ${reason}`,
+    warning,
     verdict: 'refused',
+    signature: 'invalid',
   }
 }

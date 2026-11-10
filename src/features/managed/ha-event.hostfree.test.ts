@@ -5,7 +5,13 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import { type HaBindingLoaders, handleManagedHaEvent, reporterPrivateHosts } from './ha-event.ts'
+import {
+  HA_EVENT_REFUSED_MESSAGES,
+  type HaBindingLoaders,
+  haEventSignature,
+  handleManagedHaEvent,
+  reporterPrivateHosts,
+} from './ha-event.ts'
 import {
   AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
@@ -170,7 +176,7 @@ test('handleManagedHaEvent returns null when the managed row is gone', async () 
   const result = await handleManagedHaEvent(
     fakeDb([[]]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A }
+    { signature: 'verified', reporterServerId: SERVER_A }
   )
   assertEquals(result, null)
 })
@@ -179,7 +185,7 @@ test('handleManagedHaEvent returns null for an unknown engine', async () => {
   const result = await handleManagedHaEvent(
     fakeDb([[{ ...pgRow, engine: 'not-an-engine' }]]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A }
+    { signature: 'verified', reporterServerId: SERVER_A }
   )
   assertEquals(result, null)
 })
@@ -188,7 +194,7 @@ test('handleManagedHaEvent returns null when the cluster has no members', async 
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], []]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A }
+    { signature: 'verified', reporterServerId: SERVER_A }
   )
   assertEquals(result, null)
 })
@@ -198,7 +204,7 @@ test('handleManagedHaEvent resumes an in-flight recovery instead of opening anot
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg, [inflight]]),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary' },
-    { reporterServerId: SERVER_A, binding: binding() }
+    { signature: 'verified', reporterServerId: SERVER_A, binding: binding() }
   )
   assertEquals(result?.id, 'rec-1')
   assertEquals(result?.state, 'fencing')
@@ -215,7 +221,7 @@ test('handleManagedHaEvent returns null when no primary or source member exists'
       [],
     ]),
     { managedId: MANAGED_ID, sourceMemberId: 'missing' },
-    { reporterServerId: SERVER_A, binding: binding() }
+    { signature: 'verified', reporterServerId: SERVER_A, binding: binding() }
   )
   assertEquals(result, null)
 })
@@ -225,7 +231,7 @@ test('handleManagedHaEvent persists a blocked row when no failover candidate exi
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg, [], [], []], [blocked]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A, binding: binding(), commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_A, binding: binding(), commandQueue: queue }
   )
   assertEquals(result?.id, 'rec-blocked')
   assertEquals(result?.state, 'blocked')
@@ -258,7 +264,7 @@ test('handleManagedHaEvent records a terminal blocked row when a candidate exist
       [detecting]
     ),
     { managedId: MANAGED_ID, at: NOW },
-    { reporterServerId: SERVER_A, binding: binding() }
+    { signature: 'verified', reporterServerId: SERVER_A, binding: binding() }
   )
   assertEquals(result?.id, 'rec-detect')
   assertEquals(result?.state, 'blocked')
@@ -269,7 +275,7 @@ test('handleManagedHaEvent rejects a Postgres event with no detector (Orchestrat
   const result = await handleManagedHaEvent(
     fakeDb([[pgRow], [member()], inOrg], undefined, calls),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary' },
-    { reporterServerId: SERVER_A, commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_A, commandQueue: queue }
   )
   assertEquals(result, null)
   assertEquals(calls, { inserts: 0, reads: 3 })
@@ -280,7 +286,7 @@ test('handleManagedHaEvent rejects an explicit orchestrator event for Postgres',
   const result = await handleManagedHaEvent(
     fakeDb([[pgRow], [member()], inOrg], undefined, calls),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'orchestrator' },
-    { reporterServerId: SERVER_A, commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_A, commandQueue: queue }
   )
   assertEquals(result, null)
   assertEquals(calls, { inserts: 0, reads: 3 })
@@ -291,7 +297,11 @@ test('handleManagedHaEvent rejects an event with no detector from a server hosti
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg], undefined, calls),
     { managedId: MANAGED_ID },
-    { reporterServerId: '550e8400-e29b-41d4-a716-4466554400ff', commandQueue: queue }
+    {
+      signature: 'verified',
+      reporterServerId: '550e8400-e29b-41d4-a716-4466554400ff',
+      commandQueue: queue,
+    }
   )
   assertEquals(result, null)
   assertEquals(calls, { inserts: 0, reads: 3 })
@@ -302,7 +312,7 @@ test('handleManagedHaEvent rejects an event from a member server in another orga
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], [{ organizationId: OTHER_ORG }]], undefined, calls),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A, commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_A, commandQueue: queue }
   )
   assertEquals(result, null)
   assertEquals(calls, { inserts: 0, reads: 3 })
@@ -313,7 +323,7 @@ test("handleManagedHaEvent ignores a postgres-probe event from a server that is 
   const result = await handleManagedHaEvent(
     fakeDb([[pgRow], [member(), replicaMember()], inOrg], undefined, calls),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
-    { reporterServerId: SERVER_B, commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_B, commandQueue: queue }
   )
   assertEquals(result, null)
   assertEquals(calls, { inserts: 0, reads: 3 })
@@ -328,7 +338,7 @@ test('handleManagedHaEvent ignores a postgres-probe event naming a stale primary
       calls
     ),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-old', detector: 'postgres-probe' },
-    { reporterServerId: SERVER_A, commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_A, commandQueue: queue }
   )
   assertEquals(result, null)
   assertEquals(calls, { inserts: 0, reads: 3 })
@@ -339,7 +349,7 @@ test('handleManagedHaEvent ignores a postgres-probe event for a MySQL cluster', 
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg], undefined, calls),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
-    { reporterServerId: SERVER_A, commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_A, commandQueue: queue }
   )
   assertEquals(result, null)
   assertEquals(calls, { inserts: 0, reads: 3 })
@@ -359,7 +369,7 @@ test('handleManagedHaEvent runs the unchanged failover path for a valid postgres
       detector: 'postgres-probe',
       evidence: { failures: 6 },
     },
-    { reporterServerId: SERVER_A, commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_A, commandQueue: queue }
   )
   assertEquals(result?.id, 'rec-probe')
   assertEquals(result?.state, 'blocked')
@@ -384,7 +394,7 @@ test('handleManagedHaEvent honours the persisted cooldown (a fresh process sees 
   const result = await handleManagedHaEvent(
     fakeDb([[pgRow], [member(), replicaMember()], inOrg, [], [previous]], [cooldownRow], calls),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
-    { reporterServerId: SERVER_A, commandQueue: queue }
+    { signature: 'verified', reporterServerId: SERVER_A, commandQueue: queue }
   )
   // Refused: one visible terminal row, no fence/promote. The two extra reads
   // look for an identical refusal to count instead of inserting again.
@@ -400,7 +410,12 @@ test('orchestrator event naming the current primary proceeds to failover', async
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg, [], [], []], [blocked]),
     { managedId: MANAGED_ID, instanceHost: '10.0.0.5', instancePort: 3306 },
-    { reporterServerId: SERVER_A, commandQueue: queue, binding: binding({ advertises: true }) }
+    {
+      signature: 'verified',
+      reporterServerId: SERVER_A,
+      commandQueue: queue,
+      binding: binding({ advertises: true }),
+    }
   )
   assertEquals(result?.id, 'rec-bound')
 })
@@ -415,6 +430,7 @@ test("orchestrator event naming the local primary's published private listener p
     { managedId: MANAGED_ID, instanceHost: '10.0.0.6', instancePort: 45000 },
     {
       reporterServerId: SERVER_B,
+      signature: 'verified',
       commandQueue: queue,
       binding: binding({
         advertises: true,
@@ -446,6 +462,7 @@ test('stale remote primary with the same private port as the local primary is re
     { managedId: MANAGED_ID, instanceHost: '10.0.0.5', instancePort: 45000 },
     {
       reporterServerId: SERVER_B,
+      signature: 'verified',
       commandQueue: queue,
       binding: binding({
         advertises: true,
@@ -466,6 +483,7 @@ test('orchestrator event matching host case-insensitively still proceeds', async
     { managedId: MANAGED_ID, instanceHost: 'DB-1', instancePort: 3306 },
     {
       reporterServerId: SERVER_A,
+      signature: 'verified',
       commandQueue: queue,
       binding: binding({ primaryDial: async () => ({ host: 'db-1', port: 3306 }) }),
     }
@@ -479,14 +497,20 @@ test('orchestrator event naming another instance is recorded stale and never fen
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], STALE_REPLICA_OLD_PRIMARY, inOrg], [stale], calls),
     { managedId: MANAGED_ID, instanceHost: '10.0.0.9', instancePort: 3306 },
-    { reporterServerId: SERVER_A, commandQueue: queue, binding: binding({ advertises: true }) }
+    {
+      signature: 'verified',
+      reporterServerId: SERVER_A,
+      commandQueue: queue,
+      binding: binding({ advertises: true }),
+    }
   )
   assertEquals(result?.id, 'rec-stale')
   // One terminal row (after the blocked-row dedupe lookup); no candidate, datacenter, or command reads followed.
   assertEquals(calls, { inserts: 1, reads: 5 })
 })
 
-function coldPgDb(blocked: unknown) {
+/** `incident`: the journal rows the failure-start floor reads (last accepted, incident rows). */
+function coldPgDb(blocked: unknown, incident: unknown[][] = []) {
   const pins = [SERVER_A, SERVER_B].map((serverId, index) => ({
     ipId: `ip-${index}`,
     serverId,
@@ -495,14 +519,14 @@ function coldPgDb(blocked: unknown) {
     address: `203.0.113.${10 + index}`,
   }))
   const cold = replicaMember({ metadata: { replication: { state: 'stopped', observedAt: NOW } } })
-  return fakeDb([[pgRow], [member(), cold], inOrg, [], [], pins], [blocked])
+  return fakeDb([[pgRow], [member(), cold], inOrg, ...incident, [], [], pins], [blocked])
 }
 
 test('handleManagedHaEvent probes a cold Postgres standby, anchored on the detector span', async () => {
   const blocked = recoveryRow({ state: 'blocked', id: 'rec-cold' })
   const calls: unknown[] = []
   const result = await handleManagedHaEvent(
-    coldPgDb(blocked),
+    coldPgDb(blocked, [[], []]),
     {
       managedId: MANAGED_ID,
       sourceMemberId: 'mem-primary',
@@ -511,6 +535,7 @@ test('handleManagedHaEvent probes a cold Postgres standby, anchored on the detec
     },
     {
       reporterServerId: SERVER_A,
+      signature: 'verified',
       commandQueue: queue,
       probeStandby: (target) => {
         calls.push(target)
@@ -538,6 +563,7 @@ test('handleManagedHaEvent never probes without a usable detector span', async (
     },
     {
       reporterServerId: SERVER_A,
+      signature: 'verified',
       commandQueue: queue,
       probeStandby: () => {
         probed += 1
@@ -553,7 +579,7 @@ test('orchestrator event with a matching host but another port is stale', async 
   await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg], [recoveryRow({ state: 'blocked' })], calls),
     { managedId: MANAGED_ID, instanceHost: '10.0.0.5', instancePort: 3307 },
-    { reporterServerId: SERVER_A, commandQueue: queue, binding: binding() }
+    { signature: 'verified', reporterServerId: SERVER_A, commandQueue: queue, binding: binding() }
   )
   assertEquals(calls, { inserts: 1, reads: 5 })
 })
@@ -563,7 +589,12 @@ test('orchestrator event without an instance from a daemon that advertises the f
   await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg], [recoveryRow({ state: 'blocked' })], calls),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A, commandQueue: queue, binding: binding({ advertises: true }) }
+    {
+      signature: 'verified',
+      reporterServerId: SERVER_A,
+      commandQueue: queue,
+      binding: binding({ advertises: true }),
+    }
   )
   assertEquals(calls, { inserts: 1, reads: 5 })
 })
@@ -573,7 +604,12 @@ test('orchestrator event without an instance from an old daemon keeps the legacy
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg, [], [], []], [blocked]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A, commandQueue: queue, binding: binding({ advertises: false }) }
+    {
+      signature: 'verified',
+      reporterServerId: SERVER_A,
+      commandQueue: queue,
+      binding: binding({ advertises: false }),
+    }
   )
   assertEquals(result?.id, 'rec-legacy')
 })
@@ -585,6 +621,7 @@ test('a postgres-probe event is not subject to the Orchestrator binding', async 
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
     {
       reporterServerId: SERVER_A,
+      signature: 'verified',
       commandQueue: queue,
       binding: binding({ advertises: true, primaryDial: async () => null }),
     }
@@ -600,6 +637,7 @@ test('a boot-hold report is answered, never treated as a dead primary: no failov
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'boot-hold' },
     {
       reporterServerId: SERVER_A,
+      signature: 'verified',
       commandQueue: queue,
       autoFailover: 'on',
       probeStandby: () => {
@@ -627,6 +665,7 @@ test('a boot-hold report for a cluster the control plane does not know is droppe
     { managedId: MANAGED_ID, detector: 'boot-hold' },
     {
       reporterServerId: SERVER_A,
+      signature: 'verified',
       bootHold: () => {
         answers.push(1)
         return Promise.resolve('released')
@@ -635,4 +674,100 @@ test('a boot-hold report for a cluster the control plane does not know is droppe
   )
   assertEquals(result, null)
   assertEquals(answers.length, 0)
+})
+
+/** Db double that also keeps what was inserted. */
+function recordingDb(resultSets: unknown[][], calls: DbCalls) {
+  const inserted: Array<Record<string, unknown>> = []
+  const db = fakeDb(resultSets, undefined, calls) as unknown as Record<string, unknown>
+  db.insert = () => {
+    calls.inserts += 1
+    return {
+      values: (row: Record<string, unknown>) => {
+        inserted.push(row)
+        return { returning: () => Promise.resolve([recoveryRow({ ...row, id: 'rec-refused' })]) }
+      },
+    }
+  }
+  return { db: db as unknown as Db, inserted }
+}
+
+for (const signature of ['unsigned', 'invalid', 'session-unsigned'] as const) {
+  test(`handleManagedHaEvent refuses a ${signature} report and records why, fencing nothing`, async () => {
+    const calls = { inserts: 0, reads: 0 }
+    const { db, inserted } = recordingDb(
+      [[mysqlRow], [member(), replicaMember()], inOrg, []],
+      calls
+    )
+    let probed = 0
+    const result = await handleManagedHaEvent(
+      db,
+      { managedId: MANAGED_ID, evidence: { spanMs: 20_000 } },
+      {
+        reporterServerId: SERVER_A,
+        signature,
+        commandQueue: queue,
+        binding: binding(),
+        probeStandby: () => {
+          probed += 1
+          return Promise.resolve(null)
+        },
+      }
+    )
+    assertEquals(result?.id, 'rec-refused')
+    assertEquals(probed, 0)
+    assertEquals(calls.inserts, 1)
+    const metadata = inserted[0]?.metadata as Record<string, unknown>
+    assertEquals(inserted[0]?.state, 'blocked')
+    assertEquals(inserted[0]?.targetMemberId ?? null, null)
+    assertEquals(metadata.blockedReason, HA_EVENT_REFUSED_MESSAGES[signature])
+    assertEquals(metadata.reportRefused, signature)
+    assertEquals(metadata.reporterServerId, SERVER_A)
+  })
+}
+
+test('a refused report from a server outside the cluster is only logged', async () => {
+  const calls = { inserts: 0, reads: 0 }
+  const { db } = recordingDb(
+    [[mysqlRow], [member(), replicaMember()], [{ organizationId: OTHER_ORG }]],
+    calls
+  )
+  const result = await handleManagedHaEvent(
+    db,
+    { managedId: MANAGED_ID },
+    { reporterServerId: SERVER_A, signature: 'unsigned', commandQueue: queue }
+  )
+  assertEquals(result, null)
+  assertEquals(calls.inserts, 0)
+})
+
+test('a refused boot-hold report starts nothing and writes no journal row', async () => {
+  const calls = { inserts: 0, reads: 0 }
+  const answers: unknown[] = []
+  const { db } = recordingDb([[mysqlRow]], calls)
+  const result = await handleManagedHaEvent(
+    db,
+    { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'boot-hold' },
+    {
+      reporterServerId: SERVER_A,
+      signature: 'unsigned',
+      commandQueue: queue,
+      bootHold: (_db, params) => {
+        answers.push(params)
+        return Promise.resolve('released' as never)
+      },
+    }
+  )
+  assertEquals(result, null)
+  assertEquals(answers, [])
+  assertEquals(calls, { inserts: 0, reads: 1 })
+})
+
+test('haEventSignature: only a verified frame on a signed session is verified', () => {
+  assertEquals(haEventSignature('verified', true), 'verified')
+  assertEquals(haEventSignature('verified', false), 'session-unsigned')
+  assertEquals(haEventSignature('unsigned', true), 'unsigned')
+  assertEquals(haEventSignature('none', true), 'unsigned')
+  assertEquals(haEventSignature('invalid', true), 'invalid')
+  assertEquals(haEventSignature('none', false), 'session-unsigned')
 })

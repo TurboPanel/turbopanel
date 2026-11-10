@@ -17,6 +17,7 @@ import { environment, managed, project, server } from '../../db/schema.ts'
 import { isManagedEngineCode } from './types.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { beginAutomaticFailover, recordStaleDeadPrimaryReport } from './ha-recovery.ts'
+import { firstIncidentReportAt, recordBlockedRecovery } from './recovery-records.ts'
 import { BOOT_HOLD_DETECTOR, handleBootHoldReport } from './ha-return-fence.ts'
 import {
   listManagedMembers,
@@ -34,7 +35,12 @@ import {
 } from './ha-policy.ts'
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
 import type { AutoFailoverSetting } from './auto-failover-switch.ts'
-import { failureStartedAtMs, type FreshStandbyProbe } from './ha-fresh-standby.ts'
+import {
+  anchoredFailureStartedAtMs,
+  failureStartedAtMs,
+  type FreshStandbyProbe,
+  MAX_FAILURE_SPAN_MS,
+} from './ha-fresh-standby.ts'
 import {
   isPrivateEndpointError,
   resolvePrivateEndpoints,
@@ -222,6 +228,112 @@ function detectorAndEvidence(
 }
 
 /**
+ * What the transport's signature check found for one `managed-ha-event`
+ * (`src/daemon/authn/report-signature.ts`). Only `verified` is acted on.
+ * `session-unsigned`: the frame came over a connection that is not a signed
+ * session, so it could not carry a signature.
+ */
+export type HaEventSignature = 'verified' | 'unsigned' | 'invalid' | 'session-unsigned'
+
+/**
+ * The {@link HaEventSignature} of a frame from what the socket's signature
+ * check found (`verified`, `unsigned`, `invalid`, or `none` when no check ran)
+ * and whether the socket is a signed session.
+ */
+export function haEventSignature(found: string, signedSession: boolean): HaEventSignature {
+  if (!signedSession) return 'session-unsigned'
+  if (found === 'verified') return 'verified'
+  return found === 'invalid' ? 'invalid' : 'unsigned'
+}
+
+/** Why a dead-primary report was refused, in the words the journal shows. */
+export const HA_EVENT_REFUSED_MESSAGES: Readonly<
+  Record<Exclude<HaEventSignature, 'verified'>, string>
+> = {
+  unsigned:
+    'Automatic failover not started: the daemon that reported the primary down did not sign the report. Update the daemon on that server.',
+  invalid:
+    "Automatic failover not started: the signature on the report that the primary is down did not check out against that server's daemon key.",
+  'session-unsigned':
+    "Automatic failover not started: the report that the primary is down came over a connection that is not signed. That server's daemon must trust this control plane's identity before its reports are acted on.",
+}
+
+/**
+ * A refused `managed-ha-event` (see {@link HaEventSignature}): nothing is
+ * fenced, promoted or started. A dead-primary report is recorded as a
+ * terminal `blocked` row (no target, so no cooldown; repeats fold into it)
+ * when the reporting server hosts a member of the cluster in its
+ * organization; otherwise it is only logged. A boot-hold report is only
+ * logged: its primary stays stopped until an operator starts it.
+ */
+export async function recordRefusedHaEvent(
+  db: Db,
+  input: ManagedHaEventInput,
+  deps: { reporterServerId: string; signature: Exclude<HaEventSignature, 'verified'> }
+): Promise<RecoveryRecord | null> {
+  const reason = HA_EVENT_REFUSED_MESSAGES[deps.signature]
+  const row = await loadCluster(db, input.managedId)
+  if (!row?.engine || !isManagedEngineCode(row.engine)) return null
+  if (input.detector === BOOT_HOLD_DETECTOR) {
+    compatLogWarn(
+      'managed-ha',
+      `refused boot-hold report for ${row.id} from server ${deps.reporterServerId} (${deps.signature}): the held primary stays stopped until an operator starts it`
+    )
+    return null
+  }
+  const members = await listManagedMembers(db, row.id)
+  const primary = members.find((member) => member.role === 'primary')
+  const reporterOrganizationId = await loadServerOrganization(db, deps.reporterServerId)
+  const inCluster =
+    members.some((member) => member.serverId === deps.reporterServerId) &&
+    row.organizationId !== null &&
+    reporterOrganizationId === row.organizationId
+  compatLogWarn(
+    'managed-ha',
+    `refused managed-ha-event for ${row.id} from server ${deps.reporterServerId} (${deps.signature}): ${reason}`
+  )
+  if (!primary || !inCluster) return null
+  return recordBlockedRecovery(db, {
+    managedId: row.id,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: primary.id,
+    state: 'blocked',
+    metadata: {
+      blockedReason: reason,
+      reportRefused: deps.signature,
+      reporterServerId: deps.reporterServerId,
+      sourceServerId: primary.serverId,
+      ...(input.detector ? { detector: input.detector } : {}),
+    },
+  })
+}
+
+/**
+ * The fresh-standby gate's failure start for this event: the detector's span
+ * may only move it later than `DETECTION_ALLOWANCE_MS` before the first
+ * report of the incident the control plane recorded
+ * (`anchoredFailureStartedAtMs`). No usable span: `null`, and no journal read.
+ */
+async function eventFailureStartedAtMs(
+  db: Db,
+  input: ManagedHaEventInput,
+  ctx: { managedId: string; primary: ManagedMemberRow | null; receivedAtMs: number }
+): Promise<number | null> {
+  if (failureStartedAtMs(input.evidence, ctx.receivedAtMs) === null || !ctx.primary) return null
+  const first = await firstIncidentReportAt(db, {
+    managedId: ctx.managedId,
+    sourcePrimaryMemberId: ctx.primary.id,
+    sinceIso: new Date(ctx.receivedAtMs - MAX_FAILURE_SPAN_MS).toISOString(),
+  })
+  const firstMs = first === null ? null : Date.parse(first)
+  return anchoredFailureStartedAtMs(
+    input.evidence,
+    ctx.receivedAtMs,
+    firstMs !== null && Number.isFinite(firstMs) ? firstMs : null
+  )
+}
+
+/**
  * `deps.reporterServerId` must be the authenticated session's server id
  * (the cell attachment), never a payload field: the gate trusts it to prove
  * which host sent the event.
@@ -232,6 +344,11 @@ export async function handleManagedHaEvent(
   deps: {
     commandQueue?: CommandQueue
     reporterServerId: string
+    /**
+     * What the transport's signature check found. Anything but `verified` is
+     * refused and recorded (`recordRefusedHaEvent`) before any other check.
+     */
+    signature: HaEventSignature
     /** `TURBOPANEL_AUTO_FAILOVER`, resolved by the transport; absent = `on`. */
     autoFailover?: AutoFailoverSetting
     /** Event-time probe of a candidate standby; absent = never probe. */
@@ -246,6 +363,12 @@ export async function handleManagedHaEvent(
     bootHold?: typeof handleBootHoldReport
   }
 ): Promise<RecoveryRecord | null> {
+  if (deps.signature !== 'verified') {
+    return recordRefusedHaEvent(db, input, {
+      reporterServerId: deps.reporterServerId,
+      signature: deps.signature,
+    })
+  }
   const receivedAtMs = (deps.nowMs ?? Date.now)()
   const row = await loadCluster(db, input.managedId)
   if (!row) return null
@@ -326,6 +449,10 @@ export async function handleManagedHaEvent(
       ? {}
       : { freshStandbyMarginMs: deps.freshStandbyMarginMs }),
     ...(deps.nowMs ? { nowMs: deps.nowMs } : {}),
-    failureStartedAtMs: failureStartedAtMs(input.evidence, receivedAtMs),
+    failureStartedAtMs: await eventFailureStartedAtMs(db, input, {
+      managedId: row.id,
+      primary,
+      receivedAtMs,
+    }),
   })
 }

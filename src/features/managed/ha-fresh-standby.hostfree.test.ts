@@ -1,6 +1,8 @@
 import { assertEquals } from '@std/assert'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import {
+  anchoredFailureStartedAtMs,
+  DETECTION_ALLOWANCE_MS,
   evaluateFreshStandby,
   type FreshStandbyInput,
   failureStartedAtMs,
@@ -152,6 +154,60 @@ test('failureStartedAtMs anchors on the detector span and refuses a bad one', ()
   assertEquals(failureStartedAtMs({ spanMs: '25000' }, 100_000), null)
   assertEquals(failureStartedAtMs({ spanMs: -1 }, 100_000), null)
   assertEquals(failureStartedAtMs({ spanMs: MAX_FAILURE_SPAN_MS + 1 }, 100_000), null)
+})
+
+test('anchoredFailureStartedAtMs: the span only moves the failure start later than the floor', () => {
+  const received = 1_000_000
+  // An honest short span is kept as it is.
+  assertEquals(anchoredFailureStartedAtMs({ spanMs: 20_000 }, received), received - 20_000)
+  // A span longer than the detection allowance cannot move it earlier.
+  assertEquals(
+    anchoredFailureStartedAtMs({ spanMs: 15 * 60_000 }, received),
+    received - DETECTION_ALLOWANCE_MS
+  )
+  // The floor follows the control plane's first report of the incident.
+  const first = received - 15 * 60_000
+  assertEquals(
+    anchoredFailureStartedAtMs({ spanMs: 15 * 60_000 + 200_000 }, received, first),
+    first - DETECTION_ALLOWANCE_MS
+  )
+  assertEquals(anchoredFailureStartedAtMs({ spanMs: 0 }, received, first), received)
+  // A first report "later" than this one is read as this one.
+  assertEquals(
+    anchoredFailureStartedAtMs({ spanMs: 10 * 60_000 }, received, received + 5_000),
+    received - DETECTION_ALLOWANCE_MS
+  )
+  // No usable span: the gate stays closed, as before.
+  assertEquals(anchoredFailureStartedAtMs(undefined, received, first), null)
+  assertEquals(anchoredFailureStartedAtMs({ spanMs: -1 }, received), null)
+})
+
+test('a MySQL kill and a paused Postgres primary still pass with the control plane floor', () => {
+  const T = 1_000_000_000
+  // MySQL kill: the replica last streamed at the kill, the event arrives 20 s later.
+  const mysql = evaluateFreshStandby({
+    engine: 'mysql',
+    marginMs: 10_000,
+    probeStartedAtMs: T + 21_000,
+    failureStartedAtMs: anchoredFailureStartedAtMs({ spanMs: 20_000 }, T + 20_000)!,
+    replication: mysqlReplica({ lastStreaming: { at: 'x', ageMs: 21_000, lagSeconds: 0 } }),
+  })
+  assertEquals(mysql.accepted, true)
+  // The same kill reported 15 min later (after a cooldown), first recorded at T + 20 s.
+  const retry = evaluateFreshStandby({
+    engine: 'mysql',
+    marginMs: 10_000,
+    probeStartedAtMs: T + 15 * 60_000 + 1_000,
+    failureStartedAtMs: anchoredFailureStartedAtMs(
+      { spanMs: 15 * 60_000 },
+      T + 15 * 60_000,
+      T + 20_000
+    )!,
+    replication: mysqlReplica({
+      lastStreaming: { at: 'x', ageMs: 15 * 60_000 + 1_000, lagSeconds: 0 },
+    }),
+  })
+  assertEquals(retry.accepted, true)
 })
 
 test('pickMostAdvancedStandby takes the highest received LSN, then the lowest ordinal', () => {
