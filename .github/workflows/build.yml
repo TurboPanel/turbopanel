@@ -562,13 +562,69 @@ jobs:
         with:
           deno-version: ${{ steps.deno-pin.outputs.version }}
 
+      # Wire twins merge control plane first, then daemon, so between the two
+      # merges one trunk holds the twin and the other does not. On trunk (a
+      # push, a manual run, or the Release Candidate PR: head trunk of this
+      # repository, base staging)
+      # a failure of either check is looked at again below; every other pull
+      # request stays strict.
       - name: Check metrics contract twin (sibling byte-compare)
+        id: metrics-twin
         working-directory: turbopanel
+        continue-on-error: ${{ github.event_name != 'pull_request' || (github.head_ref == 'trunk' && github.base_ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: deno test -A --no-check src/contracts/metrics-contract.test.ts
 
       - name: Check contract drift (metrics, hostname, machine-key, channels)
+        id: drift
         working-directory: turbopanel
+        continue-on-error: ${{ github.event_name != 'pull_request' || (github.head_ref == 'trunk' && github.base_ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: node scripts/check-contract-drift.mjs
+
+      # Passes only when a twin is merged on one side (inside the checked
+      # tree) and still open, or merged later, on the other; it prints where
+      # to check the lagging side out. No such twin, or an API error, fails
+      # the job (scripts/half-merged-twin.mjs).
+      - name: Look for a wire twin merged on one side only
+        id: twin
+        if: steps.metrics-twin.outcome == 'failure' || steps.drift.outcome == 'failure'
+        working-directory: turbopanel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELF_REPO: ${{ github.repository }}
+          SIBLING_REPO: TurboPanel/turbopaneld
+          SELF_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          SIBLING_SHA="$(git -C ../turbopaneld rev-parse HEAD)"
+          export SIBLING_SHA
+          node scripts/half-merged-twin.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Check out the control plane half of the twin
+        if: steps.twin.outputs.self-ref != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.twin.outputs.self-ref }}
+          path: turbopanel
+          persist-credentials: false
+
+      - name: Check out the daemon half of the twin
+        if: steps.twin.outputs.sibling-ref != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TurboPanel/turbopaneld
+          ref: ${{ steps.twin.outputs.sibling-ref }}
+          path: turbopaneld
+          persist-credentials: false
+
+      - name: Check the contract twins with both halves of the twin
+        if: steps.metrics-twin.outcome == 'failure' || steps.drift.outcome == 'failure'
+        working-directory: turbopanel
+        env:
+          TWIN_NOTE: ${{ steps.twin.outputs.note }}
+        run: |
+          deno test -A --no-check src/contracts/metrics-contract.test.ts
+          node scripts/check-contract-drift.mjs
+          echo "::warning title=Contract drift::${TWIN_NOTE}"
+          printf '%s\n' "$TWIN_NOTE" >> "$GITHUB_STEP_SUMMARY"
 
   # Single aggregate check for the branch rulesets. It needs every job that
   # runs on pull_request and fails unless all of them succeeded (a skipped
