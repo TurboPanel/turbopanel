@@ -6,11 +6,11 @@
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { grant, hosting, user } from '../../db/schema.ts'
+import { grant, hosting, portal, user } from '../../db/schema.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -201,6 +201,9 @@ test('moving a tunnel onto another server sends that server its table and connec
     assertEquals((await tableOf(s, s.queued.indexOf(sentTo(s, s.siteAId).at(-1)!))).peerAddresses, [
       '10.95.0.10',
     ])
+    // What the carrier's connector last reported survives a change that keeps it.
+    const carrierPortal = and(eq(portal.tunnelId, s.tunnelId), eq(portal.serverId, s.carrierId))
+    await s.db.update(portal).set({ reported: 'connected' }).where(carrierPortal)
     await withApi(s, async (api, settle, deferred) => {
       const moved = await api(
         `/organizations/${s.organizationId}/tunnels/${s.tunnelId}/placement`,
@@ -230,6 +233,11 @@ test('moving a tunnel onto another server sends that server its table and connec
       // ...and the server that runs the site learns it may receive from it.
       const tableA = await tableOf(s, s.queued.indexOf(sentTo(s, s.siteAId).at(-1)!))
       assertEquals(tableA.peerAddresses, ['10.95.0.10', '10.95.0.12'])
+      const [kept] = await s.db
+        .select({ reported: portal.reported })
+        .from(portal)
+        .where(carrierPortal)
+      assertEquals(kept?.reported, 'connected')
     })
   })
 })

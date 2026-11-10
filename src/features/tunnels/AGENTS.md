@@ -27,7 +27,9 @@ member there, a widened CHECK (forward migration) and one adapter.
   (`unknown`, `connected`, `down`, `error`) is separate from `wanted`. A
   server runs many tunnels and tunnels of several organizations may share a
   server, so the key is (tunnel, server) and nothing assumes one tunnel per
-  server. `portal.options` is reserved for per-server details (for example a
+  server. A placement change touches only the rows that change
+  (`portalChanges`): a server that keeps its role keeps its row and what its
+  connector last reported, so it does not fall back to "not reported yet". `portal.options` is reserved for per-server details (for example a
   local endpoint).
 - `tunnel.organization_id` owns the tunnel; `tunnel.routing_organization_id`
   is the organization whose servers and sites it carries (named as on
