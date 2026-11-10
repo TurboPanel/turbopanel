@@ -1,8 +1,9 @@
 # Re-runs the red promote-ok check (promote-ok.yml) of the open Release
 # Candidate and Release PRs when what they wait for may now exist: after
-# the trunk Build and the Canary that follows it, and after Publish Release Candidate (a new rc). The re-run
-# reports on the PR's head commit under the same `promote-ok` name, so the
-# ruleset sees the new result. Logic: TurboPanel/dev gh-promote-ok-recheck.yml.
+# the trunk Build and the Canary that follows it, and after Publish Release
+# Candidate (a new rc). The re-run reports on the PR's head commit under the
+# same `promote-ok` name, so the ruleset sees the new result. Logic:
+# TurboPanel/dev gh-promote-ok-recheck.yml.
 #
 # workflow_dispatch:
 #   pr = <number>   dry run: evaluate promote-ok for that PR, read-only (the
@@ -33,6 +34,15 @@ on:
         type: boolean
         default: false
 
+# One recheck at a time per repo, none dropped: triggers that land close
+# together queue in order (`queue: max`) instead of re-running the same
+# check twice at once, and a pending one is never replaced by a newer one
+# (each may name a different commit to re-check).
+concurrency:
+  group: promote-ok-recheck
+  cancel-in-progress: false
+  queue: max
+
 # Read-only by default; only the recheck job may re-run runs.
 permissions:
   contents: read
@@ -45,12 +55,13 @@ jobs:
       || (github.event_name == 'workflow_run'
           && github.event.workflow_run.event != 'pull_request'
           && github.event.workflow_run.conclusion != 'skipped')
-    uses: TurboPanel/dev/.github/workflows/gh-promote-ok-recheck.yml@d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
+    uses: TurboPanel/dev/.github/workflows/gh-promote-ok-recheck.yml@db324e17e5c2d6a02098e6c541c6274801242924 # dev#115
     with:
-      dev-ref: d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
+      dev-ref: db324e17e5c2d6a02098e6c541c6274801242924 # dev#115
       dry-run: ${{ github.event_name == 'workflow_dispatch' && !inputs.rerun }}
     # gh-promote-ok-recheck.yml finds the open PRs (pull-requests) and re-runs
-    # their failed promote-ok run (actions: write).
+    # their failed promote-ok run, force-cancelling and re-running one that
+    # looked too early and still waits for a runner (actions: write).
     permissions:
       contents: read
       actions: write
@@ -58,11 +69,11 @@ jobs:
 
   dry-run:
     if: github.event_name == 'workflow_dispatch' && inputs.pr != ''
-    uses: TurboPanel/dev/.github/workflows/gh-promote-ok.yml@fac435665a138dbf4449c581621ea527ec1ca4df # dev#79
+    uses: TurboPanel/dev/.github/workflows/gh-promote-ok.yml@db324e17e5c2d6a02098e6c541c6274801242924 # dev#115
     with:
       repo-kind: instance
       ci-workflow: build.yml
-      dev-ref: fac435665a138dbf4449c581621ea527ec1ca4df # dev#79
+      dev-ref: db324e17e5c2d6a02098e6c541c6274801242924 # dev#115
       pr-number: ${{ inputs.pr }}
     permissions:
       contents: read
