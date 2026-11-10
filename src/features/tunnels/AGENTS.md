@@ -115,13 +115,17 @@ member there, a widened CHECK (forward migration) and one adapter.
 - **A stopped connector is sent again.** A connector list that finished well is
   never resent while it is unchanged, so a connector stopped by hand (or given
   up on by systemd) used to stay down. When a status answer shows a connector
-  the last list asked that server to run as stopped, failed or not installed
-  (`connectorsNeedingRepair`), `recordTunnelStatus` clears the remembered hash
+  the last list asked that server to run as stopped or failed
+  (`connectorsNeedingRepair`) and that list has finished (one still on its way
+  is waited for), `recordTunnelStatus` clears the remembered hash
   (`server.metadata.tunnelConnectors.stateHash`, the rest kept), so the next
   connector sweep sends the same list again; the daemon starts an installed
   connector that is stopped or failed when the list is resent. An older daemon
   ignores the resend, so at worst one list per status poll goes out while the
-  connector stays down.
+  connector stays down. `not-installed` is not repaired this way: a daemon
+  that still holds the connector's record skips it on a resend, so the list
+  would only repeat (a daemon-side reinstall from the stored token copy is not
+  built yet).
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 

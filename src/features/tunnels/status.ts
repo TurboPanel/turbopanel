@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { createDenoDb } from '../../db/connection.ts'
-import { portal, server, tunnel } from '../../db/schema.ts'
+import { command, portal, server, tunnel } from '../../db/schema.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import { carryingServers } from './lifecycle.ts'
 import type {
@@ -152,16 +152,20 @@ export async function recordTunnelStatus(
   return counts.reduce((sum, n) => sum + n, 0)
 }
 
-/** States in which a connector the server was asked to run is not running. */
-const NOT_RUNNING: ReadonlySet<TunnelStatusConnectorState> = new Set([
-  'stopped',
-  'failed',
-  'not-installed',
-])
+/**
+ * States in which a connector the server was asked to run is installed but not
+ * running, which a resend repairs (the daemon starts it again). `not-installed`
+ * is left out: a daemon that still holds the connector's record skips it on a
+ * resend, so asking again would only repeat the same list every poll.
+ */
+const NOT_RUNNING: ReadonlySet<TunnelStatusConnectorState> = new Set(['stopped', 'failed'])
+
+/** A connector command that has not finished yet. */
+const OPEN_COMMAND = ['queued', 'dispatching', 'sent', 'acked', 'running']
 
 /**
- * The connectors the last list asked this server to run that it reports as not
- * running (stopped by hand, given up on by systemd, or gone), sorted. Pure.
+ * The connectors the last list asked this server to run that it reports as
+ * stopped or failed (stopped by hand, or given up on by systemd), sorted. Pure.
  */
 export function connectorsNeedingRepair(
   result: TunnelStatusCommandResult,
@@ -176,7 +180,8 @@ export function connectorsNeedingRepair(
 /**
  * A connector list that went out well is never sent again while it is
  * unchanged, so a connector that stopped afterwards stayed down. When the
- * answer shows one of the asked connectors not running, the remembered hash of
+ * answer shows one of the asked connectors stopped or failed, and the last list
+ * has finished (one still on its way is waited for), the remembered hash of
  * the last list (`server.metadata.tunnelConnectors.stateHash`) is cleared: the
  * next connector sweep sends the same list again, and a daemon that starts
  * stopped connectors on a resend brings it back. The rest of that record (the
@@ -192,17 +197,29 @@ async function requestConnectorRepair(
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  const sent = (row?.metadata as { tunnelConnectors?: { installed?: unknown } } | null)
-    ?.tunnelConnectors
+  const sent = (
+    row?.metadata as { tunnelConnectors?: { installed?: unknown; commandId?: unknown } } | null
+  )?.tunnelConnectors
   if (!sent || !Array.isArray(sent.installed)) return
   const asked = sent.installed.filter((id): id is string => typeof id === 'string')
   if (connectorsNeedingRepair(result, asked).length === 0) return
+  // A list still on its way is waited for, not sent a second time.
+  if (typeof sent.commandId === 'string' && (await commandStillOpen(db, sent.commandId))) return
   await db
     .update(server)
     .set({
       metadata: sql`jsonb_set(${server.metadata}, '{tunnelConnectors,stateHash}', '""'::jsonb)`,
     })
     .where(and(eq(server.id, serverId), sql`${server.metadata} -> 'tunnelConnectors' IS NOT NULL`))
+}
+
+async function commandStillOpen(db: Db, commandId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ status: command.status })
+    .from(command)
+    .where(eq(command.id, commandId))
+    .limit(1)
+  return row !== undefined && OPEN_COMMAND.includes(row.status)
 }
 
 /** What the screen says about a connector's version. */

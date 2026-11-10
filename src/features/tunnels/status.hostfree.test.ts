@@ -114,16 +114,11 @@ test('only asked connectors that are not running need a repair', () => {
   assertEquals(connectorsNeedingRepair(result, [third, base.tunnelId]), [base.tunnelId, third])
   assertEquals(connectorsNeedingRepair(result, [other]), [])
   assertEquals(connectorsNeedingRepair(result, []), [])
-  for (const status of ['connecting', 'connected'] as const) {
+  // Running, starting, or gone (a resend would not reinstall it): nothing to repair.
+  for (const status of ['connecting', 'connected', 'not-installed'] as const) {
     assertEquals(
       connectorsNeedingRepair({ ...result, connectors: [{ ...base, status }] }, [base.tunnelId]),
       []
     )
   }
-  assertEquals(
-    connectorsNeedingRepair({ ...result, connectors: [{ ...base, status: 'not-installed' }] }, [
-      base.tunnelId,
-    ]),
-    [base.tunnelId]
-  )
 })
