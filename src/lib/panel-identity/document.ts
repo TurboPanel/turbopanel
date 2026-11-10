@@ -2,6 +2,7 @@ import { base64urlDecode, base64urlEncode } from '../encoding/base64url.ts'
 import { fingerprintRawPublicKey } from './fingerprint.ts'
 import { httpSigningInput } from './frame-envelope.ts'
 import { signWithCurrent, type PanelIdentity } from './identity.ts'
+import type { RotationPasskey } from './keyset-statement.ts'
 
 export const IDENTITY_DOCUMENT_PATH = '/api/daemon/v1/instance/identity'
 export const IDENTITY_SIGNATURE_HEADER = 'X-TurboPanel-Signature'
@@ -20,6 +21,8 @@ export type IdentityDocument = {
   keys: IdentityDocumentKey[]
   seal: { kid: string; alg: 'X25519'; pub: string }
   keyset: number
+  /** The rotation passkeys servers pin once (first fill); absent until one is marked. */
+  rotation?: { rpId: string; passkeys: RotationPasskey[] }
   urls: string[]
   issued: string
   expires: string
@@ -35,14 +38,23 @@ export type IdentityDocument = {
   boundSessions: 1
 }
 
+/** Key-set chain facts the document carries: the live key set and the marked passkeys. */
+export type IdentityChainState = {
+  keyset: number
+  rotation: { rpId: string; passkeys: RotationPasskey[] } | null
+}
+
 /**
- * The document for `identity`. The panel holds no public key for `next`, only
- * its fingerprint, so that entry has an empty `pub` and daemons pin by `kid`.
+ * The document for `identity`. Only the current key is listed: the `next`
+ * key is retired (key changes are key-set statements), so a stored one is no
+ * longer written here and servers stop accepting it at their next read.
+ * Readers still take a document that lists `role: "next"`.
  */
 export function buildIdentityDocument(
   identity: PanelIdentity,
   urls: string[],
-  now: Date
+  now: Date,
+  chain?: IdentityChainState
 ): IdentityDocument {
   const keys: IdentityDocumentKey[] = [
     {
@@ -52,9 +64,6 @@ export function buildIdentityDocument(
       role: 'current',
     },
   ]
-  if (identity.next) {
-    keys.push({ kid: identity.next.kid, alg: 'Ed25519', pub: '', role: 'next' })
-  }
   return {
     v: 1,
     keys,
@@ -63,7 +72,8 @@ export function buildIdentityDocument(
       alg: 'X25519',
       pub: base64urlEncode(identity.seal.publicRaw),
     },
-    keyset: identity.keyset,
+    keyset: Math.max(identity.keyset, chain?.keyset ?? 0),
+    ...(chain?.rotation ? { rotation: chain.rotation } : {}),
     urls,
     issued: now.toISOString(),
     expires: new Date(now.getTime() + IDENTITY_DOCUMENT_TTL_MS).toISOString(),
@@ -79,6 +89,14 @@ export function serializeIdentityDocument(doc: IdentityDocument): string {
     keys: doc.keys.map((k) => ({ kid: k.kid, alg: k.alg, pub: k.pub, role: k.role })),
     seal: { kid: doc.seal.kid, alg: doc.seal.alg, pub: doc.seal.pub },
     keyset: doc.keyset,
+    ...(doc.rotation
+      ? {
+          rotation: {
+            rpId: doc.rotation.rpId,
+            passkeys: doc.rotation.passkeys.map((p) => ({ id: p.id, alg: p.alg, pub: p.pub })),
+          },
+        }
+      : {}),
     urls: doc.urls,
     issued: doc.issued,
     expires: doc.expires,
@@ -98,9 +116,10 @@ export type SignedIdentityResponse = { body: string; signature: string; issued: 
 export async function signIdentityDocument(
   identity: PanelIdentity,
   urls: string[],
-  now: Date
+  now: Date,
+  chain?: IdentityChainState
 ): Promise<SignedIdentityResponse> {
-  const doc = buildIdentityDocument(identity, urls, now)
+  const doc = buildIdentityDocument(identity, urls, now, chain)
   const body = serializeIdentityDocument(doc)
   const sig = await signWithCurrent(identity, httpSigningBytes(IDENTITY_DOCUMENT_PATH, body))
   return { body, signature: `${identity.current.kid}:${sig}`, issued: doc.issued }

@@ -31,6 +31,8 @@ import {
   publicOriginForHostname,
 } from '../features/install/public-origins.ts'
 import { recordAudit } from '../features/audit/audit-records.ts'
+import { markedRpId } from '../lib/panel-identity/keyset-store.ts'
+import { hostFromPublicUrlEntry } from '../features/install/public-urls.ts'
 import { platformControlPlaneOrigin } from '../features/install/control-plane-origins.ts'
 import {
   parseCertificateHostnamesBody,
@@ -70,6 +72,33 @@ function failureStatus(error: string): 404 | 422 {
 function primaryOrigin(rows: readonly InstanceHostnameRecord[]): string | null {
   const primary = primaryHostname(rows)
   return primary ? publicOriginForHostname(primary) : null
+}
+
+export const ROTATION_RP_ID_HOSTNAME_ERROR = 'rotation_rp_id_hostname'
+
+/**
+ * While rotation passkeys are marked, servers verify key changes against the
+ * primary hostname they were created on (`rp_id`). Removing it, or making
+ * another hostname primary, would leave no place those passkeys can sign.
+ */
+async function refuseMovingRotationRpId(
+  c: Context<AppEnv>,
+  db: Db,
+  hostnames: readonly { host: string; isPrimary?: boolean }[]
+): Promise<Response | null> {
+  const rpId = await markedRpId(db)
+  if (!rpId) return null
+  const primary = primaryHostname(hostnames)
+  const host = primary ? hostFromPublicUrlEntry(primary.host) : null
+  if (host === rpId) return null
+  return c.json(
+    {
+      ok: false,
+      error: ROTATION_RP_ID_HOSTNAME_ERROR,
+      message: `${rpId} approves control plane key changes and must stay the primary hostname while rotation passkeys are marked.`,
+    },
+    409
+  )
 }
 
 /**
@@ -196,6 +225,8 @@ export function registerInstanceHostnameAdminRoutes(
         422
       )
     }
+    const keepsRpId = await refuseMovingRotationRpId(c, db, parsed.hostnames)
+    if (keepsRpId) return keepsRpId
     const previousPrimary = primaryOrigin(await listInstanceHostnames(db))
     const replaced = await replaceInstanceHostnames(db, parsed.hostnames)
     if (!replaced.ok) return c.json(replaced, 422)

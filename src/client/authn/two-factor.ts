@@ -20,6 +20,7 @@ import {
 } from './totp.ts'
 import { constantTimeEqual } from '../../lib/secrets/constant-time.ts'
 import { base64urlDecode, base64urlEncode } from '../../lib/encoding/base64url.ts'
+import { markedPasskeyIds } from '../../lib/panel-identity/keyset-store.ts'
 
 export const TWO_FACTOR_CHALLENGE_PURPOSE = 'two-factor-challenge'
 export const BACKUP_CODE_VERIFIER_PURPOSE = 'backup-code-verifier'
@@ -326,6 +327,8 @@ export type TwoFactorPasskeySummary = {
   createdAt: string
   deviceType: string
   isBackedUp: boolean
+  /** Marked as a rotation passkey: approves control plane key changes and cannot be deleted. */
+  isRotation: boolean
 }
 
 export type TwoFactorStatus = {
@@ -338,7 +341,7 @@ export type TwoFactorStatus = {
 }
 
 export async function getTwoFactorStatus(db: Db, userId: string): Promise<TwoFactorStatus> {
-  const [factorRows, userRows, passkeyRows, accountRows] = await Promise.all([
+  const [factorRows, userRows, passkeyRows, accountRows, marked] = await Promise.all([
     db
       .select({
         isVerified: twoFactor.isVerified,
@@ -359,6 +362,7 @@ export async function getTwoFactorStatus(db: Db, userId: string): Promise<TwoFac
       .from(passkey)
       .where(eq(passkey.userId, userId)),
     db.select({ providerId: account.providerId }).from(account).where(eq(account.userId, userId)),
+    markedPasskeyIds(db),
   ])
 
   const factor = factorRows[0]
@@ -370,6 +374,7 @@ export async function getTwoFactorStatus(db: Db, userId: string): Promise<TwoFac
       createdAt: row.createdAt,
       deviceType: row.deviceType,
       isBackedUp: row.isBackedUp,
+      isRotation: marked.has(row.id),
     }))
     .sort((a, b) => a.id.localeCompare(b.id))
   const linkedProviders = [

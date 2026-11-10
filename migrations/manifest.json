@@ -182,6 +182,12 @@
       "tag": "0029_notification_preferences",
       "when": 1793977275593,
       "sha256": "7d254287a5b268456ce2ee47d8ec62ec00674b5e6919b89f9873d02a7a862afd"
+    },
+    {
+      "idx": 30,
+      "tag": "0030_control_plane_key_rotation",
+      "when": 1794252745440,
+      "sha256": "6ebb6ae9d1a7f2b142d9c165f72189e568338dd3961e9e35b395b44f93243a26"
     }
   ]
 }

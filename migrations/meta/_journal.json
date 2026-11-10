@@ -211,6 +211,13 @@
       "when": 1793977275593,
       "tag": "0029_notification_preferences",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1794252745440,
+      "tag": "0030_control_plane_key_rotation",
+      "breakpoints": true
     }
   ]
 }

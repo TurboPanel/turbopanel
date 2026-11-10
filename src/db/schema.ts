@@ -428,6 +428,85 @@ export const passkey = pgTable(
   ]
 )
 /**
+ * A sign-in passkey marked as a rotation passkey: it approves changes of the
+ * control plane key. The key is a frozen snapshot of what servers pin. While
+ * marked (`unmarked_at` NULL) the passkey cannot be deleted (`RESTRICT`);
+ * unmarking clears `passkey_id` and keeps the row as history.
+ */
+export const custodian = pgTable(
+  'custodian',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    passkeyId: uuid('passkey_id'),
+    pkid: text().notNull(),
+    alg: text().notNull(),
+    publicKeyRaw: text('public_key_raw').notNull(),
+    rpId: text('rp_id').notNull(),
+    label: text(),
+    markedKeyset: integer('marked_keyset').notNull(),
+    unmarkedKeyset: integer('unmarked_keyset'),
+    unmarkedAt: timestamp('unmarked_at', { precision: 3, withTimezone: true, mode: 'string' }),
+  },
+  (table) => [
+    uniqueIndex('uniq_custodian_marked_pkid')
+      .using('btree', table.pkid.asc().nullsLast().op('text_ops'))
+      .where(sql`(unmarked_at IS NULL)`),
+    foreignKey({
+      columns: [table.passkeyId],
+      foreignColumns: [passkey.id],
+      name: 'custodian_passkey_id_passkey_id_fk',
+    }).onDelete('restrict'),
+    check('custodian_alg_check', sql`alg IN ('ES256', 'EdDSA')`),
+    check(
+      'custodian_marked_passkey_check',
+      sql`(unmarked_at IS NOT NULL) OR (passkey_id IS NOT NULL)`
+    ),
+  ]
+)
+/**
+ * The control plane's key-set chain: every approved key-set statement, kept
+ * forever and served to servers in `keyset` order. `body` is the exact
+ * statement bytes (base64url); `approvals` the WebAuthn assertions over them.
+ */
+export const rotation = pgTable(
+  'rotation',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', { precision: 3, withTimezone: true, mode: 'string' })
+      .defaultNow()
+      .notNull(),
+    keyset: integer().notNull(),
+    kind: text().notNull(),
+    state: text().notNull(),
+    prevKid: text('prev_kid').notNull(),
+    currentKid: text('current_kid').notNull(),
+    body: text().notNull(),
+    approvals: text().notNull(),
+    approvedByUserId: uuid('approved_by_user_id'),
+    liveAt: timestamp('live_at', { precision: 3, withTimezone: true, mode: 'string' }),
+  },
+  (table) => [
+    unique('uniq_rotation_keyset').on(table.keyset),
+    foreignKey({
+      columns: [table.approvedByUserId],
+      foreignColumns: [user.id],
+      name: 'rotation_approved_by_user_id_user_id_fk',
+    }).onDelete('set null'),
+    check('rotation_kind_check', sql`kind IN ('rotate', 'revoke', 'passkeys')`),
+    check('rotation_state_check', sql`state IN ('awaiting_key', 'live')`),
+    check('rotation_live_at_check', sql`(state = 'live') = (live_at IS NOT NULL)`),
+  ]
+)
+/**
  * Logical routing domain — not a building — of mutually routable private
  * subnets (IPv4 and/or IPv6); optional — a server may belong to zero or many
  * datacenters via `ip` pins. `options` mirrors `organization.options` for
@@ -819,6 +898,12 @@ export const server = pgTable(
      * was reported. False raises the `panel.pin_mismatch` alarm.
      */
     isTrustPinMatching: boolean('is_trust_pin_matching'),
+    /**
+     * Hash of the rotation passkeys the server's pin holds (base64url SHA-256
+     * of its `passkeys=` line), from its last signed pin report; empty when
+     * none are pinned, NULL when the daemon does not report it.
+     */
+    trustPinPasskeys: text('trust_pin_passkeys'),
     /**
      * Pin silence stage raised for the current offline episode: 1
      * `server.pin_silent`, 2 `server.pin_missing`. NULL when nothing is

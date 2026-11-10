@@ -15,15 +15,19 @@ import {
   base64urlDecode,
   base64urlEncode,
   bytesToUuid,
-  coseKeyToJwk,
-  type CosePublicJwk,
   parseAttestationObject,
   parseAuthenticatorData,
   uuidToBytes,
-  verifyAssertion,
   verifyRpIdHash,
 } from './webauthn.ts'
+import {
+  coseKeyToStoredJwk,
+  PASSKEY_REGISTRATION_ALGS,
+  parseStoredPasskeyJwk,
+  verifyStoredPasskeyAssertion,
+} from './passkey-keys.ts'
 import { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
+import { isPasskeyMarked, markedPasskeyIds } from '../../lib/panel-identity/keyset-store.ts'
 
 export const WEBAUTHN_CHALLENGE_PURPOSE = 'webauthn-challenge'
 export const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000
@@ -38,6 +42,16 @@ export class PasskeyExistsError extends Error {
   constructor() {
     super('passkey_exists')
     this.name = 'PasskeyExistsError'
+  }
+}
+
+/** The passkey approves control plane key changes; it must be unmarked first. */
+export class PasskeyMarkedError extends Error {
+  constructor() {
+    super(
+      'This passkey approves control plane key changes. Unmark it on Control Plane Identity first.'
+    )
+    this.name = 'PasskeyMarkedError'
   }
 }
 
@@ -205,10 +219,10 @@ export async function buildPasskeyRegistrationOptions(
       name: params.email,
       displayName: params.email,
     },
-    pubKeyCredParams: [
-      { alg: -7, type: 'public-key' },
-      { alg: -257, type: 'public-key' },
-    ],
+    pubKeyCredParams: PASSKEY_REGISTRATION_ALGS.map((alg) => ({
+      alg,
+      type: 'public-key' as const,
+    })),
     authenticatorSelection: {
       residentKey: 'required',
       userVerification: 'required',
@@ -362,7 +376,7 @@ export async function verifyPasskeyRegistration(
     throw new InvalidPasskeyCeremonyError()
   }
 
-  const jwk = coseKeyToJwk(authData.attested.coseKeyBytes)
+  const jwk = coseKeyToStoredJwk(authData.attested.coseKeyBytes)
   const credentialId = base64urlEncode(authData.attested.credentialId)
   const deviceType = authData.backupEligible ? 'multiDevice' : 'singleDevice'
   const transports = parseTransports(
@@ -403,6 +417,8 @@ export type PasskeySummary = {
   createdAt: string
   deviceType: string
   isBackedUp: boolean
+  /** Marked as a rotation passkey: it approves control plane key changes and cannot be deleted. */
+  isRotation: boolean
 }
 
 export async function listPasskeys(
@@ -419,6 +435,7 @@ export async function listPasskeys(
     })
     .from(passkey)
     .where(eq(passkey.userId, userId))
+  const marked = await markedPasskeyIds(db)
 
   const passkeys = rows
     .map((row) => ({
@@ -427,13 +444,24 @@ export async function listPasskeys(
       createdAt: row.createdAt,
       deviceType: row.deviceType,
       isBackedUp: row.isBackedUp,
+      isRotation: marked.has(row.id),
     }))
     .sort((a, b) => a.id.localeCompare(b.id))
 
   return { passkeys }
 }
 
+/** Delete one of the user's passkeys; a marked rotation passkey throws {@link PasskeyMarkedError}. */
 export async function deletePasskey(db: Db, userId: string, passkeyId: string): Promise<boolean> {
+  // Ownership first: the mark check must not tell a caller whether someone
+  // else's passkey is marked.
+  const own = await db
+    .select({ id: passkey.id })
+    .from(passkey)
+    .where(and(eq(passkey.id, passkeyId), eq(passkey.userId, userId)))
+    .limit(1)
+  if (own.length === 0) return false
+  if (await isPasskeyMarked(db, passkeyId)) throw new PasskeyMarkedError()
   const deleted = await db
     .delete(passkey)
     .where(and(eq(passkey.id, passkeyId), eq(passkey.userId, userId)))
@@ -449,31 +477,6 @@ export type PasskeyCredentialAssertion = {
     authenticatorData?: unknown
     signature?: unknown
     userHandle?: unknown
-  }
-}
-
-function parseStoredJwk(raw: string): CosePublicJwk | null {
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return null
-    }
-    const record = parsed as Record<string, unknown>
-    if (record.kty === 'EC' && record.crv === 'P-256') {
-      if (typeof record.x !== 'string' || typeof record.y !== 'string') {
-        return null
-      }
-      return { kty: 'EC', crv: 'P-256', x: record.x, y: record.y }
-    }
-    if (record.kty === 'RSA') {
-      if (typeof record.n !== 'string' || typeof record.e !== 'string') {
-        return null
-      }
-      return { kty: 'RSA', n: record.n, e: record.e, alg: 'RS256' }
-    }
-    return null
-  } catch {
-    return null
   }
 }
 
@@ -553,10 +556,10 @@ async function loginSignatureOk(params: {
   clientDataJSON: string
   signature: string
 }): Promise<boolean> {
-  const jwk = parseStoredJwk(params.publicKey)
+  const jwk = parseStoredPasskeyJwk(params.publicKey)
   if (!jwk) return false
   try {
-    return await verifyAssertion({
+    return await verifyStoredPasskeyAssertion({
       jwk,
       authData: params.authDataBytes,
       clientDataJSON: base64urlDecode(params.clientDataJSON),

@@ -93,6 +93,11 @@ import {
   TUNNEL_STATUSES,
 } from '../features/tunnels/vocabulary.ts'
 import { NONCE_KINDS } from '../features/servers/daemon-nonce.ts'
+import {
+  KEYSET_STATEMENT_KINDS,
+  KEYSET_STATEMENT_STATES,
+  ROTATION_PASSKEY_ALGS,
+} from '../lib/panel-identity/keyset-statement.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -126,6 +131,9 @@ function checkValues(constraintName: string): string[] {
 }
 
 const CASES: Array<[constraint: string, values: readonly string[]]> = [
+  ['custodian_alg_check', ROTATION_PASSKEY_ALGS],
+  ['rotation_kind_check', KEYSET_STATEMENT_KINDS],
+  ['rotation_state_check', KEYSET_STATEMENT_STATES],
   ['carrier_provider_check', TUNNEL_PROVIDERS],
   ['carrier_status_check', CARRIER_STATUSES],
   ['badge_status_check', CARRIER_STATUSES],

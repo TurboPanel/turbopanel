@@ -227,6 +227,7 @@ export const DAEMON_WIRE_FEATURES = [
   'topology-generation-optional-v1',
   'signed-reports-v1',
   'panel-bound-session-v1',
+  'panel-keyset-statements-v1',
   'environment-stop-remove-volumes-v1',
 ] as const
 
@@ -505,6 +506,15 @@ export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report
  * still accepted until a later floor bump.
  */
 export const SIGNED_REPORTS_FEATURE: DaemonWireFeature = 'signed-reports-v1'
+
+/**
+ * Passkey-approved key changes: the control plane serves the key-set chain at
+ * `GET /api/daemon/v1/instance/identity/statements` and the identity
+ * document's `rotation` block; the daemon pins rotation passkeys, follows the
+ * chain, and signs a `passkeys` hash into its pin report. Listed by both
+ * sides; nothing on either side waits for the other (expand-only).
+ */
+export const PANEL_KEYSET_STATEMENTS_FEATURE: DaemonWireFeature = 'panel-keyset-statements-v1'
 
 /**
  * The daemon understands `tunnel: false` and `lanRoutes` on

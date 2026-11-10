@@ -147,3 +147,40 @@ If you see `Sign in to Cloudflare first: ./node_modules/.bin/wrangler login`,
 run that command, sign in in the browser, then run the same command again.
 
 Self-hosted control planes make their own key on first start.
+
+### Rotating the key (owner step)
+
+Once servers are installed, the key changes only with the approval of your
+rotation passkeys (mark at least two on Control Plane Identity first). Run this
+on your own machine, never on a server:
+
+```sh
+pnpm identity:rotate --env testing
+```
+
+Add `--revoke` when the current key may be in someone else's hands.
+
+1. The command makes the new key in memory and prints its fingerprint and a
+   link. Nothing is stored yet.
+2. Open the link while signed in as a superadmin, check that the new
+   fingerprint on the screen matches the one in your terminal, and approve with
+   a rotation passkey. The approved change now waits for its key, and no other
+   key or passkey change can be made until it is finished or cancelled.
+3. Press Enter in the terminal. The command first asks the control plane
+   whether an approved change for exactly this key is stored. Only then does it
+   store the key; it never stores a key on Enter alone, because a key without
+   an approved change would cut every server off.
+4. It waits until the control plane uses the new key. Servers move to it as
+   they see the change.
+
+Approve first, then store the key: that order is what lets servers follow.
+
+If the command stops after you approved (you typed `no`, the terminal closed,
+or the key was refused three times), the key it made is gone and the approved
+change keeps waiting. Open Control Plane Identity, choose **Cancel Waiting
+Change**, and run the command again. Cancel only when the command did not store
+the key: if it printed that the key was stored, wait for the control plane to
+pick it up instead.
+
+The command says "Nothing was changed" only when that is true; otherwise it
+says that a change is still waiting.

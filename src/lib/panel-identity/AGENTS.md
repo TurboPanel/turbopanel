@@ -1,6 +1,6 @@
 # Panel identity (`src/lib/panel-identity/`)
 
-The panel's Ed25519 identity key (slots `current` and `next`) plus an X25519
+The panel's Ed25519 identity key (slot `current`; the old `next` slot is retired) plus an X25519
 sealing key, and the signed identity document served at
 `GET /api/daemon/v1/instance/identity`. Contract: the panel-trust design contract (owner-held, outside git).
 
@@ -14,7 +14,8 @@ sealing key, and the signed identity document served at
   throw at init. Self-hosted: `setting` row `PANEL_IDENTITY_KEYS` with the seeds sealed under the
   data-encryption key (`ensurePanelIdentity`, generated once, never regenerated); the
   re-encrypt sweep has stage `identity` for it.
-- **`next`** is a fingerprint only (the private key is offline), so its document entry has an empty `pub`.
+- **`next`** is retired: a stored or bound one is still parsed, but the document no longer lists it
+  (`role: "next"` is not written), so servers stop accepting it at their next read of the document.
 - **Signature** is the `X-TurboPanel-Signature: <kid>:<sig>` header over
   `"tp-http\n" + path + "\n" + exact body`, not a field in the body. `serializeIdentityDocument`
   writes the key order by hand; do not add a canonicaliser. The route returns the cached exact bytes.
@@ -60,8 +61,46 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
   models (`src/query-cache/read-models/`) do not select it yet, so the server badge still reads
   `none` there. The self-hosted edge gate (`src/platform/deno/ingress/gate.ts`) reads the column
   directly.
-- **Changing `next`** (`setPanelIdentityNext`) must be followed by swapping the in-memory identity
-  (`onIdentityNextChanged` in `server.ts`); the document cache re-signs when the next fingerprint changes.
+- **`next` is retired.** `PUT …/identity/next` answers 410 and nothing writes one; parsers still
+  read a stored or served `next` (forward-only). Key changes are key-set statements below.
+- **Key-set statements (key rotation).** `keyset-statement.ts` builds the exact statement bytes
+  (`{"type":"tp-keyset","v":1,keyset,prev,kind,rpId,current,passkeys,iat}`, passkeys sorted by id) and
+  verifies an envelope `{statement, approvals}` the way servers do (`tp-host panel-identity-write
+  statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpIdHash`, UP+UV,
+  `webauthn.get`, origin under the rp id, ES256 DER only or EdDSA, `prev` = pinned key, `keyset` above
+  the pinned one, removals approved by a passkey that stays, additions prove possession, an `rpId`
+  move needs an old-set approval plus possession under the new id. **Only the exact bytes verify:**
+  `verifyKeysetEnvelope` re-serializes the parsed statement and compares bytes (not text: decoding
+  drops a byte order mark), so `"keyset":4.0`, another member order, spacing or an escape is
+  `statement is malformed`, as on servers; the base64url must be the spelling an encoder writes.
+  Refusal reasons are the closed list `KEYSET_REFUSAL_REASONS` (internal words; the admin route
+  maps them). Genesis (nothing marked) is control-plane only. Shared vectors: `src/test-fixtures/keyset-statement-vectors.json` (public data,
+  byte-identical copy in the daemon repo; regenerate both together). Rotation passkeys are marked
+  sign-in passkeys (`custodian` table, `keyset-store.ts`); the chain is the `rotation` table, served
+  publicly at `GET /api/daemon/v1/instance/identity/statements?after=n` and deliberately **not** on
+  the signed-response list (a server that needs it holds a key this control plane no longer signs
+  with). The document gains `rotation:{rpId,passkeys}` once something is marked and its `keyset` is
+  `max(identity.keyset, newest live statement)`. Self-hosted rotation seals a `pendingEd25519Seed`
+  inside the same `sealed` blob (so the re-encrypt stage covers it), promotes it in the statement's
+  transaction (the X25519 sealing key is kept), and reloads the identity (`onIdentityChanged`). High
+  Availability stores the statement `awaiting_key`; it turns `live` when a request sees the loaded
+  binding's current key equal its `current_kid` (`pnpm identity:rotate`, `scripts/rotate-identity-key.mjs`;
+  `identity:set --replace` refuses once passkeys are marked). A waiting change blocks prepare and
+  approve; the command stores the key only after `GET /api/daemon/v1/instance/identity/statements/waiting/<fingerprint>`
+  (public, limited per address, facts only: `{keyset, kind, prev, current}` or 404) confirms an
+  approved change for exactly its key, and a stopped command is undone with the admin cancel route
+  (`deleteAwaitingStatement`: refused once the loaded key is the new key). The public identity
+  routes read chain data through `createIdentityChainCache` (`document-cache.ts`: 30 s, data only,
+  dropped when the loaded key or its key set changes); a statement page nobody asked for lately is
+  charged to the caller's address (`identity-statements` limit). The Workers hello still carries the
+  binding's keyset; a daemon whose pin holds passkeys does not compare it.
+- **Pin report passkeys.** A newer daemon adds `passkeys` (base64url SHA-256 of its pin's `passkeys=`
+  line, "" for none) with a second signature `passkeysSig` over `"tp-panel-pin-passkeys\n" + sessionId
+  + serverId + keyId + passkeys + iat` (joined by `\n`); stored in `server.trust_pin_passkeys`, and a
+  non-empty hash that differs from the marked set raises `panel.pin_mismatch` (context
+  `reportedPasskeys` / `expectedPasskeys`). Not a mismatch: a report whose key set is below the live
+  one (the server is behind and catches up on its daily read), and a report taken while the marked
+  set could not be read (unknown, never "none marked").
 - **Sealed secrets (`hpke.ts`).** HPKE (RFC 9180) base mode, DHKEM(X25519, HKDF-SHA256),
   ChaCha20-Poly1305, via `@hpke/core` + `@hpke/chacha20poly1305` (pure JS, no I/O at load, builds
   the suite on first use). Envelope `{v:1, kid, enc, ct}`; `aad` is the recipient server id.

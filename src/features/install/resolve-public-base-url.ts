@@ -47,7 +47,7 @@ function platformEnvOf(c: Context): Record<string, string | undefined> | undefin
  * Workers (stored rows ignored), the primary stored hostname on Deno (the
  * process environment ignored). `null` when the runtime's one source is empty.
  */
-async function resolveConfiguredOrigin(c: Context): Promise<string | null> {
+export async function resolveConfiguredOrigin(c: Context): Promise<string | null> {
   if (isHostedRuntime(c)) return platformControlPlaneOrigin(platformEnvOf(c))
   const db = getDb(c)
   return db ? await primaryStoredOrigin(db) : null

@@ -22,6 +22,7 @@ import {
   buildPasskeyLoginOptions,
   buildPasskeyRegistrationOptions,
   deletePasskey,
+  PasskeyMarkedError,
   InvalidPasskeyCeremonyError,
   listPasskeys,
   type PasskeyCredentialAssertion,
@@ -124,6 +125,25 @@ function parseEmptyObject(body: unknown): AuthBodyValidation<Record<string, neve
   return { ok: true, value: {} }
 }
 
+/**
+ * Every origin a browser can report for a passkey of `rpId` on this control
+ * plane. One host can be reachable on several public ports (443 behind an
+ * edge and the control plane's own 8443); the RP ID is the bare host, so
+ * every one is valid. Hosted, stored rows are ignored: the platform origin is
+ * the only one.
+ */
+export async function webauthnOriginsFor(
+  c: Context<AppEnv>,
+  publicOrigin: string,
+  rpId: string
+): Promise<readonly string[]> {
+  const db = getDb(c)
+  const fromRows = db
+    ? publicOriginsForRpId(await controlPlaneHostnameRows(db, c.get('runtime')), rpId)
+    : []
+  return fromRows.length > 0 ? fromRows : [publicOrigin]
+}
+
 async function resolveWebauthnOrigin(
   c: Context<AppEnv>,
   opts: AuthRouteOpts
@@ -131,14 +151,7 @@ async function resolveWebauthnOrigin(
   const publicBase = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
   const publicUrl = new URL(publicBase)
   const rpId = publicUrl.hostname
-  // One host can be reachable on several public ports (443 behind an edge and
-  // the panel's own 8443); the RP ID is the bare host, so every one is valid.
-  const db = getDb(c)
-  // Hosted, stored rows are ignored: the platform origin is the only one.
-  const fromRows = db
-    ? publicOriginsForRpId(await controlPlaneHostnameRows(db, c.get('runtime')), rpId)
-    : []
-  return { rpId, origins: fromRows.length > 0 ? fromRows : [publicUrl.origin] }
+  return { rpId, origins: await webauthnOriginsFor(c, publicUrl.origin, rpId) }
 }
 
 export function registerPasskeyRoutes(auth: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -244,7 +257,13 @@ export function registerPasskeyRoutes(auth: Hono<AppEnv>, opts: AuthRouteOpts) {
     if (reauth) return reauth
 
     const passkeyId = c.req.param('id')
-    const deleted = await deletePasskey(db, sessionData.userId, passkeyId)
+    let deleted: boolean
+    try {
+      deleted = await deletePasskey(db, sessionData.userId, passkeyId)
+    } catch (err) {
+      if (!(err instanceof PasskeyMarkedError)) throw err
+      return c.json({ ok: false, error: 'passkey_marked', message: err.message }, 409)
+    }
     if (!deleted) {
       return c.json({ ok: false, error: 'Not found' }, 404)
     }
