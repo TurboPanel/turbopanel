@@ -150,11 +150,13 @@ test('resolveServerId creates row for licensed enrollment', async () => {
         throw new Error('expected resolveServerId to return server id for valid license')
       }
       const [row] = await db
-        .select({ machineKey: server.machineKey })
+        .select({ machineKey: server.machineKey, name: server.name })
         .from(server)
         .where(eq(server.id, resolved))
         .limit(1)
       assertEquals(row?.machineKey, machineKey)
+      // The name typed in Add Server is the new server's display name.
+      assertEquals(row?.name, 'Server Registry Test License')
     } finally {
       if (resolved) {
         await deleteOrganizationServerTree(db, organizationId, resolved)
@@ -449,6 +451,9 @@ test('resolveServerId rejects a second host once the license is latched', async 
       })
       assertEquals(second, null)
 
+      // An operator renames the server; enrolling again must not undo it.
+      await db.update(server).set({ name: 'Renamed By Operator' }).where(eq(server.id, first))
+
       const reenroll = await resolveServerId(db, {
         serverId: first,
         hostname: `first-again-${crypto.randomUUID()}`,
@@ -457,6 +462,12 @@ test('resolveServerId rejects a second host once the license is latched', async 
         licenseToken,
       })
       assertEquals(reenroll, first)
+      const [row] = await db
+        .select({ name: server.name })
+        .from(server)
+        .where(eq(server.id, first))
+        .limit(1)
+      assertEquals(row?.name, 'Renamed By Operator')
     } finally {
       if (first) {
         await deleteOrganizationServerTree(db, organizationId, first)

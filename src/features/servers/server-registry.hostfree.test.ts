@@ -5,10 +5,13 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import { license } from '../../db/schema.ts'
 import {
+  enrolledServerName,
   findServerIdForIdentity,
   getServerLicenseBinding,
   mergeServerMetadataIdentity,
+  resolveServerId,
   touchServerMetadata,
 } from './server-registry.ts'
 
@@ -551,4 +554,91 @@ test('touchServerMetadata keeps the report when the stop alert fails', async () 
     { onServicesStoppedAfterCrashes: () => Promise.reject(new Error('sender down')) }
   )
   assertEquals(patches.length, 1)
+})
+
+test('enrolledServerName keeps the typed name and drops a blank one', () => {
+  assertEquals(enrolledServerName('tptest-daemon1'), 'tptest-daemon1')
+  assertEquals(enrolledServerName('  web-01  '), 'web-01')
+  assertEquals(enrolledServerName('   '), null)
+  assertEquals(enrolledServerName(''), null)
+  assertEquals(enrolledServerName(null), null)
+  assertEquals(enrolledServerName(undefined), null)
+})
+
+/**
+ * A fake for the first enroll of an unbound key: the key is free, the insert
+ * returns {@link SERVER_ID}, and the latch returns the key's name. Every
+ * server update inside the transaction is recorded. Calls made after the
+ * transaction (the best-effort system hierarchy) are refused, which the
+ * enroll path logs and ignores.
+ */
+function firstEnrollDb(licenseName: string | null) {
+  const serverPatches: Array<Record<string, unknown>> = []
+  let committed = false
+  type Link = Promise<unknown[]> & { [step: string]: (...args: never[]) => unknown }
+  const chain = (rows: unknown[], onSet?: (patch: Record<string, unknown>) => void): Link => {
+    const link = Promise.resolve(rows) as Link
+    for (const step of ['from', 'where', 'for', 'limit', 'values', 'returning']) {
+      link[step] = () => link
+    }
+    link.set = (patch: Record<string, unknown>) => {
+      onSet?.(patch)
+      return link
+    }
+    return link
+  }
+  const guard = () => {
+    if (committed) throw new Error('not modelled by this fake')
+  }
+  const db = {
+    select: (columns: Record<string, unknown>) => {
+      guard()
+      return chain('serverId' in columns ? [{ serverId: null }] : [{ id: 'org-1' }])
+    },
+    insert: () => {
+      guard()
+      return chain([{ id: SERVER_ID }])
+    },
+    update: (table: unknown) => {
+      guard()
+      if (table === license) {
+        return chain([{ id: 'lic-1', name: licenseName, tierId: null, expiresAt: null }])
+      }
+      return chain([], (patch) => serverPatches.push(patch))
+    },
+    transaction: async (fn: (tx: unknown) => Promise<unknown>) => {
+      guard()
+      const out = await fn(db)
+      committed = true
+      return out
+    },
+  }
+  return { db: db as unknown as Db, serverPatches }
+}
+
+const FIRST_ENROLL_IDENTITY = {
+  hostname: 'web-01',
+  machineKey: HEX64,
+  licenseId: 'lic-1',
+  licenseToken: 'tok',
+}
+
+test('a first enroll gives the new server the name typed in Add Server', async () => {
+  const { db, serverPatches } = firstEnrollDb('tptest-daemon1')
+  const resolved = await resolveServerId(db, FIRST_ENROLL_IDENTITY, undefined, {
+    verifiedLicense: { organizationId: 'org-1' },
+  })
+  assertEquals(resolved, SERVER_ID)
+  assertEquals(serverPatches, [{ name: 'tptest-daemon1' }])
+})
+
+test('a first enroll with an unnamed key leaves the server name unset', async () => {
+  for (const licenseName of [null, '   ']) {
+    const { db, serverPatches } = firstEnrollDb(licenseName)
+    const resolved = await resolveServerId(db, FIRST_ENROLL_IDENTITY, undefined, {
+      verifiedLicense: { organizationId: 'org-1' },
+    })
+    assertEquals(resolved, SERVER_ID)
+    assertEquals(serverPatches, [])
+  }
 })
