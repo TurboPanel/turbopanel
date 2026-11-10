@@ -7,6 +7,7 @@ import { assertEquals, assertStringIncludes, assertThrows } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
 import {
   constantDrift,
+  copyChanged,
   extractFieldSpecs,
   fieldPinDrift,
   mapDriftFromDaemon,
@@ -216,23 +217,29 @@ test('snapshot: the daemon may pin more types and optional fields, never fewer o
   )
 })
 
-test('a byte mirror that differs is a notice, and red only when this pull request changes its copy', () => {
-  const none = { all: false, files: new Set<string>() }
-  assertEquals(mirrorDrift('X drifted', 'src/x.ts', none), false)
-  assertEquals(
-    mirrorDrift('X drifted', 'src/x.ts', { all: false, files: new Set(['src/other.ts']) }),
-    false
-  )
+test('a byte mirror that differs is a notice, and red only when this pull request changes its copy', async () => {
+  assertEquals(mirrorDrift('X drifted', 'src/x.ts', false), false)
   assertThrows(
-    () => mirrorDrift('X drifted', 'src/x.ts', { all: false, files: new Set(['src/x.ts']) }),
+    () => mirrorDrift('X drifted', 'src/x.ts', true),
     Error,
     'this pull request changes src/x.ts'
   )
-  assertThrows(
-    () => mirrorDrift('X drifted', 'src/x.ts', { all: true, files: new Set(['*']) }),
-    Error,
-    'must match daemon trunk'
-  )
+  const base = await Deno.makeTempDir()
+  const head = await Deno.makeTempDir()
+  try {
+    await Deno.writeTextFile(join(base, 'same.json'), '{}')
+    await Deno.writeTextFile(join(head, 'same.json'), '{}')
+    await Deno.writeTextFile(join(base, 'edited.json'), '{}')
+    await Deno.writeTextFile(join(head, 'edited.json'), '{"a":1}')
+    await Deno.writeTextFile(join(head, 'new.json'), '{}')
+    assertEquals(copyChanged('same.json', base, head), false)
+    assertEquals(copyChanged('edited.json', base, head), true)
+    assertEquals(copyChanged('new.json', base, head), true)
+    assertEquals(copyChanged('edited.json', '', head), false)
+  } finally {
+    await Deno.remove(base, { recursive: true })
+    await Deno.remove(head, { recursive: true })
+  }
 })
 
 test('named constants: the control plane value must equal daemon trunk, which must have it', () => {

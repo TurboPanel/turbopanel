@@ -482,10 +482,8 @@ jobs:
   contract-twin:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # pull-requests: lists the files a pull request changes (the byte mirrors).
     permissions:
       contents: read
-      pull-requests: read
     concurrency:
       group: instance-contract-twin-${{ github.event_name }}-${{ (github.head_ref == 'trunk' || github.head_ref == 'staging') && github.run_id || github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'trunk' && github.head_ref != 'staging' }}
@@ -504,33 +502,26 @@ jobs:
           persist-credentials: false
 
       # Only a pull request into trunk can be red for a byte mirror, and only
-      # for a mirror it changes. A list that cannot be read counts every
-      # mirror as changed (fail closed).
-      - name: List the files this pull request changes
-        id: changed
+      # for a mirror whose copy here it changes: the check compares each copy
+      # with the same file at the pull request's base.
+      - name: Check out the byte mirrors at the pull request's base
         if: github.event_name == 'pull_request' && github.base_ref == 'trunk'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          if files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"; then
-            # File names come from the pull request, so the delimiter is
-            # random: no name can end the list early.
-            delim="CONTRACT_FILES_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
-            {
-              echo "files<<${delim}"
-              printf '%s\n' "$files"
-              echo "${delim}"
-            } >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::could not list this pull request's files; every byte mirror counts as changed"
-            echo 'files=*' >> "$GITHUB_OUTPUT"
-          fi
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: turbopanel-base
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            src/contracts/metrics-contract.ts
+            src/contracts/layout-vectors.json
+            src/contracts/topology-slot-mapping.ts
 
       - name: Check the contract against daemon trunk (daemon first)
         working-directory: turbopanel
         env:
-          CONTRACT_CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          CONTRACT_BASE_DIR: ${{ github.event_name == 'pull_request' && github.base_ref == 'trunk' && format('{0}/turbopanel-base', github.workspace) || '' }}
         run: node scripts/check-contract-drift.mjs
 
   # Single aggregate check for the branch rulesets. It needs every job that
