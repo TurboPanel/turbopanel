@@ -514,10 +514,13 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           if files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"; then
+            # File names come from the pull request, so the delimiter is
+            # random: no name can end the list early.
+            delim="CONTRACT_FILES_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
             {
-              echo 'files<<CONTRACT_CHANGED_FILES_END'
+              echo "files<<${delim}"
               printf '%s\n' "$files"
-              echo 'CONTRACT_CHANGED_FILES_END'
+              echo "${delim}"
             } >> "$GITHUB_OUTPUT"
           else
             echo "::warning::could not list this pull request's files; every byte mirror counts as changed"

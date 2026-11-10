@@ -6,9 +6,11 @@
 import { assertEquals, assertStringIncludes, assertThrows } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
 import {
+  constantDrift,
   extractFieldSpecs,
   fieldPinDrift,
   mapDriftFromDaemon,
+  markedWidening,
   mirrorDrift,
   missingFromDaemon,
   objectLiteralEntries,
@@ -230,5 +232,37 @@ test('a byte mirror that differs is a notice, and red only when this pull reques
     () => mirrorDrift('X drifted', 'src/x.ts', { all: true, files: new Set(['*']) }),
     Error,
     'must match daemon trunk'
+  )
+})
+
+test('named constants: the control plane value must equal daemon trunk, which must have it', () => {
+  assertEquals(constantDrift('tp-hello-v1', 'tp-hello-v1', 'HELLO_PREFIX'), null)
+  assertStringIncludes(
+    constantDrift('tp-hello-v1', 'tp-hello-v2', 'HELLO_PREFIX') ?? '',
+    'must hold the same value'
+  )
+  assertStringIncludes(
+    constantDrift('tp-new-v1', null, 'HELLO_PREFIX') ?? '',
+    'merge the daemon change first'
+  )
+  assertStringIncludes(
+    constantDrift(null, 'x', 'HELLO_PREFIX') ?? '',
+    'missing on the control plane'
+  )
+})
+
+test('snapshot: a daemon pin that widens on purpose still covers the control plane pin', () => {
+  const pin = { name: 'v', required: true, type: '4 | 6' }
+  const wide = { ...pin, type: '4 | 6 | 8', expansion: true }
+  assertEquals(markedWidening(pin, wide), true)
+  assertEquals(markedWidening(pin, { ...wide, expansion: undefined }), false)
+  assertEquals(markedWidening(pin, { ...wide, required: false }), false)
+  assertEquals(markedWidening(pin, { ...wide, type: '4' }), false)
+  const snap = (field: object) =>
+    JSON.stringify({ T: { instance: 'i.ts', daemon: 'd.ts', fields: [field] } })
+  assertEquals(snapshotSubsetDrift(snap(pin), snap(wide)), null)
+  assertStringIncludes(
+    snapshotSubsetDrift(snap(pin), snap({ ...pin, type: '4 | 6 | 8' })) ?? '',
+    'differs'
   )
 })
