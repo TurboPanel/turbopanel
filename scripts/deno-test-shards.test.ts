@@ -164,7 +164,8 @@ describe('build.yml fan-in', () => {
     )
     assertEquals(workflow.includes('resolve-sibling-ref'), false)
     assertEquals(workflow.includes('Sibling-Branch'), false)
-    assertStringIncludes(workflow, 'CONTRACT_CHANGED_FILES: ${{ steps.changed.outputs.files }}')
+    assertStringIncludes(workflow, 'ref: ${{ github.event.pull_request.base.sha }}')
+    assertStringIncludes(workflow, 'CONTRACT_BASE_DIR: ${{')
   })
 
   it('does not depend on the website checkout or a generated data dictionary', () => {

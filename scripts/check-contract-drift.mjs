@@ -47,9 +47,9 @@
  *     vectors) and FILESYSTEM_ROLE_PRIORITY: there is no "ahead" for bytes,
  *     so a mismatch is a notice (the control plane has not caught up yet),
  *     and red only on a control plane pull request that changes its own copy
- *     (per file) to something other than daemon trunk's. CONTRACT_CHANGED_FILES (one path per line,
- *     set by build.yml from the pull request's file list) names those files;
- *     CONTRACT_CHANGED_FILES=* treats every mirror as changed.
+ *     (per file) to something other than daemon trunk's. CONTRACT_BASE_DIR (the
+ *     pull request's base, set by build.yml) is what the copy is compared
+ *     with to tell whether this pull request changed it.
  *
  * Usage:
  *   node scripts/check-contract-drift.mjs
@@ -231,19 +231,15 @@ function requireFloorWithinVersion(floor, peerVersion, name) {
 }
 
 /**
- * The control plane files a pull request changes (see the header): `all` when
- * every mirror counts as changed, else the `files` named. Empty outside a
- * pull request.
+ * Whether this pull request changes its copy of a mirror: the copy here
+ * differs from the same file at the pull request's base (CONTRACT_BASE_DIR,
+ * set by build.yml for a pull request into trunk). A file the base does not
+ * have counts as changed. Outside such a pull request nothing counts.
  */
-function changedFiles() {
-  const raw = process.env.CONTRACT_CHANGED_FILES ?? ''
-  const files = new Set(
-    raw
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-  )
-  return { all: files.has('*'), files }
+export function copyChanged(panelPath, baseDir = process.env.CONTRACT_BASE_DIR ?? '', self = ROOT) {
+  if (!baseDir) return false
+  const before = readRel(baseDir, panelPath)
+  return before == null || before !== readRel(self, panelPath)
 }
 
 /**
@@ -251,8 +247,8 @@ function changedFiles() {
  * changes its own copy (`panelPath`), else a notice that the control plane has
  * not caught up with the daemon yet.
  */
-export function mirrorDrift(message, panelPath, changed = changedFiles()) {
-  if (changed.all || changed.files.has(panelPath)) {
+export function mirrorDrift(message, panelPath, changed = copyChanged(panelPath)) {
+  if (changed) {
     fail(`${message}: this pull request changes ${panelPath}, which must match daemon trunk's copy`)
   }
   console.log(
