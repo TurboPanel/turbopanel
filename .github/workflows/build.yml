@@ -471,12 +471,21 @@ jobs:
         if: github.event_name == 'pull_request' && steps.sonar.outcome == 'success'
         uses: TurboPanel/dev/.github/actions/sonar-new-issues@2db1bbfa3cff89a52fac3ee4a53bd495dc1c79b1 # dev#47
 
-  # Contract twin: byte-compares the metrics contract and the other mirrored
-  # contracts against TurboPanel/turbopaneld, so this repo is checked out next
-  # to a sibling turbopaneld checkout (a same-named branch, else trunk).
+  # Contract twin: checks this control plane against TurboPanel/turbopaneld
+  # trunk, always trunk (never another pull request's branch). Wire changes
+  # ship daemon first, then control plane, so the rule is one-way: the control
+  # plane may rely only on what daemon trunk already has (features, feature
+  # floors, channels, snapshot fields); the daemon may be ahead. Byte mirrors
+  # are red only on a pull request into trunk that changes this repo's copy to
+  # something other than daemon trunk's, and a notice otherwise
+  # (scripts/check-contract-drift.mjs).
   contract-twin:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # pull-requests: lists the files a pull request changes (the byte mirrors).
+    permissions:
+      contents: read
+      pull-requests: read
     concurrency:
       group: instance-contract-twin-${{ github.event_name }}-${{ (github.head_ref == 'trunk' || github.head_ref == 'staging') && github.run_id || github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'trunk' && github.head_ref != 'staging' }}
@@ -486,88 +495,42 @@ jobs:
         with:
           path: turbopanel
 
-      - name: Resolve turbopaneld checkout ref
-        id: daemon-ref
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.head_ref || github.ref_name }}
-          BASE_REF: ${{ github.base_ref }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_BODY: ${{ github.event.pull_request.body }}
-          SIBLING_REPO: TurboPanel/turbopaneld
-        run: |
-          # A same-named feature branch, else the sibling's trunk. Never the
-          # sibling's staging or live: promotion PRs (base staging/live) and
-          # PRs from those branches carry commits that passed against trunk.
-          # A pull request may name the sibling branch instead with a
-          # `Sibling-Branch: <branch>` line in its description (a fork PR, or
-          # a twin with another name); the branch must exist in the org repo.
-          # The description is read fresh so an edit counts on a re-run, and
-          # it only reaches the resolver through the environment.
-          PR_BODY="$EVENT_BODY"
-          if [ -n "$PR_NUMBER" ]; then
-            PR_BODY="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.body // ""')" || PR_BODY="$EVENT_BODY"
-          fi
-          export PR_BODY
-          resolved="$(node turbopanel/scripts/resolve-sibling-ref.mjs)" || { printf '%s\n' "$resolved"; exit 1; }
-          CANDIDATE="$(printf '%s\n' "$resolved" | sed -n 's/^candidate=//p')"
-          SOURCE="$(printf '%s\n' "$resolved" | sed -n 's/^source=//p')"
-          if gh api "repos/${SIBLING_REPO}/branches/${CANDIDATE}" --silent; then
-            REF="$CANDIDATE"
-          elif [ "$SOURCE" = override ]; then
-            echo "::error title=Sibling-Branch::the branch named in the description does not exist in ${SIBLING_REPO}; a maintainer has to push it there first"
-            exit 1
-          else
-            REF=trunk
-            SOURCE=trunk-fallback
-          fi
-          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
-          REF="$REF" SOURCE="$SOURCE" node turbopanel/scripts/resolve-sibling-ref.mjs summary >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Check out turbopaneld (contract twin sibling)
+      - name: Check out turbopaneld trunk (contract twin sibling)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: TurboPanel/turbopaneld
           path: turbopaneld
-          ref: ${{ steps.daemon-ref.outputs.ref }}
+          ref: trunk
+          persist-credentials: false
 
-      - name: Read Deno pin
-        id: deno-pin
-        run: echo "version=$(sh turbopanel/scripts/ci-runtime-pins.sh turbopaneld deno)" >> "$GITHUB_OUTPUT"
+      # Only a pull request into trunk can be red for a byte mirror, and only
+      # for a mirror it changes. A list that cannot be read counts every
+      # mirror as changed (fail closed).
+      - name: List the files this pull request changes
+        id: changed
+        if: github.event_name == 'pull_request' && github.base_ref == 'trunk'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"; then
+            # File names come from the pull request, so the delimiter is
+            # random: no name can end the list early.
+            delim="CONTRACT_FILES_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+            {
+              echo "files<<${delim}"
+              printf '%s\n' "$files"
+              echo "${delim}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::could not list this pull request's files; every byte mirror counts as changed"
+            echo 'files=*' >> "$GITHUB_OUTPUT"
+          fi
 
-      # Three attempts, 15 s then 45 s apart: setup-deno has no retry input and
-      # a transient GitHub 5xx on the download must not turn the run red.
-      - name: Install Deno
-        id: deno-try-1
-        continue-on-error: true
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: ${{ steps.deno-pin.outputs.version }}
-      - name: Wait before retrying the Deno download
-        if: steps.deno-try-1.outcome == 'failure'
-        run: sleep 15
-      - name: Install Deno (retry 1 of 2)
-        id: deno-try-2
-        if: steps.deno-try-1.outcome == 'failure'
-        continue-on-error: true
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: ${{ steps.deno-pin.outputs.version }}
-      - name: Wait before retrying the Deno download again
-        if: steps.deno-try-2.outcome == 'failure'
-        run: sleep 45
-      - name: Install Deno (retry 2 of 2)
-        if: steps.deno-try-2.outcome == 'failure'
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: ${{ steps.deno-pin.outputs.version }}
-
-      - name: Check metrics contract twin (sibling byte-compare)
+      - name: Check the contract against daemon trunk (daemon first)
         working-directory: turbopanel
-        run: deno test -A --no-check src/contracts/metrics-contract.test.ts
-
-      - name: Check contract drift (metrics, hostname, machine-key, channels)
-        working-directory: turbopanel
+        env:
+          CONTRACT_CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: node scripts/check-contract-drift.mjs
 
   # Single aggregate check for the branch rulesets. It needs every job that

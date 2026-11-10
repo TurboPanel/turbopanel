@@ -201,7 +201,8 @@ export type RecoveryMetadata = {
   detector?: string
   /**
    * Detector evidence as sent (JSON text, bounded). Only its `spanMs` is
-   * used, to anchor the fresh-standby gate's failure start.
+   * used, and only to move the fresh-standby gate's failure start later than
+   * the control plane's own floor (`anchoredFailureStartedAtMs`).
    */
   detectorEvidence?: string
   /** Fresh-standby gate outcome per probed replica (accepted basis / refusal). */
@@ -222,6 +223,15 @@ export type RecoveryMetadata = {
    * (no fencing, no promotion). `blockedReason` says why.
    */
   stale?: boolean
+  /**
+   * The dead-primary report was refused before anything else was checked,
+   * because its signature was missing or wrong or it came over a connection
+   * that is not signed (`ha-event.ts`). `blockedReason` says which. Never
+   * counts as a report of the incident.
+   */
+  reportRefused?: 'unsigned' | 'invalid' | 'session-unsigned'
+  /** The server whose report was refused. */
+  reporterServerId?: string
   /**
    * Terminal `failed` row nothing will advance: an operator has to check the
    * cluster before the next role change. `failedReason` says why.
@@ -267,6 +277,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+const REPORT_REFUSED_KINDS: ReadonlySet<string> = new Set([
+  'unsigned',
+  'invalid',
+  'session-unsigned',
+])
+
+function optionalReportRefused(value: unknown): RecoveryMetadata['reportRefused'] {
+  return typeof value === 'string' && REPORT_REFUSED_KINDS.has(value)
+    ? (value as RecoveryMetadata['reportRefused'])
+    : undefined
 }
 
 function optionalBoolean(value: unknown): boolean | undefined {
@@ -370,6 +392,8 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'hostLossIncident', optionalString(value.hostLossIncident))
   if (value.returnFence === 'confirmed') metadata.returnFence = value.returnFence
   setIfPresent(metadata, 'stale', optionalBoolean(value.stale))
+  setIfPresent(metadata, 'reportRefused', optionalReportRefused(value.reportRefused))
+  setIfPresent(metadata, 'reporterServerId', optionalString(value.reporterServerId))
   setIfPresent(metadata, 'needsOperator', optionalBoolean(value.needsOperator))
   setIfPresent(metadata, 'failedReason', optionalString(value.failedReason))
   setIfPresent(

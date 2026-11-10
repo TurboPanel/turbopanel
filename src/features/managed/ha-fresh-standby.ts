@@ -307,6 +307,36 @@ export function failureStartedAtMs(
 }
 
 /**
+ * How long before the control plane first heard of an incident the failure
+ * may have started: the daemons' own detection time. A MySQL or MariaDB kill
+ * reaches the control plane about 20 s after Docker stopped the engine, a hung
+ * MySQL or MariaDB primary 30 to 45 s after its first unanswered ping, and a
+ * Postgres probe within about a minute. A span longer than this does not move
+ * the failure start earlier.
+ */
+export const DETECTION_ALLOWANCE_MS = 90_000
+
+/**
+ * The failure start the fresh-standby gate uses, from the control plane's own
+ * receive times. The detector's span may only move it later (stricter), never
+ * earlier than {@link DETECTION_ALLOWANCE_MS} before the first report of this
+ * incident the control plane received (`firstReportAtMs`; absent = this one).
+ * An earlier failure start would let a standby that stopped streaming long
+ * ago pass, so the reporter cannot widen what the gate accepts. `null` (gate
+ * closed) when the event carries no usable span, as before.
+ */
+export function anchoredFailureStartedAtMs(
+  evidence: Record<string, unknown> | undefined,
+  receivedAtMs: number,
+  firstReportAtMs?: number | null
+): number | null {
+  const reported = failureStartedAtMs(evidence, receivedAtMs)
+  if (reported === null) return null
+  const firstMs = Math.min(firstReportAtMs ?? receivedAtMs, receivedAtMs)
+  return Math.max(reported, firstMs - DETECTION_ALLOWANCE_MS)
+}
+
+/**
  * Among accepted standbys, the one that received the most WAL (highest
  * `receivedLsn`); ties, and standbys with no parseable LSN, fall back to the
  * lowest ordinal, then id. `null` for an empty list.

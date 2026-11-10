@@ -43,7 +43,11 @@ import {
 } from '../commands/command-records.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
-import { findInFlightRecovery, findLatestRecovery, updateRecovery } from './recovery-records.ts'
+import {
+  findInFlightRecovery,
+  findLatestActedRecovery,
+  updateRecovery,
+} from './recovery-records.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import type { ManagedEngineCode } from './types.ts'
 
@@ -136,7 +140,7 @@ export async function handleBootHoldReport(
   const deps: BootHoldDeps = {
     listMembers: listManagedMembers,
     inFlightRecovery: findInFlightRecovery,
-    latestRecovery: findLatestRecovery,
+    latestRecovery: findLatestActedRecovery,
     enqueueLifecycle,
     noteReplacedMemberFenced,
     ...seams,
@@ -198,7 +202,7 @@ async function noteReplacedMemberFenced(
       .set({ status: 'needs_resync', updatedAt: new Date().toISOString() })
       .where(and(eq(replica.id, member.id), eq(replica.managedId, managedId)))
   }
-  const latest = await findLatestRecovery(db, managedId)
+  const latest = await findLatestActedRecovery(db, managedId)
   if (
     latest?.sourcePrimaryMemberId === member.id &&
     latest.metadata.fenceBasis === 'host-loss-attested' &&

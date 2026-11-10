@@ -160,3 +160,14 @@ test('serverIpsEquals sees a link flip as a change', () => {
   assertEquals(serverIpsEquals(up, down), false)
   assertEquals(serverIpsEquals(up, [{ ...up[0] }]), true)
 })
+
+// Daemon first: a newer daemon may send ServerReportedIp fields this control
+// plane does not know yet. They are ignored, never a reason to drop the row.
+test('parseServerIps keeps a row with fields it does not know and drops only those fields', () => {
+  assertEquals(
+    parseServerIps([
+      { address: '10.0.0.2', version: 4, scope: 'private', zone: 'eu-1', future: { x: 1 } },
+    ]),
+    [{ address: '10.0.0.2', version: 4, scope: 'private' }]
+  )
+})

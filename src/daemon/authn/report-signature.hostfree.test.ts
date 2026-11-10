@@ -64,7 +64,12 @@ test('a signed report verifies and is handled without its envelope', async () =>
   const key = await testDaemonKey()
   for (const message of [OUTCOME, PEERS]) {
     const intake = await intakeSignedSessionReport(await signed(key, message), session(key))
-    assertEquals(intake, { raw: JSON.stringify(message), warning: null, verdict: 'verified' })
+    assertEquals(intake, {
+      raw: JSON.stringify(message),
+      warning: null,
+      verdict: 'verified',
+      signature: 'verified',
+    })
     // The same once the server is known to sign.
     const again = await intakeSignedSessionReport(
       await signed(key, message),
@@ -101,6 +106,7 @@ test('a peer report that does not verify is dropped', async () => {
     raw: null,
     warning: 'refused signed fabric-peers-report: signature invalid',
     verdict: 'refused',
+    signature: 'invalid',
   })
 })
 
@@ -122,6 +128,7 @@ test('another session, another key id, a stale iat or no stored key is refused',
       raw: null,
       warning: `refused signed fabric-peers-report: ${reason}`,
       verdict: 'refused',
+      signature: 'invalid',
     })
   }
 })
@@ -143,11 +150,13 @@ test('an unsigned report is still accepted, with a warning only from a daemon th
     raw,
     warning: 'unsigned command-outcome from a daemon that signs reports',
     verdict: 'unsigned',
+    signature: 'unsigned',
   })
   assertEquals(await intakeSignedSessionReport(raw, session(key, { daemonSignsReports: false })), {
     raw,
     warning: null,
     verdict: 'unsigned',
+    signature: 'unsigned',
   })
 })
 
@@ -186,6 +195,7 @@ test('once the server has signed, an unsigned peer report is dropped', async () 
     raw: null,
     warning: 'refused unsigned fabric-peers-report: this server signs its reports',
     verdict: 'refused',
+    signature: 'unsigned',
   })
 })
 
@@ -197,6 +207,7 @@ test('once the server has signed, frames that are not reports still pass', async
     raw: heartbeat,
     warning: null,
     verdict: 'other',
+    signature: 'none',
   })
   const nested = JSON.stringify({ type: 'heartbeat', note: { type: 'command-outcome' } })
   assertEquals((await intakeSignedSessionReport(nested, ratcheted)).raw, nested)
@@ -209,6 +220,7 @@ test('frames that are not reports pass as they are', async () => {
     raw: heartbeat,
     warning: null,
     verdict: 'other',
+    signature: 'none',
   })
   // A result nested in another frame does not make it a report.
   const nested = JSON.stringify({ type: 'heartbeat', note: { type: 'command-outcome' } })
@@ -218,9 +230,56 @@ test('frames that are not reports pass as they are', async () => {
     raw: signedHello,
     warning: null,
     verdict: 'other',
+    signature: 'none',
   })
   const notJson = appendSignature('{not json}', 'abc')
   assertEquals((await intakeSignedSessionReport(notJson, session(key))).raw, notJson)
+})
+
+const HA_EVENT = {
+  type: 'managed-ha-event',
+  managedId: '00000000-0000-4000-8000-0000000000aa',
+  evidence: { spanMs: 20_000 },
+  at: '2026-11-05T12:00:00.000Z',
+}
+
+test('a signed managed-ha-event is verified and handed on without its envelope', async () => {
+  const key = await testDaemonKey()
+  const intake = await intakeSignedSessionReport(await signed(key, HA_EVENT), session(key))
+  assertEquals(intake, {
+    raw: JSON.stringify(HA_EVENT),
+    warning: null,
+    verdict: 'verified',
+    signature: 'verified',
+  })
+})
+
+test('an unsigned managed-ha-event is handed on marked unsigned, ratchet or not', async () => {
+  const key = await testDaemonKey()
+  const raw = JSON.stringify(HA_EVENT)
+  for (const serverSignsReports of [false, true]) {
+    assertEquals(await intakeSignedSessionReport(raw, session(key, { serverSignsReports })), {
+      raw,
+      warning: null,
+      verdict: 'other',
+      signature: 'unsigned',
+    })
+  }
+  // Spacing in the type does not hide it: the parsed type decides.
+  const spaced = raw.replace('"type":', '"type": ')
+  assertEquals((await intakeSignedSessionReport(spaced, session(key))).signature, 'unsigned')
+})
+
+test('a managed-ha-event with a bad signature is handed on marked invalid', async () => {
+  const key = await testDaemonKey()
+  const other = await testDaemonKey()
+  const intake = await intakeSignedSessionReport(await signed(other, HA_EVENT), session(key))
+  assertEquals(intake, {
+    raw: JSON.stringify(HA_EVENT),
+    warning: 'refused signed managed-ha-event: signature invalid',
+    verdict: 'refused',
+    signature: 'invalid',
+  })
 })
 
 test('the hello feature list says whether the daemon signs reports', () => {
@@ -274,4 +333,32 @@ test('a duplicate type key that ends as another type is not a report', async () 
   const intake = await intakeSignedSessionReport(text, session(key, { serverSignsReports: true }))
   assertEquals(intake.verdict, 'other')
   assertEquals(intake.raw, text)
+})
+
+test('a signed managed-ha-event must be fresh: not ahead of the clock, not held back', async () => {
+  const key = await testDaemonKey()
+  const cases: Array<[number, string | null]> = [
+    [NOW_S, null],
+    [NOW_S + 30, null],
+    [NOW_S + 31, 'signed in the future'],
+    [NOW_S - 60, null],
+    [NOW_S - 61, 'signed too long ago'],
+  ]
+  for (const [iat, reason] of cases) {
+    const intake = await intakeSignedSessionReport(
+      await signed(key, HA_EVENT, { iat }),
+      session(key)
+    )
+    assertEquals(intake.signature, reason === null ? 'verified' : 'invalid', String(iat))
+    assertEquals(
+      intake.warning,
+      reason === null ? null : `refused signed managed-ha-event: ${reason}`
+    )
+  }
+  // Other reports keep the wider window.
+  const outcome = await intakeSignedSessionReport(
+    await signed(key, OUTCOME, { iat: NOW_S - 200 }),
+    session(key)
+  )
+  assertEquals(outcome.signature, 'verified')
 })

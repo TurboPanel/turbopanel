@@ -76,6 +76,8 @@ export function deadlineBlockStreak(
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
   let streak = 0
   for (const other of earlier) {
+    // A refused HA report was never acted on: it neither breaks nor extends the run.
+    if (other.metadata.reportRefused) continue
     const startedAt = Date.parse(other.startedAt)
     if (
       other.kind !== 'automatic-failover' ||
