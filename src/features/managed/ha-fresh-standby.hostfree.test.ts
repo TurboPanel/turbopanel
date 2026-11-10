@@ -182,7 +182,7 @@ test('anchoredFailureStartedAtMs: the span only moves the failure start later th
   assertEquals(anchoredFailureStartedAtMs({ spanMs: -1 }, received), null)
 })
 
-test('a MySQL kill and a paused Postgres primary still pass with the control plane floor', () => {
+test('a MySQL kill, and its retry after the cooldown, still pass with the control plane floor', () => {
   const T = 1_000_000_000
   // MySQL kill: the replica last streamed at the kill, the event arrives 20 s later.
   const mysql = evaluateFreshStandby({
@@ -193,7 +193,7 @@ test('a MySQL kill and a paused Postgres primary still pass with the control pla
     replication: mysqlReplica({ lastStreaming: { at: 'x', ageMs: 21_000, lagSeconds: 0 } }),
   })
   assertEquals(mysql.accepted, true)
-  // The same kill reported 15 min later (after a cooldown), first recorded at T + 20 s.
+  // The same kill reported again 15 min later (after a cooldown), first recorded at T + 20 s.
   const retry = evaluateFreshStandby({
     engine: 'mysql',
     marginMs: 10_000,

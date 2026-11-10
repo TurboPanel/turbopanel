@@ -208,9 +208,10 @@ function loggableId(report: Record<string, unknown>): string {
 /**
  * Check one inbound frame of a signed session. Frames that are not reports
  * pass as they are. A {@link SIGNATURE_REQUIRED_TYPES} frame is never
- * dropped here: it is handed on with what its signature check found. An unsigned report is refused once the server has signed
- * one; before that it is still accepted (older daemons), with a warning when
- * this daemon said it signs them.
+ * dropped here: it is handed on with what its signature check found. Any
+ * other unsigned report is refused once the server has signed one; before
+ * that it is still accepted (older daemons), with a warning when this daemon
+ * said it signs them.
  */
 export async function intakeSignedSessionReport(
   raw: string,

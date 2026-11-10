@@ -128,7 +128,8 @@ export async function firstIncidentReportAt(
   for (const row of rows) {
     const record = serializeRow(row)
     if (!record || record.targetMemberId !== null) continue
-    if (lastAccepted && record.startedAt <= lastAccepted.startedAt) continue
+    // An earlier incident: at or before the last accepted failover.
+    if (record.startedAt <= (lastAccepted?.startedAt ?? '')) continue
     const metadata = record.metadata
     if (metadata.reportRefused || metadata.stale || metadata.detector === 'host-loss') continue
     return record.startedAt
