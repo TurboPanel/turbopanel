@@ -6,7 +6,7 @@
  */
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
-import { assertEquals } from '@std/assert'
+import { assert, assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -522,6 +522,49 @@ test('replaces(): equal expiry is rejected, later accepted, earlier rejected', a
   assertEquals(replaces(stored(new Date(at - 1000)), true, pair.parsed, now), true)
   assertEquals(replaces(stored(new Date(at + 1000)), true, pair.parsed, now), false)
   assertEquals(replaces(stored(new Date(at + 1000)), false, pair.parsed, now), true)
+})
+
+test('replaces(): a later pair that covers more names than the stored one renews it', async () => {
+  const wider = await issuedPair([HOST, `www.${HOST}`], 60)
+  const now = new Date()
+  const at = wider.parsed.notAfter.getTime()
+  const narrow = (notAfter: number) => ({
+    names: [HOST],
+    notAfter: new Date(notAfter).toISOString(),
+  })
+  // A still-valid narrower pair is replaced by a later one that covers its names and more.
+  assertEquals(replaces(narrow(at - 86_400_000), true, wider.parsed, now), true)
+  // Not by one that expires no later.
+  assertEquals(replaces(narrow(at), true, wider.parsed, now), false)
+  // A pair that does not cover every stored name still waits for the stored one to expire.
+  const other = await issuedPair([`www.${HOST}`], 60)
+  assertEquals(replaces(narrow(at - 86_400_000), true, other.parsed, now), false)
+})
+
+test('a renewal that adds the www name replaces the stored narrower pair and moves the renewal time on', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    // The row holds a still-valid pair for the typed name only.
+    await openRequest(f, f.serverId)
+    const narrow = await issuedPair([HOST], 30)
+    assertEquals(
+      (await storeIssuedCertificate(f.db, withRequest(narrow, f.serverId), f.deps)).ok,
+      true
+    )
+    const before = readHttpIssuanceState((await readRow(f)).metadata)!
+    // The next request orders both names and gets a certificate that lives longer.
+    await openRequest(f, f.serverId)
+    const wider = await issuedPair([HOST, `www.${HOST}`], 90)
+    const result = await storeIssuedCertificate(f.db, withRequest(wider, f.serverId), f.deps)
+    assertEquals(result, { ok: true, stored: true, tlsIds: [f.tlsId] })
+    const row = await readRow(f)
+    assertEquals(row.certificatePem, wider.certificatePem)
+    const after = readHttpIssuanceState(row.metadata)!
+    assert(after.renewAt !== null && after.renewAt !== before.renewAt, String(after.renewAt))
+  } finally {
+    await f.cleanup()
+  }
 })
 
 for (const kind of [

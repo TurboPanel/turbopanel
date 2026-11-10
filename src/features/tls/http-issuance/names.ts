@@ -9,7 +9,7 @@
  * gets one certificate per name, which a row cannot hold, so it is sent only a
  * single-name order.
  */
-import { hostingCertificateNames } from '../../../contracts/commands/hostname.ts'
+import { foldHostname, hostingCertificateNames } from '../../../contracts/commands/hostname.ts'
 import type { HostingWwwMode } from '../../../contracts/commands/hostname.ts'
 import { ACME_ISSUE_FEATURE, ACME_ISSUE_ONE_CERT_FEATURE } from '../../../lib/version-wire.ts'
 
@@ -24,14 +24,16 @@ export function orderNamesFor(
   rowNames: readonly string[],
   sites: readonly PinningSite[]
 ): string[] | null {
-  const typed = rowNames.map((name) => name.trim().toLowerCase()).filter((n) => n.length > 0)
+  const typed = rowNames.map((name) => foldHostname(name)).filter((n) => n.length > 0)
   if (typed.length === 0) return null
   const rowSet = new Set(typed)
   const added = sites.flatMap((site) => {
     // Only a site whose typed names the row covers adds its other spellings.
-    const own = site.hostnames.map((name) => name.trim().toLowerCase())
+    const own = site.hostnames.map((name) => foldHostname(name))
     if (!own.every((name) => rowSet.has(name))) return []
-    return hostingCertificateNames({ hostnames: own, www: site.www })
+    return hostingCertificateNames({ hostnames: own, www: site.www }).map((name) =>
+      foldHostname(name)
+    )
   })
   const names = [...new Set([...typed, ...added])]
   return names.some((name) => name.includes('*')) ? null : names

@@ -263,6 +263,11 @@ async function sendAll(
   return failed
 }
 
+/** The names a request asked for when it started; the row's current ones for a request an older release started. */
+function requestNames(state: HttpIssuanceState, row: Pick<RowFacts, 'orderNames'>): string[] {
+  return state.orderNames.length > 0 ? state.orderNames : row.orderNames
+}
+
 function orderEnvelope(
   now: Date,
   row: Pick<RowFacts, 'id' | 'orderNames'>,
@@ -273,7 +278,7 @@ function orderEnvelope(
   return envelope(now, 'acme-issue-request', {
     acmeRequestId: state.requestId,
     tlsId: row.id,
-    names: row.orderNames,
+    names: requestNames(state, row),
     directory: state.directory,
     contactEmail,
     startByIso: state.startByAt,
@@ -358,6 +363,7 @@ function freshState(params: {
   choice: Extract<Choice, { ok: true }>
   previous: HttpIssuanceState | null
   staging: boolean
+  orderNames: string[]
 }): HttpIssuanceState {
   const { deps, now, choice, previous } = params
   const startedAt = now.toISOString()
@@ -382,6 +388,7 @@ function freshState(params: {
     roster: rosterOf(choice),
     centralPair: previous?.centralPair ?? false,
     issueTimes: previous?.issueTimes ?? [],
+    orderNames: params.orderNames,
   })
 }
 
@@ -406,7 +413,7 @@ function openingMessages(
     serverId: h.serverId,
     envelope: envelope(now, 'acme-proof-forward', {
       acmeRequestId: state.requestId,
-      names: row.orderNames,
+      names: requestNames(state, row),
       targetAddress: choice.issuerAddress,
       expiresAtIso: state.startByAt,
     }),
@@ -466,7 +473,14 @@ async function startInTransaction(
     sql`select pg_advisory_xact_lock(${ISSUER_LOCK_NAMESPACE}, hashtext(${choice.issuer.serverId}))`
   )
   if (await issuerHasOpenOrder(tx, choice.issuer.serverId)) return { outcome: 'busy', send: [] }
-  const fresh = freshState({ deps, now, choice, previous, staging: deps.staging })
+  const fresh = freshState({
+    deps,
+    now,
+    choice,
+    previous,
+    staging: deps.staging,
+    orderNames: row.orderNames,
+  })
   const direct = choice.helpers.length === 0
   const state: HttpIssuanceState = direct
     ? { ...fresh, phase: 'ordering', orderSentAt: fresh.startedAt }

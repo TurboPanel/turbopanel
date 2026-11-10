@@ -57,3 +57,10 @@ test('several names go only to a daemon that gets one certificate for all of the
   assertEquals(takesOrderFor([ACME_ISSUE_ONE_CERT_FEATURE], ['example.com']), false)
   assertEquals(takesOrderFor([], ['example.com']), false)
 })
+
+test('names are folded the same way everywhere, an international name as punycode', () => {
+  assertEquals(
+    orderNamesFor([' Bücher.Example '], [{ hostnames: ['bücher.example'], www: 'both' }]),
+    ['xn--bcher-kva.example', 'www.xn--bcher-kva.example']
+  )
+})

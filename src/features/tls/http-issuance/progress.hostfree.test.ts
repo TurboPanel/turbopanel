@@ -56,6 +56,7 @@ function open(over: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     centralPair: false,
     issueTimes: [],
     renewAt: null,
+    orderNames: [],
     roster: [
       { serverId: 'a', label: 'Server A', role: 'issuer' },
       { serverId: 'b', label: 'Server B', role: 'helper' },
