@@ -102,11 +102,29 @@ export type StoredStatement = {
   liveAt: string | null
 }
 
-function envelopeOf(row: { body: string; approvals: string }): KeysetEnvelope {
-  return {
+type EnvelopeColumns = {
+  body: string
+  approvals: string
+  prevKey: string | null
+  prevKeySignature: string | null
+  state: string
+}
+
+/**
+ * The envelope of a stored row. The replaced key's signature rides only on a
+ * `live` row: a High Availability change waiting for its key moves to a key
+ * the browser named, so its signature never leaves the control plane before
+ * the new key is loaded (whatever route asks).
+ */
+function envelopeOf(row: EnvelopeColumns): KeysetEnvelope {
+  const envelope: KeysetEnvelope = {
     statement: row.body,
     approvals: JSON.parse(row.approvals) as KeysetEnvelope['approvals'],
   }
+  if (row.state === 'live' && row.prevKey !== null && row.prevKeySignature !== null) {
+    envelope.keySig = { pub: row.prevKey, sig: row.prevKeySignature }
+  }
+  return envelope
 }
 
 const STATEMENT_COLUMNS = {
@@ -117,6 +135,8 @@ const STATEMENT_COLUMNS = {
   currentKid: rotation.currentKid,
   body: rotation.body,
   approvals: rotation.approvals,
+  prevKey: rotation.prevKey,
+  prevKeySignature: rotation.prevKeySignature,
   createdAt: rotation.createdAt,
   liveAt: rotation.liveAt,
 }
@@ -129,6 +149,8 @@ function toStored(row: {
   currentKid: string
   body: string
   approvals: string
+  prevKey: string | null
+  prevKeySignature: string | null
   createdAt: string
   liveAt: string | null
 }): StoredStatement {
@@ -151,7 +173,13 @@ export async function listLiveStatements(
   limit = 100
 ): Promise<KeysetEnvelope[]> {
   const rows = await db
-    .select({ body: rotation.body, approvals: rotation.approvals })
+    .select({
+      body: rotation.body,
+      approvals: rotation.approvals,
+      prevKey: rotation.prevKey,
+      prevKeySignature: rotation.prevKeySignature,
+      state: rotation.state,
+    })
     .from(rotation)
     .where(and(eq(rotation.state, 'live'), gt(rotation.keyset, after)))
     .orderBy(asc(rotation.keyset))
@@ -262,6 +290,8 @@ export async function insertStatement(db: Db, input: StatementInsert): Promise<v
     currentKid: input.currentKid,
     body: input.envelope.statement,
     approvals: JSON.stringify(approvals),
+    prevKey: input.envelope.keySig?.pub ?? null,
+    prevKeySignature: input.envelope.keySig?.sig ?? null,
     approvedByUserId: input.approvedByUserId,
     liveAt: input.state === 'live' ? new Date().toISOString() : null,
   })

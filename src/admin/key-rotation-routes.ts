@@ -8,7 +8,10 @@
  *   the pending key a rotation moves to.
  * - `POST /instance/identity/statements` takes the bytes back with the
  *   browser's assertions, checks them exactly as a server will
- *   (`keyset-statement.ts`), and stores the statement.
+ *   (`keyset-statement.ts`), signs the bytes with the key being replaced
+ *   (except a revoke, which two passkeys approve instead), and stores the
+ *   statement. The signature is made last, inside the store's transaction, so
+ *   a refused or failed approval never yields one.
  *
  * `GET /instance/identity/rotation` is the screen's read;
  * `GET /instance/identity/statements/:keyset` downloads one envelope (root
@@ -39,6 +42,7 @@ import {
   PENDING_KEY_MISMATCH,
   promotePendingIdentityKey,
   raiseStoredIdentityKeyset,
+  signWithCurrent,
   STORED_IDENTITY_CHANGED,
 } from '../lib/panel-identity/identity.ts'
 import {
@@ -49,13 +53,18 @@ import {
   type KeysetRefusalReason,
   type KeysetStatement,
   type KeysetStatementKind,
+  keysetKeySignatureMessage,
   keysetStatementChallenge,
   MAX_ROTATION_PASSKEYS,
+  MIN_REVOKE_APPROVALS,
+  needsKeySignature,
   parseKeysetEnvelope,
   parseKeysetStatement,
   type RotationPasskey,
   rotationPasskeyId,
+  samePasskeySet,
   serializeKeysetStatement,
+  verifyKeysetApprovals,
   verifyKeysetEnvelope,
 } from '../lib/panel-identity/keyset-statement.ts'
 import {
@@ -113,6 +122,9 @@ const REFUSAL_WORDS: Record<KeysetRefusalReason, string> = {
   'every passkey under the new rpId must prove possession': `Each passkey has to approve the change itself. ${START_AGAIN}`,
   'a removal needs a passkey that stays': `Unmarking needs approval from a passkey that stays marked. ${START_AGAIN}`,
   'an added passkey must prove possession': `Each passkey you mark has to approve the change itself. ${START_AGAIN}`,
+  'the previous key did not sign': `The control plane key changed after this was prepared. ${START_AGAIN}`,
+  'a revoke needs two pinned passkeys': `An emergency revoke needs approval from two different marked passkeys. ${START_AGAIN}`,
+  'a key change must keep the passkeys': `A key change cannot mark or unmark passkeys. Do that as its own change.`,
 }
 
 /** The owner-facing sentence for a verifier refusal (the internal reason goes to the log). */
@@ -496,15 +508,10 @@ function refuseBeforeVerify(
   return null
 }
 
-function samePasskeySet(a: readonly RotationPasskey[], b: readonly RotationPasskey[]): boolean {
-  return (
-    a.length === b.length &&
-    a.every((p) => b.some((q) => q.id === p.id && q.alg === p.alg && q.pub === p.pub))
-  )
-}
-
 type ApprovedChange = {
   db: Db
+  identity: PanelIdentity
+  pin: KeysetPin
   parsed: KeysetStatement
   envelope: KeysetEnvelope
   state: 'awaiting_key' | 'live'
@@ -513,16 +520,71 @@ type ApprovedChange = {
   userId: string | null
 }
 
-/** One transaction: the statement, the marks, and (self-hosted) the stored key and key set. */
+/** Thrown (as the message) when the signed envelope does not pass the servers' own check. */
+export const KEY_SIGNATURE_SELF_CHECK = 'the signed statement does not verify'
+
+/**
+ * The envelope servers get: for `rotate` and `passkeys`, the running key (the
+ * one `prev` names) signs `"tp-keyset\n"` + the exact bytes; a revoke stays
+ * unsigned. The result is checked with the servers' rules before it is kept.
+ */
+export async function signApprovedEnvelope(
+  identity: PanelIdentity,
+  pin: KeysetPin,
+  envelope: KeysetEnvelope,
+  parsed: KeysetStatement,
+  nowSeconds: number
+): Promise<KeysetEnvelope> {
+  if (!needsKeySignature(parsed.kind)) return envelope
+  if (identity.current.kid !== parsed.prev) throw new Error(STORED_IDENTITY_CHANGED)
+  const bytes = decodeBase64urlStrict(envelope.statement)
+  if (!bytes) throw new Error(KEY_SIGNATURE_SELF_CHECK)
+  const signed: KeysetEnvelope = {
+    ...envelope,
+    keySig: {
+      pub: base64urlEncode(identity.current.publicRaw),
+      sig: await signWithCurrent(identity, keysetKeySignatureMessage(bytes)),
+    },
+  }
+  const check = await verifyKeysetEnvelope(signed, pin, nowSeconds)
+  if (!check.ok) throw new Error(KEY_SIGNATURE_SELF_CHECK)
+  return signed
+}
+
+/**
+ * One transaction: (self-hosted key change) the pending key is promoted
+ * first, which refuses a key this control plane did not make; then the old
+ * key signs; then the statement, the marks and the key set are stored. The
+ * signature exists only inside a transaction that commits.
+ */
 async function storeApproved(
   opts: KeyRotationOptions,
   change: ApprovedChange
-): Promise<'stored' | 'conflict' | 'pending_key_changed'> {
-  const { db, parsed, envelope, state, marks, unmark } = change
+): Promise<
+  { outcome: 'stored'; envelope: KeysetEnvelope } | { outcome: 'conflict' | 'pending_key_changed' }
+> {
+  const { db, parsed, state, marks, unmark } = change
   const keyChanges = parsed.kind !== 'passkeys'
+  let stored: KeysetEnvelope | null = null
   try {
     await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db
+      if (opts.runtime === 'deno' && keyChanges) {
+        if (!opts.dataEncryption) throw new Error(NO_KEY_STORE)
+        // Promoting writes the stored key only; the running identity still
+        // holds the old key, which signs below.
+        await promotePendingIdentityKey(txDb, opts.dataEncryption, {
+          kid: parsed.current.kid,
+          keyset: parsed.keyset,
+        })
+      }
+      const envelope = await signApprovedEnvelope(
+        change.identity,
+        change.pin,
+        change.envelope,
+        parsed,
+        Math.floor(Date.now() / 1000)
+      )
       await insertStatement(txDb, {
         keyset: parsed.keyset,
         kind: parsed.kind,
@@ -533,23 +595,18 @@ async function storeApproved(
         approvedByUserId: change.userId,
       })
       await applyCustodianChanges(txDb, { keyset: parsed.keyset, mark: marks, unmark })
-      if (opts.runtime !== 'deno') return
-      if (!keyChanges) {
+      if (opts.runtime === 'deno' && !keyChanges) {
         await raiseStoredIdentityKeyset(txDb, parsed.keyset)
-        return
       }
-      if (!opts.dataEncryption) throw new Error(NO_KEY_STORE)
-      await promotePendingIdentityKey(txDb, opts.dataEncryption, {
-        kid: parsed.current.kid,
-        keyset: parsed.keyset,
-      })
+      stored = envelope
     })
   } catch (err) {
     const outcome = approvalStoreFailure(err)
-    if (outcome) return outcome
+    if (outcome) return { outcome }
     throw err
   }
-  return 'stored'
+  if (!stored) throw new Error(KEY_SIGNATURE_SELF_CHECK)
+  return { outcome: 'stored', envelope: stored }
 }
 
 /**
@@ -665,7 +722,8 @@ async function checkApproval(
       "Approve this change on this control plane's own address, then start again."
     )
   }
-  const verified = await verifyKeysetEnvelope(envelope, pin, nowSeconds)
+  // The browser cannot sign with the control plane key; that comes after every check.
+  const verified = await verifyKeysetApprovals(envelope, pin, nowSeconds)
   if (!verified.ok) {
     logWarn('key-rotation', `key set ${parsed.keyset} not approved: ${verified.reason}`)
     return refuse(c, 422, 'approval_refused', refusalWords(verified.reason))
@@ -699,6 +757,8 @@ async function approve(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Re
   const state = opts.runtime === 'workers' && keyChanges ? 'awaiting_key' : 'live'
   const stored = await storeApproved(opts, {
     db,
+    identity: loaded.identity,
+    pin,
     parsed,
     envelope,
     state,
@@ -706,11 +766,10 @@ async function approve(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Re
     unmark,
     userId: session?.userId ?? null,
   })
-  if (stored === 'conflict') {
-    return refuse(c, 409, 'statement_conflict', 'Another change was approved first. Start again.')
-  }
-  if (stored === 'pending_key_changed') {
-    return refuse(c, 409, 'pending_key_changed', 'The new key changed. Start again.')
+  if (stored.outcome !== 'stored') {
+    return stored.outcome === 'conflict'
+      ? refuse(c, 409, 'statement_conflict', 'Another change was approved first. Start again.')
+      : refuse(c, 409, 'pending_key_changed', 'The new key changed. Start again.')
   }
   await reloadIdentity(opts, parsed.keyset)
   await auditApproval(c, {
@@ -721,7 +780,15 @@ async function approve(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Re
     state,
     pinnedApprovals: checked.pinnedApprovals,
   })
-  return c.json({ ok: true, keyset: parsed.keyset, kind: parsed.kind, state, envelope })
+  // A change that waits for its key keeps its signature inside the control
+  // plane until it goes live (the same rule as every stored read).
+  return c.json({
+    ok: true,
+    keyset: parsed.keyset,
+    kind: parsed.kind,
+    state,
+    envelope: state === 'live' ? stored.envelope : envelope,
+  })
 }
 
 /**
@@ -794,6 +861,8 @@ async function prepare(c: Context<AppEnv>, opts: KeyRotationOptions): Promise<Re
     oldFingerprint: planned.statement.prev,
     newFingerprint: planned.statement.current.kid,
     approverCredentialIds: await approverCredentialIds(loaded.db, loaded.pin.custodians),
+    // A revoke has no signature by the old key, so two different marked passkeys approve it.
+    approvalsNeeded: planned.statement.kind === 'revoke' ? MIN_REVOKE_APPROVALS : 1,
     possessionCredentialIds: planned.possession,
   })
 }

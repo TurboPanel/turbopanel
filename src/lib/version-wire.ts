@@ -229,6 +229,7 @@ export const DAEMON_WIRE_FEATURES = [
   'panel-bound-session-v1',
   'panel-keyset-statements-v1',
   'environment-stop-remove-volumes-v1',
+  'panel-keyset-key-signature-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -515,6 +516,15 @@ export const SIGNED_REPORTS_FEATURE: DaemonWireFeature = 'signed-reports-v1'
  * sides; nothing on either side waits for the other (expand-only).
  */
 export const PANEL_KEYSET_STATEMENTS_FEATURE: DaemonWireFeature = 'panel-keyset-statements-v1'
+
+/**
+ * Key-set statements carry the replaced key's `keySig` (`"tp-keyset\n"` + the
+ * statement bytes) for `rotate` and `passkeys`, and a revoke needs two
+ * different pinned passkeys; a daemon that lists it refuses anything less.
+ * Informational only: nothing switches on it (an older daemon ignores
+ * `keySig` and still follows the chain).
+ */
+export const PANEL_KEYSET_KEY_SIGNATURE_FEATURE: DaemonWireFeature = 'panel-keyset-key-signature-v1'
 
 /**
  * The daemon understands `tunnel: false` and `lanRoutes` on

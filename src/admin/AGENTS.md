@@ -65,7 +65,7 @@
   `next_key_retired` on both runtimes (the offline next key is retired). Key changes are
   `key-rotation-routes.ts`: `GET /instance/identity/rotation`, `POST /instance/identity/statements/prepare`
   (exact statement bytes + WebAuthn challenge), `POST /instance/identity/statements` (assertions, checked
-  like a server checks them, then stored), `GET /instance/identity/statements/:keyset` (download) and
+  like a server checks them, then signed by the replaced key unless it is a revoke, and stored), `GET /instance/identity/statements/:keyset` (download) and
   `DELETE /instance/identity/statements/:keyset` (cancel a High Availability change that still waits
   for its key: one conditional delete, audited `panel.key.cancel`, 409 `not_waiting` once live);
   superadmin, step-up `panel.key.change`, audited `panel.key.rotate|revoke` and
