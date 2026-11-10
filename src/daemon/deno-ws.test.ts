@@ -3824,7 +3824,12 @@ test('signed session: a verified attach proof raises the server to level 2 and s
       const helloBody = JSON.parse(splitSignature(helloRaw!)!.unsigned) as {
         sessionId: string
         kid: string
+        forServer: string
+        forKey: string
       }
+      // The signed hello names this socket's server and the token's key id, offer or not.
+      assertEquals(helloBody.forServer, serverId)
+      assertEquals(helloBody.forKey, 'key-test')
       const iat = Math.floor(Date.now() / 1000)
       const sig = await key.sign(
         attachSigningInput({

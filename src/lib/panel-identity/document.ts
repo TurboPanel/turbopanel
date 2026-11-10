@@ -28,6 +28,14 @@ export type IdentityDocument = {
   expires: string
   /** 1: this control plane takes the license sealed on enroll (`sealed-enroll.ts`). */
   sealedLicense: 1
+  /**
+   * 1: this control plane signs the server id and daemon key id into every
+   * session hello (`panel-bound-session-v1`; frames name them too when the
+   * daemon offered). A pinned daemon that reads it from a verified document
+   * refuses an unbound hello. Frames carry the hello's session id, so an
+   * unbound frame in a bound session is fine.
+   */
+  boundSessions: 1
 }
 
 /** Key-set chain facts the document carries: the live key set and the marked passkeys. */
@@ -70,6 +78,7 @@ export function buildIdentityDocument(
     issued: now.toISOString(),
     expires: new Date(now.getTime() + IDENTITY_DOCUMENT_TTL_MS).toISOString(),
     sealedLicense: 1,
+    boundSessions: 1,
   }
 }
 
@@ -92,6 +101,7 @@ export function serializeIdentityDocument(doc: IdentityDocument): string {
     issued: doc.issued,
     expires: doc.expires,
     sealedLicense: doc.sealedLicense,
+    boundSessions: doc.boundSessions,
   })
 }
 

@@ -119,7 +119,7 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
   cell writes the next `seq` to the socket attachment before each signed send and sends one frame at a
   time per socket; Deno keeps it in the socket's sender. Any other first frame gets today's unsigned
   session unless `server.trust_level` is 1 or more (close 4403). Nothing reads the feature list to
-  decide. In a signed session the outbox waits for the daemon's first presence `hello`; the
+  decide. **Bound session** (`panel-bound-session-v1`): the signed hello always carries `forServer` and `forKey` (the JWT `sub` and `kid`; a socket with no key id is refused), offer or not, and the daemon refuses a hello naming another server or key. Every frame carries the hello's random session id, so a session signed for server A never verifies at V; stripping the daemon's offer cannot downgrade it. A daemon that lists the flag in its `hello-nonce` also gets the two members on every frame (not sent unasked: an older daemon would pass extra frame members on); both names are reserved envelope members. The signed identity document also carries `boundSessions: 1` (last member, inside the signed bytes): a pinned daemon that reads it from a verified document refuses any unbound hello. Belt and braces for the one remaining gap: an older identity document replayed within its 30-day lifetime lacks the member (tracked with the license follow-up). In a signed session the outbox waits for the daemon's first presence `hello`; the
   `version` frame does not.
 - **Daemon proofs and `trust_level`** (`src/daemon/authn/`). Only the daemon's own key raises
   `server.trust_level`, and only to 2: a verified attach proof on the first presence `hello` of a
