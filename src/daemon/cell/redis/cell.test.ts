@@ -214,6 +214,85 @@ test('enqueue markSent and handleInbound complete command lifecycle', async () =
   }
 })
 
+test('handleInbound refuses an answer of another kind and keeps the request pending', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const deliveryId = generateDeliveryId()
+    const requestId = generateRequestId()
+    const at = new Date().toISOString()
+    await cell.enqueue({
+      kind: 'command-dispatch',
+      deliveryId,
+      requestId,
+      at,
+      commandId: 'cmd-1',
+      commandType: 'managed.lifecycle',
+      payload: {},
+    })
+    await cell.markSent(deliveryId, 'conn-1', at)
+
+    // An unsigned answer frame of another kind that names the command's id.
+    const forged = await cell.handleInbound({ kind: 'dev-sync-result', requestId, at, ok: true })
+    assertEquals(forged, null)
+    assertEquals((await cell.getRequest(requestId))?.status, 'sent')
+
+    const done = await cell.handleInbound({
+      kind: 'command-outcome',
+      requestId,
+      at,
+      ok: false,
+      error: 'stop failed',
+    })
+    assertEquals(done?.status, 'failed')
+    assertEquals(done?.error, 'stop failed')
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
+test('handleInbound refuses command-ack and command-outcome for a request that is not a command', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const deliveryId = generateDeliveryId()
+    const requestId = generateRequestId()
+    const at = new Date().toISOString()
+    await cell.enqueue({
+      kind: 'managed-health-request',
+      deliveryId,
+      requestId,
+      at,
+      managedId: 'managed-1',
+      memberId: 'member-1',
+      role: 'replica',
+      engine: 'mysql',
+    })
+    await cell.markSent(deliveryId, 'conn-1', at)
+
+    assertEquals(
+      await cell.handleInbound({ kind: 'command-ack', requestId, at, daemonReceivedAt: at }),
+      null
+    )
+    assertEquals(
+      await cell.handleInbound({ kind: 'command-outcome', requestId, at, ok: true }),
+      null
+    )
+    const pending = await cell.getRequest(requestId)
+    assertEquals(pending?.status, 'sent')
+    assertEquals(pending?.ackAt, undefined)
+
+    const done = await cell.handleInbound({
+      kind: 'managed-health-result',
+      requestId,
+      at,
+      ok: false,
+      error: 'engine not answering',
+    })
+    assertEquals(done?.status, 'failed')
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
 test('readOutboxBatch and ackOutbox deliver and acknowledge outbox entries', async () => {
   const { client, cell, serverId } = createTestCell()
   try {

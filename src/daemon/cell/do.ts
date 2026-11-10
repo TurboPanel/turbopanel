@@ -144,7 +144,11 @@ import type {
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
 } from '../../contracts/cell-protocol.ts'
-import { deriveInboundOutcome } from './inbound-outcome.ts'
+import {
+  answerKindMismatchWarning,
+  deriveInboundOutcome,
+  inboundAnswersRequest,
+} from './inbound-outcome.ts'
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -3534,6 +3538,17 @@ export class DaemonCellObject {
     if (!row) return null
 
     const existing = parseRequestRow(serverId, row)
+    if (!inboundAnswersRequest(existing.requestKind, inbound.kind)) {
+      // Refused, not failed: the request stays pending for its real answer.
+      const warning = answerKindMismatchWarning({
+        serverId,
+        requestId: inbound.requestId,
+        requestKind: existing.requestKind,
+        inboundKind: inbound.kind,
+      })
+      console.warn(`daemon-cell ${warning}`)
+      return null
+    }
     if (isTerminalStatus(existing.status)) {
       return this.#applyLateTerminalAck(serverId, inbound, existing) ?? existing
     }

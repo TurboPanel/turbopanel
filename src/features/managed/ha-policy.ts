@@ -283,6 +283,15 @@ export const AUTOMATIC_FAILOVER_DETECTORS: ReadonlyMap<string, readonly string[]
  */
 export const PRIMARY_HOST_DETECTORS: ReadonlySet<string> = new Set([POSTGRES_PROBE_DETECTOR])
 
+/**
+ * Detectors whose event names no member but must still come from the current
+ * primary's own server. The daemon reports an Orchestrator dead primary, and
+ * its own hung-primary probe, only for a primary that runs on its host, so a
+ * report from any other server (a replica's, or another member's link) is
+ * never a real one and must not fence the primary somewhere else.
+ */
+export const PRIMARY_SERVER_DETECTORS: ReadonlySet<string> = new Set([ORCHESTRATOR_DETECTOR])
+
 /** Minimum time between two accepted automatic failovers of one cluster. */
 export const AUTOMATIC_FAILOVER_COOLDOWN_MS = 15 * 60_000
 
@@ -314,9 +323,15 @@ function reporterRejection(input: HaEventGateInput): string | null {
   return null
 }
 
-function primaryHostRejection(input: HaEventGateInput): string | null {
+/**
+ * The event must come from the current primary's server. `requireMember`:
+ * it must also name the primary member; otherwise a member it names, if any,
+ * must be the primary.
+ */
+function primaryReporterRejection(input: HaEventGateInput, requireMember: boolean): string | null {
   if (!input.primary) return 'no current primary'
-  if (input.sourceMemberId !== input.primary.id) {
+  const named = requireMember || input.sourceMemberId !== undefined
+  if (named && input.sourceMemberId !== input.primary.id) {
     return 'event does not name the current primary'
   }
   if (input.reporterServerId !== input.primary.serverId) {
@@ -328,7 +343,8 @@ function primaryHostRejection(input: HaEventGateInput): string | null {
 /**
  * Why a `managed-ha-event` must not start automatic failover; `null` when it
  * may. Every detector (including none) must come from a server that hosts a
- * member of the cluster in the cluster's organization.
+ * member of the cluster in the cluster's organization, and every detector that
+ * may start one must come from the current primary's own server.
  */
 export function haEventRejection(input: HaEventGateInput): string | null {
   const detector = input.detector ?? ORCHESTRATOR_DETECTOR
@@ -339,7 +355,8 @@ export function haEventRejection(input: HaEventGateInput): string | null {
   }
   const reporter = reporterRejection(input)
   if (reporter) return reporter
-  return PRIMARY_HOST_DETECTORS.has(detector) ? primaryHostRejection(input) : null
+  if (PRIMARY_HOST_DETECTORS.has(detector)) return primaryReporterRejection(input, true)
+  return PRIMARY_SERVER_DETECTORS.has(detector) ? primaryReporterRejection(input, false) : null
 }
 
 export type OrchestratorBindingInput = {
