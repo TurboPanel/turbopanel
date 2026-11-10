@@ -108,3 +108,22 @@ export function parsePlacementBody(body: Record<string, unknown>): Parsed<Placem
     value: { placement, serverIds: serverIds.value, exceptServerIds: exceptServerIds.value },
   }
 }
+
+/**
+ * What a placement change does to the portal rows: the servers whose row goes
+ * (left out now, or switched between `run` and `skip`) and the rows to add. A
+ * server that keeps the same role keeps its row, and with it what its
+ * connector last reported, so the screen does not fall back to "not reported
+ * yet" for a server the change did not touch. Pure.
+ */
+export function portalChanges(
+  existing: readonly PortalFact[],
+  wanted: readonly PortalFact[]
+): { remove: string[]; add: PortalFact[] } {
+  const want = new Map(wanted.map((p) => [p.serverId, p.wanted]))
+  const have = new Map(existing.map((p) => [p.serverId, p.wanted]))
+  return {
+    remove: existing.filter((p) => want.get(p.serverId) !== p.wanted).map((p) => p.serverId),
+    add: wanted.filter((p) => have.get(p.serverId) !== p.wanted),
+  }
+}

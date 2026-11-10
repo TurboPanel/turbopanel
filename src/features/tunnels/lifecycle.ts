@@ -38,6 +38,7 @@ import { TunnelProviderError } from './errors.ts'
 import {
   type PlacementInput,
   placementWarnings,
+  portalChanges,
   resolveCarryingServers,
   type PortalFact,
 } from './placement.ts'
@@ -373,16 +374,27 @@ async function checkPlacementTargets(
 
 /** Replace a tunnel's portals with the ones the placement asks for. */
 async function replacePortals(
-  tx: Pick<Db, 'delete' | 'insert'>,
+  tx: Pick<Db, 'delete' | 'insert' | 'select'>,
   tunnelId: string,
   targets: PlacementTargets
 ): Promise<void> {
-  await tx.delete(portal).where(eq(portal.tunnelId, tunnelId))
-  const rows = [
-    ...targets.runServerIds.map((serverId) => ({ tunnelId, serverId, wanted: 'run' })),
-    ...targets.skipServerIds.map((serverId) => ({ tunnelId, serverId, wanted: 'skip' })),
-  ]
-  if (rows.length > 0) await tx.insert(portal).values(rows)
+  const existing = await tx
+    .select({ serverId: portal.serverId, wanted: portal.wanted })
+    .from(portal)
+    .where(eq(portal.tunnelId, tunnelId))
+  const { remove, add } = portalChanges(
+    existing.map((p) => ({ serverId: p.serverId, wanted: p.wanted as PortalFact['wanted'] })),
+    [
+      ...targets.runServerIds.map((serverId) => ({ serverId, wanted: 'run' as const })),
+      ...targets.skipServerIds.map((serverId) => ({ serverId, wanted: 'skip' as const })),
+    ]
+  )
+  if (remove.length > 0) {
+    await tx
+      .delete(portal)
+      .where(and(eq(portal.tunnelId, tunnelId), inArray(portal.serverId, remove)))
+  }
+  if (add.length > 0) await tx.insert(portal).values(add.map((p) => ({ tunnelId, ...p })))
 }
 
 export async function updatePlacement(

@@ -148,7 +148,61 @@ export async function recordTunnelStatus(
     await followTunnelStatus(db, serverId, connector.tunnelId, portalStateOf(connector.status))
     return portals.length
   })
+  await requestConnectorRepair(db, serverId, result)
   return counts.reduce((sum, n) => sum + n, 0)
+}
+
+/** States in which a connector the server was asked to run is not running. */
+const NOT_RUNNING: ReadonlySet<TunnelStatusConnectorState> = new Set([
+  'stopped',
+  'failed',
+  'not-installed',
+])
+
+/**
+ * The connectors the last list asked this server to run that it reports as not
+ * running (stopped by hand, given up on by systemd, or gone), sorted. Pure.
+ */
+export function connectorsNeedingRepair(
+  result: TunnelStatusCommandResult,
+  asked: readonly string[]
+): string[] {
+  return result.connectors
+    .filter((c) => asked.includes(c.tunnelId) && NOT_RUNNING.has(c.status))
+    .map((c) => c.tunnelId)
+    .toSorted((a, b) => (a < b ? -1 : 1))
+}
+
+/**
+ * A connector list that went out well is never sent again while it is
+ * unchanged, so a connector that stopped afterwards stayed down. When the
+ * answer shows one of the asked connectors not running, the remembered hash of
+ * the last list (`server.metadata.tunnelConnectors.stateHash`) is cleared: the
+ * next connector sweep sends the same list again, and a daemon that starts
+ * stopped connectors on a resend brings it back. The rest of that record (the
+ * ids being removed) is kept.
+ */
+async function requestConnectorRepair(
+  db: Db,
+  serverId: string,
+  result: TunnelStatusCommandResult
+): Promise<void> {
+  const [row] = await db
+    .select({ metadata: server.metadata })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  const sent = (row?.metadata as { tunnelConnectors?: { installed?: unknown } } | null)
+    ?.tunnelConnectors
+  if (!sent || !Array.isArray(sent.installed)) return
+  const asked = sent.installed.filter((id): id is string => typeof id === 'string')
+  if (connectorsNeedingRepair(result, asked).length === 0) return
+  await db
+    .update(server)
+    .set({
+      metadata: sql`jsonb_set(${server.metadata}, '{tunnelConnectors,stateHash}', '""'::jsonb)`,
+    })
+    .where(and(eq(server.id, serverId), sql`${server.metadata} -> 'tunnelConnectors' IS NOT NULL`))
 }
 
 /** What the screen says about a connector's version. */

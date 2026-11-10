@@ -27,7 +27,9 @@ member there, a widened CHECK (forward migration) and one adapter.
   (`unknown`, `connected`, `down`, `error`) is separate from `wanted`. A
   server runs many tunnels and tunnels of several organizations may share a
   server, so the key is (tunnel, server) and nothing assumes one tunnel per
-  server. `portal.options` is reserved for per-server details (for example a
+  server. A placement change touches only the rows that change
+  (`portalChanges`): a server that keeps its role keeps its row and what its
+  connector last reported, so it does not fall back to "not reported yet". `portal.options` is reserved for per-server details (for example a
   local endpoint).
 - `tunnel.organization_id` owns the tunnel; `tunnel.routing_organization_id`
   is the organization whose servers and sites it carries (named as on
@@ -110,6 +112,16 @@ member there, a widened CHECK (forward migration) and one adapter.
   rows (only `one` and `chosen` store them), so the answer is applied to the
   tunnel directly and a down answer only moves it off `pending`. Only a server
   that carries the tunnel (`carryingServers`) can move it.
+- **A stopped connector is sent again.** A connector list that finished well is
+  never resent while it is unchanged, so a connector stopped by hand (or given
+  up on by systemd) used to stay down. When a status answer shows a connector
+  the last list asked that server to run as stopped, failed or not installed
+  (`connectorsNeedingRepair`), `recordTunnelStatus` clears the remembered hash
+  (`server.metadata.tunnelConnectors.stateHash`, the rest kept), so the next
+  connector sweep sends the same list again; the daemon starts an installed
+  connector that is stopped or failed when the list is resent. An older daemon
+  ignores the resend, so at worst one list per status poll goes out while the
+  connector stays down.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 
@@ -341,8 +353,7 @@ provider accounts.
   connector stay alone. A resend is harmless (the daemon leaves a running
   connector as it is), and the same list is not sent again sooner than ten
   minutes after a send that did not finish. It runs from the periodic sweeps
-  (`runTunnelConnectorsSweepTick`) and right after a tunnel is created, moved
-  or removed (best effort). Changing a tunnel's run token is not supported
+  (`runTunnelConnectorsSweepTick`) and through the nudge below (best effort). Changing a tunnel's run token is not supported
   yet: remove the connector, then send it again.
 - `nudge.ts` sends the tables and then the connector lists
   (`syncOrganizationTunnelConnectors`) right away instead of waiting for the
@@ -350,12 +361,19 @@ provider accounts.
   connector at once too. It never throws (each pass is guarded on its own), does
   nothing for an organization with no tunnel (and no server that once held a
   table or a connector list), and each pass stops after 40 servers, in the order
-  they are found; the sweep reaches the rest. Triggers: a site is created,
+  they are found; the sweep reaches the rest. Triggers: a tunnel is created,
+  moved to other servers (`PUT .../placement`) or removed, a hostname is added
+  to or removed from a tunnel, a server is allowed or barred from carrying
+  tunnels (`/tunnel-carrying`), a site is created,
   edited or deleted (`/hostings`), a server is changed, deleted or has its
   addresses set (`/servers`), a server joins or leaves a datacenter
   (`/datacenters/:id/members`) or the datacenter is edited, an environment or
   project is deleted, a deploy that moves sites is queued (`deploy-routes.ts`),
   and a deploy result lands (`consumer.ts`, `applyEnvironmentDeploySideEffect`).
+  The tunnel routes once sent only the connector lists, so a server added to a
+  tunnel started its connector at once but got its forwarding table only from
+  the sweep (or the next deploy result): the tables and the lists go out
+  together from every trigger.
   **A request handler never waits for it**: it calls
   `nudgeTunnelRoutesAfterResponse` (`src/client/organizations/tunnel-nudge.ts`),
   which runs the work after the response (`runAfterResponse`) on its own

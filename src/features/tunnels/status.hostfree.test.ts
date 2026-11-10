@@ -1,5 +1,11 @@
 import { assertEquals } from '@std/assert'
-import { connectorUpdateNotice, nextTunnelStatus, portalErrorOf, portalStateOf } from './status.ts'
+import {
+  connectorsNeedingRepair,
+  connectorUpdateNotice,
+  nextTunnelStatus,
+  portalErrorOf,
+  portalStateOf,
+} from './status.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -89,4 +95,35 @@ test('an all-servers tunnel has no portal rows, so one server going down only mo
   assertEquals(nextTunnelStatus('pending', [], 'connected'), 'active')
   assertEquals(nextTunnelStatus('pending', [], 'error'), 'attention')
   assertEquals(nextTunnelStatus('active', [], 'down'), 'active')
+})
+
+test('only asked connectors that are not running need a repair', () => {
+  const other = '1b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e'
+  const third = '2c3d4e5f-6a7b-4c8d-8e9f-1a2b3c4d5e6f'
+  const result = {
+    pinnedVersion: '2026.5.2',
+    connectors: [
+      { ...base, status: 'stopped' as const },
+      { ...base, tunnelId: other, status: 'connected' as const },
+      { ...base, tunnelId: third, status: 'failed' as const },
+      { ...base, tunnelId: 'instance', status: 'stopped' as const },
+    ],
+  }
+  // The control plane's own tunnel and ids it never asked for are not its to repair.
+  assertEquals(connectorsNeedingRepair(result, [base.tunnelId, other]), [base.tunnelId])
+  assertEquals(connectorsNeedingRepair(result, [third, base.tunnelId]), [base.tunnelId, third])
+  assertEquals(connectorsNeedingRepair(result, [other]), [])
+  assertEquals(connectorsNeedingRepair(result, []), [])
+  for (const status of ['connecting', 'connected'] as const) {
+    assertEquals(
+      connectorsNeedingRepair({ ...result, connectors: [{ ...base, status }] }, [base.tunnelId]),
+      []
+    )
+  }
+  assertEquals(
+    connectorsNeedingRepair({ ...result, connectors: [{ ...base, status: 'not-installed' }] }, [
+      base.tunnelId,
+    ]),
+    [base.tunnelId]
+  )
 })

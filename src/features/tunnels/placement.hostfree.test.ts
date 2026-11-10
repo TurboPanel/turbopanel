@@ -1,5 +1,10 @@
 import { assert, assertEquals } from '@std/assert'
-import { parsePlacementBody, placementWarnings, resolveCarryingServers } from './placement.ts'
+import {
+  parsePlacementBody,
+  placementWarnings,
+  portalChanges,
+  resolveCarryingServers,
+} from './placement.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -103,4 +108,26 @@ test('the placement body is checked per placement', () => {
   )
   assertEquals(parsePlacementBody({ placement: 'some' }).ok, false)
   assertEquals(parsePlacementBody({ placement: 'chosen', serverIds: ['x'] }).ok, false)
+})
+
+test('a placement change keeps the rows of servers whose role is unchanged', () => {
+  const existing = [
+    { serverId: A, wanted: 'run' as const },
+    { serverId: B, wanted: 'run' as const },
+  ]
+  // A stays, B leaves, C joins: only B goes and only C is added.
+  assertEquals(
+    portalChanges(existing, [
+      { serverId: A, wanted: 'run' },
+      { serverId: C, wanted: 'run' },
+    ]),
+    { remove: [B], add: [{ serverId: C, wanted: 'run' }] }
+  )
+  // A switched to left out: its row is replaced, not kept with stale facts.
+  assertEquals(portalChanges(existing, [{ serverId: A, wanted: 'skip' }]), {
+    remove: [A, B],
+    add: [{ serverId: A, wanted: 'skip' }],
+  })
+  assertEquals(portalChanges(existing, existing), { remove: [], add: [] })
+  assertEquals(portalChanges([], existing), { remove: [], add: existing })
 })

@@ -20,6 +20,7 @@ import { getCommandDispatchPayload } from '../commands/command-records.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { RUN_SECRET_PROVIDER } from './vocabulary.ts'
 import { runTunnelConnectorsSweepTick, syncServerTunnelConnectors } from './connector-sync.ts'
+import { recordTunnelStatus } from './status.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
 const test = Deno.test.bind(Deno)
@@ -323,5 +324,32 @@ test('the sweep sends a server that should run a tunnel and one that must drop i
     const second = await runTunnelConnectorsSweepTick(c.db, c.deps)
     assert(second.sent >= 1)
     assertEquals((await sentPayload(c)).remove, [providerId])
+  })
+})
+
+test('a connector the server reports stopped is sent again; a running one is not', async () => {
+  await withServer({ connected: true, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
+    const providerId = await c.addTunnel('Stopped')
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    await c.db.update(command).set({ status: 'succeeded' }).where(eq(command.serverId, c.serverId))
+    const answer = (status: 'connected' | 'stopped') => ({
+      pinnedVersion: '2026.10.7',
+      connectors: [{ tunnelId: providerId, status, version: '2026.10.7', slot: 'a' as const }],
+    })
+    // Running: the list that finished is not sent again.
+    await recordTunnelStatus(c.db, c.serverId, answer('connected'))
+    assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), { status: 'unchanged' })
+    assertEquals(c.queued.length, 1)
+    // Stopped: the same list goes out again at once, so the daemon can start it.
+    await recordTunnelStatus(c.db, c.serverId, answer('stopped'))
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    assertEquals(c.queued.length, 2)
+    assertEquals(
+      (await sentPayload(c)).install.map((entry) => entry.tunnelId),
+      [providerId]
+    )
+    // Once that resend finished, nothing more goes out until the next bad answer.
+    await c.db.update(command).set({ status: 'succeeded' }).where(eq(command.serverId, c.serverId))
+    assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), { status: 'unchanged' })
   })
 })

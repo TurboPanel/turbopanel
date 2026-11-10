@@ -155,3 +155,55 @@ test('a later answer replaces the earlier one and a stopped connector reads as d
     }
   })
 })
+
+test('a connector the server was asked to run but reports stopped makes the next sweep send the list again', async () => {
+  await withDb(async (db) => {
+    const s = await seed(db)
+    try {
+      const sent = {
+        stateHash: 'f'.repeat(64),
+        commandId: crypto.randomUUID(),
+        sentAt: new Date().toISOString(),
+        installed: [s.externalId],
+        removing: ['3d4e5f6a-7b8c-4d9e-8f0a-1b2c3d4e5f6a'],
+      }
+      await db
+        .update(server)
+        .set({ metadata: { tunnelConnectors: sent } })
+        .where(eq(server.id, s.serverA))
+      const answer = (status: 'connected' | 'stopped') => ({
+        pinnedVersion: '2026.6.0',
+        connectors: [{ tunnelId: s.externalId, status, version: '2026.6.0', slot: 'a' as const }],
+      })
+      const remembered = async () => {
+        const [row] = await db
+          .select({ metadata: server.metadata })
+          .from(server)
+          .where(eq(server.id, s.serverA))
+        return (row!.metadata as { tunnelConnectors: typeof sent }).tunnelConnectors
+      }
+      await recordTunnelStatus(db, s.serverA, answer('connected'))
+      assertEquals((await remembered()).stateHash, sent.stateHash)
+      await recordTunnelStatus(db, s.serverA, answer('stopped'))
+      const after = await remembered()
+      // The hash no longer matches any list, so the sweep resends; the rest is kept.
+      assertEquals(after.stateHash, '')
+      assertEquals(after.installed, sent.installed)
+      assertEquals(after.removing, sent.removing)
+      // Server B was never sent a list: nothing is written for it.
+      await recordTunnelStatus(db, s.serverB, answer('stopped'))
+      const [b] = await db
+        .select({ metadata: server.metadata })
+        .from(server)
+        .where(eq(server.id, s.serverB))
+      assertEquals(
+        (b!.metadata as { tunnelConnectors?: unknown } | null)?.tunnelConnectors,
+        undefined
+      )
+    } finally {
+      await db.delete(organization).where(eq(organization.id, s.organizationId))
+      await db.delete(server).where(eq(server.id, s.serverA))
+      await db.delete(server).where(eq(server.id, s.serverB))
+    }
+  })
+})

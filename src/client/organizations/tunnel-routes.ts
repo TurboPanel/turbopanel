@@ -31,7 +31,6 @@ import {
   updatePlacement,
   type TunnelRow,
 } from '../../features/tunnels/lifecycle.ts'
-import { syncOrganizationTunnelConnectors } from '../../features/tunnels/connector-sync.ts'
 import { serversWithoutTunnelSupport } from '../../features/tunnels/daemon-gate.ts'
 import { parsePlacementBody } from '../../features/tunnels/placement.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
@@ -40,6 +39,7 @@ import {
   type TunnelAdapterRegistry,
 } from '../../features/tunnels/registry.ts'
 import type { TunnelProvider } from '../../features/tunnels/vocabulary.ts'
+import { nudgeTunnelRoutesAfterResponse } from './tunnel-nudge.ts'
 
 const TUNNEL_PATHS = [
   '/organizations/:id/tunnels',
@@ -110,23 +110,14 @@ function secretsOrFail(c: Context<AppEnv>) {
 }
 
 /**
- * Tell the servers right away which connectors to run. The periodic sweep does
- * the same, so a failure here is not an error for the person.
+ * Tell the servers right away what changed: forwarding tables first, then the
+ * connector lists (`nudgeTunnelRoutes`). A change of where a tunnel runs, of
+ * the names it carries or of which servers may carry tunnels changes both, so
+ * both go out. It runs after the response; the periodic sweep sends whatever
+ * this misses, so a failure here is not an error for the person.
  */
-async function nudgeConnectors(c: Context<AppEnv>, scope: Scope): Promise<void> {
-  const commandQueue = c.get('commandQueue')
-  const secretsConfig = c.get('secretsConfig')
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  if (!commandQueue || !secretsConfig || !dataEncryptionSecrets) return
-  try {
-    await syncOrganizationTunnelConnectors(
-      scope.db,
-      { commandQueue, secretsConfig, dataEncryptionSecrets },
-      scope.organizationId
-    )
-  } catch {
-    // The sweep sends the list again.
-  }
+function nudgeServers(c: Context<AppEnv>, scope: Scope): void {
+  nudgeTunnelRoutesAfterResponse(c, scope.organizationId)
 }
 
 async function listResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
@@ -171,7 +162,7 @@ function createResponse(registry: TunnelAdapterRegistry) {
         provider: row.provider,
         placement: row.placement,
       })
-      await nudgeConnectors(c, scope)
+      nudgeServers(c, scope)
       return c.json({ tunnel: await tunnelWithSupportWarning(scope, row) }, 201)
     } catch (err) {
       return refused(c, err)
@@ -196,7 +187,7 @@ async function placementResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
       name: row.name,
       placement: updated.placement,
     })
-    await nudgeConnectors(c, scope)
+    nudgeServers(c, scope)
     return c.json({ tunnel: await tunnelWithSupportWarning(scope, updated) })
   } catch (err) {
     return refused(c, err)
@@ -228,7 +219,7 @@ function deleteResponse(registry: TunnelAdapterRegistry) {
       provider: row.provider,
       removing: outcome === 'removing',
     })
-    await nudgeConnectors(c, scope)
+    nudgeServers(c, scope)
     return c.json({ ok: true, removing: outcome === 'removing' })
   }
 }
@@ -266,6 +257,7 @@ function addDoorwayResponse(registry: TunnelAdapterRegistry) {
         hostname: created.hostname,
         dns: created.externalDnsRecordId ? 'created' : 'none',
       })
+      nudgeServers(c, scope)
       return c.json({ hostname: toApiDoorway(created) }, 201)
     } catch (err) {
       return refused(c, err)
@@ -301,6 +293,7 @@ function removeDoorwayResponse(registry: TunnelAdapterRegistry) {
       tunnelId: row.id,
       hostname: current.hostname,
     })
+    nudgeServers(c, scope)
     return c.json({ ok: true })
   }
 }
@@ -326,6 +319,7 @@ async function carryingResponse(c: Context<AppEnv>, scope: Scope): Promise<Respo
     .set({ options })
     .where(and(eq(server.id, serverId), eq(server.organizationId, scope.organizationId)))
   await audit(c, scope, 'server.tunnel_carrying', serverId, { carry: body.carry })
+  nudgeServers(c, scope)
   return c.json({ serverId, carry: body.carry })
 }
 
