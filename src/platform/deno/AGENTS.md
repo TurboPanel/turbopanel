@@ -38,3 +38,18 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
 
 Code that only the self-hosted build may carry lives in `ingress/`; its rules
 are in [`ingress/AGENTS.md`](./ingress/AGENTS.md).
+
+## Self-hosted timers and hosted parity
+
+The hosted cron (`runOfflineSweep` in `src/daemon/cell/offline-sweep.ts`, once
+a minute) has no counterpart process on a self-hosted control plane; its work
+runs from timers in `server.ts` instead. The cleanup lane of
+`createDenoMaintenanceScheduler` and `runSystemReconcileSweepTick` cover the
+command, notification, history, reconcile and folder sweeps. The one-minute
+certificate timer (`LEAF_RENEWAL_SWEEP_INTERVAL_MS`, fresh database client, no
+overlap, skipped while the command queue is the no-op one) runs leaf renewal
+(with peer leaf delivery), waiting Let's Encrypt requests, DNS certificate
+cleanup, HTTP issuance and then the tunnel sweeps (`tunnel-sweeps.ts`, the
+shared list in `src/features/tunnels/sweeps.ts`). A sweep added to
+`runQueuedCronSweeps` must also be called from `server.ts`;
+`tunnel-sweeps.hostfree.test.ts` fails otherwise.

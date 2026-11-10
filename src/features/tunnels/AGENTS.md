@@ -69,6 +69,21 @@ member there, a widened CHECK (forward migration) and one adapter.
   removing a badge or carrier deletes its secrets in the same transaction
   (`deleteBadge`, `deleteCarrier`), removing a tunnel deletes its run-token
   secret (`deleteTunnelRecord`), and `tunnel.secret_id` is SET NULL.
+- **Periodic sweeps (`sweeps.ts`).** The five tunnel sweeps (routes,
+  connectors, removal, daily token recheck, connector status) are one ordered
+  list, `TUNNEL_SWEEPS`, and both schedulers run that list every minute: the
+  hosted cron (`runQueuedCronSweeps` in `src/daemon/cell/offline-sweep.ts`,
+  behind the secrets bundle like leaf renewal) and the self-hosted
+  certificate timer in `src/platform/deno/server.ts`
+  (`runSelfHostedTunnelSweeps`, fresh database client, no overlap, skipped
+  while the command queue is the no-op one). Each sweep fails alone and
+  throttles itself from the database, so the minute tick is cheap. Add a new
+  tunnel sweep to the list, never to one scheduler:
+  `src/platform/deno/tunnel-sweeps.hostfree.test.ts` fails when a scheduler
+  calls a tunnel sweep directly, or when the hosted cron runs a sweep the
+  self-hosted timers do not. Before this list existed the self-hosted control
+  plane ran none of them; a tunnel left at `removing` then is finished by the
+  removal sweep once the build with the list runs, with no data change.
 - **Removing a tunnel (`deleteTunnel`, `removal.ts`).** The mark is one guarded
   `UPDATE ... WHERE NOT EXISTS (doorway)`, and `addDoorway` re-reads the status
   after storing its row, so a hostname added at the same moment either stops the
@@ -82,7 +97,7 @@ member there, a widened CHECK (forward migration) and one adapter.
   `conflict`), so a tunnel that has a connector somewhere is first marked
   `removing`. `carryingServers` is empty for a `removing` tunnel, so the next
   connector send tells its servers to stop (the usual remove list), and the
-  provider delete is tried by `runTunnelRemovalSweepTick` (offline sweep) after
+  provider delete is tried by `runTunnelRemovalSweepTick` (periodic sweeps) after
   each wait: 30 s, doubling, up to 10 min (`tunnel.metadata.removal` holds
   `attempts`, `nextAt` and the plain reason, shown as a warning on the tunnel).
   A tunnel with no connector is deleted at once; one the provider no longer has
@@ -215,7 +230,7 @@ hostnames and display.
   removed at once: the second removal sees the first one gone and is refused.
   The provider is asked before the lock, never while holding it; a zone removal
   whose token's zones changed in between answers 409 `badge_changed`.
-- **Daily recheck.** `badge-recheck.ts` (offline sweep) re-checks up to 10 tokens a
+- **Daily recheck.** `badge-recheck.ts` (periodic sweeps) re-checks up to 10 tokens a
   tick whose last check is a day old: scopes refresh, a token the provider no
   longer accepts goes to `attention`, an outage changes nothing and the token is
   tried again in an hour. `badgeWarnings` flags a token 14 days before its expiry.
@@ -301,7 +316,7 @@ provider accounts.
   changed, when the last command did not succeed (a server that was offline
   never got it: the consumer does not queue for a disconnected server), or
   when the daemon reported warnings or fewer forwarded names than wanted. The
-  periodic sweep (`runTunnelRoutesSweepTick`, from the offline sweep, same
+  periodic sweep (`runTunnelRoutesSweepTick`, from the periodic sweeps, same
   gate as leaf renewal) covers reconnects. A server is only sent a table while
   connected and advertising the feature. The peer leaf is minted when a table
   needs a certificate; the renewal sweep hands a fresh leaf through
@@ -325,7 +340,7 @@ provider accounts.
   installed are ever removed, so the instance's own tunnel and a hand-placed
   connector stay alone. A resend is harmless (the daemon leaves a running
   connector as it is), and the same list is not sent again sooner than ten
-  minutes after a send that did not finish. It runs from the offline sweep
+  minutes after a send that did not finish. It runs from the periodic sweeps
   (`runTunnelConnectorsSweepTick`) and right after a tunnel is created, moved
   or removed (best effort). Changing a tunnel's run token is not supported
   yet: remove the connector, then send it again.
