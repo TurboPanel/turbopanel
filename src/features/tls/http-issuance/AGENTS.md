@@ -43,9 +43,9 @@ is never picked.
   certificate with its pair, and no `tlsMode: 'acme'`, only when the pair came
   from this flow (`centralPair`, set by the capture of an open request) and the
   target daemon lists the feature and the stored certificate covers every name of the
-  row (a daemon reports one certificate per name, and a row holds one pair, so a
-  two-name row stays on the server's own web server until one certificate covers
-  both). A pair a server captured itself keeps the
+  row and every name the site answers on (its www mode adds the other spelling); a
+  pair that covers less stays on the server's own web server. A pair a server
+  captured itself keeps the
   server's own web server ordering and renewing.
 - Renewal starts at the stored renewal time (about two thirds in, with a random
   head start), preferring the server that issued last time.
@@ -71,10 +71,7 @@ orders begin per tick so a first run after a rollout is gradual. The cheap
 answers (nothing due, a wait or cap in force, no contact address) come before any
 DNS or per-server lookup.
 
-Only a row with exactly one plain name is ordered here. A row with several names
-(apex and www) would get one certificate per name from the daemon, and a row holds
-one pair, so it is left entirely alone (never selected, no lookups, no marker) and
-stays with each server's own web server until per-name pairs exist.
+Which names an order asks for, and who may take it (`names.ts`). The order asks for the row's names plus every www name the pinning sites' www mode adds (a pinned pair serves that name too); a wildcard is never ordered here. A daemon that lists `acme-issue-one-cert-v1` places the order with its own client and gets one certificate for all the names; an older daemon (only `acme-issue-v1`) would get one certificate per name, which a row cannot hold, so it takes only a single-name order (`takesOrderFor`). A row with several names whose serving daemons are all older is still selected by the sweep but answers `not_eligible` before any DNS lookup or write, and stays with each server's own web server. A single-name row whose site adds a www name now needs the new feature too: before, it was ordered for the typed name alone and the www name was served with a pair that did not cover it. The names an order asks for are fixed in the request state when it starts (`orderNames`), so a site edited mid-request does not change them between the forwards and the order; a request an older release started has none and uses the row's current names. Names are folded (`foldHostname`). A pair that covers every stored name (the same names, or more, such as a renewal that now also covers the www name) replaces the stored pair when it expires later (`replaces` in `src/client/tls/issued-certificate.ts`); before, a wider pair was kept only as a note, the request closed on the old pair's renewal time, and the sweep ordered again every minute.
 
 One order at a time per issuing server: the daemon runs one issuer window at a time, so
 a second order would wait behind the first and could pass the panel's silence limit.
