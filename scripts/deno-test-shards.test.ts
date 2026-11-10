@@ -159,9 +159,12 @@ describe('build.yml fan-in', () => {
       [
         '          repository: TurboPanel/turbopaneld',
         '          path: turbopaneld',
-        '          ref: trunk',
+        '          ref: ${{ steps.sibling.outputs.ref }}',
       ].join('\n')
     )
+    // A queued trunk build compares with daemon trunk as of its own commit.
+    assertStringIncludes(workflow, 'commits?sha=trunk&until=${at}&per_page=1')
+    assertStringIncludes(workflow, 'SIBLING_REPO: TurboPanel/turbopaneld')
     assertEquals(workflow.includes('resolve-sibling-ref'), false)
     assertEquals(workflow.includes('Sibling-Branch'), false)
     assertStringIncludes(workflow, 'ref: ${{ github.event.pull_request.base.sha }}')
