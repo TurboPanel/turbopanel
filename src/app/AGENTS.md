@@ -59,8 +59,11 @@
   A release that introduces a new wire message leaves
   `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION` where
   they are. Each new message is feature-gated: the peer advertises support
-  in `features[]` (`DAEMON_WIRE_FEATURES`, kept equal in both
-  `version-wire.ts` files) and the daemon checks `instanceSupports()` before
+  in `features[]` (`DAEMON_WIRE_FEATURES`; the daemon's list may be
+  longer than this one, never shorter: wire changes merge daemon first, then
+  control plane, and the contract check fails a control plane that lists a
+  feature daemon trunk lacks; `filterHelloFeatures` ignores names this
+  control plane does not know) and the daemon checks `instanceSupports()` before
   treating the peer as able to speak it. `php-site-modes-v1` gates a deploy
   field rather than a message: the daemon runs each PHP site in its `php.mode`
   (FastCGI or php-fpm, nginx and Apache). Deploy prepare refuses a mode other
