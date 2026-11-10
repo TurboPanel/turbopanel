@@ -13,13 +13,16 @@ import {
   type RotationPasskey,
   rotationPasskeysLine,
   serializeKeysetStatement,
+  verifyKeysetApprovals,
   verifyKeysetEnvelope,
 } from './keyset-statement.ts'
 import {
   createSoftPasskey,
   rawEcdsaToDer,
   softAssert,
+  softKeySig,
   softPanelKey,
+  softPanelKeyPair,
   vectorEnvelope,
 } from '../../test-fixtures/software-authenticator.ts'
 import vectors from '../../test-fixtures/keyset-statement-vectors.json' with { type: 'json' }
@@ -62,7 +65,7 @@ test('a rotation approved by one pinned passkey verifies (ES256 and EdDSA)', asy
   for (const alg of ['ES256', 'EdDSA'] as const) {
     const approver = await createSoftPasskey(alg)
     const other = await createSoftPasskey('ES256')
-    const [k1, k2] = [await softPanelKey(), await softPanelKey()]
+    const [k1, k2] = [await softPanelKeyPair(), await softPanelKey()]
     const pin: KeysetPin = {
       current: k1.kid,
       keyset: 1,
@@ -90,6 +93,7 @@ test('a rotation approved by one pinned passkey verifies (ES256 and EdDSA)', asy
           origin: 'https://admin.cp.example.test:8443',
         }),
       ],
+      keySig: await softKeySig(k1, bytes),
     }
     const result = await verifyKeysetEnvelope(envelope, pin, NOW)
     assert(result.ok, result.ok ? '' : result.reason)
@@ -99,7 +103,7 @@ test('a rotation approved by one pinned passkey verifies (ES256 and EdDSA)', asy
 
 test('genesis: the first marks need a proof of possession from each passkey', async () => {
   const [a, b] = [await createSoftPasskey('ES256'), await createSoftPasskey('EdDSA')]
-  const k1 = await softPanelKey()
+  const k1 = await softPanelKeyPair()
   const pin: KeysetPin = { current: k1.kid, keyset: 1, rpId: 'cp.example.test', passkeys: [] }
   const bytes = encoder.encode(
     serializeKeysetStatement({
@@ -107,7 +111,7 @@ test('genesis: the first marks need a proof of possession from each passkey', as
       prev: k1.kid,
       kind: 'passkeys',
       rpId: 'cp.example.test',
-      current: k1,
+      current: { kid: k1.kid, pub: k1.pub },
       passkeys: [a.passkey, b.passkey],
       iat: NOW,
     })
@@ -116,6 +120,7 @@ test('genesis: the first marks need a proof of possession from each passkey', as
   const only = {
     statement: base64urlEncode(bytes),
     approvals: [await softAssert(a, { rpId: 'cp.example.test', challenge })],
+    keySig: await softKeySig(k1, bytes),
   }
   assertEquals((await verifyKeysetEnvelope(only, pin, NOW)).ok, false)
   only.approvals.push(await softAssert(b, { rpId: 'cp.example.test', challenge }))
@@ -137,6 +142,7 @@ test('genesis: the first marks need a proof of possession from each passkey', as
     {
       statement: base64urlEncode(rotate),
       approvals: [await softAssert(a, { rpId: 'cp.example.test', challenge: rotateChallenge })],
+      keySig: await softKeySig(k1, rotate),
     },
     pin,
     NOW
@@ -146,7 +152,7 @@ test('genesis: the first marks need a proof of possession from each passkey', as
 
 test('an rpId move needs an old-set approval and possession under the new id', async () => {
   const [old, fresh] = [await createSoftPasskey('ES256'), await createSoftPasskey('ES256')]
-  const k1 = await softPanelKey()
+  const k1 = await softPanelKeyPair()
   const pin: KeysetPin = {
     current: k1.kid,
     keyset: 3,
@@ -159,7 +165,7 @@ test('an rpId move needs an old-set approval and possession under the new id', a
       prev: k1.kid,
       kind: 'passkeys',
       rpId: 'new.example.test',
-      current: k1,
+      current: { kid: k1.kid, pub: k1.pub },
       passkeys: [fresh.passkey],
       iat: NOW,
     })
@@ -168,15 +174,22 @@ test('an rpId move needs an old-set approval and possession under the new id', a
   const oldApproval = await softAssert(old, { rpId: 'old.example.test', challenge })
   const freshProof = await softAssert(fresh, { rpId: 'new.example.test', challenge })
   const statement = base64urlEncode(bytes)
+  const keySig = await softKeySig(k1, bytes)
   assert(
-    (await verifyKeysetEnvelope({ statement, approvals: [oldApproval, freshProof] }, pin, NOW)).ok
+    (
+      await verifyKeysetEnvelope(
+        { statement, approvals: [oldApproval, freshProof], keySig },
+        pin,
+        NOW
+      )
+    ).ok
   )
   assertEquals(
-    (await verifyKeysetEnvelope({ statement, approvals: [freshProof] }, pin, NOW)).ok,
+    (await verifyKeysetEnvelope({ statement, approvals: [freshProof], keySig }, pin, NOW)).ok,
     false
   )
   assertEquals(
-    (await verifyKeysetEnvelope({ statement, approvals: [oldApproval] }, pin, NOW)).ok,
+    (await verifyKeysetEnvelope({ statement, approvals: [oldApproval], keySig }, pin, NOW)).ok,
     false
   )
 })
@@ -245,7 +258,7 @@ test('the shared passkeys line vector: sorted by id in code-unit order, then has
 
 test('only the exact statement bytes verify: other forms of the same JSON are refused', async () => {
   const [a, b] = [await createSoftPasskey('ES256'), await createSoftPasskey('EdDSA')]
-  const k1 = await softPanelKey()
+  const k1 = await softPanelKeyPair()
   const rpId = 'cp.example.test'
   const pin: KeysetPin = { current: k1.kid, keyset: 1, rpId, passkeys: [] }
   const text = serializeKeysetStatement({
@@ -253,7 +266,7 @@ test('only the exact statement bytes verify: other forms of the same JSON are re
     prev: k1.kid,
     kind: 'passkeys',
     rpId,
-    current: k1,
+    current: { kid: k1.kid, pub: k1.pub },
     passkeys: [a.passkey, b.passkey],
     iat: NOW,
   })
@@ -267,6 +280,7 @@ test('only the exact statement bytes verify: other forms of the same JSON are re
           await softAssert(a, { rpId, challenge }),
           await softAssert(b, { rpId, challenge }),
         ],
+        keySig: await softKeySig(k1, bytes),
       },
       pin,
       NOW
@@ -301,7 +315,7 @@ test('only the exact statement bytes verify: other forms of the same JSON are re
 
 test('a statement in base64url with stray trailing bits is refused', async () => {
   const a = await createSoftPasskey('ES256')
-  const k1 = await softPanelKey()
+  const k1 = await softPanelKeyPair()
   const rpId = 'cp.example.test'
   const bytes = encoder.encode(
     serializeKeysetStatement({
@@ -309,7 +323,7 @@ test('a statement in base64url with stray trailing bits is refused', async () =>
       prev: k1.kid,
       kind: 'passkeys',
       rpId,
-      current: k1,
+      current: { kid: k1.kid, pub: k1.pub },
       passkeys: [a.passkey],
       iat: NOW,
     })
@@ -318,15 +332,119 @@ test('a statement in base64url with stray trailing bits is refused', async () =>
   const approvals = [await softAssert(a, { rpId, challenge })]
   const pin: KeysetPin = { current: k1.kid, keyset: 1, rpId, passkeys: [] }
   const canonical = base64urlEncode(bytes)
-  assert((await verifyKeysetEnvelope({ statement: canonical, approvals }, pin, NOW)).ok)
+  const keySig = await softKeySig(k1, bytes)
+  assert((await verifyKeysetEnvelope({ statement: canonical, approvals, keySig }, pin, NOW)).ok)
   // Find a spelling that decodes to the same bytes but is not the one an encoder writes.
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
   const last = alphabet.indexOf(canonical.at(-1)!)
   const padBits = canonical.length % 4 === 2 ? 4 : canonical.length % 4 === 3 ? 2 : 0
   if (padBits === 0) return
   const stray = canonical.slice(0, -1) + alphabet[last + 1]!
-  assertEquals(await verifyKeysetEnvelope({ statement: stray, approvals }, pin, NOW), {
+  assertEquals(await verifyKeysetEnvelope({ statement: stray, approvals, keySig }, pin, NOW), {
     ok: false,
     reason: 'statement is not base64url',
   })
+})
+
+/** A pin with two marked passkeys and the key it holds, for the passkey-plus-old-key rules. */
+async function twoPasskeyPin() {
+  const [a, b] = [await createSoftPasskey('ES256'), await createSoftPasskey('EdDSA')]
+  const k1 = await softPanelKeyPair()
+  const rpId = 'cp.example.test'
+  const pin: KeysetPin = { current: k1.kid, keyset: 4, rpId, passkeys: [a.passkey, b.passkey] }
+  const statement = async (kind: 'rotate' | 'revoke') => {
+    const bytes = encoder.encode(
+      serializeKeysetStatement({
+        keyset: 5,
+        prev: k1.kid,
+        kind,
+        rpId,
+        current: await softPanelKey(),
+        passkeys: pin.passkeys,
+        iat: NOW,
+      })
+    )
+    return { bytes, challenge: await keysetStatementChallenge(bytes) }
+  }
+  return { a, b, k1, rpId, pin, statement }
+}
+
+test('a rotation needs both a pinned passkey and the old key', async () => {
+  const { a, k1, rpId, pin, statement } = await twoPasskeyPin()
+  const { bytes, challenge } = await statement('rotate')
+  const approval = await softAssert(a, { rpId, challenge })
+  const keySig = await softKeySig(k1, bytes)
+  const base = { statement: base64urlEncode(bytes) }
+  assertEquals(await verifyKeysetEnvelope({ ...base, approvals: [approval] }, pin, NOW), {
+    ok: false,
+    reason: 'the previous key did not sign',
+  })
+  assertEquals(await verifyKeysetEnvelope({ ...base, approvals: [], keySig }, pin, NOW), {
+    ok: false,
+    reason: 'no pinned passkey approved',
+  })
+  const both = await verifyKeysetEnvelope({ ...base, approvals: [approval], keySig }, pin, NOW)
+  assert(both.ok, both.ok ? '' : both.reason)
+  // What the control plane checks before it signs: the passkey part alone.
+  assert((await verifyKeysetApprovals({ ...base, approvals: [approval] }, pin, NOW)).ok)
+  // Replayed after it applied: the pin moved on.
+  const replay = await verifyKeysetEnvelope(
+    { ...base, approvals: [approval], keySig },
+    both.ok ? pinAfter(both.statement) : pin,
+    NOW
+  )
+  assertEquals(replay, { ok: false, reason: 'prev is not the pinned key' })
+})
+
+test('a signature by another key under the pinned key, or over other bytes, is refused', async () => {
+  const { a, k1, rpId, pin, statement } = await twoPasskeyPin()
+  const { bytes, challenge } = await statement('rotate')
+  const approvals = [await softAssert(a, { rpId, challenge })]
+  const other = await softPanelKeyPair()
+  const forged = { pub: k1.pub, sig: (await softKeySig(other, bytes)).sig }
+  const elsewhere = await softKeySig(k1, (await statement('rotate')).bytes)
+  for (const keySig of [forged, elsewhere, await softKeySig(other, bytes)]) {
+    assertEquals(
+      await verifyKeysetEnvelope(
+        { statement: base64urlEncode(bytes), approvals, keySig },
+        pin,
+        NOW
+      ),
+      { ok: false, reason: 'the previous key did not sign' }
+    )
+  }
+})
+
+test('an emergency revoke needs two different pinned passkeys', async () => {
+  const { a, b, rpId, pin, statement } = await twoPasskeyPin()
+  const { bytes, challenge } = await statement('revoke')
+  const base = { statement: base64urlEncode(bytes) }
+  const [byA, byB] = [
+    await softAssert(a, { rpId, challenge }),
+    await softAssert(b, { rpId, challenge }),
+  ]
+  assertEquals(await verifyKeysetEnvelope({ ...base, approvals: [byA] }, pin, NOW), {
+    ok: false,
+    reason: 'a revoke needs two pinned passkeys',
+  })
+  assertEquals(await verifyKeysetEnvelope({ ...base, approvals: [byA, byA] }, pin, NOW), {
+    ok: false,
+    reason: 'an approval is repeated',
+  })
+  const two = await verifyKeysetEnvelope({ ...base, approvals: [byA, byB] }, pin, NOW)
+  assert(two.ok, two.ok ? '' : two.reason)
+  const byId = (x: string, y: string) => x.localeCompare(y)
+  assertEquals([...two.pinnedApprovals].sort(byId), [a.passkey.id, b.passkey.id].sort(byId))
+})
+
+test('an envelope keySig must be exactly pub and sig', () => {
+  const base = { statement: 'AA', approvals: [] }
+  assertEquals(parseKeysetEnvelope({ ...base, keySig: { pub: 'AA', sig: 'AA' } })?.keySig, {
+    pub: 'AA',
+    sig: 'AA',
+  })
+  assertEquals(parseKeysetEnvelope({ ...base, keySig: { pub: 'AA' } }), null)
+  assertEquals(parseKeysetEnvelope({ ...base, keySig: { sig: 'AA', pub: 'AA' } }), null)
+  assertEquals(parseKeysetEnvelope({ ...base, keySig: { pub: 'AA', sig: 'AA', x: 1 } }), null)
+  assertEquals(parseKeysetEnvelope({ ...base, keySig: 'AA' }), null)
 })

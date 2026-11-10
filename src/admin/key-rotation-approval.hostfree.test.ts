@@ -3,24 +3,45 @@
  * audit context and the mail every superadmin gets, rendered from the real
  * context) and for the checks the approve route makes before it verifies.
  */
-import { assert, assertEquals } from '@std/assert'
+import { assert, assertEquals, assertRejects } from '@std/assert'
 import { base64urlEncode } from '../lib/encoding/base64url.ts'
 import { AUDIT_EVENTS, contextFor } from '../features/notifications/audit-bridge.ts'
 import { describeEvent } from '../features/notifications/events.ts'
 import {
   KEYSET_ENVELOPE_MAX_BYTES,
   KEYSET_REFUSAL_REASONS,
+  type KeysetEnvelope,
+  type KeysetPin,
   type KeysetStatement,
+  keysetStatementChallenge,
+  parseKeysetStatement,
   type RotationPasskey,
+  serializeKeysetStatement,
+  verifyKeysetEnvelope,
 } from '../lib/panel-identity/keyset-statement.ts'
-import type { CustodianMark, MarkedCustodian } from '../lib/panel-identity/keyset-store.ts'
-import { PENDING_KEY_MISMATCH, STORED_IDENTITY_CHANGED } from '../lib/panel-identity/identity.ts'
+import {
+  type CustodianMark,
+  envelopeOf,
+  type MarkedCustodian,
+} from '../lib/panel-identity/keyset-store.ts'
+import {
+  type PanelIdentity,
+  PENDING_KEY_MISMATCH,
+  STORED_IDENTITY_CHANGED,
+} from '../lib/panel-identity/identity.ts'
+import { importEd25519Signer } from '../lib/panel-identity/keys.ts'
+import {
+  createSoftPasskey,
+  softAssert,
+  softPanelKey,
+} from '../test-fixtures/software-authenticator.ts'
 import {
   approvalAudit,
   approvalStoreFailure,
   approvalsFromOwnOrigin,
   parseApproveBody,
   refusalWords,
+  signApprovedEnvelope,
 } from './key-rotation-routes.ts'
 
 const test = Deno.test.bind(Deno)
@@ -106,11 +127,13 @@ test('a revoke that waits for its key says it has not taken effect yet', () => {
     marks: [],
     unmark: [],
     state: 'awaiting_key',
-    pinnedApprovals: [YUBI.id],
+    pinnedApprovals: [YUBI.id, PHONE.id],
   })
   assertEquals(mail.action, 'panel.key.revoke')
   assertEquals(mail.title, 'A control plane key change was approved')
   assert(mail.body.includes('approved key set 7 with the passkey Security Key'), mail.body)
+  // Both passkeys that approved the revoke are named.
+  assert(mail.body.includes('Security Key (root@example.com), Phone (root@example.com)'), mail.body)
   assert(mail.body.includes(`will be replaced by ${NEW_KEY}`), mail.body)
   assert(mail.body.includes('takes effect when the rotation command stores the new key'), mail.body)
 })
@@ -280,4 +303,78 @@ test('a store that loses the compare-and-set on the stored key is a 409 start ag
   // Anything else stays a real fault.
   assertEquals(approvalStoreFailure(new Error('connection reset')), null)
   assertEquals(approvalStoreFailure('not an error'), null)
+})
+
+/** A control plane identity with a fresh current key, and a pin of two passkeys on it. */
+async function signingSetup() {
+  const current = await importEd25519Signer(crypto.getRandomValues(new Uint8Array(32)))
+  const identity = { keyset: 4, current, next: null, seal: current } as PanelIdentity
+  const [a, b] = [await createSoftPasskey('ES256'), await createSoftPasskey('EdDSA')]
+  const rpId = 'cp.example.test'
+  const pin: KeysetPin = { current: current.kid, keyset: 4, rpId, passkeys: [a.passkey, b.passkey] }
+  const approved = async (kind: 'rotate' | 'revoke' | 'passkeys', prev = current.kid) => {
+    const statement: Omit<KeysetStatement, 'type' | 'v'> = {
+      keyset: 5,
+      prev,
+      kind,
+      rpId,
+      current:
+        kind === 'passkeys'
+          ? { kid: current.kid, pub: base64urlEncode(current.publicRaw) }
+          : await softPanelKey(),
+      passkeys: pin.passkeys,
+      iat: 1793000000,
+    }
+    const bytes = new TextEncoder().encode(serializeKeysetStatement(statement))
+    const challenge = await keysetStatementChallenge(bytes)
+    const envelope: KeysetEnvelope = {
+      statement: base64urlEncode(bytes),
+      approvals: [
+        await softAssert(a, { rpId, challenge }),
+        await softAssert(b, { rpId, challenge }),
+      ],
+    }
+    return { envelope, parsed: parseKeysetStatement(bytes)! }
+  }
+  return { identity, pin, approved }
+}
+
+test('the running key signs a rotation and a passkey change, exactly as servers check it', async () => {
+  const { identity, pin, approved } = await signingSetup()
+  for (const kind of ['rotate', 'passkeys'] as const) {
+    const { envelope, parsed } = await approved(kind)
+    assertEquals((await verifyKeysetEnvelope(envelope, pin, 1793000000)).ok, false, kind)
+    const signed = await signApprovedEnvelope(identity, pin, envelope, parsed, 1793000000)
+    assertEquals(signed.keySig?.pub, base64urlEncode(identity.current.publicRaw), kind)
+    assert((await verifyKeysetEnvelope(signed, pin, 1793000000)).ok, kind)
+  }
+})
+
+test('a revoke stays unsigned, and a key that moved since prepare signs nothing', async () => {
+  const { identity, pin, approved } = await signingSetup()
+  const revoke = await approved('revoke')
+  const unsigned = await signApprovedEnvelope(identity, pin, revoke.envelope, revoke.parsed, 1)
+  assertEquals(unsigned, revoke.envelope)
+  assertEquals(unsigned.keySig, undefined)
+  const moved = await approved('rotate', (await softPanelKey()).kid)
+  await assertRejects(
+    () => signApprovedEnvelope(identity, pin, moved.envelope, moved.parsed, 1793000000),
+    Error,
+    STORED_IDENTITY_CHANGED
+  )
+})
+
+test('a stored change hands out its old-key signature only once it is live', () => {
+  const row = {
+    body: 'ST',
+    approvals: '[]',
+    prevKey: 'PUB',
+    prevKeySignature: 'SIG',
+  }
+  assertEquals(envelopeOf({ ...row, state: 'live' }).keySig, { pub: 'PUB', sig: 'SIG' })
+  assertEquals(envelopeOf({ ...row, state: 'awaiting_key' }).keySig, undefined)
+  assertEquals(
+    envelopeOf({ ...row, prevKey: null, prevKeySignature: null, state: 'live' }).keySig,
+    undefined
+  )
 })

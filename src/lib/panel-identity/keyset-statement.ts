@@ -2,7 +2,9 @@
  * Key-set statements: the only way a server's pinned control plane key, key
  * set number or rotation passkeys change after install. A statement is exact
  * JSON bytes built once here; the owner's rotation passkeys approve it with a
- * WebAuthn assertion whose challenge is SHA-256 of those bytes. Servers check
+ * WebAuthn assertion whose challenge is SHA-256 of those bytes, and (except
+ * for an emergency revoke) the key being replaced signs the same bytes, so a
+ * passkey assertion alone moves no server. Servers check
  * the same rules in `tp-host panel-identity-write statement` (python and
  * openssl), over the shared vectors in `src/test-fixtures/keyset-statement-vectors.json`.
  *
@@ -22,6 +24,10 @@ export type KeysetStatementState = (typeof KEYSET_STATEMENT_STATES)[number]
 /** Envelope cap; tp-host refuses anything larger. */
 export const KEYSET_ENVELOPE_MAX_BYTES = 16 * 1024
 export const MAX_ROTATION_PASSKEYS = 5
+/** Prefix of the bytes the replaced key signs: `"tp-keyset\n"` + statement bytes. */
+export const KEYSET_KEY_SIGNATURE_PREFIX = 'tp-keyset\n'
+/** A revoke has no signature by the replaced key, so it needs this many pinned passkeys. */
+export const MIN_REVOKE_APPROVALS = 2
 /** How far in the future a statement's `iat` may be. There is no lower bound: offline servers apply old statements. */
 export const KEYSET_STATEMENT_MAX_FUTURE_SECONDS = 300
 
@@ -54,7 +60,15 @@ export type KeysetApproval = {
   signature: string
 }
 
-export type KeysetEnvelope = { statement: string; approvals: KeysetApproval[] }
+/** Signature by the replaced key (`prev`): its raw public key and an Ed25519 signature. */
+export type KeysetKeySig = { pub: string; sig: string }
+
+export type KeysetEnvelope = {
+  statement: string
+  approvals: KeysetApproval[]
+  /** Absent on a revoke (the old key may be lost) and before the control plane signs. */
+  keySig?: KeysetKeySig
+}
 
 /** What a server pinned (or, before any mark, the control plane's genesis state with no passkeys). */
 export type KeysetPin = {
@@ -81,6 +95,9 @@ export const KEYSET_REFUSAL_REASONS = [
   'every passkey under the new rpId must prove possession',
   'a removal needs a passkey that stays',
   'an added passkey must prove possession',
+  'the previous key did not sign',
+  'a revoke needs two pinned passkeys',
+  'a key change must keep the passkeys',
 ] as const
 export type KeysetRefusalReason = (typeof KEYSET_REFUSAL_REASONS)[number]
 
@@ -230,9 +247,19 @@ export function parseKeysetStatement(bytes: Uint8Array): KeysetStatement | null 
   }
 }
 
+/** The `keySig` member: exactly `pub` and `sig`, both strings; undefined when absent, null when out of shape. */
+function parseKeySig(value: unknown): KeysetKeySig | undefined | null {
+  if (value === undefined) return undefined
+  if (!isRecord(value) || Object.keys(value).join(',') !== 'pub,sig') return null
+  const { pub, sig } = value
+  return typeof pub === 'string' && typeof sig === 'string' ? { pub, sig } : null
+}
+
 /** Parse an envelope from untrusted JSON (the size cap applies to the serialized form). */
 export function parseKeysetEnvelope(value: unknown): KeysetEnvelope | null {
   if (!isRecord(value) || typeof value.statement !== 'string') return null
+  const keySig = parseKeySig(value.keySig)
+  if (keySig === null) return null
   if (!Array.isArray(value.approvals) || value.approvals.length > MAX_ROTATION_PASSKEYS * 2) {
     return null
   }
@@ -250,11 +277,12 @@ export function parseKeysetEnvelope(value: unknown): KeysetEnvelope | null {
     }
     approvals.push({ id, authenticatorData, clientDataJSON, signature })
   }
-  const envelope = { statement: value.statement, approvals }
-  return JSON.stringify(envelope).length <= KEYSET_ENVELOPE_MAX_BYTES ? envelope : null
+  const envelope: KeysetEnvelope = { statement: value.statement, approvals }
+  if (keySig) envelope.keySig = keySig
+  return serializeKeysetEnvelope(envelope).length <= KEYSET_ENVELOPE_MAX_BYTES ? envelope : null
 }
 
-/** The serialized envelope as served and stored: `statement`, then `approvals` in order. */
+/** The serialized envelope as served: `statement`, `approvals` in order, then `keySig` when present. */
 export function serializeKeysetEnvelope(envelope: KeysetEnvelope): string {
   return JSON.stringify({
     statement: envelope.statement,
@@ -264,7 +292,40 @@ export function serializeKeysetEnvelope(envelope: KeysetEnvelope): string {
       clientDataJSON: a.clientDataJSON,
       signature: a.signature,
     })),
+    ...(envelope.keySig ? { keySig: { pub: envelope.keySig.pub, sig: envelope.keySig.sig } } : {}),
   })
+}
+
+/** Whether a statement of this kind must carry a signature by the key it replaces. */
+export function needsKeySignature(kind: KeysetStatementKind): boolean {
+  return kind !== 'revoke'
+}
+
+/** The bytes the replaced key signs: the fixed prefix, then the exact statement bytes. */
+export function keysetKeySignatureMessage(bytes: Uint8Array): Uint8Array {
+  const prefix = textEncoder.encode(KEYSET_KEY_SIGNATURE_PREFIX)
+  const message = new Uint8Array(prefix.length + bytes.length)
+  message.set(prefix, 0)
+  message.set(bytes, prefix.length)
+  return message
+}
+
+/** `keySig` is by the key `prev` names and signs these exact bytes. */
+export async function keySignatureVerifies(
+  keySig: KeysetKeySig | undefined,
+  statement: KeysetStatement,
+  bytes: Uint8Array
+): Promise<boolean> {
+  if (!keySig) return false
+  const pub = decodeBase64urlStrict(keySig.pub)
+  const sig = decodeBase64urlStrict(keySig.sig)
+  if (pub?.length !== 32 || sig?.length !== 64) return false
+  if ((await fingerprintRawPublicKey(pub)) !== statement.prev) return false
+  return await signatureVerifies(
+    { id: statement.prev, alg: 'EdDSA', pub: keySig.pub },
+    keysetKeySignatureMessage(bytes),
+    sig
+  )
 }
 
 function derLength(der: Uint8Array, at: number): { length: number; next: number } | null {
@@ -401,6 +462,14 @@ function samePasskey(a: RotationPasskey, b: RotationPasskey): boolean {
   return a.id === b.id && a.alg === b.alg && a.pub === b.pub
 }
 
+/** The same passkeys, in any order. */
+export function samePasskeySet(
+  a: readonly RotationPasskey[],
+  b: readonly RotationPasskey[]
+): boolean {
+  return a.length === b.length && a.every((p) => b.some((q) => samePasskey(p, q)))
+}
+
 function fail(reason: KeysetRefusalReason): KeysetVerification {
   return { ok: false, reason }
 }
@@ -458,19 +527,31 @@ async function checkApprovals(
   return { pinned, possession }
 }
 
-function checkRules(
+type ApprovalSets = { pinned: Set<string>; possession: Set<string> }
+
+/**
+ * A key change moves the key only: the passkeys and their rp id stay as
+ * pinned, so two approvals that revoke cannot also add a passkey.
+ */
+function keyChangeRule(
   statement: KeysetStatement,
   pin: KeysetPin,
-  approvals: { pinned: Set<string>; possession: Set<string> }
+  approvals: ApprovalSets
 ): KeysetRefusalReason | null {
-  const isGenesis = pin.passkeys.length === 0
-  if (isGenesis) {
-    if (statement.kind !== 'passkeys') return 'no rotation passkey is pinned'
-    return statement.passkeys.every((p) => approvals.possession.has(p.id))
-      ? null
-      : 'every marked passkey must prove possession'
+  if (statement.rpId !== pin.rpId || !samePasskeySet(statement.passkeys, pin.passkeys)) {
+    return 'a key change must keep the passkeys'
   }
-  if (approvals.pinned.size === 0) return 'no pinned passkey approved'
+  return statement.kind === 'revoke' && approvals.pinned.size < MIN_REVOKE_APPROVALS
+    ? 'a revoke needs two pinned passkeys'
+    : null
+}
+
+/** Marks and unmarks: removals approved by a passkey that stays, additions prove possession. */
+function passkeyChangeRule(
+  statement: KeysetStatement,
+  pin: KeysetPin,
+  approvals: ApprovalSets
+): KeysetRefusalReason | null {
   if (statement.rpId !== pin.rpId) {
     return statement.passkeys.every((p) => approvals.possession.has(p.id))
       ? null
@@ -488,15 +569,55 @@ function checkRules(
   return null
 }
 
+function checkRules(
+  statement: KeysetStatement,
+  pin: KeysetPin,
+  approvals: ApprovalSets
+): KeysetRefusalReason | null {
+  const isGenesis = pin.passkeys.length === 0
+  if (isGenesis) {
+    if (statement.kind !== 'passkeys') return 'no rotation passkey is pinned'
+    return statement.passkeys.every((p) => approvals.possession.has(p.id))
+      ? null
+      : 'every marked passkey must prove possession'
+  }
+  if (approvals.pinned.size === 0) return 'no pinned passkey approved'
+  return statement.kind === 'passkeys'
+    ? passkeyChangeRule(statement, pin, approvals)
+    : keyChangeRule(statement, pin, approvals)
+}
+
 /**
- * Verify an envelope against a pin. With a pin holding no passkeys only a
- * genesis `passkeys` statement can pass (the control plane's first marks);
- * servers never call this with an empty set.
+ * Verify an envelope against a pin, the way servers do: passkey approvals
+ * and, for `rotate` and `passkeys`, the replaced key's `keySig`. With a pin
+ * holding no passkeys only a genesis `passkeys` statement can pass (the
+ * control plane's first marks); servers never call this with an empty set.
  */
 export async function verifyKeysetEnvelope(
   envelope: KeysetEnvelope,
   pin: KeysetPin,
   nowSeconds: number
+): Promise<KeysetVerification> {
+  return await verifyEnvelope(envelope, pin, nowSeconds, true)
+}
+
+/**
+ * Every rule except `keySig`: what the control plane checks on the browser's
+ * approvals before it signs with its own key (the browser cannot sign).
+ */
+export async function verifyKeysetApprovals(
+  envelope: KeysetEnvelope,
+  pin: KeysetPin,
+  nowSeconds: number
+): Promise<KeysetVerification> {
+  return await verifyEnvelope(envelope, pin, nowSeconds, false)
+}
+
+async function verifyEnvelope(
+  envelope: KeysetEnvelope,
+  pin: KeysetPin,
+  nowSeconds: number,
+  checkKeySig: boolean
 ): Promise<KeysetVerification> {
   const bytes = decodeBase64urlStrict(envelope.statement)
   if (!bytes || base64urlEncode(bytes) !== envelope.statement) {
@@ -521,6 +642,13 @@ export async function verifyKeysetEnvelope(
   const challenge = await keysetStatementChallenge(bytes)
   const approvals = await checkApprovals(envelope, statement, pin, challenge)
   if ('reason' in approvals) return fail(approvals.reason)
+  if (
+    checkKeySig &&
+    needsKeySignature(statement.kind) &&
+    !(await keySignatureVerifies(envelope.keySig, statement, bytes))
+  ) {
+    return fail('the previous key did not sign')
+  }
   const rule = checkRules(statement, pin, approvals)
   if (rule) return fail(rule)
   return {

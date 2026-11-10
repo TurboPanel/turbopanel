@@ -20,6 +20,7 @@ import {
   type PanelIdentity,
   resolvePanelIdentityFromDb,
 } from '../lib/panel-identity/identity.ts'
+import { fingerprintRawPublicKey } from '../lib/panel-identity/fingerprint.ts'
 import { listLiveStatements } from '../lib/panel-identity/keyset-store.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secrets/secrets.ts'
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
@@ -108,6 +109,7 @@ type Harness = {
   stranger: Credential
   post: (path: string, body: unknown) => Promise<Answer>
   del: (path: string) => Promise<Answer>
+  get: (path: string) => Promise<Answer>
 }
 
 /** A clean chain, one superadmin with three sign-in passkeys, and the routes on `runtime`. */
@@ -181,6 +183,7 @@ async function withRotationRoutes(
       stranger,
       post: (path, body) => send('POST', path, body),
       del: (path) => send('DELETE', path),
+      get: (path) => send('GET', path),
     })
   } finally {
     await db.delete(custodian)
@@ -274,12 +277,33 @@ test('marks, a rotation and the refusals around them', async () => {
     assertEquals(chain.length, 2)
     assertEquals(chain[1]!.statement, rotate.body.statement)
     assertEquals((await listLiveStatements(db, 2)).length, 1)
+    // The old key signed the rotation (and the first marks), exactly as servers check it.
+    assertEquals(rotated.body.envelope.keySig, chain[1]!.keySig)
+    assertEquals(
+      await fingerprintRawPublicKey(base64urlDecode(chain[1]!.keySig!.pub)),
+      rotate.body.oldFingerprint
+    )
+    assert(chain[0]!.keySig)
 
     // Emergency Revoke moves to a key made for it, never to an earlier pending one.
     const abandoned = await h.post('/statements/prepare', { kind: 'rotate' })
     const revoke = await h.post('/statements/prepare', { kind: 'revoke' })
     assertEquals([abandoned.status, revoke.status], [200, 200])
     assertNotEquals(revoke.body.newFingerprint, abandoned.body.newFingerprint)
+    assertEquals([rotate.body.approvalsNeeded, revoke.body.approvalsNeeded], [1, 2])
+    // A revoke has no old-key signature: one passkey is refused, two different ones pass.
+    const oneApproval = await h.post('/statements', {
+      statement: revoke.body.statement,
+      approvals: await approvalsFor([h.a], revoke.body),
+    })
+    assertEquals([oneApproval.status, oneApproval.body.error], [422, 'approval_refused'])
+    const revoked = await h.post('/statements', {
+      statement: revoke.body.statement,
+      approvals: await approvalsFor([h.a, h.b], revoke.body),
+    })
+    assertEquals(revoked.status, 200, JSON.stringify(revoked.body))
+    assertEquals(revoked.body.envelope.keySig, undefined)
+    assertEquals(h.key.loaded.current.kid, revoke.body.newFingerprint)
   })
 })
 
@@ -310,6 +334,10 @@ test('High Availability: a waiting key change blocks other changes and can be ca
     })
     assertEquals(approved.status, 200, JSON.stringify(approved.body))
     assertEquals([approved.body.state, approved.body.keyset], ['awaiting_key', 3])
+    // A waiting change keeps its old-key signature inside the control plane.
+    assertEquals(approved.body.envelope.keySig, undefined)
+    const download = await h.get('/statements/3')
+    assertEquals([download.status, download.body.keySig], [200, undefined])
     // Servers are not served a waiting statement.
     assertEquals((await listLiveStatements(db, 0)).length, 1)
 
@@ -360,5 +388,10 @@ test('High Availability: a waiting key change blocks other changes and can be ca
     const chain = await listLiveStatements(db, 0)
     assertEquals(chain.length, 2)
     assertEquals(chain[1]!.statement, again.body.statement)
+    // Live now: served with the signature the old key made at approval.
+    assertEquals(
+      await fingerprintRawPublicKey(base64urlDecode(chain[1]!.keySig!.pub)),
+      again.body.oldFingerprint
+    )
   })
 })
