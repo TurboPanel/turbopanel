@@ -175,6 +175,17 @@ export type TunnelPeerMaterial = {
   notAfter?: string
 }
 
+/**
+ * A tunnel name whose site runs on this server, with the exact addresses of the
+ * other servers that carry it (empty when only this server does). The daemon
+ * sets the lock and trusted peers of that name's site block from it without a
+ * deploy (daemon feature `tunnel-lock-follow-v1`).
+ */
+export type TunnelInbound = {
+  hostname: string
+  peers: string[]
+}
+
 /** Must stay in sync with the daemon `server.tunnel.routes` shape. */
 export type TunnelRoutesCommandPayload = {
   /** Lower-case sha256 of the desired state; an unchanged hash with the file in place is a no-op. */
@@ -191,6 +202,12 @@ export type TunnelRoutesCommandPayload = {
   listenAddresses?: string[]
   /** Required when `routes` or `peerAddresses` is not empty. */
   peerMaterial?: TunnelPeerMaterial
+  /**
+   * Every tunnel name whose site runs here, with who may forward it. Sent only
+   * to a daemon that advertises `tunnel-lock-follow-v1`; absent = the locks stay
+   * as the site's last deploy wrote them.
+   */
+  inbound?: TunnelInbound[]
 }
 
 /** Must stay in sync with the daemon `server.tunnel.routes` shape. */
@@ -296,6 +313,30 @@ function parseTunnelPeerMaterial(value: unknown): TunnelPeerMaterial {
   return material
 }
 
+function parseTunnelInbound(value: unknown): TunnelInbound {
+  if (!isRecord(value) || !isValidHostname(value.hostname)) {
+    throw new TypeError('Invalid server.tunnel.routes inbound')
+  }
+  return {
+    hostname: value.hostname as string,
+    peers: parseAddressList(value.peers, 'server.tunnel.routes inbound peers', {
+      min: 0,
+      max: MAX_TUNNEL_ADDRESSES,
+    }),
+  }
+}
+
+function parseTunnelInboundList(value: unknown): TunnelInbound[] {
+  if (!Array.isArray(value) || value.length > MAX_TUNNEL_ROUTES) {
+    throw new TypeError('Invalid server.tunnel.routes inbound')
+  }
+  const inbound = value.map(parseTunnelInbound)
+  if (new Set(inbound.map((entry) => entry.hostname.toLowerCase())).size !== inbound.length) {
+    throw new TypeError('Invalid server.tunnel.routes inbound')
+  }
+  return inbound
+}
+
 export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPayload {
   if (!isRecord(value)) throw new TypeError('Invalid server.tunnel.routes payload')
   if (!isString(value.hash) || !SHA256_HEX_RE.test(value.hash)) {
@@ -326,6 +367,7 @@ export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPay
   if (value.peerMaterial !== undefined) {
     payload.peerMaterial = parseTunnelPeerMaterial(value.peerMaterial)
   }
+  if (value.inbound !== undefined) payload.inbound = parseTunnelInboundList(value.inbound)
   const needsMaterial = routes.length > 0 || peerAddresses.length > 0
   if (needsMaterial && !payload.peerMaterial) {
     throw new TypeError('Invalid server.tunnel.routes peerMaterial: required with routes or peers')

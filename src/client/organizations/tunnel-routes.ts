@@ -31,7 +31,11 @@ import {
   updatePlacement,
   type TunnelRow,
 } from '../../features/tunnels/lifecycle.ts'
-import { serversWithoutTunnelSupport } from '../../features/tunnels/daemon-gate.ts'
+import {
+  serversWithDeployOnlyLock,
+  serversWithoutTunnelSupport,
+} from '../../features/tunnels/daemon-gate.ts'
+import { siteServersOfTunnel } from '../../features/tunnels/route-facts.ts'
 import { parsePlacementBody } from '../../features/tunnels/placement.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
 import {
@@ -90,19 +94,35 @@ async function loadTunnelParam(c: Context<AppEnv>, scope: Scope): Promise<Tunnel
   )
 }
 
-/** The tunnel as the API shows it, with a warning for servers whose daemon is too old to carry it. */
+/**
+ * The tunnel as the API shows it, with a warning for servers whose daemon is
+ * too old to carry it, and one for servers that run its sites but apply the
+ * name lock only when a site is deployed again.
+ */
 async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   const shown = await toApiTunnel(scope.db, row)
   const old = await serversWithoutTunnelSupport(scope.db, shown.carryingServerIds)
-  if (old.length === 0) return shown
-  const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
-  return {
-    ...shown,
-    warnings: [
-      ...shown.warnings,
-      `${names} a daemon too old to carry Tunnels. Update it, or the Tunnel will not work there.`,
-    ],
+  const deployOnly = await serversWithDeployOnlyLock(
+    scope.db,
+    await siteServersOfTunnel(scope.db, scope.organizationId, row.id)
+  )
+  const warnings = [...shown.warnings]
+  if (old.length > 0) {
+    const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
+    warnings.push(
+      `${names} a daemon too old to carry Tunnels. Update it, or the Tunnel will not work there.`
+    )
   }
+  if (deployOnly.length > 0) {
+    const names =
+      deployOnly.length === 1
+        ? '1 server that runs this Tunnel’s sites applies'
+        : `${deployOnly.length} servers that run this Tunnel’s sites apply`
+    warnings.push(
+      `${names} a change of where the Tunnel runs only when the site is deployed again. Update its daemon, or redeploy those sites after the change.`
+    )
+  }
+  return warnings.length === shown.warnings.length ? shown : { ...shown, warnings }
 }
 
 function secretsOrFail(c: Context<AppEnv>) {
