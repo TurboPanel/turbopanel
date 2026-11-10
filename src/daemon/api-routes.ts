@@ -1359,8 +1359,10 @@ export async function resolveIngestPlanAndReconcileTopology(
 /**
  * Enroll-time outbox prime: record generation 0 (or the current plan) and
  * enqueue `capability-plan-update` for the next attach. Skipped for
- * self-hosted — those daemons must keep sending the full sample. Fire-and-
- * forget: enroll still returns `{ serverId, keyId }` if this fails.
+ * self-hosted — those daemons must keep sending the full sample. Awaited, so
+ * both writes finish on the request's database client before the handler
+ * returns (on Workers the client closes then); best effort: a failure is
+ * logged and enroll still returns `{ serverId, keyId }`.
  */
 async function primeCapabilityPlanAfterEnroll(
   db: Db,
@@ -1517,7 +1519,7 @@ async function completeEnroll(
   if (credential.kind === 'reenroll' && registry) {
     await purgeDaemonCellBestEffort(registry, enrolled.serverId, 'after daemon key replaced')
   }
-  void primeCapabilityPlanAfterEnroll(db, registry, enrolled.serverId, deployment)
+  await primeCapabilityPlanAfterEnroll(db, registry, enrolled.serverId, deployment)
   return c.json({ serverId: enrolled.serverId, keyId: enrolled.keyId }, 200)
 }
 

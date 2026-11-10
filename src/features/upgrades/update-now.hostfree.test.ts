@@ -9,7 +9,11 @@ import {
   UPGRADE_RUN_ACTIVE,
   UPGRADE_TOO_SOON,
 } from './coordinator.ts'
+import type { UpdateChannel } from '../../contracts/update-channel.ts'
+import type { UpgradeTarget } from './target.ts'
 import {
+  checkNowRefresh,
+  releaseUnreachableAnswer,
   UPDATE_NOW_PAUSED_MESSAGE,
   UPDATE_NOW_UNREACHABLE_MESSAGE,
   updateNowAnswer,
@@ -130,4 +134,60 @@ test('the paused messages name the Pause All Updates switch and never say resume
   ]) {
     assertEquals(/resume/i.test(message), false)
   }
+})
+
+const NONE: UpgradeTarget = { daemon: null, instance: null, ui: null }
+
+const DAEMON_ONLY: UpgradeTarget = {
+  daemon: {
+    version: '1.2.3',
+    commit: 'new-daemon',
+    buildId: 'b1',
+    builtAt: '2026-11-01T00:00:00.000Z',
+    manifestUrl: 'https://example.com/daemon/manifest.json',
+  },
+  instance: null,
+  ui: null,
+}
+
+/** Check Now with recording fakes: which steps ran, and the answer. */
+async function pressCheckNow(channel: UpdateChannel, target: UpgradeTarget) {
+  const saved: UpgradeTarget[] = []
+  let statusReads = 0
+  const answer = await checkNowRefresh({
+    channel,
+    resolveTarget: () => Promise.resolve(target),
+    saveLatest: (next) => {
+      saved.push(next)
+      return Promise.resolve()
+    },
+    readStatus: () => {
+      statusReads += 1
+      return Promise.resolve({ ok: true as const, latest: 'status' })
+    },
+  })
+  return { answer, saved, statusReads }
+}
+
+test('Check Now with the release server down answers 503 like Update Now and keeps the saved build', async () => {
+  const { answer, saved, statusReads } = await pressCheckNow('release', NONE)
+  assertEquals(answer, releaseUnreachableAnswer())
+  assertEquals<unknown>(answer, updateNowAnswer({ ok: false, error: UPGRADE_RELEASE_UNREACHABLE }))
+  assertEquals(saved, [])
+  // No second read: the status read would ask the release server again.
+  assertEquals(statusReads, 0)
+})
+
+test('Check Now saves a partial answer and reads the status once', async () => {
+  const { answer, saved, statusReads } = await pressCheckNow('release', DAEMON_ONLY)
+  assertEquals(answer, { status: 200, body: { ok: true, latest: 'status' } })
+  assertEquals(saved, [DAEMON_ONLY])
+  assertEquals(statusReads, 1)
+})
+
+test('Check Now on a channel that publishes no manifests is a normal refresh', async () => {
+  const { answer, saved, statusReads } = await pressCheckNow('trunk', NONE)
+  assertEquals(answer.status, 200)
+  assertEquals(saved, [NONE])
+  assertEquals(statusReads, 1)
 })

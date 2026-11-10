@@ -1,7 +1,9 @@
 /**
  * Update Now (`POST /instance/updates/now`): how the coordinator's answer is
- * said over HTTP. Host-free; the route and its tests share it.
+ * said over HTTP, and Check Now's (`POST /instance/updates/check`) refresh
+ * step. Host-free; the routes and their tests share it.
  */
+import type { UpdateChannel } from '../../contracts/update-channel.ts'
 import {
   UPGRADE_DEVELOPMENT,
   UPGRADE_PAUSED,
@@ -11,6 +13,8 @@ import {
   UPGRADE_RUN_ACTIVE_MESSAGE,
   type UpgradeUpdateNowResult,
 } from './coordinator.ts'
+import type { UpgradeTarget } from './target.ts'
+import { releaseServerUnreachable } from './target-resolve.ts'
 
 /** Machine codes the route answers; clients branch on these, never the sentence. */
 export const UPDATE_NOW_ERRORS = {
@@ -46,6 +50,42 @@ export const UPDATE_NOW_DEVELOPMENT_MESSAGE =
 
 export const UPDATE_NOW_UNREACHABLE_MESSAGE =
   'The release server could not be reached. Try again in a few minutes.'
+
+/** 503 `release_unreachable`: Update Now and Check Now say it the same way. */
+export type ReleaseUnreachableAnswer = {
+  status: 503
+  body: { ok: false; error: typeof UPDATE_NOW_ERRORS.releaseUnreachable; message: string }
+}
+
+export function releaseUnreachableAnswer(): ReleaseUnreachableAnswer {
+  return {
+    status: 503,
+    body: {
+      ok: false,
+      error: UPDATE_NOW_ERRORS.releaseUnreachable,
+      message: UPDATE_NOW_UNREACHABLE_MESSAGE,
+    },
+  }
+}
+
+/**
+ * Check Now after its press is claimed: read the channel's newest build once,
+ * save it and answer the status. When every manifest the channel publishes
+ * came back empty the release server was not reached: keep the saved build,
+ * skip the status read (it would ask the release server again) and answer 503
+ * `release_unreachable`, exactly like Update Now, never "nothing new".
+ */
+export async function checkNowRefresh<T>(input: {
+  channel: UpdateChannel
+  resolveTarget: () => Promise<UpgradeTarget>
+  saveLatest: (target: UpgradeTarget) => Promise<void>
+  readStatus: () => Promise<T>
+}): Promise<{ status: 200; body: T } | ReleaseUnreachableAnswer> {
+  const target = await input.resolveTarget()
+  if (releaseServerUnreachable(input.channel, target)) return releaseUnreachableAnswer()
+  await input.saveLatest(target)
+  return { status: 200, body: await input.readStatus() }
+}
 
 /**
  * 202 with the run, 200 when nothing needs work, otherwise a code: 403, 409,
@@ -89,14 +129,7 @@ export function updateNowAnswer(
       }
     }
     case UPGRADE_RELEASE_UNREACHABLE:
-      return {
-        status: 503,
-        body: {
-          ok: false,
-          error: UPDATE_NOW_ERRORS.releaseUnreachable,
-          message: UPDATE_NOW_UNREACHABLE_MESSAGE,
-        },
-      }
+      return releaseUnreachableAnswer()
     case UPGRADE_DEVELOPMENT:
       return {
         status: 403,

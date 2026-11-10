@@ -296,6 +296,7 @@ test('an open run or a pause refuses before the press is claimed', async () => {
     return Promise.resolve(true)
   }
   const active = await f.coordinator.updateNow({ startedBy: ADMIN, claimPress })
+  assertEquals(active.ok, false)
   if (!active.ok) assertEquals(active.error, UPGRADE_RUN_ACTIVE)
   const paused = setup(['a'])
   paused.store.setPause({
@@ -305,6 +306,7 @@ test('an open run or a pause refuses before the press is claimed', async () => {
     byName: null,
   })
   const refused = await paused.coordinator.updateNow({ startedBy: ADMIN, claimPress })
+  assertEquals(refused.ok, false)
   if (!refused.ok) assertEquals(refused.error, UPGRADE_PAUSED)
   assertEquals(claimed, 0)
 })

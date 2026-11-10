@@ -17,6 +17,7 @@ import {
   type UpgradeTargetResolver,
 } from '../features/upgrades/coordinator.ts'
 import {
+  checkNowRefresh,
   UPDATE_NOW_DEVELOPMENT_MESSAGE,
   UPDATE_NOW_ERRORS,
   updateNowAnswer,
@@ -143,6 +144,8 @@ export function registerInstanceUpdatesAdminRoutes(
   // Check Now: a refresh only. It asks the release servers for the newest
   // build (at most once a minute) and answers the fresh status; it never
   // starts a run and never moves the schedule — the next scheduled check does.
+  // An unreachable release server is 503 `release_unreachable` (the saved
+  // build stays), never "nothing new", the same answer as Update Now.
   admin.post('/instance/updates/check', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
@@ -164,11 +167,16 @@ export function registerInstanceUpdatesAdminRoutes(
       )
     }
     const channel = resolveInstanceUpdateChannel(resolvePlatformEnv(c, opts))
-    const target = await resolveUpgradeTarget(channel, (kind) =>
-      resolveUpdateManifest(channel, kind, { fresh: true })
-    )
-    await setLatestAvailableBuild(db, target)
-    return c.json(await readUpdatesStatus(c, opts))
+    const answer = await checkNowRefresh({
+      channel,
+      resolveTarget: () =>
+        resolveUpgradeTarget(channel, (kind) =>
+          resolveUpdateManifest(channel, kind, { fresh: true })
+        ),
+      saveLatest: (target) => setLatestAvailableBuild(db, target),
+      readStatus: () => readUpdatesStatus(c, opts),
+    })
+    return c.json(answer.body, answer.status)
   })
 
   // Update Now (superadmin): the hourly check, run at once. It asks the
