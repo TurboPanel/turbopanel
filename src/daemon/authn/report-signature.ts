@@ -50,6 +50,16 @@ export const SIGNATURE_REQUIRED_TYPES: ReadonlySet<string> = new Set(['managed-h
 /** What the signature check found for one frame. `none`: not a signed or signature-required type. */
 export type ReportSignature = 'verified' | 'unsigned' | 'invalid' | 'none'
 
+/**
+ * A {@link SIGNATURE_REQUIRED_TYPES} frame acts on the cluster now, so it is
+ * fresh or refused: signed no more than this far ahead of this control
+ * plane's clock, and no older than {@link SIGNATURE_REQUIRED_MAX_AGE_SECONDS}.
+ * The daemon signs it as it sends it, and re-sends every 30 to 60 s while the
+ * incident lasts, so a held-back copy is refused instead of replayed.
+ */
+export const SIGNATURE_REQUIRED_MAX_AHEAD_SECONDS = 30
+export const SIGNATURE_REQUIRED_MAX_AGE_SECONDS = 60
+
 /** The error a command gets when its result arrived with a bad signature. */
 export const REPORT_SIGNATURE_INVALID = 'signature_invalid'
 
@@ -136,6 +146,11 @@ async function refusalReason(
     Math.abs(iat - Math.floor(ctx.nowMs / 1000)) > REQUEST_MAX_SKEW_SECONDS
   ) {
     return 'iat out of range'
+  }
+  if (SIGNATURE_REQUIRED_TYPES.has(type)) {
+    const ageSeconds = Math.floor(ctx.nowMs / 1000) - iat
+    if (ageSeconds < -SIGNATURE_REQUIRED_MAX_AHEAD_SECONDS) return 'signed in the future'
+    if (ageSeconds > SIGNATURE_REQUIRED_MAX_AGE_SECONDS) return 'signed too long ago'
   }
   const ok = await verifyDaemonSignature(
     ctx.publicJwk,

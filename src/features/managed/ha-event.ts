@@ -259,7 +259,7 @@ export const HA_EVENT_REFUSAL_FIXES: Readonly<
   invalid:
     "The report's signature did not check out against that server's daemon key, so it may not have come from that server. Check the server's connection to the control plane.",
   'session-unsigned':
-    "The server is not pinned to this control plane's key, so its reports cannot be signed. A server installed before panel keys is pinned by its next daemon update (Admin > Updates > Update Now); a server installed with --unsafe-no-panel-key is pinned by running the install command from this control plane on it again. The server this control plane itself runs on cannot be pinned yet.",
+    "The server is not pinned to this control plane's key, so its reports cannot be signed. A server installed before panel keys is pinned automatically the next time its daemon updates to a new release, if that update can fetch and check this control plane's identity. Any other unpinned server, including the server this control plane runs on, cannot be pinned from the control plane today. Until the server is pinned, promote a replica by hand.",
 }
 
 type HaEventRefusal = Exclude<HaEventSignature, 'verified'>
@@ -292,41 +292,123 @@ export const BOOT_HOLD_REFUSED_MESSAGES = refusalMessages(
 export async function recordRefusedHaEvent(
   db: Db,
   input: ManagedHaEventInput,
-  deps: { reporterServerId: string; signature: HaEventRefusal }
+  deps: { reporterServerId: string; signature: HaEventRefusal; binding?: HaBindingLoaders }
 ): Promise<RecoveryRecord | null> {
   const bootHold = input.detector === BOOT_HOLD_DETECTOR
   const reason = (bootHold ? BOOT_HOLD_REFUSED_MESSAGES : HA_EVENT_REFUSED_MESSAGES)[deps.signature]
   const row = await loadCluster(db, input.managedId)
   if (!row?.engine || !isManagedEngineCode(row.engine)) return null
   const members = await listManagedMembers(db, row.id)
-  const primary = members.find((member) => member.role === 'primary')
   const reporterOrganizationId = await loadServerOrganization(db, deps.reporterServerId)
-  const inCluster =
-    members.some((member) => member.serverId === deps.reporterServerId) &&
-    row.organizationId !== null &&
-    reporterOrganizationId === row.organizationId
+  const source = await refusedReportSource(db, input, {
+    bootHold,
+    engine: row.engine,
+    members,
+    reporterServerId: deps.reporterServerId,
+    reporterOrganizationId,
+    clusterOrganizationId: row.organizationId,
+    loaders: deps.binding ?? DEFAULT_BINDING_LOADERS,
+  })
   compatLogWarn(
     'managed-ha',
-    `refused ${bootHold ? 'boot-hold report' : 'managed-ha-event'} for ${row.id} from server ${deps.reporterServerId} (${deps.signature}): ${reason}`
+    `refused ${bootHold ? 'boot-hold report' : 'managed-ha-event'} for ${row.id} from server ${deps.reporterServerId} (${deps.signature}${source ? '' : ', not filed'}): ${reason}`
   )
-  // A boot-hold report names the held member; the row is about that member.
-  const source = bootHold
-    ? (members.find((member) => member.id === input.sourceMemberId) ?? primary)
-    : primary
-  if (!source || !inCluster) return null
-  return recordBlockedRecovery(db, {
+  if (!source) return null
+  return recordRefusalRow(db, {
     managedId: row.id,
-    kind: 'automatic-failover',
-    sourcePrimaryMemberId: source.id,
-    state: 'blocked',
-    metadata: {
-      blockedReason: reason,
-      reportRefused: deps.signature,
-      reporterServerId: deps.reporterServerId,
-      sourceServerId: source.serverId,
-      ...(input.detector ? { detector: input.detector } : {}),
-    },
+    source,
+    reason,
+    signature: deps.signature,
+    reporterServerId: deps.reporterServerId,
+    ...(input.detector ? { detector: input.detector } : {}),
   })
+}
+
+/**
+ * The member a refused report would have been about, when it passes every
+ * check a signed one would before any action: a boot-hold report must name a
+ * member on the reporting server; a dead-primary report must pass the detector,
+ * reporter and current-primary gate (`haEventRejection`) and, for Orchestrator,
+ * name the current primary's instance. `null`: the report is only logged, so a
+ * late report about a replaced primary is never filed against the new one.
+ */
+async function refusedReportSource(
+  db: Db,
+  input: ManagedHaEventInput,
+  ctx: {
+    bootHold: boolean
+    engine: string
+    members: readonly ManagedMemberRow[]
+    reporterServerId: string
+    reporterOrganizationId: string | null
+    clusterOrganizationId: string | null
+    loaders: HaBindingLoaders
+  }
+): Promise<ManagedMemberRow | null> {
+  const sameOrganization =
+    ctx.clusterOrganizationId !== null && ctx.reporterOrganizationId === ctx.clusterOrganizationId
+  if (ctx.bootHold) {
+    const held = ctx.members.find((member) => member.id === input.sourceMemberId)
+    return sameOrganization && held?.serverId === ctx.reporterServerId ? held : null
+  }
+  const primary = ctx.members.find((member) => member.role === 'primary') ?? null
+  const rejection = haEventRejection({
+    detector: input.detector,
+    engine: ctx.engine,
+    sourceMemberId: input.sourceMemberId,
+    reporterServerId: ctx.reporterServerId,
+    reporterOrganizationId: ctx.reporterOrganizationId,
+    clusterOrganizationId: ctx.clusterOrganizationId,
+    memberServerIds: ctx.members.map((member) => member.serverId),
+    primary,
+  })
+  if (rejection || !primary) return null
+  const stale = await staleOrchestratorReason(db, input, {
+    reporterServerId: ctx.reporterServerId,
+    engine: ctx.engine,
+    primary,
+    members: ctx.members,
+    loaders: ctx.loaders,
+  })
+  return stale ? null : primary
+}
+
+/**
+ * One terminal `blocked` row per cluster, reporting server and member for
+ * refused reports: a repeat updates the newest row when it is that same
+ * refusal (whatever the reason now is), so a daemon that re-sends every minute
+ * leaves one row.
+ */
+async function recordRefusalRow(
+  db: Db,
+  params: {
+    managedId: string
+    source: ManagedMemberRow
+    reason: string
+    signature: HaEventRefusal
+    reporterServerId: string
+    detector?: string
+  }
+): Promise<RecoveryRecord> {
+  return recordBlockedRecovery(
+    db,
+    {
+      managedId: params.managedId,
+      kind: 'automatic-failover',
+      sourcePrimaryMemberId: params.source.id,
+      state: 'blocked',
+      metadata: {
+        blockedReason: params.reason,
+        reportRefused: params.signature,
+        reporterServerId: params.reporterServerId,
+        sourceServerId: params.source.serverId,
+        ...(params.detector ? { detector: params.detector } : {}),
+      },
+    },
+    (latest) =>
+      latest.metadata.reportRefused !== undefined &&
+      latest.metadata.reporterServerId === params.reporterServerId
+  )
 }
 
 /**
@@ -388,6 +470,7 @@ export async function handleManagedHaEvent(
     return recordRefusedHaEvent(db, input, {
       reporterServerId: deps.reporterServerId,
       signature: deps.signature,
+      ...(deps.binding ? { binding: deps.binding } : {}),
     })
   }
   const receivedAtMs = (deps.nowMs ?? Date.now)()

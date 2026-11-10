@@ -15,6 +15,7 @@ import {
   reporterPrivateHosts,
 } from './ha-event.ts'
 import { firstIncidentReportAt } from './recovery-records.ts'
+import { deadlineBlockStreak } from './ha-fence-deadline.ts'
 import {
   AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
@@ -783,7 +784,10 @@ test('a refused boot-hold report starts nothing and its row says the primary sta
 
 test('every refusal says how to fix it', () => {
   assertEquals(HA_EVENT_REFUSAL_FIXES['session-unsigned'].includes('not pinned'), true)
-  assertEquals(HA_EVENT_REFUSAL_FIXES['session-unsigned'].includes('Update Now'), true)
+  assertEquals(
+    HA_EVENT_REFUSAL_FIXES['session-unsigned'].includes('promote a replica by hand'),
+    true
+  )
   assertEquals(HA_EVENT_REFUSAL_FIXES.unsigned.includes('Update the daemon'), true)
   for (const why of ['unsigned', 'invalid', 'session-unsigned'] as const) {
     assertEquals(HA_EVENT_REFUSED_MESSAGES[why].endsWith(HA_EVENT_REFUSAL_FIXES[why]), true)
@@ -850,4 +854,94 @@ test('firstIncidentReportAt skips earlier incidents and refused, stale and host-
   assertEquals(await firstIncidentReportAt(fakeDb([[], rows]), params), '2026-01-01T00:00:00.000Z')
   // Only refused rows: no report of the incident yet.
   assertEquals(await firstIncidentReportAt(fakeDb([[], [rows[1]!]]), params), null)
+})
+
+test('a refused report about a replaced primary is logged, never filed against the new primary', async () => {
+  const calls = { inserts: 0, reads: 0 }
+  // The primary is now on SERVER_B; the old primary's host (SERVER_A) still reports.
+  const { db } = recordingDb(
+    [[mysqlRow], [member({ serverId: SERVER_B }), replicaMember({ serverId: SERVER_A })], inOrg],
+    calls
+  )
+  const result = await handleManagedHaEvent(
+    db,
+    { managedId: MANAGED_ID },
+    {
+      reporterServerId: SERVER_A,
+      signature: 'session-unsigned',
+      commandQueue: queue,
+      binding: binding(),
+    }
+  )
+  assertEquals(result, null)
+  assertEquals(calls.inserts, 0)
+})
+
+test('a refused report naming another instance than the current primary is not filed', async () => {
+  const calls = { inserts: 0, reads: 0 }
+  const { db } = recordingDb([[mysqlRow], [member(), replicaMember()], inOrg], calls)
+  const result = await handleManagedHaEvent(
+    db,
+    { managedId: MANAGED_ID, instanceHost: '10.0.0.99', instancePort: 3306 },
+    { reporterServerId: SERVER_A, signature: 'unsigned', commandQueue: queue, binding: binding() }
+  )
+  assertEquals(result, null)
+  assertEquals(calls.inserts, 0)
+})
+
+test('repeated refusals from one server fold into its row, whatever the reason', async () => {
+  const calls = { inserts: 0, reads: 0 }
+  const earlier = recoveryRow({
+    id: 'rec-refused-1',
+    state: 'blocked',
+    metadata: { reportRefused: 'unsigned', reporterServerId: SERVER_A, blockedReason: 'old' },
+  })
+  const updated: unknown[] = []
+  const base = recordingDb([[mysqlRow], [member(), replicaMember()], inOrg, [], [earlier]], calls)
+  const db = base.db as unknown as Record<string, unknown>
+  db.update = () => ({
+    set: (patch: Record<string, unknown>) => {
+      updated.push(patch)
+      return {
+        where: () => ({
+          returning: () => Promise.resolve([{ ...earlier, metadata: patch.metadata }]),
+        }),
+      }
+    },
+  })
+  const result = await handleManagedHaEvent(
+    db as unknown as Db,
+    { managedId: MANAGED_ID },
+    {
+      reporterServerId: SERVER_A,
+      signature: 'session-unsigned',
+      commandQueue: queue,
+      binding: binding(),
+    }
+  )
+  assertEquals(calls.inserts, 0)
+  assertEquals(result?.id, 'rec-refused-1')
+  const metadata = (updated[0] as { metadata: Record<string, unknown> }).metadata
+  assertEquals(metadata.reportRefused, 'session-unsigned')
+  assertEquals(metadata.blockedCount, 2)
+})
+
+test('refused report rows neither break nor extend a fence-deadline run', () => {
+  const nowMs = Date.parse('2026-01-01T00:10:00.000Z')
+  const deadline = (id: string, at: string) =>
+    recoveryRow({ id, state: 'blocked', startedAt: at, metadata: { fenceDeadline: true } })
+  const refused = recoveryRow({
+    id: 'rec-refused',
+    state: 'blocked',
+    startedAt: '2026-01-01T00:05:00.000Z',
+    metadata: { reportRefused: 'unsigned', blockedReason: 'x' },
+  })
+  const current = deadline('rec-now', '2026-01-01T00:09:00.000Z')
+  const recent = [
+    current,
+    deadline('rec-2', '2026-01-01T00:06:00.000Z'),
+    refused,
+    deadline('rec-1', '2026-01-01T00:03:00.000Z'),
+  ] as never
+  assertEquals(deadlineBlockStreak(recent, current as never, nowMs), 2)
 })

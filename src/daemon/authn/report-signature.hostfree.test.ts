@@ -334,3 +334,31 @@ test('a duplicate type key that ends as another type is not a report', async () 
   assertEquals(intake.verdict, 'other')
   assertEquals(intake.raw, text)
 })
+
+test('a signed managed-ha-event must be fresh: not ahead of the clock, not held back', async () => {
+  const key = await testDaemonKey()
+  const cases: Array<[number, string | null]> = [
+    [NOW_S, null],
+    [NOW_S + 30, null],
+    [NOW_S + 31, 'signed in the future'],
+    [NOW_S - 60, null],
+    [NOW_S - 61, 'signed too long ago'],
+  ]
+  for (const [iat, reason] of cases) {
+    const intake = await intakeSignedSessionReport(
+      await signed(key, HA_EVENT, { iat }),
+      session(key)
+    )
+    assertEquals(intake.signature, reason === null ? 'verified' : 'invalid', String(iat))
+    assertEquals(
+      intake.warning,
+      reason === null ? null : `refused signed managed-ha-event: ${reason}`
+    )
+  }
+  // Other reports keep the wider window.
+  const outcome = await intakeSignedSessionReport(
+    await signed(key, OUTCOME, { iat: NOW_S - 200 }),
+    session(key)
+  )
+  assertEquals(outcome.signature, 'verified')
+})

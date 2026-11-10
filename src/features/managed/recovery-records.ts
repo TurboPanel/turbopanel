@@ -71,6 +71,36 @@ export async function findLatestRecovery(
   return row ? serializeRow(row) : null
 }
 
+/** Most journal rows {@link findLatestActedRecovery} reads past refused reports. */
+const REFUSED_ROWS_SKIP_MAX = 20
+
+/**
+ * {@link findLatestRecovery}, but never a row for a refused HA report
+ * (`metadata.reportRefused`). Those rows only say a report was not acted on;
+ * a reader that decides from the newest recovery (the boot-hold hold, the
+ * re-seed guard, the return fence) must look past them, or an unsigned report
+ * written after a failed failover would hide the row that keeps a member
+ * stopped.
+ */
+export async function findLatestActedRecovery(
+  db: Db,
+  managedId: string
+): Promise<RecoveryRecord | null> {
+  const inflight = await findInFlightRecovery(db, managedId)
+  if (inflight) return inflight
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(eq(recovery.managedId, managedId))
+    .orderBy(desc(recovery.startedAt))
+    .limit(REFUSED_ROWS_SKIP_MAX)
+  for (const row of rows) {
+    const record = serializeRow(row)
+    if (record && !record.metadata.reportRefused) return record
+  }
+  return null
+}
+
 /**
  * Newest automatic failover that was accepted (a target was chosen), in any
  * state. Backs the persisted per-cluster cooldown: it survives restarts
@@ -216,7 +246,13 @@ export async function insertRecovery(
  */
 export async function recordBlockedRecovery(
   db: Db,
-  params: InsertRecoveryParams & { metadata: RecoveryMetadata & { blockedReason: string } }
+  params: InsertRecoveryParams & { metadata: RecoveryMetadata & { blockedReason: string } },
+  /**
+   * When the newest row counts as the same refusal (it is folded into).
+   * Default: same kind, member and `blockedReason`, no target.
+   */
+  sameRefusal: (latest: RecoveryRecord) => boolean = (latest) =>
+    latest.metadata.blockedReason === params.metadata.blockedReason
 ): Promise<RecoveryRecord> {
   const latest = await findLatestRecovery(db, params.managedId)
   if (
@@ -224,7 +260,7 @@ export async function recordBlockedRecovery(
     latest.state === 'blocked' &&
     latest.targetMemberId === null &&
     latest.sourcePrimaryMemberId === params.sourcePrimaryMemberId &&
-    latest.metadata.blockedReason === params.metadata.blockedReason
+    sameRefusal(latest)
   ) {
     const updated = await updateRecovery(db, latest.id, {
       metadata: {
