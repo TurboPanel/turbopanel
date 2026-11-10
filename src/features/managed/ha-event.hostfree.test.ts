@@ -334,7 +334,7 @@ test("handleManagedHaEvent ignores an Orchestrator event from a server that is n
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member(), replicaMember()], inOrg], undefined, calls),
     { managedId: MANAGED_ID, evidence: { spanMs: 0 } },
-    { reporterServerId: SERVER_B, commandQueue: queue, binding: binding() }
+    { signature: 'verified', reporterServerId: SERVER_B, commandQueue: queue, binding: binding() }
   )
   assertEquals(result, null)
   assertEquals(calls, { inserts: 0, reads: 3 })
