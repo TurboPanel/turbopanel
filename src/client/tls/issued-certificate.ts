@@ -235,9 +235,11 @@ async function checkPair(
  * Whether the pair should replace what the row holds. A row with nothing yet
  * takes it. After that a pair replaces the stored one only when it expires
  * later (a renewal): an older valid pair sent again, or one with the very same
- * expiry, never overwrites a newer one. A certificate for a different name of
- * a multi-name row (Caddy issues one per name) does not overwrite a
- * still-valid pair for another name.
+ * expiry, never overwrites a newer one. A pair that covers every stored name
+ * (the same names, or more: a renewal that now also covers the www name a site
+ * adds) is a renewal too. A certificate for a different name of a multi-name
+ * row (Caddy issues one per name) does not overwrite a still-valid pair for
+ * another name.
  */
 export function replaces(
   stored: { names: string[] | undefined; notAfter: string | null },
@@ -248,11 +250,10 @@ export function replaces(
   if (!hasStoredPair) return true
   const storedNotAfter = stored.notAfter === null ? Number.NaN : Date.parse(stored.notAfter)
   if (Number.isNaN(storedNotAfter)) return true
-  const sameNames =
+  const coversStored =
     stored.names === undefined ||
-    (stored.names.length === parsed.dnsNames.length &&
-      stored.names.every((name) => parsed.dnsNames.includes(name)))
-  if (sameNames) return parsed.notAfter.getTime() > storedNotAfter
+    stored.names.every((name) => coversHostname(parsed.dnsNames, name))
+  if (coversStored) return parsed.notAfter.getTime() > storedNotAfter
   return storedNotAfter <= now.getTime()
 }
 
@@ -440,7 +441,14 @@ async function writePair(
     (row) =>
       row.status === 'automatic' &&
       isManagedRowMetadata(row.metadata) &&
-      coversHostname(row.metadata.dnsNames, hostname)
+      // A row covers the hostname, or (for an open request) the hostname is one the
+      // order asked for beyond the row's own names: a www name its site adds. Then the
+      // leaf must also cover every one of the row's own names, so nothing narrower
+      // than the row ever lands on it.
+      (coversHostname(row.metadata.dnsNames, hostname) ||
+        (input.requestId !== undefined &&
+          requestIsOpenFor(row.metadata, input, now) &&
+          row.metadata.dnsNames.every((name) => coversHostname(parsed.dnsNames, name))))
   )
   if (candidates.length === 0) return { refusal: 'no_matching_certificate' }
 

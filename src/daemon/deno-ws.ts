@@ -95,7 +95,11 @@ import {
   createBackupCopyReportStore,
   handleBackupCopyReport,
 } from '../features/backups/copy-report.ts'
-import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
+import {
+  handleManagedHaEvent,
+  haEventSignature,
+  type HaEventSignature,
+} from '../features/managed/ha-event.ts'
 import { handleManagedHealthReport } from '../features/managed/health-report.ts'
 import {
   FabricPeerReportThrottle,
@@ -123,7 +127,11 @@ import {
   DAEMON_PROOF_TRUST_LEVEL,
   decideAttachProof,
 } from './authn/attach-proof.ts'
-import { helloListsSignedReports, intakeSignedSessionReport } from './authn/report-signature.ts'
+import {
+  helloListsSignedReports,
+  intakeSignedSessionReport,
+  type ReportSignature,
+} from './authn/report-signature.ts'
 import {
   raiseServerTrustLevel,
   recordServerSignsReports,
@@ -523,9 +531,11 @@ async function handleDaemonManagedHaInbound(params: {
   commandQueue?: CommandQueue
   registry?: DaemonCellRegistry
   reporterServerId: string
+  signature: HaEventSignature
+  handle?: typeof handleManagedHaEvent
 }): Promise<void> {
   const { cell, db, connectionId, message } = params
-  await handleManagedHaEvent(
+  await (params.handle ?? handleManagedHaEvent)(
     db,
     {
       managedId: message.managedId,
@@ -539,6 +549,7 @@ async function handleDaemonManagedHaInbound(params: {
     {
       commandQueue: params.commandQueue,
       reporterServerId: params.reporterServerId,
+      signature: params.signature,
       autoFailover: resolveAutoFailoverFromDenoEnv(),
       probeStandby: createFreshStandbyProbe(db, params.registry),
       freshStandbyMarginMs: resolveFreshStandbyMarginMsFromDenoEnv(),
@@ -725,12 +736,21 @@ type DaemonInboundDispatch = {
   /** Reaches other servers' cells (the HA event probes a standby's daemon). */
   registry?: DaemonCellRegistry
   message: DaemonMessage
+  /**
+   * What the socket's signature check found for this frame (`none`: no check
+   * ran) and whether the socket is a signed session. Only a verified
+   * `managed-ha-event` is acted on; absent reads as an unsigned session.
+   */
+  signature?: ReportSignature
+  signedSession?: boolean
   /** Seals alert channel addresses when an event notifies; omit and only the bell is written. */
   dataEncryptionSecrets?: DerivedSecretsConfig
   /** True when the frame came over the co-located Unix-socket attach (no peer address). */
   colocated?: boolean
   /** Development entry only: receives the co-located daemon's `dev-host-status`. */
   onDevHostStatus?: DevHostStatusSink
+  /** Test seam for the `managed-ha-event` handler; default `handleManagedHaEvent`. */
+  handleManagedHaEvent?: typeof handleManagedHaEvent
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
   reply: (
     message: BackupRunReportResultMessage | CommandOutcomeAckMessage | BackupCopyReportResultMessage
@@ -840,6 +860,8 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         commandQueue: params.commandQueue,
         registry: params.registry,
         reporterServerId: serverId,
+        signature: haEventSignature(params.signature ?? 'none', params.signedSession === true),
+        handle: params.handleManagedHaEvent,
       })
       return
     case 'managed-health-report':
@@ -1002,6 +1024,8 @@ export type DaemonWebSocketOptions = {
   identityUrls?: (db: Db) => Promise<string[]>
   /** Development entry only: the co-located daemon's `dev-host-status` sink. */
   onDevHostStatus?: DevHostStatusSink
+  /** Test seam: receives every `managed-ha-event`; default `handleManagedHaEvent`. */
+  handleManagedHaEvent?: typeof handleManagedHaEvent
 }
 
 /**
@@ -1338,9 +1362,11 @@ export function registerDaemonWebSocket<E extends Env>(
         traceIgnoredUnknownInboundType(payload.sub, connectionId, failure.reason)
       }
 
-      /** A signed session's report checked and unwrapped; null = drop it. */
-      const screenSignedReport = async (raw: string): Promise<string | null> => {
-        if (phase !== 'signed' || !signedSessionId) return raw
+      /** A signed session's report checked and unwrapped; `raw` null = drop it. */
+      const screenSignedReport = async (
+        raw: string
+      ): Promise<{ raw: string | null; signature: ReportSignature }> => {
+        if (phase !== 'signed' || !signedSessionId) return { raw, signature: 'none' }
         const intake = await intakeSignedSessionReport(raw, {
           sessionId: signedSessionId,
           keyId: daemonState?.key.id,
@@ -1367,18 +1393,20 @@ export function registerDaemonWebSocket<E extends Env>(
         if (intake.warning && !repeat) {
           daemonCellLog('WARN', payload.sub, connectionId, intake.warning)
         }
-        return intake.raw
+        return { raw: intake.raw, signature: intake.signature }
       }
 
       /** A signed report checked, then the frame validated; null when dropped or refused. */
       const acceptedFrame = async (
         raw: string,
         ws: WSContext<WebSocket>
-      ): Promise<Extract<DaemonInboundFrameResult, { ok: true }> | null> => {
-        const frame = await screenSignedReport(raw)
-        if (frame === null) return null
-        const validated = validateDaemonInboundFrame(frame)
-        if (validated.ok) return validated
+      ): Promise<
+        (Extract<DaemonInboundFrameResult, { ok: true }> & { signature: ReportSignature }) | null
+      > => {
+        const screened = await screenSignedReport(raw)
+        if (screened.raw === null) return null
+        const validated = validateDaemonInboundFrame(screened.raw)
+        if (validated.ok) return { ...validated, signature: screened.signature }
         await handleUnacceptedFrame(validated, ws)
         return null
       }
@@ -1429,9 +1457,12 @@ export function registerDaemonWebSocket<E extends Env>(
           commandQueue: options.commandQueue,
           registry,
           message,
+          signature: validated.signature,
+          signedSession: phase === 'signed',
           dataEncryptionSecrets: options.dataEncryptionSecrets,
           colocated: remoteAddress === undefined,
           onDevHostStatus: options.onDevHostStatus,
+          handleManagedHaEvent: options.handleManagedHaEvent,
           reply: (answer) => replyToDaemon(ws, answer),
         })
       }

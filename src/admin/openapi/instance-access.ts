@@ -130,10 +130,14 @@ export const INSTANCE_ACCESS_PATHS = {
         'Body `{ kind: "rotate" | "revoke" | "passkeys", mark?, unmark?, newKey? }`. Returns ' +
         'the exact statement bytes (base64url) and the WebAuthn challenge (SHA-256 of them). ' +
         'Rotate and revoke need two marked passkeys; on High Availability `newKey` is the ' +
-        'public key the rotation command printed. Superadmin, step-up.',
+        'public key the rotation command printed. `approvalsNeeded` is 2 for a revoke (no ' +
+        'signature by the old key, so two different marked passkeys approve it), else 1. ' +
+        'Superadmin, step-up.',
       security: [...cookieSecurity],
       responses: {
-        '200': { description: '`{ ok: true, statement, challenge, rpId, keyset }`' },
+        '200': {
+          description: '`{ ok: true, statement, challenge, rpId, keyset, approvalsNeeded }`',
+        },
         '401': { description: 'Unauthorized' },
         '403': { description: 'Forbidden, or `reauth_required`' },
         '409': {
@@ -150,9 +154,11 @@ export const INSTANCE_ACCESS_PATHS = {
       summary: 'Approve a key-set statement with passkey assertions',
       description:
         'Body `{ statement, approvals: [{ credentialId, authenticatorData, clientDataJSON, ' +
-        'signature }] }`. Checked exactly as servers check it, then stored; self-hosted moves ' +
+        'signature }] }`. Checked exactly as servers check it; then, except for a revoke, the ' +
+        'current key signs the statement (`keySig`), and it is stored; self-hosted moves ' +
         'to the new key at once, High Availability waits for the secret. Audited; ' +
-        'superadmins are emailed. Superadmin, step-up.',
+        'superadmins are emailed. The answer carries `keySig` only once the change is live. ' +
+        'Superadmin, step-up.',
       security: [...cookieSecurity],
       responses: {
         '200': { description: '`{ ok: true, keyset, kind, state, envelope }`' },
@@ -176,7 +182,9 @@ export const INSTANCE_ACCESS_PATHS = {
       security: [...cookieSecurity],
       parameters: [{ name: 'keyset', in: 'path', required: true, schema: { type: 'integer' } }],
       responses: {
-        '200': { description: 'The envelope `{ statement, approvals }`' },
+        '200': {
+          description: 'The envelope `{ statement, approvals, keySig? }` (`keySig` once live)',
+        },
         '404': { description: 'Not found' },
       },
     },

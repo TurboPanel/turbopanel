@@ -188,6 +188,12 @@
       "tag": "0030_control_plane_key_rotation",
       "when": 1794252745440,
       "sha256": "6ebb6ae9d1a7f2b142d9c165f72189e568338dd3961e9e35b395b44f93243a26"
+    },
+    {
+      "idx": 31,
+      "tag": "0031_rotation_prev_key_signature",
+      "when": 1794316446162,
+      "sha256": "94e36e4fb647f234c1258f6b75ed15558ebaf41d8ad1417e630f034f40fad5cd"
     }
   ]
 }

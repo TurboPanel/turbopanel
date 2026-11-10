@@ -26,6 +26,31 @@
  *
  * Command schemas stay comment-pinned until they are twins.
  *
+ * Daemon first. A wire change merges into the daemon's trunk before the
+ * control plane's, and each side is checked against the other repository's
+ * trunk (never another pull request's branch). So the rule is one-way:
+ *
+ *   - lists and maps (DAEMON_WIRE_FEATURES, DAEMON_FEATURE_MIN_VERSIONS,
+ *     INSTANCE_FEATURE_MIN_VERSIONS, UPDATE_CHANNELS, the ServerReportedIp
+ *     field names) and the field snapshot: every control plane entry must be
+ *     in the daemon's, unchanged. The daemon may have more (a daemon-only
+ *     snapshot field must be optional). Old control planes ignore daemon
+ *     features they do not know (filterHelloFeatures), so a daemon that is
+ *     ahead is safe; a control plane that relies on something the daemon
+ *     does not have yet is red, and the fix is to merge the daemon first.
+ *   - named constants both sides use (signed-session prefixes, proof tags,
+ *     HOSTNAME_RE, HOSTNAME_MAX_LENGTH, MAX_NIC_SLOTS, the machine-key
+ *     namespace, INSTANCE_VERSION_HEADER): the control plane's value must
+ *     equal daemon trunk's; the daemon may have names the control plane
+ *     does not use yet.
+ *   - whole-file mirrors (the metrics contract body, the folder name
+ *     vectors) and FILESYSTEM_ROLE_PRIORITY: there is no "ahead" for bytes,
+ *     so a mismatch is a notice (the control plane has not caught up yet),
+ *     and red only on a control plane pull request that changes its own copy
+ *     (per file) to something other than daemon trunk's. CONTRACT_BASE_DIR (the
+ *     pull request's base, set by build.yml) is what the copy is compared
+ *     with to tell whether this pull request changed it.
+ *
  * Usage:
  *   node scripts/check-contract-drift.mjs
  *   pnpm check:contract-drift
@@ -185,10 +210,6 @@ function requireText(value, message) {
   return value
 }
 
-function requireEqual(left, right, message) {
-  if (left !== right || left == null) fail(message)
-}
-
 const PLAIN_SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)$/
 
 function readDenoVersion(root) {
@@ -209,8 +230,114 @@ function requireFloorWithinVersion(floor, peerVersion, name) {
   }
 }
 
-function requireJoinedEqual(left, right, message) {
-  if (left?.join(',') !== right?.join(',') || right == null) fail(message)
+/**
+ * Whether this pull request changes its copy of a mirror: the copy here
+ * differs from the same file at the pull request's base (CONTRACT_BASE_DIR,
+ * set by build.yml for a pull request into trunk). A file the base does not
+ * have counts as changed. Outside such a pull request nothing counts.
+ */
+export function copyChanged(panelPath, baseDir = process.env.CONTRACT_BASE_DIR ?? '', self = ROOT) {
+  if (!baseDir) return false
+  const before = readRel(baseDir, panelPath)
+  return before == null || before !== readRel(self, panelPath)
+}
+
+/**
+ * A byte mirror that differs: red when this control plane pull request
+ * changes its own copy (`panelPath`), else a notice that the control plane has
+ * not caught up with the daemon yet.
+ */
+export function mirrorDrift(message, panelPath, changed = copyChanged(panelPath)) {
+  if (changed) {
+    fail(`${message}: this pull request changes ${panelPath}, which must match daemon trunk's copy`)
+  }
+  console.log(
+    `::notice title=Contract mirror::${message} (${panelPath}); the control plane has not caught up with daemon trunk yet`
+  )
+  return false
+}
+
+function mirrorEqual(left, right, message, panelPath) {
+  if (left == null || right == null) fail(message)
+  if (left !== right) mirrorDrift(message, panelPath)
+}
+
+/**
+ * A named constant both sides use (a signing prefix, a proof tag, a hostname
+ * rule): the control plane's value must equal daemon trunk's. There is no
+ * "ahead" for it: a peer that disagrees rejects the other's bytes.
+ */
+export function constantDrift(left, right, message) {
+  if (right == null)
+    return `${message}: daemon trunk does not have it; merge the daemon change first`
+  if (left == null) return `${message}: missing on the control plane`
+  if (left !== right)
+    return `${message}: the control plane and daemon trunk must hold the same value`
+  return null
+}
+
+function constantEqual(left, right, message) {
+  const drift = constantDrift(left, right, message)
+  if (drift) fail(drift)
+}
+
+function mirrorJoinedEqual(left, right, message, panelPath) {
+  if (left == null || right == null) fail(message)
+  if (left.join(',') !== right.join(',')) mirrorDrift(message, panelPath)
+}
+
+/**
+ * The entries of `instance` that `daemon` lacks. Daemon first: the daemon may
+ * list more; the control plane may not rely on anything daemon trunk lacks.
+ */
+export function missingFromDaemon(instance, daemon) {
+  const have = new Set(daemon)
+  return instance.filter((entry) => !have.has(entry))
+}
+
+function requireSubset(instance, daemon, what) {
+  if (instance == null || daemon == null) fail(`${what} missing on one side of the pair`)
+  const missing = missingFromDaemon(instance, daemon)
+  if (missing.length > 0) {
+    fail(
+      `${what}: the control plane relies on ${missing.join(', ')}, which daemon trunk does not have yet; merge the daemon change first`
+    )
+  }
+}
+
+/** `{ a: 0.1.1, b: 0.2.0 }` (as extractObjectLiteral returns it) as [key, value] pairs. */
+export function objectLiteralEntries(literal) {
+  if (literal == null) return null
+  const body = literal.trim().replace(/^\{/, '').replace(/\}$/, '')
+  const entries = []
+  for (const part of body.split(',')) {
+    const item = part.trim()
+    if (!item) continue
+    const colon = item.indexOf(':')
+    if (colon < 1) return null
+    entries.push([item.slice(0, colon).trim(), item.slice(colon + 1).trim()])
+  }
+  return entries
+}
+
+/** Every control plane key must be in the daemon's map with the same value. */
+export function mapDriftFromDaemon(instanceLiteral, daemonLiteral) {
+  const instance = objectLiteralEntries(instanceLiteral)
+  const daemon = objectLiteralEntries(daemonLiteral)
+  if (instance == null || daemon == null) return 'missing or not a plain object literal'
+  const byKey = new Map(daemon)
+  for (const [key, value] of instance) {
+    if (!byKey.has(key))
+      return `${key} is not in daemon trunk's map yet; merge the daemon change first`
+    if (byKey.get(key) !== value)
+      return `${key} is ${value} here but ${byKey.get(key)} on daemon trunk`
+  }
+  return null
+}
+
+function requireMapSubset(instanceLiteral, daemonLiteral, what) {
+  const drift = mapDriftFromDaemon(instanceLiteral, daemonLiteral)
+  if (drift) fail(`${what}: ${drift}`)
 }
 
 function checkMetrics(tp, td) {
@@ -222,9 +349,12 @@ function checkMetrics(tp, td) {
     readRel(td, 'src/contracts/metrics-contract.ts'),
     'metrics-contract.ts missing on one side of the pair'
   )
-  if (stripHeaderDocblock(metricsLeft) !== stripHeaderDocblock(metricsRight)) {
-    fail('metrics-contract.ts body drifted (below the header docblock)')
-  }
+  mirrorEqual(
+    stripHeaderDocblock(metricsLeft),
+    stripHeaderDocblock(metricsRight),
+    'metrics-contract.ts body drifted (below the header docblock)',
+    'src/contracts/metrics-contract.ts'
+  )
 }
 
 function checkHostname(tp, td) {
@@ -236,15 +366,15 @@ function checkHostname(tp, td) {
     readRel(td, 'src/contracts/commands-contracts.ts'),
     'hostname sources missing on one side of the pair'
   )
-  requireEqual(
+  constantEqual(
     extractConst(hostnameLeft, 'HOSTNAME_RE'),
     extractConst(hostnameRight, 'HOSTNAME_RE'),
-    'HOSTNAME_RE drifted'
+    'HOSTNAME_RE'
   )
-  requireEqual(
+  constantEqual(
     extractConst(hostnameLeft, 'HOSTNAME_MAX_LENGTH'),
     extractConst(hostnameRight, 'HOSTNAME_MAX_LENGTH'),
-    'HOSTNAME_MAX_LENGTH drifted'
+    'HOSTNAME_MAX_LENGTH'
   )
 }
 
@@ -265,11 +395,7 @@ function checkPanelIdentityBytes(tp, td) {
     'REPORT_PREFIX',
     'SIG_SUFFIX_MARKER',
   ]) {
-    requireEqual(
-      extractConst(envelopeLeft, name),
-      extractConst(envelopeRight, name),
-      `${name} drifted`
-    )
+    constantEqual(extractConst(envelopeLeft, name), extractConst(envelopeRight, name), name)
   }
   const proofLeft = requireText(
     readRel(tp, 'src/daemon/authn/proof-version.ts'),
@@ -277,7 +403,7 @@ function checkPanelIdentityBytes(tp, td) {
   )
   const proofRight = requireText(readRel(td, 'src/crypto/keys.ts'), 'keys.ts missing on the daemon')
   for (const name of ['ENROLL_PROOF_V2_TAG', 'AUTH_PROOF_V2_TAG']) {
-    requireEqual(extractConst(proofLeft, name), extractConst(proofRight, name), `${name} drifted`)
+    constantEqual(extractConst(proofLeft, name), extractConst(proofRight, name), name)
   }
 }
 
@@ -290,7 +416,12 @@ function checkLayoutVectors(tp, td) {
     readRel(td, 'src/contracts/layout-vectors.json'),
     'layout-vectors.json missing on the daemon'
   )
-  if (left !== right) fail('layout-vectors.json drifted between checkouts')
+  mirrorEqual(
+    left,
+    right,
+    'layout-vectors.json drifted between checkouts',
+    'src/contracts/layout-vectors.json'
+  )
 }
 
 function checkMachineKey(tp, td) {
@@ -302,10 +433,10 @@ function checkMachineKey(tp, td) {
     readRel(td, 'src/host/machine-key.ts'),
     'machine-key.ts missing on one side of the pair'
   )
-  requireEqual(
+  constantEqual(
     extractConst(mkLeft, 'TURBOPANEL_MACHINE_ID_NAMESPACE'),
     extractConst(mkRight, 'TURBOPANEL_MACHINE_ID_NAMESPACE'),
-    'TURBOPANEL_MACHINE_ID_NAMESPACE drifted'
+    'TURBOPANEL_MACHINE_ID_NAMESPACE'
   )
 }
 
@@ -329,11 +460,7 @@ function checkUpdateChannels(tp, td) {
       channelsRight = quotedStrings(channelsRightSrc.slice(from + 1, to))
     }
   }
-  requireJoinedEqual(
-    channelsLeft,
-    channelsRight,
-    `UPDATE_CHANNELS drifted (${channelsLeft?.join(',')} vs ${channelsRight?.join(',')})`
-  )
+  requireSubset(channelsLeft, channelsRight, 'UPDATE_CHANNELS')
 }
 
 function checkReportedIp(tp, td) {
@@ -345,10 +472,10 @@ function checkReportedIp(tp, td) {
     readRel(td, 'src/contracts/server-reported-ip.ts'),
     'ServerReportedIp sources missing on one side of the pair'
   )
-  requireJoinedEqual(
+  requireSubset(
     extractTypeFields(ipLeftSrc, 'ServerReportedIp'),
     extractTypeFields(ipRightSrc, 'ServerReportedIp'),
-    'ServerReportedIp fields drifted'
+    'ServerReportedIp fields'
   )
 }
 
@@ -369,15 +496,16 @@ function checkSlotMapping(tp, td) {
     readRel(td, 'src/contracts/topology-slot-mapping.ts'),
     'topology slot-mapping sources missing on one side of the pair'
   )
-  requireEqual(
+  constantEqual(
     extractConst(slotLeftTypes, 'MAX_NIC_SLOTS'),
     extractConst(slotRightTypes, 'MAX_NIC_SLOTS'),
-    'MAX_NIC_SLOTS drifted'
+    'MAX_NIC_SLOTS'
   )
-  requireJoinedEqual(
+  mirrorJoinedEqual(
     extractArrayConst(slotLeftMap, 'FILESYSTEM_ROLE_PRIORITY'),
     extractArrayConst(slotRightMap, 'FILESYSTEM_ROLE_PRIORITY'),
-    'FILESYSTEM_ROLE_PRIORITY drifted'
+    'FILESYSTEM_ROLE_PRIORITY drifted',
+    'src/contracts/topology-slot-mapping.ts'
   )
 }
 
@@ -960,6 +1088,59 @@ export function snapshotDataDrift(left, right) {
   return firstDataDifference(parseSnapshot(left, 'instance'), parseSnapshot(right, 'daemon'), '$')
 }
 
+/**
+ * A daemon pin that widens the control plane's on purpose (same requiredness,
+ * a wider type, `expansion: true`) still covers it.
+ */
+export function markedWidening(pin, theirs) {
+  return (
+    theirs.expansion === true &&
+    theirs.required === pin.required &&
+    relateFieldTypes(theirs.type, pin.type) === 'wider'
+  )
+}
+
+/** Why the daemon's pin of one type does not cover the control plane's, or null. */
+function typePinDrift(typeName, pin, theirs) {
+  for (const key of ['instance', 'daemon']) {
+    if (pin[key] !== theirs[key]) return `$.${typeName}.${key} differs`
+  }
+  const daemonFields = new Map((theirs.fields ?? []).map((field) => [field.name, field]))
+  for (const field of pin.fields ?? []) {
+    const found = daemonFields.get(field.name)
+    if (!found) {
+      return `${typeName}.${field.name} is pinned here but not in daemon trunk's snapshot; merge the daemon change first`
+    }
+    const differs = firstDataDifference(field, found, `$.${typeName}.fields.${field.name}`)
+    if (differs && !markedWidening(field, found))
+      return `${differs} differs from daemon trunk's snapshot`
+    daemonFields.delete(field.name)
+  }
+  const required = [...daemonFields.values()].find((extra) => extra.required)
+  return required
+    ? `${typeName}.${required.name} is a required field only the daemon pins; a field the control plane does not know yet must be optional`
+    : null
+}
+
+/**
+ * Daemon first: every type and field the control plane pins must be pinned
+ * the same way in the daemon's snapshot. The daemon may pin more types, and
+ * more fields when they are optional. Returns why not, or null.
+ */
+export function snapshotSubsetDrift(left, right) {
+  const instance = parseSnapshot(left, 'instance')
+  const daemon = parseSnapshot(right, 'daemon')
+  for (const [typeName, pin] of Object.entries(instance)) {
+    const theirs = daemon[typeName]
+    if (!isPlainObject(theirs)) {
+      return `${typeName} is pinned here but not in daemon trunk's snapshot; merge the daemon change first`
+    }
+    const drift = typePinDrift(typeName, pin, theirs)
+    if (drift) return drift
+  }
+  return null
+}
+
 function parseSnapshot(text, side) {
   try {
     return JSON.parse(text)
@@ -1011,14 +1192,15 @@ function checkExpandOnly(tp, td) {
   )
   let differsAt = null
   try {
-    differsAt = snapshotDataDrift(left, right)
+    differsAt = snapshotSubsetDrift(left, right)
   } catch (error) {
     fail(error.message)
   }
   if (differsAt) {
-    fail(`contract-field-snapshot.json drifted between checkouts at ${differsAt}`)
+    fail(`contract-field-snapshot.json: ${differsAt}`)
   }
   const snapshot = JSON.parse(left)
+  const daemonSnapshot = JSON.parse(right)
   for (const [typeName, pin] of Object.entries(snapshot)) {
     const instanceSrc = requireText(
       readRel(tp, pin.instance),
@@ -1028,7 +1210,7 @@ function checkExpandOnly(tp, td) {
     const instanceFields = extractFieldSpecs(instanceSrc, typeName)
     const daemonFields = extractFieldSpecs(daemonSrc, typeName)
     assertFieldsCovered(instanceFields, pin.fields, `${typeName} instance`)
-    assertFieldsCovered(daemonFields, pin.fields, `${typeName} daemon`)
+    assertFieldsCovered(daemonFields, daemonSnapshot[typeName].fields, `${typeName} daemon`)
     if (!instanceFields || !daemonFields) fail(`${typeName} fields missing`)
     assertRequiredSuperset(instanceFields, daemonFields, typeName)
   }
@@ -1041,10 +1223,10 @@ function checkExpandOnly(tp, td) {
     readRel(td, 'src/instance/version-wire.ts'),
     'daemon version-wire.ts missing'
   )
-  requireEqual(
+  constantEqual(
     extractConst(instanceWire, 'INSTANCE_VERSION_HEADER'),
     extractConst(daemonWire, 'INSTANCE_VERSION_HEADER'),
-    'INSTANCE_VERSION_HEADER drifted'
+    'INSTANCE_VERSION_HEADER'
   )
   // The two floors name versions on two separate release lines (the daemon's
   // and the control plane's), so they are not equal. Each must be a plain
@@ -1059,20 +1241,20 @@ function checkExpandOnly(tp, td) {
     readDenoVersion(td),
     'MIN_SUPPORTED_DAEMON_VERSION'
   )
-  requireEqual(
+  requireMapSubset(
     extractObjectLiteral(instanceWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
     extractObjectLiteral(daemonWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
-    'DAEMON_FEATURE_MIN_VERSIONS drifted'
+    'DAEMON_FEATURE_MIN_VERSIONS'
   )
-  requireEqual(
+  requireMapSubset(
     extractObjectLiteral(instanceWire, 'INSTANCE_FEATURE_MIN_VERSIONS'),
     extractObjectLiteral(daemonWire, 'INSTANCE_FEATURE_MIN_VERSIONS'),
-    'INSTANCE_FEATURE_MIN_VERSIONS drifted'
+    'INSTANCE_FEATURE_MIN_VERSIONS'
   )
-  requireJoinedEqual(
+  requireSubset(
     extractArrayConst(instanceWire, 'DAEMON_WIRE_FEATURES'),
     extractArrayConst(daemonWire, 'DAEMON_WIRE_FEATURES'),
-    'DAEMON_WIRE_FEATURES drifted'
+    'DAEMON_WIRE_FEATURES'
   )
 }
 
@@ -1096,7 +1278,7 @@ function main() {
   checkExpandOnly(tp, td)
 
   console.log(
-    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, folder name vectors, signed-session bytes, expand-only fields agree.'
+    'check-contract-drift: the control plane relies on nothing daemon trunk lacks (features, feature floors, channels, ServerReportedIp, expand-only fields); byte mirrors checked (notices above, if any).'
   )
 }
 

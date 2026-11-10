@@ -6,22 +6,22 @@ checkout (`turbopaneld`). Keep the directory name: it matches the URL prefix.
 
 Nested docs:
 
-| Area | Read first |
-| --- | --- |
-| Cell (presence, DO + Redis, hibernation/cost) | `cell/AGENTS.md` |
-| Host-metrics ingest + stores | `metrics/AGENTS.md` |
+| Area                                          | Read first          |
+| --------------------------------------------- | ------------------- |
+| Cell (presence, DO + Redis, hibernation/cost) | `cell/AGENTS.md`    |
+| Host-metrics ingest + stores                  | `metrics/AGENTS.md` |
 
 ## Producer-owns
 
 Wire shapes are owned by **one** repo. The other copies them (or drift-checks
 them). Do not “fix” a shape in the consumer and leave the producer behind.
 
-| Shape | Owner | Copy / check |
-| --- | --- | --- |
-| Command payload + result schemas | **this repo** (`src/contracts/commands/`) | daemon rewrites a twin under `turbopaneld/src/contracts/` |
+| Shape                                      | Owner                                                                     | Copy / check                                                                                                                     |
+| ------------------------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Command payload + result schemas           | **this repo** (`src/contracts/commands/`)                                 | daemon rewrites a twin under `turbopaneld/src/contracts/`                                                                        |
 | Cell protocol (`DaemonMessage`, envelopes) | **this repo** (`src/contracts/cell-protocol.ts`, `src/contracts/cell.ts`) | daemon extracts a twin; fields the daemon added (`hello`/`heartbeat`, `drivetemp`) stay daemon-local until this repo adopts them |
-| Metrics contract | **daemon** (`turbopaneld/src/contracts/metrics-contract.ts`) | this repo vendors a **byte-identical** twin (`src/contracts/metrics-contract.ts`); CI compares bodies below the header |
-| Topology types + slot mapping | **daemon** | this repo drift-checks `src/contracts/topology-*.ts` |
+| Metrics contract                           | **daemon** (`turbopaneld/src/contracts/metrics-contract.ts`)              | this repo vendors a **byte-identical** twin (`src/contracts/metrics-contract.ts`); CI compares bodies below the header           |
+| Topology types + slot mapping              | **daemon**                                                                | this repo drift-checks `src/contracts/topology-*.ts`                                                                             |
 
 CI:
 
@@ -172,6 +172,8 @@ daemon holds reports until the attach frame's feature list arrives
 unsigned report on a signed session. The cost: a server that once ran a
 signing daemon cannot go back to an older daemon on a signed session unless
 it is re-enrolled.
+
+**Signed HA events (`signed-ha-events-v1`, owner decision 2026-11-10, no floor bump).** On a signed session a daemon that sees the feature on the attach frame also signs every `managed-ha-event` (dead-primary and boot-hold reports) with the same envelope. These frames are in `SIGNATURE_REQUIRED_TYPES` (`authn/report-signature.ts`): the control plane acts on one only when its signature verifies, on every session and whatever the ratchet says. The intake never drops one; it hands it on marked `verified`, `unsigned` or `invalid`, and a frame on a session that is not signed is `session-unsigned` (`haEventSignature` in `features/managed/ha-event.ts`). Both runtimes pass that to `handleManagedHaEvent`, which refuses anything but `verified` before any other check (`recordRefusedHaEvent`): a report from a server that hosts a member of the cluster in its organization becomes one terminal `blocked` row that says why and the exact fix (`HA_EVENT_REFUSED_MESSAGES`, `BOOT_HOLD_REFUSED_MESSAGES`, fixes in `HA_EVENT_REFUSAL_FIXES`; `metadata.reportRefused`; no target, so no cooldown; repeats fold into it), anything else is logged only. A refused boot-hold report leaves its held primary stopped. Owner decision 2026-11-10: strict, with no exception for the co-located daemon. A server must be pinned (hold the panel identity pin) to have a signed session; a server installed before panel keys is pinned by its next daemon update to a new release when that update can fetch and check the identity document (learn-on-upgrade in `run.sh`; a failure leaves it unpinned), no other unpinned server can be pinned from the control plane today, and the server a self-hosted control plane runs on is never pinned (`run.sh` writes no panel pin for a control-plane install or a co-located refresh), so its databases do not fail over automatically. A refused report is filed only when it passes every check a signed one would before any action (detector, reporter and current-primary gate, the Orchestrator instance binding; a boot-hold report must name a member on the reporting server), so a late report about a replaced primary is only logged; repeats from one server fold into its own row per cluster and member, whatever the reason, even when other rows were written since (`findRefusedReportRow`). The Durable Object writes a refusal for one cluster at most every 10 minutes per socket (`haRefusalsAt` on the attachment, stamped after a successful write) before it opens a database client. A signed `managed-ha-event` is refused when signed more than 30 s ahead of the control plane's clock or more than 60 s ago, so a held-back copy cannot be replayed. Readers that decide from the newest recovery (the boot-hold hold, the re-seed guard, the abort-restart guard) use `findLatestActedRecovery` (refused rows filtered out in SQL, so no number of them can hide the row that matters), and the fence-deadline run skips refused rows, so a refused report never hides a failed failover that needs an operator. The cost, accepted by the owner: a server whose daemon has not updated, or whose connection is not a signed session (trust level 0, no panel identity pin), no longer fails over automatically, and its held primaries are not released after an unclean boot. A verified event also sets the reports ratchet, like any verified report. A signed event can still be delayed by whoever ends TLS, within that 60 s window.
 
 ## Sealed secrets (`daemon-sealed-secrets-v1`)
 

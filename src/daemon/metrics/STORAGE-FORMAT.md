@@ -434,17 +434,18 @@ device ids.
 `src/contracts/metrics-contract.ts` exists in this repo and in `turbopaneld` (`src/contracts/metrics-contract.ts`).
 Everything below the header docblock (after the first `*/`) must be byte-identical in the two.
 
-- **`contract-twin`** is the CI job (`.github/workflows/build.yml`, job `contract-twin`) that checks out both repos
-  side by side and runs `deno test -A --no-check src/contracts/metrics-contract.test.ts` (the byte compare) and
-  `scripts/check-contract-drift.mjs`.
+- **`contract-twin`** is the CI job (`.github/workflows/build.yml`, job `contract-twin`) that checks this repo out
+  next to `turbopaneld` trunk and runs `scripts/check-contract-drift.mjs`. The metrics body is a byte mirror: a
+  mismatch is a notice while the control plane catches up, and red on a pull request into trunk that changes this
+  copy to something other than daemon trunk's.
 - **`pnpm check:contract-drift`** is the same drift check locally. It also compares the hostname rule, the
   machine-key namespace, the update channels, the slot-mapping constants, the folder-name vectors and the
   expand-only field snapshot (`scripts/contract-field-snapshot.json`). It skips (exit 0) when the sibling checkout
   is missing, so a green local run with no sibling proves nothing.
-- Change the contract in both repos in the same step. A field already committed to the snapshot may not be removed
+- Change the contract daemon first, then here, to match daemon trunk. A field already committed to the snapshot may not be removed
   or narrowed; widening needs `expansion: true` on its pin.
-- Wire release order for a format change: the panel first, then the daemon (a daemon without the feature falls
-  back to the plain version 6 sample).
+- Wire order for a format change: the daemon first, then the control plane (the daemon sends the new format only
+  to a control plane that lists the feature, and falls back to the plain version 6 sample otherwise).
 
 ## Ingest limits
 

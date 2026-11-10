@@ -47,6 +47,7 @@ function state(overrides: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     centralPair: false,
     issueTimes: [],
     renewAt: null,
+    orderNames: [],
     ...overrides,
   }
 }
@@ -59,6 +60,16 @@ test('state round trips through metadata and keeps the other keys', () => {
   assertEquals(metadata.dnsNames, ['a.example.com'])
   assertEquals(metadata.acme, { stage: 'x' })
   assertEquals(readHttpIssuanceState(metadata), state())
+})
+
+test('a request keeps the names it asked for; a request an older release started reads as none', () => {
+  const asked = state({ orderNames: ['a.example.com', 'www.a.example.com'] })
+  assertEquals(readHttpIssuanceState(withHttpIssuanceState({}, asked))?.orderNames, [
+    'a.example.com',
+    'www.a.example.com',
+  ])
+  const { orderNames: _gone, ...older } = state()
+  assertEquals(readHttpIssuanceState({ httpCert: older })?.orderNames, [])
 })
 
 test('unknown shapes read as null', () => {

@@ -14,7 +14,7 @@ import { isManagedPrimaryEpoch } from '../../contracts/commands/schemas.ts'
 import type { Db } from '../../db/connection.ts'
 import { listManagedMembers } from './members.ts'
 import { loadPrimaryEpoch } from './primary-epoch.ts'
-import { findLatestRecovery } from './recovery-records.ts'
+import { findLatestActedRecovery } from './recovery-records.ts'
 
 export const RESEED_GUARD_METADATA_KEY = 'switchoverReseed'
 
@@ -58,7 +58,7 @@ export async function reseedSupersededReason(db: Db, guard: ReseedGuard): Promis
     return 'the new primary is no longer the ready primary'
   }
   if (source?.role !== 'replica') return 'the former primary is no longer a replica'
-  const latest = await findLatestRecovery(db, guard.managedId)
+  const latest = await findLatestActedRecovery(db, guard.managedId)
   if (latest?.id !== guard.recoveryId) return 'another recovery started after the switchover'
   if (guard.epoch === undefined) return 'the re-seed carries no valid primary epoch'
   if ((await loadPrimaryEpoch(db, guard.managedId)) !== guard.epoch) {

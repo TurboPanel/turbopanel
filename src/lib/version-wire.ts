@@ -229,6 +229,9 @@ export const DAEMON_WIRE_FEATURES = [
   'panel-bound-session-v1',
   'panel-keyset-statements-v1',
   'environment-stop-remove-volumes-v1',
+  'signed-ha-events-v1',
+  'panel-keyset-key-signature-v1',
+  'acme-issue-one-cert-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -325,6 +328,14 @@ export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
  * its key; the finished pair goes through `POST /api/daemon/v1/tls/issued`.
  */
 export const ACME_ISSUE_FEATURE: DaemonWireFeature = 'acme-issue-v1'
+
+/**
+ * The daemon places a server-placed order with its own ACME client and gets one
+ * certificate that covers every name of the request, reported once per name. A
+ * request with several names (apex and www, or more) goes only to a daemon that
+ * lists this feature; an older one would get one certificate per name.
+ */
+export const ACME_ISSUE_ONE_CERT_FEATURE: DaemonWireFeature = 'acme-issue-one-cert-v1'
 
 /**
  * The daemon keeps each command's final result on the host until this control
@@ -508,6 +519,18 @@ export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report
 export const SIGNED_REPORTS_FEATURE: DaemonWireFeature = 'signed-reports-v1'
 
 /**
+ * On a signed session the daemon also signs every `managed-ha-event` (dead
+ * primary and boot-hold reports), with the same envelope as the signed
+ * reports. This control plane acts on a `managed-ha-event` only when its
+ * signature verifies (`SIGNATURE_REQUIRED_TYPES` in
+ * `src/daemon/authn/report-signature.ts`): an unsigned one, from any daemon
+ * or session, is refused and recorded. Listed by both sides; a daemon signs
+ * them for a control plane that lists it. No floor moves: an older daemon
+ * still connects and works, but its failover reports are not acted on.
+ */
+export const SIGNED_HA_EVENTS_FEATURE: DaemonWireFeature = 'signed-ha-events-v1'
+
+/**
  * Passkey-approved key changes: the control plane serves the key-set chain at
  * `GET /api/daemon/v1/instance/identity/statements` and the identity
  * document's `rotation` block; the daemon pins rotation passkeys, follows the
@@ -515,6 +538,15 @@ export const SIGNED_REPORTS_FEATURE: DaemonWireFeature = 'signed-reports-v1'
  * sides; nothing on either side waits for the other (expand-only).
  */
 export const PANEL_KEYSET_STATEMENTS_FEATURE: DaemonWireFeature = 'panel-keyset-statements-v1'
+
+/**
+ * Key-set statements carry the replaced key's `keySig` (`"tp-keyset\n"` + the
+ * statement bytes) for `rotate` and `passkeys`, and a revoke needs two
+ * different pinned passkeys; a daemon that lists it refuses anything less.
+ * Informational only: nothing switches on it (an older daemon ignores
+ * `keySig` and still follows the chain).
+ */
+export const PANEL_KEYSET_KEY_SIGNATURE_FEATURE: DaemonWireFeature = 'panel-keyset-key-signature-v1'
 
 /**
  * The daemon understands `tunnel: false` and `lanRoutes` on
