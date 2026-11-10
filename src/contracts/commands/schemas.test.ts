@@ -7982,3 +7982,47 @@ test('parseFabricReconcilePayload keeps tunnel and lanRoutes, address optional o
     assertThrows(() => parseFabricReconcilePayload(value), TypeError, message)
   }
 })
+
+test('parseEnvironmentStopPayload takes removeVolumes as storage ids only', () => {
+  const base = { environmentId: 'env-1', projectId: 'proj-1', projectName: 'tp-demo' }
+  const id = '0195a5a0-0000-7000-8000-00000000000a'
+  assertEquals(
+    parseEnvironmentStopPayload({ ...base, removeVolumes: [{ storageId: id }, { storageId: id }] })
+      .removeVolumes,
+    [{ storageId: id }]
+  )
+  assertEquals(parseEnvironmentStopPayload(base).removeVolumes, undefined)
+  for (const bad of ['managed_x_data', id.toUpperCase(), '../x']) {
+    assertThrows(
+      () => parseEnvironmentStopPayload({ ...base, removeVolumes: [{ storageId: bad }] }),
+      Error,
+      'Invalid environment.stop removeVolumes entry'
+    )
+  }
+  assertThrows(
+    () => parseEnvironmentStopPayload({ ...base, removeVolumes: 'x' }),
+    TypeError,
+    'Invalid environment.stop removeVolumes'
+  )
+})
+
+test('parseEnvironmentStopResult reads volume states and drops malformed ones', () => {
+  const id = '0195a5a0-0000-7000-8000-00000000000a'
+  const other = '0195a5a0-0000-7000-8000-00000000000b'
+  assertEquals(
+    parseEnvironmentStopResult({
+      projectName: 'tp-demo',
+      volumes: [
+        { storageId: id, state: 'removed', reason: 'ignored' },
+        { storageId: other, state: 'kept', reason: 'still used by web-1' },
+        { storageId: 'bad', state: 'removed' },
+        { storageId: id, state: 'vanished' },
+      ],
+    }).volumes,
+    [
+      { storageId: id, state: 'removed' },
+      { storageId: other, state: 'kept', reason: 'still used by web-1' },
+    ]
+  )
+  assertEquals(parseEnvironmentStopResult({ projectName: 'x' }).volumes, undefined)
+})

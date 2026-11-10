@@ -32,6 +32,8 @@ import {
   grant,
   hosting,
   hostname,
+  key,
+  mount,
   network,
   organization,
   principal,
@@ -39,7 +41,10 @@ import {
   project,
   server,
   service,
+  share,
   slot,
+  storage,
+  storageCopy,
   subnet,
   tenancy,
   tls,
@@ -2922,6 +2927,262 @@ test('POST /environments/:id/stop mid-rollout cancels the servers still waiting'
         .from(command)
         .where(and(eq(command.name, 'environment.deploy'), eq(command.serverId, held)))
       assertEquals(heldCommand?.status, 'cancelled')
+    })
+  })
+})
+
+/** The registered volumes of a Destroy-that-deletes-data scene, by the name people know them by. */
+type DataVolumeScene = {
+  ids: Record<string, string>
+  otherEnvironmentId: string
+}
+
+/**
+ * An environment with two volumes a Destroy may delete (its own and its
+ * service's) next to every kind it must never touch: another environment's,
+ * a project-wide one, a common one, one shared with or mounted by another
+ * environment, and an external one. `ready` gives the server a daemon that
+ * lists the volume removal feature.
+ */
+async function withDataVolumeScene(
+  ctx: TwoServerCtx & { projectId: string },
+  options: { ready: boolean },
+  fn: (scene: DataVolumeScene) => Promise<void>
+): Promise<void> {
+  const { db } = ctx
+  await db
+    .update(environment)
+    .set({ serverId: ctx.serverId })
+    .where(eq(environment.id, ctx.environmentId))
+  // A rollout still waiting on this server: a refusal must leave it waiting.
+  await upsertDeploymentTargets(db, {
+    environmentId: ctx.environmentId,
+    targets: [
+      {
+        serverId: ctx.serverId,
+        desiredGeneration: 1,
+        status: 'pending',
+        options: { secretPlan: [], siteReleases: [] },
+      },
+    ],
+  })
+  if (options.ready) {
+    await db
+      .update(server)
+      .set({ daemon: { projection: { features: ['environment-stop-remove-volumes-v1'] } } })
+      .where(eq(server.id, ctx.serverId))
+    await db.insert(key).values({
+      serverId: ctx.serverId,
+      algorithm: 'Ed25519',
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+      fingerprint: `fp-${crypto.randomUUID()}`,
+    })
+  }
+  const [other] = await db
+    .insert(environment)
+    .values({ name: 'other-env', projectId: ctx.projectId })
+    .returning({ id: environment.id })
+  const otherEnvironmentId = other!.id
+  const [web] = await db
+    .insert(service)
+    .values({ environmentId: ctx.environmentId, name: 'web', composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const [otherWeb] = await db
+    .insert(service)
+    .values({ environmentId: otherEnvironmentId, name: 'web', composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const ids: Record<string, string> = {}
+  const volume = async (
+    name: string,
+    scope: Partial<typeof storage.$inferInsert>,
+    copyOptions: Record<string, unknown> = { managed: true }
+  ) => {
+    const [row] = await db
+      .insert(storage)
+      .values({ organizationId: ctx.organizationId, kind: 'volume', name, ...scope })
+      .returning({ id: storage.id })
+    ids[name] = row!.id
+    await db.insert(storageCopy).values({
+      storageId: row!.id,
+      serverId: ctx.serverId,
+      provider: 'docker',
+      role: 'primary',
+      options: copyOptions,
+    })
+  }
+  try {
+    await volume('db_data', { environmentId: ctx.environmentId })
+    await volume('uploads', { serviceId: web!.id })
+    await volume('other_data', { environmentId: otherEnvironmentId })
+    await volume('project_data', { projectId: ctx.projectId })
+    await volume('common_data', { environmentId: ctx.environmentId, isCommon: true })
+    await volume('shared_data', { environmentId: ctx.environmentId })
+    await volume('mounted_data', { environmentId: ctx.environmentId })
+    await volume(
+      'outside',
+      { environmentId: ctx.environmentId },
+      {
+        managed: false,
+        externalName: 'outside',
+      }
+    )
+    await db
+      .insert(share)
+      .values({ environmentId: otherEnvironmentId, storageId: ids.shared_data! })
+    await db.insert(mount).values({
+      storageId: ids.mounted_data!,
+      serviceId: otherWeb!.id,
+      destinationPath: '/data',
+    })
+    await fn({ ids, otherEnvironmentId })
+  } finally {
+    await db.delete(audit).where(eq(audit.organizationId, ctx.organizationId))
+    await db.delete(mount).where(inArray(mount.storageId, Object.values(ids)))
+    await db.delete(share).where(eq(share.environmentId, otherEnvironmentId))
+    await db.delete(storage).where(eq(storage.organizationId, ctx.organizationId))
+    await db.delete(deployment).where(eq(deployment.environmentId, ctx.environmentId))
+    await db.delete(service).where(eq(service.environmentId, otherEnvironmentId))
+    await db.delete(environment).where(eq(environment.id, otherEnvironmentId))
+    await db.delete(key).where(eq(key.serverId, ctx.serverId))
+  }
+}
+
+function destroyBody(ids: readonly string[], confirmName = 'deploy-route-env'): string {
+  return JSON.stringify({ deleteVolumes: true, confirmName, volumeIds: ids })
+}
+
+async function stopsQueued(ctx: TwoServerCtx): Promise<number> {
+  return ctx.commandQueue.envelopes.filter((envelope) => envelope.type === 'environment.stop')
+    .length
+}
+
+test('GET /environments/:id/data-volumes lists only what is this environment’s alone', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await withDataVolumeScene(ctx, { ready: true }, async ({ ids }) => {
+      const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+      const res = await ctx.app.request(`/environments/${ctx.environmentId}/data-volumes`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
+      })
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        volumes: Array<{ storageId: string; name: string; staysOn: unknown[] }>
+        kept: Array<{ name: string; reason: string }>
+        outdatedServers: unknown[]
+      }
+      assertEquals(body.volumes, [
+        { storageId: ids.db_data!, name: 'db_data', staysOn: [] },
+        { storageId: ids.uploads!, name: 'uploads', staysOn: [] },
+      ])
+      assertEquals(
+        body.kept.map((entry) => [entry.name, entry.reason]),
+        [
+          ['common_data', 'common'],
+          ['mounted_data', 'shared'],
+          ['outside', 'external'],
+          ['shared_data', 'shared'],
+        ]
+      )
+      // Another environment's and a project-wide volume are not this environment's at all.
+      const named = [...body.volumes, ...body.kept].map((entry) => entry.name)
+      assertEquals(named.includes('other_data'), false)
+      assertEquals(named.includes('project_data'), false)
+      assertEquals(body.outdatedServers, [])
+    })
+  })
+})
+
+test('POST /environments/:id/stop with no body removes no volume', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await withDataVolumeScene(ctx, { ready: true }, async () => {
+      const res = await postEnvironment(ctx, 'stop')
+      assertEquals(res.status, 200)
+      const payload = await queuedStopPayload(ctx)
+      assertEquals('removeVolumes' in payload, false)
+      const audits = await ctx.db
+        .select({ action: audit.action })
+        .from(audit)
+        .where(eq(audit.organizationId, ctx.organizationId))
+      assertEquals(
+        audits.some((row) => row.action === 'environment.data.delete'),
+        false
+      )
+    })
+  })
+})
+
+test('POST /environments/:id/stop refuses to delete data before anything stops', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await withDataVolumeScene(ctx, { ready: false }, async ({ ids }) => {
+      const shown = [ids.db_data!, ids.uploads!]
+      const missing = await postEnvironment(
+        ctx,
+        'stop',
+        JSON.stringify({ deleteVolumes: true, volumeIds: shown })
+      )
+      assertEquals(missing.status, 400)
+      const wrong = await postEnvironment(ctx, 'stop', destroyBody(shown, 'Deploy-Route-Env'))
+      assertEquals(wrong.status, 400)
+      assertEquals(((await wrong.json()) as { error: string }).error, 'confirm_name_required')
+      const unlisted = await postEnvironment(
+        ctx,
+        'stop',
+        JSON.stringify({ deleteVolumes: true, confirmName: 'deploy-route-env' })
+      )
+      assertEquals(unlisted.status, 400)
+      const stale = await postEnvironment(ctx, 'stop', destroyBody([ids.db_data!]))
+      assertEquals(stale.status, 409)
+      assertEquals(((await stale.json()) as { error: string }).error, 'data_volumes_changed')
+      // The server's daemon does not list the feature.
+      const outdated = await postEnvironment(ctx, 'stop', destroyBody(shown))
+      assertEquals(outdated.status, 409)
+      const body = (await outdated.json()) as {
+        error: string
+        servers: Array<{ serverId: string }>
+      }
+      assertEquals(body.error, 'delete_volumes_needs_daemon_update')
+      assertEquals(
+        body.servers.map((entry) => entry.serverId),
+        [ctx.serverId]
+      )
+
+      assertEquals(await stopsQueued(ctx), 0)
+      assertEquals((await targetsByServer(ctx)).get(ctx.serverId), 'pending')
+    })
+  })
+})
+
+test('POST /environments/:id/stop deleting data sends exactly the computed volumes and audits them', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await withDataVolumeScene(ctx, { ready: true }, async ({ ids }) => {
+      const res = await postEnvironment(ctx, 'stop', destroyBody([ids.uploads!, ids.db_data!]))
+      assertEquals(res.status, 200)
+      const payload = await queuedStopPayload(ctx)
+      assertEquals(
+        (payload.removeVolumes as Array<{ storageId: string }>)
+          .map((entry) => entry.storageId)
+          .toSorted((a, b) => a.localeCompare(b)),
+        [ids.db_data!, ids.uploads!].toSorted((a, b) => a.localeCompare(b))
+      )
+      const [row] = await ctx.db
+        .select({ context: audit.context, targetId: audit.targetId })
+        .from(audit)
+        .where(
+          and(
+            eq(audit.organizationId, ctx.organizationId),
+            eq(audit.action, 'environment.data.delete')
+          )
+        )
+      assertEquals(row?.targetId, ctx.environmentId)
+      const context = row?.context as {
+        volumes: Array<{ name: string; removedOn: string[]; staysOn: string[] }>
+      }
+      assertEquals(
+        context.volumes.map((entry) => [entry.name, entry.removedOn, entry.staysOn]),
+        [
+          ['db_data', [ctx.serverId], []],
+          ['uploads', [ctx.serverId], []],
+        ]
+      )
     })
   })
 })

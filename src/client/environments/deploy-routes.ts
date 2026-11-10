@@ -50,6 +50,7 @@ import type {
   EnvironmentDeploySite,
   EnvironmentDeployVariableMaterial,
   EnvironmentLifecycleAction,
+  StopVolumeRemoval,
 } from '../../contracts/commands/schemas.ts'
 import {
   buildDeployPreviewContainers,
@@ -181,6 +182,12 @@ import {
   parseJsonBody,
 } from '../shared.ts'
 import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
+import {
+  type DestroyDataPlan,
+  parseDestroyRequest,
+  planDestroyData,
+  registerEnvironmentDataVolumeRoutes,
+} from './destroy-data.ts'
 
 type DeployHostingPayload = EnvironmentDeployHosting
 
@@ -2544,6 +2551,8 @@ async function enqueueStopCommand(
     siteReleases: EnvironmentSiteRelease[]
     /** Services whose releases are cleared while their folder stays. */
     releaseCleanup?: EnvironmentSiteRelease[]
+    /** Registered Docker volumes to remove (a Destroy that deletes data); absent otherwise. */
+    removeVolumes?: StopVolumeRemoval[]
   }
 ): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
@@ -2561,6 +2570,9 @@ async function enqueueStopCommand(
       ...(params.siteReleases.length > 0 ? { siteReleases: params.siteReleases } : {}),
       ...(params.releaseCleanup && params.releaseCleanup.length > 0
         ? { releaseCleanup: params.releaseCleanup }
+        : {}),
+      ...(params.removeVolumes && params.removeVolumes.length > 0
+        ? { removeVolumes: params.removeVolumes }
         : {}),
     },
     expiresAt,
@@ -2596,8 +2608,49 @@ async function enqueueStopCommand(
   }
 }
 
+/** The servers a Destroy of the environment goes to; empty when it has none. */
+async function environmentStopServerIds(db: Db, environmentId: string): Promise<string[]> {
+  const loaded = await loadLifecycleTargets(db, environmentId)
+  return loaded instanceof Response ? [] : loaded.serverIds
+}
+
+/** Record a Destroy that deletes data, with the names people know the volumes by. */
+async function recordDestroyDataAudit(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    organizationId: string
+    userId: string
+    environmentId: string
+    plan: DestroyDataPlan
+    queued: readonly QueuedCommandRef[]
+  }
+): Promise<void> {
+  const session = c.get('session')
+  await recordAudit(db, {
+    organizationId: params.organizationId,
+    actorUserId: params.userId,
+    actorEmail: session?.email ?? null,
+    action: 'environment.data.delete',
+    targetType: 'environment',
+    targetId: params.environmentId,
+    context: {
+      // Removed on the servers the commands went to; a copy on a server in `staysOn` stays.
+      volumes: params.plan.volumes.map(({ storageId, name, staysOn }) => ({
+        storageId,
+        name,
+        removedOn: params.queued.map(({ serverId }) => serverId),
+        staysOn: staysOn.map(({ serverId }) => serverId),
+      })),
+      kept: params.plan.kept.map(({ storageId, name, reason }) => ({ storageId, name, reason })),
+      commands: params.queued.map(({ commandId, serverId }) => ({ commandId, serverId })),
+    },
+  })
+}
+
 /**
- * Register `POST /environments/:id/stop` — compose down (+ volumes) teardown.
+ * Register `POST /environments/:id/stop` — compose down (+ volumes) teardown,
+ * and `GET /environments/:id/data-volumes` for the Destroy dialog.
  * Status is polled via existing `GET /servers/:serverId/commands/:commandId`.
  */
 export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -2605,6 +2658,7 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     throw new TypeError('session secrets are required for environment stop routes')
   }
   router.use('/environments/:id/stop', createSessionMiddleware(opts.secrets))
+  registerEnvironmentDataVolumeRoutes(router, opts, environmentStopServerIds)
 
   router.post('/environments/:id/stop', async (c) => {
     const db = getDb(c)
@@ -2614,7 +2668,15 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     const auth = await authorizeEnvironmentManage(c, db, environmentId)
     if (auth instanceof Response) return auth
 
-    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'environment.stop')
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const request = parseDestroyRequest(body)
+    if (request === 'invalid') return c.json({ error: 'Invalid request' }, 400)
+
+    // The step-up names what is asked: deleting data says so.
+    const stepUp = request.deleteVolumes
+      ? await requireStepUpIfConfigured(c, auth.organizationId, 'environment.data.delete')
+      : await requireStepUpIfConfigured(c, auth.organizationId, 'environment.stop')
     if (stepUp) return stepUp
 
     const commandQueue = assertDispatchInfrastructure(c)
@@ -2622,6 +2684,12 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
 
     const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded
+    // Every refusal of a Destroy that deletes data comes before anything stops.
+    const dataPlan = request.deleteVolumes
+      ? await planDestroyData(c, db, { environmentId, serverIds: loaded.serverIds, request })
+      : null
+    if (dataPlan instanceof Response) return dataPlan
+    const removeVolumes = dataPlan?.volumes.map(({ storageId }) => ({ storageId })) ?? []
     await cancelWaitingRollout(db, environmentId, 'the environment was stopped')
 
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
@@ -2633,6 +2701,16 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     // So the trees go out as `releaseCleanup`, never as `siteReleases`.
     const releaseCleanup = await resolveEnvironmentSiteReleases(db, environmentId)
     const queued: QueuedCommandRef[] = []
+    const auditDeletedData = async () => {
+      if (dataPlan === null || removeVolumes.length === 0 || queued.length === 0) return
+      await recordDestroyDataAudit(c, db, {
+        organizationId: auth.organizationId,
+        userId: auth.userId,
+        environmentId,
+        plan: dataPlan,
+        queued,
+      })
+    }
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueStopCommand(db, commandQueue, {
         serverId,
@@ -2647,10 +2725,16 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
         fabricNetworks: namesByServer.get(serverId) ?? [],
         siteReleases: [],
         releaseCleanup,
+        removeVolumes,
       })
-      if (enqueued instanceof Response) return enqueued
+      if (enqueued instanceof Response) {
+        // A server already asked to delete data is recorded even when a later one fails.
+        await auditDeletedData()
+        return enqueued
+      }
       queued.push(enqueued)
     }
+    await auditDeletedData()
     await purgeEnvironmentComposeNetworks(db, environmentId)
     const secretsConfig = c.get('secretsConfig')
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')

@@ -15,7 +15,13 @@ test('the client OpenAPI spec documents the environment stop and lifecycle route
   const stop = spec.paths[`${CLIENT_API_PREFIX}/environments/{id}/stop`]
   assertExists(stop?.post)
   assertEquals(stop.post.tags, ['Environments'])
-  assertEquals(stop.post.requestBody, undefined)
+  // Optional body: `{ deleteVolumes, confirmName }` for a Destroy that deletes data.
+  assertExists(stop.post.requestBody)
+
+  const volumes = spec.paths[`${CLIENT_API_PREFIX}/environments/{id}/data-volumes`] as
+    { get?: { tags?: string[] } } | undefined
+  assertExists(volumes?.get)
+  assertEquals(volumes.get.tags, ['Environments'])
 
   const lifecycle = spec.paths[`${CLIENT_API_PREFIX}/environments/{id}/lifecycle`]
   assertExists(lifecycle?.post)
