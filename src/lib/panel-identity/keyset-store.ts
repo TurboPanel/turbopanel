@@ -116,7 +116,7 @@ type EnvelopeColumns = {
  * the browser named, so its signature never leaves the control plane before
  * the new key is loaded (whatever route asks).
  */
-function envelopeOf(row: EnvelopeColumns): KeysetEnvelope {
+export function envelopeOf(row: EnvelopeColumns): KeysetEnvelope {
   const envelope: KeysetEnvelope = {
     statement: row.body,
     approvals: JSON.parse(row.approvals) as KeysetEnvelope['approvals'],

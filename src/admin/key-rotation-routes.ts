@@ -640,7 +640,10 @@ type ApprovalFacts = {
  */
 export function approvalAudit(input: ApprovalFacts): Pick<AuditEntry, 'action' | 'context'> {
   const { parsed, pin, marks, unmark } = input
-  const approver = pin.custodians.find((a) => input.pinnedApprovals.includes(a.id))
+  // A revoke is approved by two passkeys; the mail names each.
+  const approvers = pin.custodians
+    .filter((a) => input.pinnedApprovals.includes(a.id) && a.label !== null)
+    .map((a) => a.label)
   const unmarked = pin.custodians
     .filter((a) => unmark.includes(a.id))
     .map((a) => a.label ?? 'a passkey')
@@ -652,7 +655,7 @@ export function approvalAudit(input: ApprovalFacts): Pick<AuditEntry, 'action' |
       keyset: parsed.keyset,
       oldFingerprint: parsed.prev,
       newFingerprint: parsed.current.kid,
-      passkey: approver?.label ?? marks[0]?.label ?? null,
+      passkey: approvers.length > 0 ? approvers.join(', ') : (marks[0]?.label ?? null),
       marked: marked.length > 0 ? marked.join(', ') : null,
       unmarked: unmarked.length > 0 ? unmarked.join(', ') : null,
       state: input.state,
