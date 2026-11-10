@@ -12,6 +12,7 @@ import {
   handleManagedHaEvent,
   reporterPrivateHosts,
 } from './ha-event.ts'
+import { firstIncidentReportAt } from './recovery-records.ts'
 import {
   AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
@@ -781,4 +782,56 @@ test('haEventSignature: only a verified frame on a signed session is verified', 
   assertEquals(haEventSignature('none', true), 'unsigned')
   assertEquals(haEventSignature('invalid', true), 'invalid')
   assertEquals(haEventSignature('none', false), 'session-unsigned')
+})
+
+test('firstIncidentReportAt skips earlier incidents and refused, stale and host-loss rows', async () => {
+  const accepted = recoveryRow({
+    id: 'rec-accepted',
+    targetMemberId: 'mem-replica',
+    state: 'completed',
+    startedAt: '2026-01-01T00:00:00.000Z',
+  })
+  const rows = [
+    // At the accepted failover: an earlier incident.
+    recoveryRow({ id: 'r0', state: 'blocked', startedAt: '2026-01-01T00:00:00.000Z' }),
+    recoveryRow({
+      id: 'r1',
+      state: 'blocked',
+      startedAt: '2026-01-01T00:01:00.000Z',
+      metadata: { reportRefused: 'unsigned', blockedReason: 'x' },
+    }),
+    recoveryRow({
+      id: 'r2',
+      state: 'blocked',
+      startedAt: '2026-01-01T00:02:00.000Z',
+      metadata: { stale: true, blockedReason: 'x' },
+    }),
+    recoveryRow({
+      id: 'r3',
+      state: 'blocked',
+      startedAt: '2026-01-01T00:03:00.000Z',
+      metadata: { detector: 'host-loss', blockedReason: 'x' },
+    }),
+    // The cooldown refusal: the first real report of this incident.
+    recoveryRow({
+      id: 'r4',
+      state: 'blocked',
+      startedAt: '2026-01-01T00:04:00.000Z',
+      metadata: { blockedReason: AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE, blockedCount: 9 },
+    }),
+    recoveryRow({ id: 'r5', state: 'blocked', startedAt: '2026-01-01T00:05:00.000Z' }),
+  ]
+  const params = {
+    managedId: MANAGED_ID,
+    sourcePrimaryMemberId: 'mem-primary',
+    sinceIso: '2025-12-31T23:50:00.000Z',
+  }
+  assertEquals(
+    await firstIncidentReportAt(fakeDb([[accepted], rows]), params),
+    '2026-01-01T00:04:00.000Z'
+  )
+  // No accepted failover yet: the oldest plain row counts.
+  assertEquals(await firstIncidentReportAt(fakeDb([[], rows]), params), '2026-01-01T00:00:00.000Z')
+  // Only refused rows: no report of the incident yet.
+  assertEquals(await firstIncidentReportAt(fakeDb([[], [rows[1]!]]), params), null)
 })

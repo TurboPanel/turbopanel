@@ -293,8 +293,12 @@ type SocketSessionAttachment = {
 
 /** A refused HA report from one socket is recorded at most this often per cluster and reason. */
 const HA_REFUSAL_RECORD_EVERY_MS = 10 * 60_000
-/** Distinct cluster and reason keys one socket remembers. */
-const HA_REFUSAL_KEYS_MAX = 16
+/**
+ * Distinct cluster and reason keys one socket remembers. Each is about 70
+ * bytes (a UUID, the reason and a timestamp); the serialized attachment is
+ * capped at 2 KiB, so keep this small.
+ */
+const HA_REFUSAL_KEYS_MAX = 4
 
 /** The server and key a socket's signed hello names; none (refused) when no key id was kept. */
 function sessionBindingOf(

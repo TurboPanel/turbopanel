@@ -532,9 +532,10 @@ async function handleDaemonManagedHaInbound(params: {
   registry?: DaemonCellRegistry
   reporterServerId: string
   signature: HaEventSignature
+  handle?: typeof handleManagedHaEvent
 }): Promise<void> {
   const { cell, db, connectionId, message } = params
-  await handleManagedHaEvent(
+  await (params.handle ?? handleManagedHaEvent)(
     db,
     {
       managedId: message.managedId,
@@ -748,6 +749,8 @@ type DaemonInboundDispatch = {
   colocated?: boolean
   /** Development entry only: receives the co-located daemon's `dev-host-status`. */
   onDevHostStatus?: DevHostStatusSink
+  /** Test seam for the `managed-ha-event` handler; default `handleManagedHaEvent`. */
+  handleManagedHaEvent?: typeof handleManagedHaEvent
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
   reply: (
     message: BackupRunReportResultMessage | CommandOutcomeAckMessage | BackupCopyReportResultMessage
@@ -858,6 +861,7 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         registry: params.registry,
         reporterServerId: serverId,
         signature: haEventSignature(params.signature ?? 'none', params.signedSession === true),
+        handle: params.handleManagedHaEvent,
       })
       return
     case 'managed-health-report':
@@ -1020,6 +1024,8 @@ export type DaemonWebSocketOptions = {
   identityUrls?: (db: Db) => Promise<string[]>
   /** Development entry only: the co-located daemon's `dev-host-status` sink. */
   onDevHostStatus?: DevHostStatusSink
+  /** Test seam: receives every `managed-ha-event`; default `handleManagedHaEvent`. */
+  handleManagedHaEvent?: typeof handleManagedHaEvent
 }
 
 /**
@@ -1456,6 +1462,7 @@ export function registerDaemonWebSocket<E extends Env>(
           dataEncryptionSecrets: options.dataEncryptionSecrets,
           colocated: remoteAddress === undefined,
           onDevHostStatus: options.onDevHostStatus,
+          handleManagedHaEvent: options.handleManagedHaEvent,
           reply: (answer) => replyToDaemon(ws, answer),
         })
       }
