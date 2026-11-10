@@ -183,6 +183,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       body: 'Exact statement bytes as base64url; the passkey challenge is SHA-256 of these bytes, so they are never rebuilt.',
       approvals:
         'JSON array of the WebAuthn assertions that approved the statement, served to servers as written.',
+      prev_key:
+        'Base64url raw public key of `prev_kid`, served with the signature; NULL for a revoke and for statements stored before key signatures.',
+      prev_key_signature:
+        'Base64url Ed25519 signature by the replaced key over `tp-keyset`, a newline and the statement bytes; NULL for a revoke, which two passkeys approve.',
       approved_by_user_id:
         'Superadmin who approved it; ON DELETE SET NULL so the chain outlives the account.',
       live_at: 'When the statement started being served; NULL while `awaiting_key`.',

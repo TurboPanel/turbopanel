@@ -164,7 +164,8 @@ Add `--revoke` when the current key may be in someone else's hands.
    link. Nothing is stored yet.
 2. Open the link while signed in as a superadmin, check that the new
    fingerprint on the screen matches the one in your terminal, and approve with
-   a rotation passkey. The approved change now waits for its key, and no other
+   a rotation passkey (with `--revoke`, two different ones: the old key cannot
+   sign a revoke). The approved change now waits for its key, and no other
    key or passkey change can be made until it is finished or cancelled.
 3. Press Enter in the terminal. The command first asks the control plane
    whether an approved change for exactly this key is stored. Only then does it

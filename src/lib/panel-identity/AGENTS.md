@@ -69,7 +69,15 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
   statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpIdHash`, UP+UV,
   `webauthn.get`, origin under the rp id, ES256 DER only or EdDSA, `prev` = pinned key, `keyset` above
   the pinned one, removals approved by a passkey that stays, additions prove possession, an `rpId`
-  move needs an old-set approval plus possession under the new id. **Only the exact bytes verify:**
+  move needs an old-set approval plus possession under the new id. **Passkey plus old key** (owner
+  decision 2026-11-10): `rotate` and `passkeys` also need the envelope's `keySig` `{pub, sig}`, the
+  replaced key's Ed25519 signature over `"tp-keyset\n"` + the exact bytes (`pub` must hash to
+  `prev`); a `revoke` has none and needs two pinned approvals with different ids instead; a key change
+  keeps the pinned passkeys and `rpId`. The approve route checks the passkeys
+  (`verifyKeysetApprovals`), then signs last, inside the store transaction (self-hosted after the
+  pending key is promoted, so it never signs a key it did not make), and re-checks with
+  `verifyKeysetEnvelope`. `keyset-store.ts` attaches `keySig` only to `live` rows, so a High
+  Availability change waiting for its key never hands out its signature. **Only the exact bytes verify:**
   `verifyKeysetEnvelope` re-serializes the parsed statement and compares bytes (not text: decoding
   drops a byte order mark), so `"keyset":4.0`, another member order, spacing or an escape is
   `statement is malformed`, as on servers; the base64url must be the spelling an encoder writes.

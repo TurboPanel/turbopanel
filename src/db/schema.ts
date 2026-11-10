@@ -491,6 +491,8 @@ export const rotation = pgTable(
     currentKid: text('current_kid').notNull(),
     body: text().notNull(),
     approvals: text().notNull(),
+    prevKey: text('prev_key'),
+    prevKeySignature: text('prev_key_signature'),
     approvedByUserId: uuid('approved_by_user_id'),
     liveAt: timestamp('live_at', { precision: 3, withTimezone: true, mode: 'string' }),
   },
@@ -504,6 +506,10 @@ export const rotation = pgTable(
     check('rotation_kind_check', sql`kind IN ('rotate', 'revoke', 'passkeys')`),
     check('rotation_state_check', sql`state IN ('awaiting_key', 'live')`),
     check('rotation_live_at_check', sql`(state = 'live') = (live_at IS NOT NULL)`),
+    check(
+      'rotation_prev_key_signature_check',
+      sql`(prev_key IS NULL) = (prev_key_signature IS NULL)`
+    ),
   ]
 )
 /**
