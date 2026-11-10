@@ -6,6 +6,8 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import {
+  BOOT_HOLD_REFUSED_MESSAGES,
+  HA_EVENT_REFUSAL_FIXES,
   HA_EVENT_REFUSED_MESSAGES,
   type HaBindingLoaders,
   haEventSignature,
@@ -753,16 +755,16 @@ test('a refused report from a server outside the cluster is only logged', async 
   assertEquals(calls.inserts, 0)
 })
 
-test('a refused boot-hold report starts nothing and writes no journal row', async () => {
+test('a refused boot-hold report starts nothing and its row says the primary stays stopped', async () => {
   const calls = { inserts: 0, reads: 0 }
   const answers: unknown[] = []
-  const { db } = recordingDb([[mysqlRow]], calls)
+  const { db, inserted } = recordingDb([[mysqlRow], [member(), replicaMember()], inOrg, []], calls)
   const result = await handleManagedHaEvent(
     db,
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'boot-hold' },
     {
       reporterServerId: SERVER_A,
-      signature: 'unsigned',
+      signature: 'session-unsigned',
       commandQueue: queue,
       bootHold: (_db, params) => {
         answers.push(params)
@@ -770,9 +772,23 @@ test('a refused boot-hold report starts nothing and writes no journal row', asyn
       },
     }
   )
-  assertEquals(result, null)
+  assertEquals(result?.id, 'rec-refused')
   assertEquals(answers, [])
-  assertEquals(calls, { inserts: 0, reads: 1 })
+  assertEquals(calls.inserts, 1)
+  const metadata = inserted[0]?.metadata as Record<string, unknown>
+  assertEquals(metadata.blockedReason, BOOT_HOLD_REFUSED_MESSAGES['session-unsigned'])
+  assertEquals(metadata.detector, 'boot-hold')
+  assertEquals(inserted[0]?.sourcePrimaryMemberId, 'mem-primary')
+})
+
+test('every refusal says how to fix it', () => {
+  assertEquals(HA_EVENT_REFUSAL_FIXES['session-unsigned'].includes('not pinned'), true)
+  assertEquals(HA_EVENT_REFUSAL_FIXES['session-unsigned'].includes('Update Now'), true)
+  assertEquals(HA_EVENT_REFUSAL_FIXES.unsigned.includes('Update the daemon'), true)
+  for (const why of ['unsigned', 'invalid', 'session-unsigned'] as const) {
+    assertEquals(HA_EVENT_REFUSED_MESSAGES[why].endsWith(HA_EVENT_REFUSAL_FIXES[why]), true)
+    assertEquals(BOOT_HOLD_REFUSED_MESSAGES[why].endsWith(HA_EVENT_REFUSAL_FIXES[why]), true)
+  }
 })
 
 test('haEventSignature: only a verified frame on a signed session is verified', () => {

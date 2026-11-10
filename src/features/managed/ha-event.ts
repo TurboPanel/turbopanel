@@ -246,41 +246,58 @@ export function haEventSignature(found: string, signedSession: boolean): HaEvent
   return found === 'invalid' ? 'invalid' : 'unsigned'
 }
 
-/** Why a dead-primary report was refused, in the words the journal shows. */
-export const HA_EVENT_REFUSED_MESSAGES: Readonly<
-  Record<Exclude<HaEventSignature, 'verified'>, string>
+/**
+ * The fix for each refusal, in the words the journal shows. A server is
+ * pinned when its daemon holds this control plane's key (the panel identity
+ * pin); only a pinned server has a signed session.
+ */
+export const HA_EVENT_REFUSAL_FIXES: Readonly<
+  Record<'unsigned' | 'invalid' | 'session-unsigned', string>
 > = {
   unsigned:
-    'Automatic failover not started: the daemon that reported the primary down did not sign the report. Update the daemon on that server.',
+    "The server's daemon did not sign the report: it is older than this control plane. Update the daemon on that server (Admin > Updates > Update Now).",
   invalid:
-    "Automatic failover not started: the signature on the report that the primary is down did not check out against that server's daemon key.",
+    "The report's signature did not check out against that server's daemon key, so it may not have come from that server. Check the server's connection to the control plane.",
   'session-unsigned':
-    "Automatic failover not started: the report that the primary is down came over a connection that is not signed. That server's daemon must trust this control plane's identity before its reports are acted on.",
+    "The server is not pinned to this control plane's key, so its reports cannot be signed. A server installed before panel keys is pinned by its next daemon update (Admin > Updates > Update Now); a server installed with --unsafe-no-panel-key is pinned by running the install command from this control plane on it again. The server this control plane itself runs on cannot be pinned yet.",
 }
+
+type HaEventRefusal = Exclude<HaEventSignature, 'verified'>
+
+/** `prefix` followed by each refusal's fix. */
+function refusalMessages(prefix: string): Readonly<Record<HaEventRefusal, string>> {
+  return {
+    unsigned: `${prefix} ${HA_EVENT_REFUSAL_FIXES.unsigned}`,
+    invalid: `${prefix} ${HA_EVENT_REFUSAL_FIXES.invalid}`,
+    'session-unsigned': `${prefix} ${HA_EVENT_REFUSAL_FIXES['session-unsigned']}`,
+  }
+}
+
+/** Why a dead-primary report was refused, and the fix, in the words the journal shows. */
+export const HA_EVENT_REFUSED_MESSAGES = refusalMessages('Automatic failover not started.')
+
+/** Why a held primary was not released after an unclean boot, and the fix. */
+export const BOOT_HOLD_REFUSED_MESSAGES = refusalMessages(
+  'The primary on this server stays stopped after an unclean restart until someone starts it.'
+)
 
 /**
  * A refused `managed-ha-event` (see {@link HaEventSignature}): nothing is
- * fenced, promoted or started. A dead-primary report is recorded as a
- * terminal `blocked` row (no target, so no cooldown; repeats fold into it)
- * when the reporting server hosts a member of the cluster in its
- * organization; otherwise it is only logged. A boot-hold report is only
- * logged: its primary stays stopped until an operator starts it.
+ * fenced, promoted or started. It is recorded as a terminal `blocked` row
+ * that says why and how to fix it (no target, so no cooldown; repeats fold
+ * into it) when the reporting server hosts a member of the cluster in its
+ * organization; otherwise it is only logged. A refused boot-hold report
+ * leaves its held primary stopped, and its row says so.
  */
 export async function recordRefusedHaEvent(
   db: Db,
   input: ManagedHaEventInput,
-  deps: { reporterServerId: string; signature: Exclude<HaEventSignature, 'verified'> }
+  deps: { reporterServerId: string; signature: HaEventRefusal }
 ): Promise<RecoveryRecord | null> {
-  const reason = HA_EVENT_REFUSED_MESSAGES[deps.signature]
+  const bootHold = input.detector === BOOT_HOLD_DETECTOR
+  const reason = (bootHold ? BOOT_HOLD_REFUSED_MESSAGES : HA_EVENT_REFUSED_MESSAGES)[deps.signature]
   const row = await loadCluster(db, input.managedId)
   if (!row?.engine || !isManagedEngineCode(row.engine)) return null
-  if (input.detector === BOOT_HOLD_DETECTOR) {
-    compatLogWarn(
-      'managed-ha',
-      `refused boot-hold report for ${row.id} from server ${deps.reporterServerId} (${deps.signature}): the held primary stays stopped until an operator starts it`
-    )
-    return null
-  }
   const members = await listManagedMembers(db, row.id)
   const primary = members.find((member) => member.role === 'primary')
   const reporterOrganizationId = await loadServerOrganization(db, deps.reporterServerId)
@@ -290,19 +307,23 @@ export async function recordRefusedHaEvent(
     reporterOrganizationId === row.organizationId
   compatLogWarn(
     'managed-ha',
-    `refused managed-ha-event for ${row.id} from server ${deps.reporterServerId} (${deps.signature}): ${reason}`
+    `refused ${bootHold ? 'boot-hold report' : 'managed-ha-event'} for ${row.id} from server ${deps.reporterServerId} (${deps.signature}): ${reason}`
   )
-  if (!primary || !inCluster) return null
+  // A boot-hold report names the held member; the row is about that member.
+  const source = bootHold
+    ? (members.find((member) => member.id === input.sourceMemberId) ?? primary)
+    : primary
+  if (!source || !inCluster) return null
   return recordBlockedRecovery(db, {
     managedId: row.id,
     kind: 'automatic-failover',
-    sourcePrimaryMemberId: primary.id,
+    sourcePrimaryMemberId: source.id,
     state: 'blocked',
     metadata: {
       blockedReason: reason,
       reportRefused: deps.signature,
       reporterServerId: deps.reporterServerId,
-      sourceServerId: primary.serverId,
+      sourceServerId: source.serverId,
       ...(input.detector ? { detector: input.detector } : {}),
     },
   })

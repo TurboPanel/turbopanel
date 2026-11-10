@@ -1178,8 +1178,10 @@ all:
    `src/daemon/AGENTS.md` → Signed HA events). Anything else is refused before
    any other check: a terminal `blocked` row with a plain reason
    (`metadata.reportRefused` = `unsigned`, `invalid` or `session-unsigned`)
-   when the reporter hosts a member in the cluster's organization, else a log
-   line; a refused boot-hold report is only logged.
+   and the exact fix (`HA_EVENT_REFUSAL_FIXES`: update the daemon, or pin the
+   server) when the reporter hosts a member in the cluster's organization,
+   else a log line. A refused boot-hold report gets its own row: the held
+   primary stays stopped.
 1. The detector covers the cluster's engine.
 2. **Every** event (with or without `detector`): the reporting server — the
    authenticated cell session's `serverId`, never a payload field — hosts a
