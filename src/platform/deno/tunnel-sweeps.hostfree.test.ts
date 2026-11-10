@@ -61,7 +61,7 @@ test('the self-hosted run calls every tunnel sweep, and a failing one does not s
 test('the self-hosted minute timer runs the tunnel sweeps', () => {
   const server = readSource('./server.ts')
   const timer = server.slice(
-    server.indexOf('const leafRenewalTimer = setInterval('),
+    server.indexOf('const runCertificateSweeps = async'),
     server.indexOf('}, LEAF_RENEWAL_SWEEP_INTERVAL_MS)')
   )
   assert(timer.length > 0, 'the minute timer is not where this test looks for it')
@@ -94,4 +94,20 @@ test('every sweep the hosted cron runs on its queue also runs on a self-hosted c
   const missing = [...hosted].filter((name) => !server.includes(`${selfHostedName[name] ?? name}(`))
   assert(hosted.size >= 10, `found only ${hosted.size} hosted sweeps; the parser is broken`)
   assertEquals(missing, [], 'hosted-only sweeps: add them to the self-hosted timers in server.ts')
+})
+
+test('the real tunnel sweeps run without throwing when the database fails', async () => {
+  const touched: string[] = []
+  const failingDb = new Proxy(
+    {},
+    {
+      get(_target, property) {
+        touched.push(String(property))
+        throw new Error('database unavailable')
+      },
+    }
+  ) as Db
+  await runSelfHostedTunnelSweeps(failingDb, fakeDeps)
+  // The status poll stops at the no-op queue; the four others reach the database.
+  assert(touched.length >= 4, `only ${touched.length} sweeps reached the database`)
 })

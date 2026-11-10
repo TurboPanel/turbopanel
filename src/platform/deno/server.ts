@@ -1047,6 +1047,38 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // createDenoDb() per tick, always endDbConnection in finally — do not reuse
   // the process-long `db` (same discipline as Workers Hyperdrive).
   // Overlap-guarded; one minute, like the hosted cron.
+  const runCertificateSweeps = async (tickDb: Db): Promise<void> => {
+    try {
+      // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
+      // bounded batch; reset when the sweep completes or the cursor is
+      // invalid). A due peer leaf goes out with its tunnel table, as on the
+      // hosted cron.
+      await runLeafRenewalSweepTick(tickDb, commandQueue, {
+        secretsConfig,
+        dataEncryptionSecrets,
+        deliverPeerLeaf: peerLeafDelivery(commandQueue, { secretsConfig, dataEncryptionSecrets }),
+      })
+      // Waiting Let's Encrypt requests (DNS not ready yet): same cadence.
+      // The secrets let a newly pinned certificate go out at once.
+      await runHostingLetsEncryptSweepTick(tickDb, {
+        apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
+      })
+      // DNS-validated certificates: no order and no renewal from the control plane;
+      // only challenge records it made are removed, through the DNS provider.
+      await runDnsCertificateCleanupTick(
+        buildDnsCertContext(tickDb, { secrets: dataEncryptionSecrets })
+      )
+      // Certificates a serving server orders at the panel's request.
+      await runHttpIssuanceSweepTick(tickDb, {
+        registry: daemonCellRegistry,
+        push: { commandQueue, secretsConfig },
+        secrets: dataEncryptionSecrets,
+        env: runtimeEnv,
+      })
+    } catch (err) {
+      logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
+    }
+  }
   let leafRenewalInFlight = false
   const leafRenewalTimer = setInterval(() => {
     if (leafRenewalInFlight) return
@@ -1055,39 +1087,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     void (async () => {
       const tickDb = createDenoDb()
       try {
-        try {
-          // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced
-          // per bounded batch; reset when the sweep completes or the cursor
-          // is invalid). A due peer leaf goes out with its tunnel table, as on
-          // the hosted cron.
-          await runLeafRenewalSweepTick(tickDb, commandQueue, {
-            secretsConfig,
-            dataEncryptionSecrets,
-            deliverPeerLeaf: peerLeafDelivery(commandQueue, {
-              secretsConfig,
-              dataEncryptionSecrets,
-            }),
-          })
-          // Waiting Let's Encrypt requests (DNS not ready yet): same cadence.
-          // The secrets let a newly pinned certificate go out at once.
-          await runHostingLetsEncryptSweepTick(tickDb, {
-            apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
-          })
-          // DNS-validated certificates: no order and no renewal from the control plane;
-          // only challenge records it made are removed, through the DNS provider.
-          await runDnsCertificateCleanupTick(
-            buildDnsCertContext(tickDb, { secrets: dataEncryptionSecrets })
-          )
-          // Certificates a serving server orders at the panel's request.
-          await runHttpIssuanceSweepTick(tickDb, {
-            registry: daemonCellRegistry,
-            push: { commandQueue, secretsConfig },
-            secrets: dataEncryptionSecrets,
-            env: runtimeEnv,
-          })
-        } catch (err) {
-          logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
-        }
+        await runCertificateSweeps(tickDb)
         // Tunnel tables, connectors, removals, token recheck and connector
         // status: the hosted cron's list, each sweep on its own (never throws).
         await runSelfHostedTunnelSweeps(tickDb, {
