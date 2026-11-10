@@ -21,6 +21,10 @@
 # cancel-in-progress off it can no longer cancel a canary being published.
 
 name: Canary
+# The run is titled with the commit it builds. Its own head commit is the
+# trunk tip when it was queued, which a later merge may already have moved;
+# the promote-ok recheck reads the title to re-check that exact commit.
+run-name: Canary ${{ github.event.workflow_run.head_sha }}
 
 on:
   workflow_run:
