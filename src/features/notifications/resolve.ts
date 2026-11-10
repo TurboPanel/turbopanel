@@ -15,7 +15,8 @@
  *   3. target: one personal channel, then one channel kind, then every kind.
  * Scope beats subject on purpose: "deploys: none" everywhere plus "project
  * Checkout: all" means Checkout's deploys arrive. A row whose `endsAt` has
- * passed is ignored. The unique key on `preference` makes ties impossible.
+ * passed is ignored. The unique key on `preference` rules out ties except
+ * between rows for two different resources of one event (`decidingRows`).
  */
 import type { NotificationSeverity } from './events.ts'
 import type { NotificationLevel, NotificationPreferenceKind } from './vocabulary.ts'
@@ -128,6 +129,33 @@ export function rowMatches(
     matchesId(row.channelId, target.channelId) &&
     matchesId(row.kind, target.kind)
   )
+}
+
+/**
+ * Every matching row at the highest specificity. Usually one; an event that
+ * names both a service and a server can match one row for each at the same
+ * depth, and which of those `resolveLevel` returns depends on row order. The
+ * unsubscribe covers all of them so the order cannot matter.
+ */
+export function decidingRows(
+  rows: readonly PreferenceRow[],
+  scope: EventScope,
+  target: CopyTarget,
+  nowMs: number
+): PreferenceRow[] {
+  let top: PreferenceRow[] = []
+  let topRank = -1
+  for (const row of rows) {
+    if (!rowMatches(row, scope, target, nowMs)) continue
+    const rank = specificity(row)
+    if (rank > topRank) {
+      top = [row]
+      topRank = rank
+    } else if (rank === topRank) {
+      top.push(row)
+    }
+  }
+  return top
 }
 
 /** The deciding row for one person's copy; `fallback` is the topic's catalog level. */

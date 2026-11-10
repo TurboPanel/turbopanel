@@ -18,7 +18,7 @@
  * 2026-11-06), so the presets exist to make that one tap.
  */
 import type { Context, Hono } from 'hono'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -26,9 +26,12 @@ import { type Db, getDb } from '../../db/connection.ts'
 import { notificationChannel, notificationPreference, user } from '../../db/schema.ts'
 import { canAccessOrganization } from '../org-context.ts'
 import {
+  accountEmails,
   ensureNotificationCatalog,
   ensurePrimaryEmailChannels,
   listPreferenceRows,
+  resourceInOrganization,
+  upsertPreference,
 } from '../../features/notifications/fanout-records.ts'
 import {
   type EventScope,
@@ -266,19 +269,30 @@ async function personalChannelSummaries(c: Ctx, db: Db, userId: string) {
     .where(eq(notificationChannel.userId, userId))
     .orderBy(notificationChannel.createdAt)
   const secrets = c.get('dataEncryptionSecrets')
+  // The account email channel sends to the account's address as it is now,
+  // so that is the address (and the verified state) shown for it.
+  const account = (await accountEmails(db, [userId])).get(userId)
   return await Promise.all(
-    rows.map(async (row) => ({
-      id: row.id,
-      kind: row.kind,
-      label: row.label,
-      isPrimary: row.isPrimary,
-      verified: row.verifiedAt !== null || row.isPrimary,
-      disabled: row.disabledAt !== null,
-      address: describeChannelAddress(
-        row.kind as 'email',
-        await resolveChannelAddress(secrets, { kind: row.kind as 'email', address: row.address })
-      ),
-    }))
+    rows.map(async (row) => {
+      const live = row.isPrimary && row.kind === 'email' ? account : undefined
+      return {
+        id: row.id,
+        kind: row.kind,
+        label: row.isPrimary && row.kind === 'email' ? 'Account Email' : row.label,
+        isPrimary: row.isPrimary,
+        verified: live ? live.verified : row.verifiedAt !== null,
+        disabled: row.disabledAt !== null,
+        address:
+          live?.email ??
+          describeChannelAddress(
+            row.kind as 'email',
+            await resolveChannelAddress(secrets, {
+              kind: row.kind as 'email',
+              address: row.address,
+            })
+          ),
+      }
+    })
   )
 }
 
@@ -318,31 +332,6 @@ async function isAdministrator(db: Db, userId: string): Promise<{ admin: boolean
     .limit(1)
   const admin = isAdminRole(row?.role)
   return { admin, all: admin && row?.all === true }
-}
-
-/** Upsert one row by its scope tuple. Throws on a foreign key the database refuses. */
-async function writePreference(db: Db, userId: string, value: PreferenceWrite): Promise<string> {
-  const [row] = await db
-    .insert(notificationPreference)
-    .values({ userId, ...value })
-    .onConflictDoUpdate({
-      target: [
-        notificationPreference.userId,
-        notificationPreference.organizationId,
-        notificationPreference.projectId,
-        notificationPreference.environmentId,
-        notificationPreference.serviceId,
-        notificationPreference.serverId,
-        notificationPreference.destinationId,
-        notificationPreference.categoryCode,
-        notificationPreference.topicCode,
-        notificationPreference.kind,
-        notificationPreference.channelId,
-      ],
-      set: { level: value.level, endsAt: value.endsAt, updatedAt: sql`now()` },
-    })
-    .returning({ id: notificationPreference.id })
-  return row!.id
 }
 
 /** True when a Postgres error is a foreign key or CHECK refusal (a scope that is not where it says). */
@@ -416,9 +405,15 @@ async function putPreference(c: Ctx): Promise<Response> {
       .limit(1)
     if (!own) return c.json({ error: 'Not found' }, 404)
   }
+  // A service, server or backup target of another organization answers
+  // exactly like an id that does not exist, so the answer never says whether
+  // a foreign id is real.
+  if (org !== null && !(await resourceInOrganization(db, org, value))) {
+    return c.json({ error: 'scope_not_in_organization' }, 422)
+  }
   await ensureNotificationCatalog(db)
   try {
-    const id = await writePreference(db, sess.userId, value)
+    const id = await upsertPreference(db, sess.userId, value)
     return c.json({ ok: true, id })
   } catch (error) {
     if (isRefusedReference(error)) {
@@ -470,7 +465,7 @@ async function postPreset(c: Ctx): Promise<Response> {
   const levels = NOTIFICATION_PRESETS[preset as NotificationPreset]
   await Promise.all(
     (['inbox', 'email'] as const).map((kind) =>
-      writePreference(db, sess.userId, {
+      upsertPreference(db, sess.userId, {
         organizationId: org,
         projectId: null,
         environmentId: null,
