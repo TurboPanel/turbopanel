@@ -785,13 +785,20 @@ test('a refused boot-hold report starts nothing and its row says the primary sta
 test('every refusal says how to fix it', () => {
   assertEquals(HA_EVENT_REFUSAL_FIXES['session-unsigned'].includes('not pinned'), true)
   assertEquals(
-    HA_EVENT_REFUSAL_FIXES['session-unsigned'].includes('promote a replica by hand'),
+    HA_EVENT_REFUSED_MESSAGES['session-unsigned'].endsWith('promote a replica by hand.'),
     true
   )
+  assertEquals(
+    BOOT_HOLD_REFUSED_MESSAGES['session-unsigned'].endsWith(
+      'check the held primary and start it, or promote a replica by hand.'
+    ),
+    true
+  )
+  assertEquals(HA_EVENT_REFUSAL_FIXES.invalid.includes('clock is off'), true)
   assertEquals(HA_EVENT_REFUSAL_FIXES.unsigned.includes('Update the daemon'), true)
   for (const why of ['unsigned', 'invalid', 'session-unsigned'] as const) {
-    assertEquals(HA_EVENT_REFUSED_MESSAGES[why].endsWith(HA_EVENT_REFUSAL_FIXES[why]), true)
-    assertEquals(BOOT_HOLD_REFUSED_MESSAGES[why].endsWith(HA_EVENT_REFUSAL_FIXES[why]), true)
+    assertEquals(HA_EVENT_REFUSED_MESSAGES[why].includes(HA_EVENT_REFUSAL_FIXES[why]), true)
+    assertEquals(BOOT_HOLD_REFUSED_MESSAGES[why].includes(HA_EVENT_REFUSAL_FIXES[why]), true)
   }
 })
 
@@ -897,7 +904,7 @@ test('repeated refusals from one server fold into its row, whatever the reason',
     metadata: { reportRefused: 'unsigned', reporterServerId: SERVER_A, blockedReason: 'old' },
   })
   const updated: unknown[] = []
-  const base = recordingDb([[mysqlRow], [member(), replicaMember()], inOrg, [], [earlier]], calls)
+  const base = recordingDb([[mysqlRow], [member(), replicaMember()], inOrg, [earlier]], calls)
   const db = base.db as unknown as Record<string, unknown>
   db.update = () => ({
     set: (patch: Record<string, unknown>) => {

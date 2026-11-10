@@ -396,12 +396,11 @@ test('a refused report filed after a failover that needs an operator does not re
     startedAt: '2026-10-06T12:05:00.000Z',
     metadata: { reportRefused: 'session-unsigned', blockedReason: 'x', detector: 'boot-hold' },
   })
-  // Rows as the journal returns them: newest first, after the in-flight read.
-  const db = queuedDb([[], [refused, needsOperator]])
-  assertEquals((await findLatestActedRecovery(db, MANAGED_ID))?.id, 'rec-failed')
-  // 3. Once pinned, its verified boot-hold report keeps it stopped.
+  // The journal query filters refused rows in SQL (the database-backed test in
+  // `ha-host-loss-sweep.test.ts` proves that); here it returns what is left.
+  assertEquals(refused.metadata.reportRefused, 'session-unsigned')
   const { deps, spy } = seams([member({ id: MEM_OLD, serverId: SERVER_OLD, role: 'primary' })], {
-    latest: await findLatestActedRecovery(queuedDb([[], [refused, needsOperator]]), MANAGED_ID),
+    latest: await findLatestActedRecovery(queuedDb([[], [needsOperator]]), MANAGED_ID),
   })
   assertEquals(await report(deps), 'kept')
   assertEquals(spy.starts, [])

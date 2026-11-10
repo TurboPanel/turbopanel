@@ -17,7 +17,12 @@ import { environment, managed, project, server } from '../../db/schema.ts'
 import { isManagedEngineCode } from './types.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { beginAutomaticFailover, recordStaleDeadPrimaryReport } from './ha-recovery.ts'
-import { firstIncidentReportAt, recordBlockedRecovery } from './recovery-records.ts'
+import {
+  findRefusedReportRow,
+  firstIncidentReportAt,
+  insertRecovery,
+  updateRecovery,
+} from './recovery-records.ts'
 import { BOOT_HOLD_DETECTOR, handleBootHoldReport } from './ha-return-fence.ts'
 import {
   listManagedMembers,
@@ -257,28 +262,35 @@ export const HA_EVENT_REFUSAL_FIXES: Readonly<
   unsigned:
     "The server's daemon did not sign the report: it is older than this control plane. Update the daemon on that server (Admin > Updates > Update Now).",
   invalid:
-    "The report's signature did not check out against that server's daemon key, so it may not have come from that server. Check the server's connection to the control plane.",
+    "The report's signature did not check out against that server's daemon key, or the server's clock is off by more than a minute. Check the server's clock and its connection to the control plane.",
   'session-unsigned':
-    "The server is not pinned to this control plane's key, so its reports cannot be signed. A server installed before panel keys is pinned automatically the next time its daemon updates to a new release, if that update can fetch and check this control plane's identity. Any other unpinned server, including the server this control plane runs on, cannot be pinned from the control plane today. Until the server is pinned, promote a replica by hand.",
+    "The server is not pinned to this control plane's key, so its reports cannot be signed. A server installed before panel keys is pinned automatically the next time its daemon updates to a new release, if that update can fetch and check this control plane's identity. Any other unpinned server, including the server this control plane runs on, cannot be pinned from the control plane today.",
 }
 
 type HaEventRefusal = Exclude<HaEventSignature, 'verified'>
 
-/** `prefix` followed by each refusal's fix. */
-function refusalMessages(prefix: string): Readonly<Record<HaEventRefusal, string>> {
+/** `prefix`, each refusal's fix, then `closing`. */
+function refusalMessages(
+  prefix: string,
+  closing: string
+): Readonly<Record<HaEventRefusal, string>> {
   return {
-    unsigned: `${prefix} ${HA_EVENT_REFUSAL_FIXES.unsigned}`,
-    invalid: `${prefix} ${HA_EVENT_REFUSAL_FIXES.invalid}`,
-    'session-unsigned': `${prefix} ${HA_EVENT_REFUSAL_FIXES['session-unsigned']}`,
+    unsigned: `${prefix} ${HA_EVENT_REFUSAL_FIXES.unsigned} ${closing}`,
+    invalid: `${prefix} ${HA_EVENT_REFUSAL_FIXES.invalid} ${closing}`,
+    'session-unsigned': `${prefix} ${HA_EVENT_REFUSAL_FIXES['session-unsigned']} ${closing}`,
   }
 }
 
 /** Why a dead-primary report was refused, and the fix, in the words the journal shows. */
-export const HA_EVENT_REFUSED_MESSAGES = refusalMessages('Automatic failover not started.')
+export const HA_EVENT_REFUSED_MESSAGES = refusalMessages(
+  'Automatic failover not started.',
+  'Until then, promote a replica by hand.'
+)
 
 /** Why a held primary was not released after an unclean boot, and the fix. */
 export const BOOT_HOLD_REFUSED_MESSAGES = refusalMessages(
-  'The primary on this server stays stopped after an unclean restart until someone starts it.'
+  'The primary on this server stays stopped after an unclean restart until someone starts it.',
+  'Until then, check the held primary and start it, or promote a replica by hand.'
 )
 
 /**
@@ -375,9 +387,9 @@ async function refusedReportSource(
 
 /**
  * One terminal `blocked` row per cluster, reporting server and member for
- * refused reports: a repeat updates the newest row when it is that same
- * refusal (whatever the reason now is), so a daemon that re-sends every minute
- * leaves one row.
+ * refused reports: a repeat updates that row (whatever the reason now is),
+ * even when other rows were written since, so a daemon that re-sends every
+ * minute leaves one row.
  */
 async function recordRefusalRow(
   db: Db,
@@ -390,25 +402,36 @@ async function recordRefusalRow(
     detector?: string
   }
 ): Promise<RecoveryRecord> {
-  return recordBlockedRecovery(
-    db,
-    {
-      managedId: params.managedId,
-      kind: 'automatic-failover',
-      sourcePrimaryMemberId: params.source.id,
-      state: 'blocked',
+  const metadata = {
+    blockedReason: params.reason,
+    reportRefused: params.signature,
+    reporterServerId: params.reporterServerId,
+    sourceServerId: params.source.serverId,
+    ...(params.detector ? { detector: params.detector } : {}),
+  }
+  const filed = await findRefusedReportRow(db, {
+    managedId: params.managedId,
+    sourcePrimaryMemberId: params.source.id,
+    reporterServerId: params.reporterServerId,
+  })
+  if (filed) {
+    const updated = await updateRecovery(db, filed.id, {
       metadata: {
-        blockedReason: params.reason,
-        reportRefused: params.signature,
-        reporterServerId: params.reporterServerId,
-        sourceServerId: params.source.serverId,
-        ...(params.detector ? { detector: params.detector } : {}),
+        ...filed.metadata,
+        ...metadata,
+        blockedCount: (filed.metadata.blockedCount ?? 1) + 1,
+        lastBlockedAt: new Date().toISOString(),
       },
-    },
-    (latest) =>
-      latest.metadata.reportRefused !== undefined &&
-      latest.metadata.reporterServerId === params.reporterServerId
-  )
+    })
+    if (updated) return updated
+  }
+  return insertRecovery(db, {
+    managedId: params.managedId,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: params.source.id,
+    state: 'blocked',
+    metadata,
+  })
 }
 
 /**

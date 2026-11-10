@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -71,16 +71,17 @@ export async function findLatestRecovery(
   return row ? serializeRow(row) : null
 }
 
-/** Most journal rows {@link findLatestActedRecovery} reads past refused reports. */
-const REFUSED_ROWS_SKIP_MAX = 20
+/** No `metadata.reportRefused`: a row that was acted on (or an older row without it). */
+const NOT_REFUSED_REPORT = sql`(${recovery.metadata} ->> 'reportRefused') IS NULL`
 
 /**
  * {@link findLatestRecovery}, but never a row for a refused HA report
- * (`metadata.reportRefused`). Those rows only say a report was not acted on;
- * a reader that decides from the newest recovery (the boot-hold hold, the
- * re-seed guard, the return fence) must look past them, or an unsigned report
- * written after a failed failover would hide the row that keeps a member
- * stopped.
+ * (`metadata.reportRefused`), filtered in SQL so any number of refused rows
+ * cannot push the row that matters out of reach. Those rows only say a report
+ * was not acted on; a reader that decides from the newest recovery (the
+ * boot-hold hold, the re-seed guard, the abort-restart guard) must look past
+ * them, or an unsigned report written after a failed failover would hide the
+ * row that keeps a member stopped.
  */
 export async function findLatestActedRecovery(
   db: Db,
@@ -91,14 +92,40 @@ export async function findLatestActedRecovery(
   const rows = await db
     .select()
     .from(recovery)
-    .where(eq(recovery.managedId, managedId))
+    .where(and(eq(recovery.managedId, managedId), NOT_REFUSED_REPORT))
     .orderBy(desc(recovery.startedAt))
-    .limit(REFUSED_ROWS_SKIP_MAX)
-  for (const row of rows) {
-    const record = serializeRow(row)
-    if (record && !record.metadata.reportRefused) return record
-  }
-  return null
+    .limit(1)
+  const row = rows[0]
+  return row ? serializeRow(row) : null
+}
+
+/**
+ * The refused-report row already filed for this cluster, reporting server
+ * and member, newest first; null when there is none. The fold for refused
+ * reports reads this, not only the newest row, so two servers whose refusals
+ * alternate still leave one row each.
+ */
+export async function findRefusedReportRow(
+  db: Db,
+  params: { managedId: string; sourcePrimaryMemberId: string; reporterServerId: string }
+): Promise<RecoveryRecord | null> {
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(
+      and(
+        eq(recovery.managedId, params.managedId),
+        eq(recovery.kind, 'automatic-failover'),
+        eq(recovery.state, 'blocked'),
+        eq(recovery.sourcePrimaryMemberId, params.sourcePrimaryMemberId),
+        sql`(${recovery.metadata} ->> 'reportRefused') IS NOT NULL`,
+        sql`(${recovery.metadata} ->> 'reporterServerId') = ${params.reporterServerId}`
+      )
+    )
+    .orderBy(desc(recovery.startedAt))
+    .limit(1)
+  const row = rows[0]
+  return row ? serializeRow(row) : null
 }
 
 /**
@@ -246,13 +273,7 @@ export async function insertRecovery(
  */
 export async function recordBlockedRecovery(
   db: Db,
-  params: InsertRecoveryParams & { metadata: RecoveryMetadata & { blockedReason: string } },
-  /**
-   * When the newest row counts as the same refusal (it is folded into).
-   * Default: same kind, member and `blockedReason`, no target.
-   */
-  sameRefusal: (latest: RecoveryRecord) => boolean = (latest) =>
-    latest.metadata.blockedReason === params.metadata.blockedReason
+  params: InsertRecoveryParams & { metadata: RecoveryMetadata & { blockedReason: string } }
 ): Promise<RecoveryRecord> {
   const latest = await findLatestRecovery(db, params.managedId)
   if (
@@ -260,7 +281,7 @@ export async function recordBlockedRecovery(
     latest.state === 'blocked' &&
     latest.targetMemberId === null &&
     latest.sourcePrimaryMemberId === params.sourcePrimaryMemberId &&
-    sameRefusal(latest)
+    latest.metadata.blockedReason === params.metadata.blockedReason
   ) {
     const updated = await updateRecovery(db, latest.id, {
       metadata: {
