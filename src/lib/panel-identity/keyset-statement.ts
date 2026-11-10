@@ -527,29 +527,31 @@ async function checkApprovals(
   return { pinned, possession }
 }
 
-function checkRules(
+type ApprovalSets = { pinned: Set<string>; possession: Set<string> }
+
+/**
+ * A key change moves the key only: the passkeys and their rp id stay as
+ * pinned, so two approvals that revoke cannot also add a passkey.
+ */
+function keyChangeRule(
   statement: KeysetStatement,
   pin: KeysetPin,
-  approvals: { pinned: Set<string>; possession: Set<string> }
+  approvals: ApprovalSets
 ): KeysetRefusalReason | null {
-  const isGenesis = pin.passkeys.length === 0
-  if (isGenesis) {
-    if (statement.kind !== 'passkeys') return 'no rotation passkey is pinned'
-    return statement.passkeys.every((p) => approvals.possession.has(p.id))
-      ? null
-      : 'every marked passkey must prove possession'
+  if (statement.rpId !== pin.rpId || !samePasskeySet(statement.passkeys, pin.passkeys)) {
+    return 'a key change must keep the passkeys'
   }
-  if (approvals.pinned.size === 0) return 'no pinned passkey approved'
-  if (statement.kind !== 'passkeys') {
-    // A key change moves the key only: the passkeys and their rp id stay as
-    // pinned, so two approvals that revoke cannot also add a passkey.
-    if (statement.rpId !== pin.rpId || !samePasskeySet(statement.passkeys, pin.passkeys)) {
-      return 'a key change must keep the passkeys'
-    }
-    return statement.kind === 'revoke' && approvals.pinned.size < MIN_REVOKE_APPROVALS
-      ? 'a revoke needs two pinned passkeys'
-      : null
-  }
+  return statement.kind === 'revoke' && approvals.pinned.size < MIN_REVOKE_APPROVALS
+    ? 'a revoke needs two pinned passkeys'
+    : null
+}
+
+/** Marks and unmarks: removals approved by a passkey that stays, additions prove possession. */
+function passkeyChangeRule(
+  statement: KeysetStatement,
+  pin: KeysetPin,
+  approvals: ApprovalSets
+): KeysetRefusalReason | null {
   if (statement.rpId !== pin.rpId) {
     return statement.passkeys.every((p) => approvals.possession.has(p.id))
       ? null
@@ -565,6 +567,24 @@ function checkRules(
     return 'an added passkey must prove possession'
   }
   return null
+}
+
+function checkRules(
+  statement: KeysetStatement,
+  pin: KeysetPin,
+  approvals: ApprovalSets
+): KeysetRefusalReason | null {
+  const isGenesis = pin.passkeys.length === 0
+  if (isGenesis) {
+    if (statement.kind !== 'passkeys') return 'no rotation passkey is pinned'
+    return statement.passkeys.every((p) => approvals.possession.has(p.id))
+      ? null
+      : 'every marked passkey must prove possession'
+  }
+  if (approvals.pinned.size === 0) return 'no pinned passkey approved'
+  return statement.kind === 'passkeys'
+    ? passkeyChangeRule(statement, pin, approvals)
+    : keyChangeRule(statement, pin, approvals)
 }
 
 /**
