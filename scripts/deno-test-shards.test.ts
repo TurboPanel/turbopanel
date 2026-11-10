@@ -159,12 +159,25 @@ describe('build.yml fan-in', () => {
       [
         '          repository: TurboPanel/turbopaneld',
         '          path: turbopaneld',
-        '          ref: trunk',
+        '          ref: ${{ steps.sibling.outputs.ref }}',
       ].join('\n')
     )
+    // A queued trunk build compares with daemon trunk as of its own commit.
+    assertStringIncludes(workflow, 'commits?sha=trunk&until=${at}&per_page=1')
+    assertStringIncludes(workflow, 'SIBLING_REPO: TurboPanel/turbopaneld')
     assertEquals(workflow.includes('resolve-sibling-ref'), false)
     assertEquals(workflow.includes('Sibling-Branch'), false)
-    assertStringIncludes(workflow, 'ref: ${{ github.event.pull_request.base.sha }}')
+    assertStringIncludes(workflow, "ref: ${{ github.event.pull_request.base.sha || 'trunk' }}")
+    // Only a trunk push is lenient: a manual run on a feature branch is held
+    // to the pull request rule, so it cannot put a lenient ci-ok on a PR head.
+    assertStringIncludes(
+      workflow,
+      "AS_OF: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/trunk') ||"
+    )
+    assertStringIncludes(
+      workflow,
+      "(github.event_name != 'pull_request' && github.ref != 'refs/heads/trunk')) && format('{0}/turbopanel-base', github.workspace)"
+    )
     assertStringIncludes(workflow, 'CONTRACT_BASE_DIR: ${{')
   })
 
