@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { deriveInboundOutcome } from './inbound-outcome.ts'
+import { deriveInboundOutcome, inboundAnswersRequest } from './inbound-outcome.ts'
 import type { DaemonInboundEnvelope } from '../../contracts/cell-protocol.ts'
 
 /**
@@ -464,4 +464,90 @@ test('deriveInboundOutcome maps deploy-cancel-result done and failed', () => {
   })
   const failed = deriveInboundOutcome({ ...done, ok: false, outcome: undefined, error: 'boom' })
   assertEquals(failed?.status, 'failed')
+})
+
+/** Every answer kind a daemon may send on a correlated request. */
+const ANSWER_KINDS = [
+  'addresses-result',
+  'managed-logs-result',
+  'managed-health-result',
+  'managed-permissions-result',
+  'server-network-check-result',
+  'dev-host-action-result',
+  'container-logs-result',
+  'repo-read-result',
+  'repo-default-branch-result',
+  'fabric-paths-result',
+  'dev-sync-result',
+  'tunnel-token-result',
+  'public-urls-update-result',
+  'metrics-live-start-result',
+  'metrics-live-stop-result',
+  'metrics-capabilities-result',
+  'topology-overrides-update-result',
+  'capability-plan-update-result',
+  'capability-plan-clear-result',
+  'deploy-cancel-result',
+  'update-result',
+  'instance-update-result',
+  'command-ack',
+  'command-outcome',
+] as const satisfies readonly DaemonInboundEnvelope['kind'][]
+
+/** Request kind -> the only answers it takes. */
+const EXPECTED: ReadonlyArray<[string, readonly string[]]> = [
+  ['addresses-request', ['addresses-result']],
+  ['managed-logs-request', ['managed-logs-result']],
+  ['managed-health-request', ['managed-health-result']],
+  ['managed-permissions-request', ['managed-permissions-result']],
+  ['server-network-check-request', ['server-network-check-result']],
+  ['dev-host-action', ['dev-host-action-result']],
+  ['container-logs-request', ['container-logs-result']],
+  ['repo-read-request', ['repo-read-result']],
+  ['repo-default-branch-request', ['repo-default-branch-result']],
+  ['fabric-paths-request', ['fabric-paths-result']],
+  ['dev-sync', ['dev-sync-result']],
+  ['tunnel-token', ['tunnel-token-result']],
+  ['public-urls-update', ['public-urls-update-result']],
+  ['metrics-live-start', ['metrics-live-start-result']],
+  ['metrics-live-stop', ['metrics-live-stop-result']],
+  ['metrics-capabilities-request', ['metrics-capabilities-result']],
+  ['topology-overrides-update', ['topology-overrides-update-result']],
+  ['capability-plan-update', ['capability-plan-update-result']],
+  ['capability-plan-clear', ['capability-plan-clear-result']],
+  ['deploy-cancel', ['deploy-cancel-result']],
+  ['update', ['update-result']],
+  ['instance-update', ['instance-update-result']],
+  ['command-dispatch', ['command-ack', 'command-outcome']],
+  ['echo', []],
+  ['acme-issue-request', []],
+  ['acme-proof-forward', []],
+  ['acme-proof-forward-end', []],
+]
+
+test('inboundAnswersRequest accepts only the answers a request kind expects', () => {
+  for (const [requestKind, allowed] of EXPECTED) {
+    for (const answer of ANSWER_KINDS) {
+      assertEquals(
+        inboundAnswersRequest(requestKind, answer),
+        allowed.includes(answer),
+        `${requestKind} answered by ${answer}`
+      )
+    }
+  }
+})
+
+test('inboundAnswersRequest refuses a result frame completing a command', () => {
+  for (const answer of ANSWER_KINDS) {
+    if (answer === 'command-ack' || answer === 'command-outcome') continue
+    assertEquals(inboundAnswersRequest('command-dispatch', answer), false, answer)
+  }
+})
+
+test('inboundAnswersRequest refuses every answer for an unknown or empty request kind', () => {
+  for (const requestKind of ['', 'unknown-request', 'constructor', '__proto__', 'toString']) {
+    for (const answer of ANSWER_KINDS) {
+      assertEquals(inboundAnswersRequest(requestKind, answer), false, `${requestKind}/${answer}`)
+    }
+  }
 })

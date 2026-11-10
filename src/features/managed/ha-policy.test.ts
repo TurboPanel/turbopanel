@@ -593,6 +593,27 @@ test('haEventRejection: postgres-probe must name the current primary from its ow
   assertEquals(haEventRejection({ ...GATE, primary: null }), 'no current primary')
 })
 
+test("haEventRejection: an Orchestrator event must come from the current primary's server", () => {
+  const orchestrator = {
+    ...GATE,
+    detector: undefined,
+    sourceMemberId: undefined,
+    engine: 'mariadb',
+  }
+  assertEquals(haEventRejection(orchestrator), null)
+  // A replica's server (or any other member's link) never speaks for a primary elsewhere.
+  assertEquals(
+    haEventRejection({ ...orchestrator, reporterServerId: 'srv-b' }),
+    "event did not come from the current primary's server"
+  )
+  assertEquals(haEventRejection({ ...orchestrator, primary: null }), 'no current primary')
+  assertEquals(
+    haEventRejection({ ...orchestrator, sourceMemberId: 'mem-old-primary' }),
+    'event does not name the current primary'
+  )
+  assertEquals(haEventRejection({ ...orchestrator, sourceMemberId: 'mem-primary' }), null)
+})
+
 test('haEventRejection: postgres-probe never speaks for MySQL/MariaDB', () => {
   for (const engine of ['mysql', 'mariadb']) {
     assertEquals(
