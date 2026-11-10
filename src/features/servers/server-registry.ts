@@ -248,8 +248,13 @@ export function mergeServerMetadataIdentity(
   return changed ? next : null
 }
 
-function defaultDisplayName(_identity: ServerHelloIdentity): string | null {
-  return null
+/**
+ * The display name a newly enrolled server takes from its registration key:
+ * the name typed in Add Server, trimmed, or null when none was given.
+ */
+export function enrolledServerName(licenseName: string | null | undefined): string | null {
+  const name = licenseName?.trim()
+  return name || null
 }
 
 function nowTs(): string {
@@ -713,6 +718,10 @@ async function authorizeAndBindLicensedServer(
  * server takes the license that key held at that tier in the same
  * transaction, so the seat can never be given away between the latch and the
  * server taking it, and a failure rolls the latch back for the daemon's retry.
+ * The new server also takes the name typed in Add Server (`license.name`),
+ * written only while the row has none. This runs for a brand-new row only: a
+ * server that enrolls again keeps whatever name it has, so a rename by an
+ * operator is never undone.
  * If the license was already consumed (concurrent enroll), throw a unique
  * violation so the caller can take the race-reuse path.
  */
@@ -733,7 +742,6 @@ async function insertLicensedServer(
       .insert(server)
       .values({
         organizationId,
-        name: defaultDisplayName(identity),
         createdAt: now,
         updatedAt: now,
         ...(columns.hostname ? { hostname: columns.hostname } : {}),
@@ -751,7 +759,12 @@ async function insertLicensedServer(
       .update(license)
       .set({ serverId: id, updatedAt: now })
       .where(and(eq(license.id, licenseId), isNull(license.serverId), isNull(license.revokedAt)))
-      .returning({ id: license.id, tierId: license.tierId, expiresAt: license.expiresAt })
+      .returning({
+        id: license.id,
+        name: license.name,
+        tierId: license.tierId,
+        expiresAt: license.expiresAt,
+      })
 
     // Expired between the token check and this latch: refused like a lost
     // race, so the transaction rolls back and nothing binds.
@@ -763,6 +776,14 @@ async function insertLicensedServer(
       }
       err.code = '23505'
       throw err
+    }
+
+    const name = enrolledServerName(latched[0]?.name)
+    if (name) {
+      await tx
+        .update(server)
+        .set({ name })
+        .where(and(eq(server.id, id), isNull(server.name)))
     }
 
     const tierId = latched[0]?.tierId
