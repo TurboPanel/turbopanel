@@ -341,8 +341,7 @@ provider accounts.
   connector stay alone. A resend is harmless (the daemon leaves a running
   connector as it is), and the same list is not sent again sooner than ten
   minutes after a send that did not finish. It runs from the periodic sweeps
-  (`runTunnelConnectorsSweepTick`) and right after a tunnel is created, moved
-  or removed (best effort). Changing a tunnel's run token is not supported
+  (`runTunnelConnectorsSweepTick`) and through the nudge below (best effort). Changing a tunnel's run token is not supported
   yet: remove the connector, then send it again.
 - `nudge.ts` sends the tables and then the connector lists
   (`syncOrganizationTunnelConnectors`) right away instead of waiting for the
@@ -350,12 +349,19 @@ provider accounts.
   connector at once too. It never throws (each pass is guarded on its own), does
   nothing for an organization with no tunnel (and no server that once held a
   table or a connector list), and each pass stops after 40 servers, in the order
-  they are found; the sweep reaches the rest. Triggers: a site is created,
+  they are found; the sweep reaches the rest. Triggers: a tunnel is created,
+  moved to other servers (`PUT .../placement`) or removed, a hostname is added
+  to or removed from a tunnel, a server is allowed or barred from carrying
+  tunnels (`/tunnel-carrying`), a site is created,
   edited or deleted (`/hostings`), a server is changed, deleted or has its
   addresses set (`/servers`), a server joins or leaves a datacenter
   (`/datacenters/:id/members`) or the datacenter is edited, an environment or
   project is deleted, a deploy that moves sites is queued (`deploy-routes.ts`),
   and a deploy result lands (`consumer.ts`, `applyEnvironmentDeploySideEffect`).
+  The tunnel routes once sent only the connector lists, so a server added to a
+  tunnel started its connector at once but got its forwarding table only from
+  the sweep (or the next deploy result): the tables and the lists go out
+  together from every trigger.
   **A request handler never waits for it**: it calls
   `nudgeTunnelRoutesAfterResponse` (`src/client/organizations/tunnel-nudge.ts`),
   which runs the work after the response (`runAfterResponse`) on its own
