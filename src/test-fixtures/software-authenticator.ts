@@ -101,6 +101,34 @@ export async function softAssert(
   }
 }
 
+/** A fresh Ed25519 control plane key: its fingerprint, raw public key and signing key. */
+export async function softPanelKeyPair(): Promise<{
+  kid: string
+  pub: string
+  privateKey: CryptoKey
+}> {
+  const pair = (await crypto.subtle.generateKey('Ed25519', true, [
+    'sign',
+    'verify',
+  ])) as CryptoKeyPair
+  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
+  return {
+    kid: base64urlEncode(await sha256(raw)),
+    pub: base64urlEncode(raw),
+    privateKey: pair.privateKey,
+  }
+}
+
+/** The replaced key's `keySig` over `"tp-keyset\n"` + the statement bytes. */
+export async function softKeySig(
+  key: { pub: string; privateKey: CryptoKey },
+  statementBytes: Uint8Array
+): Promise<{ pub: string; sig: string }> {
+  const message = new Uint8Array([...encoder.encode('tp-keyset\n'), ...statementBytes])
+  const sig = await crypto.subtle.sign('Ed25519', key.privateKey, message as BufferSource)
+  return { pub: key.pub, sig: base64urlEncode(new Uint8Array(sig)) }
+}
+
 /** A fresh Ed25519 control plane key: its fingerprint and raw public key. */
 export async function softPanelKey(): Promise<{ kid: string; pub: string }> {
   const pair = (await crypto.subtle.generateKey('Ed25519', true, [
@@ -112,12 +140,17 @@ export async function softPanelKey(): Promise<{ kid: string; pub: string }> {
 }
 
 /** A shared-vector envelope: approvals are stored as `[id, authenticatorData, clientDataJSON, assertion]`. */
-export type VectorEnvelope = { statement: string; approvals: string[][] }
+export type VectorEnvelope = {
+  statement: string
+  approvals: string[][]
+  keySig?: { pub: string; sig: string }
+}
 
 /** The envelope as the control plane serves it. */
 export function vectorEnvelope(raw: VectorEnvelope): {
   statement: string
   approvals: KeysetApproval[]
+  keySig?: { pub: string; sig: string }
 } {
   return {
     statement: raw.statement,
@@ -127,5 +160,6 @@ export function vectorEnvelope(raw: VectorEnvelope): {
       clientDataJSON: clientDataJSON ?? '',
       signature: signature ?? '',
     })),
+    ...(raw.keySig ? { keySig: raw.keySig } : {}),
   }
 }

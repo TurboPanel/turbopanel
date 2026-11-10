@@ -96,6 +96,13 @@ export type HttpIssuanceState = {
   issueTimes: string[]
   /** When the panel orders this pair again (about two thirds into its life), set when the pair is stored. */
   renewAt: string | null
+  /**
+   * What this request asked for, fixed when it started (the row's names plus
+   * the www names its sites added then), so a site edited mid-request does not
+   * change the names between the forwards and the order. Empty on a request
+   * an older control plane started: the row's current order names are used.
+   */
+  orderNames: string[]
 }
 
 const FORWARD_OUTCOMES: ReadonlySet<string> = new Set(['pending', 'ready', 'failed', 'skipped'])
@@ -191,6 +198,7 @@ export function newHttpIssuanceState(
     centralPair: false,
     issueTimes: [],
     renewAt: null,
+    orderNames: [],
     ...base,
   }
 }
@@ -242,6 +250,9 @@ export function readHttpIssuanceState(metadata: unknown): HttpIssuanceState | nu
       ? r.issueTimes.filter((t): t is string => typeof t === 'string' && t.length > 0)
       : [],
     renewAt: text(r.renewAt),
+    orderNames: Array.isArray(r.orderNames)
+      ? r.orderNames.filter((n): n is string => typeof n === 'string' && n.length > 0)
+      : [],
   }
 }
 

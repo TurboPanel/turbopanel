@@ -241,6 +241,8 @@ test('the sweep picks up exactly the rows with work to do', async () => {
         ids.retryDue,
         ids.failedWithPairDue,
         ids.endsPending,
+        // Several names are picked; who may take the order is decided per daemon.
+        ids.twoNames,
       ].sort()
     )
   } finally {
