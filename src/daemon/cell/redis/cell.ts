@@ -21,7 +21,11 @@ import {
   TERMINAL_REQUEST_RETENTION_MS,
   validateDaemonInboundEnvelope,
 } from '../../../contracts/cell-protocol.ts'
-import { deriveInboundOutcome } from '../inbound-outcome.ts'
+import {
+  answerKindMismatchWarning,
+  deriveInboundOutcome,
+  inboundAnswersRequest,
+} from '../inbound-outcome.ts'
 import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo, logWarn } from '../../../lib/logger.ts'
 import { onDaemonUpdateExpired } from '../control-plane-monitor.ts'
 import type { Db } from '../../../db/connection.ts'
@@ -1053,6 +1057,19 @@ export class RedisDaemonCell implements DaemonCell {
     }
 
     const existing = parseRequestRecord(this.#serverId, inbound.requestId, fields)
+    if (!inboundAnswersRequest(existing.requestKind, inbound.kind)) {
+      // Refused, not failed: the request stays pending for its real answer.
+      logWarn(
+        'daemon-cell',
+        answerKindMismatchWarning({
+          serverId: this.#serverId,
+          requestId: inbound.requestId,
+          requestKind: existing.requestKind,
+          inboundKind: inbound.kind,
+        })
+      )
+      return null
+    }
     if (isTerminalStatus(existing.status)) {
       return (
         (await this.#applyLateTerminalAck(inbound, existing, fields, reqKey, 'handleInbound')) ??

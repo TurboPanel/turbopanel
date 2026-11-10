@@ -4055,6 +4055,78 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
     expect(body.record.status).toBe('failed')
   })
 
+  it('refuses an answer of another kind and keeps the request pending', async () => {
+    const serverId = 'test-srv-answer-kind-refused'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const requestId = generateRequestId()
+    const at = new Date().toISOString()
+
+    await cellRpc(stub, serverId, '/rpc/enqueue', {
+      method: 'POST',
+      body: JSON.stringify({
+        outbound: {
+          kind: 'command-dispatch',
+          deliveryId: generateDeliveryId(),
+          requestId,
+          at,
+          commandId: 'cmd-answer-kind',
+          commandType: 'managed.lifecycle',
+          payload: {},
+        },
+      }),
+    })
+
+    const inbound = async (frame: Record<string, unknown>) => {
+      const response = await cellRpc(stub, serverId, '/rpc/inbound', {
+        method: 'POST',
+        body: JSON.stringify({ inbound: { requestId, at, ...frame } }),
+      })
+      expect(response.status).toBe(200)
+      return ((await response.json()) as { record: { status: string } | null }).record
+    }
+
+    expect(await inbound({ kind: 'dev-sync-result', ok: true })).toBeNull()
+    expect(await inbound({ kind: 'managed-health-result', ok: true })).toBeNull()
+    const pending = await cellRpc(stub, serverId, `/rpc/request?requestId=${requestId}`, {
+      method: 'GET',
+    })
+    const pendingBody = (await pending.json()) as { record: { status: string } }
+    expect(pendingBody.record.status).toBe('queued')
+
+    const done = await inbound({ kind: 'command-outcome', ok: false, error: 'stop failed' })
+    expect(done?.status).toBe('failed')
+  })
+
+  it('refuses command-ack for a request that is not a command', async () => {
+    const serverId = 'test-srv-answer-kind-ack'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const requestId = generateRequestId()
+    const at = new Date().toISOString()
+
+    await cellRpc(stub, serverId, '/rpc/enqueue', {
+      method: 'POST',
+      body: JSON.stringify({
+        outbound: {
+          kind: 'managed-logs-request',
+          deliveryId: generateDeliveryId(),
+          requestId,
+          at,
+          managedId: crypto.randomUUID(),
+          tail: 100,
+        },
+      }),
+    })
+
+    const response = await cellRpc(stub, serverId, '/rpc/inbound', {
+      method: 'POST',
+      body: JSON.stringify({
+        inbound: { kind: 'command-ack', requestId, at, daemonReceivedAt: at },
+      }),
+    })
+    expect(response.status).toBe(200)
+    expect(((await response.json()) as { record: unknown }).record).toBeNull()
+  })
+
   it('repo-default-branch-result correlates done, null branch and failed', async () => {
     const serverId = 'test-srv-repo-default-branch'
     const stub = env.DAEMON_CELL.getByName(serverId)
