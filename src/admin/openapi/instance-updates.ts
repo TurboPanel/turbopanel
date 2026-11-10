@@ -157,10 +157,13 @@ export const INSTANCE_UPDATES_PATHS = {
       'manifest cache), saves it, and answers the same body as `GET /instance/updates`. It ' +
       'never starts an update and never moves the schedule: the next scheduled check ' +
       'starts it. At most once a minute per install; sooner answers 429 `check_too_soon` ' +
-      'with `retryAfterSeconds` and a `Retry-After` header.',
+      'with `retryAfterSeconds` and a `Retry-After` header. When no manifest of the channel ' +
+      'could be read it answers 503 `release_unreachable` (the same answer as Update Now) ' +
+      'and keeps the saved build, rather than showing nothing new.',
     {
       '200': { description: 'The refreshed update status' },
       '429': { description: '`check_too_soon`' },
+      '503': { description: '`release_unreachable`, or the database is unavailable' },
     }
   ),
   [`${ADMIN_API_PREFIX}/instance/updates/now`]: postRoute(

@@ -28,6 +28,12 @@ import {
   user,
 } from '../db/schema.ts'
 import { OPERATOR_WEBHOOK_LABEL } from '../features/notifications/records.ts'
+import { setUpdateManifestProvider } from '../features/update/manifest.ts'
+import { LATEST_BUILD_SETTINGS_KEY } from '../features/upgrades/target-resolve.ts'
+import {
+  UPDATE_NOW_ERRORS,
+  UPDATE_NOW_UNREACHABLE_MESSAGE,
+} from '../features/upgrades/update-now.ts'
 import { encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
@@ -643,10 +649,21 @@ test('Check Now refreshes what is waiting, never starts a run, and runs at most 
   await withRoleUser('admin', async ({ app, cookie }) => {
     const db = createDenoDb()
     const headers = { Cookie: cookie, 'content-type': 'application/json' }
-    await db.delete(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+    const checkKeys = ['UPGRADE_CHECK', LATEST_BUILD_SETTINGS_KEY]
+    await db.delete(setting).where(inArray(setting.key, checkKeys))
     const originalFetch = globalThis.fetch
     globalThis.fetch = (() =>
       Promise.resolve(new Response('missing', { status: 404 }))) as typeof fetch
+    // A fixed daemon build answers the read, so the release server counts as reached.
+    setUpdateManifestProvider(() =>
+      Promise.resolve({
+        commit: 'check-now-daemon',
+        buildId: 'check-now-build',
+        builtAt: '2026-01-01T00:00:00.000Z',
+        channel: 'release',
+        manifestUrl: 'https://example.com/daemon/manifest.json',
+      })
+    )
     try {
       const first = await app.request(`${ADMIN_API_PREFIX}/instance/updates/check`, {
         method: 'POST',
@@ -688,9 +705,32 @@ test('Check Now refreshes what is waiting, never starts a run, and runs at most 
       const stored = row?.value as { lastCheckAt: string | null; lastManualCheckAt: string }
       assertEquals(stored.lastCheckAt, null)
       assertEquals(stored.lastManualCheckAt, body.lastCheckAt)
+
+      // The release server down (every manifest 404): 503 `release_unreachable`,
+      // the same answer as Update Now, and the saved build stays.
+      setUpdateManifestProvider(null)
+      await db.delete(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+      const down = await app.request(`${ADMIN_API_PREFIX}/instance/updates/check`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(down.status, 503)
+      assertEquals(await jsonBody<{ ok: boolean; error: string; message: string }>(down), {
+        ok: false,
+        error: UPDATE_NOW_ERRORS.releaseUnreachable,
+        message: UPDATE_NOW_UNREACHABLE_MESSAGE,
+      })
+      const [latest] = await db
+        .select()
+        .from(setting)
+        .where(eq(setting.key, LATEST_BUILD_SETTINGS_KEY))
+      const saved = latest?.value as { daemon?: { commit?: string } | null } | undefined
+      assertEquals(saved?.daemon?.commit, 'check-now-daemon')
     } finally {
       globalThis.fetch = originalFetch
-      await db.delete(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+      setUpdateManifestProvider(null)
+      await db.delete(setting).where(inArray(setting.key, checkKeys))
     }
   })
 })

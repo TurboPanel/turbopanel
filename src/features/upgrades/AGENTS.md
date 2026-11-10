@@ -119,6 +119,12 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   of the two. The press is claimed with one conditional `jsonb_set` on that
   field, and the scheduled check writes only `lastCheckAt`, so neither
   overwrites the other.
+  When every manifest the channel publishes comes back empty
+  (`releaseServerUnreachable`) it answers 503 `release_unreachable` with the
+  Update Now sentence, keeps the saved build and skips the status read, which
+  would ask the release server a second time (`checkNowRefresh` in
+  `update-now.ts`). The press is already claimed, so a retry within the
+  minute answers 429.
 - **Update Now** (`POST /instance/updates/now`, superadmin, audited as
   `upgrade.start_now`, no step-up like Pause / Resume, release installs on both
   runtimes): the hourly check, run at once. `coordinator.updateNow()` refuses
