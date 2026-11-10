@@ -161,7 +161,13 @@ export async function recordTunnelStatus(
 const NOT_RUNNING: ReadonlySet<TunnelStatusConnectorState> = new Set(['stopped', 'failed'])
 
 /** A connector command that has not finished yet. */
-const OPEN_COMMAND = ['queued', 'dispatching', 'sent', 'acked', 'running']
+const OPEN_COMMAND: ReadonlySet<string> = new Set([
+  'queued',
+  'dispatching',
+  'sent',
+  'acked',
+  'running',
+])
 
 /**
  * The connectors the last list asked this server to run that it reports as
@@ -219,7 +225,7 @@ async function commandStillOpen(db: Db, commandId: string): Promise<boolean> {
     .from(command)
     .where(eq(command.id, commandId))
     .limit(1)
-  return row !== undefined && OPEN_COMMAND.includes(row.status)
+  return row !== undefined && OPEN_COMMAND.has(row.status)
 }
 
 /** What the screen says about a connector's version. */
