@@ -49,6 +49,7 @@ export const STEP_UP_ACTIONS = {
   'managed.restore': 'Restore a managed database backup over its data',
   'hosting.delete': 'Delete a hosting',
   'environment.stop': 'Stop an environment and remove its containers',
+  'environment.data.delete': 'Destroy an environment and delete its data volumes',
   'managed.disaster_recovery.promote': 'Promote a disaster-recovery replica of a managed database',
   'tls.ca.rotate': "Rotate the organization's certificate authority",
   'tls.ca.retire': 'Retire the previous certificate authority after a rotation',

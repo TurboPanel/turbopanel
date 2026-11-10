@@ -228,6 +228,7 @@ export const DAEMON_WIRE_FEATURES = [
   'signed-reports-v1',
   'panel-bound-session-v1',
   'panel-keyset-statements-v1',
+  'environment-stop-remove-volumes-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -253,6 +254,15 @@ export const TOPOLOGY_GENERATION_OPTIONAL_FEATURE: DaemonWireFeature =
  * this feature; an older daemon would run it as a full deploy.
  */
 export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-only-v1'
+
+/**
+ * The daemon honours `removeVolumes` on `environment.stop`: after the stack is
+ * down it removes each named registered Docker volume and reports what it did
+ * per volume (`volumes[]`). A Destroy that deletes data is refused unless the
+ * daemon of every server the stop goes to lists this; an older daemon would
+ * ignore the field and keep the data without saying so.
+ */
+export const STOP_REMOVE_VOLUMES_FEATURE: DaemonWireFeature = 'environment-stop-remove-volumes-v1'
 
 /**
  * The daemon takes any application mode in `nativeAppServices[].appMode` that
