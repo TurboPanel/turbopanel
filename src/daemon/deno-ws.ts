@@ -1237,6 +1237,10 @@ export function registerDaemonWebSocket<E extends Env>(
         const decision = await decideFirstFrame(raw, {
           trustLevel: daemonState?.trustLevel ?? 0,
           panelIdentity: options.panelIdentity,
+          binding:
+            typeof payload.kid === 'string' && payload.kid !== ''
+              ? { serverId: payload.sub, keyId: payload.kid }
+              : undefined,
         })
         if (decision.kind === 'refused') {
           daemonCellLog('WARN', payload.sub, connectionId, `session refused: ${decision.reason}`)
