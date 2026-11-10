@@ -39,6 +39,7 @@ import {
   wsMessageDataToString,
 } from './deno-ws.ts'
 import { RedisDaemonCell } from './cell/redis/cell.ts'
+import type { handleManagedHaEvent } from '../features/managed/ha-event.ts'
 import type { RedisCellClient } from './cell/redis/client.ts'
 import { createFakeRedisCellClient } from './cell/redis/fake-redis-cell-client.ts'
 import { outboxKey } from './cell/redis/keys.ts'
@@ -1677,6 +1678,7 @@ async function withLiveDaemonServer(
     panelIdentity?: () => Promise<PanelIdentity | null>
     /** Skip the pause after a failed outbox pump turn; only for a cell that fails once. */
     outboxPumpSleep?: (ms: number) => Promise<void>
+    handleManagedHaEvent?: typeof handleManagedHaEvent
   },
   fn: (ctx: { port: number; origin: string }) => Promise<void>
 ): Promise<void> {
@@ -1702,6 +1704,7 @@ async function withLiveDaemonServer(
     panelIdentity: options.panelIdentity,
     outboxPumpSleep: options.outboxPumpSleep,
     identityUrls: () => Promise.resolve(['https://panel.example.test']),
+    handleManagedHaEvent: options.handleManagedHaEvent,
   })
 
   const ac = new AbortController()
@@ -3944,6 +3947,100 @@ test('signed session: a signed result is handled as sent, a badly signed one fai
       >
       assertEquals([good.ok, good.result], [true, { done: true }])
       assertEquals([forged.ok, forged.error], [false, 'signature_invalid'])
+    }
+  )
+})
+
+test('signed session: a signed managed-ha-event is handled as verified, an unsigned or forged one is not', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-signed-ha-events'
+  const identity = await fixturePanelIdentity()
+  const key = await testDaemonKey()
+  const seen: Array<{ managedId: string; signature: string }> = []
+  const handle: typeof handleManagedHaEvent = (_db, input, deps) => {
+    seen.push({ managedId: input.managedId, signature: deps.signature })
+    return Promise.resolve(null)
+  }
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb('key-test', 0, key.publicJwk),
+      registry: createTrackingRegistry(createTrackingDaemonCell(serverId).cell),
+      panelIdentity: () => Promise.resolve(identity),
+      handleManagedHaEvent: handle,
+    },
+    async ({ port }) => {
+      const ws = await openSignedSocket(port, serverId, secrets)
+      const frames = collectWsMessages(ws, 2)
+      ws.send(JSON.stringify({ type: 'hello-nonce', nonce: HELLO_NONCE }))
+      const [helloRaw] = await frames
+      const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as {
+        sessionId: string
+      }
+      ws.send(JSON.stringify(presenceHello({ features: ['signed-ha-events-v1'] })))
+      const event = (managedId: string) => ({
+        type: 'managed-ha-event',
+        managedId,
+        evidence: { spanMs: 20_000 },
+        at: new Date().toISOString(),
+      })
+      const signedEvent = async (managedId: string, signWith = key) => {
+        const unsigned = JSON.stringify({
+          ...event(managedId),
+          sessionId,
+          iat: Math.floor(Date.now() / 1000),
+          kid: 'key-test',
+        })
+        return appendSignature(
+          unsigned,
+          await signWith.sign(reportSigningInput('managed-ha-event', unsigned))
+        )
+      }
+      ws.send(await signedEvent('00000000-0000-4000-8000-0000000000a1'))
+      ws.send(JSON.stringify(event('00000000-0000-4000-8000-0000000000a2')))
+      ws.send(await signedEvent('00000000-0000-4000-8000-0000000000a3', await testDaemonKey()))
+      await waitForCondition(() => seen.length >= 3)
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+      // Frames are handled concurrently, so compare in id order.
+      seen.sort((a, b) => a.managedId.localeCompare(b.managedId))
+      assertEquals(seen, [
+        { managedId: '00000000-0000-4000-8000-0000000000a1', signature: 'verified' },
+        { managedId: '00000000-0000-4000-8000-0000000000a2', signature: 'unsigned' },
+        { managedId: '00000000-0000-4000-8000-0000000000a3', signature: 'invalid' },
+      ])
+    }
+  )
+})
+
+test('a managed-ha-event on a session that is not signed is handled as session-unsigned', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-legacy-ha-event'
+  const seen: string[] = []
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createMockDb(),
+      registry: createTrackingRegistry(createTrackingDaemonCell(serverId).cell),
+      handleManagedHaEvent: (_db, _input, deps) => {
+        seen.push(deps.signature)
+        return Promise.resolve(null)
+      },
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = await openLiveDaemonWs({ port, token: issued.token, remoteIp: LIVE_REMOTE_IP })
+      ws.send(
+        JSON.stringify({
+          type: 'managed-ha-event',
+          managedId: '00000000-0000-4000-8000-0000000000b1',
+          at: new Date().toISOString(),
+        })
+      )
+      await waitForCondition(() => seen.length >= 1)
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+      assertEquals(seen, ['session-unsigned'])
     }
   )
 })

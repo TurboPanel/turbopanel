@@ -14,7 +14,7 @@ import {
   type CommandQueueBinding,
   createWorkersCommandQueue,
 } from '../../features/commands/workers-queue.ts'
-import { handleManagedHaEvent } from '../../features/managed/ha-event.ts'
+import { handleManagedHaEvent, type HaEventSignature } from '../../features/managed/ha-event.ts'
 import {
   type AutoFailoverSetting,
   FRESH_STANDBY_MARGIN_ENV,
@@ -66,6 +66,8 @@ export async function handleCellManagedHaEvent(
   frame: ManagedHaEventFrame,
   deps: {
     reporterServerId: string
+    /** What the socket's signature check found; only `verified` is acted on. */
+    signature: HaEventSignature
     commandQueue: CommandQueue | undefined
     autoFailover: AutoFailoverSetting
     probeStandby?: FreshStandbyProbe
@@ -87,6 +89,7 @@ export async function handleCellManagedHaEvent(
     },
     {
       reporterServerId: deps.reporterServerId,
+      signature: deps.signature,
       ...(deps.commandQueue ? { commandQueue: deps.commandQueue } : {}),
       autoFailover: deps.autoFailover,
       ...(deps.probeStandby ? { probeStandby: deps.probeStandby } : {}),
