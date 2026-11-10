@@ -114,12 +114,13 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
     )
   }
   if (deployOnly.length > 0) {
-    const names =
-      deployOnly.length === 1
-        ? '1 server that runs this Tunnel’s sites applies'
-        : `${deployOnly.length} servers that run this Tunnel’s sites apply`
+    const one = deployOnly.length === 1
+    const who = one
+      ? '1 server that runs this Tunnel’s sites applies'
+      : `${deployOnly.length} servers that run this Tunnel’s sites apply`
+    const fix = one ? 'Update its daemon' : 'Update their daemons'
     warnings.push(
-      `${names} a change of where the Tunnel runs only when the site is deployed again. Update its daemon, or redeploy those sites after the change.`
+      `${who} a change of where the Tunnel runs only when the site is deployed again. ${fix}, or redeploy those sites after the change.`
     )
   }
   return warnings.length === shown.warnings.length ? shown : { ...shown, warnings }
