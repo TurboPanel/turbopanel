@@ -229,6 +229,7 @@ export const DAEMON_WIRE_FEATURES = [
   'panel-bound-session-v1',
   'panel-keyset-statements-v1',
   'environment-stop-remove-volumes-v1',
+  'signed-ha-events-v1',
   'panel-keyset-key-signature-v1',
 ] as const
 
@@ -507,6 +508,18 @@ export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report
  * still accepted until a later floor bump.
  */
 export const SIGNED_REPORTS_FEATURE: DaemonWireFeature = 'signed-reports-v1'
+
+/**
+ * On a signed session the daemon also signs every `managed-ha-event` (dead
+ * primary and boot-hold reports), with the same envelope as the signed
+ * reports. This control plane acts on a `managed-ha-event` only when its
+ * signature verifies (`SIGNATURE_REQUIRED_TYPES` in
+ * `src/daemon/authn/report-signature.ts`): an unsigned one, from any daemon
+ * or session, is refused and recorded. Listed by both sides; a daemon signs
+ * them for a control plane that lists it. No floor moves: an older daemon
+ * still connects and works, but its failover reports are not acted on.
+ */
+export const SIGNED_HA_EVENTS_FEATURE: DaemonWireFeature = 'signed-ha-events-v1'
 
 /**
  * Passkey-approved key changes: the control plane serves the key-set chain at

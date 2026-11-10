@@ -151,11 +151,20 @@ describe('build.yml fan-in', () => {
     )
   })
 
-  it('pairs sibling checkouts with trunk, never staging or live', () => {
-    // The staging/live guard lives in the resolver; its own suite pins it.
-    const resolver = 'node turbopanel/scripts/resolve-sibling-ref.mjs)"'
-    assertEquals(workflow.split(resolver).length - 1, 1)
-    assertEquals(workflow.includes('REF="${{'), false)
+  it('checks the contract against turbopaneld trunk only, never another branch', () => {
+    // Daemon first: the control plane may rely only on what daemon trunk has,
+    // so the sibling is always trunk (no same-named branch, no override).
+    assertStringIncludes(
+      workflow,
+      [
+        '          repository: TurboPanel/turbopaneld',
+        '          path: turbopaneld',
+        '          ref: trunk',
+      ].join('\n')
+    )
+    assertEquals(workflow.includes('resolve-sibling-ref'), false)
+    assertEquals(workflow.includes('Sibling-Branch'), false)
+    assertStringIncludes(workflow, 'CONTRACT_CHANGED_FILES: ${{ steps.changed.outputs.files }}')
   })
 
   it('does not depend on the website checkout or a generated data dictionary', () => {

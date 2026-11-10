@@ -48,7 +48,6 @@ describe('ci-runtime-pins', () => {
     assertEquals(action.includes('node-version: "'), false)
     assertEquals(action.includes('deno-version: "'), false)
     assertStringIncludes(release, './.github/actions/setup-toolchain')
-    assertStringIncludes(build, 'turbopanel/scripts/ci-runtime-pins.sh turbopaneld deno')
     assertEquals(build.includes('deno-version: "'), false)
     assertEquals(release.includes('node-version: "'), false)
     assertEquals(release.includes('deno-version: "'), false)

@@ -35,6 +35,7 @@ import {
   cellFreshStandbyMarginMs,
   handleCellManagedHaEvent,
 } from './managed-ha-inbound.ts'
+import { haEventSignature, type HaEventSignature } from '../../features/managed/ha-event.ts'
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
@@ -103,6 +104,7 @@ import {
 import {
   helloListsSignedReports,
   intakeSignedSessionReport,
+  type ReportSignature,
   type ReportVerdict,
 } from '../authn/report-signature.ts'
 import {
@@ -281,7 +283,22 @@ type SocketSessionAttachment = {
   reportsSigned?: boolean
   /** The unsigned-report warning was logged on this socket (once per connection). */
   warnedUnsigned?: boolean
+  /**
+   * `managedId` -> ms of the last refused `managed-ha-event` written from this
+   * socket, so the daemon's every-minute re-sends open no database client
+   * (`#haRefusalRecorded`, stamped only after a successful write).
+   */
+  haRefusalsAt?: Record<string, number>
 }
+
+/** A refused HA report from one socket is recorded at most this often per cluster and reason. */
+const HA_REFUSAL_RECORD_EVERY_MS = 10 * 60_000
+/**
+ * Distinct clusters one socket remembers. Each entry is about 55 bytes (a
+ * UUID and a timestamp); the serialized attachment is capped at 2 KiB, so keep
+ * this small.
+ */
+const HA_REFUSAL_KEYS_MAX = 4
 
 /** The server and key a socket's signed hello names; none (refused) when no key id was kept. */
 function sessionBindingOf(
@@ -1874,13 +1891,78 @@ export class DaemonCellObject {
     ws.serializeAttachment({ ...latest, signsReports })
   }
 
-  /** A signed session's report checked and unwrapped; null = drop it. */
+  /**
+   * One `managed-ha-event`: a verified one goes to the failover path; a
+   * refused one is written at most every {@link HA_REFUSAL_RECORD_EVERY_MS}
+   * per cluster from this socket (`#haRefusalRecorded`).
+   */
+  async #handleManagedHaEventInbound(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    parsed: Extract<DaemonMessage, { type: 'managed-ha-event' }>,
+    signature: HaEventSignature
+  ): Promise<void> {
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
+    const refused = signature !== 'verified'
+    if (refused && this.#haRefusalRecorded(ws, parsed.managedId)) return
+    const handled = await this.#withProjectionDbResult(
+      'managed-ha-event',
+      attachment.serverId,
+      async (db) => {
+        await handleCellManagedHaEvent(db, parsed, {
+          reporterServerId: attachment.serverId,
+          signature,
+          commandQueue: cellCommandQueue(this.#env),
+          autoFailover: cellAutoFailover(this.#env),
+          // Other servers' cells via their DO stubs; never this one.
+          probeStandby: createFreshStandbyProbe(
+            db,
+            createDurableObjectDaemonCellRegistry(this.#env, db),
+            { skipServerId: attachment.serverId }
+          ),
+          freshStandbyMarginMs: cellFreshStandbyMarginMs(this.#env),
+        })
+        return true
+      }
+    )
+    // Only a refusal that was written holds back the next one.
+    if (refused && handled) this.#stampHaRefusal(ws, parsed.managedId)
+  }
+
+  /**
+   * True when a refused `managed-ha-event` for this cluster was written from
+   * this socket in the last {@link HA_REFUSAL_RECORD_EVERY_MS}, whatever the
+   * reason: the daemon re-sends every minute, and the journal folds repeats
+   * per cluster and server anyway, so no database client is opened for it.
+   * Kept on the attachment so it survives hibernation.
+   */
+  #haRefusalRecorded(ws: WebSocket, managedId: string): boolean {
+    const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
+    const last = latest?.haRefusalsAt?.[managedId]
+    return last !== undefined && Date.now() - last < HA_REFUSAL_RECORD_EVERY_MS
+  }
+
+  /** Note that a refused report for this cluster was just written (see `#haRefusalRecorded`). */
+  #stampHaRefusal(ws: WebSocket, managedId: string): void {
+    const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
+    if (!latest) return
+    const nowMs = Date.now()
+    const kept = Object.entries(latest.haRefusalsAt ?? {})
+      .filter(([id, at]) => id !== managedId && nowMs - at < HA_REFUSAL_RECORD_EVERY_MS)
+      .slice(-(HA_REFUSAL_KEYS_MAX - 1))
+    ws.serializeAttachment({
+      ...latest,
+      haRefusalsAt: { ...Object.fromEntries(kept), [managedId]: nowMs },
+    })
+  }
+
+  /** A signed session's report checked and unwrapped; `raw` null = drop it. */
   async #screenSignedReport(
     ws: WebSocket,
     attachment: SocketSessionAttachment,
     raw: string
-  ): Promise<string | null> {
-    if (attachment.phase !== 'signed' || !attachment.session) return raw
+  ): Promise<{ raw: string | null; signature: ReportSignature }> {
+    if (attachment.phase !== 'signed' || !attachment.session) return { raw, signature: 'none' }
     // The latest attachment: an earlier report on this socket may have set the flags.
     const current = (ws.deserializeAttachment() as SocketSessionAttachment | null) ?? attachment
     const intake = await intakeSignedSessionReport(raw, {
@@ -1899,7 +1981,7 @@ export class DaemonCellObject {
         `daemon-cell event=report-signature serverId=${attachment.serverId} conn=${attachment.connectionId} ${intake.warning}`
       )
     }
-    return intake.raw
+    return { raw: intake.raw, signature: intake.signature }
   }
 
   /**
@@ -1944,11 +2026,13 @@ export class DaemonCellObject {
     ws: WebSocket,
     attachment: SocketSessionAttachment,
     raw: string
-  ): Promise<Extract<DaemonInboundFrameResult, { ok: true }> | null> {
-    const frame = await this.#screenSignedReport(ws, attachment, raw)
-    if (frame === null) return null
-    const validated = validateDaemonInboundFrame(frame)
-    if (validated.ok) return validated
+  ): Promise<
+    (Extract<DaemonInboundFrameResult, { ok: true }> & { signature: ReportSignature }) | null
+  > {
+    const screened = await this.#screenSignedReport(ws, attachment, raw)
+    if (screened.raw === null) return null
+    const validated = validateDaemonInboundFrame(screened.raw)
+    if (validated.ok) return { ...validated, signature: screened.signature }
     this.#refuseInboundFrame(ws, attachment, validated)
     return null
   }
@@ -2527,21 +2611,12 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'managed-ha-event') {
-        await this.#recordInboundRepairingPresence(attachment, parsed.at)
-        await this.#withProjectionDb('managed-ha-event', attachment.serverId, async (db) => {
-          await handleCellManagedHaEvent(db, parsed, {
-            reporterServerId: attachment.serverId,
-            commandQueue: cellCommandQueue(this.#env),
-            autoFailover: cellAutoFailover(this.#env),
-            // Other servers' cells via their DO stubs; never this one.
-            probeStandby: createFreshStandbyProbe(
-              db,
-              createDurableObjectDaemonCellRegistry(this.#env, db),
-              { skipServerId: attachment.serverId }
-            ),
-            freshStandbyMarginMs: cellFreshStandbyMarginMs(this.#env),
-          })
-        })
+        await this.#handleManagedHaEventInbound(
+          ws,
+          attachment,
+          parsed,
+          haEventSignature(validated.signature, session.phase === 'signed')
+        )
         return
       }
 
