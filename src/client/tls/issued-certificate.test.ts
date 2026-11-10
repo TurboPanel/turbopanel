@@ -755,6 +755,38 @@ test('a pair for a different hostname than the request is still refused by the n
   }
 })
 
+test("an open request's pair reported for the www name its site adds is stored when it covers the row's names too", async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    await openRequest(f, f.serverId)
+    // A leaf for the www name alone never lands on the row.
+    const narrow = await issuedPair([`www.${HOST}`])
+    const refused = await storeIssuedCertificate(
+      f.db,
+      { ...withRequest(narrow, f.serverId), hostname: `www.${HOST}` },
+      f.deps
+    )
+    assertEquals(refused.ok, false)
+    if (!refused.ok) assertEquals(refused.error, 'no_matching_certificate')
+    assertEquals((await readRow(f)).privateKeyPem, null)
+    // One leaf for both names, reported under the www name, is stored on the row.
+    const both = await issuedPair([HOST, `www.${HOST}`])
+    const stored = await storeIssuedCertificate(
+      f.db,
+      { ...withRequest(both, f.serverId), hostname: `www.${HOST}` },
+      f.deps
+    )
+    assertEquals(stored, { ok: true, stored: true, tlsIds: [f.tlsId] })
+    // The same pair again under the row's own name only notes the capture.
+    const again = await storeIssuedCertificate(f.db, withRequest(both, f.serverId), f.deps)
+    assertEquals(again.ok, true)
+    assertEquals((await readRow(f)).certificatePem, both.certificatePem)
+  } finally {
+    await f.cleanup()
+  }
+})
+
 test('a pair for an open request notes the capture, and the issued event then closes it', async () => {
   if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
   const f = await setup()

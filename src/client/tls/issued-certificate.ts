@@ -440,7 +440,14 @@ async function writePair(
     (row) =>
       row.status === 'automatic' &&
       isManagedRowMetadata(row.metadata) &&
-      coversHostname(row.metadata.dnsNames, hostname)
+      // A row covers the hostname, or (for an open request) the hostname is one the
+      // order asked for beyond the row's own names: a www name its site adds. Then the
+      // leaf must also cover every one of the row's own names, so nothing narrower
+      // than the row ever lands on it.
+      (coversHostname(row.metadata.dnsNames, hostname) ||
+        (input.requestId !== undefined &&
+          requestIsOpenFor(row.metadata, input, now) &&
+          row.metadata.dnsNames.every((name) => coversHostname(parsed.dnsNames, name))))
   )
   if (candidates.length === 0) return { refusal: 'no_matching_certificate' }
 

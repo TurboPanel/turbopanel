@@ -74,7 +74,10 @@ const clock = (deps: Pick<HttpIssuanceDeps, 'now'>): Date => (deps.now ?? (() =>
 type RowFacts = {
   id: string
   organizationId: string
+  /** The row's own names: what a stored pair must cover before a request closes. */
   names: string[]
+  /** What an order asks for: the row's names plus the www names its sites add. */
+  orderNames: string[]
   hasPair: boolean
   metadata: Record<string, unknown>
 }
@@ -126,7 +129,8 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
   return {
     id: row.id,
     organizationId: row.organizationId,
-    names: await orderNamesOf(tx, row.id, row.metadata),
+    names: namesOf(row.metadata),
+    orderNames: await orderNamesOf(tx, row.id, row.metadata),
     hasPair: row.hasKey === true,
     metadata: (row.metadata ?? {}) as Record<string, unknown>,
   }
@@ -261,7 +265,7 @@ async function sendAll(
 
 function orderEnvelope(
   now: Date,
-  row: Pick<RowFacts, 'id' | 'names'>,
+  row: Pick<RowFacts, 'id' | 'orderNames'>,
   state: HttpIssuanceState,
   helpers: Array<{ serverId: string; address: string }>,
   contactEmail: string
@@ -269,7 +273,7 @@ function orderEnvelope(
   return envelope(now, 'acme-issue-request', {
     acmeRequestId: state.requestId,
     tlsId: row.id,
-    names: row.names,
+    names: row.orderNames,
     directory: state.directory,
     contactEmail,
     startByIso: state.startByAt,
@@ -298,15 +302,19 @@ export type StartOutcome =
 
 async function gather(
   deps: HttpIssuanceDeps,
-  row: Pick<RowFacts, 'id' | 'names'>,
+  row: Pick<RowFacts, 'id' | 'orderNames'>,
   previous: HttpIssuanceState | null
 ): Promise<{ choice: Choice; servers: ServingServer[] }> {
-  const servers = await describeServers(deps, await loadServingServers(deps.db, row.id), row.names)
+  const servers = await describeServers(
+    deps,
+    await loadServingServers(deps.db, row.id),
+    row.orderNames
+  )
   // Nothing to choose from until the first pass over the servers: skip the DNS lookup.
   if (!servers.some((s) => s.hasFeature)) {
     return { choice: { ok: false, reason: 'no_servers', skipped: [] }, servers }
   }
-  const dnsAddresses = await dnsAddressesOf(deps.dnsLookup, row.names)
+  const dnsAddresses = await dnsAddressesOf(deps.dnsLookup, row.orderNames)
   const choice = chooseParticipants({
     servers,
     dnsAddresses,
@@ -398,7 +406,7 @@ function openingMessages(
     serverId: h.serverId,
     envelope: envelope(now, 'acme-proof-forward', {
       acmeRequestId: state.requestId,
-      names: row.names,
+      names: row.orderNames,
       targetAddress: choice.issuerAddress,
       expiresAtIso: state.startByAt,
     }),
@@ -511,7 +519,7 @@ export async function startHttpIssuance(
   if (contactEmail === null || contactEmail.trim() === '') {
     return await waitForContact(deps, peek.organizationId, tlsId, now, names)
   }
-  const { choice, servers } = await gather(deps, { id: tlsId, names }, previous)
+  const { choice, servers } = await gather(deps, { id: tlsId, orderNames: names }, previous)
   // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
   if (!servers.some((s) => s.hasFeature)) return 'not_eligible'
   const result = await deps.db.transaction((tx) =>
