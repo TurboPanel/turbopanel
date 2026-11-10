@@ -433,7 +433,8 @@ test('an emergency revoke needs two different pinned passkeys', async () => {
   })
   const two = await verifyKeysetEnvelope({ ...base, approvals: [byA, byB] }, pin, NOW)
   assert(two.ok, two.ok ? '' : two.reason)
-  assertEquals(two.pinnedApprovals.sort(), [a.passkey.id, b.passkey.id].sort())
+  const byId = (x: string, y: string) => x.localeCompare(y)
+  assertEquals([...two.pinnedApprovals].sort(byId), [a.passkey.id, b.passkey.id].sort(byId))
 })
 
 test('an envelope keySig must be exactly pub and sig', () => {
