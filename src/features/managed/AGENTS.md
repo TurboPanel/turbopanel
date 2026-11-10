@@ -1182,6 +1182,14 @@ all:
 3. `PRIMARY_HOST_DETECTORS` (`postgres-probe`): `sourceMemberId` is the
    current primary member and the reporter is that member's server, so a stale
    daemon (old primary after a switchover) can never fail over the new primary.
+   `PRIMARY_SERVER_DETECTORS` (`orchestrator`, the event without `detector`):
+   the reporter must be the current primary's server too (a `sourceMemberId`,
+   when sent, must name the primary). The daemon reports an Orchestrator dead
+   primary and its own hung-primary probe only for a primary on its own host,
+   so a report from a replica's server, or forged on another member's link, is
+   logged and dropped and never fences a primary somewhere else. An old
+   primary's host after a failover is dropped by this rule too (it used to get a
+   stale `blocked` row from 3a).
    3a. `orchestrator` events are bound to the CURRENT primary
    (`orchestratorBindingRejection`): the daemon sends Orchestrator's key for
    the dead instance (`instanceHost` + `instancePort`, feature
