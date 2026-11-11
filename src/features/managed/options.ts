@@ -3,6 +3,7 @@ import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { login, managed, managedDatabase } from '../../db/schema.ts'
 import type { ManagedEngineSpec } from './index.ts'
+import { addDatabasesToAdminToolLogins } from './admin-tools/projects.ts'
 import { nameListSql } from './sql-name-list.ts'
 import type { ManagedSettings } from './settings.ts'
 
@@ -156,9 +157,16 @@ export async function saveManagedDatabases(
   const added = next.databases.filter((name) => !byName.has(name))
   if (added.length > 0) {
     // One statement, so the rows get their ids in the order given.
-    await db
+    const inserted = await db
       .insert(managedDatabase)
       .values(added.map((name) => ({ managedId, name, ...fields(name) })))
+      .returning({ id: managedDatabase.id })
+    // An admin tool's login is listed on every database, including this one.
+    await addDatabasesToAdminToolLogins(
+      db,
+      managedId,
+      inserted.map((row) => row.id)
+    )
   }
   const changed = existing.filter((row) => {
     if (!wanted.has(row.name)) return false

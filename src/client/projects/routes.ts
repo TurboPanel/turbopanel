@@ -245,7 +245,7 @@ type CreateProjectInput = {
  * Confirms `workspaceId` belongs to `organizationId` and the caller may
  * create resources within it. Shared by create and move-target validation.
  */
-async function resolveWorkspaceTarget(
+export async function resolveWorkspaceTarget(
   c: Context<AppEnv>,
   db: Db,
   workspaceId: string,
@@ -737,7 +737,7 @@ async function resolveProjectRepositoryBinding(
   }
 }
 
-async function insertDockerComposeProject(
+export async function insertDockerComposeProject(
   tx: DbTx,
   fields: {
     name: string | null
@@ -913,6 +913,66 @@ async function writeProjectPatch(
     throw err
   }
   return null
+}
+
+/**
+ * Deletes a project (the caller has already authorized it and checked the
+ * typed name): plans the teardown, stops the hosts, removes the rows and
+ * starts the cleanup. Used by `DELETE /projects/:id` and by an admin tool's Remove.
+ */
+export async function runProjectDelete(
+  c: Context<AppEnv>,
+  scope: { db: Db; userId: string; organizationId: string },
+  id: string
+): Promise<Response> {
+  const { db, userId, organizationId } = scope
+  // The plan is read while the service / hosting / segment rows still exist:
+  // the stops are built from them. A reason the delete cannot run (a managed
+  // database, a shared asset another project uses, an offline server)
+  // refuses here, before anything is stopped.
+  const { plan, teardownPlans } = await planProjectDelete(db, id)
+  const refused = refuseOnPlanBlockers(c, plan)
+  if (refused) return refused
+  // Read now: the names and hostnames are gone once the rows are.
+  const snapshot = await snapshotDeleteForAudit(db, plan, id)
+
+  // The stop goes out after the delete is checked and before any row is
+  // removed; when it cannot be sent the delete is refused and nothing changes.
+  let stoppedServerIds: string[] = []
+  const result = await deleteProjectCascade(
+    db,
+    id,
+    { c, actorId: userId, organizationId },
+    async () => {
+      const stop = await stopEnvironmentHosts(c, db, teardownPlans, userId)
+      stoppedServerIds = stop.serverIds
+      return stop.stopped
+    }
+  )
+  if (!result.ok) {
+    return c.json({ error: result.error, ...result.detail }, 409)
+  }
+
+  // Recorded as soon as the rows are gone and before any host is asked to
+  // remove anything, so the trail has the delete even if the cleanup fails.
+  await recordAudit(
+    db,
+    projectDeleteAuditEntry(
+      { organizationId, actorUserId: userId, actorEmail: c.get('session')?.email ?? null },
+      id,
+      snapshot
+    )
+  )
+
+  const cleanup = await startDeleteCleanup(c, db, userId, result.cleanup)
+  await retireIdleIngressOn(c, db, stoppedServerIds, userId)
+  nudgeTunnelRoutesAfterResponse(c, organizationId)
+
+  return c.json({
+    ok: true as const,
+    ...(result.warning ? { warning: result.warning } : {}),
+    cleanup,
+  })
 }
 
 export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -1171,52 +1231,6 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const needsName = refuseUnlessNameConfirmed(c, 'project', confirmationName(named?.name, id))
     if (needsName) return needsName
 
-    // The plan is read while the service / hosting / segment rows still exist:
-    // the stops are built from them. A reason the delete cannot run (a managed
-    // database, a shared asset another project uses, an offline server)
-    // refuses here, before anything is stopped.
-    const { plan, teardownPlans } = await planProjectDelete(db, id)
-    const refused = refuseOnPlanBlockers(c, plan)
-    if (refused) return refused
-    // Read now: the names and hostnames are gone once the rows are.
-    const snapshot = await snapshotDeleteForAudit(db, plan, id)
-
-    // The stop goes out after the delete is checked and before any row is
-    // removed; when it cannot be sent the delete is refused and nothing changes.
-    let stoppedServerIds: string[] = []
-    const result = await deleteProjectCascade(
-      db,
-      id,
-      { c, actorId: userId, organizationId },
-      async () => {
-        const stop = await stopEnvironmentHosts(c, db, teardownPlans, userId)
-        stoppedServerIds = stop.serverIds
-        return stop.stopped
-      }
-    )
-    if (!result.ok) {
-      return c.json({ error: result.error, ...result.detail }, 409)
-    }
-
-    // Recorded as soon as the rows are gone and before any host is asked to
-    // remove anything, so the trail has the delete even if the cleanup fails.
-    await recordAudit(
-      db,
-      projectDeleteAuditEntry(
-        { organizationId, actorUserId: userId, actorEmail: c.get('session')?.email ?? null },
-        id,
-        snapshot
-      )
-    )
-
-    const cleanup = await startDeleteCleanup(c, db, userId, result.cleanup)
-    await retireIdleIngressOn(c, db, stoppedServerIds, userId)
-    nudgeTunnelRoutesAfterResponse(c, organizationId)
-
-    return c.json({
-      ok: true as const,
-      ...(result.warning ? { warning: result.warning } : {}),
-      cleanup,
-    })
+    return await runProjectDelete(c, { db, userId, organizationId }, id)
   })
 }

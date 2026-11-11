@@ -1545,3 +1545,39 @@ Daemon teardown: `../turbopaneld/src/managed/AGENTS.md` (`destroy.ts`).
 ## Privilege catalogue
 
 `privileges/` holds the versioned privilege catalogue (per engine and supported series, checked against captured engine output in `privileges/fixtures/`) and the design for the permission grid: `privileges/DESIGN.md`. Adding an engine version: capture a fixture with `scripts/capture-privilege-fixtures.mjs`, then add the series and any new or removed privileges to the catalogue data.
+
+## Admin tools
+
+`src/features/managed/admin-tools/` and `src/client/managed/admin-tool-routes.ts`
+run phpMyAdmin (`phpmyadmin:5.2.3`), Adminer (`adminer:6.3.0`) and pgAdmin
+(`dpage/pgadmin4:9.19`) for one Database Cluster as an ordinary compose deploy.
+No migration, no wire feature and no daemon change: a tool is a project whose
+`metadata` is `{ code: 'admin-tool', tool, managedId, loginId, loginName,
+hostname, access, image, revision, email? }` (found through `listAdminTools`),
+one service `tool`, one binding with prefix `DB` and no preset, and generated
+config files (`deploy-config-files-v1`) for Adminer's plugin files and pgAdmin's
+server list and pass file.
+
+- The tool login is a tool login (`internal` sources, primary routing). It is
+  listed on every current database as explicit `scope` rows, **not** All
+  Databases, so the organization and cluster switches keep governing ordinary
+  logins. `saveManagedDatabases` lists each new database on the cluster's tool
+  logins (`addDatabasesToAdminToolLogins`), and the drop-database guard ignores
+  tool logins (their listing goes with the database). The binding pins the
+  cluster's first database, so that one cannot be dropped until the tool is removed (the drop answers `managed_database_has_bindings` naming the tool's project).
+- Every tool verifies the proxy certificate and its name against the Organization
+  CA file in every SSL mode. Never fall back to plain TLS.
+- Environment values must be exactly one `{$KEY}` reference, so nothing here
+  composes `{$DB_HOST}:{$DB_PORT}` in an environment value (config file content may).
+- pgAdmin reads its server list, pass file and web account only on first run;
+  `ADMIN_TOOL_REVISION` (bumped by Reset Password and Update Tool) recreates the
+  container. Never put a secret in it. pgAdmin keeps no volume. It must see only
+  `PGADMIN_DEFAULT_PASSWORD_FILE`, never both password names.
+- Bumping a pin is a one-line change in `templates.ts` plus a canary check;
+  "Update Available" shows when a project's stored image differs from the pin.
+- Routes: `GET/POST /managed/admin-tools`, `POST .../:projectId/password`,
+  `POST .../:projectId/update`, `DELETE .../:projectId?confirmName=`. Remove
+  uses the project delete path, then deletes the login (a refused login delete
+  answers `ok: true` with `loginNotRemoved`). A caller cannot set the `admin-tool`
+  marker: project create strips `code` from caller metadata, and a tool is only
+  recognised when its `tool` service is bound to a login of this cluster.

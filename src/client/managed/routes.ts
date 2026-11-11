@@ -95,6 +95,7 @@ import {
   listManagedLogins,
   type DatabaseLoginRole,
   type LoginSettingsPatch,
+  type ManagedLoginCredentialRow,
   type ManagedLoginRow,
   patchLogin,
   removeNewManagedLogins,
@@ -105,6 +106,13 @@ import {
   allDatabasesSwitches,
   loadAllDatabasesRefusal,
 } from '../../features/managed/all-databases.ts'
+import { registerManagedAdminToolRoutes } from './admin-tool-routes.ts'
+import {
+  ADMIN_TOOL_LOGIN_SOURCES,
+  adminToolLoginGrants,
+} from '../../features/managed/admin-tools/login-settings.ts'
+import { unlistFromLogins } from '../../features/managed/admin-tools/unlist.ts'
+import { adminToolLoginIds } from '../../features/managed/admin-tools/projects.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
 import {
   APP_LOGIN_NAME_SCHEME,
@@ -1525,8 +1533,13 @@ async function refuseDatabaseDropWhenInUse(
       409
     )
   }
+  // An admin tool's login is listed on every database; that is not a reason to
+  // keep one (the listing goes with the database).
+  const toolLoginIds = new Set(await adminToolLoginIds(db, managedId))
   const users = listUsersReferencingDatabase(
-    (await listManagedLogins(db, managedId)).filter((entry) => entry.id !== ownerLoginId),
+    (await listManagedLogins(db, managedId)).filter(
+      (entry) => entry.id !== ownerLoginId && !toolLoginIds.has(entry.id)
+    ),
     databaseName
   )
   if (users.length > 0) {
@@ -2251,6 +2264,194 @@ async function createBackupLoginRoute(c: Context<AppEnv>): Promise<Response> {
   })
 }
 
+/** Takes the database off every admin tool login's list for the drop's apply; `restore` puts it back. */
+async function unlistToolLoginsFromDatabase(db: Db, managedId: string, databaseName: string) {
+  return await unlistFromLogins(await adminToolLoginIds(db, managedId), async (id) => {
+    const target = await findManagedLogin(db, managedId, id)
+    return target ? await unlistLoginFromDatabase(db, target, databaseName) : null
+  })
+}
+
+/**
+ * The login of an admin tool, made like `POST /managed/users` makes one but with
+ * fixed settings: a tool login, reachable only from the server itself, listed
+ * on every current database (explicit grants, not All Databases, so that switch
+ * keeps governing ordinary logins; the cluster's database creation keeps the
+ * list in step). The login row is saved here and the apply is queued by the
+ * returned `apply`, after the caller has bound the tool to it.
+ */
+async function createManagedToolLogin(
+  c: Context<AppEnv>,
+  scope: {
+    db: Db
+    auth: { userId: string; organizationId: string }
+    ctx: ManagedContext
+    row: ManagedRowRecord
+  },
+  input: { username: string; access: 'admin' | 'read-only' }
+) {
+  const { db, auth, ctx, row } = scope
+  const options = await loadManagedOptions(db, ctx.spec, row)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+  const grants = adminToolLoginGrants({
+    access: input.access,
+    engine: ctx.spec.engine,
+    clusterDatabases: options.databases,
+  })
+  const { databases, privileges } = grants
+  if (databases.length === 0) {
+    return c.json(
+      {
+        error: 'admin_tool_needs_database',
+        message: 'Add a database to this Database Cluster before adding an admin tool.',
+      },
+      409
+    )
+  }
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!dataEncryptionSecrets) return c.json({ error: 'Encryption unavailable' }, 503)
+  const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+  const gate = await gateLoginCreate(c, db, {
+    ctx,
+    row,
+    options,
+    body: { allowedSources: [...ADMIN_TOOL_LOGIN_SOURCES] },
+    targetServerId,
+    grantMode: grants.grantMode,
+    grants: [{ privileges, databases }],
+  })
+  if (gate instanceof Response) return gate
+  const settings: LoginSettingsPatch = {
+    databases,
+    allDatabases: grants.allDatabases,
+    privileges,
+    connectionRole: grants.connectionRole,
+    grantMode: grants.grantMode,
+    tool: grants.tool,
+    ...loginLimitSettings(gate.limits),
+  }
+  const created = await inLoginCreateTransaction(
+    db,
+    { ctx, managedId: row.id, targetServerId },
+    (tx, shared) =>
+      createLoginWithNewName(tx, dataEncryptionSecrets, {
+        ...shared,
+        settings,
+        username: input.username,
+        nameScheme: APP_LOGIN_NAME_SCHEME,
+      })
+  )
+  if (!created.ok) return c.json({ error: created.error }, created.status)
+  return {
+    loginId: created.loginId,
+    username: created.username,
+    password: created.password,
+    notes: gate.notes,
+    apply: () =>
+      applyCreatedLogins(c, db, {
+        ctx,
+        row,
+        options,
+        targetServerId,
+        commandQueue: gate.commandQueue,
+        userId: auth.userId,
+        loginIds: [created.loginId],
+      }),
+  }
+}
+
+/**
+ * Rotates one login's password, rewrites its bindings' variables and queues the
+ * apply that makes it real; any failure puts the old password back. Used by
+ * `POST /managed/users/:loginId/password` and by an admin tool's Reset Password.
+ */
+async function rotateManagedLogin(
+  c: Context<AppEnv>,
+  scope: {
+    db: Db
+    auth: { userId: string; organizationId: string }
+    ctx: ManagedContext
+    row: ManagedRowRecord
+  },
+  target: ManagedLoginCredentialRow
+) {
+  const { db, auth, ctx, row } = scope
+  const rotateGuard = evaluateManagedLoginRotateGuard(target.role)
+  if (rotateGuard) {
+    return c.json({ error: rotateGuard.error }, rotateGuard.status)
+  }
+
+  const options = await loadManagedOptions(db, ctx.spec, row)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!dataEncryptionSecrets) {
+    return c.json({ error: 'Encryption unavailable' }, 503)
+  }
+
+  const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+
+  const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
+  if (commandQueue instanceof Response) return commandQueue
+
+  const previousPassword = target.password
+
+  const { plaintext } = await rotateLoginPassword(db, dataEncryptionSecrets, target.id)
+
+  const materializeResult = await materializeBindingsForLogin(db, dataEncryptionSecrets, target.id)
+  // Every failure from here on must undo BOTH the stored password and the
+  // project variables that were just rewritten with the new one.
+  const rollBack = () =>
+    rollBackLoginRotation(db, dataEncryptionSecrets, {
+      loginId: target.id,
+      previousPassword,
+    })
+  if (!('ok' in materializeResult)) {
+    await rollBack()
+    return c.json({ error: materializeResult.kind }, 422)
+  }
+
+  const residual = parseManagedResidual(row.metadata)
+  const preparedApply = await prepareManagedApplyPayloads(c, db, {
+    managedRow: row,
+    spec: ctx.spec,
+    settings: options.settings,
+    databases: options.databases,
+    ownerRoleDatabases: options.ownerRoleDatabases,
+    databaseOwners: options.databaseOwners,
+    serverId: targetServerId,
+    environmentId: ctx.environmentId,
+    organizationId: ctx.organizationId,
+    rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
+  })
+  if (isPrepareError(preparedApply)) {
+    await rollBack()
+    return mapManagedApplyPrepareError(c, preparedApply)
+  }
+
+  const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
+    userId: auth.userId,
+    managedId: row.id,
+    members: preparedApply.members,
+  })
+  if (enqueued instanceof Response) {
+    await rollBack()
+    return enqueued
+  }
+
+  const primaryResult = pickPrimaryCommandResult(enqueued)
+  const redeployRequired = await listBindingImpactForLogin(db, target.id)
+  return {
+    plaintext,
+    commandId: primaryResult?.commandId,
+    serverId: primaryResult?.serverId ?? targetServerId,
+    results: enqueued,
+    redeployRequired,
+  }
+}
+
 /**
  * Delete one login of the cluster (`DELETE /managed/users/:loginId` and
  * `DELETE /managed/backup-login`): `pickTarget` finds it. The host drops the
@@ -2365,6 +2566,24 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   }
   registerManagedExternalAccessRoutes(router)
   registerManagedPrivilegeRoutes(router)
+  registerManagedAdminToolRoutes(router, {
+    loadScope: (c) => loadManagedRowScope(c),
+    loadReadScope: async (c) => {
+      const scope = await loadManagedAuthScope(c)
+      if (scope instanceof Response) return scope
+      const row = await findManagedForEnvironment(scope.db, scope.environmentId)
+      if (!row) return c.json({ tools: [] })
+      return { db: scope.db, auth: scope.auth, managedId: row.id }
+    },
+    createLogin: createManagedToolLogin,
+    rotateLogin: async (c, scope, loginId) => {
+      const target = await findManagedLogin(scope.db, scope.row.id, loginId)
+      if (!target) return c.json({ error: 'Not found' }, 404)
+      return await rotateManagedLogin(c, scope, target)
+    },
+    deleteLogin: (c, _scope, loginId) =>
+      deleteManagedLoginRoute(c, (db, managedId) => findManagedLogin(db, managedId, loginId)),
+  })
 
   router.post('/environments/:id/managed', async (c) => {
     const scope = await loadManagedContextScope(c)
@@ -3071,83 +3290,15 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const target = await findManagedLogin(db, row.id, loginId)
     if (!target) return c.json({ error: 'Not found' }, 404)
-    const rotateGuard = evaluateManagedLoginRotateGuard(target.role)
-    if (rotateGuard) {
-      return c.json({ error: rotateGuard.error }, rotateGuard.status)
-    }
-
-    const options = await loadManagedOptions(db, ctx.spec, row)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-    if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Encryption unavailable' }, 503)
-    }
-
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
-    if (targetServerId instanceof Response) return targetServerId
-
-    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
-    if (commandQueue instanceof Response) return commandQueue
-
-    const previousPassword = target.password
-
-    const { plaintext } = await rotateLoginPassword(db, dataEncryptionSecrets, target.id)
-
-    const materializeResult = await materializeBindingsForLogin(
-      db,
-      dataEncryptionSecrets,
-      target.id
-    )
-    // Every failure from here on must undo BOTH the stored password and the
-    // project variables that were just rewritten with the new one.
-    const rollBack = () =>
-      rollBackLoginRotation(db, dataEncryptionSecrets, {
-        loginId: target.id,
-        previousPassword,
-      })
-    if (!('ok' in materializeResult)) {
-      await rollBack()
-      return c.json({ error: materializeResult.kind }, 422)
-    }
-
-    const residual = parseManagedResidual(row.metadata)
-    const preparedApply = await prepareManagedApplyPayloads(c, db, {
-      managedRow: row,
-      spec: ctx.spec,
-      settings: options.settings,
-      databases: options.databases,
-      ownerRoleDatabases: options.ownerRoleDatabases,
-      databaseOwners: options.databaseOwners,
-      serverId: targetServerId,
-      environmentId: ctx.environmentId,
-      organizationId: ctx.organizationId,
-      rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
-    })
-    if (isPrepareError(preparedApply)) {
-      await rollBack()
-      return mapManagedApplyPrepareError(c, preparedApply)
-    }
-
-    const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
-      userId: auth.userId,
-      managedId: row.id,
-      members: preparedApply.members,
-    })
-    if (enqueued instanceof Response) {
-      await rollBack()
-      return enqueued
-    }
-
-    const primaryResult = pickPrimaryCommandResult(enqueued)
-    const redeployRequired = await listBindingImpactForLogin(db, target.id)
+    const rotated = await rotateManagedLogin(c, { db, auth, ctx, row }, target)
+    if (rotated instanceof Response) return rotated
     return c.json({
       ok: true,
-      password: plaintext,
-      commandId: primaryResult?.commandId,
-      serverId: primaryResult?.serverId ?? targetServerId,
-      results: enqueued,
-      redeployRequired,
+      password: rotated.plaintext,
+      commandId: rotated.commandId,
+      serverId: rotated.serverId,
+      results: rotated.results,
+      redeployRequired: rotated.redeployRequired,
     })
   })
 
@@ -3499,8 +3650,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const unlisting = ownerLogin
       ? await unlistLoginFromDatabase(db, ownerLogin, databaseName)
       : null
+    // An admin tool's login is listed on every database; it stops listing this one too.
+    const toolUnlisting = await unlistToolLoginsFromDatabase(db, row.id, databaseName)
     const restoreOwnerLogin = async () => {
       await unlisting?.restore()
+      await toolUnlisting.restore()
     }
 
     const prepared = await restoringOnFailure(restoreOwnerLogin, () =>
