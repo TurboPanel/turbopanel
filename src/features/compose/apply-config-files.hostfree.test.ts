@@ -89,7 +89,7 @@ test('a text file gets only text parts and a file-backed config', () => {
     file: '/run/turbopanel/deployments/p1/e1/configs/pgadmin--servers',
   })
   assertEquals('servers' in configs, false)
-  const service = (result.document.data.services as Record<string, any>).pgadmin
+  const service = (result.document.data.services as Record<string, { configs: unknown[] }>).pgadmin
   assertEquals(service.configs[0], {
     source: 'pgadmin_servers',
     target: '/pgadmin4/servers.json',
@@ -199,7 +199,7 @@ test('an unresolved or invalid reference is refused', () => {
 
 test('owner and mode are dropped with a warning', () => {
   const result = ok(compile(PGADMIN, DB))
-  const service = (result.document.data.services as Record<string, any>).pgadmin
+  const service = (result.document.data.services as Record<string, { configs: unknown[] }>).pgadmin
   assertEquals(service.configs[1], {
     source: 'pgadmin_pgpass',
     target: '/pgadmin4/pgpass',
