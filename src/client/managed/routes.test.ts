@@ -47,6 +47,7 @@ import {
   principal,
   project,
   retention,
+  scope,
   server,
   service,
   snapshot,
@@ -78,7 +79,11 @@ import {
 import type { BackupRunReportMessage } from '../../contracts/cell-protocol.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
-import { removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
+import { createManagedLogin, removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
+import {
+  insertToolProjectFixture,
+  removeToolProjectFixture,
+} from '../../features/managed/admin-tools/projects.test.support.ts'
 import {
   releaseManagedLifecycleLease,
   tryTakeManagedLifecycleLease,
@@ -5513,6 +5518,205 @@ test('backup login: create, one per cluster, list, delete, and both audited', as
         ['managed.backup_login.create', managedId],
         ['managed.backup_login.delete', managedId],
       ])
+    }
+  )
+})
+
+const DATA_ENCRYPTION_TEST_SECRETS = () =>
+  deriveEncryptionSecretsConfig(parseTestSecretsConfig('deno'), 'data-encryption')
+
+test('an admin tool login does not block a database drop and the drop apply leaves that database out of its list', async () => {
+  await withManagedFixtures(
+    {},
+    async ({
+      db,
+      app,
+      secrets,
+      commandQueue,
+      userId,
+      organizationId,
+      workspaceId,
+      environmentId,
+      serverId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const managedId = created.managed.id
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+      const addDb = await app.request(`/environments/${environmentId}/managed/databases`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ name: 'tooldb' }),
+      })
+      assertEquals(addDb.status, 200)
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+
+      const tool = await createManagedLogin(db, await DATA_ENCRYPTION_TEST_SECRETS(), {
+        managedId,
+        username: 'tool_drop',
+        databases: ['defaultdb', 'tooldb'],
+        tool: true,
+      })
+      const made = await insertToolProjectFixture(db, {
+        organizationId,
+        workspaceId,
+        serverId,
+        metadataManagedId: managedId,
+        metadataLoginId: tool.loginId,
+        boundLoginId: tool.loginId,
+        boundDatabaseId: await databaseIdByName(db, managedId, 'defaultdb'),
+        name: 'Drop Test Tool',
+      })
+      try {
+        const before = commandQueue.envelopes.length
+        const drop = await app.request(
+          `/environments/${environmentId}/managed/databases/tooldb?confirmName=tooldb`,
+          { method: 'DELETE', headers }
+        )
+        assertEquals(drop.status, 200)
+
+        const applies = commandQueue.envelopes
+          .slice(before)
+          .filter((envelope) => envelope.type === 'managed.apply')
+        assertEquals(applies.length > 0, true)
+        const [row] = await db
+          .select({ payload: dispatch.payload })
+          .from(dispatch)
+          .where(eq(dispatch.commandId, applies.at(-1)!.commandId))
+          .limit(1)
+        const credentials = (
+          row?.payload as { credentials: Array<{ username: string; databases: string[] }> }
+        ).credentials
+        const toolCredential = credentials.find((entry) => entry.username === 'tool_drop')
+        assertEquals(toolCredential?.databases, ['defaultdb'])
+
+        const listed = await db
+          .select({ name: managedDatabase.name })
+          .from(scope)
+          .innerJoin(managedDatabase, eq(managedDatabase.id, scope.databaseId))
+          .where(eq(scope.loginId, tool.loginId))
+        assertEquals(
+          listed.map((entry) => entry.name),
+          ['defaultdb']
+        )
+      } finally {
+        await removeToolProjectFixture(db, made)
+      }
+    }
+  )
+})
+
+test('a project with copied tool metadata bound to another cluster login is 404 on reset, update and remove and changes nothing', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, workspaceId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const managedId = ((await create.json()) as { managed: { id: string } }).managed.id
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+
+      // Another cluster of the same organization, with a login of its own.
+      const [otherProject] = await db
+        .insert(project)
+        .values({
+          name: 'Other Cluster',
+          workspaceId,
+          organizationId,
+          kind: 'managed',
+          metadata: { code: 'postgres' },
+        })
+        .returning({ id: project.id })
+      const [otherEnv] = await db
+        .insert(environment)
+        .values({ name: 'production', projectId: otherProject!.id, serverId })
+        .returning({ id: environment.id })
+      const [otherManaged] = await db
+        .insert(managed)
+        .values({
+          environmentId: otherEnv!.id,
+          serverId,
+          name: 'Other Postgres',
+          engine: 'postgres',
+          status: 'ready',
+          options: { settings: getManagedEngineSpec('postgres')!.defaultSettings },
+        })
+        .returning({ id: managed.id })
+      const [otherDatabase] = await db
+        .insert(managedDatabase)
+        .values({ managedId: otherManaged!.id, name: 'shop' })
+        .returning({ id: managedDatabase.id })
+      const foreign = await createManagedLogin(db, await DATA_ENCRYPTION_TEST_SECRETS(), {
+        managedId: otherManaged!.id,
+        username: 'foreign_tool',
+        databases: ['shop'],
+        tool: true,
+      })
+      const fake = await insertToolProjectFixture(db, {
+        organizationId,
+        workspaceId,
+        serverId,
+        metadataManagedId: managedId,
+        metadataLoginId: foreign.loginId,
+        boundLoginId: foreign.loginId,
+        boundDatabaseId: otherDatabase!.id,
+        name: 'Copied Tool',
+      })
+      const passwordOf = async () =>
+        (
+          await db
+            .select({ password: login.password })
+            .from(login)
+            .where(eq(login.id, foreign.loginId))
+        )[0]?.password
+      try {
+        const passwordBefore = await passwordOf()
+        const base = `/environments/${environmentId}/managed/admin-tools/${fake.projectId}`
+        const answers = await Promise.all([
+          app.request(`${base}/password`, { method: 'POST', headers }),
+          app.request(`${base}/update`, { method: 'POST', headers }),
+          app.request(`${base}?confirmName=Copied%20Tool`, { method: 'DELETE', headers }),
+        ])
+        assertEquals(
+          answers.map((res) => res.status),
+          [404, 404, 404]
+        )
+        assertEquals(await passwordOf(), passwordBefore)
+        const stillThere = await db
+          .select({ id: project.id })
+          .from(project)
+          .where(eq(project.id, fake.projectId))
+        assertEquals(stillThere.length, 1)
+        const list = await app.request(`/environments/${environmentId}/managed/admin-tools`, {
+          headers,
+        })
+        assertEquals(((await list.json()) as { tools: unknown[] }).tools, [])
+      } finally {
+        await removeToolProjectFixture(db, fake)
+        await db.delete(managed).where(eq(managed.id, otherManaged!.id))
+        await db.delete(environment).where(eq(environment.id, otherEnv!.id))
+        await db.delete(project).where(eq(project.id, otherProject!.id))
+      }
     }
   )
 })
