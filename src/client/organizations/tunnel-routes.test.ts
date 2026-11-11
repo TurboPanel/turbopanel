@@ -16,6 +16,7 @@ import { createSession } from '../authn/session-store.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   audit,
+  command,
   datacenter,
   deployment,
   doorway,
@@ -24,6 +25,7 @@ import {
   hosting,
   grant,
   ip,
+  key,
   network,
   organization,
   portal,
@@ -46,6 +48,14 @@ import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
 import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
 import { recordTunnelStatus } from '../../features/tunnels/status.ts'
 import { registerOrganizationTunnelRoutes } from './tunnel-routes.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import {
+  TUNNEL_CONNECTOR_FEATURE,
+  TUNNEL_CONNECTOR_TOKEN_CHANGE_FEATURE,
+  TUNNEL_FORWARDING_FEATURE,
+  TUNNEL_STATUS_FEATURE,
+} from '../../lib/version-wire.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -62,6 +72,8 @@ type Called = { status: number; text: string; body: Record<string, unknown> }
 
 const TOKEN = 'cf-api-token-0123456789abcdefghijklmnopqrstuv'
 const RUN_TOKEN = 'run-token-abcdefghijklmnopqrstuvwxyz0123456789'
+/** The run token the faked provider hands out after a rotation (made up, built so no scanner mistakes it). */
+const ROTATED_RUN_TOKEN = 'R'.repeat(48)
 const ACCOUNT = 'a'.repeat(32)
 const ACCOUNT_B = 'b'.repeat(32)
 
@@ -80,7 +92,12 @@ const provider = {
   /** Records that appear after the first read of the name (someone added one in between). */
   nameRecordsLater: null as { id: string; name: string; type: string; content: string }[] | null,
   nameReads: 0,
+  /** The tunnel secrets sent to rotate a run token. */
+  rotationSecrets: [] as string[],
 }
+
+/** A command queue for the tests that need one; most routes run without it. */
+let testQueue: (CommandQueue & { queued: CommandEnvelope[] }) | null = null
 
 const ok = (result: unknown) => Response.json({ success: true, errors: [], result })
 const refused = (status: number, message: string) =>
@@ -121,6 +138,12 @@ const fakeProvider: typeof fetch = async (input, init) => {
   if (path === '/zones/zone-1/dns_records/rec-old6' && method === 'DELETE') {
     return ok({ id: 'rec-old6' })
   }
+  if (/^\/accounts\/[a-z]{32}\/cfd_tunnel\/[^/]+$/.test(path) && method === 'PATCH') {
+    const sent = JSON.parse(String(init?.body)) as { tunnel_secret?: string }
+    provider.rotationSecrets.push(sent.tunnel_secret ?? '')
+    return ok({})
+  }
+  if (/^\/accounts\/[a-z]{32}\/cfd_tunnel\/[^/]+\/token$/.test(path)) return ok(ROTATED_RUN_TOKEN)
   if (/^\/accounts\/[a-z]{32}\/cfd_tunnel\/tunnel-ext-\d+$/.test(path) && method === 'DELETE') {
     if (provider.tunnelDeleteConflicts > 0) {
       provider.tunnelDeleteConflicts -= 1
@@ -222,6 +245,8 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
   provider.nameRecords = []
   provider.nameRecordsLater = null
   provider.nameReads = 0
+  provider.rotationSecrets = []
+  testQueue = null
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
   const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -231,6 +256,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
     c.set('db', db)
     c.set('secretsConfig', secretsConfig)
     c.set('dataEncryptionSecrets', secrets)
+    if (testQueue) c.set('commandQueue', testQueue)
     return next()
   })
   registerOrganizationTunnelRoutes(
@@ -362,6 +388,7 @@ test('every tunnel route refuses a request without a session', async () => {
       ['POST', `/organizations/${f.orgA}/tunnels`],
       ['GET', `/organizations/${f.orgA}/tunnels/${id}`],
       ['PUT', `/organizations/${f.orgA}/tunnels/${id}/placement`],
+      ['POST', `/organizations/${f.orgA}/tunnels/${id}/run-token/rotate`],
       ['DELETE', `/organizations/${f.orgA}/tunnels/${id}`],
       ['GET', `/organizations/${f.orgA}/tunnels/${id}/hostnames`],
       ['POST', `/organizations/${f.orgA}/tunnels/${id}/hostnames`],
@@ -1378,5 +1405,86 @@ test('the daemon warning shows on later loads of the list and of one tunnel, not
     assert(rows[0]!.warnings.some((w) => w.includes('too old')))
     const one = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
     assert((one.body.tunnel as { warnings: string[] }).warnings.some((w) => w.includes('too old')))
+  })
+})
+
+test('rotating a run token starts with a 202, is refused to others and audits without the token', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const carriers = [f.servers[0], f.servers[1]]
+    // Connected servers whose daemon can follow, each with a usable key; a UUID provider id
+    // so the connector lists carry the tunnel.
+    await f.db.update(tunnel).set({ externalId: crypto.randomUUID() }).where(eq(tunnel.id, id))
+    await f.db
+      .update(server)
+      .set({
+        isConnected: true,
+        daemon: {
+          projection: {
+            features: [
+              TUNNEL_FORWARDING_FEATURE,
+              TUNNEL_CONNECTOR_FEATURE,
+              TUNNEL_STATUS_FEATURE,
+              TUNNEL_CONNECTOR_TOKEN_CHANGE_FEATURE,
+            ],
+          },
+        },
+      })
+      .where(inArray(server.id, carriers))
+    await f.db.insert(key).values(
+      carriers.map((serverId) => ({
+        serverId,
+        algorithm: 'Ed25519',
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+        fingerprint: `fp-${crypto.randomUUID()}`,
+      }))
+    )
+    f.cleanup.push(async () => {
+      await f.db.delete(command).where(inArray(command.serverId, carriers))
+      await f.db.delete(key).where(inArray(key.serverId, carriers))
+    })
+    const queued: CommandEnvelope[] = []
+    testQueue = {
+      queued,
+      enqueue: (envelope) => {
+        queued.push(envelope)
+        return Promise.resolve()
+      },
+    }
+    const path = `/organizations/${f.orgA}/tunnels/${id}/run-token/rotate`
+    // A read-only member is refused; another organization's manager does not find it.
+    assertEquals((await call(f, 'POST', path, f.memberCookie, {})).status, 403)
+    const other = `/organizations/${f.orgB}/tunnels/${id}/run-token/rotate`
+    assertEquals((await call(f, 'POST', other, f.otherManagerCookie, {})).status, 404)
+    assertEquals(provider.rotationSecrets.length, 0)
+
+    const started = await call(f, 'POST', path, f.managerCookie, {})
+    assertEquals(started.status, 202, started.text)
+    const rotation = started.body.rotation as Record<string, unknown>
+    assertEquals(rotation.phase, 'rolling')
+    assertEquals(rotation.currentServerId, carriers.toSorted()[0])
+    assert(Array.isArray(started.body.warnings))
+    assertEquals(provider.rotationSecrets.length, 1)
+    // Neither the token nor the secret leaves in the answer.
+    assert(!started.text.includes(ROTATED_RUN_TOKEN))
+    assert(!started.text.includes(provider.rotationSecrets[0]!))
+    assert(!started.text.includes(RUN_TOKEN))
+    const [row] = await f.db
+      .select()
+      .from(audit)
+      .where(and(eq(audit.organizationId, f.orgA), eq(audit.action, 'tunnel.run_token.rotate')))
+    assert(row, 'the rotation is audited')
+    const recorded = JSON.stringify(row)
+    assert(!recorded.includes(ROTATED_RUN_TOKEN))
+    assert(!recorded.includes(provider.rotationSecrets[0]!))
+    assert(!recorded.includes(RUN_TOKEN))
+    // Nor does any command sent to a server carry them in clear.
+    const sent = JSON.stringify(queued)
+    assert(!sent.includes(ROTATED_RUN_TOKEN))
+    assert(!sent.includes(provider.rotationSecrets[0]!))
+    // A second start while it runs is refused.
+    const again = await call(f, 'POST', path, f.managerCookie, {})
+    assertEquals(again.status, 409)
+    assertEquals(again.body.error, 'rotation_in_progress')
   })
 })

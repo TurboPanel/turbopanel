@@ -33,6 +33,7 @@ test('the tunnel sweep list holds every hosted tunnel sweep, in order', () => {
     [
       'tunnel-routes-sweep-failed',
       'tunnel-connectors-sweep-failed',
+      'tunnel-run-token-rotation-failed',
       'tunnel-removal-sweep-failed',
       'tunnel-token-recheck-failed',
       'tunnel-status-poll-failed',
@@ -71,7 +72,7 @@ test('the self-hosted minute timer runs the tunnel sweeps', () => {
 
 test('no single tunnel sweep is wired into one scheduler only', () => {
   // A tunnel sweep belongs in features/tunnels/sweeps.ts, which both schedulers run.
-  const direct = /\brun(Tunnel\w*|BadgeRecheck\w*)Tick\b/
+  const direct = /\brun(Tunnel\w*|BadgeRecheck\w*|RunTokenRotation\w*)Tick\b/
   for (const path of ['./server.ts', '../../daemon/cell/offline-sweep.ts']) {
     const match = readSource(path).match(direct)
     assertEquals(match?.[0], undefined, `${path} calls a tunnel sweep directly`)

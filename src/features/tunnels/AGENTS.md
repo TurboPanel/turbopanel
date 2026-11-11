@@ -277,8 +277,14 @@ typed client over an injected `fetch`; tests never call the real service).
   accepts it, so tests alone would not catch it. The default is a wrapper that
   calls `globalThis.fetch` as a plain function; `cloudflare-client.hostfree.test.ts`
   stubs a fetch that refuses a wrong receiver.
-- Rotating a Cloudflare run token is not confirmed against the API, so the
-  adapter reports it as unsupported rather than guess an endpoint.
+- Rotating a Cloudflare run token: `rotateRunToken` gives the tunnel a new
+  random secret (`PATCH .../cfd_tunnel/{id}` with `tunnel_secret`, 32 random
+  bytes in base64) and reads the new token back with the get-token call;
+  connectors already connected stay up, but the old token can no longer open a
+  connection. The secret is passed to the error scrubber. `dropConnections`
+  (`DELETE .../cfd_tunnel/{id}/connections`) drops every connection; connectors
+  that hold the current token reconnect. Both are from the provider's
+  documentation and still to be proven on canary.
 
 ## Routes
 
@@ -380,8 +386,7 @@ provider accounts.
   connector stay alone. A resend is harmless (the daemon leaves a running
   connector as it is), and the same list is not sent again sooner than ten
   minutes after a send that did not finish. It runs from the periodic sweeps
-  (`runTunnelConnectorsSweepTick`) and through the nudge below (best effort). Changing a tunnel's run token is not supported
-  yet: remove the connector, then send it again.
+  (`runTunnelConnectorsSweepTick`) and through the nudge below (best effort). A rotated run token reaches each server through the same list (see **Run-token rotation** below).
 - `nudge.ts` sends the tables and then the connector lists
   (`syncOrganizationTunnelConnectors`) right away instead of waiting for the
   sweep, so a server that joins or leaves an "all" tunnel starts or stops its
@@ -663,3 +668,75 @@ said `x509: certificate signed by unknown authority`, so verification really was
 on. The tunnel, DNS name and certificate were removed afterwards. Not yet tried
 through the full panel flow (turning the option on for a tunnel with a site): that
 is the next testing round.
+
+## Run-token rotation
+
+`run-token-rotation.ts` (driver) and `rotation-state.ts` (pure), route
+`POST /organizations/:id/tunnels/:tunnelId/run-token/rotate`, periodic sweep
+`runRunTokenRotationSweepTick`. A tunnel's run token is replaced without
+removing the tunnel:
+
+- Refused (409) while the tunnel is being removed or not yet at the provider,
+  while a rotation is under way (`rotation_in_progress`), when a carrying
+  server's daemon lacks `tunnel-connector-token-change-v1`, `tunnel-connector-v1`
+  or `tunnel-status-v1` (`tunnel_daemon_too_old`, with `serverIds`; an older
+  daemon keeps the old token, which can no longer reconnect), and for a single
+  carrier without `confirmSingleServer` (`rotation_single_server`: visitors
+  lose the tunnel for a few seconds). Every start warns that connectors
+  briefly reconnect. The same refusals (all but the single carrier) are
+  computed by `rotationBlock` and shown on every tunnel answer as
+  `runTokenRotationBlock` (code, message, serverIds), so the screen can disable
+  the action with the reason before it is pressed.
+- Progress is `tunnel.metadata.runTokenRotation` (no new table, column or
+  status value): `phase` (`starting`, `rolling`, `finishing`, `done`,
+  `stopped`), a `step` counter every save is guarded on (one writer wins),
+  `tunnelSecretId` (the tunnel secret, 32 random bytes chosen once and sealed in
+  a `secret` row before the provider is ever asked, so every attempt, retry or
+  second advancer sends the same secret and gets the same token), `claimedAt`
+  (a two-minute lease, taken with a guarded save, around each provider
+  attempt), `newSecretId` (the new sealed token, a second `secret` row; the
+  chosen secret is deleted once it is saved), `pending` and `moved` servers,
+  `unconfirmed` (moved servers that went out of reach before confirming) and
+  the `current` one.
+- Until the end, `runSecretFor` gives each server the old token while it waits
+  its turn and the new one once moved (or when it started carrying the tunnel
+  after the rotation began), so a repair resend or a placement change never
+  moves a server early. The one exception: the driver moves a waiting server
+  whose connector last reported `down` or `error` (portal `reported`) out of
+  `pending` into `unconfirmed` at once, since it holds no connection and the
+  old token could not open one; it keeps the new token from then on (state,
+  not the latest report, decides) and is checked again at the end.
+  Connector sync hashes the secret row id, so moving a server changes its list
+  and it is sent.
+- One server at a time: its list goes out with the new token (the daemon
+  restarts that connector in place), and once that command succeeded the
+  server is asked `server.tunnel.status` (again every 30 s) until this tunnel's
+  connector answers `connected`. Then traffic is given ten minutes to move onto
+  that connector (`ROTATION_SETTLE_MS`, from the provider's own rotation steps:
+  "Wait 10 minutes for traffic to route through the new connectors") before the
+  next server is moved or old connections are dropped. Before a server's list
+  goes out, the rotation waits until no other connector list is on its way to
+  it, so an older list carrying the old token can never land after the new
+  one. A server that cannot be reached waits behind the others; the current
+  server going out of reach mid-move keeps the new token (in `unconfirmed`)
+  and is checked again once every waiting server has moved. Once a secret was
+  chosen, a stop would strand the waiting servers on a token the provider may
+  already have retired, so every stop that can clear up by itself (a provider
+  error, which may have landed anyway; no remaining server reachable; a list
+  refused, not confirming the new token, or not connected within ten minutes)
+  is `retryable`: the answer says so (`resumesOnItsOwn`) and the sweep resumes
+  it two minutes later (`ROTATION_RETRY_MS`). Nothing more moves and no
+  connection is dropped while stopped. A person can resume at once; a resume
+  after a secret was chosen skips the start-only "every server reachable"
+  check. `oldTokenServerIds` lists the servers that may still hold the old
+  token: the waiting ones once the new token is known, and every carrier when
+  it stopped after the secret was chosen but before the token came back. Only
+  a gone provider account or chosen secret stops it for good.
+- Then every connection is dropped once, under the same lease, so two
+  advancers never drop twice (`dropConnections`; a provider account
+  that is gone, or a provider that cannot drop them, stops the rotation rather
+  than marking it done), the tunnel takes the new secret row (renamed to the
+  tunnel's run token) and the old one is deleted, in one transaction with the
+  `done` save. Deleting a tunnel also deletes the token and the chosen secret
+  of a rotation that never finished. The token is never logged, audited (`tunnel.run_token.rotate`
+  records the phase and server count) or returned.

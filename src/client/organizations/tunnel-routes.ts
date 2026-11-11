@@ -37,6 +37,7 @@ import {
 } from '../../features/tunnels/daemon-gate.ts'
 import { siteServersOfTunnel } from '../../features/tunnels/route-facts.ts'
 import { parsePlacementBody } from '../../features/tunnels/placement.ts'
+import { rotationBlock, startRunTokenRotation } from '../../features/tunnels/run-token-rotation.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
 import {
   createTunnelAdapterRegistry,
@@ -49,6 +50,7 @@ const TUNNEL_PATHS = [
   '/organizations/:id/tunnels',
   '/organizations/:id/tunnels/:tunnelId',
   '/organizations/:id/tunnels/:tunnelId/placement',
+  '/organizations/:id/tunnels/:tunnelId/run-token/rotate',
   '/organizations/:id/tunnels/:tunnelId/hostnames',
   '/organizations/:id/tunnels/:tunnelId/hostnames/:doorwayId',
   '/organizations/:id/servers/:serverId/tunnel-carrying',
@@ -123,7 +125,12 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
       `${who} a change of where the Tunnel runs only when the site is deployed again. ${fix}, or redeploy those sites after the change.`
     )
   }
-  return warnings.length === shown.warnings.length ? shown : { ...shown, warnings }
+  // Why Rotate Run Token would be refused now, so the screen can say so before it is pressed.
+  const blocked = await rotationBlock(scope.db, row)
+  const runTokenRotationBlock = blocked
+    ? { code: blocked.code, message: blocked.message, ...blocked.details }
+    : null
+  return { ...shown, warnings, runTokenRotationBlock }
 }
 
 /** `{ dnsReplaced }` from a hostname row's metadata when records were replaced, else nothing. */
@@ -218,6 +225,50 @@ async function placementResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
     return c.json({ tunnel: await tunnelWithSupportWarning(scope, updated) })
   } catch (err) {
     return refused(c, err)
+  }
+}
+
+/**
+ * Replace the tunnel's run token without removing the tunnel. Starts (or
+ * resumes) the rotation and answers with where it is; the periodic sweep moves
+ * it on, one server at a time. The token is never returned or audited.
+ */
+function rotateRunTokenResponse(registry: TunnelAdapterRegistry) {
+  return async (c: Context<AppEnv>, scope: Scope): Promise<Response> => {
+    const row = await loadTunnelParam(c, scope)
+    if (row instanceof Response) return row
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    if (body.confirmSingleServer !== undefined && typeof body.confirmSingleServer !== 'boolean') {
+      return invalid(c, 'rotation_invalid', 'confirmSingleServer', 'Must be true or false')
+    }
+    const commandQueue = c.get('commandQueue')
+    const secretsConfig = c.get('secretsConfig')
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    if (!commandQueue || !secretsConfig || !dataEncryptionSecrets) {
+      return c.json({ error: 'secrets_unavailable' }, 503)
+    }
+    try {
+      const started = await startRunTokenRotation(
+        scope.db,
+        {
+          commandQueue,
+          secretsConfig,
+          dataEncryptionSecrets,
+          adapter: registry(row.provider as TunnelProvider),
+        },
+        row,
+        { confirmSingleServer: body.confirmSingleServer === true }
+      )
+      await audit(c, scope, 'tunnel.run_token.rotate', row.id, {
+        name: row.name,
+        phase: started.rotation.phase,
+        servers: started.rotation.movedServerIds.length + started.rotation.pendingServerIds.length,
+      })
+      return c.json(started, 202)
+    } catch (err) {
+      return refused(c, err)
+    }
   }
 }
 
@@ -385,6 +436,10 @@ export function registerOrganizationTunnelRoutes(
   router.post('/organizations/:id/tunnels', guarded(createResponse(registry)))
   router.get('/organizations/:id/tunnels/:tunnelId', guarded(getResponse))
   router.put('/organizations/:id/tunnels/:tunnelId/placement', guarded(placementResponse))
+  router.post(
+    '/organizations/:id/tunnels/:tunnelId/run-token/rotate',
+    guarded(rotateRunTokenResponse(registry))
+  )
   router.delete('/organizations/:id/tunnels/:tunnelId', guarded(deleteResponse(registry)))
   router.get('/organizations/:id/tunnels/:tunnelId/hostnames', guarded(listDoorwaysResponse))
   router.post(

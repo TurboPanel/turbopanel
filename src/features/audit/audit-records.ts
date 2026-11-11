@@ -103,6 +103,7 @@ export const AUDIT_ACTIONS = [
   'origin_certificate.revoke',
   'tunnel.create',
   'tunnel.update',
+  'tunnel.run_token.rotate',
   'tunnel.delete',
   'doorway.create',
   'doorway.dns_replace_failed',

@@ -298,6 +298,27 @@ export class CloudflareClient {
     )
   }
 
+  /**
+   * Give the tunnel a new secret, which issues a new run token (read it back
+   * with {@link getTunnelToken}). Connectors already connected stay up, but the
+   * old token can no longer open a connection.
+   */
+  async setTunnelSecret(accountId: string, tunnelId: string, tunnelSecret: string): Promise<void> {
+    await this.#call(
+      'PATCH',
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}`,
+      { tunnel_secret: tunnelSecret }
+    )
+  }
+
+  /** Drop every connector connection of the tunnel; connectors with a valid token reconnect. */
+  async deleteTunnelConnections(accountId: string, tunnelId: string): Promise<void> {
+    await this.#call(
+      'DELETE',
+      `/accounts/${encodeURIComponent(accountId)}/cfd_tunnel/${encodeURIComponent(tunnelId)}/connections`
+    )
+  }
+
   /** Replace the tunnel's ingress rules. The last rule must be a catch-all with no hostname. */
   async putConfiguration(
     accountId: string,

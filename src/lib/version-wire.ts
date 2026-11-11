@@ -233,6 +233,7 @@ export const DAEMON_WIRE_FEATURES = [
   'panel-keyset-key-signature-v1',
   'acme-issue-one-cert-v1',
   'tunnel-lock-follow-v1',
+  'tunnel-connector-token-change-v1',
   'deploy-config-files-v1',
 ] as const
 
@@ -296,6 +297,14 @@ export const TUNNEL_STATUS_FACTS_FEATURE: DaemonWireFeature = 'tunnel-status-fac
  * from it without a deploy. Without it the lock follows the site's next deploy.
  */
 export const TUNNEL_LOCK_FOLLOW_FEATURE: DaemonWireFeature = 'tunnel-lock-follow-v1'
+/**
+ * The daemon moves an installed connector to a new run token when the list
+ * carries one (the tunnel's token was rotated). Run-token rotation is refused
+ * while any carrying server lacks it: an older daemon would keep the old token,
+ * which can no longer reconnect.
+ */
+export const TUNNEL_CONNECTOR_TOKEN_CHANGE_FEATURE: DaemonWireFeature =
+  'tunnel-connector-token-change-v1'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`

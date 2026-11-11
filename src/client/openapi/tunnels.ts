@@ -304,6 +304,24 @@ export const tunnelSchemas = {
       },
       warnings: { type: 'array', items: { type: 'string' } },
       verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
+      runTokenRotation: {
+        oneOf: [{ $ref: '#/components/schemas/TunnelRunTokenRotation' }, { type: 'null' }],
+      },
+      runTokenRotationBlock: {
+        description:
+          'Why Replace Run Token would be refused now (`tunnel_removing`, `tunnel_not_ready`, `rotation_in_progress`, `tunnel_daemon_too_old` or `server_not_ready`, the last two with `serverIds`), or null when it can start. A single carrying server is not a block: it needs `confirmSingleServer`.',
+        oneOf: [
+          {
+            type: 'object',
+            properties: {
+              code: { type: 'string' },
+              message: { type: 'string' },
+              serverIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+            },
+          },
+          { type: 'null' },
+        ],
+      },
       doorwayCount: { type: 'integer' },
     },
   },
@@ -356,6 +374,21 @@ export const tunnelSchemas = {
           'Why a removal is waiting, in plain words (for example no API Token can edit the DNS of its zone); the row stays in `attention` and a retry finishes it. Null otherwise.',
       },
       createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  TunnelRunTokenRotation: {
+    type: 'object',
+    title: 'Run Token Rotation',
+    properties: {
+      phase: { type: 'string', enum: ['starting', 'rolling', 'finishing', 'done', 'stopped'] },
+      startedAt: { type: 'string', format: 'date-time' },
+      finishedAt: { type: ['string', 'null'], format: 'date-time' },
+      movedServerIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      pendingServerIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      currentServerId: { type: ['string', 'null'], format: 'uuid' },
+      stoppedReason: { type: ['string', 'null'] },
+      oldTokenServerIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      resumesOnItsOwn: { type: 'boolean' },
     },
   },
   TunnelHostnameCreate: {
@@ -839,6 +872,40 @@ Object.assign(tunnelPaths, {
           type: 'object',
           properties: { tunnel: { $ref: '#/components/schemas/Tunnel' } },
         }),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/run-token/rotate': {
+    post: {
+      tags: ['Organizations'],
+      summary: "Replace a Tunnel's run token",
+      description: `Owners and managers only. Issues a new run token at the provider without removing the Tunnel, then moves the servers that run it to the new token one at a time: each server's connector restarts on the new token, and the next server waits until it reports its connector connected and traffic has had ten minutes to move onto it (the provider's documented wait). At the end every connection of the Tunnel is dropped once, so a connection opened with the old token cannot stay; connectors briefly reconnect. Answers 202 with where the rotation is (\`rotation\`, also shown on the Tunnel as \`runTokenRotation\`) and \`warnings\`; the periodic sweep moves it on. A server that cannot be reached waits behind the others, and a waiting server whose connector went down is given the new token at once; both are checked again at the end. A stop that can clear up by itself (a provider error, no remaining server reachable, a server that refuses the new token or does not connect within ten minutes) has \`phase: stopped\` with \`stoppedReason\` and resumes on its own a few minutes later (\`resumesOnItsOwn\`); sending this again resumes at once from there, with the secret and token already chosen, even while a server is out of reach. \`oldTokenServerIds\` lists the servers that may still hold the old token: the waiting ones once the new token is issued, or every server when it stopped before the provider's answer came back. The token is never returned. Refusals: 409 \`rotation_single_server\` (only one server runs the Tunnel, so visitors lose it for a few seconds; send \`confirmSingleServer: true\`), \`tunnel_daemon_too_old\` (with \`serverIds\`: a server's daemon cannot move its connector to a new token), \`rotation_in_progress\`, \`tunnel_removing\`, \`tunnel_not_ready\`; 503 \`secrets_unavailable\`. ${TUNNEL_ERRORS}`,
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: { confirmSingleServer: { type: 'boolean', default: false } },
+            },
+          },
+        },
+      },
+      responses: {
+        ...jsonOk(
+          'Started',
+          {
+            type: 'object',
+            properties: {
+              rotation: { $ref: '#/components/schemas/TunnelRunTokenRotation' },
+              warnings: { type: 'array', items: { type: 'string' } },
+            },
+          },
+          '202'
+        ),
         ...errors({ badRequest: true }),
       },
     },

@@ -33,6 +33,7 @@ import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
 import { compareText } from './order.ts'
+import { runSecretFor } from './rotation-state.ts'
 
 /** The least time between two sends of the same list to one server. */
 export const TUNNEL_CONNECTORS_RESEND_GAP_MS = 10 * 60 * 1000
@@ -121,7 +122,9 @@ export async function wantedConnectorsByServer(
       if (!row.externalId || !row.secretId || !PROVIDER_ID_RE.test(row.externalId)) return
       for (const serverId of await carryingServers(db, row)) {
         const list = wanted.get(serverId) ?? []
-        list.push({ tunnelId: row.externalId, secretId: row.secretId })
+        // While the run token is being rotated, each server gets the old or the new one on its own.
+        const secretId = runSecretFor(row, serverId) ?? row.secretId
+        list.push({ tunnelId: row.externalId, secretId })
         wanted.set(serverId, list)
       }
     })
@@ -142,6 +145,20 @@ async function hashInstalls(install: readonly WantedConnector[]) {
 
 type ServerReady =
   { ok: true; metadata: unknown; keyId: string } | { ok: false; outcome: TunnelConnectorsOutcome }
+
+/**
+ * Why a server cannot be sent a connector list right now (unknown, offline,
+ * daemon too old, daemon key unusable), or null when it can.
+ */
+export async function connectorServerProblem(
+  db: Db,
+  organizationId: string,
+  serverId: string
+): Promise<string | null> {
+  const ready = await checkServerReady(db, organizationId, serverId)
+  if (ready.ok) return null
+  return 'reason' in ready.outcome ? ready.outcome.reason : 'unavailable'
+}
 
 /** The server exists, is connected, and runs a daemon that can install connectors. */
 async function checkServerReady(
@@ -310,7 +327,13 @@ function warnMissingTokens(serverId: string, missing: readonly string[]): void {
 export async function syncServerTunnelConnectors(
   db: Db,
   deps: TunnelConnectorsDeps,
-  params: { organizationId: string; serverId: string; wanted?: readonly WantedConnector[] }
+  params: {
+    organizationId: string
+    serverId: string
+    wanted?: readonly WantedConnector[]
+    /** Send even when the list looks current (a rotation must see this server answer for its token). */
+    force?: boolean
+  }
 ): Promise<TunnelConnectorsOutcome> {
   if (isNoopCommandQueue(deps.commandQueue)) {
     return { status: 'skipped', reason: 'no command queue' }
@@ -328,6 +351,7 @@ export async function syncServerTunnelConnectors(
   const remove = idsToRemove(sent, last, wantedIds)
   const stateHash = await hashInstalls(install)
   if (
+    !params.force &&
     isAlreadyCurrent(sent, last, stateHash, remove, install.length === 0 && remove.length === 0)
   ) {
     return { status: 'unchanged' }

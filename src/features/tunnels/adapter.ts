@@ -105,11 +105,26 @@ export type TunnelAdapter = {
     token: string,
     input: { accountId: string | null; externalId: string }
   ): Promise<string>
-  /** Issue a fresh run token for a tunnel without recreating it. */
+  /**
+   * Give the tunnel this secret, which issues the run token that goes with it,
+   * and return that token, without recreating the tunnel. The caller chooses
+   * the secret (`newTunnelSecret`) and keeps it, so sending the same secret
+   * again is harmless and returns the same token. Connectors already connected
+   * stay up; the old token can no longer connect.
+   */
   rotateRunToken(
     token: string,
-    input: { accountId: string | null; externalId: string }
+    input: { accountId: string | null; externalId: string; tunnelSecret: string }
   ): Promise<string>
+  /**
+   * Drop every connector connection of the tunnel, so one opened with an old
+   * run token cannot stay; connectors that hold the current token reconnect.
+   * Optional: a provider without it leaves connections as they are.
+   */
+  dropConnections?(
+    token: string,
+    input: { accountId: string | null; externalId: string }
+  ): Promise<void>
   /** Replace the full set of routes: every name goes to the local web server. */
   setRoutes(
     token: string,
@@ -182,4 +197,9 @@ export type TunnelAdapter = {
   ): Promise<ProviderOriginCertificate[]>
   /** Revoke a certificate issued by `issueOriginCertificate`. */
   revokeOriginCertificate?(token: string, input: { externalId: string }): Promise<void>
+}
+
+/** 32 random bytes in base64: a fresh tunnel secret (the provider's minimum length). */
+export function newTunnelSecret(): string {
+  return btoa(String.fromCodePoint(...crypto.getRandomValues(new Uint8Array(32))))
 }
