@@ -25,6 +25,7 @@ import {
   parseServerHardwareProfile,
   parseServerReleaseLinkScan,
   parseServerRuntimeMetadata,
+  publicServerRuntimeMetadata,
   timeSyncFromColumns,
 } from '../../features/servers/server-metadata.ts'
 import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
@@ -240,7 +241,7 @@ export async function resolveFleetPresence(
       timeSync,
       ips,
       docker: parseServerDockerMetadata(metadata.docker) ?? null,
-      runtimes: parseServerRuntimeMetadata(metadata.runtimes) ?? null,
+      runtimes: publicServerRuntimeMetadata(parseServerRuntimeMetadata(metadata.runtimes)),
       releaseLinkScan: parseServerReleaseLinkScan(metadata.releaseLinkScan) ?? null,
       hardwareProfile: parseServerHardwareProfile(metadata.hardwareProfile) ?? null,
     })

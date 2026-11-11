@@ -2158,6 +2158,42 @@ export type EnvironmentDeployCronJob = {
   concurrencyPolicy?: 'forbid'
 }
 
+/** When a site's post-deploy commands run; omitted means `before-traffic`. */
+export type EnvironmentDeploySitePostDeployTiming = 'before-traffic' | 'after-switch'
+
+/**
+ * Commands run as the site's account in the new release with the site's
+ * variables: before the release takes traffic (the default; a failure leaves
+ * the release that was serving in place) or right after the switch. A deploy
+ * may be retried, so they can run more than once and should be safe to.
+ * Sent only to a daemon that lists `site-php-lifecycle-v1`.
+ */
+export type EnvironmentDeploySitePostDeploy = {
+  /** 1 to 10 argv lists; `command[0]` is an absolute path. */
+  commands: string[][]
+  /** 30 to 1800; omitted means 900. */
+  timeoutSeconds?: number
+  timing?: EnvironmentDeploySitePostDeployTiming
+}
+
+/**
+ * One long-running command (a queue worker) kept running as a managed unit
+ * under the site's account. Restarted gracefully after every deploy. Sent only
+ * to a daemon that lists `site-php-lifecycle-v1`.
+ */
+export type EnvironmentDeploySiteWorker = {
+  /** Unit-name segment, unique within the site. */
+  name: string
+  /** argv; `command[0]` is an absolute path. */
+  command: string[]
+  /** 1 to 8; omitted means 1. */
+  processes?: number
+  /** `TimeoutStopSec=`, 10 to 3600; omitted means 90. */
+  stopTimeoutSeconds?: number
+  /** `MemoryMax=` in bytes, 64 MiB to 64 GiB. */
+  memoryMaxBytes?: number
+}
+
 export type EnvironmentDeploySite = {
   composeServiceName: string
   /**
@@ -2188,6 +2224,13 @@ export type EnvironmentDeploySite = {
    * Requires `principal`: a timer with no `User=` would run as root.
    */
   cron?: EnvironmentDeployCronJob[]
+  /**
+   * Commands to run in each newly built release, as the site's principal.
+   * Requires `principal` and a release-backed site.
+   */
+  postDeploy?: EnvironmentDeploySitePostDeploy
+  /** Background workers, run as the site's principal. Requires `principal`. */
+  workers?: EnvironmentDeploySiteWorker[]
   /** Merged hosting web env (non-secret variables + options.web.env). */
   webEnv?: Record<string, string>
   /**
@@ -3774,6 +3817,137 @@ function parseDeployCronJobs(value: unknown): EnvironmentDeployCronJob[] | undef
   })
 }
 
+/** An argv as the cron rule: non-empty, bounded, no control characters, absolute first word. */
+function isCommandArgv(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (arg) => isString(arg) && arg.length > 0 && arg.length <= 512 && !/[\0\n\r]/.test(arg)
+    ) &&
+    (value[0] as string).startsWith('/')
+  )
+}
+
+function integerInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+}
+
+const MAX_POST_DEPLOY_COMMANDS = 10
+const MIN_POST_DEPLOY_TIMEOUT_SECONDS = 30
+const MAX_POST_DEPLOY_TIMEOUT_SECONDS = 1800
+
+function parseDeploySitePostDeploy(value: unknown): EnvironmentDeploySitePostDeploy | undefined {
+  if (value === undefined) return undefined
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.commands) ||
+    value.commands.length < 1 ||
+    value.commands.length > MAX_POST_DEPLOY_COMMANDS ||
+    !value.commands.every(isCommandArgv)
+  ) {
+    throw new Error('Invalid sites postDeploy')
+  }
+  const out: EnvironmentDeploySitePostDeploy = {
+    commands: value.commands.map((argv: string[]) => [...argv]),
+  }
+  if (value.timeoutSeconds !== undefined) {
+    if (
+      !integerInRange(
+        value.timeoutSeconds,
+        MIN_POST_DEPLOY_TIMEOUT_SECONDS,
+        MAX_POST_DEPLOY_TIMEOUT_SECONDS
+      )
+    ) {
+      throw new Error('Invalid sites postDeploy timeoutSeconds')
+    }
+    out.timeoutSeconds = value.timeoutSeconds
+  }
+  if (value.timing !== undefined) {
+    if (value.timing !== 'before-traffic' && value.timing !== 'after-switch') {
+      throw new Error('Invalid sites postDeploy timing')
+    }
+    out.timing = value.timing
+  }
+  return out
+}
+
+const MAX_SITE_WORKERS = 10
+const MIN_WORKER_MEMORY_BYTES = 64 * 1024 * 1024
+const MAX_WORKER_MEMORY_BYTES = 64 * 1024 * 1024 * 1024
+const WORKER_NUMBER_LIMITS: ReadonlyArray<
+  readonly ['processes' | 'stopTimeoutSeconds' | 'memoryMaxBytes', number, number]
+> = [
+  ['processes', 1, 8],
+  ['stopTimeoutSeconds', 10, 3600],
+  ['memoryMaxBytes', MIN_WORKER_MEMORY_BYTES, MAX_WORKER_MEMORY_BYTES],
+]
+
+function parseDeploySiteWorker(raw: unknown): EnvironmentDeploySiteWorker {
+  if (
+    !isRecord(raw) ||
+    !isString(raw.name) ||
+    !CRON_JOB_NAME_RE.test(raw.name) ||
+    !isCommandArgv(raw.command)
+  ) {
+    throw new Error('Invalid sites workers entry')
+  }
+  const worker: EnvironmentDeploySiteWorker = { name: raw.name, command: [...raw.command] }
+  for (const [key, min, max] of WORKER_NUMBER_LIMITS) {
+    const limit = raw[key]
+    if (limit === undefined) continue
+    if (!integerInRange(limit, min, max)) throw new Error('Invalid sites workers entry')
+    worker[key] = limit
+  }
+  return worker
+}
+
+function parseDeploySiteWorkers(value: unknown): EnvironmentDeploySiteWorker[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_SITE_WORKERS) {
+    throw new Error('Invalid sites workers')
+  }
+  const seen = new Set<string>()
+  return value.map((raw) => {
+    const worker = parseDeploySiteWorker(raw)
+    if (seen.has(worker.name)) throw new Error(`Duplicate sites worker: ${worker.name}`)
+    seen.add(worker.name)
+    return worker
+  })
+}
+
+/** Commands and workers run as the site's account, never as root, and commands need a release. */
+function assertSiteLifecycleOwnership(site: EnvironmentDeploySite): void {
+  const name = site.composeServiceName
+  if (site.postDeploy && !site.principal) {
+    throw new Error(
+      `Invalid sites entry: ${name} has post-deploy commands but no principal to run them as`
+    )
+  }
+  if (site.workers && site.workers.length > 0 && !site.principal) {
+    throw new Error(`Invalid sites entry: ${name} has workers but no principal to run them as`)
+  }
+  if (site.postDeploy && site.sourceKind === 'managed-directory') {
+    throw new Error(
+      `Invalid sites entry: ${name} is a managed directory with no release to run post-deploy commands in`
+    )
+  }
+}
+
+/** The scheduled jobs, post-deploy commands and workers a site entry carries. */
+function parseDeploySiteJobs(
+  entry: Record<string, unknown>
+): Pick<EnvironmentDeploySite, 'cron' | 'postDeploy' | 'workers'> {
+  const out: Pick<EnvironmentDeploySite, 'cron' | 'postDeploy' | 'workers'> = {}
+  const cron = parseDeployCronJobs(entry.cron)
+  if (cron) out.cron = cron
+  const postDeploy = parseDeploySitePostDeploy(entry.postDeploy)
+  if (postDeploy) out.postDeploy = postDeploy
+  const workers = parseDeploySiteWorkers(entry.workers)
+  if (workers) out.workers = workers
+  return out
+}
+
 function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
   if (!isRecord(entry)) {
     throw new Error('Invalid sites entry')
@@ -3807,8 +3981,7 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
     }
     site.sourceKind = entry.sourceKind as EnvironmentDeploySite['sourceKind']
   }
-  const cron = parseDeployCronJobs(entry.cron)
-  if (cron) site.cron = cron
+  Object.assign(site, parseDeploySiteJobs(entry))
   const webEnv = parseEnvRecord(entry.webEnv)
   if (webEnv) site.webEnv = webEnv
   const webSecretEnv = parseEnvRecord(entry.webSecretEnv)
@@ -3833,6 +4006,7 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
       `Invalid sites entry: ${site.composeServiceName} is a managed directory with no principal`
     )
   }
+  assertSiteLifecycleOwnership(site)
   return site
 }
 

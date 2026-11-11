@@ -37,6 +37,23 @@ Per-feature behavior contracts for the client surface (moved from the root
 `AGENTS.md` **API / WS surfaces** section). Keep current when endpoint behavior
 changes.
 
+- **PHP site commands and workers:** a PHP site's post-deploy commands and
+  background workers are service options (`postDeployCommands`,
+  `postDeployTimeoutSeconds`, `postDeployTiming`, `workers`; read always, not
+  behind `deployHooks`; no migration). The service write route runs
+  `validateSiteLifecycleOptions` on the raw options and answers **400** with its
+  sentence, because the parse drops what it cannot read. Deploy prepare
+  (`environments/deploy-site-lifecycle.ts`) turns them into `sites[].postDeploy`
+  and `sites[].workers`: a site with either and no principal is
+  **422 `site_lifecycle_unowned`**; a server whose daemon lacks
+  `site-php-lifecycle-v1` is **409 `site_lifecycle_unsupported`** naming the
+  server (a site without them deploys as before). Commands on a managed-directory
+  site are not sent (no release); workers are. A retried deploy can run commands
+  again, so say "should be safe to run more than once" wherever they are described.
+  The server services response carries the PHP patch versions (`patches`),
+  `restartError` and per-service `phpVersion` / `phpRestartPending`, never the
+  raw site list. Keep `RESERVED_BUILD_ENV_KEYS` in `features/compose/build-env.ts`
+  in step with the daemon's.
 - **Tunnel provider accounts (client surface):** `GET|POST /organizations/:id/carriers`,
   `DELETE /organizations/:id/carriers/:carrierId` (409 `carrier_in_use` while a
   tunnel uses it), `GET|POST .../carriers/:carrierId/badges`,

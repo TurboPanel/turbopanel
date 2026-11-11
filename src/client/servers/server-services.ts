@@ -18,7 +18,11 @@ import {
   service,
   workspace,
 } from '../../db/schema.ts'
-import { parseServerRuntimeMetadata } from '../../features/servers/server-metadata.ts'
+import {
+  parseServerRuntimeMetadata,
+  type ServerPhpPatchSite,
+  type ServerPhpRestartError,
+} from '../../features/servers/server-metadata.ts'
 import {
   blockedDatabaseForgetMessage,
   blockedEnvironmentForgetMessage,
@@ -60,6 +64,10 @@ export type ServerServicesAppContainer = {
 }
 
 export type ServerServicesApp = {
+  /** PHP version this service runs, when the daemon reported its sites. */
+  phpVersion?: string
+  /** The service runs an older PHP than is installed and is waiting for a restart. */
+  phpRestartPending?: true
   serviceId: string
   name: string
   project: string
@@ -100,6 +108,10 @@ export type ServerServicesNetwork = {
 export type ServerServicesRuntime = {
   kind: string
   versions: string[]
+  /** PHP only: installed patch version by series, when the daemon reported it. */
+  patches?: Record<string, string>
+  /** PHP only: why the last restart after a patch update stopped. */
+  restartError?: ServerPhpRestartError
 }
 
 export type ServerServicesResponse = {
@@ -398,6 +410,13 @@ export function serverServicesRemovalReasons(
   return reasons
 }
 
+/** The per-site PHP runtimes the daemon reported; never the raw list. */
+function phpSitesFromMetadata(metadata: unknown): readonly ServerPhpPatchSite[] {
+  if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return []
+  const parsed = parseServerRuntimeMetadata((metadata as { runtimes?: unknown }).runtimes)
+  return parsed?.php?.sites ?? []
+}
+
 export function serverServicesRuntimesFromMetadata(metadata: unknown): ServerServicesRuntime[] {
   if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) {
     return []
@@ -405,7 +424,14 @@ export function serverServicesRuntimesFromMetadata(metadata: unknown): ServerSer
   const parsed = parseServerRuntimeMetadata((metadata as { runtimes?: unknown }).runtimes)
   if (!parsed) return []
   const runtimes: ServerServicesRuntime[] = []
-  if (parsed.php) runtimes.push({ kind: 'php', versions: parsed.php.series })
+  if (parsed.php) {
+    runtimes.push({
+      kind: 'php',
+      versions: parsed.php.series,
+      ...(parsed.php.versions ? { patches: parsed.php.versions } : {}),
+      ...(parsed.php.restartError ? { restartError: parsed.php.restartError } : {}),
+    })
+  }
   if (parsed.node) {
     runtimes.push({ kind: 'node', versions: parsed.node.series })
   }
@@ -423,8 +449,25 @@ function replicaRole(value: string): 'primary' | 'replica' {
   return value === 'replica' ? 'replica' : 'primary'
 }
 
+/** The PHP version and pending-restart flag for one service, joined from the daemon's site list. */
+export function phpFieldsForApp(
+  phpSites: readonly ServerPhpPatchSite[],
+  environmentId: string,
+  composeServiceName: string
+): Pick<ServerServicesApp, 'phpVersion' | 'phpRestartPending'> {
+  const site = phpSites.find(
+    (entry) =>
+      entry.environmentId === environmentId && entry.composeServiceName === composeServiceName
+  )
+  return {
+    ...(site?.version ? { phpVersion: site.version } : {}),
+    ...(site?.outdated ? { phpRestartPending: true as const } : {}),
+  }
+}
+
 function groupApps(
   rows: Array<{
+    environmentId: string
     serviceId: string
     serviceName: string | null
     composeServiceName: string
@@ -434,11 +477,14 @@ function groupApps(
     containerStatus: string
     containerRole: string
   }>,
-  domainsByService: Map<string, string[]>
+  domainsByService: Map<string, string[]>,
+  phpSites: readonly ServerPhpPatchSite[] = []
 ): ServerServicesApp[] {
   const byService = new Map<
     string,
     {
+      environmentId: string
+      composeServiceName: string
       name: string
       project: string
       environment: string
@@ -449,6 +495,8 @@ function groupApps(
     let app = byService.get(row.serviceId)
     if (!app) {
       app = {
+        environmentId: row.environmentId,
+        composeServiceName: row.composeServiceName,
         name: row.serviceName ?? row.composeServiceName,
         project: row.projectName ?? '',
         environment: row.environmentName ?? '',
@@ -466,6 +514,7 @@ function groupApps(
   for (const [serviceId, app] of byService) {
     app.containers.sort((a, b) => compareName(a.name, b.name))
     apps.push({
+      ...phpFieldsForApp(phpSites, app.environmentId, app.composeServiceName),
       serviceId,
       name: app.name,
       project: app.project,
@@ -520,6 +569,7 @@ function groupDatabaseUsers(
 function loadAppRows(db: Db, serverId: string) {
   return db
     .select({
+      environmentId: environment.id,
       serviceId: service.id,
       serviceName: service.name,
       composeServiceName: service.composeServiceName,
@@ -718,7 +768,9 @@ export async function loadServerServices(
       canForget,
       reasons,
     },
-    apps: capServerServicesList(groupApps(appRows, domainsByService)),
+    apps: capServerServicesList(
+      groupApps(appRows, domainsByService, phpSitesFromMetadata(metadata))
+    ),
     databases,
     databaseUsers: capServerServicesList(databaseUsers),
     backups: capServerServicesList(backups),

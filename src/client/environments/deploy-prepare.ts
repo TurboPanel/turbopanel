@@ -135,6 +135,13 @@ import {
 } from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import {
+  renderSiteLifecycleForDeploy,
+  type SiteLifecycleUnsupportedError,
+  siteLifecycleUnowned,
+  siteLifecycleUnsupported,
+  sitesCarryLifecycle,
+} from './deploy-site-lifecycle.ts'
+import {
   type NodeAppModeFeatureError,
   withCustomNodeAppModes,
 } from './deploy-node-app-mode-gate.ts'
@@ -167,6 +174,7 @@ import {
 } from '../../features/projects/project-options.ts'
 import {
   parseServiceOptions,
+  type ServiceOptions,
   resolveServiceInstances,
 } from '../../features/projects/service-options.ts'
 import { resolveRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
@@ -336,6 +344,7 @@ export type DeployPrepareWarningCode =
   | 'site_principal_ambiguous'
   | 'site_managed_directory_unowned'
   | 'site_cron_unowned'
+  | 'site_lifecycle_unowned'
   | 'source_principal_ambiguous'
   | 'principal_alias_unknown'
   | 'principal_required_for_service_kind'
@@ -669,9 +678,11 @@ export type DeployPrepareError =
   | ComposeHostingError
   | { kind: 'site_managed_directory_unowned'; composeServiceName: string }
   | { kind: 'site_cron_unowned'; composeServiceName: string }
+  | { kind: 'site_lifecycle_unowned'; composeServiceName: string }
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
   | SiteEngineFeatureError
+  | SiteLifecycleUnsupportedError
   /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
   | DenoAppFeatureError
   /** An app with a custom application mode goes to a daemon that would refuse it. */
@@ -783,6 +794,8 @@ type HardDeployPrepareError =
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
   | SiteEngineFeatureError
+  // Hard in preview too: an older daemon would refuse the whole deploy.
+  | SiteLifecycleUnsupportedError
   // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
   | DenoAppFeatureError
   // Hard in preview too: an older daemon would refuse the whole deploy.
@@ -883,6 +896,12 @@ function warningFromPrepareError(
       return {
         code: 'site_cron_unowned',
         message: `Site "${error.composeServiceName}" has scheduled jobs but no project principal to run them as.`,
+        details: { composeServiceName: error.composeServiceName },
+      }
+    case 'site_lifecycle_unowned':
+      return {
+        code: 'site_lifecycle_unowned',
+        message: `Site "${error.composeServiceName}" has post-deploy commands or background workers but no project principal to run them as.`,
         details: { composeServiceName: error.composeServiceName },
       }
     case 'source_principal_ambiguous':
@@ -3028,6 +3047,17 @@ async function namedServer(db: Db, serverId: string): Promise<{ serverId: string
   return { serverId, name: row?.name?.trim() || row?.hostname || serverId }
 }
 
+/** Refuses commands or workers for a server whose daemon cannot run them; names the server only then. */
+async function withSiteLifecycleGate(
+  db: Db,
+  serverId: string,
+  sites: readonly EnvironmentDeploySite[],
+  features: readonly string[]
+): Promise<SiteLifecycleUnsupportedError | undefined> {
+  if (!sitesCarryLifecycle(sites)) return undefined
+  return siteLifecycleUnsupported(sites, features, await namedServer(db, serverId))
+}
+
 /** A list as a one-key object, or nothing when it is absent or empty (keeps old hashes and payloads as they were). */
 function nonEmptyListField<K extends string, T>(
   key: K,
@@ -3565,6 +3595,13 @@ async function resolveLocalSitesBoundForDeploy(
   const localSite = sitesOnScheduledServer(siteResolved, args.pipeline.localServiceNames)
   const engineGate = await withSiteEngineFeature(db, args.params.serverId, localSite)
   if ('kind' in engineGate) return engineGate
+  const lifecycleGate = await withSiteLifecycleGate(
+    db,
+    args.params.serverId,
+    localSite,
+    phpDaemonState?.projection?.features ?? []
+  )
+  if (lifecycleGate) return lifecycleGate
   const dbBindingWarnings: SiteDbBindingsWarning[] = []
   const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
     organizationId: args.params.organizationId,
@@ -4009,7 +4046,11 @@ export async function prepareDeployCompose(
 /** Why one site could not be pinned to a principal. */
 export type SitePrincipalError =
   | {
-      kind: 'site_principal_ambiguous' | 'site_managed_directory_unowned' | 'site_cron_unowned'
+      kind:
+        | 'site_principal_ambiguous'
+        | 'site_managed_directory_unowned'
+        | 'site_cron_unowned'
+        | 'site_lifecycle_unowned'
       composeServiceName: string
     }
   | {
@@ -4085,7 +4126,8 @@ function prepareSiteForDeploy(
   principalById: ReadonlyMap<string, EnvironmentDeployPrincipalMaterial>,
   /** `principal.id` the service's declared alias resolved to, if it declared one. */
   declared: { alias: string; principalId: string | undefined } | undefined,
-  tasks: readonly TaskRecord[] = []
+  tasks: readonly TaskRecord[] = [],
+  options: ServiceOptions | undefined = undefined
 ):
   | { ok: true; site: EnvironmentDeploySite }
   | {
@@ -4118,6 +4160,11 @@ function prepareSiteForDeploy(
   const cron = renderCronForDeploy(authoredCron, tasks)
   // A timer with no `User=` runs as root; the wire refuses that.
   if (cron.length > 0 && !principalPin) return fail('site_cron_unowned')
+  // Commands and workers run as the site's account, never as root.
+  const lifecycle = renderSiteLifecycleForDeploy(options, site.sourceKind)
+  if (siteLifecycleUnowned(lifecycle, principalPin !== undefined)) {
+    return fail('site_lifecycle_unowned')
+  }
 
   return {
     ok: true,
@@ -4125,6 +4172,7 @@ function prepareSiteForDeploy(
       ...rest,
       ...(php ? { php } : {}),
       ...(cron.length > 0 ? { cron } : {}),
+      ...lifecycle,
       ...(principalPin ? { principal: principalPin } : {}),
     },
   }
@@ -4140,7 +4188,7 @@ function prepareSiteForDeploy(
 export async function attachPrincipalsToSites(
   db: Db,
   environmentId: string,
-  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>,
+  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string; options?: unknown }>,
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
   sites: readonly SiteSpec[],
   principalResolution: ComposePrincipalResolution,
@@ -4151,8 +4199,11 @@ export async function attachPrincipalsToSites(
   const principalById = new Map(principalMaterial.map((entry) => [entry.principalId, entry]))
   const principalIdsByServiceId = await loadPrincipalIdsByServiceIdForEnvironment(db, environmentId)
   const serviceIdByComposeName = new Map<string, string>()
+  const optionsByComposeName = new Map<string, ServiceOptions>()
   for (const row of serviceRows) {
     serviceIdByComposeName.set(row.composeServiceName, row.id)
+    const options = parseServiceOptions(row.options)
+    if (options) optionsByComposeName.set(row.composeServiceName, options)
   }
 
   const out: EnvironmentDeploySite[] = []
@@ -4170,7 +4221,8 @@ export async function attachPrincipalsToSites(
             alias,
             principalId: principalResolution.principalIdByAlias.get(alias),
           },
-      tasksByComposeName.get(site.composeServiceName)
+      tasksByComposeName.get(site.composeServiceName),
+      optionsByComposeName.get(site.composeServiceName)
     )
     if (!prepared.ok) return prepared.error
     out.push(prepared.site)
