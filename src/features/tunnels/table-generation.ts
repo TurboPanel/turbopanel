@@ -25,7 +25,15 @@ import { compareText } from './order.ts'
 import type { RoutingFacts } from './route-facts.ts'
 
 /** What is stored for an organization. */
-export type StoredTunnelGeneration = { contentHash: string; generation: number }
+export type StoredTunnelGeneration = {
+  contentHash: string
+  generation: number
+  /** When the generation was last raised on purpose (a daemon refused it), in Unix milliseconds. */
+  bumpedAt?: number
+}
+
+/** The least time between two deliberate raises for one organization (guards against a loop). */
+export const TUNNEL_GENERATION_BUMP_GAP_MS = 60_000
 
 /** A resolved generation, and whether it was newly raised by this call. */
 export type TunnelGenerationDecision = StoredTunnelGeneration & { changed: boolean }
@@ -107,7 +115,14 @@ export function readStoredTunnelGeneration(options: unknown): StoredTunnelGenera
     Number.isSafeInteger(raw.generation) &&
     raw.generation >= 0
   ) {
-    return { contentHash: raw.contentHash, generation: raw.generation }
+    const stored: StoredTunnelGeneration = {
+      contentHash: raw.contentHash,
+      generation: raw.generation,
+    }
+    if (typeof raw.bumpedAt === 'number' && Number.isFinite(raw.bumpedAt)) {
+      stored.bumpedAt = raw.bumpedAt
+    }
+    return stored
   }
   return undefined
 }
@@ -150,6 +165,28 @@ async function storeIfUnchanged(
   return rows.length > 0
 }
 
+type StoreDecision<T> = { next: StoredTunnelGeneration | null; result: T }
+
+/**
+ * Read the stored value, let `decide` choose what to store (null = nothing),
+ * and store it only if the stored value did not change meanwhile; otherwise
+ * decide again from the new value.
+ */
+async function storeWith<T>(
+  db: Db,
+  organizationId: string,
+  decide: (stored: StoredTunnelGeneration | undefined) => StoreDecision<T>
+): Promise<T> {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const options = await loadStored(db, organizationId)
+    const previous = (options as { tunnelTable?: unknown } | null)?.tunnelTable ?? null
+    const decision = decide(readStoredTunnelGeneration(options))
+    if (decision.next === null) return decision.result
+    if (await storeIfUnchanged(db, organizationId, previous, decision.next)) return decision.result
+  }
+  throw new Error('The tunnel table generation could not be stored')
+}
+
 /**
  * The generation of the organization's table for these facts. An unchanged
  * table gets the stored number back; changed content stores and returns a
@@ -162,14 +199,40 @@ export async function resolveTunnelGeneration(
   now: () => number = Date.now
 ): Promise<number> {
   const contentHash = await hashTunnelFacts(facts)
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    const options = await loadStored(db, organizationId)
-    const stored = readStoredTunnelGeneration(options)
-    const previous = (options as { tunnelTable?: unknown } | null)?.tunnelTable ?? null
+  return await storeWith(db, organizationId, (stored) => {
     const decision = decideTunnelGeneration(stored, contentHash, now())
-    if (!decision.changed) return decision.generation
-    const next = { contentHash: decision.contentHash, generation: decision.generation }
-    if (await storeIfUnchanged(db, organizationId, previous, next)) return next.generation
+    const next = { contentHash, generation: decision.generation }
+    return { next: decision.changed ? next : null, result: decision.generation }
+  })
+}
+
+/**
+ * Pure: the value to store when a daemon refused the current generation as
+ * older than its own. It goes to `max(previous + 1, now)` with the same
+ * content, or nowhere when the last deliberate raise was less than the gap ago.
+ */
+export function planGenerationBump(
+  stored: StoredTunnelGeneration | undefined,
+  nowMs: number
+): StoredTunnelGeneration | undefined {
+  if (stored?.bumpedAt !== undefined && nowMs - stored.bumpedAt < TUNNEL_GENERATION_BUMP_GAP_MS) {
+    return undefined
   }
-  throw new Error('The tunnel table generation could not be stored')
+  return {
+    contentHash: stored?.contentHash ?? '',
+    generation: nextTunnelGeneration(stored?.generation, nowMs),
+    bumpedAt: nowMs,
+  }
+}
+
+/** Raise the stored generation after a refusal; the new number, or `undefined` when raised too recently. */
+export async function bumpTunnelGeneration(
+  db: Db,
+  organizationId: string,
+  now: () => number = Date.now
+): Promise<number | undefined> {
+  return await storeWith(db, organizationId, (stored) => {
+    const next = planGenerationBump(stored, now())
+    return { next: next ?? null, result: next?.generation }
+  })
 }

@@ -1,13 +1,15 @@
 import { assertEquals } from '@std/assert'
 import { buildNameLock } from './name-lock.ts'
 import { toRoutesPayload } from './route-builder.ts'
-import { staleTunnelTableWarning } from './stale-table-note.ts'
+import { healStaleTunnelTable, staleTunnelTableWarning } from './stale-table-note.ts'
 import {
   canonicalTunnelFacts,
   daemonTakesTunnelGeneration,
   generationForDaemon,
   decideTunnelGeneration,
   nextTunnelGeneration,
+  planGenerationBump,
+  TUNNEL_GENERATION_BUMP_GAP_MS,
   readStoredTunnelGeneration,
 } from './table-generation.ts'
 import type { RoutingFacts } from './route-facts.ts'
@@ -129,4 +131,59 @@ test('an old daemon is resolved nothing, a daemon with the feature gets the tabl
   assertEquals(calls, 0)
   assertEquals(await generationForDaemon(['tunnel-table-generation-v1'], resolve), NOW)
   assertEquals(calls, 1)
+})
+
+test('a refusal raises the generation to the clock, and not again within the gap', () => {
+  const stored = { contentHash: 'h', generation: 5 }
+  const first = planGenerationBump(stored, NOW)
+  assertEquals(first, { contentHash: 'h', generation: NOW, bumpedAt: NOW })
+  assertEquals(planGenerationBump(first, NOW + TUNNEL_GENERATION_BUMP_GAP_MS - 1), undefined)
+  const later = planGenerationBump(first, NOW + TUNNEL_GENERATION_BUMP_GAP_MS)
+  assertEquals(later?.generation, NOW + TUNNEL_GENERATION_BUMP_GAP_MS)
+  assertEquals(planGenerationBump(undefined, NOW)?.generation, NOW)
+})
+
+test('a stored raise time survives a read', () => {
+  const stored = { contentHash: 'h', generation: 3, bumpedAt: NOW }
+  assertEquals(readStoredTunnelGeneration({ tunnelTable: stored }), stored)
+})
+
+const STALE = {
+  applied: false,
+  warnings: ['tunnel table generation 5 is older than the one in place; left as it is'],
+}
+const RECORD = { id: 'c1', type: 'server.tunnel.routes', serverId: 's1' }
+
+function ports(bumped: number | undefined, org: string | null = 'o1') {
+  const resent: string[] = []
+  return {
+    resent,
+    ports: {
+      organizationOf: () => Promise.resolve(org ?? undefined),
+      bump: () => Promise.resolve(bumped),
+      resend: (_o: string, serverId: string) => {
+        resent.push(serverId)
+        return Promise.resolve()
+      },
+    },
+  }
+}
+
+test('a stale refusal raises the generation and sends that server its table again', async () => {
+  const p = ports(NOW)
+  assertEquals(await healStaleTunnelTable(RECORD, STALE, p.ports), true)
+  assertEquals(p.resent, ['s1'])
+})
+
+test('a refusal inside the gap, an ordinary answer or a gone server sends nothing', async () => {
+  const limited = ports(undefined)
+  assertEquals(await healStaleTunnelTable(RECORD, STALE, limited.ports), false)
+  const ordinary = ports(NOW)
+  assertEquals(
+    await healStaleTunnelTable(RECORD, { applied: false, warnings: [] }, ordinary.ports),
+    false
+  )
+  const gone = ports(NOW, null)
+  assertEquals(await healStaleTunnelTable(RECORD, STALE, gone.ports), false)
+  assertEquals([...limited.resent, ...ordinary.resent, ...gone.resent], [])
 })

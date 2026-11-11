@@ -528,8 +528,14 @@ same way: `sync.ts` sets `generation` on `server.tunnel.routes` and
 that lists the feature. It stays out of the table `hash` and the per-server sent
 state. If it cannot be stored the send fails (a table without it would clear the
 daemon's record). When a daemon answers `applied: false` with its "older than
-the one in place" warning, `stale-table-note.ts` logs it from the command's
-success side effects, so a daemon stuck on a higher number shows in the logs.
+the one in place" warning, the stored number is behind what the daemon applied
+(for example after a restore). `stale-table-note.ts` logs it and heals it from
+the command's success side effects (`stale-table-heal.ts`): the organization's
+generation is raised to `max(previous + 1, now)` with the same compare-and-set
+(`bumpedAt` in the stored value limits that to once a minute per organization,
+so two stuck daemons cannot loop) and that server is sent its table again
+through `syncServerTunnelRoutes` with `force`. A server refused inside the
+minute is not requeued at once; the sweep sends it the table again.
 
 ## Origin certificates
 
