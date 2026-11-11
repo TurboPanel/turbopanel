@@ -274,3 +274,106 @@ test('the hash of a fixed table is pinned, so the order feeding it never drifts 
     '2d07617b9051cf5724a4c2980733b865d8914d320b5453ee08a178af2d8fb168'
   )
 })
+
+test('a server that runs a site learns, per name, the other carriers of that name only', () => {
+  const tunnels = [
+    {
+      // Tunnel 1 runs on B and C; its site runs on A.
+      carrying: [B, C],
+      doorways: [{ hostname: 'one.example.com', siteServerIds: [A], isLocalOnly: true }],
+    },
+    {
+      // Tunnel 2 runs on C only; its site runs on A too.
+      carrying: [C],
+      doorways: [{ hostname: 'two.example.com', siteServerIds: [A], isLocalOnly: true }],
+    },
+    {
+      // Tunnel 3 runs on A alone; its site runs on A: nobody else may forward it.
+      carrying: [A],
+      doorways: [{ hostname: 'solo.example.com', siteServerIds: [A], isLocalOnly: true }],
+    },
+  ]
+  const built = buildTunnelRoutes(A, tunnels, book, { withInbound: true })
+  assertEquals(built.inbound, [
+    { hostname: 'one.example.com', peers: ['10.0.0.12', 'fd00::b'] },
+    { hostname: 'solo.example.com', peers: [] },
+    // Not B: B carries tunnel 1, not this name's tunnel.
+    { hostname: 'two.example.com', peers: ['10.0.0.12'] },
+  ])
+  // The server-wide list stays the union, as before.
+  assertEquals(built.peerAddresses, ['10.0.0.12', 'fd00::b'])
+  // A carrier that runs no site gets an empty list; asked for nothing, nothing is set.
+  assertEquals(buildTunnelRoutes(B, tunnels, book, { withInbound: true }).inbound, [])
+  assertEquals(buildTunnelRoutes(A, tunnels, book).inbound, undefined)
+})
+
+test('a table with names to lock passes the daemon parser, with or without a certificate', async () => {
+  const built = buildTunnelRoutes(
+    A,
+    [
+      {
+        carrying: [A],
+        doorways: [{ hostname: 'solo.example.com', siteServerIds: [A], isLocalOnly: true }],
+      },
+    ],
+    book,
+    { withInbound: true }
+  )
+  assertEquals(built.needsPeerMaterial, true)
+  const lone = buildTunnelRoutes(
+    B,
+    [
+      {
+        carrying: [C],
+        doorways: [{ hostname: 'x.example.com', siteServerIds: [B], isLocalOnly: true }],
+      },
+    ],
+    book,
+    { withInbound: true }
+  )
+  assertEquals(lone.routes, [])
+  assertEquals(lone.inbound, [{ hostname: 'x.example.com', peers: ['10.0.0.12'] }])
+  const payload = await toRoutesPayload(lone, {
+    certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+    privateKeyEnvelope: 'tpdaemon.AAAA',
+    caCertPem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+  })
+  assertEquals(parseTunnelRoutesPayload(payload).inbound, lone.inbound)
+  // Nobody else carries the name any more: only the lock goes out, loopback alone, no certificate.
+  const alone = buildTunnelRoutes(
+    A,
+    [
+      {
+        carrying: [],
+        doorways: [{ hostname: 'x.example.com', siteServerIds: [A], isLocalOnly: true }],
+      },
+    ],
+    book,
+    { withInbound: true }
+  )
+  assertEquals(alone.needsPeerMaterial, false)
+  assertEquals(alone.inbound, [{ hostname: 'x.example.com', peers: [] }])
+  assertEquals(
+    parseTunnelRoutesPayload(await toRoutesPayload(alone, undefined)).inbound,
+    alone.inbound
+  )
+})
+
+test('the hash of a table without inbound is what it was, and inbound changes it', async () => {
+  const tunnels = [
+    {
+      carrying: [B],
+      doorways: [{ hostname: 'one.example.com', siteServerIds: [A], isLocalOnly: true }],
+    },
+  ]
+  const plain = buildTunnelRoutes(A, tunnels, book)
+  const withInbound = buildTunnelRoutes(A, tunnels, book, { withInbound: true })
+  const { inbound: _dropped, ...withoutField } = withInbound
+  assertEquals(
+    await hashTunnelRoutes(plain, undefined),
+    await hashTunnelRoutes(withoutField, undefined)
+  )
+  assert(
+    (await hashTunnelRoutes(plain, undefined)) !== (await hashTunnelRoutes(withInbound, undefined))
+  )
+})

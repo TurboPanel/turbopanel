@@ -25,7 +25,7 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { issuePeerLeaf, type PeerLeafIssue } from '../tls/peer-leaf.ts'
 import { pendingTlsLeafMetadata } from '../tls/leaf-tracking.ts'
-import { daemonCanCarryTunnels } from './daemon-gate.ts'
+import { daemonCanCarryTunnels, daemonLockFollowsTable } from './daemon-gate.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
   buildTunnelRoutes,
@@ -161,7 +161,9 @@ async function enqueueRoutes(
   return { ok: true, commandId: record.id }
 }
 
-type ServerReady = { ok: true; metadata: unknown } | { ok: false; outcome: TunnelSyncOutcome }
+type ServerReady =
+  | { ok: true; metadata: unknown; features: readonly string[] }
+  | { ok: false; outcome: TunnelSyncOutcome }
 
 /** The server exists, is connected, and runs a daemon that advertises tunnel support. */
 async function checkServerReady(
@@ -181,8 +183,9 @@ async function checkServerReady(
   if (!row) return skip('unknown server')
   if (!row.isConnected) return skip('server offline')
   const state = await getServerDaemonStateByServerId(db, serverId)
-  if (!daemonCanCarryTunnels(state?.projection?.features)) return skip('daemon too old')
-  return { ok: true, metadata: row.metadata }
+  const features = state?.projection?.features
+  if (!daemonCanCarryTunnels(features)) return skip('daemon too old')
+  return { ok: true, metadata: row.metadata, features: Array.isArray(features) ? features : [] }
 }
 
 /**
@@ -197,7 +200,10 @@ async function isAlreadyCurrent(
   built: RouteBuildResult,
   stateHash: string
 ): Promise<boolean> {
-  if (sent === null) return !built.needsPeerMaterial && built.routes.length === 0
+  // Nothing was ever sent: only a table with nothing in it needs no send.
+  if (sent === null) {
+    return !built.needsPeerMaterial && built.routes.length === 0 && !built.inbound?.length
+  }
   if (sent.stateHash !== stateHash) return false
   const last = await loadLastSend(db, sent)
   if (lastSendIsSettled(last, sent, Date.now())) return true
@@ -225,7 +231,10 @@ export async function syncServerTunnelRoutes(
   const ready = await checkServerReady(db, organizationId, serverId)
   if (!ready.ok) return ready.outcome
   const facts = await loadRoutingFacts(db, organizationId)
-  const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses)
+  // The name lock follows the table only on a daemon that says it can.
+  const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses, {
+    withInbound: daemonLockFollowsTable(ready.features),
+  })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)
   const open = !params.force && !params.issue

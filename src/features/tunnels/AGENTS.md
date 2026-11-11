@@ -115,13 +115,17 @@ member there, a widened CHECK (forward migration) and one adapter.
 - **A stopped connector is sent again.** A connector list that finished well is
   never resent while it is unchanged, so a connector stopped by hand (or given
   up on by systemd) used to stay down. When a status answer shows a connector
-  the last list asked that server to run as stopped, failed or not installed
-  (`connectorsNeedingRepair`), `recordTunnelStatus` clears the remembered hash
+  the last list asked that server to run as stopped or failed
+  (`connectorsNeedingRepair`) and that list has finished (one still on its way
+  is waited for), `recordTunnelStatus` clears the remembered hash
   (`server.metadata.tunnelConnectors.stateHash`, the rest kept), so the next
   connector sweep sends the same list again; the daemon starts an installed
   connector that is stopped or failed when the list is resent. An older daemon
   ignores the resend, so at worst one list per status poll goes out while the
-  connector stays down.
+  connector stays down. `not-installed` is not repaired this way: a daemon
+  that still holds the connector's record skips it on a resend, so the list
+  would only repeat (a daemon-side reinstall from the stored token copy is not
+  built yet).
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 
@@ -432,11 +436,24 @@ provider accounts.
   calls it first (answering 200 with `tunnelOnly: true` and creating nothing),
   and the waiting-request sweep calls it before retrying, so nothing is ordered
   from or retried at the authority for a tunnel-only name.
-  **The lock follows the next deploy.** Adding or removing a carrier changes the
-  peer set, but nothing redeploys the site by itself: until the site is deployed
-  again, a newly added carrier's forwards to that server are dropped (closed, not
-  open) and a removed carrier stays allowed. The deploy-inputs digest already
-  covers the `tunnel` field, so the next deploy is never skipped as unchanged.
+  **The lock follows the forwarding table** (daemon feature
+  `tunnel-lock-follow-v1`). The deploy writes the first lock; after that the
+  table sent to a server that runs a site carries `inbound`: every tunnel name
+  whose site runs there, with the exact addresses of the other servers that
+  carry that name's tunnel (per name, not the server-wide `peerAddresses`, so
+  one tunnel's carriers never reach another tunnel's names; empty when no other
+  server carries it). The daemon rewrites only those names' lock and
+  `trusted_proxies` lines, so a carrier added or removed by a placement change
+  is let in or shut out within seconds of the nudge, with no redeploy, and a
+  later deploy takes the same peers. `inbound` is in the table hash only when
+  sent, so a daemon without the feature keeps its hash and gets no field; a
+  table that holds only `inbound` is still sent. For a daemon without the
+  feature the old rule holds (the lock follows the site's next deploy: a newly
+  added carrier's forwards are dropped, a removed one stays allowed), and the
+  tunnel's `warnings` say how many servers that run its sites are in that case
+  (`serversWithDeployOnlyLock`, `siteServersOfTunnel`). The deploy-inputs
+  digest already covers the `tunnel` field, so a deploy is never skipped as
+  unchanged.
 - Limits: 50 tunnels and 2000 hostnames per organization, 200 hostnames per
   tunnel. A table is cut at the daemon contract caps (2000 names, 16 upstreams
   per name, 8 addresses per upstream, 64 peer and listen addresses) with a
@@ -461,9 +478,9 @@ provider accounts.
   first forwarded requests could be dropped. Default-drop must not ship before
   that order is fixed (send the rule before the routes, or apply it from the
   sync path).
-- Not in this slice: redeploying a site when its carrier set changes. The resend
-  (`nudge.ts`) covers forwarding tables and connector lists; the name lock on the
-  site follows its next deploy (see above).
+- A site is never redeployed when its carrier set changes: the resend
+  (`nudge.ts`) covers forwarding tables (with the lock, see above) and
+  connector lists.
 
 ## Origin certificates
 

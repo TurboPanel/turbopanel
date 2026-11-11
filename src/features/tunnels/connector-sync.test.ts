@@ -353,3 +353,17 @@ test('a connector the server reports stopped is sent again; a running one is not
     assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), { status: 'unchanged' })
   })
 })
+
+test('a stopped report while the last list is still on its way waits for that list', async () => {
+  await withServer({ connected: true, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
+    const providerId = await c.addTunnel('InFlight')
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    // The command is still queued: the stopped answer predates it.
+    await recordTunnelStatus(c.db, c.serverId, {
+      pinnedVersion: '2026.10.7',
+      connectors: [{ tunnelId: providerId, status: 'stopped', version: '2026.10.7', slot: 'a' }],
+    })
+    assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), { status: 'unchanged' })
+    assertEquals(c.queued.length, 1)
+  })
+})
