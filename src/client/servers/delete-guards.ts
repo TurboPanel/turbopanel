@@ -1460,7 +1460,11 @@ export async function forgetServerOwnedResources(
   organizationId: string
 ): Promise<ForgottenServerResources> {
   const plan = await planServerForget(tx, serverId, organizationId)
-  if (plan.blockedDatabases.length > 0 || plan.blockedEnvironments.length > 0) {
+  if (
+    plan.blockedDatabases.length > 0 ||
+    plan.blockedEnvironments.length > 0 ||
+    plan.blockedCaches.length > 0
+  ) {
     throw new ServerHasBlockersDuringForgetError(
       plan.blockingBlockers,
       capPreviewList(plan.blockedDatabases).items,

@@ -168,6 +168,7 @@ import {
   prepareProjectCaches,
   type ProjectCacheRefusal,
   withCacheHostingEnv,
+  withRedisExtension,
 } from './deploy-caches.ts'
 import { injectHelperPublishes } from '../../features/caches/reach.ts'
 import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
@@ -3094,8 +3095,11 @@ function projectCacheFields(
   return {
     ...(state.caches === undefined ? {} : { caches: state.caches }),
     ...(state.helperReach === undefined ? {} : { helperReach: state.helperReach }),
-    helperPorts: state.helperPorts,
-    cacheConsumers: state.cacheConsumers,
+    // Left out when empty, so an environment with no caches records what it always did.
+    ...(Object.keys(state.helperPorts).length === 0 ? {} : { helperPorts: state.helperPorts }),
+    ...(Object.keys(state.cacheConsumers).length === 0
+      ? {}
+      : { cacheConsumers: state.cacheConsumers }),
   }
 }
 
@@ -4027,7 +4031,7 @@ export async function prepareDeployCompose(
     tasksByComposeName,
   })
   if ('kind' in localSiteBoundOrError) return localSiteBoundOrError
-  const localSiteBound = localSiteBoundOrError
+  const localSiteBound = withRedisExtension(localSiteBoundOrError, cacheState.delivery)
 
   const nativeLanes = await resolveLocalNativeAppsAndRuntimes(c, db, {
     mode,

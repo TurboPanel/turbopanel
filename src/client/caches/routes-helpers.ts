@@ -49,8 +49,11 @@ function engineError(body: Record<string, unknown>): CacheRequestError | null {
   return null
 }
 
+const ACCESS_SET: ReadonlySet<string> = new Set(CACHE_ACCESS)
+const FALSE_WORDS: ReadonlySet<string> = new Set(['false', '0', 'no'])
+
 function parseAccess(value: unknown): CacheAccess | CacheRequestError {
-  if (typeof value === 'string' && (CACHE_ACCESS as readonly string[]).includes(value)) {
+  if (typeof value === 'string' && ACCESS_SET.has(value)) {
     return value as CacheAccess
   }
   return bad('invalid_access', 'Access must be socket or port')
@@ -135,7 +138,7 @@ export function parseCachePatchBody(body: unknown): CachePatchInput | CacheReque
 
 /** `deleteData` defaults on; only an explicit false keeps the data. */
 export function parseDeleteData(raw: string | undefined): boolean {
-  return raw === undefined ? true : !['false', '0', 'no'].includes(raw.toLowerCase())
+  return raw === undefined ? true : !FALSE_WORDS.has(raw.toLowerCase())
 }
 
 /** The refusal when the unit ceiling would exceed the account's memory ceiling, else null. */

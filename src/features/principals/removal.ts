@@ -80,7 +80,7 @@ export async function countPrincipalReferencesOutside(
     storages: await total(storage, and(outside(storage.id, scope.storageIds))),
     secrets: await total(secret, undefined),
     logins: await total(login, undefined),
-    caches: await total(cache, undefined),
+    caches: await total(cache, outside(cache.environmentId, scope.environmentIds)),
     folders: await total(
       folder,
       and(

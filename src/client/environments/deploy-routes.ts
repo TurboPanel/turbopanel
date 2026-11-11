@@ -1082,8 +1082,8 @@ function deploymentTargetsForFanOut(params: {
           phpModes: recordSitePhpModes(prepared?.sites),
           listenPorts: params.listenPortsByServer.get(serverId) ?? [],
           // Helper ports and each service's caches, so a redeploy keeps the port and a reboot can rehydrate secrets.
-          helperPorts: prepared?.helperPorts ?? {},
-          cacheConsumers: prepared?.cacheConsumers ?? {},
+          ...(prepared?.helperPorts ? { helperPorts: prepared.helperPorts } : {}),
+          ...(prepared?.cacheConsumers ? { cacheConsumers: prepared.cacheConsumers } : {}),
           // What this server was last sent, so a later deploy of another environment
           // can tell a name this one served and no longer holds.
           servedHostnames: prepared ? servedNamesOf(httpHostingNames(prepared)) : [],

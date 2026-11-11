@@ -184,7 +184,10 @@ export async function prepareProjectCaches(
   input: PrepareProjectCachesInput
 ): Promise<PreparedProjectCaches | ProjectCacheRefusal> {
   const rows = await listEnvironmentCaches(db, input.environmentId)
-  const decls = reachDecls(input.application)
+  // A reach container is opened on the server that runs it, so others skip it.
+  const decls = reachDecls(input.application).filter(
+    (decl) => input.localServiceNames === undefined || input.localServiceNames.has(decl.service)
+  )
   const features = await storedDaemonFeatures(db, input.serverId)
   const here = rows.filter((row) => row.serverId === input.serverId)
   if (!features.includes(PROJECT_CACHE_FEATURE)) {
@@ -307,31 +310,57 @@ export async function withCacheHostingEnv(
   const out: EnvironmentDeployHosting[] = []
   for (const entry of hostings) {
     const name = entry.composeServiceName
-    if (name === undefined || !hasDelivery(delivery, name)) {
-      out.push(entry)
-      continue
-    }
-    const map: ResolvedVariableMap = new Map()
-    await applyDeliveryToMap(secrets, delivery, name, map, [])
-    const env = { ...entry.web?.env }
-    const secretEnv = { ...entry.web?.secretEnv }
-    for (const [key, item] of map) {
-      if (!item.forRuntime || !isSiteVariableName(key)) continue
-      if (item.isSecret) secretEnv[key] = item.value
-      else env[key] = item.value
-    }
-    out.push({
-      ...entry,
-      web: {
-        ...entry.web,
-        ...(Object.keys(env).length > 0 ? { env } : {}),
-        ...(Object.keys(secretEnv).length > 0 ? { secretEnv } : {}),
-      },
-    })
+    out.push(
+      name === undefined || !hasDelivery(delivery, name)
+        ? entry
+        : await mergeDeliveryIntoHosting(entry, name, secrets, delivery)
+    )
   }
   return out
 }
 
+async function mergeDeliveryIntoHosting(
+  entry: EnvironmentDeployHosting,
+  name: string,
+  secrets: DerivedSecretsConfig | undefined,
+  delivery: CacheDelivery
+): Promise<EnvironmentDeployHosting> {
+  const map: ResolvedVariableMap = new Map()
+  await applyDeliveryToMap(secrets, delivery, name, map, [])
+  const env = { ...entry.web?.env }
+  const secretEnv = { ...entry.web?.secretEnv }
+  for (const [key, item] of map) {
+    if (!item.forRuntime || !isSiteVariableName(key)) continue
+    if (item.isSecret) secretEnv[key] = item.value
+    else env[key] = item.value
+  }
+  return {
+    ...entry,
+    web: {
+      ...entry.web,
+      ...(Object.keys(env).length > 0 ? { env } : {}),
+      ...(Object.keys(secretEnv).length > 0 ? { secretEnv } : {}),
+    },
+  }
+}
+
 function hasDelivery(delivery: CacheDelivery, name: string): boolean {
   return delivery.consumers.has(name) || delivery.helperVars.has(name)
+}
+
+/**
+ * Turn the PHP `redis` extension on for the sites that get a cache. A site with
+ * no PHP block is not a PHP site, so it is left as it is.
+ */
+export function withRedisExtension<
+  T extends { composeServiceName: string; php?: { extensions?: string[] } },
+>(sites: readonly T[], delivery: CacheDelivery): T[] {
+  return sites.map((site) => {
+    const consumes = (delivery.consumers.get(site.composeServiceName)?.length ?? 0) > 0
+    if (!consumes || site.php === undefined) return site
+    const extensions = [...new Set([...(site.php.extensions ?? []), 'redis'])].toSorted((a, b) =>
+      a.localeCompare(b)
+    )
+    return { ...site, php: { ...site.php, extensions } }
+  })
 }

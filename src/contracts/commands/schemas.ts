@@ -9458,6 +9458,7 @@ export function parseManagedHaFailoverResult(value: unknown): ManagedHaFailoverC
 // Must stay in sync with the daemon `cache.apply` / `environment.deploy` shapes
 // (`turbopaneld/src/contracts/commands-contracts.ts`).
 
+const CACHE_SERIES_SET: ReadonlySet<string> = new Set(CACHE_SERIES)
 const CACHE_NAME_RE = /^[a-z][a-z0-9-]{0,62}$/
 const CACHE_SHA256_HEX_RE = /^[0-9a-f]{64}$/
 const CACHE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -9550,10 +9551,7 @@ function parseCacheEngine(
   value: Record<string, unknown>
 ): Pick<EnvironmentDeployCache, 'engine' | 'version'> {
   if (value.engine !== 'valkey') throw new TypeError('caches engine must be valkey')
-  if (
-    typeof value.version !== 'string' ||
-    !(CACHE_SERIES as readonly string[]).includes(value.version)
-  ) {
+  if (typeof value.version !== 'string' || !CACHE_SERIES_SET.has(value.version)) {
     throw new TypeError('caches version is not one the host vendors')
   }
   return { engine: 'valkey', version: value.version }

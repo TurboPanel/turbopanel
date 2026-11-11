@@ -222,7 +222,7 @@ async function createCache(c: Context<AppEnv>): Promise<Response> {
   const gate = await daemonRefusal(c, ctx.db, placed.serverId)
   if (gate) return gate
   const accounts = await loadTenancyPrincipalIdsForEnvironment(ctx.db, ctx.environmentId)
-  if (!accounts.includes(input.principalId)) {
+  if (!new Set(accounts).has(input.principalId)) {
     return c.json(
       {
         error: 'principal_not_in_environment',

@@ -60,7 +60,7 @@ export const cacheSchemas = {
 
 const security = [{ cookieAuth: [] }]
 const environmentParam = {
-  name: 'environmentId',
+  name: 'id',
   in: 'path',
   required: true,
   schema: { type: 'string' },
@@ -81,7 +81,7 @@ const writeErrors = {
 }
 
 export const cachePaths = {
-  '/api/client/v1/environments/{environmentId}/caches': {
+  '/api/client/v1/environments/{id}/caches': {
     get: {
       tags: ['Environments'],
       summary: 'List the project caches of an environment',
@@ -135,7 +135,7 @@ export const cachePaths = {
       },
     },
   },
-  '/api/client/v1/environments/{environmentId}/caches/{cacheId}': {
+  '/api/client/v1/environments/{id}/caches/{cacheId}': {
     patch: {
       tags: ['Environments'],
       summary: 'Change a project cache (a memory limit or access change restarts it)',
