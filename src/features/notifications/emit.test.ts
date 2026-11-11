@@ -18,6 +18,7 @@ import {
   notificationChannel,
   notificationDelivery,
   notificationPreference,
+  notificationRule,
   organization,
   team,
   teammate,
@@ -27,7 +28,9 @@ import { emitNotification, retryDueDeliveries } from './emit.ts'
 import {
   claimDueDeliveries,
   countUnreadForUser,
+  channelsForEvent,
   createNotificationChannel,
+  deleteChannel,
   listNotificationsForUser,
   markNotificationsRead,
   replaceRulesForChannel,
@@ -781,5 +784,59 @@ test('a claimed delivery is not picked again until its lease ends', async () => 
     assertEquals(first.length, 1)
     // The row is leased: a second sweep right after finds nothing due.
     assertEquals((await claimDueDeliveries(db, 10)).length, 0)
+  })
+})
+
+test('a control plane channel hears install events, and organization events only when switched on', async () => {
+  await withFixture(async ({ db, organizationId }) => {
+    const enc = await secrets()
+    const make = async (isAllOrganizationsNotified: boolean) => {
+      const channel = await createNotificationChannel(db, enc, {
+        scope: 'instance',
+        kind: 'webhook',
+        label: `Routing ${crypto.randomUUID()}`,
+        address: 'https://hooks.example.com/routing',
+        isAllOrganizationsNotified,
+      })
+      await replaceRulesForChannel(db, channel.id, [{ event: '*', minSeverity: 'info' }])
+      return channel
+    }
+    const quiet = await make(false)
+    const loud = await make(true)
+    // A control plane channel with the switch off whose rule names this organization.
+    const named = await make(false)
+    await db.delete(notificationRule).where(eq(notificationRule.channelId, named.id))
+    await db
+      .insert(notificationRule)
+      .values({ channelId: named.id, event: '*', minSeverity: 'info', organizationId })
+    const orgOwn = await createNotificationChannel(db, enc, {
+      scope: 'organization',
+      organizationId,
+      kind: 'webhook',
+      label: 'Routing own',
+      address: 'https://hooks.example.com/own',
+    })
+    await replaceRulesForChannel(db, orgOwn.id, [{ event: '*', minSeverity: 'info' }])
+    try {
+      const ids = async (event: 'server.offline' | 'fleet.mass_disconnect', org: string | null) =>
+        new Set((await channelsForEvent(db, event, 'warning', org)).map((ch) => ch.id))
+      const install = await ids('fleet.mass_disconnect', null)
+      assertEquals(install.has(quiet.id), true)
+      assertEquals(install.has(loud.id), true)
+      assertEquals(install.has(orgOwn.id), false)
+      const organizationEvent = await ids('server.offline', organizationId)
+      assertEquals(organizationEvent.has(quiet.id), false)
+      assertEquals(organizationEvent.has(loud.id), true)
+      assertEquals(organizationEvent.has(orgOwn.id), true)
+      assertEquals(organizationEvent.has(named.id), true)
+      const otherOrganizationEvent = await ids('server.offline', crypto.randomUUID())
+      assertEquals(otherOrganizationEvent.has(named.id), false)
+      assertEquals(install.has(named.id), false)
+    } finally {
+      await deleteChannel(db, quiet.id)
+      await deleteChannel(db, loud.id)
+      await deleteChannel(db, named.id)
+      await deleteChannel(db, orgOwn.id)
+    }
   })
 })

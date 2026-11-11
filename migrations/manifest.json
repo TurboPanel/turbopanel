@@ -212,6 +212,12 @@
       "tag": "0034_binding_preset",
       "when": 1794412796776,
       "sha256": "1299a864a690fa28aff3bc3950ac4442e73d637324459f3400a4e68f6457645a"
+    },
+    {
+      "idx": 35,
+      "tag": "0035_keep_install_channels_hearing_organizations",
+      "when": 1794414184707,
+      "sha256": "36818670521bb08b1839bb1b7fdd3dec4b43823b1e5adada8d3bffeb76323a80"
     }
   ]
 }

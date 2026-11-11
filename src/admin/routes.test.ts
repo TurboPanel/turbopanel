@@ -27,7 +27,10 @@ import {
   upgrade,
   user,
 } from '../db/schema.ts'
-import { OPERATOR_WEBHOOK_LABEL } from '../features/notifications/records.ts'
+import {
+  createNotificationChannel,
+  OPERATOR_WEBHOOK_LABEL,
+} from '../features/notifications/records.ts'
 import { setUpdateManifestProvider } from '../features/update/manifest.ts'
 import { LATEST_BUILD_SETTINGS_KEY } from '../features/upgrades/target-resolve.ts'
 import {
@@ -1683,12 +1686,14 @@ test('a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
           label: string
           kind: string
           address: string
+          allOrganizations: boolean
           rules: Array<{ event: string; minSeverity: string }>
         }>
       }>(listed)
       const operator = channels.find((ch) => ch.label === OPERATOR_WEBHOOK_LABEL)
       assertEquals(operator?.kind, 'webhook')
       assertEquals(operator?.address, 'https://hooks.slack.com')
+      assertEquals(operator?.allOrganizations, true)
       assertEquals(operator?.rules, [{ event: '*', minSeverity: 'info' }])
       const legacyRows = await db
         .select({ value: setting.value })
@@ -1706,6 +1711,111 @@ test('a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
       })
     } finally {
       await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+    }
+  })
+})
+
+test('a control plane channel carries the all organizations switch through create and update', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const send = (method: string, path: string, body: unknown) =>
+      app.request(`${ADMIN_API_PREFIX}/notification-channels${path}`, {
+        method,
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    const created = await send('POST', '', {
+      kind: 'webhook',
+      label: 'Switch Test',
+      address: 'https://hooks.slack.com/services/T0/B0/SWITCH',
+      rules: [{ event: '*', minSeverity: 'info' }],
+    })
+    assertEquals(created.status, 201)
+    const { channel } = await jsonBody<{ channel: { id: string; allOrganizations: boolean } }>(
+      created
+    )
+    try {
+      assertEquals(channel.allOrganizations, false)
+      const on = await send('PATCH', `/${channel.id}`, { allOrganizations: true })
+      assertEquals(on.status, 200)
+      assertEquals(
+        (await jsonBody<{ channel: { allOrganizations: boolean } }>(on)).channel.allOrganizations,
+        true
+      )
+      const bad = await send('PATCH', `/${channel.id}`, { allOrganizations: 'yes' })
+      assertEquals(bad.status, 400)
+      assertEquals((await jsonBody<{ error: string }>(bad)).error, 'all_organizations_invalid')
+    } finally {
+      await send('DELETE', `/${channel.id}`, {})
+    }
+  })
+})
+
+test('an operator webhook made before the switch existed is switched on when touched', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    try {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const enc = await deriveEncryptionSecretsConfig(
+        parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
+        'data-encryption'
+      )
+      const old = await createNotificationChannel(db, enc, {
+        scope: 'instance',
+        kind: 'webhook',
+        label: OPERATOR_WEBHOOK_LABEL,
+        address: 'https://hooks.slack.com/services/OLD/PATH',
+        isAllOrganizationsNotified: false,
+      })
+      const listed = await app.request(`${ADMIN_API_PREFIX}/notification-channels`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(listed.status, 200)
+      const [row] = await db
+        .select({ on: notificationChannel.isAllOrganizationsNotified })
+        .from(notificationChannel)
+        .where(eq(notificationChannel.id, old.id))
+      assertEquals(row?.on, true)
+    } finally {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+    }
+  })
+})
+
+test('the operator webhook cannot be switched off from hearing every organization', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    try {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const put = await app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
+        method: 'PUT',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://hooks.slack.com/services/OP/PATH' }),
+      })
+      assertEquals(put.status, 200)
+      const [row] = await db
+        .select({ id: notificationChannel.id })
+        .from(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const patched = await app.request(`${ADMIN_API_PREFIX}/notification-channels/${row!.id}`, {
+        method: 'PATCH',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ allOrganizations: false }),
+      })
+      assertEquals(patched.status, 400)
+      assertEquals(
+        (await jsonBody<{ error: string }>(patched)).error,
+        'operator_webhook_hears_all_organizations'
+      )
+    } finally {
       await db
         .delete(notificationChannel)
         .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
