@@ -7,19 +7,22 @@
  */
 import { compatLogWarn } from '../../lib/log-compat.ts'
 
-const STALE_WARNING = /^tunnel table generation (\d+) is older than the one in place/
+/**
+ * The warning the daemon returns for a table it did not apply because a newer
+ * one is in place. Pinned to the daemon's own text: `src/deploy/tunnel-apply.ts`
+ * in the daemon repository ("ignored: a newer forwarding table is already in
+ * place"). The wire text carries no generation number.
+ */
+const STALE_WARNING_PREFIX = 'ignored: a newer forwarding table'
 
 /** The daemon's warning for a table it left as it was because of its generation, or `undefined`. */
 export function staleTunnelTableWarning(type: string, result: unknown): string | undefined {
   if (type !== 'server.tunnel.routes') return undefined
   const answer = result as { applied?: unknown; warnings?: unknown } | null
   if (answer?.applied !== false || !Array.isArray(answer.warnings)) return undefined
-  return answer.warnings.find((w): w is string => typeof w === 'string' && STALE_WARNING.test(w))
-}
-
-/** The generation the daemon refused, read out of its warning. */
-function refusedGeneration(warning: string): string {
-  return STALE_WARNING.exec(warning)?.[1] ?? 'unknown'
+  return answer.warnings.find(
+    (w): w is string => typeof w === 'string' && w.startsWith(STALE_WARNING_PREFIX)
+  )
 }
 
 export type StaleTableHealPorts = {
@@ -29,6 +32,8 @@ export type StaleTableHealPorts = {
   bump: (organizationId: string) => Promise<number | undefined>
   /** Send the server its table again (the normal sync path). */
   resend: (organizationId: string, serverId: string) => Promise<void>
+  /** The generation this control plane stored before the daemon refused it, for the log. */
+  sentGeneration?: (organizationId: string) => Promise<number | undefined>
 }
 
 /**
@@ -45,11 +50,13 @@ export async function healStaleTunnelTable(
 ): Promise<boolean> {
   const warning = staleTunnelTableWarning(record.type, result)
   if (warning === undefined) return false
+  const organizationId = await ports.organizationOf(record.serverId)
+  const sent =
+    organizationId === undefined ? undefined : await ports.sentGeneration?.(organizationId)
   compatLogWarn(
     'tunnel-sync',
-    `server ${record.serverId}: command ${record.id}: the daemon kept its forwarding table and refused generation ${refusedGeneration(warning)}; it holds a higher generation than this control plane sent`
+    `server ${record.serverId}: command ${record.id}: the daemon kept its forwarding table (${warning}); it holds a newer one than the generation this control plane sent (${sent ?? 'unknown'})`
   )
-  const organizationId = await ports.organizationOf(record.serverId)
   if (organizationId === undefined) return false
   const raised = await ports.bump(organizationId)
   if (raised === undefined) {

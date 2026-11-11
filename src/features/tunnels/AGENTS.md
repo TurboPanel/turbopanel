@@ -536,6 +536,12 @@ generation is raised to `max(previous + 1, now)` with the same compare-and-set
 so two stuck daemons cannot loop) and that server is sent its table again
 through `syncServerTunnelRoutes` with `force`. A server refused inside the
 minute is not requeued at once; the sweep sends it the table again.
+Anything that writes `organization.options` must merge into it (a jsonb merge or
+`jsonb_set`), never replace it whole, or the counter is lost. A deploy
+preparation (a preview too) can write the counter: the generation is stored the
+first time a changed table is seen, whoever sees it first. The peers and the
+generation of a deploy come from one unchanged read of the routing facts
+(`peersWithGeneration` in `name-lock.ts`).
 
 ## Origin certificates
 

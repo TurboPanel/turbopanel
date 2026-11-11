@@ -17,6 +17,14 @@ import type { RoutingFacts } from './route-facts.ts'
 /** Sonar only recognises `test()`; see backups-reconcile.hostfree.test.ts. */
 const test = Deno.test.bind(Deno)
 
+/**
+ * The exact warning the daemon returns for a table it did not apply because a
+ * newer one is in place: turbopaneld `src/deploy/tunnel-apply.ts` (pinned
+ * against daemon trunk 21161e4a). If the daemon changes it, the self-heal must
+ * follow.
+ */
+const DAEMON_STALE_WARNING = 'ignored: a newer forwarding table is already in place'
+
 const NOW = 1_800_000_000_000
 
 function facts(order: 'a' | 'b'): RoutingFacts {
@@ -113,7 +121,7 @@ test('builds a deploy tunnel block with no generation of its own', () => {
 })
 
 test('notices the daemon refusing a table as older than its own', () => {
-  const warning = 'tunnel table generation 5 is older than the one in place; left as it is'
+  const warning = DAEMON_STALE_WARNING
   const result = { applied: false, warnings: [warning] }
   assertEquals(staleTunnelTableWarning('server.tunnel.routes', result), warning)
   const quiet = staleTunnelTableWarning('server.tunnel.routes', { applied: false, warnings: [] })
@@ -150,7 +158,7 @@ test('a stored raise time survives a read', () => {
 
 const STALE = {
   applied: false,
-  warnings: ['tunnel table generation 5 is older than the one in place; left as it is'],
+  warnings: [DAEMON_STALE_WARNING],
 }
 const RECORD = { id: 'c1', type: 'server.tunnel.routes', serverId: 's1' }
 
@@ -186,4 +194,26 @@ test('a refusal inside the gap, an ordinary answer or a gone server sends nothin
   const gone = ports(NOW, null)
   assertEquals(await healStaleTunnelTable(RECORD, STALE, gone.ports), false)
   assertEquals([...limited.resent, ...ordinary.resent, ...gone.resent], [])
+})
+
+test('the self-heal matches the daemon wire text and not an unrelated warning', () => {
+  const stale = {
+    applied: false,
+    warnings: ['ignored: a newer forwarding table is already in place'],
+  }
+  assertEquals(
+    staleTunnelTableWarning('server.tunnel.routes', stale),
+    'ignored: a newer forwarding table is already in place'
+  )
+  const other = { applied: false, warnings: ['a name was dropped'] }
+  assertEquals(staleTunnelTableWarning('server.tunnel.routes', other), undefined)
+})
+
+test('a raise with nothing stored leaves content unmatched, so the next resolve raises once', () => {
+  const bumped = planGenerationBump(undefined, NOW)
+  assertEquals(bumped, { contentHash: '', generation: NOW, bumpedAt: NOW })
+  const next = decideTunnelGeneration(bumped, 'h1', NOW + 1)
+  assertEquals(next.changed, true)
+  assertEquals(next.generation, NOW + 1)
+  assertEquals(decideTunnelGeneration(next, 'h1', NOW + 2).changed, false)
 })

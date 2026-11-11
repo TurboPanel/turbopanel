@@ -8,7 +8,8 @@ import type { Db } from '../../db/connection.ts'
 import { server } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { healStaleTunnelTable, staleTunnelTableWarning } from './stale-table-note.ts'
-import { bumpTunnelGeneration } from './table-generation.ts'
+import { bumpTunnelGeneration, readStoredTunnelGeneration } from './table-generation.ts'
+import { organization } from '../../db/schema.ts'
 import { syncServerTunnelRoutes, type TunnelSyncDeps } from './sync.ts'
 
 export async function healStaleTunnelTableOf(
@@ -28,6 +29,14 @@ export async function healStaleTunnelTableOf(
           .limit(1)
         // Without the queue and secrets nothing can be sent, so nothing is raised either.
         return deps === null ? undefined : (row?.organizationId ?? undefined)
+      },
+      sentGeneration: async (organizationId) => {
+        const [row] = await db
+          .select({ options: organization.options })
+          .from(organization)
+          .where(eq(organization.id, organizationId))
+          .limit(1)
+        return readStoredTunnelGeneration(row?.options)?.generation
       },
       bump: (organizationId) => bumpTunnelGeneration(db, organizationId),
       resend: async (organizationId, serverId) => {

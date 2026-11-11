@@ -16,8 +16,12 @@ import { compareText } from './order.ts'
 import { daemonCanCarryTunnels } from './daemon-gate.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
-import { loadRoutingFacts, loadServerAddresses } from './route-facts.ts'
-import { generationForDaemon, resolveTunnelGeneration } from './table-generation.ts'
+import { loadRoutingFacts, loadServerAddresses, type RoutingFacts } from './route-facts.ts'
+import {
+  canonicalTunnelFacts,
+  daemonTakesTunnelGeneration,
+  resolveTunnelGeneration,
+} from './table-generation.ts'
 
 /** Always allowed anyway; sent when no other server forwards here so the list is never empty. */
 export const LOOPBACK_PEER = '127.0.0.1'
@@ -146,6 +150,47 @@ export async function loadNameLock(
   })
 }
 
+type SnapshotParams = {
+  organizationId: string
+  serverId: string
+  hostingId: string
+  siteHostnames: readonly string[]
+}
+
+/** How often the peers are read again when the routing facts move while they are read. */
+const SNAPSHOT_RETRIES = 3
+
+/**
+ * The lock (its peers) and the generation of the table those peers come from,
+ * taken from one unchanged snapshot of the routing facts: the facts are read
+ * before and after the lock, and the lock is read again when they differ, so
+ * the generation always describes the peers sent with it.
+ */
+async function peersWithGeneration(
+  db: Db,
+  params: SnapshotParams
+): Promise<{ lock: NameLock; generation: number }> {
+  const facts = await loadRoutingFacts(db, params.organizationId)
+  const lock = await loadNameLock(db, params)
+  return await settleSnapshot(db, params, facts, lock, SNAPSHOT_RETRIES)
+}
+
+/** Read the facts again; when they moved, read the lock again too, up to `retries` times. */
+async function settleSnapshot(
+  db: Db,
+  params: SnapshotParams,
+  facts: RoutingFacts,
+  lock: NameLock,
+  retries: number
+): Promise<{ lock: NameLock; generation: number }> {
+  const after = await loadRoutingFacts(db, params.organizationId)
+  if (retries <= 0 || canonicalTunnelFacts(after) === canonicalTunnelFacts(facts)) {
+    return { lock, generation: await resolveTunnelGeneration(db, params.organizationId, after) }
+  }
+  const again = await loadNameLock(db, params)
+  return await settleSnapshot(db, params, after, again, retries - 1)
+}
+
 export type NameLockRefusal = {
   /** `tunnel_daemon_too_old`: the server's daemon would serve a locked name to anyone. `tunnel_name_public_certificate`: a locked name is pinned to a public certificate. */
   code: 'tunnel_daemon_too_old' | 'tunnel_name_public_certificate'
@@ -214,14 +259,12 @@ export async function resolveDeployNameLock(
     return { refusal: { code: 'tunnel_daemon_too_old', hostnames: locked } }
   }
   // The generation of the table these peers were taken from, for a daemon that keeps one.
-  const generation = await generationForDaemon(state?.projection?.features, async () =>
-    resolveTunnelGeneration(
-      db,
-      params.organizationId,
-      await loadRoutingFacts(db, params.organizationId)
-    )
-  )
-  const tunnel = generation === undefined ? lock.tunnel : { ...lock.tunnel, generation }
+  let tunnel = lock.tunnel
+  if (daemonTakesTunnelGeneration(state?.projection?.features)) {
+    const settled = await peersWithGeneration(db, params)
+    if (settled.lock.tunnel === undefined) return { tunnel: undefined }
+    tunnel = { ...settled.lock.tunnel, generation: settled.generation }
+  }
   return { tunnel, ...(acmePinned ? { dropPublicCertificate: true as const } : {}) }
 }
 
