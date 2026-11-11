@@ -3,6 +3,14 @@ import type { BadgeCapabilities, DeclaredZone, TokenInfo, TunnelProvider } from 
 export type ProviderAccount = { id: string; name: string }
 export type ProviderZone = { id: string; name: string }
 
+/** A DNS record that already holds a name, as shown to the person before it is replaced. */
+export type ExistingDnsRecord = {
+  id: string
+  type: string
+  content: string
+  proxied: boolean
+}
+
 /** What a credential check found, from read calls only. */
 export type CredentialReport = {
   accounts: ProviderAccount[]
@@ -109,9 +117,29 @@ export type TunnelAdapter = {
     token: string,
     input: { accountId: string | null; hostname: string }
   ): Promise<ProviderZone>
-  createDnsName(
+  /**
+   * The address records (A, AAAA, CNAME) that already hold a name in a zone,
+   * other than the tunnel's own CNAME. Optional: a provider without it is not
+   * asked first and its own refusal stands.
+   */
+  listDnsConflicts?(
     token: string,
     input: { zoneId: string; hostname: string; externalId: string }
+  ): Promise<ExistingDnsRecord[]>
+  /**
+   * Point the name at the tunnel. A CNAME that already points there is kept.
+   * Address records that hold the name are replaced only when `replace` lists
+   * exactly their ids (the person confirmed what they saw); otherwise the call
+   * throws {@link DnsNameTaken} naming them, and nothing is changed.
+   */
+  createDnsName(
+    token: string,
+    input: {
+      zoneId: string
+      hostname: string
+      externalId: string
+      replace?: readonly string[]
+    }
   ): Promise<{ recordId: string }>
   removeDnsName(token: string, input: { zoneId: string; recordId: string }): Promise<void>
   deleteTunnel(

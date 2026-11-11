@@ -80,7 +80,7 @@ function invalid(c: Context<AppEnv>, error: string, field: string, detail: strin
 /** A refusal from the lifecycle code as a response; anything else is rethrown. */
 function refused(c: Context<AppEnv>, err: unknown): Response {
   if (err instanceof TunnelRefusal) {
-    return c.json({ error: err.code, message: err.message }, err.status)
+    return c.json({ ...err.details, error: err.code, message: err.message }, err.status)
   }
   throw err
 }
@@ -124,6 +124,12 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
     )
   }
   return warnings.length === shown.warnings.length ? shown : { ...shown, warnings }
+}
+
+/** `{ dnsReplaced }` from a hostname row's metadata when records were replaced, else nothing. */
+function replacedOf(metadata: unknown): { dnsReplaced?: unknown[] } {
+  const replaced = (metadata as { dnsReplaced?: unknown } | null)?.dnsReplaced
+  return Array.isArray(replaced) && replaced.length > 0 ? { dnsReplaced: replaced } : {}
 }
 
 function secretsOrFail(c: Context<AppEnv>) {
@@ -277,6 +283,8 @@ function addDoorwayResponse(registry: TunnelAdapterRegistry) {
         tunnelId: row.id,
         hostname: created.hostname,
         dns: created.externalDnsRecordId ? 'created' : 'none',
+        // What the replaced records were: once replaced, this is the only record of them.
+        ...replacedOf(created.metadata),
       })
       nudgeServers(c, scope)
       return c.json({ hostname: toApiDoorway(created) }, 201)

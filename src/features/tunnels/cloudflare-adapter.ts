@@ -11,10 +11,15 @@ import {
   type TokenKind,
   UNKNOWN_TOKEN,
 } from './vocabulary.ts'
-import type { CredentialReport, DeclaredZoneResult, TunnelAdapter } from './adapter.ts'
+import type {
+  CredentialReport,
+  DeclaredZoneResult,
+  ExistingDnsRecord,
+  TunnelAdapter,
+} from './adapter.ts'
 import { CloudflareClient, type CloudflareIngressRule } from './cloudflare-client.ts'
 import { cloudflareTokenFormatProblem } from './cloudflare-token-format.ts'
-import { TunnelProviderError } from './errors.ts'
+import { DnsNameTaken, TunnelProviderError } from './errors.ts'
 
 /** Names of the permissions a token needs, as Cloudflare words them. */
 export const CLOUDFLARE_PERMISSIONS = {
@@ -297,6 +302,40 @@ export function buildIngress(
   return rules
 }
 
+/** Record types a proxied CNAME cannot sit beside; anything else on the name is left alone. */
+const ADDRESS_TYPES = new Set(['A', 'AAAA', 'CNAME'])
+
+function tunnelTarget(externalId: string): string {
+  return `${externalId}.cfargotunnel.com`
+}
+
+/** Same set of record ids, in any order. */
+function sameIds(records: readonly { id: string }[], ids: readonly string[]): boolean {
+  const wanted = new Set(ids)
+  return wanted.size === records.length && records.every((r) => wanted.has(r.id))
+}
+
+/** The tunnel's own CNAME for the name, if any, and the address records that would have to go. */
+async function readNameRecords(
+  api: CloudflareClient,
+  input: { zoneId: string; hostname: string; externalId: string }
+): Promise<{ ours: { id: string } | null; conflicts: ExistingDnsRecord[] }> {
+  const target = tunnelTarget(input.externalId).toLowerCase()
+  const records = (await api.listDnsRecords(input.zoneId, input.hostname)).filter(
+    (r) => (r.name ?? input.hostname).toLowerCase() === input.hostname.toLowerCase()
+  )
+  const ours = records.find((r) => r.type === 'CNAME' && (r.content ?? '').toLowerCase() === target)
+  const conflicts = records
+    .filter((r) => r !== ours && ADDRESS_TYPES.has(r.type ?? ''))
+    .map((r) => ({
+      id: r.id,
+      type: r.type ?? '',
+      content: r.content ?? '',
+      proxied: r.proxied === true,
+    }))
+  return { ours: ours ? { id: ours.id } : null, conflicts }
+}
+
 export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}): TunnelAdapter {
   const client = (token: string) => new CloudflareClient({ token, fetch: options.fetch })
   return {
@@ -414,12 +453,39 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       )
     },
 
+    async listDnsConflicts(token, input) {
+      const found = await readNameRecords(client(token), input)
+      return found.conflicts
+    },
+
     async createDnsName(token, input) {
-      const record = await client(token).createDnsRecord(input.zoneId, {
-        name: input.hostname,
-        content: `${input.externalId}.cfargotunnel.com`,
-      })
-      return { recordId: record.id }
+      const api = client(token)
+      const found = await readNameRecords(api, input)
+      // Already pointing at this tunnel (an earlier add, or made by hand): keep it.
+      if (found.ours) return { recordId: found.ours.id }
+      const record = { name: input.hostname, content: tunnelTarget(input.externalId) }
+      if (found.conflicts.length === 0) {
+        return { recordId: (await api.createDnsRecord(input.zoneId, record)).id }
+      }
+      if (!sameIds(found.conflicts, input.replace ?? [])) {
+        throw new DnsNameTaken(input.hostname, found.conflicts)
+      }
+      // Confirmed. A CNAME may not sit beside other address records, so the
+      // others go first; then the first record becomes the CNAME (its id is kept).
+      const [first, ...rest] = found.conflicts
+      await Promise.all(rest.map((other) => api.deleteDnsRecord(input.zoneId, other.id)))
+      try {
+        const written = await api.putDnsRecord(input.zoneId, first!.id, record)
+        return { recordId: written.id }
+      } catch (err) {
+        if (rest.length === 0 || !(err instanceof TunnelProviderError)) throw err
+        const removed = rest.map((r) => `${r.type} ${r.content}`).join(', ')
+        throw new TunnelProviderError(
+          err.code,
+          `${err.message} (already removed: ${removed})`,
+          err.status
+        )
+      }
     },
 
     async removeDnsName(token, input) {

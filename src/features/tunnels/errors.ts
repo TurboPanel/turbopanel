@@ -58,3 +58,35 @@ export function codeForStatus(status: number): TunnelErrorCode {
   if (status === 429) return 'rate_limited'
   return 'provider_error'
 }
+
+/**
+ * The name already has address records (A, AAAA or CNAME) that the person has
+ * not agreed to replace. Carries what they are, so the screen can show them.
+ */
+export class DnsNameTaken extends Error {
+  readonly hostname: string
+  readonly records: readonly { id: string; type: string; content: string; proxied: boolean }[]
+
+  constructor(
+    hostname: string,
+    records: readonly { id: string; type: string; content: string; proxied: boolean }[]
+  ) {
+    super(dnsNameTakenMessage(hostname, records))
+    this.name = 'DnsNameTaken'
+    this.hostname = hostname
+    this.records = records
+  }
+}
+
+/** "A DNS record for a.example.com already exists: A 203.0.113.4 (proxied). …" */
+export function dnsNameTakenMessage(
+  hostname: string,
+  records: readonly { type: string; content: string; proxied: boolean }[]
+): string {
+  const listed = records
+    .map((r) => `${r.type} ${clip(r.content, 100)}${r.proxied ? ' (proxied)' : ''}`)
+    .join(', ')
+  const which = records.length === 1 ? 'A DNS record' : 'DNS records'
+  const it = records.length === 1 ? 'it' : 'them'
+  return `${which} for ${hostname} already exist${records.length === 1 ? 's' : ''}: ${listed}. Replace ${it} to point the name at this Tunnel, or remove ${it} at your DNS provider first.`
+}

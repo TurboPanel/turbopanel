@@ -26,7 +26,7 @@ import { compareText } from './order.ts'
 import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
 import { retireUnusedOriginCertificates } from './origin-certificate.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
-import type { TunnelAdapter } from './adapter.ts'
+import type { ExistingDnsRecord, TunnelAdapter } from './adapter.ts'
 import {
   BadgeRefused,
   BadgeUnavailable,
@@ -34,7 +34,7 @@ import {
   openBestBadge,
   useBadges,
 } from './badge-use.ts'
-import { TunnelProviderError } from './errors.ts'
+import { DnsNameTaken, TunnelProviderError } from './errors.ts'
 import {
   type PlacementInput,
   placementWarnings,
@@ -61,12 +61,28 @@ export type DoorwayRow = typeof doorway.$inferSelect
 export class TunnelRefusal extends Error {
   readonly code: string
   readonly status: 400 | 404 | 409 | 502
-  constructor(code: string, status: 400 | 404 | 409 | 502, message: string) {
+  /** Extra fields for the answer (for example the DNS records that hold a name). */
+  readonly details: Record<string, unknown> | undefined
+  constructor(
+    code: string,
+    status: 400 | 404 | 409 | 502,
+    message: string,
+    details?: Record<string, unknown>
+  ) {
     super(message)
     this.name = 'TunnelRefusal'
     this.code = code
     this.status = status
+    this.details = details
   }
+}
+
+/** 409 `dns_record_exists`: the name's address records, which the person may agree to replace. */
+export function dnsNameTakenRefusal(err: DnsNameTaken): TunnelRefusal {
+  return new TunnelRefusal('dns_record_exists', 409, err.message, {
+    hostname: err.hostname,
+    records: err.records.map((r) => ({ ...r })),
+  })
 }
 
 export const MAX_TUNNELS_PER_ORG = 50
@@ -533,6 +549,7 @@ async function removeAtProviderQuietly(
 
 /** A provider failure as a refusal; the message is already scrubbed. */
 export function providerRefusal(err: unknown): unknown {
+  if (err instanceof DnsNameTaken) return dnsNameTakenRefusal(err)
   if (err instanceof TunnelProviderError) {
     if (err.code === 'unauthorized') {
       return new TunnelRefusal('badge_rejected', 400, 'The provider did not accept this API Token.')
@@ -736,9 +753,15 @@ function assertNotRemoving(row: Pick<TunnelRow, 'status'>): void {
 // ---------------------------------------------------------------------------
 // Doorways
 
+/** A provider's DNS record id, as the conflict answer showed it. */
+const DNS_RECORD_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
+/** More records than this on one name is not something to replace in one go. */
+const MAX_REPLACED_RECORDS = 10
+
 export function parseDoorwayBody(body: Record<string, unknown>): Parsed<{
   hostname: string
   isLocalOnly: boolean
+  replaceDnsRecords: string[]
 }> {
   const raw = typeof body.hostname === 'string' ? body.hostname.trim().toLowerCase() : ''
   if (!isValidHostname(raw)) {
@@ -747,7 +770,27 @@ export function parseDoorwayBody(body: Record<string, unknown>): Parsed<{
   if (body.isLocalOnly !== undefined && typeof body.isLocalOnly !== 'boolean') {
     return { ok: false, field: 'isLocalOnly', detail: 'Must be true or false' }
   }
-  return { ok: true, value: { hostname: raw, isLocalOnly: body.isLocalOnly !== false } }
+  const replace = body.replaceDnsRecords ?? []
+  if (
+    !Array.isArray(replace) ||
+    replace.length > MAX_REPLACED_RECORDS ||
+    !replace.every((id) => typeof id === 'string' && DNS_RECORD_ID_RE.test(id)) ||
+    new Set(replace).size !== replace.length
+  ) {
+    return {
+      ok: false,
+      field: 'replaceDnsRecords',
+      detail: 'Must be the ids of the DNS records to replace',
+    }
+  }
+  return {
+    ok: true,
+    value: {
+      hostname: raw,
+      isLocalOnly: body.isLocalOnly !== false,
+      replaceDnsRecords: replace as string[],
+    },
+  }
 }
 
 /**
@@ -819,7 +862,7 @@ export async function addDoorway(
   deps: { adapter: TunnelAdapter; secrets: DerivedSecretsConfig },
   row: TunnelRow,
   owner: CarrierRow,
-  input: { hostname: string; isLocalOnly: boolean }
+  input: { hostname: string; isLocalOnly: boolean; replaceDnsRecords?: readonly string[] }
 ): Promise<DoorwayRow> {
   assertNotRemoving(row)
   if (!row.externalId) {
@@ -849,6 +892,9 @@ export async function addDoorway(
   )
   // A zone with no token that can edit its DNS is refused before anything is written.
   if (zone) assertDnsTokenExists(await listBadges(db, owner.id), zone)
+  // A name that already has address records is refused, naming them, before
+  // anything is written or routed, unless the person agreed to replace exactly those.
+  const replacedRecords = zone ? await assertDnsNameFree(db, deps, { row, owner, zone }, input) : []
   const created = await insertDoorway(
     db,
     row,
@@ -863,12 +909,53 @@ export async function addDoorway(
       .where(eq(tunnel.id, row.id))
       .limit(1)
     assertNotRemoving({ status: now?.status ?? 'removing' })
-    return await publishDoorway(db, deps, { row, owner, account, zone }, created)
+    return await publishDoorway(
+      db,
+      deps,
+      { row, owner, account, zone, replaceDnsRecords: input.replaceDnsRecords, replacedRecords },
+      created
+    )
   } catch (err) {
     await db.delete(doorway).where(eq(doorway.id, created.id))
     await restoreRoutesQuietly(db, deps, row, owner)
     throw refuse(err, 'edit Tunnels')
   }
+}
+
+/**
+ * Ask the provider which address records hold the name (with a token that can
+ * read the zone's DNS) and refuse with them unless `replaceDnsRecords` lists
+ * exactly their ids. The provider checks again when the name is written, so a
+ * record added in between is never replaced unseen.
+ */
+async function assertDnsNameFree(
+  db: Db,
+  deps: Deps,
+  plan: { row: TunnelRow; owner: CarrierRow; zone: { id: string; name: string } },
+  input: { hostname: string; replaceDnsRecords?: readonly string[] }
+): Promise<ExistingDnsRecord[]> {
+  const list = deps.adapter.listDnsConflicts
+  if (!list) return []
+  const { row, owner, zone } = plan
+  let found
+  try {
+    found = await useBadges(db, deps.secrets, owner.id, { capability: 'dns', zone }, (token) =>
+      list.call(deps.adapter, token, {
+        zoneId: zone.id,
+        hostname: input.hostname,
+        externalId: row.externalId!,
+      })
+    )
+  } catch (err) {
+    throw refuse(err, 'edit DNS')
+  }
+  const conflicts = found.value
+  if (conflicts.length === 0) return []
+  const wanted = new Set(input.replaceDnsRecords ?? [])
+  const confirmed =
+    wanted.size === conflicts.length && conflicts.every((record) => wanted.has(record.id))
+  if (!confirmed) throw dnsNameTakenRefusal(new DnsNameTaken(input.hostname, conflicts))
+  return conflicts
 }
 
 /** Refuse, with the reason, when no active token reaches DNS for this zone. */
@@ -911,6 +998,10 @@ type PublishPlan = {
   owner: CarrierRow
   account: string | null
   zone: { id: string; name: string } | null
+  /** Record ids the person agreed to replace with the tunnel's CNAME. */
+  replaceDnsRecords?: readonly string[]
+  /** What those records were, kept on the row as the only record of them once replaced. */
+  replacedRecords?: readonly ExistingDnsRecord[]
 }
 
 type Deps = { adapter: TunnelAdapter; secrets: DerivedSecretsConfig }
@@ -939,6 +1030,7 @@ async function publishDoorway(
           zoneId: zone.id,
           hostname: created.hostname,
           externalId: row.externalId!,
+          replace: plan.replaceDnsRecords ?? [],
         })
       )
     : null
@@ -950,7 +1042,21 @@ async function publishDoorway(
         status: 'live',
         externalDnsRecordId: recordId,
         // The token used is kept for the record only; any token that covers the zone can remove the name later.
-        metadata: zone ? { zoneId: zone.id, dnsBadgeId: dns?.badge.id ?? null } : null,
+        metadata: zone
+          ? {
+              zoneId: zone.id,
+              dnsBadgeId: dns?.badge.id ?? null,
+              ...(plan.replacedRecords?.length
+                ? {
+                    dnsReplaced: plan.replacedRecords.map(({ type, content, proxied }) => ({
+                      type,
+                      content,
+                      proxied,
+                    })),
+                  }
+                : {}),
+            }
+          : null,
       })
       .where(eq(doorway.id, created.id))
       .returning()
