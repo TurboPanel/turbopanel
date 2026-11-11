@@ -22,6 +22,7 @@ import {
   configSecretRefsFromOptions,
   parseRehydrateRequestBody,
   rehydrateSecretWants,
+  expandRehydrateDbRefs,
 } from './rehydrate-secrets.ts'
 
 /**
@@ -605,4 +606,38 @@ test('rehydrate asks for config-only secrets too, deduped, with no mount flags',
   assertEquals(configSecretRefsFromOptions({ secretPlan: [] }), [])
   assertEquals(configSecretRefsFromOptions(null), [])
   assertEquals(rehydrateSecretWants([], []), [])
+})
+
+test('a plain variable made from a database secret field rehydrates as a secret under its own key', () => {
+  const envelope = 'tpsecret.v1.binding-password-envelope'
+  const table = new Map([
+    [
+      'DATABASE',
+      {
+        bindingId: 'b1',
+        engine: 'postgres',
+        delivery: 'container' as const,
+        rows: new Map([['DATABASE_PASSWORD', { value: envelope, isSecret: true }]]),
+      },
+    ],
+  ])
+  const out = expandRehydrateDbRefs(
+    new Map([
+      [
+        'DB_PASS',
+        {
+          value: '{$db.DATABASE.password}',
+          isSecret: false,
+          isLiteral: false,
+          forBuild: false,
+          forRuntime: true,
+        },
+      ],
+    ]),
+    table
+  )
+  const entry = out.get('DB_PASS')
+  assertEquals(entry?.isSecret, true)
+  assertEquals(entry?.value === envelope, true)
+  assertEquals(entry?.bindingId, 'b1')
 })

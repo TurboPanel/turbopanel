@@ -237,6 +237,7 @@ export const DAEMON_WIRE_FEATURES = [
   'deploy-config-files-v1',
   'site-php-lifecycle-v1',
   'tunnel-table-generation-v1',
+  'site-db-url-ca-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -509,6 +510,15 @@ export const DEPLOY_CANCEL_FEATURE: DaemonWireFeature = 'deploy-cancel-v1'
  * no CA and a deploy warning, never a multi-line value.
  */
 export const SITE_DB_BINDINGS_FEATURE: DaemonWireFeature = 'site-db-bindings-v1'
+
+/**
+ * The daemon takes `sites[].dbCa.urlVariables` and adds `sslrootcert=<the CA
+ * file>` to each listed Postgres URL that uses `verify-ca` or `verify-full` and
+ * names no root certificate, and it takes up to 16 `dbCa.variables`. Without it
+ * the control plane sends neither (and refuses more than 8 names), so a site's
+ * URL stays as it was.
+ */
+export const SITE_DB_URL_CA_FEATURE: DaemonWireFeature = 'site-db-url-ca-v1'
 
 /**
  * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`

@@ -1281,3 +1281,94 @@ describe('apply-variables build assignments', () => {
     assertEquals(assigned.PUBLIC_URL, 'https://example.test')
   })
 })
+
+describe('apply-variables database references', () => {
+  const BINDING = '11111111-1111-4111-8111-111111111111'
+  const secretEntry = (key: string) => ({
+    key,
+    value: 'marker',
+    isSecret: true,
+    isLiteral: true,
+    forBuild: false,
+    forRuntime: true,
+    bindingId: BINDING,
+  })
+  const doc = (environment: Record<string, string>) => {
+    const document = emptyComposeDocument()
+    document.data.services = { web: { image: 'x', environment } }
+    return document
+  }
+  const secretsOf = (result: ApplyVariablesResult) =>
+    (result.document.data.services as Record<string, { secrets?: unknown[] }>).web.secrets
+
+  it('mounts a secret field under the name the app asked for', () => {
+    const password = secretEntry('DATABASE_PASSWORD')
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc({ X: '{$db.DATABASE.password}' }), {
+        globalEntries: [password],
+        perServiceEntries: new Map(),
+        perServiceDbRefs: new Map([['web', () => password]]),
+      })
+    )
+    const secrets = secretsOf(result) as { target: string }[]
+    assertEquals(
+      secrets.map((item) => item.target),
+      ['X']
+    )
+    const env = (result.document.data.services as Record<string, { environment: unknown }>).web
+      .environment as Record<string, string>
+    assertEquals(env[secretFileEnvKey('X')], secretContainerPath('X'))
+  })
+
+  it('still mounts the binding CA at its own name when it is mapped to another name', () => {
+    const ca = secretEntry('DATABASE_CA_CERT')
+    const viaPlainRef = mustApply(
+      applyVariablesToComposeDocument(doc({ FOO: '{$DATABASE_CA_CERT}' }), {
+        globalEntries: [ca],
+        perServiceEntries: new Map(),
+      })
+    )
+    const viaDbRef = mustApply(
+      applyVariablesToComposeDocument(doc({ FOO: '{$db.DATABASE.ca_text}' }), {
+        globalEntries: [ca],
+        perServiceEntries: new Map(),
+        perServiceDbRefs: new Map([['web', () => ca]]),
+      })
+    )
+    for (const result of [viaPlainRef, viaDbRef]) {
+      const targets = (secretsOf(result) as { target: string }[]).map((item) => item.target)
+      assertEquals(
+        targets.sort((a, b) => a.localeCompare(b)),
+        ['DATABASE_CA_CERT', 'FOO']
+      )
+      assertEquals(result.secretPlan.length, 1)
+    }
+  })
+
+  it('attaches a user variable made from a secret field as a file, with no reference', () => {
+    const made = { ...secretEntry('DB_PASS'), source: 'service' }
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc({}), {
+        globalEntries: [made],
+        perServiceEntries: new Map(),
+      })
+    )
+    assertEquals(
+      (secretsOf(result) as { target: string }[]).map((item) => item.target),
+      ['DB_PASS']
+    )
+    assertEquals(
+      result.secretPlan.map((plan) => plan.key),
+      ['DB_PASS']
+    )
+  })
+
+  it('reports an unresolved database reference by name', () => {
+    const result = applyVariablesToComposeDocument(doc({ X: '{$db.MISSING.host}' }), {
+      globalEntries: [],
+      perServiceEntries: new Map(),
+    })
+    assertEquals(isApplyVariablesError(result), true)
+    assertEquals((result as { ref?: string }).ref, '{$db.MISSING.host}')
+  })
+})

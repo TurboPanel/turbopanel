@@ -1,3 +1,4 @@
+import type { DbRefIssue } from '../bindings/db-refs.ts'
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
@@ -498,4 +499,75 @@ test('resolveHostingDeployWeb returns a secret-only hosting as secretEnv alone',
   ])
   const web = await resolveHostingDeployWeb(db, 'h1', { web: {} })
   assertEquals(web, { secretEnv: { ONLY_SECRET: sealed } })
+})
+
+/** Hosting chain, then the service's one binding (`DATABASE`, MySQL, PHP site rows). */
+function hostingWithBindingDb(serviceRows: unknown[], bindingRows: unknown[]): Db {
+  let varLoads = 0
+  const chain = [
+    {
+      organizationId: 'org',
+      workspaceId: 'ws',
+      projectId: 'proj',
+      environmentId: 'env',
+      serviceId: 'svc',
+    },
+  ]
+  return {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({ where: () => ({ limit: () => Promise.resolve(chain) }) }),
+            }),
+            where: () => Promise.resolve([{ id: 'b1', keyPrefix: 'DATABASE', engine: 'mysql' }]),
+          }),
+        }),
+        where: () => {
+          varLoads += 1
+          // org, workspace, project, environment, service, hosting, then the binding's rows
+          if (varLoads === 5) return thenableRows(serviceRows)
+          if (varLoads === 7) return thenableRows(bindingRows)
+          return thenableRows([])
+        },
+      }),
+    }),
+  } as unknown as Db
+}
+
+test('resolveHostingDeployWeb expands database references and never opens a secret', async () => {
+  const sealed = await encryptSecret(await dataSecrets(), 'marker-password')
+  const plainRow = (key: string, value: string) => ({
+    key,
+    value,
+    isSecret: false,
+    isLiteral: false,
+    forBuild: false,
+    forRuntime: true,
+    bindingId: null,
+  })
+  const db = hostingWithBindingDb(
+    [
+      plainRow('PDO_DSN', 'mysql:host={$db.DATABASE.host};port={$db.DATABASE.port}'),
+      plainRow('APP_DB_PASS', '{$db.DATABASE.password}'),
+      plainRow('GONE', '{$db.OTHER.host}'),
+    ],
+    [
+      { bindingId: 'b1', key: 'DATABASE_HOST', value: '127.0.0.1', isSecret: false },
+      { bindingId: 'b1', key: 'DATABASE_PORT', value: '13306', isSecret: false },
+      { bindingId: 'b1', key: 'DATABASE_PASSWORD', value: sealed, isSecret: true },
+    ]
+  )
+  const issues: DbRefIssue[] = []
+  const web = await resolveHostingDeployWeb(db, 'h1', { web: {} }, issues)
+  assertEquals(web?.env, { PDO_DSN: 'mysql:host=127.0.0.1;port=13306' })
+  // The envelope is carried as stored: nothing on this path decrypts it.
+  assertEquals(web?.secretEnv?.APP_DB_PASS === sealed, true)
+  assertEquals(JSON.stringify(web).includes('marker-password'), false)
+  // GONE is set on the service itself, so a missing binding is an error to refuse the deploy with.
+  assertEquals(
+    issues.map((issue) => [issue.code, issue.key]),
+    [['variable_unresolved', 'GONE']]
+  )
 })

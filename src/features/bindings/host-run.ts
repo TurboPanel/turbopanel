@@ -128,6 +128,8 @@ export function bindingRequiredKeys(
 export type HostSiteBindingNeeds = {
   /** `<PREFIX>_CA_FILE` names, one per binding on the service. */
   caFileKeys: string[]
+  /** `<PREFIX>_URL` names of the Postgres bindings: the daemon adds `sslrootcert` to them. */
+  urlKeys: string[]
   requiredKeys: string[]
 }
 
@@ -151,8 +153,9 @@ export async function loadHostSiteBindingNeeds(
     .where(and(inArray(binding.serviceId, [...serviceIds])))
   for (const row of rows) {
     if (!row.engine) continue
-    const needs = out.get(row.serviceId) ?? { caFileKeys: [], requiredKeys: [] }
+    const needs = out.get(row.serviceId) ?? { caFileKeys: [], urlKeys: [], requiredKeys: [] }
     needs.caFileKeys.push(bindingPrefixedKeys(row.keyPrefix).caFile)
+    if (row.engine === 'postgres') needs.urlKeys.push(bindingPrefixedKeys(row.keyPrefix).url)
     needs.requiredKeys.push(
       ...bindingRequiredKeys({
         keyPrefix: row.keyPrefix,

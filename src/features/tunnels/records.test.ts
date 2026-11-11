@@ -270,11 +270,11 @@ test('concurrent carrier adds cannot pass the per-organization limit', async () 
   })
 })
 
-test('the two links an organization delete depends on stay deferrable and initially deferred', async () => {
+test('the three links an organization delete depends on stay deferrable and initially deferred', async () => {
   await withDb(async (db) => {
     const result = await db.execute(
       sql`select conname, condeferrable, condeferred from pg_constraint
-          where conname in ('badge_secret_id_secret_id_fk', 'tunnel_carrier_id_carrier_id_fk')
+          where conname in ('badge_secret_id_secret_id_fk', 'record_carrier_id_carrier_id_fk', 'tunnel_carrier_id_carrier_id_fk')
           order by conname`
     )
     const rows = (
@@ -288,6 +288,7 @@ test('the two links an organization delete depends on stay deferrable and initia
       rows.map((r) => [r.conname, r.condeferrable, r.condeferred]),
       [
         ['badge_secret_id_secret_id_fk', true, true],
+        ['record_carrier_id_carrier_id_fk', true, true],
         ['tunnel_carrier_id_carrier_id_fk', true, true],
       ]
     )

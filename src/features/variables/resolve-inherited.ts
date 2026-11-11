@@ -239,6 +239,26 @@ export async function resolveInheritedVariablesForHosting(
   db: Db,
   hostingId: string
 ): Promise<ResolvedVariableMap> {
+  return (await resolveHostingVariables(db, hostingId)).map
+}
+
+/** A hosting's effective variables plus where its own scope starts. */
+export type HostingVariables = {
+  map: ResolvedVariableMap
+  /** Keys set on the hosting's service or on the hosting itself (not inherited from above). */
+  ownKeys: Set<string>
+  serviceId: string | null
+}
+
+/**
+ * {@link resolveInheritedVariablesForHosting} that also reports the keys set on
+ * the service or the hosting, so a deploy can tell a setting made for this app
+ * from one inherited from the project or organization.
+ */
+export async function resolveHostingVariables(
+  db: Db,
+  hostingId: string
+): Promise<HostingVariables> {
   const chainRows = await db
     .select({
       organizationId: workspace.organizationId,
@@ -257,14 +277,20 @@ export async function resolveInheritedVariablesForHosting(
 
   const chain = chainRows[0]
   if (!chain) {
-    return new Map()
+    return { map: new Map(), ownKeys: new Set(), serviceId: null }
   }
 
   const merged: ResolvedVariableMap = new Map()
   await mergeOrganizationChain(db, chain, merged)
-  mergeVariables(merged, await loadVariablesForParent(db, 'serviceId', chain.serviceId))
-  mergeVariables(merged, await loadVariablesForParent(db, 'hostingId', hostingId))
-  return merged
+  const serviceRows = await loadVariablesForParent(db, 'serviceId', chain.serviceId)
+  const hostingRows = await loadVariablesForParent(db, 'hostingId', hostingId)
+  mergeVariables(merged, serviceRows)
+  mergeVariables(merged, hostingRows)
+  return {
+    map: merged,
+    ownKeys: new Set([...serviceRows, ...hostingRows].map((row) => row.key)),
+    serviceId: chain.serviceId,
+  }
 }
 
 /**

@@ -321,3 +321,49 @@ test('size limits are enforced', () => {
   }
   assertEquals(failure(compile(total, [])).kind, 'config_file_invalid')
 })
+
+test('a config file reads a database reference from the binding rows, secrets as parts', () => {
+  const rows = new Map([
+    ['DATABASE_HOST', entry('DATABASE_HOST', 'db.internal')],
+    ['DATABASE_PORT', entry('DATABASE_PORT', '5432')],
+    [
+      'DATABASE_PASSWORD',
+      entry('DATABASE_PASSWORD', 'tpsecret.v1.sealed', { isSecret: true, bindingId: 'b1' }),
+    ],
+  ])
+  const doc = emptyComposeDocument()
+  doc.data = {
+    services: {
+      app: { image: 'app', configs: [{ source: 'pgpass', target: '/app/pgpass' }] },
+    },
+    configs: {
+      pgpass: {
+        content: '{$db.DATABASE.host}:{$db.DATABASE.port}:*:app:{$db.DATABASE.password}\n',
+      },
+    },
+  }
+  const result = ok(
+    applyVariablesToComposeDocument(doc, {
+      globalEntries: [...rows.values()],
+      perServiceEntries: new Map(),
+      perServiceDbRefs: new Map([
+        [
+          'app',
+          (ref) =>
+            rows.get(
+              `DATABASE_${{ host: 'HOST', port: 'PORT', password: 'PASSWORD' }[ref.field as string]}`
+            ),
+        ],
+      ]),
+      projectId: 'p1',
+      environmentId: 'e1',
+      configFilesEnabled: true,
+    })
+  )
+  const file = result.configFiles.find((f) => f.source === 'app_pgpass')
+  assertEquals(file?.parts, [
+    { text: 'db.internal:5432:*:app:' },
+    { secretKey: 'DATABASE_PASSWORD' },
+    { text: '\n' },
+  ])
+})

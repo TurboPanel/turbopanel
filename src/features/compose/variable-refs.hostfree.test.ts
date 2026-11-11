@@ -1,6 +1,9 @@
 import { assertEquals } from '@std/assert'
 import {
   collectComposeInterpolationKeys,
+  DB_REF_FIELDS,
+  formatVariableRef,
+  type ParsedVariableRef,
   hasComposeInterpolation,
   hasEmbeddedRefToken,
   containsVariableRefOpener,
@@ -159,4 +162,46 @@ test('hasComposeInterpolation sets doubled dollar signs aside', () => {
   assertEquals(hasComposeInterpolation('${HOME}'), true)
   assertEquals(hasComposeInterpolation('path $HOME'), true)
   assertEquals(hasComposeInterpolation('price $5 and {$$x}'), false)
+})
+
+test('a database reference is the only three-segment form', () => {
+  assertEquals(parseExactVariableRef('{$db.DATABASE.host}'), {
+    ok: true,
+    ref: {
+      raw: '{$db.DATABASE.host}',
+      scope: 'db',
+      binding: 'DATABASE',
+      field: 'host',
+      key: 'host',
+    },
+  })
+  for (const field of DB_REF_FIELDS) {
+    assertEquals(parseExactVariableRef(`{$db.APP.${field}}`).ok, true, field)
+  }
+  assertEquals(parseExactVariableRef('{$project.DATABASE.host}'), {
+    ok: false,
+    error: 'invalid',
+    message: 'Unknown variable scope "project"',
+  })
+  const unknown = parseExactVariableRef('{$db.DATABASE.bogus}')
+  assertEquals(unknown.ok === false && unknown.error === 'invalid', true)
+  assertEquals(parseExactVariableRef('{$db.DATABASE}').ok, false)
+  assertEquals(parseExactVariableRef('{$a.b.c.d}').ok, false)
+  assertEquals(isVariableRefScope('db'), false)
+})
+
+test('embedded splitting takes up to two dots and leaves the escape literal', () => {
+  const parts = splitEmbeddedRefs('h={$db.DATABASE.host};{$$db.DATABASE.port}')
+  assertEquals(
+    parts.map((part) => part.kind),
+    ['text', 'ref', 'text']
+  )
+  assertEquals(
+    formatVariableRef((parts[1] as { ref: ParsedVariableRef }).ref),
+    '{$db.DATABASE.host}'
+  )
+  assertEquals(formatVariableRef({ raw: '', scope: 'project', key: 'K' }), '{$project.K}')
+  assertEquals(formatVariableRef({ raw: '', scope: null, key: 'K' }), '{$K}')
+  const bad = splitEmbeddedRefs('{$a.b.c}')
+  assertEquals(bad[0]?.kind, 'invalid')
 })

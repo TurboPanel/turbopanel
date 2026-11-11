@@ -17,6 +17,7 @@ import {
   switchingSecretRequiresValue,
   validateVariableKeyValue,
   variableKeyUniqueConflictMessage,
+  variableReferenceProblem,
   VARIABLE_KEY_RE,
 } from './routes-helpers.ts'
 
@@ -80,13 +81,13 @@ test('isVariableKeyUniqueViolation matches each partial unique index name', () =
   ]) {
     const err = Object.assign(
       new Error(`duplicate key value violates unique constraint "${indexName}"`),
-      { code: '23505' },
+      { code: '23505' }
     )
     assertEquals(isVariableKeyUniqueViolation(err), true)
   }
   assertEquals(
     isVariableKeyUniqueViolation(Object.assign(new Error('other'), { code: '23505' })),
-    false,
+    false
   )
 })
 
@@ -103,9 +104,7 @@ test('parseVariableParent accepts every parent body field', async () => {
 
 test('parseVariableParent rejects multiple parents and invalid ids', async () => {
   const c = mockContext()
-  await expectParentRequired(
-    parseVariableParent(c, { projectId: 'p1', environmentId: 'e1' }),
-  )
+  await expectParentRequired(parseVariableParent(c, { projectId: 'p1', environmentId: 'e1' }))
   await expectParentRequired(parseVariableParent(c, { projectId: '' }))
   await expectInvalidRequest(parseVariableParent(c, { projectId: 42 }))
 })
@@ -126,7 +125,7 @@ test('buildInsertValues pins server parent column', () => {
       forBuild: false,
       forRuntime: true,
       description: 'host override',
-    },
+    }
   )
   assertEquals(values.serverId, 'srv-1')
   assertEquals(values.hostingId, null)
@@ -140,7 +139,7 @@ test('parseResolvedVariablesQuery requires exactly one scope', () => {
       environmentId: undefined,
       hostingId: undefined,
     }).ok,
-    false,
+    false
   )
   assertEquals(
     parseResolvedVariablesQuery({
@@ -148,7 +147,7 @@ test('parseResolvedVariablesQuery requires exactly one scope', () => {
       environmentId: 'e1',
       hostingId: undefined,
     }).ok,
-    false,
+    false
   )
   assertEquals(
     parseResolvedVariablesQuery({
@@ -156,7 +155,7 @@ test('parseResolvedVariablesQuery requires exactly one scope', () => {
       environmentId: undefined,
       hostingId: 'h1',
     }),
-    { ok: true, query: { kind: 'hosting', id: 'h1' } },
+    { ok: true, query: { kind: 'hosting', id: 'h1' } }
   )
   assertEquals(
     parseResolvedVariablesQuery({
@@ -164,7 +163,7 @@ test('parseResolvedVariablesQuery requires exactly one scope', () => {
       environmentId: undefined,
       hostingId: undefined,
     }),
-    { ok: true, query: { kind: 'service', id: 's1' } },
+    { ok: true, query: { kind: 'service', id: 's1' } }
   )
   assertEquals(
     parseResolvedVariablesQuery({
@@ -172,7 +171,7 @@ test('parseResolvedVariablesQuery requires exactly one scope', () => {
       environmentId: 'e1',
       hostingId: undefined,
     }),
-    { ok: true, query: { kind: 'environment', id: 'e1' } },
+    { ok: true, query: { kind: 'environment', id: 'e1' } }
   )
 })
 
@@ -183,5 +182,51 @@ test('validateVariableKeyValue and patch helpers', () => {
   assertEquals(patchHasOnlyUpdatedAt({ updatedAt: 'x', key: 'A' }), false)
   assertEquals(switchingSecretRequiresValue(false, true, false), true)
   assertEquals(switchingSecretRequiresValue(false, true, true), false)
-  assertEquals(variableKeyUniqueConflictMessage(), 'A variable with this key already exists in this scope')
+  assertEquals(
+    variableKeyUniqueConflictMessage(),
+    'A variable with this key already exists in this scope'
+  )
+})
+
+test('variableReferenceProblem checks a database reference before it is saved', () => {
+  assertEquals(variableReferenceProblem('plain text', false, false), null)
+  assertEquals(variableReferenceProblem('{$db.DATABASE.host}', false, false), null)
+  assertEquals(variableReferenceProblem('{$db.DATABASE.password}', false, false), null)
+  assertEquals(
+    variableReferenceProblem('h={$db.DATABASE.host}:{$db.DATABASE.port}', false, false),
+    null
+  )
+  // The escape is a literal token, not a reference: it is fine anywhere.
+  assertEquals(variableReferenceProblem('{$$db.DATABASE.password}', true, true), null)
+  // Other references are not this check's business.
+  assertEquals(variableReferenceProblem('{$project.KEY}', true, true), null)
+
+  assertEquals(
+    variableReferenceProblem('{$db.DATABASE.bogus}', false, false)?.includes('malformed'),
+    true
+  )
+  assertEquals(
+    variableReferenceProblem('{$db.DATABASE}', false, false)?.includes('malformed'),
+    true
+  )
+  assertEquals(
+    variableReferenceProblem('x {$db.DATABASE.host', false, false)?.includes('malformed'),
+    true
+  )
+  assertEquals(
+    variableReferenceProblem('{$db.DATABASE.host}', true, false)?.includes('plain variable'),
+    true
+  )
+  assertEquals(
+    variableReferenceProblem('{$db.DATABASE.host}', false, true)?.includes('running app only'),
+    true
+  )
+  assertEquals(
+    variableReferenceProblem('p={$db.DATABASE.password}', false, false)?.includes('whole value'),
+    true
+  )
+  assertEquals(
+    variableReferenceProblem('u={$db.DATABASE.url}', false, false)?.includes('whole value'),
+    true
+  )
 })

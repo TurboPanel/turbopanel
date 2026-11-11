@@ -1053,6 +1053,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One system principal on one server, the per-server form of a `principal` row; written by deploy fan-out, teardown and server removal.',
     columns: {
+      sync_device_id:
+        'Device id of the account file sync instance on this server, as the daemon reports it; NULL while sync is off.',
+      sync_port:
+        'Listen port the control plane gave the account file sync instance on this server, 1024 to 65535; unique per server.',
       state:
         '`pending` when a deploy that creates the account is queued, `present` once it succeeded, `retiring` once a stop that retires it is queued, `absent` after.',
       uid: 'Linux uid the host assigned, reported by the daemon; NULL until then, unique per server when set.',
@@ -1100,6 +1104,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One deployable unit (a compose service) within an environment; rows are derived from the compose document by reconcile, managed allocation or daemon reports.',
     columns: {
+      is_host_access_allowed:
+        'Whether the service may use host-level Compose fields such as devices and host networking; needs the organization switch on too; default false.',
       slug: 'Folder name under the site owner tree, unique per environment; set at creation, locked once a `folder` row exists, NULL until set.',
       is_common:
         'True when the folder is in the `common` scope shared by every environment; chosen at creation and never changed.',
@@ -1187,6 +1193,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       "One completed managed-engine backup artifact recorded from the daemon's `managed.backup` result; unique per (managed_id, backup_id), cascades with the cluster.",
     columns: {
+      origin:
+        '`backup` when a backup run made the file, `import` when it was brought in to be restored; existing rows are `backup`.',
       backup_id:
         'Daemon-minted `bk_` plus hex token that is also the artifact filename on the host; unique per managed engine, not globally.',
       size_bytes:
@@ -1614,6 +1622,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One completed storage-copy backup artifact recorded from a daemon report; unique per (copy_id, backup_id), cascades with the copy.',
     columns: {
+      origin:
+        '`backup` when a backup run made the file, `import` when it was brought in to be restored; existing rows are `backup`.',
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
       backup_id:
@@ -1766,11 +1776,68 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Highest physical core count read in the hour; NULL when none was read, never negative.',
     },
   },
+  peripheral: {
+    group: 'runtime',
+    summary:
+      'A device node on a server that can be passed to one service (USB drive, serial adapter, printer, capture card), keyed by its stable path.',
+    columns: {
+      service_id:
+        'The service the device is passed to; NULL when no service has it, and cleared when that service is deleted.',
+      name: 'Label an operator gave the device; NULL when none.',
+      kind: 'What the device is: `usb`, `serial`, `printer`, `video`, `audio` or `other`.',
+      status: '`present` while the host reports the device, `missing` once it no longer does.',
+      path: 'Stable device path under `/dev` (a by-id or by-path link) as the host reports it; unique per server.',
+      vendor_id:
+        'USB vendor id as four lower-case hex digits; NULL for a device that is not on USB.',
+      product_id:
+        'USB product id as four lower-case hex digits; NULL for a device that is not on USB.',
+      observed_at: 'When the host last reported the device.',
+    },
+  },
+  visitor: {
+    group: 'resources',
+    summary:
+      'One sign-in for a password-protected site: a name and a bcrypt hash the site web server checks, per site service; never returned by a route.',
+    columns: {
+      name: 'User name a visitor types; letters, digits and `._@-`, 1 to 64 characters, unique per site.',
+      password_hash:
+        'bcrypt hash of the password (`$2a$`, `$2b$` or `$2y$`, cost 10 to 12) written by the control plane; the password itself is never stored.',
+    },
+  },
+  record: {
+    group: 'networking',
+    summary:
+      'A DNS record TurboPanel created or adopted at a connected provider, so it never changes a record it does not own.',
+    columns: {
+      organization_id:
+        'Organization whose name it is; NULL for the control plane own names, which use an `ingress` account.',
+      carrier_id:
+        'Organization provider account that serves it; checked at commit so an organization delete removes both.',
+      ingress_id:
+        'Install-level provider account for the control plane own names; set exactly when `carrier_id` is not.',
+      name: 'Fully qualified record name in lower case.',
+      kind: 'Record type: `A`, `AAAA` or `CNAME`.',
+      status:
+        '`pending`, `synced`, `drifted`, `removing` or `failed`, as the drift check last found it.',
+      provider: 'Provider that holds the record; `cloudflare` only for now.',
+      zone_id: 'Provider zone id the record lives in.',
+      external_id:
+        'Provider record id; NULL until the provider created it, unique per provider zone.',
+      content:
+        'Record value, 1 to 253 characters: an address for `A` and `AAAA`, a host name for `CNAME`.',
+      ttl: 'Time to live in seconds, 1 to 86400; NULL leaves the provider automatic value.',
+      checked_at: 'When the drift check last compared the record with the provider.',
+      error: 'Last provider error in plain words; NULL after a success.',
+      is_proxied: 'Whether the provider proxy fronts the record, as for a tunnel `CNAME`.',
+      is_adopted: 'True when the record already existed at the provider and an owner adopted it.',
+    },
+  },
   server: {
     group: 'runtime',
     summary:
       'One enrolled host per row (uuidv7 id); daemon enroll and heartbeats project host facts onto it, operators set the name, options and pins via PATCH.',
     columns: {
+      role: 'What the server is for: `server` runs workloads, `witness` only votes in database failover and holds no data; written by an administrator.',
       preferred_datacenter_id:
         'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
       is_fabric_enabled:
@@ -2093,6 +2160,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'An address notifications can be delivered to, owned by the instance, one organization or one user per `scope`; addresses of secret kinds are sealed.',
     columns: {
+      is_all_organizations_notified:
+        'Instance channels only: also hear every organization event, including organizations created later; otherwise only install events.',
       scope:
         'Owner kind: `instance`, `organization` or `user`; the owner columns must agree with it (CHECK).',
       organization_id:

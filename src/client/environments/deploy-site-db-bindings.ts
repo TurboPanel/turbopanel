@@ -22,7 +22,13 @@ import {
 } from '../../features/bindings/host-run.ts'
 import { ensureActiveOrganizationCa } from '../../features/managed/apply-prepare.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { SITE_DB_BINDINGS_FEATURE } from '../../lib/version-wire.ts'
+import { loadSiteRefNames } from '../../features/bindings/db-refs.ts'
+import { SITE_DB_BINDINGS_FEATURE, SITE_DB_URL_CA_FEATURE } from '../../lib/version-wire.ts'
+
+/** How many `dbCa.variables` a daemon without `site-db-url-ca-v1` takes. */
+const LEGACY_MAX_DB_CA_VARIABLES = 8
+/** How many a daemon with it takes (the daemon parser's limit). */
+const MAX_DB_CA_VARIABLES = 16
 
 export type SiteDbBindingsWarning = {
   code: 'site_db_ca_unavailable'
@@ -54,6 +60,14 @@ export function siteDbCaUnavailableWarning(composeServiceName: string): SiteDbBi
 /** The database reads, injectable so the rules above are testable without one. */
 export type SiteDbBindingsDeps = {
   loadNeeds: (db: Db, serviceIds: readonly string[]) => Promise<Map<string, HostSiteBindingNeeds>>
+  /**
+   * Names the daemon fills for the `{$db.<binding>.<field>}` references a
+   * service's hostings hold: a CA file path, and a Postgres URL.
+   */
+  loadRefNames: (
+    db: Db,
+    serviceId: string
+  ) => Promise<{ siteCaFileNames: string[]; siteUrlNames: string[] }>
   /** Ids of the services that have at least one hosting with a hostname. */
   loadHostedServiceIds: (db: Db, serviceIds: readonly string[]) => Promise<Set<string>>
   loadCaPem: (
@@ -81,6 +95,7 @@ export async function loadHostedServiceIds(
 const defaultDeps: SiteDbBindingsDeps = {
   loadNeeds: loadHostSiteBindingNeeds,
   loadHostedServiceIds,
+  loadRefNames: loadSiteRefNames,
   loadCaPem: async (db, secrets, organizationId) => {
     const ca = await ensureActiveOrganizationCa(db, secrets, organizationId)
     return 'kind' in ca ? undefined : ca.trustBundlePem
@@ -127,18 +142,82 @@ export async function withSiteDbBindings(
     ? await deps.loadCaPem(db, dataEncryptionSecrets, params.organizationId)
     : undefined
 
-  return params.sites.map((site) => {
-    const serviceId = idByName.get(site.composeServiceName)
-    const siteNeeds = serviceId === undefined ? undefined : needs.get(serviceId)
-    if (!siteNeeds) return site
-    if (!supported || pem === undefined) {
-      params.warnings.push(siteDbCaUnavailableWarning(site.composeServiceName))
-      return site
-    }
-    return {
-      ...site,
-      dbCa: { variables: unique(siteNeeds.caFileKeys), pem },
-      requiredEnv: unique(siteNeeds.requiredKeys),
-    }
+  return await attachToSites(db, deps, {
+    sites: params.sites,
+    idByName,
+    needs,
+    pem,
+    warnings: params.warnings,
+    urlSupported: params.daemonFeatures.includes(SITE_DB_URL_CA_FEATURE),
   })
+}
+
+async function attachToSites(
+  db: Db,
+  deps: SiteDbBindingsDeps,
+  input: Readonly<{
+    sites: readonly EnvironmentDeploySite[]
+    idByName: ReadonlyMap<string, string>
+    needs: ReadonlyMap<string, HostSiteBindingNeeds>
+    /** Undefined when the daemon cannot take a CA file at all. */
+    pem: string | undefined
+    warnings: SiteDbBindingsWarning[]
+    urlSupported: boolean
+  }>
+): Promise<EnvironmentDeploySite[] | SiteDbBindingsError> {
+  const out: EnvironmentDeploySite[] = []
+  for (const site of input.sites) {
+    const serviceId = input.idByName.get(site.composeServiceName)
+    const siteNeeds = serviceId === undefined ? undefined : input.needs.get(serviceId)
+    if (serviceId === undefined || !siteNeeds) {
+      out.push(site)
+    } else if (input.pem === undefined) {
+      input.warnings.push(siteDbCaUnavailableWarning(site.composeServiceName))
+      out.push(site)
+    } else {
+      const { pem, urlSupported } = input
+      const attached = await attachDbCa(db, deps, { site, serviceId, siteNeeds, pem, urlSupported })
+      if ('kind' in attached) return attached
+      out.push(attached)
+    }
+  }
+  return out
+}
+
+/** One bound site with its `dbCa` and `requiredEnv`, or the refusal for too many names. */
+async function attachDbCa(
+  db: Db,
+  deps: SiteDbBindingsDeps,
+  input: Readonly<{
+    site: EnvironmentDeploySite
+    serviceId: string
+    siteNeeds: HostSiteBindingNeeds
+    pem: string
+    urlSupported: boolean
+  }>
+): Promise<EnvironmentDeploySite | SiteDbBindingsError> {
+  const { site, siteNeeds, urlSupported } = input
+  const refNames = await deps.loadRefNames(db, input.serviceId)
+  const variables = unique([...siteNeeds.caFileKeys, ...refNames.siteCaFileNames])
+  const urlVariables = unique([...siteNeeds.urlKeys, ...refNames.siteUrlNames])
+  // Only the names that are sent count: an older daemon is never sent the URL names.
+  const tooMany = urlSupported
+    ? Math.max(variables.length, urlVariables.length) > MAX_DB_CA_VARIABLES
+    : variables.length > LEGACY_MAX_DB_CA_VARIABLES
+  if (tooMany) return tooManyNamesError(site.composeServiceName, urlSupported)
+  return {
+    ...site,
+    dbCa: { variables, pem: input.pem, ...(urlSupported ? { urlVariables } : {}) },
+    requiredEnv: unique(siteNeeds.requiredKeys),
+  }
+}
+
+function tooManyNamesError(composeServiceName: string, urlSupported: boolean): SiteDbBindingsError {
+  const hint = urlSupported
+    ? 'Remove some database references or bindings from the site'
+    : 'Update the daemon on this server, or remove some database references or bindings from the site'
+  return {
+    kind: 'binding_host_site_unsupported',
+    message: `Site "${composeServiceName}" names more database CA file variables than this server's daemon can take. ${hint}, then deploy again.`,
+  }
 }
