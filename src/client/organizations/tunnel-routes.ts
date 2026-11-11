@@ -76,7 +76,7 @@ function invalid(c: Context<AppEnv>, error: string, field: string, detail: strin
 /** A refusal from the lifecycle code as a response; anything else is rethrown. */
 function refused(c: Context<AppEnv>, err: unknown): Response {
   if (err instanceof TunnelRefusal) {
-    return c.json({ error: err.code, message: err.message }, err.status)
+    return c.json({ ...err.details, error: err.code, message: err.message }, err.status)
   }
   throw err
 }
@@ -256,6 +256,9 @@ function addDoorwayResponse(registry: TunnelAdapterRegistry) {
         tunnelId: row.id,
         hostname: created.hostname,
         dns: created.externalDnsRecordId ? 'created' : 'none',
+        ...(parsed.value.replaceDnsRecords.length > 0
+          ? { dnsReplaced: parsed.value.replaceDnsRecords }
+          : {}),
       })
       nudgeServers(c, scope)
       return c.json({ hostname: toApiDoorway(created) }, 201)
