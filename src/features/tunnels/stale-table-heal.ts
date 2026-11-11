@@ -5,11 +5,10 @@
  */
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { server } from '../../db/schema.ts'
+import { organization, server } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { healStaleTunnelTable, staleTunnelTableWarning } from './stale-table-note.ts'
 import { bumpTunnelGeneration, readStoredTunnelGeneration } from './table-generation.ts'
-import { organization } from '../../db/schema.ts'
 import { syncServerTunnelRoutes, type TunnelSyncDeps } from './sync.ts'
 
 export async function healStaleTunnelTableOf(
