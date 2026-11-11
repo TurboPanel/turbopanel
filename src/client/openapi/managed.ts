@@ -2229,7 +2229,7 @@ const managedBasePaths = {
       tags: ['Managed services'],
       summary: 'Remove an admin tool, its address and its login',
       description:
-        'Needs `confirmName` (the project name) as a query parameter. The databases are not touched.',
+        'Needs `confirmName` (the project name) as a query parameter. The databases are not touched. When the host refuses to drop the tool login after the project is gone, the answer is still `ok: true` with `loginNotRemoved: { name, reason }`; remove that login from the Users list.',
       parameters: [ENV_ID_PARAM, PROJECT_ID_PARAM],
       responses: {
         200: { description: 'Tool removed' },

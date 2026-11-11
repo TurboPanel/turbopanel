@@ -107,6 +107,11 @@ import {
   loadAllDatabasesRefusal,
 } from '../../features/managed/all-databases.ts'
 import { registerManagedAdminToolRoutes } from './admin-tool-routes.ts'
+import {
+  ADMIN_TOOL_LOGIN_SOURCES,
+  adminToolLoginGrants,
+} from '../../features/managed/admin-tools/login-settings.ts'
+import { unlistFromLogins } from '../../features/managed/admin-tools/unlist.ts'
 import { adminToolLoginIds } from '../../features/managed/admin-tools/projects.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
 import {
@@ -289,7 +294,6 @@ import {
   parseReplicaClassCreate,
   pickPrimaryCommandResult,
   placementNeedsHealthyFabric,
-  isReservedDatabaseName,
   readInitialDatabase,
   replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
@@ -2262,18 +2266,10 @@ async function createBackupLoginRoute(c: Context<AppEnv>): Promise<Response> {
 
 /** Takes the database off every admin tool login's list for the drop's apply; `restore` puts it back. */
 async function unlistToolLoginsFromDatabase(db: Db, managedId: string, databaseName: string) {
-  const ids = await adminToolLoginIds(db, managedId)
-  const unlistings = await Promise.all(
-    ids.map(async (id) => {
-      const target = await findManagedLogin(db, managedId, id)
-      return target ? await unlistLoginFromDatabase(db, target, databaseName) : null
-    })
-  )
-  return {
-    restore: async () => {
-      await Promise.all(unlistings.map((entry) => entry?.restore()))
-    },
-  }
+  return await unlistFromLogins(await adminToolLoginIds(db, managedId), async (id) => {
+    const target = await findManagedLogin(db, managedId, id)
+    return target ? await unlistLoginFromDatabase(db, target, databaseName) : null
+  })
 }
 
 /**
@@ -2297,9 +2293,12 @@ async function createManagedToolLogin(
   const { db, auth, ctx, row } = scope
   const options = await loadManagedOptions(db, ctx.spec, row)
   if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-  const databases = options.databases.filter(
-    (name) => !isReservedDatabaseName(ctx.spec.engine, name)
-  )
+  const grants = adminToolLoginGrants({
+    access: input.access,
+    engine: ctx.spec.engine,
+    clusterDatabases: options.databases,
+  })
+  const { databases, privileges } = grants
   if (databases.length === 0) {
     return c.json(
       {
@@ -2309,8 +2308,6 @@ async function createManagedToolLogin(
       409
     )
   }
-  const isAdmin = input.access === 'admin'
-  const privileges = isAdmin ? [DATABASE_ADMIN_PRIVILEGE] : ['read-only']
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) return c.json({ error: 'Encryption unavailable' }, 503)
   const targetServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -2319,19 +2316,19 @@ async function createManagedToolLogin(
     ctx,
     row,
     options,
-    body: { allowedSources: ['internal'] },
+    body: { allowedSources: [...ADMIN_TOOL_LOGIN_SOURCES] },
     targetServerId,
-    grantMode: 'recipe',
+    grantMode: grants.grantMode,
     grants: [{ privileges, databases }],
   })
   if (gate instanceof Response) return gate
   const settings: LoginSettingsPatch = {
     databases,
-    allDatabases: false,
+    allDatabases: grants.allDatabases,
     privileges,
-    connectionRole: isAdmin ? 'read-write' : 'read-only',
-    grantMode: 'recipe',
-    tool: true,
+    connectionRole: grants.connectionRole,
+    grantMode: grants.grantMode,
+    tool: grants.tool,
     ...loginLimitSettings(gate.limits),
   }
   const created = await inLoginCreateTransaction(

@@ -1564,7 +1564,7 @@ server list and pass file.
   logins. `saveManagedDatabases` lists each new database on the cluster's tool
   logins (`addDatabasesToAdminToolLogins`), and the drop-database guard ignores
   tool logins (their listing goes with the database). The binding pins the
-  cluster's first database, so that one cannot be dropped until the tool is removed.
+  cluster's first database, so that one cannot be dropped until the tool is removed (the drop answers `managed_database_has_bindings` naming the tool's project).
 - Every tool verifies the proxy certificate and its name against the Organization
   CA file in every SSL mode. Never fall back to plain TLS.
 - Environment values must be exactly one `{$KEY}` reference, so nothing here
@@ -1577,4 +1577,7 @@ server list and pass file.
   "Update Available" shows when a project's stored image differs from the pin.
 - Routes: `GET/POST /managed/admin-tools`, `POST .../:projectId/password`,
   `POST .../:projectId/update`, `DELETE .../:projectId?confirmName=`. Remove
-  uses the project delete path, then deletes the login.
+  uses the project delete path, then deletes the login (a refused login delete
+  answers `ok: true` with `loginNotRemoved`). A caller cannot set the `admin-tool`
+  marker: project create strips `code` from caller metadata, and a tool is only
+  recognised when its `tool` service is bound to a login of this cluster.
