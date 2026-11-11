@@ -3012,12 +3012,8 @@ async function toPreparedDeployResult(
     warnings: parts.warnings,
     ...(parts.envFile !== undefined ? { envFile: parts.envFile } : {}),
     ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
-    ...(parts.configFiles !== undefined && parts.configFiles.length > 0
-      ? { configFiles: parts.configFiles }
-      : {}),
-    ...(parts.configSecretRefs !== undefined && parts.configSecretRefs.length > 0
-      ? { configSecretRefs: parts.configSecretRefs }
-      : {}),
+    ...nonEmptyListField('configFiles', parts.configFiles),
+    ...nonEmptyListField('configSecretRefs', parts.configSecretRefs),
     ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
   }
 }
@@ -3030,6 +3026,36 @@ async function namedServer(db: Db, serverId: string): Promise<{ serverId: string
     .where(eq(server.id, serverId))
     .limit(1)
   return { serverId, name: row?.name?.trim() || row?.hostname || serverId }
+}
+
+/** A list as a one-key object, or nothing when it is absent or empty (keeps old hashes and payloads as they were). */
+function nonEmptyListField<K extends string, T>(
+  key: K,
+  list: readonly T[] | undefined
+): Partial<Record<K, T[]>> {
+  if (list === undefined || list.length === 0) return {}
+  return { [key]: [...list] } as Partial<Record<K, T[]>>
+}
+
+/** The prepare error for a failed variable pass; the daemon gate names this slice's server. */
+async function variablesPrepareFailure(
+  db: Db,
+  serverId: string,
+  error: ApplyVariablesError
+): Promise<DeployPrepareError> {
+  const prepareError = toApplyVariablesPrepareError(error)
+  if (prepareError.kind !== 'config_files_need_daemon_update') return prepareError
+  return { ...prepareError, servers: [await namedServer(db, serverId)] }
+}
+
+function configFileWarnings(
+  list: ReadonlyArray<{ composeServiceName: string; source: string; message: string }>
+): DeployPrepareWarning[] {
+  return list.map((warning) => ({
+    code: 'config_file_ownership_ignored',
+    message: warning.message,
+    details: { composeServiceName: warning.composeServiceName, config: warning.source },
+  }))
 }
 
 function toApplyVariablesPrepareError(error: ApplyVariablesError): DeployPrepareError {
@@ -3752,19 +3778,9 @@ export async function prepareDeployCompose(
     ),
   })
   if (isApplyVariablesError(withVariables)) {
-    const prepareError = toApplyVariablesPrepareError(withVariables)
-    if (prepareError.kind === 'config_files_need_daemon_update') {
-      return { ...prepareError, servers: [await namedServer(db, params.serverId)] }
-    }
-    return prepareError
+    return await variablesPrepareFailure(db, params.serverId, withVariables)
   }
-  for (const warning of withVariables.configWarnings) {
-    warnings.push({
-      code: 'config_file_ownership_ignored',
-      message: warning.message,
-      details: { composeServiceName: warning.composeServiceName, config: warning.source },
-    })
-  }
+  warnings.push(...configFileWarnings(withVariables.configWarnings))
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
     pipeline.optionsByComposeName,
@@ -3953,9 +3969,7 @@ export async function prepareDeployCompose(
             // tells a changed text-only config from an unchanged one.
             // Left out when there are none, so an environment without generated
             // files keeps the hash it already has.
-            ...(withVariables.configFiles.length > 0
-              ? { configFiles: withVariables.configFiles }
-              : {}),
+            ...nonEmptyListField('configFiles', withVariables.configFiles),
             storage: storageMaterialRaw,
           },
         }),

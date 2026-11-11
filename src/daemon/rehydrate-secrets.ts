@@ -135,18 +135,18 @@ export function configSecretRefsFromOptions(options: unknown): ConfigSecretRef[]
  * generated config file reads (deduped by service and key). A config-only
  * secret has no mount, so it carries neither flag.
  */
+export type RehydrateSecretWant = ConfigSecretRef & { forBuild: boolean; forRuntime: boolean }
+
 export function rehydrateSecretWants(
   secretPlan: readonly EnvironmentDeploySecretPlanEntry[],
   configRefs: readonly ConfigSecretRef[]
-): Array<ConfigSecretRef & { forBuild: boolean; forRuntime: boolean }> {
-  const wants: Array<ConfigSecretRef & { forBuild: boolean; forRuntime: boolean }> = secretPlan.map(
-    (plan) => ({
-      composeServiceName: plan.composeServiceName,
-      key: plan.key,
-      forBuild: plan.forBuild,
-      forRuntime: plan.forRuntime,
-    })
-  )
+): RehydrateSecretWant[] {
+  const wants: RehydrateSecretWant[] = secretPlan.map((plan) => ({
+    composeServiceName: plan.composeServiceName,
+    key: plan.key,
+    forBuild: plan.forBuild,
+    forRuntime: plan.forRuntime,
+  }))
   for (const ref of configRefs) {
     if (wants.some((w) => w.key === ref.key && w.composeServiceName === ref.composeServiceName)) {
       continue
@@ -239,15 +239,14 @@ async function collectRehydrateVariableMaterial(
   item: RehydrateDeploymentRequest,
   daemonServerId: string,
   keyId: string,
-  secretPlan: EnvironmentDeploySecretPlanEntry[],
-  configRefs: readonly ConfigSecretRef[],
+  wants: readonly RehydrateSecretWant[],
   dataEncryptionSecrets: DerivedSecretsConfig,
   secretsConfig: SecretsConfig
 ): Promise<EnvironmentDeployVariableMaterial[]> {
   const variableMaterial: EnvironmentDeployVariableMaterial[] = []
   const maps = new Map<string, ResolvedVariableMap>()
 
-  await forEachSequential(rehydrateSecretWants(secretPlan, configRefs), async (plan) => {
+  await forEachSequential(wants, async (plan) => {
     let varMap = maps.get(plan.composeServiceName)
     if (!varMap) {
       varMap = await resolveServiceVariableMap(
@@ -315,8 +314,7 @@ async function rehydrateOneDeployment(
       item,
       daemonServerId,
       keyId,
-      secretPlan,
-      configSecretRefsFromOptions(deployRow.options),
+      rehydrateSecretWants(secretPlan, configSecretRefsFromOptions(deployRow.options)),
       dataEncryptionSecrets,
       secretsConfig
     )

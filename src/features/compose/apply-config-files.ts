@@ -328,6 +328,27 @@ export function applyServiceConfigFiles(
  * configs that were compiled (or are unused), and refuse a service that names
  * another service's generated source.
  */
+function sharedSourceError(
+  ctx: ConfigFilesContext,
+  name: string,
+  service: unknown
+): ApplyVariablesError | null {
+  if (!isRecord(service) || !Array.isArray(service.configs)) return null
+  for (const item of service.configs) {
+    const source = configEntrySource(item)
+    const owner = ctx.files.find((file) => file.source === source)
+    if (owner && owner.composeServiceName !== name) {
+      return fileError(
+        name,
+        source ?? '',
+        `Config ${source} belongs to service ${owner.composeServiceName}, not ${name}`,
+        'config_file_shared'
+      )
+    }
+  }
+  return null
+}
+
 export function finishConfigFiles(
   ctx: ConfigFilesContext,
   data: Record<string, unknown>
@@ -336,19 +357,8 @@ export function finishConfigFiles(
   const topLevel = { ...data.configs }
   const services = isRecord(data.services) ? data.services : {}
   for (const [name, service] of Object.entries(services)) {
-    if (!isRecord(service) || !Array.isArray(service.configs)) continue
-    for (const item of service.configs) {
-      const source = configEntrySource(item)
-      const owner = ctx.files.find((file) => file.source === source)
-      if (owner && owner.composeServiceName !== name) {
-        return fileError(
-          name,
-          source ?? '',
-          `Config ${source} belongs to service ${owner.composeServiceName}, not ${name}`,
-          'config_file_shared'
-        )
-      }
-    }
+    const shared = sharedSourceError(ctx, name, service)
+    if (shared) return shared
   }
   for (const [name, spec] of Object.entries(topLevel)) {
     if (isRecord(spec) && typeof spec.content === 'string') delete topLevel[name]
