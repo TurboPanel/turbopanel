@@ -1231,3 +1231,5 @@ hostname, and a warning with the variable left out when it is set higher. On a
 PHP site `ca_file` works as a whole value only (the daemon fills the path) and
 `ca_text` is refused; a Node app has no CA file yet. Save checks:
 `variableReferenceProblem` in `src/client/variables/routes-helpers.ts`.
+
+The admin tool templates (`src/features/managed/admin-tools/templates.ts`) are the first in-tree users of generated config files: plugin files, a server list and a pass file are `configs.<n>.content` with `{$KEY}` parts. Remember that an environment value must be exactly one reference.

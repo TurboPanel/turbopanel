@@ -42,6 +42,13 @@ const LOGIN_ID_PARAM = {
   schema: { type: 'string' },
 } as const
 
+const PROJECT_ID_PARAM = {
+  name: 'projectId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string' },
+} as const
+
 const DATABASE_NAME_PARAM = {
   name: 'name',
   in: 'path',
@@ -2195,6 +2202,57 @@ const managedBasePaths = {
         200: { description: 'Delete queued' },
         404: { description: 'The cluster has no backup login' },
       },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/admin-tools': {
+    get: {
+      tags: ['Managed services'],
+      summary: "List the cluster's admin tools (never a password)",
+      parameters: [ENV_ID_PARAM],
+      responses: { 200: { description: 'Tools of this Database Cluster' } },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Add an admin tool (phpMyAdmin, Adminer or pgAdmin) with its own login',
+      description:
+        'Makes a tool login (reachable only from the server itself, with an explicit grant on every current database that is kept in step when a database is added) and a small project that runs the pinned tool image bound to that login, published on `hostname`. Body: `tool`, `hostname`, optional `access` (`admin` by default, or `read-only`). Both the login password and, for pgAdmin, the web sign-in password are returned once. Deploy the returned environment next. Refusals: 400 `admin_tool_unknown`, `invalid_hostname`, `admin_tool_access_invalid`, `admin_tool_engine_mismatch`, `admin_tool_email_invalid`; 409 `admin_tool_needs_database`, `admin_tool_needs_daemon_update`, `admin_tool_hostname_in_use`, `managed_destroy_in_progress`.',
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: { 'application/json': { schema: { type: 'object' } } },
+      },
+      responses: { 200: { description: 'Tool added; passwords shown once' } },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/admin-tools/{projectId}': {
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Remove an admin tool, its address and its login',
+      description:
+        'Needs `confirmName` (the project name) as a query parameter. The databases are not touched.',
+      parameters: [ENV_ID_PARAM, PROJECT_ID_PARAM],
+      responses: {
+        200: { description: 'Tool removed' },
+        404: { description: 'Not a tool of this cluster' },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/admin-tools/{projectId}/password': {
+    post: {
+      tags: ['Managed services'],
+      summary: "Reset an admin tool's passwords (shown once)",
+      description:
+        'Rotates the tool login and, for pgAdmin, its web password, then bumps the tool revision so the next deploy recreates the container.',
+      parameters: [ENV_ID_PARAM, PROJECT_ID_PARAM],
+      responses: { 200: { description: 'Passwords reset; deploy the environment next' } },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/admin-tools/{projectId}/update': {
+    post: {
+      tags: ['Managed services'],
+      summary: 'Move an admin tool to the current pinned image',
+      parameters: [ENV_ID_PARAM, PROJECT_ID_PARAM],
+      responses: { 200: { description: 'Updated; deploy the environment next' } },
     },
   },
   '/api/client/v1/environments/{id}/managed/users': {
