@@ -631,7 +631,8 @@ async function sendNewToken(
   })
 }
 
-const FINISHED = new Set(['succeeded', 'failed', 'expired', 'cancelled'])
+// The command statuses that end a command (`timed_out` is what giving up on one writes).
+const FINISHED = new Set(['succeeded', 'failed', 'timed_out', 'cancelled'])
 
 /** Check the current server; when its connector is connected on the new token, move on. */
 async function checkCurrent(

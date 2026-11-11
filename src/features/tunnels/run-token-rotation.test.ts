@@ -711,3 +711,19 @@ test('two advancers at the end drop the old connections once', async () => {
     assertEquals(readRotation((await tunnelRow(w)).metadata)?.phase, 'done')
   })
 })
+
+test('a list that timed out counts as finished: the rotation stops to retry instead of waiting out the clock', async () => {
+  await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
+    const [first, second] = w.servers.toSorted() as [string, string]
+    await startRunTokenRotation(w.db, w.deps, await tunnelRow(w), { confirmSingleServer: false })
+    await w.db
+      .update(command)
+      .set({ status: 'timed_out' })
+      .where(eq(command.id, sentTo(w, first, 'server.tunnel.connectors')[0]!.commandId))
+    const stopped = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    assertEquals(stopped?.phase, 'stopped')
+    assert(stopped?.stoppedReason?.includes('did not take the new token'))
+    assertEquals(stopped?.retryable, true)
+    assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 0)
+  })
+})
