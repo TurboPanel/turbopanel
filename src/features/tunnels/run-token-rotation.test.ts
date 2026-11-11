@@ -6,7 +6,7 @@
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals, assertRejects } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import {
@@ -32,9 +32,10 @@ import {
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CredentialReport, TunnelAdapter } from './adapter.ts'
 import { wantedConnectorsByServer } from './connector-sync.ts'
+import { TunnelProviderError } from './errors.ts'
 import { TunnelRefusal } from './lifecycle.ts'
 import { insertBadge, insertCarrier, sealToken } from './records.ts'
-import { readRotation, toApiRotation } from './rotation-state.ts'
+import { readRotation, runSecretFor, toApiRotation } from './rotation-state.ts'
 import {
   advanceRunTokenRotation,
   rotationBlock,
@@ -69,7 +70,14 @@ type World = {
   oldSecretId: string
   servers: string[]
   queued: CommandEnvelope[]
-  provider: { rotations: number; reads: number; drops: number; secrets: string[] }
+  provider: {
+    rotations: number
+    reads: number
+    drops: number
+    secrets: string[]
+    /** Set to make the next provider rotation call fail (after it was counted). */
+    fail?: boolean
+  }
   deps: Parameters<typeof startRunTokenRotation>[1]
   secrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
 }
@@ -168,11 +176,15 @@ async function withWorld(
         .values(servers.map((serverId) => ({ tunnelId: t!.id, serverId, wanted: 'run' })))
     }
     const queued: CommandEnvelope[] = []
-    const provider = { rotations: 0, reads: 0, drops: 0, secrets: [] as string[] }
+    const provider: World['provider'] = { rotations: 0, reads: 0, drops: 0, secrets: [] }
     const adapter = {
       rotateRunToken: (_token: string, input: { tunnelSecret: string }) => {
         provider.rotations += 1
         provider.secrets.push(input.tunnelSecret)
+        if (provider.fail) {
+          provider.fail = false
+          return Promise.reject(new TunnelProviderError('provider_error', 'try later', 503))
+        }
         return Promise.resolve(NEW_TOKEN)
       },
       fetchRunToken: () => {
@@ -369,6 +381,8 @@ test('a server that refuses the list stops the rotation; starting again resumes 
     const stopped = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
     assertEquals(stopped?.phase, 'stopped')
     assert(stopped?.stoppedReason?.includes('did not take the new token'))
+    // The waiting server would be stranded on the old token: the sweep retries on its own.
+    assertEquals(stopped?.retryable, true)
     // Stopped: nothing more moves and no connection is dropped.
     await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
     assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 0)
@@ -410,6 +424,7 @@ test('a list answer that does not confirm the new token stops the rotation befor
     })
     const stopped = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
     assertEquals(stopped?.phase, 'stopped')
+    assertEquals(stopped?.retryable, true)
     assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 0)
     assertEquals(sentTo(w, first, 'server.tunnel.status').length, 0)
     assertEquals(w.provider.drops, 0)
@@ -553,5 +568,135 @@ test('an unreachable server waits behind the others; when none can be reached th
     await runRunTokenRotationSweepTick(w.db, w.deps)
     assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 1)
     assertEquals(w.provider.rotations, 1)
+  })
+})
+
+/** Move the stored stop back in time, so the sweep's retry wait is over. */
+async function retryWaitOver(w: World) {
+  const state = readRotation((await tunnelRow(w)).metadata)!
+  await w.db
+    .update(tunnel)
+    .set({
+      metadata: {
+        runTokenRotation: { ...state, stoppedAt: new Date(Date.now() - 5 * 60_000).toISOString() },
+      },
+    })
+    .where(eq(tunnel.id, w.tunnelId))
+}
+
+async function setConnected(w: World, serverId: string, isConnected: boolean) {
+  await w.db.update(server).set({ isConnected }).where(eq(server.id, serverId))
+}
+
+test('a server that drops mid-move keeps the new token, waits behind the others and is checked again at the end', async () => {
+  await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
+    const [first, second] = w.servers.toSorted() as [string, string]
+    await startRunTokenRotation(w.db, w.deps, await tunnelRow(w), { confirmSingleServer: false })
+    assertEquals(sentTo(w, first, 'server.tunnel.connectors').length, 1)
+    // The first server goes away before it answers: the second one is moved instead.
+    await setConnected(w, first, false)
+    const moving = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    assertEquals(moving?.phase, 'rolling')
+    assertEquals(moving?.unconfirmed, [first])
+    assertEquals(moving?.current?.serverId, second)
+    // The first server is not waiting any more: a resend gives it the new token.
+    assertEquals(runSecretFor(await tunnelRow(w), first), moving?.newSecretId)
+    await finish(w, sentTo(w, second, 'server.tunnel.connectors')[0]!, installed(w))
+    await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    await reportConnected(w, second)
+    // Every other server moved, the first is still away: stop, and retry on its own.
+    const stopped = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    assertEquals(stopped?.phase, 'stopped')
+    assertEquals(stopped?.retryable, true)
+    assertEquals(w.provider.drops, 0)
+    // A person may resume at once: an unreachable server no longer blocks a resume.
+    assertEquals(await rotationBlock(w.db, await tunnelRow(w)), null)
+    // Back (the list it never answered has expired): the sweep checks it again
+    // with the new token, then finishes.
+    await w.db
+      .update(command)
+      .set({ status: 'expired' })
+      .where(eq(command.id, sentTo(w, first, 'server.tunnel.connectors')[0]!.commandId))
+    await setConnected(w, first, true)
+    await retryWaitOver(w)
+    await runRunTokenRotationSweepTick(w.db, w.deps)
+    const resent = sentTo(w, first, 'server.tunnel.connectors')
+    assertEquals(resent.length, 2)
+    await finish(w, resent[1]!, installed(w))
+    await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    await reportConnected(w, first)
+    const done = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    assertEquals(done?.phase, 'done')
+    assertEquals(w.provider.drops, 1)
+    assertEquals(w.provider.rotations, 1)
+  })
+})
+
+test('a provider call that fails after the secret was chosen retries on its own and counts every server as on the old token', async () => {
+  await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
+    w.provider.fail = true
+    const started = await startRunTokenRotation(w.db, w.deps, await tunnelRow(w), {
+      confirmSingleServer: false,
+    })
+    assertEquals(started.rotation.phase, 'stopped')
+    assertEquals(started.rotation.resumesOnItsOwn, true)
+    // The call may have landed: until the new token is known, every server may be on the old one.
+    assertEquals(started.rotation.oldTokenServerIds, w.servers.toSorted())
+    // A resume is not blocked by a server that went away meanwhile.
+    await setConnected(w, w.servers[0]!, false)
+    assertEquals(await rotationBlock(w.db, await tunnelRow(w)), null)
+    await setConnected(w, w.servers[0]!, true)
+    await retryWaitOver(w)
+    await runRunTokenRotationSweepTick(w.db, w.deps)
+    // The same secret went out again; the rotation goes on.
+    assertEquals(w.provider.rotations, 2)
+    assertEquals(w.provider.secrets[0], w.provider.secrets[1])
+    const state = readRotation((await tunnelRow(w)).metadata)!
+    assertEquals(state.phase, 'rolling')
+    assert(state.newSecretId)
+  })
+})
+
+test('a waiting server whose connector is down is given the new token at once', async () => {
+  await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
+    const [first, second] = w.servers.toSorted() as [string, string]
+    await startRunTokenRotation(w.db, w.deps, await tunnelRow(w), { confirmSingleServer: false })
+    const state = readRotation((await tunnelRow(w)).metadata)!
+    const before = await wantedConnectorsByServer(w.db, w.organizationId)
+    assertEquals(before.get(second)?.[0]?.secretId, w.oldSecretId)
+    // Its connector stopped: the old token could not open a connection again.
+    await w.db
+      .update(portal)
+      .set({ reported: 'down' })
+      .where(and(eq(portal.tunnelId, w.tunnelId), eq(portal.serverId, second)))
+    const after = await wantedConnectorsByServer(w.db, w.organizationId)
+    assertEquals(after.get(second)?.[0]?.secretId, state.newSecretId)
+    assertEquals(after.get(first)?.[0]?.secretId, state.newSecretId)
+  })
+})
+
+test('two advancers at the end drop the old connections once', async () => {
+  await withWorld({ servers: [ALL_FEATURES] }, async (w) => {
+    const [only] = w.servers as [string]
+    await startRunTokenRotation(w.db, w.deps, await tunnelRow(w), { confirmSingleServer: true })
+    await finish(w, sentTo(w, only, 'server.tunnel.connectors')[0]!, installed(w))
+    await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    await reportConnected(w, only)
+    // Both read "finishing" at once: only the one holding the lease drops connections.
+    const state = readRotation((await tunnelRow(w)).metadata)!
+    await w.db
+      .update(tunnel)
+      .set({
+        metadata: {
+          runTokenRotation: { ...state, phase: 'finishing', current: undefined, pending: [] },
+        },
+      })
+      .where(eq(tunnel.id, w.tunnelId))
+    await Promise.all([
+      advanceRunTokenRotation(w.db, w.deps, w.tunnelId),
+      advanceRunTokenRotation(w.db, w.deps, w.tunnelId),
+    ])
+    assertEquals(w.provider.drops, 1)
+    assertEquals(readRotation((await tunnelRow(w)).metadata)?.phase, 'done')
   })
 })

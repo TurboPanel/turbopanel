@@ -49,6 +49,12 @@ export type RotationState = {
   pending: string[]
   /** Servers already given the new token. */
   moved: string[]
+  /**
+   * Moved servers that went out of reach before they confirmed the new token.
+   * They keep the new token (a reconnect brings it) and are checked again once
+   * every waiting server has moved.
+   */
+  unconfirmed?: string[]
   current?: RotationCurrent
   /** When the last moved server reported its connector connected on the new token. */
   lastConnectedAt?: string
@@ -99,6 +105,8 @@ export function readRotation(metadata: unknown): RotationState | null {
     pending: stringList(raw.pending),
     moved: stringList(raw.moved),
   }
+  const unconfirmed = stringList(raw.unconfirmed)
+  if (unconfirmed.length > 0) state.unconfirmed = unconfirmed
   const optional = {
     tunnelSecretId: optionalString(raw.tunnelSecretId),
     claimedAt: optionalString(raw.claimedAt),
@@ -126,15 +134,39 @@ export function rotationActive(state: RotationState | null): boolean {
  * Which sealed run token a server is given while a rotation is under way: the
  * old one while the server is still waiting its turn, the new one once it has
  * been moved, and the new one for a server that joined after the rotation
- * started (the old token can no longer open a connection). Pure.
+ * started (the old token can no longer open a connection). A waiting server
+ * whose connector last reported down or in error gets the new one too: its
+ * connector is not holding a connection, and the old token could not open one.
+ * Pure.
  */
 export function runSecretFor(
   row: Pick<TunnelRow, 'secretId' | 'metadata'>,
-  serverId: string
+  serverId: string,
+  connectorDown = false
 ): string | null {
   const state = readRotation(row.metadata)
   if (!state?.newSecretId || state.phase === 'done') return row.secretId
-  return state.pending.includes(serverId) ? row.secretId : state.newSecretId
+  return state.pending.includes(serverId) && !connectorDown ? row.secretId : state.newSecretId
+}
+
+/** A rotation whose servers are split between the old and the new token. Pure. */
+export function rotationSplitsTokens(metadata: unknown): boolean {
+  const state = readRotation(metadata)
+  return state?.newSecretId !== undefined && state.phase !== 'done'
+}
+
+/**
+ * Carrying servers that may still hold the old token. Once a secret was chosen
+ * the provider may already have been asked (a failed answer does not prove it
+ * was not), so before the new token is known every server counts. Pure.
+ */
+function oldTokenServers(state: RotationState): string[] {
+  if (state.phase === 'done') return []
+  if (state.newSecretId) return state.pending
+  if (state.phase === 'stopped' && state.tunnelSecretId) {
+    return [...new Set([...state.moved, ...state.pending])]
+  }
+  return []
 }
 
 /** What the person is told before a rotation starts. Pure. */
@@ -177,7 +209,7 @@ export function toApiRotation(state: RotationState | null): ApiRotation | null {
     pendingServerIds: state.pending,
     currentServerId: state.current?.serverId ?? null,
     stoppedReason: state.stoppedReason ?? null,
-    oldTokenServerIds: state.newSecretId && state.phase !== 'done' ? state.pending : [],
+    oldTokenServerIds: oldTokenServers(state),
     resumesOnItsOwn: state.phase === 'stopped' && state.retryable === true,
   }
 }

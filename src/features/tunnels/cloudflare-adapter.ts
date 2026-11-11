@@ -448,10 +448,13 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       } catch (err) {
         // The secret must never reach a log or an answer, even inside a provider message.
         if (err instanceof TunnelProviderError) {
-          throw new TunnelProviderError(err.code, err.message, err.status, [
-            input.tunnelSecret,
-            token,
-          ])
+          throw new TunnelProviderError(
+            err.code,
+            err.message,
+            err.status,
+            [input.tunnelSecret, token],
+            err.retryAfterMs
+          )
         }
         throw err
       }

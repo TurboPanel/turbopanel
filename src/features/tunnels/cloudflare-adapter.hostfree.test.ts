@@ -399,6 +399,26 @@ test('a refused rotation never carries the secret in its message', async () => {
   assert(!err.message.includes(tunnelSecret))
 })
 
+test('a rate-limited rotation keeps the wait the provider asked for', async () => {
+  const impl: typeof fetch = () =>
+    Promise.resolve(
+      new Response(JSON.stringify({ success: false, errors: [{ message: 'slow' }] }), {
+        status: 429,
+        headers: { 'Retry-After': '90' },
+      })
+    )
+  const err = await assertRejects(
+    () =>
+      createCloudflareAdapter({ fetch: impl }).rotateRunToken(TOKEN, {
+        accountId: ACCOUNT,
+        externalId: 't-1',
+        tunnelSecret: newTunnelSecret(),
+      }),
+    TunnelProviderError
+  )
+  assertEquals([err.status, err.retryAfterMs], [429, 90_000])
+})
+
 test('dropping connections deletes every connection of the tunnel', async () => {
   const { impl, calls } = fakeFetch({
     [`DELETE /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1/connections`]: ok(null),

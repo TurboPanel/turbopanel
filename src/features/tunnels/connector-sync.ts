@@ -17,9 +17,9 @@
  * queue commands for a disconnected server, so the sweep sends again until a
  * command finishes well.
  */
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, secret, server, tunnel } from '../../db/schema.ts'
+import { command, portal, secret, server, tunnel } from '../../db/schema.ts'
 import { resealSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { TUNNEL_CONNECTOR_FEATURE } from '../../lib/version-wire.ts'
@@ -33,7 +33,7 @@ import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
 import { compareText } from './order.ts'
-import { runSecretFor } from './rotation-state.ts'
+import { rotationSplitsTokens, runSecretFor } from './rotation-state.ts'
 
 /** The least time between two sends of the same list to one server. */
 export const TUNNEL_CONNECTORS_RESEND_GAP_MS = 10 * 60 * 1000
@@ -110,6 +110,15 @@ async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
+/** Servers whose connector for this tunnel last reported down or in error. */
+async function serversWithConnectorDown(db: Db, tunnelId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ serverId: portal.serverId })
+    .from(portal)
+    .where(and(eq(portal.tunnelId, tunnelId), inArray(portal.reported, ['down', 'error'])))
+  return new Set(rows.map((r) => r.serverId))
+}
+
 /** Which connectors every server of the organization should run, by server id. */
 export async function wantedConnectorsByServer(
   db: Db,
@@ -120,10 +129,13 @@ export async function wantedConnectorsByServer(
   await Promise.all(
     rows.map(async (row) => {
       if (!row.externalId || !row.secretId || !PROVIDER_ID_RE.test(row.externalId)) return
+      // While the run token is being rotated, each server gets the old or the new one on its own.
+      const down = rotationSplitsTokens(row.metadata)
+        ? await serversWithConnectorDown(db, row.id)
+        : new Set<string>()
       for (const serverId of await carryingServers(db, row)) {
         const list = wanted.get(serverId) ?? []
-        // While the run token is being rotated, each server gets the old or the new one on its own.
-        const secretId = runSecretFor(row, serverId) ?? row.secretId
+        const secretId = runSecretFor(row, serverId, down.has(serverId)) ?? row.secretId
         list.push({ tunnelId: row.externalId, secretId })
         wanted.set(serverId, list)
       }

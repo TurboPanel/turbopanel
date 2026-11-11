@@ -5,6 +5,7 @@ import {
   rotationWarnings,
   claimHeld,
   dueForRetry,
+  rotationSplitsTokens,
   runSecretFor,
   settling,
   toApiRotation,
@@ -77,6 +78,41 @@ test('each server gets the old token while it waits its turn, the new one once m
     'adopted'
   )
   assertEquals(runSecretFor({ secretId: 'plain', metadata: null }, A), 'plain')
+  // A waiting server whose connector is down holds no connection: it gets the new token.
+  assertEquals(runSecretFor(row, B, true), 'new-secret')
+  assert(rotationSplitsTokens(rotating({})))
+  assert(!rotationSplitsTokens(rotating({ phase: 'done' })))
+  assert(!rotationSplitsTokens(rotating({ newSecretId: undefined })))
+})
+
+test('moved servers that went out of reach are read back, and keep the new token', () => {
+  const row = { secretId: 'old-secret', metadata: rotating({ unconfirmed: [A, 7] }) }
+  assertEquals(readRotation(row.metadata)?.unconfirmed, [A])
+  assertEquals(runSecretFor(row, A), 'new-secret')
+  assertEquals(readRotation(rotating({}))?.unconfirmed, undefined)
+})
+
+test('stopped after the secret was chosen, every server may still hold the old token', () => {
+  const stopped = toApiRotation(
+    readRotation(
+      rotating({
+        phase: 'stopped',
+        newSecretId: undefined,
+        tunnelSecretId: 'chosen',
+        pending: [A, B],
+        moved: [],
+        retryable: true,
+      })
+    )
+  )
+  assertEquals(stopped?.oldTokenServerIds, [A, B])
+  assertEquals(stopped?.resumesOnItsOwn, true)
+  // Not started at the provider yet (no secret chosen): nobody is on an old token.
+  assertEquals(
+    toApiRotation(readRotation(rotating({ phase: 'starting', newSecretId: undefined })))
+      ?.oldTokenServerIds,
+    []
+  )
 })
 
 test('the warning says connectors briefly reconnect, and a lone server also names the short outage', () => {

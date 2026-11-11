@@ -23,11 +23,15 @@
  *    the new secret row and the old one is deleted.
  *
  * Progress lives in `tunnel.metadata.runTokenRotation` (no new table, column
- * or status). When no remaining server can be reached the rotation stops and
- * the sweep resumes it on its own; a server that refuses the list, does not
- * confirm the token or does not connect in time stops it until a person
- * starts it again (which resumes from where it stopped). The token and the
- * secret are never logged, audited or returned.
+ * or status). Once a secret was chosen, stopping would strand the waiting
+ * servers on a token the provider may already have retired, so every stop
+ * that can clear up by itself (a provider error, a server that cannot be
+ * reached, refuses the list, does not confirm the token or does not connect
+ * in time) is retried by the sweep on its own; a person can also resume it at
+ * once, without the start-only check that every server is reachable. A moved
+ * server that goes out of reach keeps the new token and is checked again at
+ * the end. Only a gone provider account or chosen secret stops it for good.
+ * The token and the secret are never logged, audited or returned.
  */
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -150,10 +154,6 @@ function adapterFor(deps: RotationDeps, row: TunnelRow): TunnelAdapter {
 const IN_PROGRESS = 'The run token of this Tunnel is already being replaced'
 
 /**
- * The refusals that come before anything changes. Returns the carrying servers,
- * sorted (the order they are moved in), and the warnings for the person.
- */
-/**
  * Why a rotation cannot start now (removing, not at the provider, under way,
  * a daemon that cannot follow, a carrier that cannot be reached), or null.
  * The screen reads it to hide or disable the action with the reason; a start
@@ -186,6 +186,9 @@ export async function rotationBlock(
       { serverIds: old }
     )
   }
+  // Resuming after the provider may have been asked: waiting servers need the
+  // new token, so an unreachable one is waited for instead of blocking.
+  if (read?.phase === 'stopped' && (read.newSecretId || read.tunnelSecretId)) return null
   // Everything knowable is checked before the provider is asked: that call cannot be undone.
   const notReady = await serversNotReady(db, row.routingOrganizationId, carrying)
   if (notReady.length > 0) {
@@ -370,7 +373,8 @@ async function issueNewToken(
   } catch (err) {
     const refused = refuse(err, 'edit Tunnels')
     const reason = refused instanceof Error ? refused.message : 'The provider refused'
-    return await stop(db, row.id, claimed, reason)
+    // The call may have landed anyway; asking again with the same secret is safe.
+    return await stop(db, row.id, claimed, reason, { retryable: true })
   }
   const [sealed] = await db
     .insert(secret)
@@ -497,29 +501,86 @@ async function moveNext(
   const carrying = new Set(await carryingServers(db, row))
   // A server that no longer carries the tunnel needs no new token.
   const pending = state.pending.filter((id) => carrying.has(id))
-  if (pending.length === 0) {
-    return await saveRotation(db, row.id, state, {
-      ...state,
-      pending: [],
-      current: undefined,
-      phase: 'finishing',
-    })
-  }
+  const unconfirmed = (state.unconfirmed ?? []).filter((id) => carrying.has(id))
+  if (pending.length === 0) return await checkUnconfirmed(db, deps, row, state, unconfirmed)
   const { serverId, queue } = await nextReachable(db, pending)
   if (!serverId) {
     const names = pending.join(', ')
-    return await stop(db, row.id, { ...state, pending }, `Server ${names} cannot be reached`, {
-      retryable: true,
-    })
+    return await stop(
+      db,
+      row.id,
+      { ...state, pending, unconfirmed },
+      `Server ${names} cannot be reached`,
+      { retryable: true }
+    )
   }
   const moved = await saveRotation(db, row.id, state, {
     ...state,
     pending: queue,
+    unconfirmed,
     moved: [...state.moved, serverId],
     current: { serverId, since: new Date().toISOString() },
   })
   if (!moved) return null
   return await sendNewToken(db, deps, row, moved)
+}
+
+/**
+ * Every waiting server has moved: check again the moved ones that went out of
+ * reach before they confirmed the new token, then finish.
+ */
+async function checkUnconfirmed(
+  db: Db,
+  deps: RotationDeps,
+  row: TunnelRow,
+  state: RotationState,
+  unconfirmed: string[]
+): Promise<RotationState | null> {
+  if (unconfirmed.length === 0) {
+    return await saveRotation(db, row.id, state, {
+      ...state,
+      pending: [],
+      unconfirmed: undefined,
+      current: undefined,
+      phase: 'finishing',
+    })
+  }
+  const { serverId, queue } = await nextReachable(db, unconfirmed)
+  if (!serverId) {
+    const names = unconfirmed.join(', ')
+    return await stop(
+      db,
+      row.id,
+      { ...state, pending: [], unconfirmed },
+      `Server ${names} cannot be reached to confirm the new token`,
+      { retryable: true }
+    )
+  }
+  const checking = await saveRotation(db, row.id, state, {
+    ...state,
+    pending: [],
+    unconfirmed: queue.length > 0 ? queue : undefined,
+    current: { serverId, since: new Date().toISOString() },
+  })
+  if (!checking) return null
+  return await sendNewToken(db, deps, row, checking)
+}
+
+/**
+ * The current server went out of reach: it keeps the new token (a reconnect
+ * brings it) and is checked again once every waiting server has moved.
+ */
+async function deferCurrent(
+  db: Db,
+  row: TunnelRow,
+  state: RotationState
+): Promise<RotationState | null> {
+  const serverId = state.current!.serverId
+  return await saveRotation(db, row.id, state, {
+    ...state,
+    current: undefined,
+    unconfirmed: [...(state.unconfirmed ?? []).filter((id) => id !== serverId), serverId],
+  })
 }
 
 /** Is a connector list still on its way to this server? */
@@ -558,8 +619,11 @@ async function sendNewToken(
     force: true,
   })
   if (outcome.status !== 'sent') {
+    if (!(await serverReachable(db, current.serverId))) return await deferCurrent(db, row, state)
     const reason = outcome.status === 'unchanged' ? 'nothing to send' : outcome.reason
-    return await stop(db, row.id, state, `Server ${current.serverId}: ${reason}`)
+    return await stop(db, row.id, state, `Server ${current.serverId}: ${reason}`, {
+      retryable: true,
+    })
   }
   return await saveRotation(db, row.id, state, {
     ...state,
@@ -577,18 +641,28 @@ async function checkCurrent(
   state: RotationState
 ): Promise<RotationState | null> {
   const current = state.current!
+  // Out of reach: wait behind the others rather than run out the clock.
+  if (!(await serverReachable(db, current.serverId))) return await deferCurrent(db, row, state)
+  const retry = { retryable: true }
   if (Date.now() - Date.parse(current.since) > ROTATION_SERVER_LIMIT_MS) {
     return await stop(
       db,
       row.id,
       state,
-      `Server ${current.serverId} did not connect on the new token within ${ROTATION_SERVER_LIMIT_MS / 60_000} minutes`
+      `Server ${current.serverId} did not connect on the new token within ${ROTATION_SERVER_LIMIT_MS / 60_000} minutes`,
+      retry
     )
   }
   if (!current.connectorsCommandId) return await sendNewToken(db, deps, row, state)
   const sent = await commandRow(db, current.connectorsCommandId)
   if (!sent || (FINISHED.has(sent.status) && sent.status !== 'succeeded')) {
-    return await stop(db, row.id, state, `Server ${current.serverId} did not take the new token`)
+    return await stop(
+      db,
+      row.id,
+      state,
+      `Server ${current.serverId} did not take the new token`,
+      retry
+    )
   }
   if (sent.status !== 'succeeded') return state
   if (!listHoldsToken(sent.resultSummary, row.externalId!)) {
@@ -596,7 +670,8 @@ async function checkCurrent(
       db,
       row.id,
       state,
-      `Server ${current.serverId} did not confirm its connector on the new token`
+      `Server ${current.serverId} did not confirm its connector on the new token`,
+      retry
     )
   }
   const asked = await commandRow(db, current.statusCommandId)
@@ -646,29 +721,33 @@ async function finish(
       'Old connections were not dropped: this provider cannot drop them'
     )
   }
-  {
-    const drop = adapter.dropConnections.bind(adapter)
-    try {
-      await useBadges(
-        db,
-        deps.dataEncryptionSecrets,
-        owner.id,
-        { capability: 'tunnels' },
-        (token) => drop(token, { accountId: owner.externalAccountId, externalId: row.externalId! })
-      )
-    } catch (err) {
-      const refused = refuse(err, 'edit Tunnels')
-      const reason = refused instanceof Error ? refused.message : 'The provider refused'
-      return await stop(db, row.id, state, `Old connections were not dropped: ${reason}`)
-    }
+  // Only one advancer drops the connections: the others wait for its lease.
+  if (claimHeld(state, Date.now())) return state
+  const claimed = await saveRotation(db, row.id, state, {
+    ...state,
+    claimedAt: new Date().toISOString(),
+  })
+  if (!claimed) return null
+  const drop = adapter.dropConnections.bind(adapter)
+  try {
+    await useBadges(db, deps.dataEncryptionSecrets, owner.id, { capability: 'tunnels' }, (token) =>
+      drop(token, { accountId: owner.externalAccountId, externalId: row.externalId! })
+    )
+  } catch (err) {
+    const refused = refuse(err, 'edit Tunnels')
+    const reason = refused instanceof Error ? refused.message : 'The provider refused'
+    return await stop(db, row.id, claimed, `Old connections were not dropped: ${reason}`, {
+      retryable: true,
+    })
   }
   const oldSecretId = row.secretId
   const newSecretId = state.newSecretId!
   const done = await db.transaction(async (tx) => {
-    const saved = await saveRotation(tx as unknown as Db, row.id, state, {
-      ...state,
+    const saved = await saveRotation(tx as unknown as Db, row.id, claimed, {
+      ...claimed,
       phase: 'done',
       current: undefined,
+      claimedAt: undefined,
       finishedAt: new Date().toISOString(),
     })
     if (!saved) return null

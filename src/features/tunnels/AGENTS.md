@@ -695,13 +695,17 @@ removing the tunnel:
   second advancer sends the same secret and gets the same token), `claimedAt`
   (a two-minute lease, taken with a guarded save, around each provider
   attempt), `newSecretId` (the new sealed token, a second `secret` row; the
-  chosen secret is deleted once it is saved), `pending` and `moved` servers
-  and the `current` one.
+  chosen secret is deleted once it is saved), `pending` and `moved` servers,
+  `unconfirmed` (moved servers that went out of reach before confirming) and
+  the `current` one.
 - Until the end, `runSecretFor` gives each server the old token while it waits
   its turn and the new one once moved (or when it started carrying the tunnel
   after the rotation began), so a repair resend or a placement change never
-  moves a server early. Connector sync hashes the secret row id, so moving a
-  server changes its list and it is sent.
+  moves a server early. The one exception: a waiting server whose connector
+  last reported `down` or `error` (portal `reported`) gets the new token at
+  once, since it holds no connection and the old token could not open one.
+  Connector sync hashes the secret row id, so moving a server changes its list
+  and it is sent.
 - One server at a time: its list goes out with the new token (the daemon
   restarts that connector in place), and once that command succeeded the
   server is asked `server.tunnel.status` (again every 30 s) until this tunnel's
@@ -711,17 +715,23 @@ removing the tunnel:
   next server is moved or old connections are dropped. Before a server's list
   goes out, the rotation waits until no other connector list is on its way to
   it, so an older list carrying the old token can never land after the new
-  one. A server that cannot be reached waits behind the others; when none of
-  the remaining ones can be reached the rotation stops with `retryable`, the
-  answer says so (`resumesOnItsOwn`), and the sweep resumes it two minutes
-  later (`ROTATION_RETRY_MS`), so servers left on the old token (which the
-  answer lists as `oldTokenServerIds`: their connector stays up but could not
-  reconnect after a restart) are not left there. A server that refuses the
-  list, does not confirm the new token or is not connected within ten minutes
-  stops it for a person to look at: nothing more moves and no connection is
-  dropped, and starting again resumes with the secret and token already
-  issued.
-- Then every connection is dropped once (`dropConnections`; a provider account
+  one. A server that cannot be reached waits behind the others; the current
+  server going out of reach mid-move keeps the new token (in `unconfirmed`)
+  and is checked again once every waiting server has moved. Once a secret was
+  chosen, a stop would strand the waiting servers on a token the provider may
+  already have retired, so every stop that can clear up by itself (a provider
+  error, which may have landed anyway; no remaining server reachable; a list
+  refused, not confirming the new token, or not connected within ten minutes)
+  is `retryable`: the answer says so (`resumesOnItsOwn`) and the sweep resumes
+  it two minutes later (`ROTATION_RETRY_MS`). Nothing more moves and no
+  connection is dropped while stopped. A person can resume at once; a resume
+  after a secret was chosen skips the start-only "every server reachable"
+  check. `oldTokenServerIds` lists the servers that may still hold the old
+  token: the waiting ones once the new token is known, and every carrier when
+  it stopped after the secret was chosen but before the token came back. Only
+  a gone provider account or chosen secret stops it for good.
+- Then every connection is dropped once, under the same lease, so two
+  advancers never drop twice (`dropConnections`; a provider account
   that is gone, or a provider that cannot drop them, stops the rotation rather
   than marking it done), the tunnel takes the new secret row (renamed to the
   tunnel's run token) and the old one is deleted, in one transaction with the
