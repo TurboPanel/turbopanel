@@ -225,6 +225,12 @@ export type ManagedSettings = {
   engineConfig?: string
   /** Only meaningful for engines with a `backup` descriptor. */
   backups?: ManagedBackupSettings
+  /**
+   * Whether logins on this cluster may use All Databases. Off unless the
+   * operator opts in (and the organization switch must also allow it); see
+   * `all-databases.ts`.
+   */
+  allowAllDatabasesLogins?: boolean
 }
 
 export const DEFAULT_MANAGED_SETTINGS: ManagedSettings = {
@@ -542,7 +548,15 @@ function parseManagedSettingsRecord(
   const backups = parseBackupSettings(value.backups)
   if (backups === null) return null
 
+  if (
+    value.allowAllDatabasesLogins !== undefined &&
+    typeof value.allowAllDatabasesLogins !== 'boolean'
+  ) {
+    return null
+  }
+
   return assembleManagedSettings({
+    allowAllDatabasesLogins: value.allowAllDatabasesLogins,
     ssl,
     image,
     routing,
@@ -554,6 +568,7 @@ function parseManagedSettingsRecord(
 }
 
 function assembleManagedSettings(parts: {
+  allowAllDatabasesLogins: boolean | undefined
   ssl: ManagedSettings['ssl']
   image: string | undefined
   routing: ManagedRoutingSettings | undefined
@@ -575,6 +590,9 @@ function assembleManagedSettings(parts: {
     settings.engineConfig = parts.engineConfig
   }
   if (parts.backups !== undefined) settings.backups = parts.backups
+  if (parts.allowAllDatabasesLogins !== undefined) {
+    settings.allowAllDatabasesLogins = parts.allowAllDatabasesLogins
+  }
   return settings
 }
 

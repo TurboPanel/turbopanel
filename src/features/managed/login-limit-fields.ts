@@ -10,6 +10,7 @@ import type { ManagedRowOptions } from './options.ts'
 import { type LoginPatchCurrent, type LoginPatchResult, planLoginPatch } from './login-patch.ts'
 import { parseManagedLoginPatchFields } from './routes-helpers.ts'
 import type { Db } from '../../db/connection.ts'
+import { loadAllDatabasesRefusal } from './all-databases.ts'
 import {
   type DaemonOwnerSupport,
   refuseReadWriteOnOldDaemon,
@@ -264,6 +265,12 @@ export async function parseLoginPatchRequest(
 ): Promise<{ dryRun: boolean; limits: LoginLimitFields; plan: LoginPatchResult } | Response> {
   const fields = parseManagedLoginPatchFields(c, ctx, body, options)
   if (fields instanceof Response) return fields
+  if (fields.allDatabases === true) {
+    const refusal = await loadAllDatabasesRefusal(db, ctx.organizationId, options.settings)
+    if (refusal) {
+      return c.json({ error: 'managed_login_all_databases_not_allowed', message: refusal }, 400)
+    }
+  }
   const limits = await parseLoginLimitFields(c, db, ctx.organizationId, body)
   if (limits instanceof Response) return limits
   const { dryRun, ...input } = { ...fields, ...limits }

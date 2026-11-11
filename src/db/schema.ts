@@ -4970,7 +4970,7 @@ export const login = pgTable(
      * `backup`. NULL only for a `self` login.
      */
     recipe: text(),
-    /** A read-only reader of every database on the cluster, current and future. */
+    /** Reads every database on the cluster, current and future: the backup login, or a login that chose All Databases while the organization and cluster switches allow it. */
     isAllDatabases: boolean('is_all_databases').default(false).notNull(),
     /** A database-tool login routes everything to the primary (no read/write split). */
     isTool: boolean('is_tool').default(false).notNull(),

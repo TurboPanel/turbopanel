@@ -70,6 +70,12 @@ export type LoginSettings = {
   tool: boolean
   /** Names of the databases the login may use (its `scope` rows). */
   databases: string[]
+  /**
+   * Reads the whole cluster, current and future databases, while both
+   * All Databases switches allow it (`all-databases.ts`). `databases` then holds
+   * only the explicit picks, which apply again when a switch goes off.
+   */
+  allDatabases?: boolean
   privileges: string[]
   connectionRole: LoginConnectionRole
   /** Places the login may connect from; `undefined` means anywhere (stored as the explicit pair). */
@@ -85,6 +91,7 @@ export type LoginSettingsPatch = {
   grantMode?: LoginGrantMode
   tool?: boolean
   databases?: string[]
+  allDatabases?: boolean
   privileges?: string[]
   connectionRole?: LoginConnectionRole
   allowedSources?: string[] | null
@@ -127,6 +134,7 @@ const LOGIN_SELECT = {
   nameScheme: login.nameScheme,
   grantMode: login.grantMode,
   isTool: login.isTool,
+  isAllDatabases: login.isAllDatabases,
   databases: loginDatabaseNames,
   privileges: login.privileges,
   access: login.access,
@@ -159,6 +167,7 @@ function toLoginRow(row: {
   nameScheme: string
   grantMode: string
   isTool: boolean
+  isAllDatabases: boolean
   databases: string[]
   privileges: string[]
   access: string
@@ -179,6 +188,7 @@ function toLoginRow(row: {
     nameScheme: toNameScheme(row.nameScheme),
     grantMode: isLoginGrantMode(row.grantMode) ? row.grantMode : 'recipe',
     tool: row.isTool,
+    allDatabases: row.isAllDatabases,
     databases: row.databases ?? [],
     privileges: row.privileges ?? [],
     connectionRole: row.access === 'read-only' ? 'read-only' : 'read-write',
@@ -301,6 +311,7 @@ export function applySettingsPatch(
     grantMode: patch.grantMode ?? settings.grantMode,
     tool: patch.tool ?? settings.tool,
     databases: patch.databases ?? settings.databases,
+    allDatabases: patch.allDatabases ?? settings.allDatabases,
     privileges: patch.privileges ?? settings.privileges,
     connectionRole: patch.connectionRole ?? settings.connectionRole,
     allowedSources:
@@ -322,6 +333,7 @@ function settingsColumns(patch: LoginSettingsPatch) {
   return {
     ...(patch.grantMode !== undefined ? { grantMode: patch.grantMode } : {}),
     ...(patch.tool !== undefined ? { isTool: patch.tool } : {}),
+    ...(patch.allDatabases !== undefined ? { isAllDatabases: patch.allDatabases } : {}),
     ...(patch.privileges !== undefined ? { privileges: patch.privileges } : {}),
     ...(patch.connectionRole !== undefined ? { access: patch.connectionRole } : {}),
     ...(patch.allowedSources !== undefined
@@ -410,7 +422,8 @@ export async function insertLogin(db: Db, input: InsertLoginInput): Promise<stri
       password: input.password,
       ...(input.nameScheme ? { nameScheme: input.nameScheme } : {}),
       ...settingsColumns(input),
-      // The backup login reads every database on the cluster, current and future.
+      // The backup login reads every database on the cluster, current and future,
+      // whatever the switches say; other logins carry the flag settingsColumns wrote.
       ...(input.role === 'backup' ? { isAllDatabases: true } : {}),
       // No limit chosen stores the explicit anywhere pair (the column default is `internal`).
       allowedSources: loginSourcesToStored(input.allowedSources),

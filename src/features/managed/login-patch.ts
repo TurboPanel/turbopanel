@@ -37,6 +37,8 @@ export type LoginPatchInput = {
   tool?: unknown
   /** Already validated against the cluster's databases by the caller. */
   databases?: string[]
+  /** Turn All Databases on or off. The switch check is the caller's (it needs the organization). */
+  allDatabases?: boolean
   connectionRole?: 'read-write' | 'read-only'
   privileges?: string[]
   confirmReset?: unknown
@@ -90,6 +92,7 @@ function patchSettings(after: LoginGrantMode, input: LoginPatchInput): LoginSett
   if (input.grantMode !== undefined) patch.grantMode = after
   if (input.tool !== undefined) patch.tool = input.tool as boolean
   if (input.databases !== undefined) patch.databases = input.databases
+  if (input.allDatabases !== undefined) patch.allDatabases = input.allDatabases
   if (input.privileges !== undefined) patch.privileges = input.privileges
   if (input.connectionRole !== undefined) patch.connectionRole = input.connectionRole
   // `null` clears: NULL means anywhere / no cap.
@@ -154,6 +157,33 @@ function refuseSelfLoginChange(
   return null
 }
 
+/** Plain-words line for turning All Databases on or off (nothing when unchanged). */
+function describeAllDatabasesChange(allDatabases: boolean | undefined): string[] {
+  if (allDatabases === true)
+    return ['Reach every database of the cluster, including ones added later']
+  if (allDatabases === false) return ['Reach only the databases picked for this login']
+  return []
+}
+
+const ALL_DATABASES_CONFLICT_MESSAGE = 'Choose All Databases or a list of databases, not both.'
+
+/** A list of databases and All Databases sent together, or a list sent to a login that stays on All Databases. */
+function refuseAllDatabasesConflict(
+  current: LoginPatchCurrent,
+  input: LoginPatchInput
+): LoginPatchError | null {
+  if (input.databases === undefined) return null
+  const staysAll = input.allDatabases ?? current.allDatabases === true
+  if (!staysAll) return null
+  return fail(
+    400,
+    'managed_login_all_databases_conflict',
+    input.allDatabases === true
+      ? ALL_DATABASES_CONFLICT_MESSAGE
+      : 'This login uses All Databases. Turn All Databases off in the same change to pick a list of databases.'
+  )
+}
+
 export function planLoginPatch(
   engine: string,
   current: LoginPatchCurrent,
@@ -171,6 +201,8 @@ export function planLoginPatch(
 
   const selfRefusal = refuseSelfLoginChange(engine, current, input, after)
   if (selfRefusal) return selfRefusal
+  const allRefusal = refuseAllDatabasesConflict(current, input)
+  if (allRefusal) return allRefusal
   if (input.tool !== undefined && typeof input.tool !== 'boolean') {
     return fail(400, 'Invalid request', 'tool must be true or false.')
   }
@@ -203,6 +235,7 @@ export function planLoginPatch(
   }
   const tool = patch.tool ?? current.tool
   const summary = describeApply(engine, after, tool, becomesAdmin)
+  summary.push(...describeAllDatabasesChange(input.allDatabases))
   summary.push(
     ...describePatchedLimits(current, input),
     ...describeStraightThroughPatch(engine, current, patch)
@@ -257,6 +290,7 @@ export function loginPatchUndo(previous: LoginSettings): LoginSettingsPatch {
     grantMode: previous.grantMode,
     tool: previous.tool,
     databases: previous.databases,
+    allDatabases: previous.allDatabases,
     privileges: previous.privileges,
     connectionRole: previous.connectionRole,
     allowedSources: previous.allowedSources ?? null,

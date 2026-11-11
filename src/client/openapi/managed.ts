@@ -695,6 +695,11 @@ export const managedSchemas = {
         description:
           'A database-tool login: everything goes to the primary, never split between reader and writer.',
       },
+      allDatabases: {
+        type: 'boolean',
+        description:
+          'Reads every database of the Database Cluster, including ones added later, while the organization and the cluster both allow All Databases logins. `databases` then holds only the explicit picks, which apply again if a switch is turned off. On create, send it instead of `databases` (both together answer 400 `managed_login_all_databases_conflict`); 400 `managed_login_all_databases_not_allowed` names the switch that is off.',
+      },
       straightThrough: {
         type: 'boolean',
         description:
@@ -1114,6 +1119,11 @@ export const managedSchemas = {
       tool: {
         type: 'boolean',
         description: 'Mark the login as used by a database tool: routed to the primary only.',
+      },
+      allDatabases: {
+        type: 'boolean',
+        description:
+          'Reads every database of the Database Cluster, including ones added later, while the organization and the cluster both allow All Databases logins. `databases` then holds only the explicit picks, which apply again if a switch is turned off. On create, send it instead of `databases` (both together answer 400 `managed_login_all_databases_conflict`); 400 `managed_login_all_databases_not_allowed` names the switch that is off.',
       },
       allowedSources: ALLOWED_SOURCES_SCHEMA,
       maxConnections: MAX_CONNECTIONS_SCHEMA,

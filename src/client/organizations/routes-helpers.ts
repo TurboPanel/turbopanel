@@ -234,6 +234,7 @@ export type HostDefaultsPatch = {
 export type ManagedDefaultsPatch = {
   sslMode?: ManagedSslMode | null
   ports?: ManagedIngressPortsPatch | null
+  allowAllDatabasesLogins?: boolean
 }
 
 const PORT_REJECTION_MESSAGE: Record<ManagedIngressPortRejection, string> = {
@@ -268,6 +269,17 @@ export function parseManagedDefaultsPatch(
     patch.ports = parsed.value
   }
 
+  if ('allowAllDatabasesLogins' in body) {
+    if (typeof body.allowAllDatabasesLogins !== 'boolean') {
+      return {
+        ok: false,
+        error: 'allowAllDatabasesLogins must be true or false.',
+        status: 400,
+      }
+    }
+    patch.allowAllDatabasesLogins = body.allowAllDatabasesLogins
+  }
+
   if (Object.keys(patch).length === 0) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
@@ -296,6 +308,9 @@ export function applyManagedDefaultsPatch(
     const merged = mergeIngressPortsPatch(current.ports, patch.ports)
     if (merged) next.ports = merged
     else delete next.ports
+  }
+  if (patch.allowAllDatabasesLogins !== undefined) {
+    next.allowAllDatabasesLogins = patch.allowAllDatabasesLogins
   }
   return next
 }
@@ -345,6 +360,8 @@ export function managedDefaultsGetResponse(defaults: ManagedOrganizationDefaults
     },
     /** Ports clients actually dial today, after platform fallback. */
     effectivePorts: resolveManagedIngressPorts(defaults.ports),
+    /** Organization switch for All Databases logins; on unless turned off. */
+    allowAllDatabasesLogins: defaults.allowAllDatabasesLogins !== false,
   }
 }
 

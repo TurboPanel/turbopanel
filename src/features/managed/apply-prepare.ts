@@ -56,7 +56,13 @@ import { REPLICATION_PASSWORD_LENGTH } from '../principals/store.ts'
 import { findManagedLoginByRole, listManagedLoginCredentials, setLoginPassword } from './logins.ts'
 import { ensureManagedReplicationLogin } from './cluster-logins.ts'
 import { keepLivePrimaryEpoch } from './primary-epoch.ts'
-import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
+import { loadManagedOrgDefaults, loadPrincipalNamePolicy } from './load-org-defaults.ts'
+import {
+  allDatabasesAllowed,
+  allDatabasesSwitches,
+  loginDatabasesForApply,
+} from './all-databases.ts'
+import { isReservedDatabaseName } from './routes-helpers.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
   isOrganizationCaUniqueViolation,
@@ -417,9 +423,11 @@ async function buildCredentials(
   dataEncryptionSecrets: DerivedSecretsConfig,
   managedId: string,
   serverId: string,
-  omitLoginIds?: string[],
+  omitLoginIds: string[] | undefined,
   /** Every database the cluster has after this apply; the backup login reaches all of them. */
-  clusterDatabases: readonly string[] = []
+  clusterDatabases: readonly string[],
+  /** Both All Databases switches allow it, and the engine whose reserved names stay out. */
+  allDatabases: { active: boolean; engine: string }
 ): Promise<ManagedApplyCommandPayload['credentials'] | ManagedApplyPrepareError> {
   const omit = new Set(omitLoginIds ?? [])
   const rows = (await listManagedLoginCredentials(db, managedId)).filter((row) => !omit.has(row.id))
@@ -465,7 +473,11 @@ async function buildCredentials(
       // Applied login — the engine role name, not the internal short name.
       username: row.appliedUsername,
       role: row.role,
-      databases: row.databases,
+      databases: loginDatabasesForApply(row, {
+        databases: clusterDatabases,
+        active: allDatabases.active,
+        isReserved: (name) => isReservedDatabaseName(allDatabases.engine, name),
+      }),
       password: resealed,
     }
     const privileges = row.privileges
@@ -1464,7 +1476,13 @@ async function buildPayloadForMember(
     input.managedRow.id,
     member.serverId,
     input.omitLoginIds,
-    input.databases
+    input.databases,
+    {
+      active: allDatabasesAllowed(
+        allDatabasesSwitches(await loadManagedOrgDefaults(db, input.organizationId), input.settings)
+      ),
+      engine: input.spec.engine,
+    }
   )
   if (!Array.isArray(credentials)) return credentials
 
