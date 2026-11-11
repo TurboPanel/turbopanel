@@ -42,6 +42,7 @@ import type {
   EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployServiceHook,
+  EnvironmentDeployConfigFile,
   EnvironmentDeploySecretPlanEntry,
   EnvironmentDeploySource,
   EnvironmentDeployServiceFolder,
@@ -57,6 +58,7 @@ import {
   buildDeployPreviewServers,
   buildNativeAppServicesForDeploy,
   previewCommitSha,
+  previewConfigFiles,
   previewNativeAppVariables,
   buildSitesForDeploy,
   composeProjectName,
@@ -593,6 +595,8 @@ type DeployCommandCreateParams = DeployActor & {
   envFile?: string
   /** File-only secret mounts the daemon materializes from `variableMaterial`. */
   secretPlan?: EnvironmentDeploySecretPlanEntry[]
+  /** Generated config files (parts only) the daemon puts together from `variableMaterial`. */
+  configFiles?: EnvironmentDeployConfigFile[]
   serviceHooks: EnvironmentDeployServiceHook[]
   dockerExternalNetworks: string[]
   dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
@@ -791,6 +795,7 @@ async function createDeployCommand(
         principalMaterial: params.principalMaterial,
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,
+        configFiles: params.configFiles,
         serviceHooks: params.serviceHooks,
         dockerExternalNetworks: params.dockerExternalNetworks,
         dockerNetworkAddressing: params.dockerNetworkAddressing,
@@ -966,6 +971,7 @@ function createParamsForPreparedServer(
     principalMaterial: row.prepared.principalMaterial,
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,
+    configFiles: row.prepared.configFiles,
     serviceHooks: row.prepared.hooks,
     dockerExternalNetworks: row.prepared.dockerExternalNetworks,
     dockerNetworkAddressing: row.prepared.dockerNetworkAddressing,
@@ -1045,6 +1051,11 @@ function deploymentTargetsForFanOut(params: {
         lastCommandId: commandByServer.get(serverId) ?? null,
         options: {
           secretPlan: prepared?.secretPlan ?? [],
+          // Secrets the generated config files read, so a reboot can ask for
+          // their values (no values here, only key names).
+          ...(prepared?.configSecretRefs === undefined
+            ? {}
+            : { configSecretRefs: prepared.configSecretRefs }),
           siteReleases: params.siteReleases,
           // The PHP mode each site was given, so the next deploy keeps it.
           phpModes: recordSitePhpModes(prepared?.sites),
@@ -1616,6 +1627,9 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       ],
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
+      ...presentFields({
+        configFiles: preparedByServer.flatMap((row) => previewConfigFiles(row.prepared)),
+      }),
       nativeAppVariables: preparedByServer.flatMap((row) =>
         previewNativeAppVariables(row.prepared, reservedPorts.get(row.serverId), environmentId)
       ),

@@ -94,7 +94,7 @@ export type DestroyDataPlan = {
 /** Wire features a server's daemon lists; the stored projection by default. */
 export type DaemonFeatureLookup = (db: Db, serverId: string) => Promise<readonly string[]>
 
-async function storedDaemonFeatures(db: Db, serverId: string): Promise<readonly string[]> {
+export async function storedDaemonFeatures(db: Db, serverId: string): Promise<readonly string[]> {
   const state = await getServerDaemonStateByServerId(db, serverId)
   return state?.projection?.features ?? []
 }

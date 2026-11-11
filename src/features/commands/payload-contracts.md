@@ -275,10 +275,19 @@ plaintext). `filename` must match `COMPOSE_FILE_NAME_RE`
 (`/^[A-Za-z0-9._-]+\.ya?ml$/`, basename-only). Secret values never enter durable
 YAML: `secretPlan[]` + `variableMaterial[]` (`tpdaemon` envelopes;
 `sealVariableMaterialForDaemon` always reseals plaintext) materialize files
-under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (mode
-`0600`). Build secrets use Compose `build.secrets`, not `build.args`. The
-last-applied plan is also stored on `deployment.options.secretPlan` for boot
-rehydrate (`POST /api/daemon/v1/deployments/secrets/rehydrate`). Optional
+under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (files
+mode `0444` in a daemon-only `0700` folder: any user inside the one container a
+file is bound into can read it, host accounts are stopped by the folder).
+Optional `configFiles[]` (daemon feature `deploy-config-files-v1`) are generated
+config files as ordered `parts` (`{ text }` or `{ secretKey }`, no value) under
+`.../configs/` with the same modes; each `secretKey` is read from the sealed
+`variableMaterial[]` entry for the same `composeServiceName`, and a secret used
+only by a config file has material but no `secretPlan` entry. Limits: names
+match `^[A-Za-z0-9][A-Za-z0-9._-]*$` and do not end in `.tmp`, 64 KiB of text
+per file, 16 files per service, 256 KiB of text per deploy. Build secrets use Compose `build.secrets`, not `build.args`. The
+last-applied plan is also stored on `deployment.options.secretPlan` (plus
+`options.configSecretRefs`, the secrets only generated files read, as
+`{ composeServiceName, key }` with no values) for boot rehydrate (`POST /api/daemon/v1/deployments/secrets/rehydrate`). Optional
 payload fields `generation`, `desiredHash`, `replicaCounts`, and `serverId`
 identify the per-host snapshot. The rehydrate response also carries `gone[]`
 (`{ projectId, environmentId }`): requested deployments whose environment row no

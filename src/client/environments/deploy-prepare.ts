@@ -45,6 +45,10 @@ import {
   isApplyVariablesError,
   type VariableScopeEntryMap,
 } from '../../features/compose/apply-variables.ts'
+import type {
+  DeployConfigFileEntry,
+  DeployConfigSecretRef,
+} from '../../features/compose/config-files.ts'
 import type { DeploySecretPlanEntry } from '../../features/compose/secret-files.ts'
 import {
   type ComposeDeployValidationError,
@@ -140,7 +144,12 @@ import {
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
 } from '../../features/bindings/host-run.ts'
-import { ACME_ISSUE_FEATURE, PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
+import {
+  ACME_ISSUE_FEATURE,
+  DEPLOY_CONFIG_FILES_FEATURE,
+  PHP_SITE_MODES_FEATURE,
+} from '../../lib/version-wire.ts'
+import { storedDaemonFeatures } from './destroy-data.ts'
 import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import { getDaemonSealingKey } from '../../features/servers/daemon-sealing-key.ts'
 import {
@@ -338,6 +347,7 @@ export type DeployPrepareWarningCode =
   | 'node_version_unresolved'
   | 'storage_service_removed'
   | 'reserved_host_port'
+  | 'config_file_ownership_ignored'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -515,6 +525,10 @@ export type PreparedDeployCompose = ServerDeployment & {
   envFile?: string
   /** File-only secret mounts (no plaintext). */
   secretPlan?: DeploySecretPlanEntry[]
+  /** Generated config files as parts (text and secret key names, no values). */
+  configFiles?: DeployConfigFileEntry[]
+  /** Secrets the generated files read; kept so a reboot can ask for their values. */
+  configSecretRefs?: DeployConfigSecretRef[]
   /**
    * What each native app's process gets as environment variables, for people:
    * every name, where it came from, and whether it reaches the process. Secret
@@ -568,7 +582,23 @@ export type NativeAppVariablesView = {
   variables: NativeAppVariableView[]
 }
 
+/** A generated config file the compose cannot compile, or the daemon cannot take. */
+export type ConfigFilesPrepareError =
+  | {
+      kind: 'config_interpolation' | 'config_file_invalid' | 'config_file_shared'
+      message: string
+      composeServiceName?: string
+      envKey?: string
+    }
+  | {
+      kind: 'config_files_need_daemon_update'
+      message: string
+      /** The servers whose daemon lacks `deploy-config-files-v1`. */
+      servers: Array<{ serverId: string; name: string }>
+    }
+
 export type DeployPrepareError =
+  | ConfigFilesPrepareError
   | { kind: 'health_check'; required: boolean; services: string[] }
   /**
    * The merged effective document failed deploy-time compose validation.
@@ -746,6 +776,7 @@ async function emptyPreparedCompose(
 }
 
 type HardDeployPrepareError =
+  | ConfigFilesPrepareError
   | { kind: 'datacenter_ip_required'; serverId: string }
   // Hard in preview too: a PHP site cannot reach this database, however it is previewed.
   | { kind: 'binding_host_site_unsupported'; message: string }
@@ -2917,6 +2948,8 @@ async function toPreparedDeployResult(
     replicaCounts: Record<string, number>
     envFile?: string
     secretPlan?: DeploySecretPlanEntry[]
+    configFiles?: DeployConfigFileEntry[]
+    configSecretRefs?: DeployConfigSecretRef[]
     sourceSelection?: DeploySourceSelection
     /**
      * The variables and storage as they are before they are sealed for the
@@ -2979,12 +3012,31 @@ async function toPreparedDeployResult(
     warnings: parts.warnings,
     ...(parts.envFile !== undefined ? { envFile: parts.envFile } : {}),
     ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
+    ...(parts.configFiles !== undefined && parts.configFiles.length > 0
+      ? { configFiles: parts.configFiles }
+      : {}),
+    ...(parts.configSecretRefs !== undefined && parts.configSecretRefs.length > 0
+      ? { configSecretRefs: parts.configSecretRefs }
+      : {}),
     ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
   }
 }
 
+/** The server this slice compiles for, named the way people know it. */
+async function namedServer(db: Db, serverId: string): Promise<{ serverId: string; name: string }> {
+  const [row] = await db
+    .select({ name: server.name, hostname: server.hostname })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return { serverId, name: row?.name?.trim() || row?.hostname || serverId }
+}
+
 function toApplyVariablesPrepareError(error: ApplyVariablesError): DeployPrepareError {
   const { kind, message, ref, composeServiceName, envKey } = error
+  if (kind === 'config_files_need_daemon_update') {
+    return { kind, message, servers: [] }
+  }
   if (kind === 'variable_unresolved') {
     return {
       kind,
@@ -3695,9 +3747,23 @@ export async function prepareDeployCompose(
     nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
     projectId: envRow.projectId,
     environmentId: params.environmentId,
+    configFilesEnabled: (await storedDaemonFeatures(db, params.serverId)).includes(
+      DEPLOY_CONFIG_FILES_FEATURE
+    ),
   })
   if (isApplyVariablesError(withVariables)) {
-    return toApplyVariablesPrepareError(withVariables)
+    const prepareError = toApplyVariablesPrepareError(withVariables)
+    if (prepareError.kind === 'config_files_need_daemon_update') {
+      return { ...prepareError, servers: [await namedServer(db, params.serverId)] }
+    }
+    return prepareError
+  }
+  for (const warning of withVariables.configWarnings) {
+    warnings.push({
+      code: 'config_file_ownership_ignored',
+      message: warning.message,
+      details: { composeServiceName: warning.composeServiceName, config: warning.source },
+    })
   }
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
@@ -3883,6 +3949,13 @@ export async function prepareDeployCompose(
       : {
           hashInputs: {
             secretVariables: withVariables.secretMaterial,
+            // The compiled YAML names only the file path, so the parts are what
+            // tells a changed text-only config from an unchanged one.
+            // Left out when there are none, so an environment without generated
+            // files keeps the hash it already has.
+            ...(withVariables.configFiles.length > 0
+              ? { configFiles: withVariables.configFiles }
+              : {}),
             storage: storageMaterialRaw,
           },
         }),
@@ -3913,6 +3986,8 @@ export async function prepareDeployCompose(
     replicaCounts: replicaCountsFromMap(pipeline.localReplicaCounts),
     envFile: withVariables.envFileContent,
     secretPlan: withVariables.secretPlan,
+    configFiles: withVariables.configFiles,
+    configSecretRefs: withVariables.configSecretRefs,
     sourceSelection: params.sourceSelection,
   })
 }

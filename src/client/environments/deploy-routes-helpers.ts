@@ -17,6 +17,7 @@ import type {
 import type {
   DeployPrepareError,
   NativeAppVariablesView,
+  PreparedDeployCompose,
   PreparedNativeAppService,
 } from './deploy-prepare.ts'
 import {
@@ -211,7 +212,13 @@ export function deployMaterialsErrorResponse(
 type VariablePrepareError = Extract<
   DeployPrepareError,
   {
-    kind: 'variable_unresolved' | 'variable_ref_invalid' | 'variable_secret_interpolation'
+    kind:
+      | 'variable_unresolved'
+      | 'variable_ref_invalid'
+      | 'variable_secret_interpolation'
+      | 'config_interpolation'
+      | 'config_file_invalid'
+      | 'config_file_shared'
   }
 >
 
@@ -874,7 +881,19 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
     case 'variable_unresolved':
     case 'variable_ref_invalid':
     case 'variable_secret_interpolation':
+    case 'config_interpolation':
+    case 'config_file_invalid':
+    case 'config_file_shared':
       return variablePrepareErrorResponse(prepared)
+    case 'config_files_need_daemon_update':
+      return {
+        status: 409,
+        body: {
+          error: 'config_files_need_daemon_update',
+          message: prepared.message,
+          servers: prepared.servers,
+        },
+      }
     case 'storage_location_unavailable':
       return storageLocationUnavailableResponse(prepared)
     case 'resource_limit':
@@ -1273,4 +1292,25 @@ export function hostingsOnlyFits(
     previous.filter((target) => target.status === 'applied').map((target) => target.serverId)
   )
   return planServerIds.every((serverId) => applied.has(serverId))
+}
+
+/** A generated config file as the preview shows it: secret slots by name, never a value or a size. */
+export type PreviewConfigFile = {
+  serverId?: string
+  composeServiceName: string
+  source: string
+  hasSecretValues: boolean
+  template: string
+}
+
+export function previewConfigFiles(prepared: PreparedDeployCompose): PreviewConfigFile[] {
+  return (prepared.configFiles ?? []).map((file) => ({
+    ...(prepared.serverId === undefined ? {} : { serverId: prepared.serverId }),
+    composeServiceName: file.composeServiceName,
+    source: file.source,
+    hasSecretValues: file.parts.some((part) => 'secretKey' in part),
+    template: file.parts
+      .map((part) => ('text' in part ? part.text : '{$' + part.secretKey + '}'))
+      .join(''),
+  }))
 }
