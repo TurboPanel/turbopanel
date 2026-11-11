@@ -28,6 +28,7 @@ test('ServerDeleteBlocker kind enum covers forgettable leftovers and remaining R
     'environment',
     'managed',
     'replica',
+    'cache',
     'deployment',
     'slot',
     'copy',

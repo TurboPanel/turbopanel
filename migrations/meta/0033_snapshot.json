@@ -1,5 +1,5 @@
 {
-  "id": "b75e89a0-327e-40cf-b462-74b704b101dc",
+  "id": "e29c0c40-216e-4833-a6ff-abda669e5181",
   "prevId": "e46a7b20-12ba-4ce2-8157-111714e6bea7",
   "version": "7",
   "dialect": "postgresql",
@@ -1394,12 +1394,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
-        },
-        "preset": {
-          "name": "preset",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -1509,10 +1503,6 @@
         "binding_key_prefix_format_check": {
           "name": "binding_key_prefix_format_check",
           "value": "(char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)"
-        },
-        "binding_preset_check": {
-          "name": "binding_preset_check",
-          "value": "preset IS NULL OR preset IN ('postgres', 'mysql', 'laravel', 'wordpress', 'metabase', 'uptime-kuma')"
         }
       },
       "isRLSEnabled": false
@@ -1661,6 +1651,263 @@
         "bulwark_digest_format_check": {
           "name": "bulwark_digest_format_check",
           "value": "last_digest IS NULL OR last_digest ~ '^[a-f0-9]{64}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.cache": {
+      "name": "cache",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "metadata": {
+          "name": "metadata",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "principal_id": {
+          "name": "principal_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "varchar(63)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "engine": {
+          "name": "engine",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'valkey'"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "version": {
+          "name": "version",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "access": {
+          "name": "access",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'socket'"
+        },
+        "port": {
+          "name": "port",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "max_memory_mb": {
+          "name": "max_memory_mb",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 64
+        },
+        "key_prefix": {
+          "name": "key_prefix",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'REDIS'"
+        },
+        "password": {
+          "name": "password",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "idx_cache_server_id": {
+          "name": "idx_cache_server_id",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cache_principal_id": {
+          "name": "idx_cache_principal_id",
+          "columns": [
+            {
+              "expression": "principal_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_cache_server_port": {
+          "name": "uniq_cache_server_port",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "port",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "port IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "cache_environment_id_environment_id_fk": {
+          "name": "cache_environment_id_environment_id_fk",
+          "tableFrom": "cache",
+          "tableTo": "environment",
+          "columnsFrom": [
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "cache_server_id_server_id_fk": {
+          "name": "cache_server_id_server_id_fk",
+          "tableFrom": "cache",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "cache_principal_id_principal_id_fk": {
+          "name": "cache_principal_id_principal_id_fk",
+          "tableFrom": "cache",
+          "tableTo": "principal",
+          "columnsFrom": [
+            "principal_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_cache_environment_name": {
+          "name": "uniq_cache_environment_name",
+          "nullsNotDistinct": false,
+          "columns": [
+            "environment_id",
+            "name"
+          ]
+        },
+        "uniq_cache_environment_principal_prefix": {
+          "name": "uniq_cache_environment_principal_prefix",
+          "nullsNotDistinct": false,
+          "columns": [
+            "environment_id",
+            "principal_id",
+            "key_prefix"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "cache_name_check": {
+          "name": "cache_name_check",
+          "value": "name ~ '^[a-z][a-z0-9-]{0,62}$'"
+        },
+        "cache_engine_check": {
+          "name": "cache_engine_check",
+          "value": "engine IN ('valkey', 'redis')"
+        },
+        "cache_status_check": {
+          "name": "cache_status_check",
+          "value": "status IN ('pending', 'applying', 'ready', 'stopped', 'failed')"
+        },
+        "cache_version_check": {
+          "name": "cache_version_check",
+          "value": "version ~ '^[0-9]{1,3}\\.[0-9]{1,3}$'"
+        },
+        "cache_access_check": {
+          "name": "cache_access_check",
+          "value": "(access = 'socket' AND port IS NULL) OR (access = 'port' AND port IS NOT NULL AND port BETWEEN 1024 AND 65535)"
+        },
+        "cache_max_memory_mb_check": {
+          "name": "cache_max_memory_mb_check",
+          "value": "max_memory_mb BETWEEN 16 AND 65536"
+        },
+        "cache_key_prefix_check": {
+          "name": "cache_key_prefix_check",
+          "value": "key_prefix ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$'"
         }
       },
       "isRLSEnabled": false

@@ -161,6 +161,14 @@ test('resolvePatchBindingFields applies and validates overrides', () => {
     resolvePatchBindingFields({ keyPrefix: 'APP', emitEngineDefaults: false }, base, 'postgres'),
     { ok: true, keyPrefix: 'APP', preset: null }
   )
+  assertEquals(
+    resolvePatchBindingFields(
+      { emitEngineDefaults: true },
+      { keyPrefix: 'DATABASE', preset: 'laravel' },
+      'postgres'
+    ),
+    { ok: true, keyPrefix: 'DATABASE', preset: 'laravel' }
+  )
   assertEquals(resolvePatchBindingFields({ preset: 'laravel' }, base, 'postgres'), {
     ok: true,
     keyPrefix: 'DATABASE',

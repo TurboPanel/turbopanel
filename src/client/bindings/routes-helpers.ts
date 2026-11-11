@@ -124,7 +124,9 @@ export function resolveRequestedPreset(
   if (!hasToggle) return { ok: true, preset: fallback }
   const toggle = parseEmitEngineDefaults(body.emitEngineDefaults)
   if (!toggle.ok) return toggle
-  return { ok: true, preset: toggle.value ? plainPresetForEngine(engineCode) : null }
+  // The older switch turned on keeps a preset the binding already has.
+  if (toggle.value) return { ok: true, preset: fallback ?? plainPresetForEngine(engineCode) }
+  return { ok: true, preset: null }
 }
 
 /** The preset a request for a new binding gets: the plain names unless it says otherwise. */
