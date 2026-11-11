@@ -473,7 +473,7 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       // Confirmed: the first record becomes the CNAME (its id is kept), the rest go.
       const [first, ...rest] = found.conflicts
       const written = await api.putDnsRecord(input.zoneId, first!.id, record)
-      for (const other of rest) await api.deleteDnsRecord(input.zoneId, other.id)
+      await Promise.all(rest.map((other) => api.deleteDnsRecord(input.zoneId, other.id)))
       return { recordId: written.id }
     },
 
