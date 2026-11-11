@@ -12,6 +12,7 @@ import {
   carrier,
   dnsRecord,
   environment,
+  ingressAccount,
   notificationChannel,
   organization,
   peripheral,
@@ -59,6 +60,7 @@ test('groundwork tables and columns hold the rules the migration gives them', as
     .values({ name: 'Groundwork Check Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
+  let ingressId: string | undefined
   try {
     const [ws] = await db
       .insert(workspace)
@@ -218,6 +220,18 @@ test('groundwork tables and columns hold the rules the migration gives them', as
     await refuses('record_ttl_check', () => db.insert(dnsRecord).values({ ...rec, ttl: 0 }))
     await db.insert(dnsRecord).values(rec)
     await refuses('uniq_record_scope_name_kind_content', () => db.insert(dnsRecord).values(rec))
+    // The control plane's own names use an install-level account, and a name is unique there.
+    const [ing] = await db
+      .insert(ingressAccount)
+      .values({ provider: 'cloudflare', label: 'gw', tokenEnvelope: 'x' })
+      .returning({ id: ingressAccount.id })
+    ingressId = ing!.id
+    await refuses('record_account_check', () =>
+      db.insert(dnsRecord).values({ ...rec, ingressId: ing!.id })
+    )
+    const install = { ...rec, organizationId: null, carrierId: null, ingressId: ing!.id }
+    await db.insert(dnsRecord).values(install)
+    await refuses('uniq_record_scope_name_kind_content', () => db.insert(dnsRecord).values(install))
     // A carrier that still has a record cannot go; the key is checked at commit.
     await refuses('record_carrier_id_carrier_id_fk', () =>
       db.delete(carrier).where(eq(carrier.id, car!.id))
@@ -239,6 +253,12 @@ test('groundwork tables and columns hold the rules the migration gives them', as
       ]
     )
   } finally {
+    // The server key is RESTRICT, so servers go first (devices and placements follow them).
+    await db.delete(server).where(eq(server.organizationId, organizationId))
+    if (ingressId) {
+      await db.delete(dnsRecord).where(eq(dnsRecord.ingressId, ingressId))
+      await db.delete(ingressAccount).where(eq(ingressAccount.id, ingressId))
+    }
     // An organization delete removes the carrier and its records in one commit.
     await db.delete(organization).where(eq(organization.id, organizationId))
     await endDbConnection(db)
