@@ -16,7 +16,16 @@
 import { and, eq, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm'
 import type { AnyPgColumn } from 'drizzle-orm/pg-core'
 import type { Db } from '../../db/connection.ts'
-import { binding, folder, login, principal, secret, storage, tenancy } from '../../db/schema.ts'
+import {
+  binding,
+  cache,
+  folder,
+  login,
+  principal,
+  secret,
+  storage,
+  tenancy,
+} from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { PrincipalReferences } from './store.ts'
 
@@ -50,7 +59,8 @@ export async function countPrincipalReferencesOutside(
   scope: PrincipalDeleteScope
 ): Promise<PrincipalReferences> {
   const total = async (
-    table: typeof tenancy | typeof storage | typeof secret | typeof login | typeof folder,
+    table:
+      typeof tenancy | typeof storage | typeof secret | typeof login | typeof folder | typeof cache,
     extra: ReturnType<typeof and>
   ): Promise<number> => {
     const [row] = await db
@@ -70,6 +80,7 @@ export async function countPrincipalReferencesOutside(
     storages: await total(storage, and(outside(storage.id, scope.storageIds))),
     secrets: await total(secret, undefined),
     logins: await total(login, undefined),
+    caches: await total(cache, undefined),
     folders: await total(
       folder,
       and(

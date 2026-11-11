@@ -908,7 +908,15 @@ test('DELETE /projects/:projectId/principals/:id refuses while a service still r
       assertEquals(del.status, 409)
       assertEquals(await del.json(), {
         error: 'principal_in_use',
-        usedBy: { tenancies: 1, bindings: 0, storages: 0, secrets: 0, logins: 0, folders: 0 },
+        usedBy: {
+          tenancies: 1,
+          bindings: 0,
+          storages: 0,
+          secrets: 0,
+          logins: 0,
+          caches: 0,
+          folders: 0,
+        },
       })
 
       const rows = await db
@@ -1560,7 +1568,15 @@ test('DELETE /projects/:projectId/principals/:id refuses while a database login 
       assertEquals(del.status, 409)
       assertEquals(await del.json(), {
         error: 'principal_in_use',
-        usedBy: { tenancies: 0, bindings: 0, storages: 0, secrets: 0, logins: 1, folders: 0 },
+        usedBy: {
+          tenancies: 0,
+          bindings: 0,
+          storages: 0,
+          secrets: 0,
+          logins: 1,
+          caches: 0,
+          folders: 0,
+        },
       })
       // The login and the principal are both still there.
       assertEquals(

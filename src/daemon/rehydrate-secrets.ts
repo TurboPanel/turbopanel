@@ -14,6 +14,8 @@ import {
   isDaemonKeyActive,
 } from '../features/servers/server-identity-db.ts'
 import { reapplyBindingOwnedVariables } from '../features/bindings/materialize.ts'
+import { readRecordedCacheConsumers } from '../features/caches/reach.ts'
+import { reapplyCacheVariables } from '../features/caches/variables.ts'
 import { logWarn } from '../lib/logger.ts'
 import {
   applyDbRefs,
@@ -178,8 +180,31 @@ export function expandRehydrateDbRefs(
   return expanded.map
 }
 
+/** The cache entries this service got at its last deploy, set last like the deploy did. */
+async function applyRecordedCacheVariables(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  where: { environmentId: string; composeServiceName: string; serverId: string },
+  map: ResolvedVariableMap
+): Promise<ResolvedVariableMap> {
+  const [row] = await db
+    .select({ options: deployment.options })
+    .from(deployment)
+    .where(
+      and(
+        eq(deployment.environmentId, where.environmentId),
+        eq(deployment.serverId, where.serverId)
+      )
+    )
+    .limit(1)
+  const ids = readRecordedCacheConsumers(row?.options)[where.composeServiceName] ?? []
+  if (ids.length > 0) await reapplyCacheVariables(db, secrets, ids, map)
+  return map
+}
+
 async function resolveServiceVariableMap(
   db: Db,
+  secrets: DerivedSecretsConfig,
   environmentId: string,
   composeServiceName: string,
   serverId: string
@@ -201,9 +226,15 @@ async function resolveServiceVariableMap(
   await mergeHostingVariablesForService(db, row.id, varMap)
   await reapplyBindingOwnedVariables(db, row.id, varMap)
   const serverVars = await resolveServerScopedVariables(db, serverId)
-  return expandRehydrateDbRefs(
+  const expanded = expandRehydrateDbRefs(
     new Map([...varMap, ...serverVars]),
     await loadBindingRefTable(db, row.id)
+  )
+  return await applyRecordedCacheVariables(
+    db,
+    secrets,
+    { environmentId, composeServiceName, serverId },
+    expanded
   )
 }
 
@@ -275,6 +306,7 @@ async function collectRehydrateVariableMaterial(
     if (!varMap) {
       varMap = await resolveServiceVariableMap(
         db,
+        dataEncryptionSecrets,
         item.environmentId,
         plan.composeServiceName,
         daemonServerId

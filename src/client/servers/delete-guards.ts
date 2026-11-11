@@ -66,6 +66,8 @@ export const FORGETTABLE_SERVER_DELETE_BLOCKER_KINDS = new Set<ServerDeleteBlock
   'slot',
   'copy',
   'replica',
+  // A cache goes with its environment; one whose environment is elsewhere blocks (see `blockedCaches`).
+  'cache',
 ])
 
 export const SERVER_DELETE_BLOCKER_LABELS: Record<ServerDeleteBlockerKind, string> = {
@@ -204,6 +206,8 @@ export type ServerForgetPlan = {
   members: ServerForgetMember[]
   blockedDatabases: ServerForgetBlockedDatabase[]
   blockedEnvironments: ServerForgetBlockedEnvironment[]
+  /** Caches on this server whose environment a forget does not drop; remove them first. */
+  blockedCaches: Array<{ id: string; name: string }>
   blockingBlockers: ServerDeleteBlocker[]
 }
 
@@ -426,13 +430,16 @@ export function canForgetServerResources(
     colocated: boolean
     blockedDatabaseCount: number
     blockedEnvironmentCount: number
+    /** Caches a forget would leave behind; 0 when omitted. */
+    blockedCacheCount?: number
   }>
 ): boolean {
   return (
     !opts.online &&
     !opts.colocated &&
     opts.blockedDatabaseCount === 0 &&
-    opts.blockedEnvironmentCount === 0
+    opts.blockedEnvironmentCount === 0 &&
+    (opts.blockedCacheCount ?? 0) === 0
   )
 }
 
@@ -528,6 +535,7 @@ function emptyForgetPlan(): ServerForgetPlan {
     members: [],
     blockedDatabases: [],
     blockedEnvironments: [],
+    blockedCaches: [],
     blockingBlockers: [],
   }
 }
@@ -929,7 +937,7 @@ export async function planServerForget(
         .where(and(eq(replica.serverId, serverId), notSystemWorkspace())),
       listServerDeleteBlockers(db, serverId, organizationId),
       db
-        .select({ id: cache.id, name: cache.name })
+        .select({ id: cache.id, name: cache.name, environmentId: cache.environmentId })
         .from(cache)
         .where(eq(cache.serverId, serverId))
         .orderBy(asc(cache.name)),
@@ -987,6 +995,21 @@ export async function planServerForget(
       databaseName: managedDisplayName(row.name, row.engine),
     }))
 
+  const forgetEnvironmentIds = new Set(environments.map((row) => row.id))
+  const blockedCaches = placedCaches
+    .filter((row) => !forgetEnvironmentIds.has(row.environmentId))
+    .map((row) => ({ id: row.id, name: row.name }))
+  const blockingBlockers = buildForgetDatabaseBlockingBlockers(
+    blockedDatabases,
+    blockedIds,
+    clusters,
+    serverId,
+    replicaTouches
+  )
+  if (blockedCaches.length > 0) {
+    pushBlocker(blockingBlockers, 'cache', blockedCaches.length)
+  }
+
   return {
     blockers: withBlockerItems(blockers, {
       environment: environmentItems,
@@ -1000,13 +1023,8 @@ export async function planServerForget(
     members,
     blockedDatabases,
     blockedEnvironments,
-    blockingBlockers: buildForgetDatabaseBlockingBlockers(
-      blockedDatabases,
-      blockedIds,
-      clusters,
-      serverId,
-      replicaTouches
-    ),
+    blockedCaches,
+    blockingBlockers: withBlockerItems(blockingBlockers, { cache: blockedCaches }),
   }
 }
 
@@ -1199,6 +1217,7 @@ export async function loadServerDeletePreview(
       colocated: opts.colocated,
       blockedDatabaseCount: plan.blockedDatabases.length,
       blockedEnvironmentCount: plan.blockedEnvironments.length,
+      blockedCacheCount: plan.blockedCaches.length,
     }),
     colocated: opts.colocated,
     blockers,

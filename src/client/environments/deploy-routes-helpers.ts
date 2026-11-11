@@ -926,6 +926,11 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
       }
     case 'storage_location_unavailable':
       return storageLocationUnavailableResponse(prepared)
+    case 'project_cache_refused':
+      return {
+        status: prepared.code === 'daemon_update_needed' ? 409 : 422,
+        body: { error: prepared.code, message: prepared.message },
+      }
     case 'resource_limit':
       return {
         status: 409,

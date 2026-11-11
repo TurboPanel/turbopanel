@@ -41,9 +41,6 @@ const NOT_SEALED: Readonly<Record<string, string>> = {
   // Nothing writes `device` yet: the push transport that seals tokens adds its
   // re-encrypt stage in the same change and removes this entry.
   'device.token': 'no writer yet; the push transport adds the sweep stage',
-  // Nothing writes `cache` yet: the project cache service that seals the login
-  // password adds its re-encrypt stage in the same change and removes this entry.
-  'cache.password': 'no writer yet; the cache service adds the sweep stage',
 }
 
 const NAME_PATTERN = /envelope|secret|preshared|private_key|key_pem|password|token/i

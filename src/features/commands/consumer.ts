@@ -86,6 +86,7 @@ import { parseReseedGuard, reseedSupersededReason } from '../managed/reseed-guar
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
 import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
+import { applyCacheFailureSideEffect, applyCacheResultSideEffect } from '../caches/results.ts'
 import {
   applyBackupTargetTestFailure,
   applyBackupTargetTestSideEffect,
@@ -296,6 +297,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   // Stops the copy's containers, extracts one archive, starts them again.
   'storage.restore': 1_800_000,
   'system.reconcile': 300_000,
+  // The first cache on a host downloads and verifies the engine, then starts each process.
+  'cache.apply': 600_000,
 }
 
 /**
@@ -341,7 +344,8 @@ export function commandTimeoutMs(type: string): number {
     type === 'managed.ha.failover' ||
     type === 'storage.backup' ||
     type === 'storage.restore' ||
-    type === 'system.reconcile'
+    type === 'system.reconcile' ||
+    type === 'cache.apply'
   ) {
     return COMMAND_TIMEOUT_MS[type]
   }
@@ -3207,6 +3211,7 @@ export async function applySucceededSideEffects(
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
   await applyBackupsReconcileSideEffect(db, record, result)
+  await applyCacheResultSideEffect(db, record, result)
   await applyBackupTargetTestSideEffect(db, record, result)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
@@ -3723,6 +3728,7 @@ async function handlePendingFailed(
   await applyFabricFailedSideEffect(db, record, envelope, error)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
   await applyPrincipalIdRefusedSideEffect(db, record, error)
+  await applyCacheFailureSideEffect(db, record, error)
 }
 
 async function handlePendingExpired(
@@ -3759,6 +3765,7 @@ async function handlePendingExpired(
   )
   await applyFabricFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
+  await applyCacheFailureSideEffect(db, record, pending.error ?? 'Command timed out')
 }
 
 async function handlePendingUnexpected(

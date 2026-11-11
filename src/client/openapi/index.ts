@@ -23,6 +23,7 @@ import { servicePaths, serviceSchemas } from './services.ts'
 import { variablePaths, variableSchemas } from './variables.ts'
 import { tagPaths, tagSchemas } from './tags.ts'
 import { taskPaths, taskSchemas } from './tasks.ts'
+import { cachePaths, cacheSchemas } from './caches.ts'
 import { bindingPaths, bindingSchemas } from './bindings.ts'
 import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
@@ -175,6 +176,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...variableSchemas,
         ...tagSchemas,
         ...taskSchemas,
+        ...cacheSchemas,
         ...bindingSchemas,
         ...storageSchemas,
         ...storageBackupSchemas,
@@ -216,6 +218,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       ...variablePaths,
       ...tagPaths,
       ...taskPaths,
+      ...cachePaths,
       ...bindingPaths,
       ...storagePaths,
       ...storageBackupPaths,

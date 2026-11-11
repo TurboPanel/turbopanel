@@ -20,6 +20,7 @@ import {
   FABRIC_RETAIN_KEYS_FEATURE,
   DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
+  PROJECT_CACHE_FEATURE,
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
   DEPLOY_CANCEL_FEATURE,
@@ -448,4 +449,9 @@ test('tunnel-status-facts-v1 is advertised and raised no floor', () => {
   assertEquals(TUNNEL_STATUS_FACTS_FEATURE, 'tunnel-status-facts-v1')
   assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_STATUS_FACTS_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('project-cache-v1 is the last daemon wire feature', () => {
+  assertEquals(PROJECT_CACHE_FEATURE, 'project-cache-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), PROJECT_CACHE_FEATURE)
 })
