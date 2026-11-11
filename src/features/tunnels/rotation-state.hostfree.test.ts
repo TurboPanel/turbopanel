@@ -3,6 +3,8 @@ import {
   readRotation,
   rotationActive,
   rotationWarnings,
+  claimHeld,
+  dueForRetry,
   runSecretFor,
   settling,
   toApiRotation,
@@ -37,7 +39,7 @@ function rotating(fields: Record<string, unknown>) {
 
 test('the stored rotation is read back, and anything malformed reads as none', () => {
   const state = readRotation(
-    rotating({ current: { serverId: A, since: 'x', connectorsCommandId: 'c1', listInPlace: true } })
+    rotating({ current: { serverId: A, since: 'x', connectorsCommandId: 'c1', unknown: true } })
   )
   assertEquals(state?.phase, 'rolling')
   assertEquals(state?.step, 3)
@@ -97,6 +99,9 @@ test('the API shows where the rotation is, never a secret id', () => {
     pendingServerIds: [B],
     currentServerId: A,
     stoppedReason: null,
+    // The provider issued the new token: B still runs on the old one.
+    oldTokenServerIds: [B],
+    resumesOnItsOwn: false,
   })
   assert(!JSON.stringify(shown).includes('secret'))
   assertEquals(toApiRotation(null), null)
@@ -128,4 +133,23 @@ test('the next server waits until traffic had time to settle on the last moved o
   assert(settling(state, at + 9 * 60_000, 10 * 60_000))
   assert(!settling(state, at + 10 * 60_000, 10 * 60_000))
   assert(!settling(readRotation(rotating({}))!, at, 10 * 60_000))
+})
+
+test('a provider attempt holds the rotation for a short lease, and a stop for an unreachable server retries', () => {
+  const at = Date.parse('2026-11-11T00:00:00.000Z')
+  const claimed = readRotation(
+    rotating({ phase: 'starting', claimedAt: '2026-11-11T00:00:00.000Z' })
+  )!
+  assert(claimHeld(claimed, at + 60_000))
+  assert(!claimHeld(claimed, at + 2 * 60_000))
+  assert(!claimHeld(readRotation(rotating({}))!, at))
+  const stopped = readRotation(
+    rotating({ phase: 'stopped', retryable: true, stoppedAt: '2026-11-11T00:00:00.000Z' })
+  )!
+  assert(!dueForRetry(stopped, at + 60_000))
+  assert(dueForRetry(stopped, at + 2 * 60_000))
+  assertEquals(toApiRotation(stopped)?.resumesOnItsOwn, true)
+  // A stop a person has to look at never goes again on its own.
+  assert(!dueForRetry(readRotation(rotating({ phase: 'stopped' }))!, at + 60 * 60_000))
+  assert(!dueForRetry(readRotation(rotating({ phase: 'rolling', retryable: true }))!, at))
 })

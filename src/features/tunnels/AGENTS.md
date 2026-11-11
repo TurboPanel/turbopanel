@@ -684,9 +684,13 @@ removing the tunnel:
 - Progress is `tunnel.metadata.runTokenRotation` (no new table, column or
   status value): `phase` (`starting`, `rolling`, `finishing`, `done`,
   `stopped`), a `step` counter every save is guarded on (one writer wins),
-  `providerCalledAt` (written before the provider is asked; a resume then only
-  reads the token, never rotates twice), `newSecretId` (the new sealed token, a
-  second `secret` row), `pending` and `moved` servers and the `current` one.
+  `tunnelSecretId` (the tunnel secret, 32 random bytes chosen once and sealed in
+  a `secret` row before the provider is ever asked, so every attempt, retry or
+  second advancer sends the same secret and gets the same token), `claimedAt`
+  (a two-minute lease, taken with a guarded save, around each provider
+  attempt), `newSecretId` (the new sealed token, a second `secret` row; the
+  chosen secret is deleted once it is saved), `pending` and `moved` servers
+  and the `current` one.
 - Until the end, `runSecretFor` gives each server the old token while it waits
   its turn and the new one once moved (or when it started carrying the tunnel
   after the rotation began), so a repair resend or a placement change never
@@ -698,12 +702,23 @@ removing the tunnel:
   connector answers `connected`. Then traffic is given ten minutes to move onto
   that connector (`ROTATION_SETTLE_MS`, from the provider's own rotation steps:
   "Wait 10 minutes for traffic to route through the new connectors") before the
-  next server is moved or old connections are dropped. A server that is offline, refuses the
-  list or is not connected within ten minutes stops the rotation
-  (`stoppedReason`): nothing more moves and no connection is dropped. Starting
-  again resumes with the token already issued.
-- Then every connection is dropped once (`dropConnections`), the tunnel takes
-  the new secret row and the old one is deleted, in one transaction with the
-  `done` save. Deleting a tunnel also deletes a new secret row that a rotation
-  never adopted. The token is never logged, audited (`tunnel.run_token.rotate`
+  next server is moved or old connections are dropped. Before a server's list
+  goes out, the rotation waits until no other connector list is on its way to
+  it, so an older list carrying the old token can never land after the new
+  one. A server that cannot be reached waits behind the others; when none of
+  the remaining ones can be reached the rotation stops with `retryable`, the
+  answer says so (`resumesOnItsOwn`), and the sweep resumes it two minutes
+  later (`ROTATION_RETRY_MS`), so servers left on the old token (which the
+  answer lists as `oldTokenServerIds`: their connector stays up but could not
+  reconnect after a restart) are not left there. A server that refuses the
+  list, does not confirm the new token or is not connected within ten minutes
+  stops it for a person to look at: nothing more moves and no connection is
+  dropped, and starting again resumes with the secret and token already
+  issued.
+- Then every connection is dropped once (`dropConnections`; a provider account
+  that is gone, or a provider that cannot drop them, stops the rotation rather
+  than marking it done), the tunnel takes the new secret row (renamed to the
+  tunnel's run token) and the old one is deleted, in one transaction with the
+  `done` save. Deleting a tunnel also deletes the token and the chosen secret
+  of a rotation that never finished. The token is never logged, audited (`tunnel.run_token.rotate`
   records the phase and server count) or returned.

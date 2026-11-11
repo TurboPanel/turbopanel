@@ -616,13 +616,19 @@ export async function deleteTunnelRecord(
     Partial<Pick<typeof tunnel.$inferSelect, 'metadata'>>
 ): Promise<void> {
   // A run token sealed by a rotation that never finished goes with the tunnel too.
-  const rotated = (row.metadata as { runTokenRotation?: { newSecretId?: unknown } } | null)
-    ?.runTokenRotation?.newSecretId
-  const extra = typeof rotated === 'string' && rotated !== row.secretId ? rotated : null
+  const rotation = (
+    row.metadata as {
+      runTokenRotation?: { newSecretId?: unknown; tunnelSecretId?: unknown }
+    } | null
+  )?.runTokenRotation
+  // The token and the chosen secret of a rotation that never finished go with the tunnel too.
+  const extra = [rotation?.newSecretId, rotation?.tunnelSecretId].filter(
+    (id): id is string => typeof id === 'string' && id !== row.secretId
+  )
   await db.transaction(async (tx) => {
     await tx.delete(tunnel).where(eq(tunnel.id, row.id))
     if (row.secretId) await tx.delete(secret).where(eq(secret.id, row.secretId))
-    if (extra) await tx.delete(secret).where(eq(secret.id, extra))
+    if (extra.length > 0) await tx.delete(secret).where(inArray(secret.id, extra))
   })
 }
 

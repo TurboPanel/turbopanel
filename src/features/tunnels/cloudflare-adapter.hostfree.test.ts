@@ -6,6 +6,7 @@ import {
   parseExpiry,
 } from './cloudflare-adapter.ts'
 import { DnsNameTaken, TunnelProviderError } from './errors.ts'
+import { newTunnelSecret } from './adapter.ts'
 import { scrubSecrets } from './scrub.ts'
 
 /**
@@ -302,48 +303,50 @@ test('deleting a tunnel calls the provider', async () => {
 /** A made-up run token, built so no scanner mistakes it for a real one. */
 const NEW_RUN_TOKEN = 'N'.repeat(64)
 
-test('rotating a run token sets a fresh random secret, then reads the new token back', async () => {
+test('rotating a run token sends the secret it was given, then reads the token back', async () => {
   const { impl, calls } = fakeFetch({
     [`PATCH /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1`]: ok({ id: 't-1' }),
     [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1/token`]: ok(NEW_RUN_TOKEN),
   })
   const adapter = createCloudflareAdapter({ fetch: impl })
-  const first = await adapter.rotateRunToken(TOKEN, { accountId: ACCOUNT, externalId: 't-1' })
-  assertEquals(first, NEW_RUN_TOKEN)
+  const tunnelSecret = newTunnelSecret()
+  const input = { accountId: ACCOUNT, externalId: 't-1', tunnelSecret }
+  assertEquals(await adapter.rotateRunToken(TOKEN, input), NEW_RUN_TOKEN)
   assertEquals(
     calls.map((c) => c.method),
     ['PATCH', 'GET']
   )
-  const body = calls[0]!.body as Record<string, unknown>
-  assertEquals(Object.keys(body), ['tunnel_secret'])
-  const secret = String(body.tunnel_secret)
-  // At least 32 random bytes, base64: the provider's minimum.
-  assertEquals(atob(secret).length, 32)
-  await adapter.rotateRunToken(TOKEN, { accountId: ACCOUNT, externalId: 't-1' })
-  assert(String((calls[2]!.body as Record<string, unknown>).tunnel_secret) !== secret)
+  assertEquals(calls[0]!.body, { tunnel_secret: tunnelSecret })
+  // Sent again (a retry): the very same secret goes out.
+  await adapter.rotateRunToken(TOKEN, input)
+  assertEquals((calls[2]!.body as Record<string, unknown>).tunnel_secret, tunnelSecret)
 })
 
-test('a refused rotation never carries the new secret in its message', async () => {
-  let sent = ''
-  const impl: typeof fetch = (_input, init) => {
-    sent = String((JSON.parse(String(init?.body)) as { tunnel_secret: string }).tunnel_secret)
-    return Promise.resolve(
+test('a fresh tunnel secret is 32 random bytes in base64, different every time', () => {
+  const first = newTunnelSecret()
+  assertEquals(atob(first).length, 32)
+  assert(first !== newTunnelSecret())
+})
+
+test('a refused rotation never carries the secret in its message', async () => {
+  const tunnelSecret = newTunnelSecret()
+  const impl: typeof fetch = () =>
+    Promise.resolve(
       Response.json(
-        { success: false, errors: [{ code: 1, message: `bad secret ${sent}` }] },
+        { success: false, errors: [{ code: 1, message: `bad secret ${tunnelSecret}` }] },
         { status: 400 }
       )
     )
-  }
   const err = await assertRejects(
     () =>
       createCloudflareAdapter({ fetch: impl }).rotateRunToken(TOKEN, {
         accountId: ACCOUNT,
         externalId: 't-1',
+        tunnelSecret,
       }),
     TunnelProviderError
   )
-  assert(sent.length > 0)
-  assert(!err.message.includes(sent))
+  assert(!err.message.includes(tunnelSecret))
 })
 
 test('dropping connections deletes every connection of the tunnel', async () => {

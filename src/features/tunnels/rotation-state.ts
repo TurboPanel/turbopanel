@@ -35,8 +35,14 @@ export type RotationState = {
   /** Counts every saved step; a save only lands on the step it read (no two writers). */
   step: number
   startedAt: string
-  /** Set just before the provider is asked for a new token; a resume then only reads it. */
-  providerCalledAt?: string
+  /**
+   * The sealed tunnel secret chosen for this rotation (a `secret` row), saved
+   * before the provider is asked. Every attempt sends this same secret, so a
+   * retry or a second advancer can never issue a different token.
+   */
+  tunnelSecretId?: string
+  /** A provider attempt holds the rotation until this time has passed (a short lease). */
+  claimedAt?: string
   /** The sealed new token, kept beside the old one until every server has it. */
   newSecretId?: string
   /** Servers that still run on the old token, in the order they will be moved. */
@@ -49,6 +55,9 @@ export type RotationState = {
   finishedAt?: string
   /** Why the rotation stopped, in plain words. */
   stoppedReason?: string
+  stoppedAt?: string
+  /** The stop was a server that could not be reached: the sweep resumes it on its own. */
+  retryable?: boolean
 }
 
 const PHASES: readonly RotationPhase[] = ['starting', 'rolling', 'finishing', 'done', 'stopped']
@@ -91,7 +100,9 @@ export function readRotation(metadata: unknown): RotationState | null {
     moved: stringList(raw.moved),
   }
   const optional = {
-    providerCalledAt: optionalString(raw.providerCalledAt),
+    tunnelSecretId: optionalString(raw.tunnelSecretId),
+    claimedAt: optionalString(raw.claimedAt),
+    stoppedAt: optionalString(raw.stoppedAt),
     newSecretId: optionalString(raw.newSecretId),
     finishedAt: optionalString(raw.finishedAt),
     lastConnectedAt: optionalString(raw.lastConnectedAt),
@@ -102,6 +113,7 @@ export function readRotation(metadata: unknown): RotationState | null {
   }
   const current = readCurrent(raw.current)
   if (current) state.current = current
+  if (raw.retryable === true) state.retryable = true
   return state
 }
 
@@ -146,6 +158,13 @@ export type ApiRotation = {
   pendingServerIds: string[]
   currentServerId: string | null
   stoppedReason: string | null
+  /**
+   * Servers still holding the old token after the provider issued the new one:
+   * their running connector stays up, but it could not reconnect after a restart.
+   */
+  oldTokenServerIds: string[]
+  /** A stop the control plane resumes on its own once the server is reachable. */
+  resumesOnItsOwn: boolean
 }
 
 export function toApiRotation(state: RotationState | null): ApiRotation | null {
@@ -158,6 +177,8 @@ export function toApiRotation(state: RotationState | null): ApiRotation | null {
     pendingServerIds: state.pending,
     currentServerId: state.current?.serverId ?? null,
     stoppedReason: state.stoppedReason ?? null,
+    oldTokenServerIds: state.newSecretId && state.phase !== 'done' ? state.pending : [],
+    resumesOnItsOwn: state.phase === 'stopped' && state.retryable === true,
   }
 }
 
@@ -165,4 +186,20 @@ export function toApiRotation(state: RotationState | null): ApiRotation | null {
 export function settling(state: RotationState, nowMs: number, settleMs: number): boolean {
   if (!state.lastConnectedAt) return false
   return nowMs - Date.parse(state.lastConnectedAt) < settleMs
+}
+
+/** How long one provider attempt may hold the rotation before another may take over. */
+export const ROTATION_CLAIM_MS = 2 * 60 * 1000
+/** How long a stop for an unreachable server waits before the sweep tries again. */
+export const ROTATION_RETRY_MS = 2 * 60 * 1000
+
+/** Is a provider attempt still holding the rotation? Pure. */
+export function claimHeld(state: RotationState, nowMs: number): boolean {
+  return state.claimedAt !== undefined && nowMs - Date.parse(state.claimedAt) < ROTATION_CLAIM_MS
+}
+
+/** Should the sweep resume this stopped rotation now? Pure. */
+export function dueForRetry(state: RotationState, nowMs: number): boolean {
+  if (state.phase !== 'stopped' || !state.retryable) return false
+  return !state.stoppedAt || nowMs - Date.parse(state.stoppedAt) >= ROTATION_RETRY_MS
 }

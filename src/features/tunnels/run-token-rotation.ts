@@ -1,34 +1,38 @@
 /**
  * Rotate a tunnel's run token without removing the tunnel.
  *
- * 1. The provider issues a new token (`rotateRunToken`). Connectors already
- *    connected stay up, but the old token can no longer open a connection.
+ * 1. A tunnel secret is chosen once and sealed before the provider is ever
+ *    asked; under a short lease the provider is given that secret, which
+ *    issues the new token (`rotateRunToken`). Sending the same secret again is
+ *    harmless, so a retry, a crash or two advancers all end with one token.
+ *    Connectors already connected stay up, but the old token can no longer
+ *    open a connection.
  * 2. The new token is sealed into a second `secret` row. Until the rotation
  *    ends, each carrying server is given the old or the new token on its own
  *    (`runSecretFor`): servers still waiting keep the old one, so a resend or a
  *    placement change never moves them early.
- * 3. One server at a time is moved: its connector list goes out with the new
- *    token (the daemon restarts that connector in place, feature
- *    `tunnel-connector-token-change-v1`), the server is asked for its connector
- *    status, and the next server waits until this one reports `connected` on
- *    the new token, and then given ten minutes for traffic to move onto it
- *    (the provider's documented wait) before the next server.
+ * 3. One server at a time is moved: once no older connector list is still on
+ *    its way to it, its list goes out with the new token (the daemon restarts
+ *    that connector in place, feature `tunnel-connector-token-change-v1`), the
+ *    server is asked for its connector status until it reports `connected` on
+ *    the new token, and traffic is given ten minutes to move onto it (the
+ *    provider's documented wait) before the next server. A server that cannot
+ *    be reached waits behind the others.
  * 4. Every connection of the tunnel is dropped once, so one opened with the old
  *    token cannot stay; our connectors reconnect at once. The tunnel then takes
  *    the new secret row and the old one is deleted.
  *
  * Progress lives in `tunnel.metadata.runTokenRotation` (no new table, column
- * or status). "Started" is written before the provider is called, and a
- * resumed rotation reads the current token instead of rotating again. A server
- * that is offline, refuses the list or does not connect within the time limit
- * stops the rotation: nothing more is moved and no connection is dropped
- * until a person starts it again (which resumes from where it stopped). The
- * token is never logged, audited or returned.
+ * or status). When no remaining server can be reached the rotation stops and
+ * the sweep resumes it on its own; a server that refuses the list, does not
+ * confirm the token or does not connect in time stops it until a person
+ * starts it again (which resumes from where it stopped). The token and the
+ * secret are never logged, audited or returned.
  */
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, secret, server, tunnel } from '../../db/schema.ts'
-import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   TUNNEL_CONNECTOR_FEATURE,
@@ -43,22 +47,18 @@ import { createCommandRecord, transitionCommand } from '../commands/command-reco
 import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
-import type { TunnelAdapter } from './adapter.ts'
+import { newTunnelSecret, type TunnelAdapter } from './adapter.ts'
 import { useBadges } from './badge-use.ts'
 import { connectorServerProblem, syncServerTunnelConnectors } from './connector-sync.ts'
-import {
-  carryingServers,
-  openRunToken,
-  refuse,
-  TunnelRefusal,
-  type TunnelRow,
-} from './lifecycle.ts'
+import { carryingServers, refuse, TunnelRefusal, type TunnelRow } from './lifecycle.ts'
 import { findCarrier } from './records.ts'
 import { createTunnelAdapterRegistry } from './registry.ts'
 import { compareText } from './order.ts'
 import { RUN_SECRET_PROVIDER, type TunnelProvider } from './vocabulary.ts'
 import {
   type ApiRotation,
+  claimHeld,
+  dueForRetry,
   readRotation,
   ROTATION_SERVER_LIMIT_MS,
   ROTATION_SETTLE_MS,
@@ -222,31 +222,32 @@ async function checkCanRotate(
 }
 
 /**
- * The state a start saves: a stopped rotation that already has its new token
- * resumes (nothing is rotated twice; the server that stopped it is checked
- * again from the start); otherwise a new one begins, keeping a stopped one's
- * "provider called" mark so the token is read, not rotated again blindly.
+ * The state a start saves: a stopped rotation resumes where it stopped (the
+ * server that stopped it is checked again from the start), keeping the secret
+ * it chose and the token it got, so nothing is ever rotated twice; otherwise a
+ * new one begins.
  */
 function startingState(
   read: RotationState | null,
   carrying: string[],
   now: string
 ): Omit<RotationState, 'step'> {
-  if (read?.phase === 'stopped' && read.newSecretId) {
-    return {
-      ...read,
-      phase: 'rolling',
-      stoppedReason: undefined,
-      current: read.current ? { serverId: read.current.serverId, since: now } : undefined,
-    }
+  if (read?.phase === 'stopped' && (read.newSecretId || read.tunnelSecretId)) {
+    return resumedState(read, now)
   }
-  const called = read?.phase === 'stopped' ? read.providerCalledAt : undefined
+  return { phase: 'starting', startedAt: now, pending: carrying, moved: [] }
+}
+
+/** A stopped rotation, going again. */
+function resumedState(read: RotationState, now: string): Omit<RotationState, 'step'> {
   return {
-    phase: 'starting',
-    startedAt: now,
-    ...(called ? { providerCalledAt: called } : {}),
-    pending: carrying,
-    moved: [],
+    ...read,
+    phase: read.newSecretId ? 'rolling' : 'starting',
+    stoppedReason: undefined,
+    stoppedAt: undefined,
+    retryable: undefined,
+    claimedAt: undefined,
+    current: read.current ? { serverId: read.current.serverId, since: now } : undefined,
   }
 }
 
@@ -281,17 +282,57 @@ async function stop(
   db: Db,
   tunnelId: string,
   state: RotationState,
-  reason: string
+  reason: string,
+  options: { retryable?: boolean } = {}
 ): Promise<RotationState | null> {
   compatLogWarn('tunnel-rotation', `tunnel ${tunnelId}: stopped: ${reason}`)
   return await saveRotation(db, tunnelId, state, {
     ...state,
     phase: 'stopped',
     stoppedReason: reason,
+    stoppedAt: new Date().toISOString(),
+    claimedAt: undefined,
+    ...(options.retryable ? { retryable: true } : {}),
   })
 }
 
-/** Ask the provider for the new token (or read it, on a resume) and seal it beside the old one. */
+/** Choose the tunnel secret once and seal it, before the provider is ever asked. */
+async function chooseSecret(
+  db: Db,
+  deps: RotationDeps,
+  row: TunnelRow,
+  state: RotationState
+): Promise<RotationState | null> {
+  const [sealed] = await db
+    .insert(secret)
+    .values({
+      organizationId: row.organizationId,
+      provider: RUN_SECRET_PROVIDER,
+      name: `${row.name} tunnel secret (rotation)`.slice(0, 120),
+      secretEnvelope: await encryptSecret(deps.dataEncryptionSecrets, newTunnelSecret()),
+    })
+    .returning({ id: secret.id })
+  const saved = await saveRotation(db, row.id, state, { ...state, tunnelSecretId: sealed!.id })
+  // Lost to another writer: its secret is the one in use, not this one.
+  if (!saved) await db.delete(secret).where(eq(secret.id, sealed!.id))
+  return saved
+}
+
+async function openSecret(db: Db, deps: RotationDeps, secretId: string): Promise<string | null> {
+  const [stored] = await db
+    .select({ secretEnvelope: secret.secretEnvelope })
+    .from(secret)
+    .where(eq(secret.id, secretId))
+    .limit(1)
+  return stored ? await decryptSecret(deps.dataEncryptionSecrets, stored.secretEnvelope) : null
+}
+
+/**
+ * Give the tunnel the chosen secret at the provider and seal the token that
+ * comes back beside the old one. The secret was saved before, and a short
+ * lease (a guarded save) lets only one advancer ask at a time, so a retry, a
+ * crash or two advancers all send the same secret and get the same token.
+ */
 async function issueNewToken(
   db: Db,
   deps: RotationDeps,
@@ -300,19 +341,17 @@ async function issueNewToken(
 ): Promise<RotationState | null> {
   const owner = await findCarrier(db, row.organizationId, row.carrierId!)
   if (!owner) return await stop(db, row.id, state, 'The provider account of this Tunnel is gone')
-  // Written before the provider is asked: after a crash the token is only read again.
-  const rotateAtProvider = !state.providerCalledAt
-  let current = state
-  if (rotateAtProvider) {
-    const marked = await saveRotation(db, row.id, current, {
-      ...current,
-      providerCalledAt: new Date().toISOString(),
-    })
-    if (!marked) return null
-    current = marked
-  }
+  if (!state.tunnelSecretId) return await chooseSecret(db, deps, row, state)
+  // Another attempt is asking the provider right now: wait for it.
+  if (claimHeld(state, Date.now())) return state
+  const claimed = await saveRotation(db, row.id, state, {
+    ...state,
+    claimedAt: new Date().toISOString(),
+  })
+  if (!claimed) return null
+  const tunnelSecret = await openSecret(db, deps, claimed.tunnelSecretId!)
+  if (!tunnelSecret) return await stop(db, row.id, claimed, 'The chosen tunnel secret is gone')
   const adapter = adapterFor(deps, row)
-  const input = { accountId: owner.externalAccountId, externalId: row.externalId! }
   let runToken: string
   try {
     const used = await useBadges(
@@ -320,19 +359,18 @@ async function issueNewToken(
       deps.dataEncryptionSecrets,
       owner.id,
       { capability: 'tunnels' },
-      async (token) => {
-        if (rotateAtProvider) return await adapter.rotateRunToken(token, input)
-        // A resume: the provider may or may not have rotated before the stop.
-        const now = await adapter.fetchRunToken(token, input)
-        const old = await openRunToken(db, deps.dataEncryptionSecrets, row)
-        return now === old ? await adapter.rotateRunToken(token, input) : now
-      }
+      (token) =>
+        adapter.rotateRunToken(token, {
+          accountId: owner.externalAccountId,
+          externalId: row.externalId!,
+          tunnelSecret,
+        })
     )
     runToken = used.value
   } catch (err) {
     const refused = refuse(err, 'edit Tunnels')
     const reason = refused instanceof Error ? refused.message : 'The provider refused'
-    return await stop(db, row.id, current, reason)
+    return await stop(db, row.id, claimed, reason)
   }
   const [sealed] = await db
     .insert(secret)
@@ -343,13 +381,19 @@ async function issueNewToken(
       secretEnvelope: await encryptSecret(deps.dataEncryptionSecrets, runToken),
     })
     .returning({ id: secret.id })
-  const saved = await saveRotation(db, row.id, current, {
-    ...current,
-    phase: current.pending.length > 0 ? 'rolling' : 'finishing',
+  const saved = await saveRotation(db, row.id, claimed, {
+    ...claimed,
+    phase: claimed.pending.length > 0 ? 'rolling' : 'finishing',
     newSecretId: sealed!.id,
+    tunnelSecretId: undefined,
+    claimedAt: undefined,
   })
-  // Lost to another writer: this copy is not the one in use.
-  if (!saved) await db.delete(secret).where(eq(secret.id, sealed!.id))
+  if (!saved) {
+    await db.delete(secret).where(eq(secret.id, sealed!.id))
+    return null
+  }
+  // The secret did its job: the token is what servers run on now.
+  await db.delete(secret).where(eq(secret.id, claimed.tunnelSecretId!))
   return saved
 }
 
@@ -423,7 +467,25 @@ async function serverReachable(db: Db, serverId: string): Promise<boolean> {
   return row?.isConnected === true
 }
 
-/** Move the next waiting server: give it the new token and remember the command. */
+/** The first waiting server that can be reached, and the queue with unreachable ones moved behind it. */
+async function nextReachable(
+  db: Db,
+  pending: readonly string[]
+): Promise<{ serverId: string | null; queue: string[] }> {
+  const reachable = await Promise.all(pending.map((id) => serverReachable(db, id)))
+  const index = reachable.indexOf(true)
+  if (index < 0) return { serverId: null, queue: [...pending] }
+  return {
+    serverId: pending[index]!,
+    queue: [...pending.slice(index + 1), ...pending.slice(0, index)],
+  }
+}
+
+/**
+ * Move the next waiting server: give it the new token and remember the
+ * command. A server that cannot be reached now waits behind the others; when
+ * none can be reached the rotation stops, and the sweep resumes it on its own.
+ */
 async function moveNext(
   db: Db,
   deps: RotationDeps,
@@ -435,8 +497,7 @@ async function moveNext(
   const carrying = new Set(await carryingServers(db, row))
   // A server that no longer carries the tunnel needs no new token.
   const pending = state.pending.filter((id) => carrying.has(id))
-  const serverId = pending[0]
-  if (!serverId) {
+  if (pending.length === 0) {
     return await saveRotation(db, row.id, state, {
       ...state,
       pending: [],
@@ -444,19 +505,40 @@ async function moveNext(
       phase: 'finishing',
     })
   }
-  if (!(await serverReachable(db, serverId))) {
-    return await stop(db, row.id, { ...state, pending }, `Server ${serverId} is offline`)
+  const { serverId, queue } = await nextReachable(db, pending)
+  if (!serverId) {
+    const names = pending.join(', ')
+    return await stop(db, row.id, { ...state, pending }, `Server ${names} cannot be reached`, {
+      retryable: true,
+    })
   }
-  const now = new Date().toISOString()
   const moved = await saveRotation(db, row.id, state, {
     ...state,
-    pending: pending.slice(1),
+    pending: queue,
     moved: [...state.moved, serverId],
-    current: { serverId, since: now },
+    current: { serverId, since: new Date().toISOString() },
   })
   if (!moved) return null
   return await sendNewToken(db, deps, row, moved)
 }
+
+/** Is a connector list still on its way to this server? */
+async function connectorsCommandOpen(db: Db, serverId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(
+      and(
+        eq(command.serverId, serverId),
+        eq(command.name, 'server.tunnel.connectors'),
+        inArray(command.status, [...OPEN_STATUSES])
+      )
+    )
+    .limit(1)
+  return row !== undefined
+}
+
+const OPEN_STATUSES = ['queued', 'dispatching', 'sent', 'acked', 'running'] as const
 
 /** Send the current server its connector list (it now carries the new token). */
 async function sendNewToken(
@@ -466,6 +548,9 @@ async function sendNewToken(
   state: RotationState
 ): Promise<RotationState | null> {
   const current = state.current!
+  // An older list still on its way could land after this one and put the old
+  // token back: wait until the server has none outstanding.
+  if (await connectorsCommandOpen(db, current.serverId)) return state
   // Always sent, even when the list looks current: the server must answer for this token.
   const outcome = await syncServerTunnelConnectors(db, deps, {
     organizationId: row.routingOrganizationId,
@@ -545,7 +630,23 @@ async function finish(
 ): Promise<RotationState | null> {
   const owner = await findCarrier(db, row.organizationId, row.carrierId!)
   const adapter = adapterFor(deps, row)
-  if (owner && adapter.dropConnections) {
+  if (!owner) {
+    return await stop(
+      db,
+      row.id,
+      state,
+      'Old connections were not dropped: the provider account of this Tunnel is gone'
+    )
+  }
+  if (!adapter.dropConnections) {
+    return await stop(
+      db,
+      row.id,
+      state,
+      'Old connections were not dropped: this provider cannot drop them'
+    )
+  }
+  {
     const drop = adapter.dropConnections.bind(adapter)
     try {
       await useBadges(
@@ -572,6 +673,11 @@ async function finish(
     })
     if (!saved) return null
     await tx.update(tunnel).set({ secretId: newSecretId }).where(eq(tunnel.id, row.id))
+    // It is the tunnel's run token now, not "the new one".
+    await tx
+      .update(secret)
+      .set({ name: `${row.name} run token`.slice(0, 120) })
+      .where(eq(secret.id, newSecretId))
     if (oldSecretId && oldSecretId !== newSecretId) {
       await tx.delete(secret).where(eq(secret.id, oldSecretId))
     }
@@ -622,14 +728,21 @@ export async function runRunTokenRotationSweepTick(
 ): Promise<{ advanced: number }> {
   if (isNoopCommandQueue(deps.commandQueue)) return { advanced: 0 }
   const rows = await db
-    .select({ id: tunnel.id })
+    .select({ id: tunnel.id, metadata: tunnel.metadata })
     .from(tunnel)
     .where(
-      sql`(${tunnel.metadata} -> 'runTokenRotation' ->> 'phase') IN ('starting', 'rolling', 'finishing')`
+      sql`(${tunnel.metadata} -> 'runTokenRotation' ->> 'phase') IN ('starting', 'rolling', 'finishing', 'stopped')`
     )
   let advanced = 0
-  await forEachSequential(rows, async ({ id }) => {
+  await forEachSequential(rows, async ({ id, metadata }) => {
     try {
+      const read = readRotation(metadata)
+      // A stop for a server that could not be reached goes again on its own.
+      if (read && dueForRetry(read, Date.now())) {
+        await saveRotation(db, id, read, resumedState(read, new Date().toISOString()))
+      } else if (!rotationActive(read)) {
+        return
+      }
       await advanceRunTokenRotation(db, deps, id)
       advanced += 1
     } catch (err) {

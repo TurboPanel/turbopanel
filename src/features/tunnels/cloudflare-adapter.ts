@@ -414,15 +414,16 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
     async rotateRunToken(token, input) {
       const account = requireAccount(input.accountId)
       const api = client(token)
-      // 32 random bytes, base64: the provider's minimum for a tunnel secret.
-      const secret = btoa(String.fromCodePoint(...crypto.getRandomValues(new Uint8Array(32))))
       try {
-        await api.setTunnelSecret(account, input.externalId, secret)
+        await api.setTunnelSecret(account, input.externalId, input.tunnelSecret)
         return await api.getTunnelToken(account, input.externalId)
       } catch (err) {
         // The secret must never reach a log or an answer, even inside a provider message.
         if (err instanceof TunnelProviderError) {
-          throw new TunnelProviderError(err.code, err.message, err.status, [secret, token])
+          throw new TunnelProviderError(err.code, err.message, err.status, [
+            input.tunnelSecret,
+            token,
+          ])
         }
         throw err
       }
