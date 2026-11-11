@@ -6,7 +6,7 @@
  */
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { eq, sql } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { createDenoDb, endDbConnection, type Db } from './connection.ts'
 import {
   carrier,
@@ -270,6 +270,17 @@ test('groundwork tables and columns hold the rules the migration gives them', as
       ]
     )
   } finally {
+    // The environment key onto its project is RESTRICT, so environments (and their services) go first.
+    const projects = db
+      .select({ id: project.id })
+      .from(project)
+      .where(eq(project.organizationId, organizationId))
+    const environments = db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(inArray(environment.projectId, projects))
+    await db.delete(service).where(inArray(service.environmentId, environments))
+    await db.delete(environment).where(inArray(environment.projectId, projects))
     // The server key is RESTRICT, so servers go first (devices and placements follow them).
     await db.delete(server).where(eq(server.organizationId, organizationId))
     if (ingressId) {
