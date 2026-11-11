@@ -75,6 +75,11 @@ const provider = {
   /** How many times the provider still refuses to delete a tunnel that has connectors. */
   tunnelDeleteConflicts: 0,
   tunnelCount: 0,
+  /** Records the zone already holds for the name being added (read before a DNS name is made). */
+  nameRecords: [] as { id: string; name: string; type: string; content: string }[],
+  /** Records that appear after the first read of the name (someone added one in between). */
+  nameRecordsLater: null as { id: string; name: string; type: string; content: string }[] | null,
+  nameReads: 0,
 }
 
 const ok = (result: unknown) => Response.json({ success: true, errors: [], result })
@@ -105,7 +110,14 @@ const fakeProvider: typeof fetch = async (input, init) => {
   if (path === '/zones/zone-1/dns_records/rec-1' && method === 'DELETE') {
     return provider.failDnsDelete ? refused(500, 'dns removal failed') : ok({ id: 'rec-1' })
   }
-  if (path === '/zones/zone-1/dns_records') return ok([])
+  if (path === '/zones/zone-1/dns_records') {
+    const name = url.searchParams.get('name')
+    if (!name) return ok([])
+    const later = provider.nameReads > 0 ? provider.nameRecordsLater : null
+    provider.nameReads += 1
+    return ok((later ?? provider.nameRecords).filter((r) => r.name === name))
+  }
+  if (path === '/zones/zone-1/dns_records/rec-old' && method === 'PUT') return ok({ id: 'rec-old' })
   if (/^\/accounts\/[a-z]{32}\/cfd_tunnel\/tunnel-ext-\d+$/.test(path) && method === 'DELETE') {
     if (provider.tunnelDeleteConflicts > 0) {
       provider.tunnelDeleteConflicts -= 1
@@ -204,6 +216,9 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
   provider.failDnsDelete = false
   provider.tunnelDeleteConflicts = 0
   provider.tunnelCount = 0
+  provider.nameRecords = []
+  provider.nameRecordsLater = null
+  provider.nameReads = 0
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
   const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -579,6 +594,78 @@ test('a hostname gets its route and its DNS name, and removing it takes both awa
       (await f.db.select().from(secret).where(eq(secret.organizationId, f.orgA))).length,
       1
     )
+  })
+})
+
+test('a hostname whose name already has a DNS record is refused with it, and added over it once confirmed', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    provider.nameRecords = [
+      { id: 'rec-old', name: 'shop.example.com', type: 'A', content: '192.0.2.10' },
+    ]
+    const path = `/organizations/${f.orgA}/tunnels/${id}/hostnames`
+    const routesBefore = provider.routeBodies.length
+    const taken = await call(f, 'POST', path, f.managerCookie, { hostname: 'shop.example.com' })
+    assertEquals(taken.status, 409, taken.text)
+    assertEquals(taken.body.error, 'dns_record_exists')
+    assertEquals(taken.body.hostname, 'shop.example.com')
+    assertEquals(taken.body.records, [
+      { id: 'rec-old', type: 'A', content: '192.0.2.10', proxied: false },
+    ])
+    assert(String(taken.body.message).includes('A 192.0.2.10'))
+    // Refused before anything was stored, routed or written.
+    assertEquals(provider.routeBodies.length, routesBefore)
+    assert(!provider.calls.some((c) => c.startsWith('PUT /zones/') || c.startsWith('POST /zones/')))
+    assertEquals(
+      (await f.db.select().from(doorway).where(eq(doorway.routingOrganizationId, f.orgA))).length,
+      0
+    )
+    const wrong = await call(f, 'POST', path, f.managerCookie, {
+      hostname: 'shop.example.com',
+      replaceDnsRecords: ['rec-other'],
+    })
+    assertEquals(wrong.status, 409)
+    assertEquals(wrong.body.error, 'dns_record_exists')
+    const replaced = await call(f, 'POST', path, f.managerCookie, {
+      hostname: 'shop.example.com',
+      replaceDnsRecords: ['rec-old'],
+    })
+    assertEquals(replaced.status, 201, replaced.text)
+    assert(provider.calls.includes('PUT /zones/zone-1/dns_records/rec-old'))
+    assertEquals((replaced.body.hostname as { dns: string }).dns, 'created')
+    // What was replaced is kept on the row (and in the audit), the only record of it now.
+    const [row] = await f.db.select().from(doorway).where(eq(doorway.routingOrganizationId, f.orgA))
+    assertEquals((row!.metadata as { dnsReplaced?: unknown }).dnsReplaced, [
+      { type: 'A', content: '192.0.2.10', proxied: false },
+    ])
+  })
+})
+
+test('a DNS record that appears between the check and the write is refused, never replaced unseen', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    provider.nameRecordsLater = [
+      { id: 'rec-new', name: 'late.example.com', type: 'AAAA', content: '2001:db8::99' },
+    ]
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'late.example.com' }
+    )
+    assertEquals(added.status, 409, added.text)
+    assertEquals(added.body.error, 'dns_record_exists')
+    assertEquals(added.body.records, [
+      { id: 'rec-new', type: 'AAAA', content: '2001:db8::99', proxied: false },
+    ])
+    assert(!provider.calls.some((c) => c.startsWith('PUT /zones/') || c.startsWith('POST /zones/')))
+    // The row is gone and the provider's routes no longer name it.
+    assertEquals(
+      (await f.db.select().from(doorway).where(eq(doorway.routingOrganizationId, f.orgA))).length,
+      0
+    )
+    assert(!JSON.stringify(provider.routeBodies.at(-1)).includes('late.example.com'))
   })
 })
 

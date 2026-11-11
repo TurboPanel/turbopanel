@@ -320,6 +320,23 @@ provider accounts.
   route set back. A hostname may be both a site name and a tunnel name, so only
   other doorways make `hostname_in_use`. DNS is never a gate for an ordinary
   site hostname; nothing here is called from the site hostname paths.
+- **A name that already has DNS records.** Before anything is stored or
+  routed, the zone's records for the name are read (with a token that can edit
+  that zone's DNS, `listDnsConflicts`). A CNAME that already points at this
+  tunnel is kept and reused. Any other A, AAAA or CNAME record refuses the add
+  with 409 `dns_record_exists`, naming each record (type, content, proxied) in
+  the message and in `records`, so the screen can show them and offer to
+  replace them. The person confirms by sending the same hostname with
+  `replaceDnsRecords`, the exact ids shown; the adapter reads the records again
+  when it writes and refuses again (`DnsNameTaken`) if the set changed in
+  between, so a record added meanwhile is never replaced unseen. A CNAME may
+  not sit beside other address records, so it deletes the others first and
+  then turns the first into the tunnel's CNAME (keeping its id); if that last
+  write fails, the error names the records already removed. Other record types
+  on the name (MX, TXT, …) are never listed, replaced or deleted. Removing the
+  hostname later deletes the CNAME; the replaced records are not put back, so
+  what they were (type, content, proxied) is kept in the hostname's
+  `metadata.dnsReplaced` and in the `doorway.create` audit row.
 - The route builder turns the facts into the `server.tunnel.routes` payload for
   one server: routes only for tunnels the server carries; a name whose site
   runs on this server is `local`; otherwise the upstreams are the datacenter

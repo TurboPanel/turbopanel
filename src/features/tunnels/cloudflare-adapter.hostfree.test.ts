@@ -5,7 +5,7 @@ import {
   createCloudflareAdapter,
   parseExpiry,
 } from './cloudflare-adapter.ts'
-import { TunnelProviderError } from './errors.ts'
+import { DnsNameTaken, TunnelProviderError } from './errors.ts'
 import { scrubSecrets } from './scrub.ts'
 
 /**
@@ -171,6 +171,7 @@ test('routes end with a catch-all and point every name at the local web server',
 
 test('the DNS name is a proxied CNAME to the tunnel', async () => {
   const { impl, calls } = fakeFetch({
+    'GET /client/v4/zones/z1/dns_records': ok([]),
     'POST /client/v4/zones/z1/dns_records': ok({ id: 'r-1' }),
     'DELETE /client/v4/zones/z1/dns_records/r-1': ok({ id: 'r-1' }),
   })
@@ -181,7 +182,9 @@ test('the DNS name is a proxied CNAME to the tunnel', async () => {
     externalId: 't-1',
   })
   assertEquals(made, { recordId: 'r-1' })
-  assertEquals(calls[0]!.body, {
+  // The name's records are read first, by exact name.
+  assert(calls[0]!.url.startsWith('/client/v4/zones/z1/dns_records?name=a.example.com'))
+  assertEquals(calls[1]!.body, {
     type: 'CNAME',
     name: 'a.example.com',
     content: 't-1.cfargotunnel.com',
@@ -189,7 +192,102 @@ test('the DNS name is a proxied CNAME to the tunnel', async () => {
     ttl: 1,
   })
   await adapter.removeDnsName(TOKEN, { zoneId: 'z1', recordId: 'r-1' })
-  assertEquals(calls[1]!.method, 'DELETE')
+  assertEquals(calls[2]!.method, 'DELETE')
+})
+
+const NAME_RECORDS = [
+  { id: 'rec-a', name: 'a.example.com', type: 'A', content: '192.0.2.10', proxied: false },
+  { id: 'rec-aaaa', name: 'a.example.com', type: 'AAAA', content: '2001:db8::10', proxied: true },
+  // Mail and verification records may sit beside the tunnel's CNAME: never listed, never touched.
+  { id: 'rec-mx', name: 'a.example.com', type: 'MX', content: 'mail.example.com' },
+  { id: 'rec-txt', name: 'a.example.com', type: 'TXT', content: 'v=spf1 -all' },
+]
+
+test('a name that already has address records is refused with them, and nothing is written', async () => {
+  const { impl, calls } = fakeFetch({ 'GET /client/v4/zones/z1/dns_records': ok(NAME_RECORDS) })
+  const adapter = createCloudflareAdapter({ fetch: impl })
+  const input = { zoneId: 'z1', hostname: 'a.example.com', externalId: 't-1' }
+  const expected = [
+    { id: 'rec-a', type: 'A', content: '192.0.2.10', proxied: false },
+    { id: 'rec-aaaa', type: 'AAAA', content: '2001:db8::10', proxied: true },
+  ]
+  assertEquals(await adapter.listDnsConflicts!(TOKEN, input), expected)
+  const err = await assertRejects(() => adapter.createDnsName(TOKEN, input), DnsNameTaken)
+  assertEquals(err.records, expected)
+  assertEquals(
+    err.message,
+    'DNS records for a.example.com already exist: A 192.0.2.10, AAAA 2001:db8::10 (proxied). Replace them to point the name at this Tunnel, or remove them at your DNS provider first.'
+  )
+  // Only part of what is there, or something else, is not a confirmation.
+  await assertRejects(
+    () => adapter.createDnsName(TOKEN, { ...input, replace: ['rec-a'] }),
+    DnsNameTaken
+  )
+  await assertRejects(
+    () => adapter.createDnsName(TOKEN, { ...input, replace: ['rec-a', 'rec-mx'] }),
+    DnsNameTaken
+  )
+  assert(calls.every((call) => call.method === 'GET'))
+})
+
+test('confirmed records are replaced: the rest are deleted first, then the first becomes the CNAME, others stay', async () => {
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/zones/z1/dns_records': ok(NAME_RECORDS),
+    'PUT /client/v4/zones/z1/dns_records/rec-a': ok({ id: 'rec-a' }),
+    'DELETE /client/v4/zones/z1/dns_records/rec-aaaa': ok({ id: 'rec-aaaa' }),
+  })
+  const made = await createCloudflareAdapter({ fetch: impl }).createDnsName(TOKEN, {
+    zoneId: 'z1',
+    hostname: 'a.example.com',
+    externalId: 't-1',
+    replace: ['rec-aaaa', 'rec-a'],
+  })
+  assertEquals(made, { recordId: 'rec-a' })
+  const writes = calls.filter((call) => call.method !== 'GET')
+  assertEquals(
+    writes.map((call) => `${call.method} ${call.url}`),
+    ['DELETE /client/v4/zones/z1/dns_records/rec-aaaa', 'PUT /client/v4/zones/z1/dns_records/rec-a']
+  )
+  assertEquals(writes[1]!.body, {
+    type: 'CNAME',
+    name: 'a.example.com',
+    content: 't-1.cfargotunnel.com',
+    proxied: true,
+    ttl: 1,
+  })
+})
+
+test('a failed write after other records were removed says which ones are already gone', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/zones/z1/dns_records': ok(NAME_RECORDS),
+    'PUT /client/v4/zones/z1/dns_records/rec-a': refused(400, 'record could not be changed'),
+    'DELETE /client/v4/zones/z1/dns_records/rec-aaaa': ok({ id: 'rec-aaaa' }),
+  })
+  const err = await assertRejects(
+    () =>
+      createCloudflareAdapter({ fetch: impl }).createDnsName(TOKEN, {
+        zoneId: 'z1',
+        hostname: 'a.example.com',
+        externalId: 't-1',
+        replace: ['rec-a', 'rec-aaaa'],
+      }),
+    TunnelProviderError
+  )
+  assert(err.message.includes('already removed: AAAA 2001:db8::10'))
+})
+
+test('a CNAME that already points at the tunnel is kept as it is', async () => {
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/zones/z1/dns_records': ok([
+      { id: 'rec-c', name: 'a.example.com', type: 'CNAME', content: 'T-1.cfargotunnel.com' },
+      { id: 'rec-txt', name: 'a.example.com', type: 'TXT', content: 'hello' },
+    ]),
+  })
+  const adapter = createCloudflareAdapter({ fetch: impl })
+  const input = { zoneId: 'z1', hostname: 'a.example.com', externalId: 't-1' }
+  assertEquals(await adapter.listDnsConflicts!(TOKEN, input), [])
+  assertEquals(await adapter.createDnsName(TOKEN, input), { recordId: 'rec-c' })
+  assert(calls.every((call) => call.method === 'GET'))
 })
 
 test('deleting a tunnel calls the provider', async () => {
