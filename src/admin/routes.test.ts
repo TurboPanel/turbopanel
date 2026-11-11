@@ -1683,12 +1683,14 @@ test('a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
           label: string
           kind: string
           address: string
+          allOrganizations: boolean
           rules: Array<{ event: string; minSeverity: string }>
         }>
       }>(listed)
       const operator = channels.find((ch) => ch.label === OPERATOR_WEBHOOK_LABEL)
       assertEquals(operator?.kind, 'webhook')
       assertEquals(operator?.address, 'https://hooks.slack.com')
+      assertEquals(operator?.allOrganizations, true)
       assertEquals(operator?.rules, [{ event: '*', minSeverity: 'info' }])
       const legacyRows = await db
         .select({ value: setting.value })
@@ -1709,6 +1711,41 @@ test('a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
       await db
         .delete(notificationChannel)
         .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+    }
+  })
+})
+
+test('a control plane channel carries the all organizations switch through create and update', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const send = (method: string, path: string, body: unknown) =>
+      app.request(`${ADMIN_API_PREFIX}/notification-channels${path}`, {
+        method,
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    const created = await send('POST', '', {
+      kind: 'webhook',
+      label: 'Switch Test',
+      address: 'https://hooks.slack.com/services/T0/B0/SWITCH',
+      rules: [{ event: '*', minSeverity: 'info' }],
+    })
+    assertEquals(created.status, 201)
+    const { channel } = await jsonBody<{ channel: { id: string; allOrganizations: boolean } }>(
+      created
+    )
+    try {
+      assertEquals(channel.allOrganizations, false)
+      const on = await send('PATCH', `/${channel.id}`, { allOrganizations: true })
+      assertEquals(on.status, 200)
+      assertEquals(
+        (await jsonBody<{ channel: { allOrganizations: boolean } }>(on)).channel.allOrganizations,
+        true
+      )
+      const bad = await send('PATCH', `/${channel.id}`, { allOrganizations: 'yes' })
+      assertEquals(bad.status, 400)
+      assertEquals((await jsonBody<{ error: string }>(bad)).error, 'all_organizations_invalid')
+    } finally {
+      await send('DELETE', `/${channel.id}`, {})
     }
   })
 })

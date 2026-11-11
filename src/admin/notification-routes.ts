@@ -1,7 +1,7 @@
 /**
  * Instance-scoped notification channels — the operator's own receivers,
- * which hear every event on the instance (an organization event reaches
- * every instance channel a rule routes it to). Mounted under
+ * which hear install events, and an organization's events only when the
+ * channel's `allOrganizations` switch is on. Mounted under
  * `/api/admin/v1`, so the admin middleware has already required an
  * administrator; the same shapes as the client channel routes, with one
  * difference: an instance email channel may name any administrator's account
@@ -27,9 +27,11 @@ import {
   type NotificationChannelRecord,
   replaceRulesForChannel,
   resolveChannelAddress,
+  setChannelAllOrganizations,
   setChannelDisabled,
   updateChannelLabel,
 } from '../features/notifications/records.ts'
+import { parseAllOrganizationsField } from '../features/notifications/all-organizations.ts'
 import { applyHoldFields, presentChannelHold } from '../features/notifications/hold-settings.ts'
 import {
   parseChannelCreateBody,
@@ -56,6 +58,7 @@ async function presentInstanceChannel(c: NotificationAdminCtx, channel: Notifica
     kind: channel.kind,
     label: channel.label,
     address: describeChannelAddress(channel.kind, await resolveChannelAddress(secrets, channel)),
+    allOrganizations: channel.allOrganizations,
     signed: channel.signingSecret !== null,
     verifiedAt: channel.verifiedAt,
     disabledAt: channel.disabledAt,
@@ -115,6 +118,10 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
         parsed.status
       )
     }
+    const allOrganizations = parseAllOrganizationsField(body)
+    if (!allOrganizations.ok) {
+      return c.json({ error: allOrganizations.error }, allOrganizations.status)
+    }
     // An instance channel has no owner profile: it reads its windows in UTC.
     if (parsed.value.hold.timeZone !== undefined) {
       return c.json({ error: 'time_zone_user_channels_only' }, 422)
@@ -150,6 +157,7 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
       signingSecret: parsed.value.signingSecret,
       createdByUserId: session.userId,
       verifiedAt,
+      isAllOrganizationsNotified: allOrganizations.value ?? false,
     })
     await replaceRulesForChannel(db, channel.id, parsed.value.rules)
     await applyHoldFields(db, channel, parsed.value.hold)
@@ -180,11 +188,18 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
         refusal?.status ?? 422
       )
     }
+    const allOrganizations = parseAllOrganizationsField(body)
+    if (!allOrganizations.ok) {
+      return c.json({ error: allOrganizations.error }, allOrganizations.status)
+    }
     if (parsed.value.label !== undefined) {
       await updateChannelLabel(db, owned.id, parsed.value.label)
     }
     if (parsed.value.disabled !== undefined) {
       await setChannelDisabled(db, owned.id, parsed.value.disabled)
+    }
+    if (allOrganizations.value !== undefined) {
+      await setChannelAllOrganizations(db, owned.id, allOrganizations.value)
     }
     if (parsed.value.rules !== undefined) {
       await replaceRulesForChannel(db, owned.id, parsed.value.rules)

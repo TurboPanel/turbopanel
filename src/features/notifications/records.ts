@@ -60,12 +60,36 @@ import {
 } from './events.ts'
 import type { NotificationAttemptReason } from './vocabulary.ts'
 
-/** Shared channels only: personal channels are decided by preferences (`emit.ts`). */
-function sharedChannelFilter(organizationId: string | null) {
-  if (!organizationId) return eq(notificationChannel.scope, 'instance')
+/**
+ * Shared channels only: personal channels are decided by preferences
+ * (`emit.ts`). An install event (no organization) reaches control plane
+ * channels whose rule names no organization. An organization's event reaches
+ * that organization's own channels, and control plane channels only when the
+ * channel is switched to hear every organization or a rule names that
+ * organization.
+ */
+function sharedRouteFilter(organizationId: string | null) {
+  if (!organizationId) {
+    return and(eq(notificationChannel.scope, 'instance'), isNull(notificationRule.organizationId))
+  }
   return or(
-    eq(notificationChannel.scope, 'instance'),
-    eq(notificationChannel.organizationId, organizationId)
+    and(
+      eq(notificationChannel.organizationId, organizationId),
+      or(
+        isNull(notificationRule.organizationId),
+        eq(notificationRule.organizationId, organizationId)
+      )
+    ),
+    and(
+      eq(notificationChannel.scope, 'instance'),
+      or(
+        eq(notificationRule.organizationId, organizationId),
+        and(
+          isNull(notificationRule.organizationId),
+          eq(notificationChannel.isAllOrganizationsNotified, true)
+        )
+      )
+    )
   )
 }
 
@@ -124,6 +148,8 @@ export type NotificationChannelRecord = {
   quiet: QuietHours | null
   /** The built-in account email channel: follows the sign-in address, cannot be deleted. */
   isPrimary: boolean
+  /** Control plane channels only: also hears every organization's events, not just install events. */
+  allOrganizations: boolean
 }
 
 export type NotificationRuleRecord = {
@@ -152,6 +178,7 @@ export function asChannel(row: typeof notificationChannel.$inferSelect): Notific
         ? { startMinute: row.quietStartMinute, endMinute: row.quietEndMinute }
         : null,
     isPrimary: row.isPrimary,
+    allOrganizations: row.isAllOrganizationsNotified,
   }
 }
 
@@ -167,6 +194,8 @@ export type CreateChannelInput = {
   signingSecret?: string | null
   createdByUserId?: string | null
   verifiedAt?: string | null
+  /** Control plane channels only (the database refuses it elsewhere): also hear every organization's events. */
+  isAllOrganizationsNotified?: boolean
 }
 
 export async function createNotificationChannel(
@@ -196,6 +225,7 @@ export async function createNotificationChannel(
       signingSecret,
       createdByUserId: input.createdByUserId ?? null,
       verifiedAt: input.verifiedAt ?? null,
+      isAllOrganizationsNotified: input.isAllOrganizationsNotified ?? false,
     })
     .returning()
   if (!row) throw new Error('notification channel insert returned no row')
@@ -308,6 +338,18 @@ export async function setChannelDisabled(db: Db, id: string, disabled: boolean):
   await db
     .update(notificationChannel)
     .set({ disabledAt: disabled ? sql`now()` : null })
+    .where(eq(notificationChannel.id, id))
+}
+
+/** Switch whether a control plane channel also hears every organization's events. */
+export async function setChannelAllOrganizations(
+  db: Db,
+  id: string,
+  value: boolean
+): Promise<void> {
+  await db
+    .update(notificationChannel)
+    .set({ isAllOrganizationsNotified: value })
     .where(eq(notificationChannel.id, id))
 }
 
@@ -438,8 +480,9 @@ export async function replaceRulesForChannel(
 
 /**
  * Every enabled shared channel a rule routes this event to: the
- * organization's own channels, plus instance channels for everything (as
- * before). Personal channels are not routed by rules any more; preferences
+ * organization's own channels, plus control plane channels for install
+ * events (and for an organization's events only when switched to all
+ * organizations or named by the rule). Personal channels are not routed by rules any more; preferences
  * decide them (`emit.ts`). A rule names `*`, one code (the older `event`
  * column or `topic_code`), or one category; a disabled or muted route sends
  * nothing.
@@ -459,7 +502,7 @@ export async function channelsForEvent(
       and(
         isNull(notificationChannel.disabledAt),
         ne(notificationChannel.scope, 'user'),
-        sharedChannelFilter(organizationId),
+        sharedRouteFilter(organizationId),
         eq(notificationRule.isEnabled, true),
         or(isNull(notificationRule.endsAt), sql`${notificationRule.endsAt} <= now()`),
         or(
