@@ -440,8 +440,9 @@ provider accounts.
   yet (the sweep and the resend fill it in later); the lock is built before
   that, so `loadNameLock` also takes the organization's non-removing doorways
   that have no site and whose name (compared without case) the deploying
-  hosting lists (`unlinkedDoorwayNamed`). It is read only (a deploy
-  preparation writes nothing), and a doorway already linked to another site is
+  hosting lists (`unlinkedDoorwayNamed`). The lookup is read only (a deploy
+  preparation stores nothing but the table generation counter, see Table
+  generation), and a doorway already linked to another site is
   never taken. Without it the first deploy sent no lock.
   Refused with 409: `tunnel_daemon_too_old` (the daemon lacks
   `tunnel-forwarding-v1` and the hosting has a locked name; an all-public hosting is
@@ -509,6 +510,38 @@ provider accounts.
 - A site is never redeployed when its carrier set changes: the resend
   (`nudge.ts`) covers forwarding tables (with the lock, see above) and
   connector lists.
+
+## Table generation
+
+Feature `tunnel-table-generation-v1`. One generation per organization tunnel
+table, kept in `organization.options.tunnelTable` (`{ contentHash, generation }`,
+no column) by `table-generation.ts`. The content hash covers the facts the
+tables are built from (`loadRoutingFacts`: carriers, where each name's site
+runs, those servers' addresses), every list sorted so equal content hashes
+equal. When the content changes the new generation is `max(previous + 1,
+Date.now())`; an unchanged table (the periodic resend, a reconnect, a deploy)
+reuses the stored number, because a changed one makes every daemon apply the
+whole table again. The write is a compare-and-set on the previous value, so two
+callers that see the same change store one number. Both senders resolve it the
+same way: `sync.ts` sets `generation` on `server.tunnel.routes` and
+`resolveDeployNameLock` sets `hostings[].tunnel.generation`, only for a daemon
+that lists the feature. It stays out of the table `hash` and the per-server sent
+state. If it cannot be stored the send fails (a table without it would clear the
+daemon's record). When a daemon answers `applied: false` with its "older than
+the one in place" warning, the stored number is behind what the daemon applied
+(for example after a restore). `stale-table-note.ts` logs it and heals it from
+the command's success side effects (`stale-table-heal.ts`): the organization's
+generation is raised to `max(previous + 1, now)` with the same compare-and-set
+(`bumpedAt` in the stored value limits that to once a minute per organization,
+so two stuck daemons cannot loop) and that server is sent its table again
+through `syncServerTunnelRoutes` with `force`. A server refused inside the
+minute is not requeued at once; the sweep sends it the table again.
+Anything that writes `organization.options` must merge into it (a jsonb merge or
+`jsonb_set`), never replace it whole, or the counter is lost. A deploy
+preparation (a preview too) can write the counter: the generation is stored the
+first time a changed table is seen, whoever sees it first. The peers and the
+generation of a deploy come from one unchanged read of the routing facts
+(`peersWithGeneration` in `name-lock.ts`).
 
 ## Origin certificates
 

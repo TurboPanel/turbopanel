@@ -17,9 +17,10 @@ const test = Deno.test.bind(Deno)
 
 const server = { serverId: 's-1', name: 'omicron' }
 
-test('the feature is advertised and is the last entry', () => {
+test('the feature is advertised right after deploy-config-files-v1', () => {
   assertEquals(SITE_PHP_LIFECYCLE_FEATURE, 'site-php-lifecycle-v1')
-  assertEquals(DAEMON_WIRE_FEATURES[DAEMON_WIRE_FEATURES.length - 1], SITE_PHP_LIFECYCLE_FEATURE)
+  const index = DAEMON_WIRE_FEATURES.indexOf(SITE_PHP_LIFECYCLE_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES[index - 1], 'deploy-config-files-v1')
 })
 
 test('service options keep commands and workers, and drop what does not read', () => {

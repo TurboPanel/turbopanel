@@ -236,6 +236,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tunnel-connector-token-change-v1',
   'deploy-config-files-v1',
   'site-php-lifecycle-v1',
+  'tunnel-table-generation-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -482,6 +483,15 @@ export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
  * refuses first, naming the server, and nothing is sent.
  */
 export const SITE_PHP_LIFECYCLE_FEATURE: DaemonWireFeature = 'site-php-lifecycle-v1'
+
+/**
+ * The daemon keeps the highest tunnel table `generation` it applied and ignores
+ * a `server.tunnel.routes` table or a deploy's `hostings[].tunnel` below it, so
+ * a deploy and a table update that cross never bring back an older carrier
+ * list. The control plane sends the field only to a daemon that lists this: an
+ * older daemon would drop it.
+ */
+export const TUNNEL_TABLE_GENERATION_FEATURE: DaemonWireFeature = 'tunnel-table-generation-v1'
 
 /**
  * The daemon understands `deploy-cancel` and stops an `environment.deploy`

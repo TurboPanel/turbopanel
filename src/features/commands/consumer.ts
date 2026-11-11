@@ -48,6 +48,7 @@ import {
   haltRollout,
 } from '../deploy/rollout.ts'
 import { nudgeTunnelRoutesForEnvironment, tunnelSyncDepsFrom } from '../tunnels/nudge.ts'
+import { healStaleTunnelTableOf } from '../tunnels/stale-table-heal.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -3211,6 +3212,17 @@ export async function applySucceededSideEffects(
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)
   await applyFirewallPreviewSideEffect(db, record, envelope, result, deps)
+  const tunnelSecrets = consumerFabricSecretFields(deps)
+  await healStaleTunnelTableOf(
+    db,
+    record,
+    result,
+    tunnelSyncDepsFrom({
+      commandQueue: deps?.commandQueue,
+      secretsConfig: tunnelSecrets.secretsConfig,
+      dataEncryptionSecrets: tunnelSecrets.dataEncryptionSecrets,
+    })
+  )
 }
 
 /**

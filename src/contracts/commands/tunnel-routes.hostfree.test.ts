@@ -324,3 +324,18 @@ test('server.tunnel.routes: inbound names parse with or without peers and bad li
     assertThrows(() => parseCommandPayload('server.tunnel.routes', payload({ inbound: bad })))
   }
 })
+
+test('a tunnel table and a deploy tunnel block accept a generation and refuse a bad one', () => {
+  const tunnel = {
+    hostnames: ['a.example.com'],
+    peers: ['10.0.0.1'],
+    generation: 1_800_000_000_000,
+  }
+  assertEquals(parseDeployHostingTunnel(tunnel, ['a.example.com'])?.generation, 1_800_000_000_000)
+  assertThrows(() => parseDeployHostingTunnel({ ...tunnel, generation: -1 }, ['a.example.com']))
+  assertThrows(() => parseDeployHostingTunnel({ ...tunnel, generation: 1.5 }, ['a.example.com']))
+  const table = { hash: HASH, routes: [], peerAddresses: [], generation: 7 }
+  assertEquals(parseTunnelRoutesPayload(table).generation, 7)
+  assertThrows(() => parseTunnelRoutesPayload({ ...table, generation: '7' }))
+  assertEquals('generation' in parseTunnelRoutesPayload({ ...table, generation: undefined }), false)
+})

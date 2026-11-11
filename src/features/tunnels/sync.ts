@@ -8,7 +8,8 @@
  * the table again when the wanted table changed, or when the last command did
  * not finish well (a server that was offline never got it: the consumer does
  * not queue commands for a disconnected server). A resend of an unchanged table
- * is harmless: the daemon compares the hash and does nothing.
+ * is harmless: the daemon compares the hash and does nothing, and it carries
+ * the same generation (`table-generation.ts`).
  *
  * Only a server whose daemon advertises tunnel support is sent anything, and
  * only while it is connected.
@@ -35,6 +36,7 @@ import {
 } from './route-builder.ts'
 import { relinkDoorwayHostings } from './doorway-links.ts'
 import { loadRoutingFacts } from './route-facts.ts'
+import { generationForDaemon, resolveTunnelGeneration } from './table-generation.ts'
 
 /** The least time between two sends of the same table to one server. */
 export const TUNNEL_ROUTES_RESEND_GAP_MS = 10 * 60 * 1000
@@ -245,6 +247,11 @@ export async function syncServerTunnelRoutes(
   if ('failed' in issue) return { status: 'failed', reason: issue.failed }
   const material = built.needsPeerMaterial ? issue.leaf?.material : undefined
   const payload = await toRoutesPayload(built, material)
+  // The generation is not part of the hash: an unchanged table keeps its number.
+  const generation = await generationForDaemon(ready.features, () =>
+    resolveTunnelGeneration(db, organizationId, facts)
+  )
+  if (generation !== undefined) payload.generation = generation
   const notes = [...built.warnings, ...built.skipped.map((n) => `${n.hostname}: ${n.reason}`)]
   for (const note of notes) compatLogWarn('tunnel-sync', `server ${serverId}: ${note}`)
   // The leaf is tracked as delivered only when the certificate really went out.
