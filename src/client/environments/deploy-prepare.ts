@@ -3759,7 +3759,10 @@ async function applyDeployVariables(
   db: Db,
   input: {
     params: { environmentId: string; serverId: string }
-    pipeline: Pick<DeployExpandPipeline, 'expandedDocument' | 'expandedServiceNames' | 'expansion'>
+    pipeline: Pick<
+      DeployExpandPipeline,
+      'expandedDocument' | 'expandedServiceNames' | 'expansion' | 'localServiceNames'
+    >
     serviceRows: ServiceRow[]
     projectId: string
     warnings: DeployPrepareWarning[]
@@ -3847,18 +3850,47 @@ function cacheHashInputs(state: PreparedProjectCaches): Record<string, unknown> 
   }
 }
 
-/** Add the helper publishes to the compiled document, or say which container is missing. */
-function injectReachPublishes(
-  data: Record<string, unknown>,
-  state: PreparedProjectCaches
-): ProjectCacheRefusal | null {
-  const missing = injectHelperPublishes(data, state.helperReach ?? [])
-  if (missing.length === 0) return null
-  return {
-    kind: 'project_cache_refused',
-    code: 'helper_reach_invalid',
-    message: `Helper port container ${missing.join(', ')} is not part of this deploy`,
-  }
+type CachesAndVariablesInput = Omit<Parameters<typeof applyDeployVariables>[2], 'cacheDelivery'> & {
+  application: Application
+  principalResolution: ComposePrincipalResolution
+  orgOptions: unknown
+  serverOptions: unknown
+}
+
+/** Caches and helper reach first (their variables are set after everything else), then every variable. */
+async function prepareCachesAndVariables(
+  c: Context<AppEnv>,
+  db: Db,
+  input: CachesAndVariablesInput
+): Promise<
+  | { cacheState: PreparedProjectCaches; withVariables: ApplyVariablesResult }
+  | ProjectCacheRefusal
+  | DeployPrepareError
+> {
+  const { application, principalResolution, orgOptions, serverOptions, ...variableInput } = input
+  const cacheState = await prepareCachesStep(
+    db,
+    {
+      environmentId: input.params.environmentId,
+      serverId: input.params.serverId,
+      secrets: c.get('dataEncryptionSecrets'),
+      application,
+      serviceRows: input.serviceRows,
+      principalResolution,
+      localServiceNames: input.pipeline.localServiceNames,
+      expansion: input.pipeline.expansion,
+      orgOptions,
+      serverOptions,
+    },
+    input.warnings
+  )
+  if ('kind' in cacheState) return cacheState
+  const withVariables = await applyDeployVariables(c, db, {
+    ...variableInput,
+    cacheDelivery: cacheState.delivery,
+  })
+  if ('kind' in withVariables) return withVariables
+  return { cacheState, withVariables }
 }
 
 export async function prepareDeployCompose(
@@ -3966,33 +3998,19 @@ export async function prepareDeployCompose(
   }
   const { pipeline, resolved } = pipelineResolved
 
-  const cacheState = await prepareCachesStep(
-    db,
-    {
-      environmentId: params.environmentId,
-      serverId: params.serverId,
-      secrets: c.get('dataEncryptionSecrets'),
-      application,
-      serviceRows,
-      principalResolution,
-      localServiceNames: pipeline.localServiceNames,
-      expansion: pipeline.expansion,
-      orgOptions: orgRow?.options,
-      serverOptions: serverRow?.options,
-    },
-    warnings
-  )
-  if ('kind' in cacheState) return cacheState
-
-  const withVariables = await applyDeployVariables(c, db, {
+  const caching = await prepareCachesAndVariables(c, db, {
     params,
     pipeline,
     serviceRows,
     projectId: envRow.projectId,
     warnings,
-    cacheDelivery: cacheState.delivery,
+    application,
+    principalResolution,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
   })
-  if ('kind' in withVariables) return withVariables
+  if ('kind' in caching) return caching
+  const { cacheState, withVariables } = caching
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
     pipeline.optionsByComposeName,
@@ -4134,8 +4152,8 @@ export async function prepareDeployCompose(
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,
   })
-  const reachError = injectReachPublishes(compiled.document.data, cacheState)
-  if (reachError) return reachError
+  // A reach container missing from the document is the host's to refuse: it names the entry.
+  injectHelperPublishes(compiled.document.data, cacheState.helperReach ?? [])
   const expansion = overlayCompiledExpansion(pipeline.expansion, compiled.expansion)
   const managedNetworkServices = applyExpansionToNames(managedLogicalNames, expansion)
   const managedNetwork = await resolveManagedNetworkHostName(
