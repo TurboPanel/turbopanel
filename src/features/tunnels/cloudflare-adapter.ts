@@ -415,7 +415,7 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       const account = requireAccount(input.accountId)
       const api = client(token)
       // 32 random bytes, base64: the provider's minimum for a tunnel secret.
-      const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+      const secret = btoa(String.fromCodePoint(...crypto.getRandomValues(new Uint8Array(32))))
       try {
         await api.setTunnelSecret(account, input.externalId, secret)
         return await api.getTunnelToken(account, input.externalId)
