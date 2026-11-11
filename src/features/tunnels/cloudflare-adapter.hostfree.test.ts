@@ -192,18 +192,72 @@ test('the DNS name is a proxied CNAME to the tunnel', async () => {
   assertEquals(calls[1]!.method, 'DELETE')
 })
 
-test('deleting a tunnel and rotating a run token behave as documented', async () => {
+test('deleting a tunnel calls the provider', async () => {
   const { impl, calls } = fakeFetch({
     [`DELETE /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1`]: ok({}),
   })
   const adapter = createCloudflareAdapter({ fetch: impl })
   await adapter.deleteTunnel(TOKEN, { accountId: ACCOUNT, externalId: 't-1' })
   assertEquals(calls[0]!.method, 'DELETE')
+})
+
+/** A made-up run token, built so no scanner mistakes it for a real one. */
+const NEW_RUN_TOKEN = 'N'.repeat(64)
+
+test('rotating a run token sets a fresh random secret, then reads the new token back', async () => {
+  const { impl, calls } = fakeFetch({
+    [`PATCH /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1`]: ok({ id: 't-1' }),
+    [`GET /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1/token`]: ok(NEW_RUN_TOKEN),
+  })
+  const adapter = createCloudflareAdapter({ fetch: impl })
+  const first = await adapter.rotateRunToken(TOKEN, { accountId: ACCOUNT, externalId: 't-1' })
+  assertEquals(first, NEW_RUN_TOKEN)
+  assertEquals(
+    calls.map((c) => c.method),
+    ['PATCH', 'GET']
+  )
+  const body = calls[0]!.body as Record<string, unknown>
+  assertEquals(Object.keys(body), ['tunnel_secret'])
+  const secret = String(body.tunnel_secret)
+  // At least 32 random bytes, base64: the provider's minimum.
+  assertEquals(atob(secret).length, 32)
+  await adapter.rotateRunToken(TOKEN, { accountId: ACCOUNT, externalId: 't-1' })
+  assert(String((calls[2]!.body as Record<string, unknown>).tunnel_secret) !== secret)
+})
+
+test('a refused rotation never carries the new secret in its message', async () => {
+  let sent = ''
+  const impl: typeof fetch = (_input, init) => {
+    sent = String((JSON.parse(String(init?.body)) as { tunnel_secret: string }).tunnel_secret)
+    return Promise.resolve(
+      Response.json(
+        { success: false, errors: [{ code: 1, message: `bad secret ${sent}` }] },
+        { status: 400 }
+      )
+    )
+  }
   const err = await assertRejects(
-    () => adapter.rotateRunToken(TOKEN, { accountId: ACCOUNT, externalId: 't-1' }),
+    () =>
+      createCloudflareAdapter({ fetch: impl }).rotateRunToken(TOKEN, {
+        accountId: ACCOUNT,
+        externalId: 't-1',
+      }),
     TunnelProviderError
   )
-  assertEquals(err.code, 'unsupported')
+  assert(sent.length > 0)
+  assert(!err.message.includes(sent))
+})
+
+test('dropping connections deletes every connection of the tunnel', async () => {
+  const { impl, calls } = fakeFetch({
+    [`DELETE /client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1/connections`]: ok(null),
+  })
+  await createCloudflareAdapter({ fetch: impl }).dropConnections!(TOKEN, {
+    accountId: ACCOUNT,
+    externalId: 't-1',
+  })
+  assertEquals(calls[0]!.method, 'DELETE')
+  assertEquals(calls[0]!.url, `/client/v4/accounts/${ACCOUNT}/cfd_tunnel/t-1/connections`)
 })
 
 test('scrubbing removes known secrets, bearer values and token-shaped runs', () => {

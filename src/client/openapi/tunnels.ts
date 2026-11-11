@@ -304,6 +304,9 @@ export const tunnelSchemas = {
       },
       warnings: { type: 'array', items: { type: 'string' } },
       verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
+      runTokenRotation: {
+        oneOf: [{ $ref: '#/components/schemas/TunnelRunTokenRotation' }, { type: 'null' }],
+      },
       doorwayCount: { type: 'integer' },
     },
   },
@@ -356,6 +359,19 @@ export const tunnelSchemas = {
           'Why a removal is waiting, in plain words (for example no API Token can edit the DNS of its zone); the row stays in `attention` and a retry finishes it. Null otherwise.',
       },
       createdAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  TunnelRunTokenRotation: {
+    type: 'object',
+    title: 'Run Token Rotation',
+    properties: {
+      phase: { type: 'string', enum: ['starting', 'rolling', 'finishing', 'done', 'stopped'] },
+      startedAt: { type: 'string', format: 'date-time' },
+      finishedAt: { type: ['string', 'null'], format: 'date-time' },
+      movedServerIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      pendingServerIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+      currentServerId: { type: ['string', 'null'], format: 'uuid' },
+      stoppedReason: { type: ['string', 'null'] },
     },
   },
   TunnelHostnameCreate: {
@@ -824,6 +840,40 @@ Object.assign(tunnelPaths, {
           type: 'object',
           properties: { tunnel: { $ref: '#/components/schemas/Tunnel' } },
         }),
+        ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/run-token/rotate': {
+    post: {
+      tags: ['Organizations'],
+      summary: "Replace a Tunnel's run token",
+      description: `Owners and managers only. Issues a new run token at the provider without removing the Tunnel, then moves the servers that run it to the new token one at a time: each server's connector restarts on the new token, and the next server waits until it reports its connector connected. At the end every connection of the Tunnel is dropped once, so a connection opened with the old token cannot stay; connectors briefly reconnect. Answers 202 with where the rotation is (\`rotation\`, also shown on the Tunnel as \`runTokenRotation\`) and \`warnings\`; the periodic sweep moves it on. A server that is offline, refuses the new token or does not connect within ten minutes stops it (\`phase: stopped\`, \`stoppedReason\`); sending this again resumes from there with the token already issued. The token is never returned. Refusals: 409 \`rotation_single_server\` (only one server runs the Tunnel, so visitors lose it for a few seconds; send \`confirmSingleServer: true\`), \`tunnel_daemon_too_old\` (with \`serverIds\`: a server's daemon cannot move its connector to a new token), \`rotation_in_progress\`, \`tunnel_removing\`, \`tunnel_not_ready\`; 503 \`secrets_unavailable\`. ${TUNNEL_ERRORS}`,
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: { confirmSingleServer: { type: 'boolean', default: false } },
+            },
+          },
+        },
+      },
+      responses: {
+        ...jsonOk(
+          'Started',
+          {
+            type: 'object',
+            properties: {
+              rotation: { $ref: '#/components/schemas/TunnelRunTokenRotation' },
+              warnings: { type: 'array', items: { type: 'string' } },
+            },
+          },
+          '202'
+        ),
         ...errors({ badRequest: true }),
       },
     },

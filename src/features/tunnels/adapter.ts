@@ -77,11 +77,23 @@ export type TunnelAdapter = {
     token: string,
     input: { accountId: string | null; externalId: string }
   ): Promise<string>
-  /** Issue a fresh run token for a tunnel without recreating it. */
+  /**
+   * Issue a fresh run token for a tunnel without recreating it. Connectors
+   * already connected stay up; the old token can no longer connect.
+   */
   rotateRunToken(
     token: string,
     input: { accountId: string | null; externalId: string }
   ): Promise<string>
+  /**
+   * Drop every connector connection of the tunnel, so one opened with an old
+   * run token cannot stay; connectors that hold the current token reconnect.
+   * Optional: a provider without it leaves connections as they are.
+   */
+  dropConnections?(
+    token: string,
+    input: { accountId: string | null; externalId: string }
+  ): Promise<void>
   /** Replace the full set of routes: every name goes to the local web server. */
   setRoutes(
     token: string,

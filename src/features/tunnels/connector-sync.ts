@@ -33,6 +33,7 @@ import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
 import { compareText } from './order.ts'
+import { runSecretFor } from './rotation-state.ts'
 
 /** The least time between two sends of the same list to one server. */
 export const TUNNEL_CONNECTORS_RESEND_GAP_MS = 10 * 60 * 1000
@@ -121,7 +122,9 @@ export async function wantedConnectorsByServer(
       if (!row.externalId || !row.secretId || !PROVIDER_ID_RE.test(row.externalId)) return
       for (const serverId of await carryingServers(db, row)) {
         const list = wanted.get(serverId) ?? []
-        list.push({ tunnelId: row.externalId, secretId: row.secretId })
+        // While the run token is being rotated, each server gets the old or the new one on its own.
+        const secretId = runSecretFor(row, serverId) ?? row.secretId
+        list.push({ tunnelId: row.externalId, secretId })
         wanted.set(serverId, list)
       }
     })

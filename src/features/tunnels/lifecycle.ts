@@ -52,6 +52,7 @@ import {
   type Parsed,
 } from './records.ts'
 import { RUN_SECRET_PROVIDER, type TunnelPlacement } from './vocabulary.ts'
+import { type ApiRotation, readRotation, toApiRotation } from './rotation-state.ts'
 
 export type TunnelRow = typeof tunnel.$inferSelect
 export type PortalRow = typeof portal.$inferSelect
@@ -61,11 +62,19 @@ export type DoorwayRow = typeof doorway.$inferSelect
 export class TunnelRefusal extends Error {
   readonly code: string
   readonly status: 400 | 404 | 409 | 502
-  constructor(code: string, status: 400 | 404 | 409 | 502, message: string) {
+  /** Extra fields for the answer (for example the DNS records that hold a name). */
+  readonly details: Record<string, unknown> | undefined
+  constructor(
+    code: string,
+    status: 400 | 404 | 409 | 502,
+    message: string,
+    details?: Record<string, unknown>
+  ) {
     super(message)
     this.name = 'TunnelRefusal'
     this.code = code
     this.status = status
+    this.details = details
   }
 }
 
@@ -99,6 +108,8 @@ export type ApiTunnel = {
   doorwayCount: number
   /** The verified connection to the web server: asked for, in effect, and which names still wait. */
   verifyOrigin: VerifyState
+  /** The last or current run-token rotation (never the token), or null when there was none. */
+  runTokenRotation: ApiRotation | null
 }
 
 export type ApiDoorway = {
@@ -210,6 +221,7 @@ export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
     warnings: [...removalWarnings(row), ...placementWarnings(carrying)],
     doorwayCount: doorways.length,
     verifyOrigin: verify,
+    runTokenRotation: toApiRotation(readRotation(row.metadata)),
   }
 }
 

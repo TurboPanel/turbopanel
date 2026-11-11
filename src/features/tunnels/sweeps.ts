@@ -17,6 +17,7 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { runBadgeRecheckSweepTick } from './badge-recheck.ts'
 import { runTunnelConnectorsSweepTick } from './connector-sync.ts'
 import { runTunnelRemovalSweepTick } from './removal.ts'
+import { runRunTokenRotationSweepTick } from './run-token-rotation.ts'
 import { runTunnelStatusPollTick } from './status-poll.ts'
 import { runTunnelRoutesSweepTick } from './sync.ts'
 
@@ -44,6 +45,12 @@ export const TUNNEL_SWEEPS: readonly TunnelSweep[] = [
   {
     failureLabel: 'tunnel-connectors-sweep-failed',
     run: (db, deps) => runTunnelConnectorsSweepTick(db, deps),
+  },
+  // Run-token rotations under way: move the next server to the new token once
+  // the one before it reports its connector connected, then drop old connections.
+  {
+    failureLabel: 'tunnel-run-token-rotation-failed',
+    run: (db, deps) => runRunTokenRotationSweepTick(db, deps),
   },
   // Tunnels being removed: once their connectors have stopped the provider
   // lets go of them; tried again after a growing wait until it does.

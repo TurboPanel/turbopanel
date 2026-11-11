@@ -372,15 +372,25 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       return client(token).getTunnelToken(requireAccount(input.accountId), input.externalId)
     },
 
-    rotateRunToken() {
-      // Cloudflare's way to issue a fresh run token is not confirmed yet, so nothing is guessed.
-      return Promise.reject(
-        new TunnelProviderError(
-          'unsupported',
-          'Rotating a Cloudflare run token is not supported yet',
-          null
-        )
-      )
+    async rotateRunToken(token, input) {
+      const account = requireAccount(input.accountId)
+      const api = client(token)
+      // 32 random bytes, base64: the provider's minimum for a tunnel secret.
+      const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
+      try {
+        await api.setTunnelSecret(account, input.externalId, secret)
+        return await api.getTunnelToken(account, input.externalId)
+      } catch (err) {
+        // The secret must never reach a log or an answer, even inside a provider message.
+        if (err instanceof TunnelProviderError) {
+          throw new TunnelProviderError(err.code, err.message, err.status, [secret, token])
+        }
+        throw err
+      }
+    },
+
+    async dropConnections(token, input) {
+      await client(token).deleteTunnelConnections(requireAccount(input.accountId), input.externalId)
     },
 
     async setRoutes(token, input) {

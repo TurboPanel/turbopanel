@@ -344,6 +344,7 @@ test('every tunnel route refuses a request without a session', async () => {
       ['POST', `/organizations/${f.orgA}/tunnels`],
       ['GET', `/organizations/${f.orgA}/tunnels/${id}`],
       ['PUT', `/organizations/${f.orgA}/tunnels/${id}/placement`],
+      ['POST', `/organizations/${f.orgA}/tunnels/${id}/run-token/rotate`],
       ['DELETE', `/organizations/${f.orgA}/tunnels/${id}`],
       ['GET', `/organizations/${f.orgA}/tunnels/${id}/hostnames`],
       ['POST', `/organizations/${f.orgA}/tunnels/${id}/hostnames`],
