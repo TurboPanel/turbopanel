@@ -2922,6 +2922,96 @@ export const managed = pgTable(
   ]
 )
 /**
+ * One native Valkey process per row: a project cache owned by one Hosting
+ * Account (`principal`) in one environment on one server. The daemon runs it
+ * as that account; the control plane stores only the settings and the sealed
+ * login password. Vocabularies live in `features/caches/vocabulary.ts`.
+ */
+export const cache = pgTable(
+  'cache',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    metadata: jsonb(),
+    environmentId: uuid('environment_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    principalId: uuid('principal_id').notNull(),
+    name: varchar({ length: 63 }).notNull(),
+    /** `valkey` | `redis` (`redis` is refused by the API until offered). */
+    engine: text().default('valkey').notNull(),
+    /** `pending` | `applying` | `ready` | `stopped` | `failed` */
+    status: text().default('pending').notNull(),
+    /** Engine series such as `8.1`; the daemon maps it to the pinned patch. */
+    version: varchar({ length: 16 }).notNull(),
+    /** `socket` | `port` */
+    access: text().default('socket').notNull(),
+    /** Loopback port from the server listen-port ledger; set only for `port` access. */
+    port: integer(),
+    maxMemoryMb: integer('max_memory_mb').default(64).notNull(),
+    keyPrefix: varchar('key_prefix', { length: 64 }).default('REDIS').notNull(),
+    /** Sealed `tpsecret` envelope of the login password. */
+    password: text().notNull(),
+  },
+  (table) => [
+    unique('uniq_cache_environment_name').on(table.environmentId, table.name),
+    unique('uniq_cache_environment_principal_prefix').on(
+      table.environmentId,
+      table.principalId,
+      table.keyPrefix
+    ),
+    index('idx_cache_server_id').on(table.serverId),
+    index('idx_cache_principal_id').on(table.principalId),
+    uniqueIndex('uniq_cache_server_port')
+      .on(table.serverId, table.port)
+      .where(sql`port IS NOT NULL`),
+    foreignKey({
+      columns: [table.environmentId],
+      foreignColumns: [environment.id],
+      name: 'cache_environment_id_environment_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'cache_server_id_server_id_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [table.principalId],
+      foreignColumns: [principal.id],
+      name: 'cache_principal_id_principal_id_fk',
+    }).onDelete('restrict'),
+    check('cache_name_check', sql`name ~ '^[a-z][a-z0-9-]{0,62}$'`),
+    check('cache_engine_check', sql`engine IN ('valkey', 'redis')`),
+    check(
+      'cache_status_check',
+      sql`status IN ('pending', 'applying', 'ready', 'stopped', 'failed')`
+    ),
+    check('cache_version_check', sql`version ~ '^[0-9]{1,3}\\.[0-9]{1,3}$'`),
+    check(
+      'cache_access_check',
+      sql`(access = 'socket' AND port IS NULL) OR (access = 'port' AND port BETWEEN 1024 AND 65535)`
+    ),
+    check('cache_max_memory_mb_check', sql`max_memory_mb BETWEEN 16 AND 65536`),
+    check('cache_key_prefix_check', sql`key_prefix ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$'`),
+  ]
+)
+/**
  * One server participation (replica) in a managed cluster (`managed`). Exactly
  * one `primary` per `managed_id` (partial unique); replicas use ordinals 2+.
  * Container fan-out uses `ordinal` on `(service_id, role='service', ordinal)`.

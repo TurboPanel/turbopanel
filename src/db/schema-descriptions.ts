@@ -1364,6 +1364,33 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "This cluster's own copy choice: null follows the organization default, `none` turns copying off, otherwise a destination id.",
     },
   },
+  cache: {
+    group: 'managed',
+    summary:
+      'One native Valkey process per row, owned by one Hosting Account in one project environment on one server; the daemon runs it as that account.',
+    columns: {
+      metadata:
+        'Last apply result from the daemon: `runtimeVersion`, `lastError` and `appliedAt`; written by the cache result handler only.',
+      principal_id:
+        'The Hosting Account the process runs as; only that account may reach it, and only its sites and apps get the variables.',
+      name: 'Short name unique in the environment, lower case letters, digits and dashes; shown in the web interface.',
+      engine:
+        'Engine binary: `valkey` today; `redis` is reserved for a later choice and refused by the API until it is offered.',
+      status:
+        'Last known state: `pending`, `applying`, `ready`, `stopped` or `failed`; written from apply results.',
+      version:
+        'Engine series such as `8.1`; the daemon maps it to the pinned patch release it vendors.',
+      access:
+        '`socket` is a private unix socket only the account can open; `port` is a loopback port the host firewall opens to that account only.',
+      port: 'Loopback port from the server listen-port ledger, set only when `access` is `port`; unique per server.',
+      max_memory_mb:
+        'Data memory limit in MiB written as `maxmemory`; the unit memory ceiling is twice this plus 32 MiB.',
+      key_prefix:
+        'Prefix of the variable names delivered to the account sites and apps, for example `REDIS_HOST`; unique per account and environment.',
+      password:
+        'Sealed `tpsecret` envelope of the login password; only its SHA-256 is sent to the daemon, the plain value travels as a sealed variable.',
+    },
+  },
   recovery: {
     group: 'managed',
     summary:
