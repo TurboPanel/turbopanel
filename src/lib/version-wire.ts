@@ -234,6 +234,7 @@ export const DAEMON_WIRE_FEATURES = [
   'acme-issue-one-cert-v1',
   'tunnel-lock-follow-v1',
   'tunnel-connector-token-change-v1',
+  'deploy-config-files-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -352,6 +353,15 @@ export const ACME_ISSUE_FEATURE: DaemonWireFeature = 'acme-issue-v1'
  * lists this feature; an older one would get one certificate per name.
  */
 export const ACME_ISSUE_ONE_CERT_FEATURE: DaemonWireFeature = 'acme-issue-one-cert-v1'
+
+/**
+ * The daemon puts generated config files together from `configFiles[]` on
+ * `environment.deploy` (text parts plus secret keys read from the sealed
+ * `variableMaterial[]`) and mounts them read-only. A deploy whose compose
+ * carries a `configs` entry with `content` that uses `{$…}` values goes only to
+ * a daemon that lists this feature; an older one would drop the field.
+ */
+export const DEPLOY_CONFIG_FILES_FEATURE: DaemonWireFeature = 'deploy-config-files-v1'
 
 /**
  * The daemon keeps each command's final result on the host until this control

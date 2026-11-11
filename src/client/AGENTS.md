@@ -259,7 +259,8 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (YAML
   holds paths only). Preview **Prepared** shows that snapshot (plus `servers[]`
   only when scheduled across more than one host), redacted `.env`, and
-  `secretPlan[]`. Runtime YAML includes `x-turbopanel.placement.server_id` as
+  `secretPlan[]` and `configFiles[]` (generated config files; secret slots shown
+  as `{$KEY}`, never a value or a size). Runtime YAML includes `x-turbopanel.placement.server_id` as
   compile-time audit metadata. Preview **Merged** stays the user-authored merge
   (including `{$…}`) plus the live pin for review.
   `POST /api/daemon/v1/deployments/secrets/rehydrate` reseals current registry

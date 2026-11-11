@@ -1046,6 +1046,33 @@ reachability) merge **into that single file** on the host and do **not** inject
 secrets. The deprecated **`composeYaml`** field is the same compiled body for
 older daemons and for UI display; it is not a second file.
 
+### Generated config files (`apply-config-files.ts`)
+
+Standard Compose `configs:` with `content` (top level) mounted by a service's
+`configs: [{ source, target }]`. The text may use `{$KEY}` / `{$scope.KEY}`
+anywhere (`splitEmbeddedRefs` in `variable-refs.ts`; the one place the
+reference grammar widens). Per service, each content config becomes its own
+source `<service>_<name>` and file `<service>--<name>`, so no file is bound into
+two services; the compiled document gets `configs.<source>.file` under
+`/run/turbopanel/deployments/<p>/<e>/configs/`, never `content`. A secret
+reference becomes a `{ secretKey }` part and rides sealed in
+`variableMaterial[]` (no `secretPlan` entry, no `/run/secrets` mount); the
+control plane never decrypts it, and `deployment.options.configSecretRefs`
+lets boot rehydrate ask for the value. `$` rules: literal `$` is `$$`, literal
+`{$name}` is `{$$name}`, Compose `${X}` / `$X` is refused
+(`config_interpolation`); references are scanned on the raw text, `$$` is
+reduced in text parts only, inserted values are never scanned again. `uid`,
+`gid` and `mode` are dropped with a warning (files are fixed read-only and
+readable by every user in the container). Refused as `config_file_invalid`: a
+name ending in `.tmp`, a generated name another config already uses, over the
+limits (64 KiB text per file, 16 per service, 256 KiB per deploy);
+`config_file_shared` when a service names another service's generated source.
+The target daemon must list `deploy-config-files-v1`: otherwise a content
+config with a real `{$…}` token returns `409 config_files_need_daemon_update`
+(naming the servers) and one without a token stays as authored (Compose's own
+`content`). `desiredHash` covers `configFiles` (the parts) so a text-only change
+is not skipped as unchanged; an environment with none keeps its hash.
+
 ### The compiler IR — four models (`ir.ts`)
 
 The deploy compiler has always had four stages; `ir.ts` gives the three

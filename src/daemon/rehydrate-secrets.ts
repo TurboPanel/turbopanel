@@ -114,6 +114,48 @@ function secretPlanFromOptions(options: unknown): EnvironmentDeploySecretPlanEnt
   }
 }
 
+/** A secret a generated config file reads: its service and key, no mount flags. */
+type ConfigSecretRef = { composeServiceName: string; key: string }
+
+export function configSecretRefsFromOptions(options: unknown): ConfigSecretRef[] {
+  if (!isRecord(options) || !Array.isArray(options.configSecretRefs)) return []
+  const refs: ConfigSecretRef[] = []
+  for (const item of options.configSecretRefs) {
+    if (!isRecord(item)) continue
+    const { composeServiceName, key } = item
+    if (typeof composeServiceName === 'string' && typeof key === 'string') {
+      refs.push({ composeServiceName, key })
+    }
+  }
+  return refs
+}
+
+/**
+ * What to ask values for: every secret plan entry, then each secret only a
+ * generated config file reads (deduped by service and key). A config-only
+ * secret has no mount, so it carries neither flag.
+ */
+export type RehydrateSecretWant = ConfigSecretRef & { forBuild: boolean; forRuntime: boolean }
+
+export function rehydrateSecretWants(
+  secretPlan: readonly EnvironmentDeploySecretPlanEntry[],
+  configRefs: readonly ConfigSecretRef[]
+): RehydrateSecretWant[] {
+  const wants: RehydrateSecretWant[] = secretPlan.map((plan) => ({
+    composeServiceName: plan.composeServiceName,
+    key: plan.key,
+    forBuild: plan.forBuild,
+    forRuntime: plan.forRuntime,
+  }))
+  for (const ref of configRefs) {
+    if (wants.some((w) => w.key === ref.key && w.composeServiceName === ref.composeServiceName)) {
+      continue
+    }
+    wants.push({ ...ref, forBuild: false, forRuntime: false })
+  }
+  return wants
+}
+
 async function resolveServiceVariableMap(
   db: Db,
   environmentId: string,
@@ -197,14 +239,14 @@ async function collectRehydrateVariableMaterial(
   item: RehydrateDeploymentRequest,
   daemonServerId: string,
   keyId: string,
-  secretPlan: EnvironmentDeploySecretPlanEntry[],
+  wants: readonly RehydrateSecretWant[],
   dataEncryptionSecrets: DerivedSecretsConfig,
   secretsConfig: SecretsConfig
 ): Promise<EnvironmentDeployVariableMaterial[]> {
   const variableMaterial: EnvironmentDeployVariableMaterial[] = []
   const maps = new Map<string, ResolvedVariableMap>()
 
-  await forEachSequential(secretPlan, async (plan) => {
+  await forEachSequential(wants, async (plan) => {
     let varMap = maps.get(plan.composeServiceName)
     if (!varMap) {
       varMap = await resolveServiceVariableMap(
@@ -272,7 +314,7 @@ async function rehydrateOneDeployment(
       item,
       daemonServerId,
       keyId,
-      secretPlan,
+      rehydrateSecretWants(secretPlan, configSecretRefsFromOptions(deployRow.options)),
       dataEncryptionSecrets,
       secretsConfig
     )
