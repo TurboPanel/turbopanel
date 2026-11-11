@@ -21,7 +21,7 @@ CREATE TABLE "cache" (
 	CONSTRAINT "cache_engine_check" CHECK (engine IN ('valkey', 'redis')),
 	CONSTRAINT "cache_status_check" CHECK (status IN ('pending', 'applying', 'ready', 'stopped', 'failed')),
 	CONSTRAINT "cache_version_check" CHECK (version ~ '^[0-9]{1,3}\.[0-9]{1,3}$'),
-	CONSTRAINT "cache_access_check" CHECK ((access = 'socket' AND port IS NULL) OR (access = 'port' AND port BETWEEN 1024 AND 65535)),
+	CONSTRAINT "cache_access_check" CHECK ((access = 'socket' AND port IS NULL) OR (access = 'port' AND port IS NOT NULL AND port BETWEEN 1024 AND 65535)),
 	CONSTRAINT "cache_max_memory_mb_check" CHECK (max_memory_mb BETWEEN 16 AND 65536),
 	CONSTRAINT "cache_key_prefix_check" CHECK (key_prefix ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$')
 );

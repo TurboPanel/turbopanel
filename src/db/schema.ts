@@ -3005,7 +3005,7 @@ export const cache = pgTable(
     check('cache_version_check', sql`version ~ '^[0-9]{1,3}\\.[0-9]{1,3}$'`),
     check(
       'cache_access_check',
-      sql`(access = 'socket' AND port IS NULL) OR (access = 'port' AND port BETWEEN 1024 AND 65535)`
+      sql`(access = 'socket' AND port IS NULL) OR (access = 'port' AND port IS NOT NULL AND port BETWEEN 1024 AND 65535)`
     ),
     check('cache_max_memory_mb_check', sql`max_memory_mb BETWEEN 16 AND 65536`),
     check('cache_key_prefix_check', sql`key_prefix ~ '^[A-Za-z_][A-Za-z0-9_]{0,63}$'`),

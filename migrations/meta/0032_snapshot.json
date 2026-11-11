@@ -1,5 +1,5 @@
 {
-  "id": "b4be71e9-c809-41f2-a7fd-78a31c44b347",
+  "id": "36c2a96f-a8f4-41b8-a3f8-9d16de0a0a45",
   "prevId": "4090190b-d706-487d-8068-de7a0a31a88a",
   "version": "7",
   "dialect": "postgresql",
@@ -1877,7 +1877,7 @@
         },
         "cache_access_check": {
           "name": "cache_access_check",
-          "value": "(access = 'socket' AND port IS NULL) OR (access = 'port' AND port BETWEEN 1024 AND 65535)"
+          "value": "(access = 'socket' AND port IS NULL) OR (access = 'port' AND port IS NOT NULL AND port BETWEEN 1024 AND 65535)"
         },
         "cache_max_memory_mb_check": {
           "name": "cache_max_memory_mb_check",

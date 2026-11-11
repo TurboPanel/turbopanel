@@ -103,6 +103,7 @@ test('cache rows are held to the name, access, memory and uniqueness rules', asy
       await refuses('cache_status_check', { name: 's', keyPrefix: 'S', status: 'gone' })
       await refuses('cache_version_check', { name: 'v', keyPrefix: 'V', version: '8' })
       await refuses('cache_version_check', { name: 'v', keyPrefix: 'V', version: '8.1.11' })
+      await refuses('cache_access_check', { name: 'a1', keyPrefix: 'A1', access: 'port' })
       await refuses('cache_access_check', { name: 'a2', keyPrefix: 'A2', port: 18080 })
       await refuses('cache_access_check', { name: 'a3', keyPrefix: 'A3', access: 'port', port: 80 })
       await refuses('cache_access_check', { name: 'a4', keyPrefix: 'A4', access: 'other' })
