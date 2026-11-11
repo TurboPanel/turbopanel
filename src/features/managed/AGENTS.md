@@ -29,15 +29,26 @@ absent.
 constant — see **Client TLS (SSL mode)** below. Do not hardcode `verify-full` in
 a DSN renderer or binding materializer again.
 
-Prefixed keys (`<PREFIX>_URL`, `_CA_CERT`, `_READ_SPLIT`, `_HOST`, `_PORT`,
-`_NAME`, `_USER`, `_PASSWORD`) are computed in `src/lib/naming.ts`
-(`bindingPrefixedKeys`). **`<PREFIX>_CA_CERT` is PEM text** — the consuming app
-materializes it; do not emit `PGSSLROOTCERT` (no file path). A file-mount
-variant is an explicit `Future:` seam.
+Prefixed keys (`<PREFIX>_URL`, `_CA_CERT`, `_CA_FILE`, `_SSL_MODE`,
+`_READ_SPLIT`, `_HOST`, `_PORT`, `_NAME`, `_USER`, `_PASSWORD`) are computed in
+`src/lib/naming.ts` (`bindingPrefixedKeys`). **`<PREFIX>_CA_CERT` is PEM text**
+for a container and a native app. `<PREFIX>_SSL_MODE` is the effective TLS mode
+in the engine's spelling, stored for every kind. A **container** also stores
+`<PREFIX>_CA_FILE` = `/run/secrets/<PREFIX>_CA_CERT` (the file mount of the
+`_CA_CERT` secret; `apply-variables.ts` mounts it under that name even when the
+secret is mapped to another name), and its **Postgres URL** carries
+`&sslrootcert=<that path>` in `verify-ca` / `verify-full`. A PHP site gets the
+same from the daemon (`site-db-url-ca-v1`: `sites[].dbCa.urlVariables`), a
+native app keeps text only, and the MySQL URL is unchanged. A new default name
+a user already holds as their own service variable is skipped, not inserted
+(`upsertBindingOwnedVariables`). Any variable can read a binding's fields with
+`{$db.<prefix>.<field>}` (`src/features/bindings/db-refs.ts`, grammar in
+`src/features/compose/AGENTS.md`); references read these stored rows, so they
+follow failover, rotation and CA changes.
 
 **Delivery by service kind** (`src/features/bindings/host-run.ts`,
 `computeBindingVariableSet`'s `delivery`): a container service keeps the
-container name and `_CA_CERT` (output byte-identical to before). A **PHP site**
+container name, `_CA_CERT`, `_CA_FILE` and the TLS mode. A **PHP site**
 and a **native Node app** run on the host as the site owner's Linux user, where
 the container name does not resolve, so they get `_HOST=127.0.0.1` (the DSN too)
 and the same listener port. A PHP site gets no `_CA_CERT` (a multi-line value

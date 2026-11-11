@@ -2102,6 +2102,12 @@ export type EnvironmentDeployHostingPhp = {
 export type EnvironmentDeploySiteDbCa = {
   variables: string[]
   pem: string
+  /**
+   * Names holding a Postgres URL: in `verify-ca` / `verify-full` the daemon adds
+   * `sslrootcert=<the CA file>` to each one that has none. Sent only to a daemon
+   * that lists `site-db-url-ca-v1`.
+   */
+  urlVariables?: string[]
 }
 
 export type EnvironmentDeploySitePrincipal = {
@@ -4011,7 +4017,7 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
 }
 
 const MAX_SITE_DB_CA_BYTES = 65_536
-const MAX_SITE_DB_CA_VARIABLES = 8
+const MAX_SITE_DB_CA_VARIABLES = 16
 const MAX_SITE_REQUIRED_ENV = 64
 const ENV_VARIABLE_NAME_RE = /^[A-Za-z_]\w*$/
 
@@ -4063,7 +4069,8 @@ function parseDeploySiteDbCa(value: unknown): EnvironmentDeploySiteDbCa | undefi
   }
   const variables = parseDeploySiteEnvNames(value.variables, MAX_SITE_DB_CA_VARIABLES)
   if (!variables) throw new Error('Invalid sites entry')
-  return { variables, pem: value.pem }
+  const urlVariables = parseDeploySiteEnvNames(value.urlVariables, MAX_SITE_DB_CA_VARIABLES)
+  return { variables, pem: value.pem, ...(urlVariables ? { urlVariables } : {}) }
 }
 
 /** Apache's port behind nginx: a loopback high port other than `listenPort`. */

@@ -487,7 +487,7 @@ with an explicit compose `services.<key>.container_name`; replica identity is
 keys) → **`registerComposeVolumes`** + **`renameComposeVolumes`** (auto-register
 top-level named volumes as `storage` rows and rewrite keys to their UUID
 `volumeName`, and pin each with `name:` unless the author set `name`/`external`, so a volume does not depend on the Compose project name; the project is per environment, and the first deploy after that change leaves a stack's old `<project>_<uuid>` volumes on the host unused) → build service-options map → resource-limit + health gates →
-**`apply-variables.ts`** (parse `{$KEY}` / `{$scope.KEY}` on `environment` /
+**`apply-variables.ts`** (parse `{$KEY}` / `{$scope.KEY}` / `{$db.<binding>.<field>}` on `environment` /
 `build.args`; non-secrets → project `.env` + `${service__KEY}`; secrets →
 Compose `secrets:` + `KEY_FILE`; unreferenced secrets not auto-injected except
 bindings; reserved `TURBOPANEL_*` keys stripped from user variables via
@@ -1049,9 +1049,9 @@ older daemons and for UI display; it is not a second file.
 ### Generated config files (`apply-config-files.ts`)
 
 Standard Compose `configs:` with `content` (top level) mounted by a service's
-`configs: [{ source, target }]`. The text may use `{$KEY}` / `{$scope.KEY}`
-anywhere (`splitEmbeddedRefs` in `variable-refs.ts`; the one place the
-reference grammar widens). Per service, each content config becomes its own
+`configs: [{ source, target }]`. The text may use `{$KEY}` / `{$scope.KEY}` /
+`{$db.<binding>.<field>}` anywhere (`splitEmbeddedRefs` in `variable-refs.ts`;
+the one place the reference grammar widens). Per service, each content config becomes its own
 source `<service>_<name>` and file `<service>--<name>`, so no file is bound into
 two services; the compiled document gets `configs.<source>.file` under
 `/run/turbopanel/deployments/<p>/<e>/configs/`, never `content`. A secret
@@ -1205,3 +1205,29 @@ rather than a special case: a spanning network is authored `driver: overlay` and
 never sets `external:`, and `collectComposeExternalDockerNetworkNames` matches
 only an authored `external:` on the _pre-compile_ document. It also gives the
 daemon a belt-and-braces path if `server.fabric.reconcile` lands stale.
+
+### Database references (`{$db.<binding>.<field>}`)
+
+`db` is the only scope that takes three segments (`variable-refs.ts`:
+`DB_REF_FIELDS`, `isDbRef`, `formatVariableRef`); it is not a variable-storage
+scope. `<binding>` is the binding's key prefix as stored; fields are `host port
+name user password url ca_file ca_text ssl_mode driver read_split`.
+They resolve from the service's own binding rows
+(`src/features/bindings/db-refs.ts`, one implementation for all three places:
+deploy buckets, hosting web env, daemon reboot rehydrate), never another
+service's.
+
+| Place | Plain field | Secret field (`password`, `url`, `ca_text`) |
+| --- | --- | --- |
+| Stored plain variable value, any scope | anywhere in the text | whole value only; the variable becomes secret (sealed envelope passed through, never decrypted on the site path) |
+| Stored secret variable | not parsed; save refuses a `{$db.` token | not parsed |
+| Compose `environment:` / `build.args` | whole value | whole value, as a file |
+| `configs.content` | anywhere | anywhere (sealed parts) |
+
+In a stored value only `db` tokens expand; `{$$db.` is the escape for a literal
+`{$db.`; inserted values are never scanned again. A reference to a binding the
+service lacks is an error when the variable is set on the service or its
+hostname, and a warning with the variable left out when it is set higher. On a
+PHP site `ca_file` works as a whole value only (the daemon fills the path) and
+`ca_text` is refused; a Node app has no CA file yet. Save checks:
+`variableReferenceProblem` in `src/client/variables/routes-helpers.ts`.

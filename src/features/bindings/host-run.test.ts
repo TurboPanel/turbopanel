@@ -53,7 +53,9 @@ test('a container service keeps its container name and the CA as text, unchanged
   assertEquals([...explicit], [...omitted])
   assertEquals(omitted.get(keys.host)?.value, 'abc-in')
   assertEquals(omitted.get(keys.caCert)?.value, PEM)
-  assertEquals(omitted.has(keys.caFile), false)
+  assertEquals(omitted.get(keys.caFile)?.value, '/run/secrets/DATABASE_CA_CERT')
+  assertEquals(omitted.get(keys.caFile)?.isSecret, false)
+  assertEquals(omitted.get(keys.sslMode)?.value, 'VERIFY_CA')
   assertEquals(omitted.get(keys.url)?.value.includes('abc-in:13306'), true)
 })
 
@@ -165,15 +167,24 @@ test('required keys name the connection set, plus the engine defaults when emitt
   assertEquals(withDefaults.length, 10)
 })
 
-test('the advertised binding keys do not grow: the CA file path is set by the daemon', () => {
+test('the advertised binding keys name the CA file for containers and sites, not Node apps', () => {
   const emitted = listBindingEmittedKeys({
     keyPrefix: 'DATABASE',
     emitEngineDefaults: false,
     engineCode: 'mysql',
   })
-  assertEquals(emitted?.includes('DATABASE_CA_FILE'), false)
+  assertEquals(emitted?.includes('DATABASE_CA_FILE'), true)
+  assertEquals(emitted?.includes('DATABASE_SSL_MODE'), true)
   assertEquals(emitted?.includes('DATABASE_CA_CERT'), true)
-  assertEquals(emitted?.length, 8)
+  assertEquals(emitted?.length, 10)
+  const node = listBindingEmittedKeys({
+    keyPrefix: 'DATABASE',
+    emitEngineDefaults: false,
+    engineCode: 'mysql',
+    delivery: 'host-node',
+  })
+  assertEquals(node?.includes('DATABASE_CA_FILE'), false)
+  assertEquals(node?.length, 9)
 })
 
 /** A `Db` whose one select returns the binding's stored variable rows. */

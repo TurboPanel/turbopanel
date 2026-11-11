@@ -2,8 +2,14 @@
 
 import {
   type ResolvedVariableMap,
-  resolveInheritedVariablesForHosting,
+  resolveHostingVariables,
 } from '../variables/resolve-inherited.ts'
+import {
+  applyDbRefs,
+  type DbRefIssue,
+  dropDbRefs,
+  loadBindingRefTable,
+} from '../bindings/db-refs.ts'
 import type { Db } from '../../db/connection.ts'
 import {
   type HostingWebOptions,
@@ -83,17 +89,35 @@ function buildDeployWeb(
  * hosting chain. Explicit `options.web.env` wins on key collisions. Secret
  * variables come back in `secretEnv` still sealed under the control plane's key
  * (see {@link mergeRuntimeVariables}).
+ *
+ * `refIssues`: when given (and the hosting has a service), `{$db.<binding>.<field>}`
+ * in the variables is expanded against the service's own bindings (a secret field passes the
+ * binding row's sealed envelope through, never decrypted) and the errors are
+ * pushed here for the caller to refuse the deploy with. `options.web.env`
+ * static values are tenant input and are not scanned.
  */
 export async function resolveHostingDeployWeb(
   db: Db,
   hostingId: string,
-  options: unknown
+  options: unknown,
+  refIssues?: DbRefIssue[]
 ): Promise<EnvironmentDeployHostingWeb | undefined> {
   const parsed = parseHostingOptions(options)
   if (parsed === null) return undefined
 
   const webOpts: HostingWebOptions | undefined = parsed.web
-  const varMap = await resolveInheritedVariablesForHosting(db, hostingId)
+  const vars = await resolveHostingVariables(db, hostingId)
+  // Always expand or drop: a raw `{$db.…}` token must never reach a site's
+  // environment, even when no issue list was given or the hosting has no service.
+  // Warnings for a reference made higher up surface through the compose-service
+  // bucket of the same deploy, which reads the same variables.
+  let varMap = dropDbRefs(vars.map)
+  if (refIssues && vars.serviceId) {
+    const table = await loadBindingRefTable(db, vars.serviceId)
+    const expanded = applyDbRefs(vars.map, table, { ownScopeKeys: vars.ownKeys })
+    refIssues.push(...expanded.errors)
+    varMap = expanded.map
+  }
   const env: Record<string, string> = {}
   const secretEnv: Record<string, string> = {}
   mergeRuntimeVariables(env, secretEnv, varMap)

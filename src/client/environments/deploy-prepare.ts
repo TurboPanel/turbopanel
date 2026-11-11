@@ -40,6 +40,7 @@ import {
   type ApplyVariablesError,
   type ApplyVariablesResult,
   applyVariablesToComposeDocument,
+  type DbRefLookup,
   type DeployVariableEntry,
   type DeployVariableMaterial,
   isApplyVariablesError,
@@ -274,6 +275,13 @@ import {
   reconcilePrincipalsFromCompose,
 } from '../principals/tenancies.ts'
 import {
+  type DbRefIssue,
+  dbRefLookupFor,
+  dropDbRefs,
+  loadBindingRefTable,
+  resolveDbRefsForService,
+} from '../../features/bindings/db-refs.ts'
+import {
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
 } from '../../features/bindings/materialize.ts'
@@ -352,6 +360,7 @@ export type DeployPrepareWarningCode =
   | 'site_db_ca_unavailable'
   | 'php_series_not_installed'
   | 'compose_variable_unresolved'
+  | 'variable_db_ref_unresolved'
   | 'php_mode_not_allowed'
   | 'node_version_unresolved'
   | 'storage_service_removed'
@@ -1703,16 +1712,21 @@ async function resolveDeployVariableBuckets(
   globalEntries: DeployVariableEntry[]
   perServiceEntries: Map<string, DeployVariableEntry[]>
   perServiceScopes: Map<string, VariableScopeEntryMap>
+  perServiceDbRefs: Map<string, DbRefLookup>
+  dbRefIssues: { errors: DbRefIssue[]; warnings: DbRefIssue[] }
 }> {
   const envVars = await resolveInheritedVariablesForEnvironment(db, params.environmentId)
   const serverVars = await resolveServerScopedVariables(db, params.serverId)
-  const fallbackGlobal = new Map([...envVars, ...serverVars])
+  const perServiceDbRefs = new Map<string, DbRefLookup>()
+  const dbRefIssues: { errors: DbRefIssue[]; warnings: DbRefIssue[] } = { errors: [], warnings: [] }
+  // No service row to read a binding from: a database reference is left out.
+  const fallbackGlobal = dropDbRefs(new Map([...envVars, ...serverVars]))
   const fallbackEntries = await mapResolvedVariablesToDeployEntries(
     fallbackGlobal,
     params.dataEncryptionSecrets
   )
   const serverScopeEntries = await mapResolvedVariablesToDeployEntries(
-    serverVars,
+    dropDbRefs(serverVars),
     params.dataEncryptionSecrets
   )
   const serverScopeMap = new Map(
@@ -1725,15 +1739,16 @@ async function resolveDeployVariableBuckets(
   const perServiceScopes = new Map<string, VariableScopeEntryMap>()
 
   if (composeServices.length === 0) {
-    return { globalEntries, perServiceEntries, perServiceScopes }
+    return { globalEntries, perServiceEntries, perServiceScopes, perServiceDbRefs, dbRefIssues }
   }
   if (params.serviceRowByComposeName.size === 0) {
     globalEntries.push(...fallbackEntries)
-    return { globalEntries, perServiceEntries, perServiceScopes }
+    return { globalEntries, perServiceEntries, perServiceScopes, perServiceDbRefs, dbRefIssues }
   }
 
   const userEntriesByServiceId = new Map<string, DeployVariableEntry[]>()
   const scopesByServiceId = new Map<string, VariableScopeEntryMap>()
+  const dbLookupByServiceId = new Map<string, DbRefLookup>()
 
   await forEachSequential(composeServices, async (composeServiceName) => {
     const row = params.serviceRowByComposeName.get(composeServiceName)
@@ -1746,24 +1761,32 @@ async function resolveDeployVariableBuckets(
         const bundle = await resolveInheritedVariableBundleForService(db, row.id)
         const hostingMap = await mergeHostingVariablesForService(db, row.id, bundle.inherited)
         await reapplyBindingOwnedVariables(db, row.id, bundle.inherited)
-        const mergedServer = new Map([...bundle.inherited, ...serverVars])
-        const scopeMaps: ResolvedVariableScopes = {
-          ...bundle.scopes,
-          hosting: hostingMap,
-          server: serverVars,
-        }
+        const refTable = await loadBindingRefTable(db, row.id)
+        const expanded = resolveDbRefsForService(refTable, {
+          merged: new Map([...bundle.inherited, ...serverVars]),
+          scopes: { ...bundle.scopes, hosting: hostingMap, server: serverVars },
+          ownScopeKeys: new Set([...(bundle.scopes.service?.keys() ?? []), ...hostingMap.keys()]),
+          serviceName: composeServiceName,
+        })
+        dbRefIssues.errors.push(...expanded.errors)
+        dbRefIssues.warnings.push(...expanded.warnings)
         cached = tagVariableSources(
-          await mapResolvedVariablesToDeployEntries(mergedServer, params.dataEncryptionSecrets),
-          scopeMaps
+          await mapResolvedVariablesToDeployEntries(expanded.merged, params.dataEncryptionSecrets),
+          expanded.scopes
         )
         cachedScopes = await mapResolvedScopesToDeployEntries(
-          scopeMaps,
+          expanded.scopes,
           params.dataEncryptionSecrets
         )
-        cachedScopes.server = serverScopeMap
         userEntriesByServiceId.set(row.id, cached)
         scopesByServiceId.set(row.id, cachedScopes)
+        dbLookupByServiceId.set(
+          row.id,
+          dbRefLookupFor(refTable, new Map(cached.map((entry) => [entry.key, entry])))
+        )
       }
+      const dbLookup = dbLookupByServiceId.get(row.id)
+      if (dbLookup) perServiceDbRefs.set(composeServiceName, dbLookup)
       userEntries = cached
       scopes = cachedScopes
     } else {
@@ -1773,7 +1796,24 @@ async function resolveDeployVariableBuckets(
     perServiceEntries.set(composeServiceName, userEntries)
     perServiceScopes.set(composeServiceName, scopes)
   })
-  return { globalEntries, perServiceEntries, perServiceScopes }
+  return { globalEntries, perServiceEntries, perServiceScopes, perServiceDbRefs, dbRefIssues }
+}
+
+/** The first database-reference error as the prepare error a deploy returns, or null. */
+function dbRefPrepareError(errors: readonly DbRefIssue[]): DeployPrepareError | null {
+  const first = errors[0]
+  if (!first) return null
+  if (first.code === 'variable_ref_invalid')
+    return { kind: 'variable_ref_invalid', message: first.message }
+  return { kind: 'variable_unresolved', message: first.message, ref: first.ref }
+}
+
+function dbRefWarnings(list: readonly DbRefIssue[]): DeployPrepareWarning[] {
+  return list.map((issue) => ({
+    code: 'variable_db_ref_unresolved',
+    message: issue.message,
+    details: { variable: issue.key, reference: issue.ref },
+  }))
 }
 
 async function mapResolvedScopesToDeployEntries(
@@ -3683,6 +3723,60 @@ async function allocateResolvedDeployPipelineForPrepare(
   return { pipeline, resolved }
 }
 
+/**
+ * Resolve every variable of the deploy (expanding database references against
+ * each service's own bindings), then inject them into the compiled document.
+ * Returns the prepare error to stop with, or the result.
+ */
+async function applyDeployVariables(
+  c: Context<AppEnv>,
+  db: Db,
+  input: {
+    params: { environmentId: string; serverId: string }
+    pipeline: Pick<DeployExpandPipeline, 'expandedDocument' | 'expandedServiceNames' | 'expansion'>
+    serviceRows: ServiceRow[]
+    projectId: string
+    warnings: DeployPrepareWarning[]
+  }
+): Promise<ApplyVariablesResult | DeployPrepareError> {
+  const { params, pipeline, warnings } = input
+  const serviceRowByCloneName = buildServiceRowByCloneName(input.serviceRows, pipeline.expansion)
+  const {
+    globalEntries,
+    perServiceEntries: userPerService,
+    perServiceScopes,
+    perServiceDbRefs,
+    dbRefIssues,
+  } = await resolveDeployVariableBuckets(db, {
+    environmentId: params.environmentId,
+    serverId: params.serverId,
+    composeServiceNames: pipeline.expandedServiceNames,
+    serviceRowByComposeName: serviceRowByCloneName,
+    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+  })
+  const dbRefError = dbRefPrepareError(dbRefIssues.errors)
+  if (dbRefError) return dbRefError
+  warnings.push(...dbRefWarnings(dbRefIssues.warnings))
+
+  const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
+    globalEntries,
+    perServiceEntries: stripReservedKeysFromEntries(userPerService),
+    perServiceScopes,
+    perServiceDbRefs,
+    nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
+    projectId: input.projectId,
+    environmentId: params.environmentId,
+    configFilesEnabled: (await storedDaemonFeatures(db, params.serverId)).includes(
+      DEPLOY_CONFIG_FILES_FEATURE
+    ),
+  })
+  if (isApplyVariablesError(withVariables)) {
+    return await variablesPrepareFailure(db, params.serverId, withVariables)
+  }
+  warnings.push(...configFileWarnings(withVariables.configWarnings))
+  return withVariables
+}
+
 export async function prepareDeployCompose(
   c: Context<AppEnv>,
   db: Db,
@@ -3788,36 +3882,14 @@ export async function prepareDeployCompose(
   }
   const { pipeline, resolved } = pipelineResolved
 
-  const serviceRowByCloneName = buildServiceRowByCloneName(serviceRows, pipeline.expansion)
-  const {
-    globalEntries,
-    perServiceEntries: userPerService,
-    perServiceScopes,
-  } = await resolveDeployVariableBuckets(db, {
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    composeServiceNames: pipeline.expandedServiceNames,
-    serviceRowByComposeName: serviceRowByCloneName,
-    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
-  })
-
-  const perServiceEntries = stripReservedKeysFromEntries(userPerService)
-
-  const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
-    globalEntries,
-    perServiceEntries,
-    perServiceScopes,
-    nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
+  const withVariables = await applyDeployVariables(c, db, {
+    params,
+    pipeline,
+    serviceRows,
     projectId: envRow.projectId,
-    environmentId: params.environmentId,
-    configFilesEnabled: (await storedDaemonFeatures(db, params.serverId)).includes(
-      DEPLOY_CONFIG_FILES_FEATURE
-    ),
+    warnings,
   })
-  if (isApplyVariablesError(withVariables)) {
-    return await variablesPrepareFailure(db, params.serverId, withVariables)
-  }
-  warnings.push(...configFileWarnings(withVariables.configWarnings))
+  if ('kind' in withVariables) return withVariables
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
     pipeline.optionsByComposeName,
@@ -4576,6 +4648,38 @@ async function takesCentralPair(
   return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
 }
 
+/**
+ * A hosting's bind address and its site environment. Database references in the
+ * hosting's variables are expanded here against the service's bindings (an
+ * error stops the deploy; a warning surfaces through the compose-service
+ * bucket of the same deploy, which reads the same variables).
+ */
+async function resolveHostingBindAndWeb(
+  db: Db,
+  h: HostingRow,
+  serverId: string
+): Promise<
+  | { prepareError: DeployPrepareError }
+  | {
+      bindResolved: Exclude<Awaited<ReturnType<typeof resolveHostingBindAddress>>, { kind: string }>
+      web: Awaited<ReturnType<typeof resolveHostingDeployWeb>>
+    }
+> {
+  const bindResolved = await resolveHostingBindAddress(db, {
+    serverId,
+    options: h.options,
+    ipId: h.ipId,
+  })
+  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
+    return { prepareError: bindResolved }
+  }
+  const webRefIssues: DbRefIssue[] = []
+  const web = await resolveHostingDeployWeb(db, h.id, h.options, webRefIssues)
+  const webRefError = dbRefPrepareError(webRefIssues)
+  if (webRefError) return { prepareError: webRefError }
+  return { bindResolved, web }
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
@@ -4638,16 +4742,9 @@ async function resolveHttpHostingEntry(
     }
   }
 
-  const bindResolved = await resolveHostingBindAddress(db, {
-    serverId,
-    options: h.options,
-    ipId: h.ipId,
-  })
-  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
-    return { prepareError: bindResolved }
-  }
-
-  const web = await resolveHostingDeployWeb(db, h.id, h.options)
+  const bindAndWeb = await resolveHostingBindAndWeb(db, h, serverId)
+  if ('prepareError' in bindAndWeb) return bindAndWeb
+  const { bindResolved, web } = bindAndWeb
 
   const lock = await resolveDeployNameLock(db, {
     organizationId,

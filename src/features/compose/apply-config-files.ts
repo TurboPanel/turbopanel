@@ -36,6 +36,7 @@ import {
 import {
   hasComposeInterpolation,
   hasEmbeddedRefToken,
+  formatVariableRef,
   type ParsedVariableRef,
   splitEmbeddedRefs,
 } from './variable-refs.ts'
@@ -81,9 +82,7 @@ function fileError(
   return { kind, message, composeServiceName, envKey: source }
 }
 
-function refLabel(ref: ParsedVariableRef): string {
-  return ref.scope ? `{$${ref.scope}.${ref.key}}` : `{$${ref.key}}`
-}
+const refLabel = formatVariableRef
 
 function addSecretRef(
   ctx: ConfigFilesContext,

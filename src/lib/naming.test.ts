@@ -301,6 +301,7 @@ test('bindingPrefixedKeys formats prefixed binding env keys', () => {
     url: 'DATABASE_URL',
     caCert: 'DATABASE_CA_CERT',
     caFile: 'DATABASE_CA_FILE',
+    sslMode: 'DATABASE_SSL_MODE',
     readSplit: 'DATABASE_READ_SPLIT',
     host: 'DATABASE_HOST',
     port: 'DATABASE_PORT',
