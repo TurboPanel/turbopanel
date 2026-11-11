@@ -13,7 +13,7 @@ export async function unlistFromLogins(
   const unlistings = await Promise.all(loginIds.map((id) => unlist(id)))
   return {
     restore: async () => {
-      await Promise.all(unlistings.map((entry) => entry?.restore()))
+      await Promise.all(unlistings.flatMap((entry) => (entry ? [entry.restore()] : [])))
     },
   }
 }

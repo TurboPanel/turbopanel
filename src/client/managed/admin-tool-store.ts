@@ -37,7 +37,6 @@ import {
   type AdminToolMetadata,
   type AdminToolProject,
   findAdminTool,
-  listAdminTools,
 } from '../../features/managed/admin-tools/projects.ts'
 import {
   ADMIN_TOOL_BINDING_PREFIX,
@@ -337,5 +336,3 @@ export function createDbAdminToolStore(c: Context<AppEnv>, scope: AdminToolScope
       ),
   }
 }
-
-export { listAdminTools }
