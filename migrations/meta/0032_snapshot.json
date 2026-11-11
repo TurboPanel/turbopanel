@@ -1,5 +1,5 @@
 {
-  "id": "aaf44e9a-822f-4b5e-bea7-03bfb616ae1e",
+  "id": "e46a7b20-12ba-4ce2-8157-111714e6bea7",
   "prevId": "4090190b-d706-487d-8068-de7a0a31a88a",
   "version": "7",
   "dialect": "postgresql",
@@ -247,6 +247,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'backup'"
+        },
         "backup_id": {
           "name": "backup_id",
           "type": "text",
@@ -374,6 +381,10 @@
         "archive_size_bytes_check": {
           "name": "archive_size_bytes_check",
           "value": "size_bytes >= 0"
+        },
+        "archive_origin_check": {
+          "name": "archive_origin_check",
+          "value": "origin IN ('backup', 'import')"
         }
       },
       "isRLSEnabled": false
@@ -512,6 +523,13 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'backup'"
         },
         "backup_id": {
           "name": "backup_id",
@@ -720,6 +738,10 @@
         "backup_size_bytes_check": {
           "name": "backup_size_bytes_check",
           "value": "size_bytes >= 0"
+        },
+        "backup_origin_check": {
+          "name": "backup_origin_check",
+          "value": "origin IN ('backup', 'import')"
         }
       },
       "isRLSEnabled": false
@@ -1372,12 +1394,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
-        },
-        "preset": {
-          "name": "preset",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -1487,10 +1503,6 @@
         "binding_key_prefix_format_check": {
           "name": "binding_key_prefix_format_check",
           "value": "(char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)"
-        },
-        "binding_preset_check": {
-          "name": "binding_preset_check",
-          "value": "preset IS NULL OR preset IN ('postgres', 'mysql', 'laravel', 'wordpress', 'metabase', 'uptime-kuma')"
         }
       },
       "isRLSEnabled": false
@@ -3377,6 +3389,294 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.record": {
+      "name": "record",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "organization_id": {
+          "name": "organization_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "carrier_id": {
+          "name": "carrier_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ingress_id": {
+          "name": "ingress_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "zone_id": {
+          "name": "zone_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_id": {
+          "name": "external_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ttl": {
+          "name": "ttl",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "checked_at": {
+          "name": "checked_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_proxied": {
+          "name": "is_proxied",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_adopted": {
+          "name": "is_adopted",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        }
+      },
+      "indexes": {
+        "uniq_record_provider_zone_external": {
+          "name": "uniq_record_provider_zone_external",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "zone_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"record\".\"external_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_record_carrier_id": {
+          "name": "idx_record_carrier_id",
+          "columns": [
+            {
+              "expression": "carrier_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"record\".\"carrier_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_record_ingress_id": {
+          "name": "idx_record_ingress_id",
+          "columns": [
+            {
+              "expression": "ingress_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"record\".\"ingress_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_record_open": {
+          "name": "idx_record_open",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"record\".\"status\" <> 'synced'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "record_organization_id_organization_id_fk": {
+          "name": "record_organization_id_organization_id_fk",
+          "tableFrom": "record",
+          "tableTo": "organization",
+          "columnsFrom": [
+            "organization_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "record_carrier_id_carrier_id_fk": {
+          "name": "record_carrier_id_carrier_id_fk",
+          "tableFrom": "record",
+          "tableTo": "carrier",
+          "columnsFrom": [
+            "carrier_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "record_ingress_id_ingress_id_fk": {
+          "name": "record_ingress_id_ingress_id_fk",
+          "tableFrom": "record",
+          "tableTo": "ingress",
+          "columnsFrom": [
+            "ingress_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_record_scope_name_kind_content": {
+          "name": "uniq_record_scope_name_kind_content",
+          "nullsNotDistinct": true,
+          "columns": [
+            "organization_id",
+            "name",
+            "kind",
+            "content"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "record_kind_check": {
+          "name": "record_kind_check",
+          "value": "kind IN ('A', 'AAAA', 'CNAME')"
+        },
+        "record_status_check": {
+          "name": "record_status_check",
+          "value": "status IN ('pending', 'synced', 'drifted', 'removing', 'failed')"
+        },
+        "record_provider_check": {
+          "name": "record_provider_check",
+          "value": "provider IN ('cloudflare')"
+        },
+        "record_account_check": {
+          "name": "record_account_check",
+          "value": "num_nonnulls(carrier_id, ingress_id) = 1"
+        },
+        "record_scope_check": {
+          "name": "record_scope_check",
+          "value": "(organization_id IS NULL) = (carrier_id IS NULL)"
+        },
+        "record_name_check": {
+          "name": "record_name_check",
+          "value": "name = lower(name) AND char_length(name) BETWEEN 1 AND 253"
+        },
+        "record_ttl_check": {
+          "name": "record_ttl_check",
+          "value": "ttl IS NULL OR ttl BETWEEN 1 AND 86400"
+        },
+        "record_content_check": {
+          "name": "record_content_check",
+          "value": "char_length(content) BETWEEN 1 AND 253"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.doorway": {
@@ -8964,6 +9264,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "is_all_organizations_notified": {
+          "name": "is_all_organizations_notified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         }
       },
       "indexes": {
@@ -9107,6 +9414,10 @@
         "channel_primary_check": {
           "name": "channel_primary_check",
           "value": "NOT is_primary OR (scope = 'user' AND kind = 'email')"
+        },
+        "channel_all_organizations_check": {
+          "name": "channel_all_organizations_check",
+          "value": "NOT is_all_organizations_notified OR scope = 'instance'"
         }
       },
       "isRLSEnabled": false
@@ -12113,6 +12424,169 @@
       },
       "isRLSEnabled": false
     },
+    "public.peripheral": {
+      "name": "peripheral",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "server_id": {
+          "name": "server_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "service_id": {
+          "name": "service_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'present'"
+        },
+        "path": {
+          "name": "path",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "vendor_id": {
+          "name": "vendor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "product_id": {
+          "name": "product_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "observed_at": {
+          "name": "observed_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "idx_peripheral_service_id": {
+          "name": "idx_peripheral_service_id",
+          "columns": [
+            {
+              "expression": "service_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"peripheral\".\"service_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "peripheral_server_id_server_id_fk": {
+          "name": "peripheral_server_id_server_id_fk",
+          "tableFrom": "peripheral",
+          "tableTo": "server",
+          "columnsFrom": [
+            "server_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "peripheral_service_id_service_id_fk": {
+          "name": "peripheral_service_id_service_id_fk",
+          "tableFrom": "peripheral",
+          "tableTo": "service",
+          "columnsFrom": [
+            "service_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_peripheral_server_path": {
+          "name": "uniq_peripheral_server_path",
+          "nullsNotDistinct": false,
+          "columns": [
+            "server_id",
+            "path"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "peripheral_kind_check": {
+          "name": "peripheral_kind_check",
+          "value": "kind IN ('usb', 'serial', 'printer', 'video', 'audio', 'other')"
+        },
+        "peripheral_status_check": {
+          "name": "peripheral_status_check",
+          "value": "status IN ('present', 'missing')"
+        },
+        "peripheral_path_check": {
+          "name": "peripheral_path_check",
+          "value": "path ~ '^/dev/[A-Za-z0-9._:/+-]+$' AND path !~ '\\.\\.'"
+        },
+        "peripheral_vendor_id_check": {
+          "name": "peripheral_vendor_id_check",
+          "value": "vendor_id IS NULL OR vendor_id ~ '^[0-9a-f]{4}$'"
+        },
+        "peripheral_product_id_check": {
+          "name": "peripheral_product_id_check",
+          "value": "product_id IS NULL OR product_id ~ '^[0-9a-f]{4}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.portal": {
       "name": "portal",
       "schema": "",
@@ -12541,6 +13015,18 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "sync_device_id": {
+          "name": "sync_device_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_port": {
+          "name": "sync_port",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -12578,6 +13064,28 @@
           ],
           "isUnique": true,
           "where": "\"placement\".\"uid\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uniq_placement_server_sync_port": {
+          "name": "uniq_placement_server_sync_port",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "sync_port",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"placement\".\"sync_port\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -12631,6 +13139,14 @@
         "placement_source_check": {
           "name": "placement_source_check",
           "value": "source IN ('compose', 'manual', 'storage')"
+        },
+        "placement_sync_device_id_check": {
+          "name": "placement_sync_device_id_check",
+          "value": "sync_device_id IS NULL OR sync_device_id ~ '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$'"
+        },
+        "placement_sync_port_check": {
+          "name": "placement_sync_port_check",
+          "value": "sync_port IS NULL OR sync_port BETWEEN 1024 AND 65535"
         }
       },
       "isRLSEnabled": false
@@ -14450,6 +14966,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'server'"
+        },
         "hostname": {
           "name": "hostname",
           "type": "varchar(255)",
@@ -14941,6 +15464,10 @@
         "server_trust_level_check": {
           "name": "server_trust_level_check",
           "value": "trust_level BETWEEN 0 AND 2"
+        },
+        "server_role_check": {
+          "name": "server_role_check",
+          "value": "role IN ('server', 'witness')"
         }
       },
       "isRLSEnabled": false
@@ -15014,6 +15541,13 @@
         },
         "is_common": {
           "name": "is_common",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "is_host_access_allowed": {
+          "name": "is_host_access_allowed",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -19565,6 +20099,90 @@
       },
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.visitor": {
+      "name": "visitor",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "uuidv7()"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp(3) with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "service_id": {
+          "name": "service_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "password_hash": {
+          "name": "password_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "visitor_service_id_service_id_fk": {
+          "name": "visitor_service_id_service_id_fk",
+          "tableFrom": "visitor",
+          "tableTo": "service",
+          "columnsFrom": [
+            "service_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "uniq_visitor_service_name": {
+          "name": "uniq_visitor_service_name",
+          "nullsNotDistinct": false,
+          "columns": [
+            "service_id",
+            "name"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "visitor_name_check": {
+          "name": "visitor_name_check",
+          "value": "name ~ '^[A-Za-z0-9._@-]{1,64}$'"
+        },
+        "visitor_password_hash_check": {
+          "name": "visitor_password_hash_check",
+          "value": "password_hash ~ '^\\$2[aby]\\$1[0-2]\\$[./A-Za-z0-9]{53}$'"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.watch": {

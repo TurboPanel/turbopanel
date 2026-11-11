@@ -93,6 +93,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'origin',
   'passkey',
   'payer',
+  // A device node on a server (USB drive, printer, serial adapter) a service can be given.
+  'peripheral',
   // Highest RAM and cores of one server per hour (the over-tier rules).
   'peak',
   'permission',
@@ -105,6 +107,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'preference',
   'principal',
   'project',
+  // A DNS record the control plane manages at a connected provider.
+  'record',
   'recovery',
   'relay',
   'replica',
@@ -150,6 +154,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'user',
   'variable',
   'verification',
+  // One sign-in (name and bcrypt hash) for a password-protected site.
+  'visitor',
   'watch',
   // Mark-all-read time for one person's inbox.
   'watermark',

@@ -42,6 +42,7 @@ import {
 } from '../features/upgrades/vocabulary.ts'
 import {
   BACKUP_COPY_STATES,
+  BACKUP_ORIGINS,
   BACKUP_RUN_STATUSES,
   BACKUP_TARGET_KINDS,
   BACKUP_TARGET_STORE_KINDS,
@@ -94,6 +95,12 @@ import {
   TUNNEL_STATUSES,
 } from '../features/tunnels/vocabulary.ts'
 import { NONCE_KINDS } from '../features/servers/daemon-nonce.ts'
+import { SERVER_ROLES } from '../features/servers/server-role.ts'
+import {
+  PERIPHERAL_KINDS,
+  PERIPHERAL_STATUSES,
+} from '../features/hardware/peripheral-vocabulary.ts'
+import { RECORD_KINDS, RECORD_PROVIDERS, RECORD_STATUSES } from '../features/dns/vocabulary.ts'
 import {
   KEYSET_STATEMENT_KINDS,
   KEYSET_STATEMENT_STATES,
@@ -228,6 +235,14 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['principal_access_check', PRINCIPAL_ACCESS_LEVELS],
   ['datacenter_address_preference_check', DATACENTER_ADDRESS_PREFERENCES],
   ['datacenter_kind_check', DATACENTER_KINDS],
+  ['server_role_check', SERVER_ROLES],
+  ['backup_origin_check', BACKUP_ORIGINS],
+  ['archive_origin_check', BACKUP_ORIGINS],
+  ['peripheral_kind_check', PERIPHERAL_KINDS],
+  ['peripheral_status_check', PERIPHERAL_STATUSES],
+  ['record_kind_check', RECORD_KINDS],
+  ['record_status_check', RECORD_STATUSES],
+  ['record_provider_check', RECORD_PROVIDERS],
 ]
 
 for (const [constraint, values] of CASES) {

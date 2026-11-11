@@ -15,6 +15,11 @@ export const BACKUP_RUN_STATUSES = ['succeeded', 'failed'] as const
 
 export type BackupRunStatus = (typeof BACKUP_RUN_STATUSES)[number]
 
+/** How a `backup` or `archive` artifact got there: made by a backup run, or brought in to restore. */
+export const BACKUP_ORIGINS = ['backup', 'import'] as const
+
+export type BackupOrigin = (typeof BACKUP_ORIGINS)[number]
+
 /** Bound on a policy's `retention_keep`; matches `retention_retention_keep_check`. */
 export const MAX_BACKUP_POLICY_RETENTION_KEEP = 100
 
