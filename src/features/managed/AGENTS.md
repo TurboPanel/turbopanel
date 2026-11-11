@@ -48,7 +48,7 @@ follow failover, rotation and CA changes.
 
 **Delivery by service kind** (`src/features/bindings/host-run.ts`,
 `computeBindingVariableSet`'s `delivery`): a container service keeps the
-container name and `_CA_CERT` (output byte-identical to before). A **PHP site**
+container name, `_CA_CERT`, `_CA_FILE` and the TLS mode. A **PHP site**
 and a **native Node app** run on the host as the site owner's Linux user, where
 the container name does not resolve, so they get `_HOST=127.0.0.1` (the DSN too)
 and the same listener port. A PHP site gets no `_CA_CERT` (a multi-line value

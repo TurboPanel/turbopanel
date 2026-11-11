@@ -139,7 +139,7 @@ function caFileField(info: BindingRefInfo, prefix: string): FieldResult {
   if (info.delivery === 'host-node') {
     return {
       kind: 'refused',
-      message: 'A Node app gets the CA as text (ca_text) for now',
+      message: 'a Node app gets the CA as text (ca_text) for now',
     }
   }
   const rowKey = bindingPrefixedKeys(prefix).caFile
@@ -160,7 +160,7 @@ export function resolveDbField(
   if (field === 'ca_text' && info.delivery === 'host-site') {
     return {
       kind: 'refused',
-      message: 'A PHP site gets the CA as a file; use ca_file',
+      message: 'a PHP site gets the CA as a file; use ca_file',
     }
   }
   const slot = FIELD_ROW_KEY[field]
@@ -186,26 +186,40 @@ type Pass = {
 type EntryOutcome =
   { kind: 'keep' } | { kind: 'drop' } | { kind: 'set'; entry: ResolvedVariableEntry }
 
-function describeUnresolved(pass: Pass, key: string, ref: DbVariableRef): string {
+function describeUnresolved(pass: Pass, key: string, ref: DbVariableRef, reason: string): string {
   const where = pass.opts.serviceName ? ` on ${pass.opts.serviceName}` : ''
-  return `${key} uses ${formatVariableRef(ref)}, but this service has no database binding named "${ref.binding}"${where}`
+  return `${key} uses ${formatVariableRef(ref)}, but ${reason}${where}`
 }
 
-/** Q4: a setting made for this app is an error; one made higher up is left out with a warning. */
-function reportUnresolved(pass: Pass, key: string, ref: DbVariableRef): void {
+/** Why a reference found nothing: no such binding, or the binding has no value for the field. */
+function unresolvedReason(pass: Pass, ref: DbVariableRef): string {
+  if (!pass.table.has(ref.binding)) {
+    return `this service has no database binding named "${ref.binding}"`
+  }
+  return `the binding "${ref.binding}" has no stored ${ref.field} (a variable of the same name set by hand on this service may hold its place; remove or rename it)`
+}
+
+/**
+ * A reference that cannot be filled in for this service (no such binding, no
+ * value for the field, or a field this kind of service cannot have). A setting
+ * made for this app is an error; one made higher up is left out with a warning.
+ */
+function reportUnresolved(
+  pass: Pass,
+  key: string,
+  ref: DbVariableRef,
+  reason: string = unresolvedReason(pass, ref)
+): void {
   const issue = { key, ref: formatVariableRef(ref) }
+  const message = describeUnresolved(pass, key, ref, reason)
   if (pass.opts.ownScopeKeys.has(key)) {
-    pass.out.errors.push({
-      ...issue,
-      code: 'variable_unresolved',
-      message: describeUnresolved(pass, key, ref),
-    })
+    pass.out.errors.push({ ...issue, code: 'variable_unresolved', message })
     return
   }
   pass.out.warnings.push({
     ...issue,
     code: 'variable_db_ref_unresolved',
-    message: `${describeUnresolved(pass, key, ref)}; the variable is left out for it`,
+    message: `${message}; the variable is left out for it`,
   })
 }
 
@@ -246,7 +260,7 @@ function rewriteWhole(
       reportUnresolved(pass, key, ref)
       return { kind: 'drop' }
     case 'refused':
-      reportInvalid(pass, key, ref, field.message)
+      reportUnresolved(pass, key, ref, field.message)
       return { kind: 'drop' }
     case 'site-ca-file':
       pass.out.siteCaFileNames.push(key)
@@ -273,10 +287,10 @@ function embeddedText(pass: Pass, key: string, ref: DbVariableRef): string | nul
       reportUnresolved(pass, key, ref)
       return null
     case 'refused':
-      reportInvalid(pass, key, ref, field.message)
+      reportUnresolved(pass, key, ref, field.message)
       return null
     case 'site-ca-file':
-      reportInvalid(pass, key, ref, 'On a PHP site the CA file can only be the whole value')
+      reportUnresolved(pass, key, ref, 'on a PHP site the CA file can only be the whole value')
       return null
     case 'computed':
       return field.value

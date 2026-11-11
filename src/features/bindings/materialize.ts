@@ -10,6 +10,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { logWarn } from '../../lib/logger.ts'
 import {
   binding,
   environment,
@@ -103,8 +104,8 @@ export function computeBindingVariableSet(
      */
     sslMode: ManagedSslMode
     /**
-     * Where the consuming service runs. Omitted means `container`, whose output
-     * is byte-identical to what it was before host-run services existed. A host
+     * Where the consuming service runs. Omitted means `container`, which also
+     * gets `<PREFIX>_CA_FILE` and, in the Postgres verify modes, a URL naming it. A host
      * kind dials ProxySQL on loopback (`host` is replaced); a PHP site gets no
      * `<PREFIX>_CA_CERT` (a multi-line value breaks its web server: the daemon
      * delivers the CA as a file and sets `<PREFIX>_CA_FILE`).
@@ -271,7 +272,13 @@ export async function upsertBindingOwnedVariables(
       // user set on this service: the unique index would fail the insert and
       // stop every deploy. Leave their row alone; a reference then reads
       // "set by hand on this service". Only inserts are skipped.
-      if (!existingByKey.has(entry.key) && heldByHand.has(entry.key)) return
+      if (!existingByKey.has(entry.key) && heldByHand.has(entry.key)) {
+        logWarn('bindings', 'binding key skipped: a variable of that name is set by hand', {
+          serviceId: params.serviceId,
+          key: entry.key,
+        })
+        return
+      }
       const sealed = await sealIfNeeded(dataEncryptionSecrets, entry.value, entry.isSecret)
       const existingId = existingByKey.get(entry.key)
       if (existingId) {

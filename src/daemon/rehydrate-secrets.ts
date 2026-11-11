@@ -14,6 +14,7 @@ import {
   isDaemonKeyActive,
 } from '../features/servers/server-identity-db.ts'
 import { reapplyBindingOwnedVariables } from '../features/bindings/materialize.ts'
+import { logWarn } from '../lib/logger.ts'
 import { applyDbRefs, loadBindingRefTable } from '../features/bindings/db-refs.ts'
 import {
   mergeHostingVariablesForService,
@@ -184,7 +185,13 @@ async function resolveServiceVariableMap(
   // A secret made by `{$db.<binding>.<field>}` rehydrates under its own key.
   // Issues are not reported here: the deploy that made the plan already was.
   const table = await loadBindingRefTable(db, row.id)
-  return applyDbRefs(new Map([...varMap, ...serverVars]), table, { ownScopeKeys: new Set() }).map
+  const expanded = applyDbRefs(new Map([...varMap, ...serverVars]), table, {
+    ownScopeKeys: new Set(),
+  })
+  for (const issue of expanded.errors) {
+    logWarn('rehydrate', 'database reference not resolved', { variable: issue.key, ref: issue.ref })
+  }
+  return expanded.map
 }
 
 export async function buildDeploymentSecretsRehydrate(

@@ -57,6 +57,7 @@ const mapOf = (entries: Record<string, ResolvedVariableEntry>): ResolvedVariable
   new Map(Object.entries(entries))
 
 const none = new Set<string>()
+const ownCa = new Set(['CA'])
 
 test('a whole secret field passes the sealed envelope through and the variable stays secret', () => {
   const out = applyDbRefs(
@@ -170,23 +171,23 @@ test('ca_file: a container reads its path, a site collects the name, a Node app 
   const embedded = applyDbRefs(
     mapOf({ CA: plain('path={$db.DATABASE.ca_file}') }),
     tableFor('host-site'),
-    { ownScopeKeys: none }
+    { ownScopeKeys: ownCa }
   )
   assertEquals(embedded.errors[0]?.message.includes('only be the whole value'), true)
 
   const node = applyDbRefs(mapOf({ CA: plain('{$db.DATABASE.ca_file}') }), tableFor('host-node'), {
-    ownScopeKeys: none,
+    ownScopeKeys: ownCa,
   })
   assertEquals(node.errors[0]?.message.includes('ca_text'), true)
 })
 
 test('ca_text: a site is told to use ca_file, a Node app and a container get the sealed text', () => {
   const site = applyDbRefs(mapOf({ CA: plain('{$db.DATABASE.ca_text}') }), tableFor('host-site'), {
-    ownScopeKeys: none,
+    ownScopeKeys: ownCa,
   })
   assertEquals(site.errors[0]?.message.includes('use ca_file'), true)
   const node = applyDbRefs(mapOf({ CA: plain('{$db.DATABASE.ca_text}') }), tableFor('host-node'), {
-    ownScopeKeys: none,
+    ownScopeKeys: ownCa,
   })
   assertEquals(node.map.get('CA')?.value === SEALED_CA, true)
   assertEquals(node.map.get('CA')?.isSecret, true)
@@ -233,6 +234,29 @@ test('a reference to a binding the service lacks: an error on its own scope, a w
   )
   assertEquals(out.warnings[0]?.message.includes('web'), true)
   assertEquals(out.map.has('OWN'), false)
+  assertEquals(out.map.has('HIGHER'), false)
+})
+
+test('a field the binding has no value for says why, naming the same-name variable hint', () => {
+  const bare: BindingRefTable = new Map([['DATABASE', { ...info('container'), rows: new Map() }]])
+  const out = applyDbRefs(mapOf({ OWN: plain('{$db.DATABASE.ssl_mode}') }), bare, {
+    ownScopeKeys: new Set(['OWN']),
+  })
+  assertEquals(out.errors[0]?.code, 'variable_unresolved')
+  assertEquals(out.errors[0]?.message.includes('set by hand on this service'), true)
+  assertEquals(out.errors[0]?.message.includes('no database binding'), false)
+})
+
+test('a field this kind cannot have is left out with a warning when set above the service', () => {
+  const out = applyDbRefs(
+    mapOf({ HIGHER: plain('{$db.DATABASE.ca_text}') }),
+    tableFor('host-site'),
+    {
+      ownScopeKeys: none,
+    }
+  )
+  assertEquals(out.errors, [])
+  assertEquals(out.warnings[0]?.code, 'variable_db_ref_unresolved')
   assertEquals(out.map.has('HIGHER'), false)
 })
 

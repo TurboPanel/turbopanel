@@ -1337,9 +1337,30 @@ describe('apply-variables database references', () => {
     )
     for (const result of [viaPlainRef, viaDbRef]) {
       const targets = (secretsOf(result) as { target: string }[]).map((item) => item.target)
-      assertEquals(targets.sort(), ['DATABASE_CA_CERT', 'FOO'])
+      assertEquals(
+        targets.sort((a, b) => a.localeCompare(b)),
+        ['DATABASE_CA_CERT', 'FOO']
+      )
       assertEquals(result.secretPlan.length, 1)
     }
+  })
+
+  it('attaches a user variable made from a secret field as a file, with no reference', () => {
+    const made = { ...secretEntry('DB_PASS'), source: 'service' }
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc({}), {
+        globalEntries: [made],
+        perServiceEntries: new Map(),
+      })
+    )
+    assertEquals(
+      (secretsOf(result) as { target: string }[]).map((item) => item.target),
+      ['DB_PASS']
+    )
+    assertEquals(
+      result.secretPlan.map((plan) => plan.key),
+      ['DB_PASS']
+    )
   })
 
   it('reports an unresolved database reference by name', () => {
