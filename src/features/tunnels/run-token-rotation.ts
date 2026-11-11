@@ -11,7 +11,8 @@
  *    token (the daemon restarts that connector in place, feature
  *    `tunnel-connector-token-change-v1`), the server is asked for its connector
  *    status, and the next server waits until this one reports `connected` on
- *    the new token. There is no fixed pause between servers.
+ *    the new token, and then given ten minutes for traffic to move onto it
+ *    (the provider's documented wait) before the next server.
  * 4. Every connection of the tunnel is dropped once, so one opened with the old
  *    token cannot stay; our connectors reconnect at once. The tunnel then takes
  *    the new secret row and the old one is deleted.
@@ -44,7 +45,7 @@ import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import type { TunnelAdapter } from './adapter.ts'
 import { useBadges } from './badge-use.ts'
-import { syncServerTunnelConnectors } from './connector-sync.ts'
+import { connectorServerProblem, syncServerTunnelConnectors } from './connector-sync.ts'
 import {
   carryingServers,
   openRunToken,
@@ -60,7 +61,9 @@ import {
   type ApiRotation,
   readRotation,
   ROTATION_SERVER_LIMIT_MS,
+  ROTATION_SETTLE_MS,
   type RotationState,
+  settling,
   STATUS_ASK_AGAIN_MS,
   rotationActive,
   rotationWarnings,
@@ -119,11 +122,25 @@ export async function serversThatCannotRotate(
   })
 }
 
+/** Carrying servers that cannot be sent a connector list now. */
+async function serversNotReady(
+  db: Db,
+  organizationId: string,
+  serverIds: readonly string[]
+): Promise<string[]> {
+  const problems = await Promise.all(
+    serverIds.map((id) => connectorServerProblem(db, organizationId, id))
+  )
+  return serverIds.filter((_, index) => problems[index] !== null)
+}
+
 export type RotationDeps = Readonly<{
   commandQueue: CommandQueue
   secretsConfig: SecretsConfig
   dataEncryptionSecrets: DerivedSecretsConfig
   adapter?: TunnelAdapter
+  /** The wait after a server connects before the next one is moved (tests set 0). */
+  settleMs?: number
 }>
 
 function adapterFor(deps: RotationDeps, row: TunnelRow): TunnelAdapter {
@@ -138,10 +155,14 @@ const IN_PROGRESS = 'The run token of this Tunnel is already being replaced'
  */
 async function checkCanRotate(
   db: Db,
+  deps: RotationDeps,
   row: TunnelRow,
   read: RotationState | null,
   options: { confirmSingleServer: boolean }
 ): Promise<{ carrying: string[]; warnings: string[] }> {
+  if (isNoopCommandQueue(deps.commandQueue)) {
+    throw new TunnelRefusal('rotation_unavailable', 409, 'Servers cannot be reached from here')
+  }
   if (row.status === 'removing') {
     throw new TunnelRefusal('tunnel_removing', 409, 'This Tunnel is being removed')
   }
@@ -162,6 +183,18 @@ async function checkCanRotate(
       409,
       `${names} a daemon that cannot move its connector to a new run token. Update it first.`,
       { serverIds: old }
+    )
+  }
+  // Everything knowable is checked before the provider is asked: that call cannot be undone.
+  const notReady = await serversNotReady(db, row.routingOrganizationId, carrying)
+  if (notReady.length > 0) {
+    const names =
+      notReady.length === 1 ? '1 server that runs' : `${notReady.length} servers that run`
+    throw new TunnelRefusal(
+      'server_not_ready',
+      409,
+      `${names} this Tunnel cannot be sent its connector right now (offline, or its daemon key is not usable). Try again once it is back.`,
+      { serverIds: notReady }
     )
   }
   const warnings = rotationWarnings(carrying)
@@ -212,7 +245,7 @@ export async function startRunTokenRotation(
   options: { confirmSingleServer: boolean }
 ): Promise<{ rotation: ApiRotation; warnings: string[] }> {
   const read = readRotation(row.metadata)
-  const { carrying, warnings } = await checkCanRotate(db, row, read, options)
+  const { carrying, warnings } = await checkCanRotate(db, deps, row, read, options)
   const saved = await saveRotation(
     db,
     row.id,
@@ -338,6 +371,19 @@ async function askStatus(db: Db, queue: CommandQueue, serverId: string): Promise
   return record.id
 }
 
+/**
+ * Did the connector list that carried the new token leave this tunnel's
+ * connector on it? The daemon lists a connector it (re)installed under
+ * `installed`, and one already on exactly the token sent under `unchanged`
+ * (a token it cannot unseal fails the command instead). Anything else, or an
+ * answer that cannot be read, is not a confirmation.
+ */
+export function listHoldsToken(resultSummary: unknown, externalId: string): boolean {
+  const result = resultSummary as { installed?: unknown; unchanged?: unknown } | null
+  const has = (list: unknown) => Array.isArray(list) && list.includes(externalId)
+  return has(result?.installed) || has(result?.unchanged)
+}
+
 /** Is this tunnel's connector on the server connected, from a finished status answer? */
 export function connectorConnected(resultSummary: unknown, externalId: string): boolean | null {
   try {
@@ -367,6 +413,8 @@ async function moveNext(
   row: TunnelRow,
   state: RotationState
 ): Promise<RotationState | null> {
+  // Traffic is given time to move onto the last server's new connector first.
+  if (settling(state, Date.now(), deps.settleMs ?? ROTATION_SETTLE_MS)) return state
   const carrying = new Set(await carryingServers(db, row))
   // A server that no longer carries the tunnel needs no new token.
   const pending = state.pending.filter((id) => carrying.has(id))
@@ -401,21 +449,19 @@ async function sendNewToken(
   state: RotationState
 ): Promise<RotationState | null> {
   const current = state.current!
+  // Always sent, even when the list looks current: the server must answer for this token.
   const outcome = await syncServerTunnelConnectors(db, deps, {
     organizationId: row.routingOrganizationId,
     serverId: current.serverId,
+    force: true,
   })
-  if (outcome.status === 'skipped' || outcome.status === 'failed') {
-    return await stop(db, row.id, state, `Server ${current.serverId}: ${outcome.reason}`)
+  if (outcome.status !== 'sent') {
+    const reason = outcome.status === 'unchanged' ? 'nothing to send' : outcome.reason
+    return await stop(db, row.id, state, `Server ${current.serverId}: ${reason}`)
   }
   return await saveRotation(db, row.id, state, {
     ...state,
-    current: {
-      ...current,
-      ...(outcome.status === 'sent'
-        ? { connectorsCommandId: outcome.commandId }
-        : { listInPlace: true }),
-    },
+    current: { ...current, connectorsCommandId: outcome.commandId },
   })
 }
 
@@ -437,22 +483,30 @@ async function checkCurrent(
       `Server ${current.serverId} did not connect on the new token within ${ROTATION_SERVER_LIMIT_MS / 60_000} minutes`
     )
   }
-  if (!current.connectorsCommandId && !current.listInPlace) {
-    return await sendNewToken(db, deps, row, state)
+  if (!current.connectorsCommandId) return await sendNewToken(db, deps, row, state)
+  const sent = await commandRow(db, current.connectorsCommandId)
+  if (!sent || (FINISHED.has(sent.status) && sent.status !== 'succeeded')) {
+    return await stop(db, row.id, state, `Server ${current.serverId} did not take the new token`)
   }
-  if (current.connectorsCommandId) {
-    const sent = await commandRow(db, current.connectorsCommandId)
-    if (!sent || (FINISHED.has(sent.status) && sent.status !== 'succeeded')) {
-      return await stop(db, row.id, state, `Server ${current.serverId} did not take the new token`)
-    }
-    if (sent.status !== 'succeeded') return state
+  if (sent.status !== 'succeeded') return state
+  if (!listHoldsToken(sent.resultSummary, row.externalId!)) {
+    return await stop(
+      db,
+      row.id,
+      state,
+      `Server ${current.serverId} did not confirm its connector on the new token`
+    )
   }
   const asked = await commandRow(db, current.statusCommandId)
   if (
     asked?.status === 'succeeded' &&
     connectorConnected(asked.resultSummary, row.externalId!) === true
   ) {
-    return await saveRotation(db, row.id, state, { ...state, current: undefined })
+    return await saveRotation(db, row.id, state, {
+      ...state,
+      current: undefined,
+      lastConnectedAt: new Date().toISOString(),
+    })
   }
   const askedLongAgo =
     !current.statusAskedAt || Date.now() - Date.parse(current.statusAskedAt) > STATUS_ASK_AGAIN_MS

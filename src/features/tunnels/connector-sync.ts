@@ -146,6 +146,20 @@ async function hashInstalls(install: readonly WantedConnector[]) {
 type ServerReady =
   { ok: true; metadata: unknown; keyId: string } | { ok: false; outcome: TunnelConnectorsOutcome }
 
+/**
+ * Why a server cannot be sent a connector list right now (unknown, offline,
+ * daemon too old, daemon key unusable), or null when it can.
+ */
+export async function connectorServerProblem(
+  db: Db,
+  organizationId: string,
+  serverId: string
+): Promise<string | null> {
+  const ready = await checkServerReady(db, organizationId, serverId)
+  if (ready.ok) return null
+  return 'reason' in ready.outcome ? ready.outcome.reason : 'unavailable'
+}
+
 /** The server exists, is connected, and runs a daemon that can install connectors. */
 async function checkServerReady(
   db: Db,
@@ -313,7 +327,13 @@ function warnMissingTokens(serverId: string, missing: readonly string[]): void {
 export async function syncServerTunnelConnectors(
   db: Db,
   deps: TunnelConnectorsDeps,
-  params: { organizationId: string; serverId: string; wanted?: readonly WantedConnector[] }
+  params: {
+    organizationId: string
+    serverId: string
+    wanted?: readonly WantedConnector[]
+    /** Send even when the list looks current (a rotation must see this server answer for its token). */
+    force?: boolean
+  }
 ): Promise<TunnelConnectorsOutcome> {
   if (isNoopCommandQueue(deps.commandQueue)) {
     return { status: 'skipped', reason: 'no command queue' }
@@ -331,6 +351,7 @@ export async function syncServerTunnelConnectors(
   const remove = idsToRemove(sent, last, wantedIds)
   const stateHash = await hashInstalls(install)
   if (
+    !params.force &&
     isAlreadyCurrent(sent, last, stateHash, remove, install.length === 0 && remove.length === 0)
   ) {
     return { status: 'unchanged' }

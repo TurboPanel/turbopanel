@@ -675,9 +675,10 @@ removing the tunnel:
 - One server at a time: its list goes out with the new token (the daemon
   restarts that connector in place), and once that command succeeded the
   server is asked `server.tunnel.status` (again every 30 s) until this tunnel's
-  connector answers `connected`. There is no fixed pause between servers (the
-  provider's documentation suggests checking each half; waiting for
-  `connected` per server is that check). A server that is offline, refuses the
+  connector answers `connected`. Then traffic is given ten minutes to move onto
+  that connector (`ROTATION_SETTLE_MS`, from the provider's own rotation steps:
+  "Wait 10 minutes for traffic to route through the new connectors") before the
+  next server is moved or old connections are dropped. A server that is offline, refuses the
   list or is not connected within ten minutes stops the rotation
   (`stoppedReason`): nothing more moves and no connection is dropped. Starting
   again resumes with the token already issued.

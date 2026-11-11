@@ -187,6 +187,7 @@ async function withWorld(
         secretsConfig,
         dataEncryptionSecrets: secrets,
         adapter,
+        settleMs: 0,
       },
     })
   } finally {
@@ -209,6 +210,11 @@ async function tunnelRow(w: World) {
 
 function sentTo(w: World, serverId: string, type: string): CommandEnvelope[] {
   return w.queued.filter((e) => e.serverId === serverId && e.type === type)
+}
+
+/** The daemon's answer to a connector list that moved this tunnel's connector to the token sent. */
+function installed(w: World) {
+  return { installed: [w.externalId], unchanged: [], removed: [] }
 }
 
 async function finish(w: World, envelope: CommandEnvelope, resultSummary?: unknown) {
@@ -248,7 +254,7 @@ test('servers are moved one at a time, each waits for the one before to connect,
     assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 0)
 
     // The list landed: the server is asked whether its connector is connected.
-    await finish(w, sentTo(w, first, 'server.tunnel.connectors')[0]!)
+    await finish(w, sentTo(w, first, 'server.tunnel.connectors')[0]!, installed(w))
     await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
     assertEquals(sentTo(w, first, 'server.tunnel.status').length, 1)
     assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 0)
@@ -259,7 +265,7 @@ test('servers are moved one at a time, each waits for the one before to connect,
     assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 1)
     assertEquals(w.provider.drops, 0)
 
-    await finish(w, sentTo(w, second, 'server.tunnel.connectors')[0]!)
+    await finish(w, sentTo(w, second, 'server.tunnel.connectors')[0]!, installed(w))
     await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
     await reportConnected(w, second)
     const done = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
@@ -331,6 +337,8 @@ test('a server that refuses the list stops the rotation; starting again resumes 
     assertEquals(resumed.rotation.phase, 'rolling')
     assertEquals(resumed.rotation.currentServerId, first)
     assertEquals(w.provider.rotations, 1)
+    // The list is sent again even though it looks current: the server must answer for this token.
+    assertEquals(sentTo(w, first, 'server.tunnel.connectors').length, 2)
   })
 })
 
@@ -344,5 +352,51 @@ test('a rotation already under way refuses a second start', async () => {
     )
     assertEquals(err.code, 'rotation_in_progress')
     assertEquals(w.provider.rotations, 1)
+  })
+})
+
+test('a list answer that does not confirm the new token stops the rotation before the next server', async () => {
+  await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
+    const [first, second] = w.servers.toSorted() as [string, string]
+    await startRunTokenRotation(w.db, w.deps, await tunnelRow(w), { confirmSingleServer: false })
+    // Succeeded, but the tunnel is in neither list: its connector was not moved.
+    await finish(w, sentTo(w, first, 'server.tunnel.connectors')[0]!, {
+      installed: [],
+      unchanged: [],
+      removed: [],
+    })
+    const stopped = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    assertEquals(stopped?.phase, 'stopped')
+    assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 0)
+    assertEquals(sentTo(w, first, 'server.tunnel.status').length, 0)
+    assertEquals(w.provider.drops, 0)
+  })
+})
+
+test('an offline carrier refuses the rotation before the provider is asked', async () => {
+  await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
+    await w.db.update(server).set({ isConnected: false }).where(eq(server.id, w.servers[1]!))
+    const row = await tunnelRow(w)
+    const err = await assertRejects(
+      () => startRunTokenRotation(w.db, w.deps, row, { confirmSingleServer: false }),
+      TunnelRefusal
+    )
+    assertEquals(err.code, 'server_not_ready')
+    assertEquals(w.provider.rotations, 0)
+  })
+})
+
+test('the next server waits for traffic to settle on the last one before it is moved', async () => {
+  await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
+    const [first, second] = w.servers.toSorted() as [string, string]
+    const deps = { ...w.deps, settleMs: 10 * 60 * 1000 }
+    await startRunTokenRotation(w.db, deps, await tunnelRow(w), { confirmSingleServer: false })
+    await finish(w, sentTo(w, first, 'server.tunnel.connectors')[0]!, installed(w))
+    await advanceRunTokenRotation(w.db, deps, w.tunnelId)
+    await reportConnected(w, first)
+    const waiting = await advanceRunTokenRotation(w.db, deps, w.tunnelId)
+    assertEquals(waiting?.phase, 'rolling')
+    assert(waiting?.lastConnectedAt)
+    assertEquals(sentTo(w, second, 'server.tunnel.connectors').length, 0)
   })
 })

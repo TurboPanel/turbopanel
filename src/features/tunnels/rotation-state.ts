@@ -11,6 +11,13 @@ import type { TunnelRow } from './lifecycle.ts'
 export const ROTATION_SERVER_LIMIT_MS = 10 * 60 * 1000
 /** How long an unanswered status question is waited for before it is asked again. */
 export const STATUS_ASK_AGAIN_MS = 30 * 1000
+/**
+ * How long traffic is given to move onto a server's new connector before the
+ * next server is restarted (and before old connections are dropped). The
+ * provider's rotation steps say: "Wait 10 minutes for traffic to route through
+ * the new connectors."
+ */
+export const ROTATION_SETTLE_MS = 10 * 60 * 1000
 
 export type RotationPhase = 'starting' | 'rolling' | 'finishing' | 'done' | 'stopped'
 
@@ -19,8 +26,6 @@ export type RotationCurrent = {
   serverId: string
   since: string
   connectorsCommandId?: string
-  /** The server already held this list (nothing to send): go straight to asking it. */
-  listInPlace?: boolean
   statusCommandId?: string
   statusAskedAt?: string
 }
@@ -39,6 +44,8 @@ export type RotationState = {
   /** Servers already given the new token. */
   moved: string[]
   current?: RotationCurrent
+  /** When the last moved server reported its connector connected on the new token. */
+  lastConnectedAt?: string
   finishedAt?: string
   /** Why the rotation stopped, in plain words. */
   stoppedReason?: string
@@ -64,7 +71,6 @@ function readCurrent(value: unknown): RotationCurrent | undefined {
   const status = optionalString(raw?.statusCommandId)
   const asked = optionalString(raw?.statusAskedAt)
   if (connectors) current.connectorsCommandId = connectors
-  if (raw?.listInPlace === true) current.listInPlace = true
   if (status) current.statusCommandId = status
   if (asked) current.statusAskedAt = asked
   return current
@@ -88,6 +94,7 @@ export function readRotation(metadata: unknown): RotationState | null {
     providerCalledAt: optionalString(raw.providerCalledAt),
     newSecretId: optionalString(raw.newSecretId),
     finishedAt: optionalString(raw.finishedAt),
+    lastConnectedAt: optionalString(raw.lastConnectedAt),
     stoppedReason: optionalString(raw.stoppedReason),
   }
   for (const [key, value] of Object.entries(optional)) {
@@ -121,7 +128,7 @@ export function runSecretFor(
 /** What the person is told before a rotation starts. Pure. */
 export function rotationWarnings(carrying: readonly string[]): string[] {
   const reconnect =
-    "Each server's connector restarts on the new token one server at a time, and at the end every connection is dropped once, so connectors briefly reconnect."
+    "Each server's connector restarts on the new token one server at a time, about ten minutes apart so traffic can move onto each new connector, and at the end every connection is dropped once, so connectors briefly reconnect."
   if (carrying.length === 1) {
     return [
       `Only one server runs this Tunnel, so visitors lose it for a few seconds while its connector restarts. Add a second server first to avoid that. ${reconnect}`,
@@ -152,4 +159,10 @@ export function toApiRotation(state: RotationState | null): ApiRotation | null {
     currentServerId: state.current?.serverId ?? null,
     stoppedReason: state.stoppedReason ?? null,
   }
+}
+
+/** Is traffic still being given time to move onto the last moved server's connector? Pure. */
+export function settling(state: RotationState, nowMs: number, settleMs: number): boolean {
+  if (!state.lastConnectedAt) return false
+  return nowMs - Date.parse(state.lastConnectedAt) < settleMs
 }

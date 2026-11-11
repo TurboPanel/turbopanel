@@ -4,9 +4,10 @@ import {
   rotationActive,
   rotationWarnings,
   runSecretFor,
+  settling,
   toApiRotation,
 } from './rotation-state.ts'
-import { connectorConnected } from './run-token-rotation.ts'
+import { connectorConnected, listHoldsToken } from './run-token-rotation.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -35,11 +36,13 @@ function rotating(fields: Record<string, unknown>) {
 }
 
 test('the stored rotation is read back, and anything malformed reads as none', () => {
-  const state = readRotation(rotating({ current: { serverId: A, since: 'x', listInPlace: true } }))
+  const state = readRotation(
+    rotating({ current: { serverId: A, since: 'x', connectorsCommandId: 'c1', listInPlace: true } })
+  )
   assertEquals(state?.phase, 'rolling')
   assertEquals(state?.step, 3)
   assertEquals(state?.pending, [B])
-  assertEquals(state?.current, { serverId: A, since: 'x', listInPlace: true })
+  assertEquals(state?.current, { serverId: A, since: 'x', connectorsCommandId: 'c1' })
   assertEquals(readRotation(null), null)
   assertEquals(readRotation({}), null)
   assertEquals(readRotation(rotating({ phase: 'later' })), null)
@@ -109,4 +112,20 @@ test('a status answer counts as connected only for this tunnel connected; connec
   assertEquals(connectorConnected(answer('failed'), A), false)
   assertEquals(connectorConnected(answer('connected'), B), false)
   assertEquals(connectorConnected('not an answer', A), null)
+})
+
+test('only a list answer that names this tunnel installed or unchanged confirms the new token', () => {
+  assertEquals(listHoldsToken({ installed: [A], unchanged: [], removed: [] }, A), true)
+  assertEquals(listHoldsToken({ installed: [], unchanged: [A], removed: [] }, A), true)
+  assertEquals(listHoldsToken({ installed: [B], unchanged: [], removed: [A] }, A), false)
+  assertEquals(listHoldsToken(null, A), false)
+  assertEquals(listHoldsToken({ installed: 'A' }, A), false)
+})
+
+test('the next server waits until traffic had time to settle on the last moved one', () => {
+  const state = readRotation(rotating({ lastConnectedAt: '2026-11-11T00:00:00.000Z' }))!
+  const at = Date.parse('2026-11-11T00:00:00.000Z')
+  assert(settling(state, at + 9 * 60_000, 10 * 60_000))
+  assert(!settling(state, at + 10 * 60_000, 10 * 60_000))
+  assert(!settling(readRotation(rotating({}))!, at, 10 * 60_000))
 })
