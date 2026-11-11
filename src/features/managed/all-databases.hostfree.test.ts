@@ -71,10 +71,20 @@ test('the organization switch is stored in the managed defaults', () => {
   assertEquals(parseManagedDefaultsPatch({ allowAllDatabasesLogins: 1 }).ok, false)
 })
 
-test('dropping a database is not blocked by an All Databases login', () => {
-  const logins = [
-    { username: 'bi', role: 'user', databases: ['app'], allDatabases: true },
-    { username: 'alice', role: 'user', databases: ['app'], allDatabases: false },
-  ]
-  assertEquals(listUsersReferencingDatabase(logins, 'app'), ['alice'])
+test('switch off, an explicit pick on the dropped database still refuses the drop', () => {
+  const logins = [{ username: 'bi', role: 'user', databases: ['app'], allDatabases: true }]
+  assertEquals(listUsersReferencingDatabase(logins, 'app'), ['bi'])
+})
+
+test('apply never lists a database the cluster no longer has', () => {
+  const cluster = { databases: ['b'], active: false, isReserved: () => false }
+  assertEquals(loginDatabasesForApply({ allDatabases: true, databases: ['a', 'b'] }, cluster), [
+    'b',
+  ])
+  // A normal login and an active All Databases login are unchanged.
+  assertEquals(loginDatabasesForApply({ allDatabases: false, databases: ['a'] }, cluster), ['a'])
+  assertEquals(
+    loginDatabasesForApply({ allDatabases: true, databases: [] }, { ...cluster, active: true }),
+    ['b']
+  )
 })

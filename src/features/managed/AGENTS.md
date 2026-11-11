@@ -451,8 +451,8 @@ login every cluster database at apply, minus reserved names, while
 `all-databases.ts` says both switches allow it: organization
 `managedDatabase.allowAllDatabasesLogins`, default on, and cluster
 `settings.allowAllDatabasesLogins`, default off; a switch turned off drops the
-access at the next apply and the picks apply again; the drop-database guard
-skips these logins), `is_tool` (database-tool login: everything to
+access at the next apply and the picks apply again (only databases the cluster still has; the drop-database guard
+counts the picks like any login's list), `is_tool` (database-tool login: everything to
 the primary), `allowed_sources`, `max_connections`, `access` and `privileges`;
 the databases a login may use are `scope` rows pointing at `database` rows.
 `is_straight_through` (nullable: NULL = the owner never chose) is the

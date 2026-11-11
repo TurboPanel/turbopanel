@@ -54,12 +54,15 @@ export async function loadAllDatabasesRefusal(
 /**
  * The databases a login is granted on at apply. An All Databases login gets
  * every database of the cluster (minus the engine's reserved names) while both
- * switches allow it; otherwise it gets the databases picked for it.
+ * switches allow it; otherwise it gets the databases picked for it that the
+ * cluster still has.
  */
 export function loginDatabasesForApply(
   login: { allDatabases?: boolean; databases: readonly string[] },
   cluster: { databases: readonly string[]; active: boolean; isReserved: (name: string) => boolean }
 ): string[] {
-  if (login.allDatabases !== true || !cluster.active) return [...login.databases]
+  if (login.allDatabases !== true) return [...login.databases]
+  // Switched off: only the picks, and never one the cluster no longer has.
+  if (!cluster.active) return login.databases.filter((name) => cluster.databases.includes(name))
   return [...new Set(cluster.databases.filter((name) => !cluster.isReserved(name)))]
 }

@@ -1101,18 +1101,11 @@ export function listUsersReferencingDatabase(
     username: string
     role: string
     databases: readonly string[]
-    /** An All Databases login follows the cluster's list, so a drop never leaves it granting on a missing database. */
-    allDatabases?: boolean
   }>,
   databaseName: string
 ): string[] {
   return logins
-    .filter(
-      (entry) =>
-        entry.role === 'user' &&
-        entry.allDatabases !== true &&
-        entry.databases.includes(databaseName)
-    )
+    .filter((entry) => entry.role === 'user' && entry.databases.includes(databaseName))
     .map((entry) => entry.username)
 }
 
