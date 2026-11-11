@@ -480,8 +480,13 @@ export const MAX_BINDING_KEY_PREFIX_LENGTH = 64
 export type BindingPrefixedKeys = {
   url: string
   caCert: string
-  /** Host-run PHP sites only: path of a CA file the daemon keeps for the site. */
+  /**
+   * Path of the CA file. A container gets a stored row (`/run/secrets/<PREFIX>_CA_CERT`);
+   * a PHP site gets it from the daemon (its own file), never a stored row.
+   */
   caFile: string
+  /** The client TLS mode in the engine's own spelling (`verify-full`, `VERIFY_IDENTITY`). */
+  sslMode: string
   readSplit: string
   host: string
   port: string
@@ -499,6 +504,7 @@ export function bindingPrefixedKeys(prefix: string): BindingPrefixedKeys {
     url: `${prefix}_URL`,
     caCert: `${prefix}_CA_CERT`,
     caFile: `${prefix}_CA_FILE`,
+    sslMode: `${prefix}_SSL_MODE`,
     readSplit: `${prefix}_READ_SPLIT`,
     host: `${prefix}_HOST`,
     port: `${prefix}_PORT`,

@@ -5,7 +5,7 @@
  * set; deploy reuses the existing secret seal / inject rail unchanged.
  */
 
-import { and, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { Db } from '../../db/connection.ts'
@@ -54,6 +54,26 @@ export type MaterializeBindingError =
   /** A PHP site cannot reach this database (its port); `message` is plain words. */
   | { kind: 'binding_host_site_unsupported'; message: string }
 
+/** Where a container finds a binding's CA certificate (a file mount of the `_CA_CERT` secret). */
+export function containerBindingCaPath(keyPrefix: string): string {
+  return `/run/secrets/${bindingPrefixedKeys(keyPrefix).caCert}`
+}
+
+const VERIFY_SSL_MODES: readonly ManagedSslMode[] = ['verify-ca', 'verify-full']
+
+/**
+ * A container's Postgres URL names its CA file in the verify modes, so a
+ * client that reads only the URL still verifies against the right root. A
+ * PHP site gets the same from the daemon; MySQL URLs are unchanged.
+ */
+function withContainerRootCert(
+  dsn: string,
+  params: Readonly<{ keyPrefix: string; engineCode: string; sslMode: ManagedSslMode }>
+): string {
+  if (params.engineCode !== 'postgres' || !VERIFY_SSL_MODES.includes(params.sslMode)) return dsn
+  return `${dsn}&sslrootcert=${containerBindingCaPath(params.keyPrefix)}`
+}
+
 export type DesiredBindingVariable = {
   key: string
   value: string
@@ -100,7 +120,7 @@ export function computeBindingVariableSet(
   const prefixed = bindingPrefixedKeys(params.keyPrefix)
   const delivery = params.delivery ?? 'container'
   const host = isHostRunDelivery(delivery) ? HOST_RUN_LOOPBACK_HOST : params.host
-  const dsn = spec.binding.buildBindingDsn({
+  const plainDsn = spec.binding.buildBindingDsn({
     host,
     port: params.port,
     database: params.databaseName,
@@ -108,6 +128,14 @@ export function computeBindingVariableSet(
     password: params.password,
     sslMode: params.sslMode,
   })
+  const dsn =
+    delivery === 'container'
+      ? withContainerRootCert(plainDsn, {
+          keyPrefix: params.keyPrefix,
+          engineCode: params.engineCode,
+          sslMode: params.sslMode,
+        })
+      : plainDsn
 
   const rows: DesiredBindingVariable[] = [
     { key: prefixed.url, value: dsn, isSecret: true },
@@ -124,6 +152,20 @@ export function computeBindingVariableSet(
     { key: prefixed.database, value: params.databaseName, isSecret: false },
     { key: prefixed.user, value: params.username, isSecret: false },
     { key: prefixed.password, value: params.password, isSecret: true },
+    {
+      key: prefixed.sslMode,
+      value: spec.formatSslMode(params.sslMode),
+      isSecret: false,
+    },
+    ...(delivery === 'container'
+      ? [
+          {
+            key: prefixed.caFile,
+            value: containerBindingCaPath(params.keyPrefix),
+            isSecret: false,
+          },
+        ]
+      : []),
   ]
 
   if (params.emitEngineDefaults) {
@@ -153,20 +195,39 @@ export function listBindingEmittedKeys(
     keyPrefix: string
     emitEngineDefaults: boolean
     engineCode: string
+    /**
+     * Omitted lists `<PREFIX>_CA_FILE` (a container stores it; the daemon sets
+     * it on a PHP site, so the name is taken either way). A native Node app has
+     * no CA file.
+     */
+    delivery?: BindingDelivery
   }>
 ): string[] | null {
   const spec = getManagedEngineSpec(params.engineCode)
   if (!spec?.binding) return null
-  // `<PREFIX>_CA_FILE` is set by the daemon on a PHP site at deploy, never
-  // stored as a binding row, so the stored/advertised key list leaves it out.
-  const { caFile: _daemonSet, ...stored } = bindingPrefixedKeys(params.keyPrefix)
-  const keys = Object.values(stored)
+  const { caFile, ...rest } = bindingPrefixedKeys(params.keyPrefix)
+  const keys = Object.values(rest)
+  if (params.delivery !== 'host-node') keys.push(caFile)
   if (params.emitEngineDefaults) {
     const u = spec.binding.unprefixed
     keys.push(u.host, u.port, u.database, u.user, u.password)
     if (u.sslMode) keys.push(u.sslMode)
   }
   return keys
+}
+
+type VariableReader = Pick<Db, 'select'>
+
+/** Keys of the service's own variables that no binding owns. */
+async function loadHandSetServiceKeys(
+  reader: VariableReader,
+  serviceId: string
+): Promise<Set<string>> {
+  const rows = await reader
+    .select({ key: variable.key })
+    .from(variable)
+    .where(and(eq(variable.serviceId, serviceId), isNull(variable.bindingId)))
+  return new Set(rows.map((row) => row.key))
 }
 
 async function sealIfNeeded(
@@ -203,8 +264,14 @@ export async function upsertBindingOwnedVariables(
       .where(eq(variable.bindingId, params.bindingId))
 
     const existingByKey = new Map(existing.map((e) => [e.key, e.id]))
+    const heldByHand = await loadHandSetServiceKeys(tx, params.serviceId)
 
     await forEachSequential(params.desired, async (entry) => {
+      // A newer default name (`<PREFIX>_SSL_MODE`) may already be a variable the
+      // user set on this service: the unique index would fail the insert and
+      // stop every deploy. Leave their row alone; a reference then reads
+      // "set by hand on this service". Only inserts are skipped.
+      if (!existingByKey.has(entry.key) && heldByHand.has(entry.key)) return
       const sealed = await sealIfNeeded(dataEncryptionSecrets, entry.value, entry.isSecret)
       const existingId = existingByKey.get(entry.key)
       if (existingId) {

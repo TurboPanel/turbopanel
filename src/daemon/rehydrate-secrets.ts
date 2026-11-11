@@ -14,6 +14,7 @@ import {
   isDaemonKeyActive,
 } from '../features/servers/server-identity-db.ts'
 import { reapplyBindingOwnedVariables } from '../features/bindings/materialize.ts'
+import { applyDbRefs, loadBindingRefTable } from '../features/bindings/db-refs.ts'
 import {
   mergeHostingVariablesForService,
   type ResolvedVariableMap,
@@ -180,7 +181,10 @@ async function resolveServiceVariableMap(
   await mergeHostingVariablesForService(db, row.id, varMap)
   await reapplyBindingOwnedVariables(db, row.id, varMap)
   const serverVars = await resolveServerScopedVariables(db, serverId)
-  return new Map([...varMap, ...serverVars])
+  // A secret made by `{$db.<binding>.<field>}` rehydrates under its own key.
+  // Issues are not reported here: the deploy that made the plan already was.
+  const table = await loadBindingRefTable(db, row.id)
+  return applyDbRefs(new Map([...varMap, ...serverVars]), table, { ownScopeKeys: new Set() }).map
 }
 
 export async function buildDeploymentSecretsRehydrate(
