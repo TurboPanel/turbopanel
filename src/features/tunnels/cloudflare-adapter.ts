@@ -470,11 +470,22 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       if (!sameIds(found.conflicts, input.replace ?? [])) {
         throw new DnsNameTaken(input.hostname, found.conflicts)
       }
-      // Confirmed: the first record becomes the CNAME (its id is kept), the rest go.
+      // Confirmed. A CNAME may not sit beside other address records, so the
+      // others go first; then the first record becomes the CNAME (its id is kept).
       const [first, ...rest] = found.conflicts
-      const written = await api.putDnsRecord(input.zoneId, first!.id, record)
       await Promise.all(rest.map((other) => api.deleteDnsRecord(input.zoneId, other.id)))
-      return { recordId: written.id }
+      try {
+        const written = await api.putDnsRecord(input.zoneId, first!.id, record)
+        return { recordId: written.id }
+      } catch (err) {
+        if (rest.length === 0 || !(err instanceof TunnelProviderError)) throw err
+        const removed = rest.map((r) => `${r.type} ${r.content}`).join(', ')
+        throw new TunnelProviderError(
+          err.code,
+          `${err.message} (already removed: ${removed})`,
+          err.status
+        )
+      }
     },
 
     async removeDnsName(token, input) {

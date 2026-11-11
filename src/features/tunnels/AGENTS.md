@@ -322,12 +322,15 @@ provider accounts.
   the message and in `records`, so the screen can show them and offer to
   replace them. The person confirms by sending the same hostname with
   `replaceDnsRecords`, the exact ids shown; the adapter reads the records again
-  when it writes, replaces the first with the tunnel's CNAME (keeping its id)
-  and deletes the rest, and refuses again (`DnsNameTaken`) if the set changed in
-  between, so a record added meanwhile is never replaced unseen. Other record
-  types on the name (MX, TXT, …) are never listed, replaced or deleted.
-  Removing the hostname later deletes the CNAME; the replaced records are not
-  put back. The audit row lists the replaced record ids.
+  when it writes and refuses again (`DnsNameTaken`) if the set changed in
+  between, so a record added meanwhile is never replaced unseen. A CNAME may
+  not sit beside other address records, so it deletes the others first and
+  then turns the first into the tunnel's CNAME (keeping its id); if that last
+  write fails, the error names the records already removed. Other record types
+  on the name (MX, TXT, …) are never listed, replaced or deleted. Removing the
+  hostname later deletes the CNAME; the replaced records are not put back, so
+  what they were (type, content, proxied) is kept in the hostname's
+  `metadata.dnsReplaced` and in the `doorway.create` audit row.
 - The route builder turns the facts into the `server.tunnel.routes` payload for
   one server: routes only for tunnels the server carries; a name whose site
   runs on this server is `local`; otherwise the upstreams are the datacenter

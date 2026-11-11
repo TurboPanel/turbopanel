@@ -126,6 +126,12 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   return warnings.length === shown.warnings.length ? shown : { ...shown, warnings }
 }
 
+/** `{ dnsReplaced }` from a hostname row's metadata when records were replaced, else nothing. */
+function replacedOf(metadata: unknown): { dnsReplaced?: unknown[] } {
+  const replaced = (metadata as { dnsReplaced?: unknown } | null)?.dnsReplaced
+  return Array.isArray(replaced) && replaced.length > 0 ? { dnsReplaced: replaced } : {}
+}
+
 function secretsOrFail(c: Context<AppEnv>) {
   return c.get('dataEncryptionSecrets') ?? null
 }
@@ -277,9 +283,8 @@ function addDoorwayResponse(registry: TunnelAdapterRegistry) {
         tunnelId: row.id,
         hostname: created.hostname,
         dns: created.externalDnsRecordId ? 'created' : 'none',
-        ...(parsed.value.replaceDnsRecords.length > 0
-          ? { dnsReplaced: parsed.value.replaceDnsRecords }
-          : {}),
+        // What the replaced records were: once replaced, this is the only record of them.
+        ...replacedOf(created.metadata),
       })
       nudgeServers(c, scope)
       return c.json({ hostname: toApiDoorway(created) }, 201)

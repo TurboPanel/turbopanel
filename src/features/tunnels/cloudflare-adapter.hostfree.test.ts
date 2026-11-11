@@ -230,7 +230,7 @@ test('a name that already has address records is refused with them, and nothing 
   assert(calls.every((call) => call.method === 'GET'))
 })
 
-test('confirmed records are replaced: the first becomes the CNAME, the rest are deleted, others stay', async () => {
+test('confirmed records are replaced: the rest are deleted first, then the first becomes the CNAME, others stay', async () => {
   const { impl, calls } = fakeFetch({
     'GET /client/v4/zones/z1/dns_records': ok(NAME_RECORDS),
     'PUT /client/v4/zones/z1/dns_records/rec-a': ok({ id: 'rec-a' }),
@@ -246,15 +246,34 @@ test('confirmed records are replaced: the first becomes the CNAME, the rest are 
   const writes = calls.filter((call) => call.method !== 'GET')
   assertEquals(
     writes.map((call) => `${call.method} ${call.url}`),
-    ['PUT /client/v4/zones/z1/dns_records/rec-a', 'DELETE /client/v4/zones/z1/dns_records/rec-aaaa']
+    ['DELETE /client/v4/zones/z1/dns_records/rec-aaaa', 'PUT /client/v4/zones/z1/dns_records/rec-a']
   )
-  assertEquals(writes[0]!.body, {
+  assertEquals(writes[1]!.body, {
     type: 'CNAME',
     name: 'a.example.com',
     content: 't-1.cfargotunnel.com',
     proxied: true,
     ttl: 1,
   })
+})
+
+test('a failed write after other records were removed says which ones are already gone', async () => {
+  const { impl } = fakeFetch({
+    'GET /client/v4/zones/z1/dns_records': ok(NAME_RECORDS),
+    'PUT /client/v4/zones/z1/dns_records/rec-a': refused(400, 'record could not be changed'),
+    'DELETE /client/v4/zones/z1/dns_records/rec-aaaa': ok({ id: 'rec-aaaa' }),
+  })
+  const err = await assertRejects(
+    () =>
+      createCloudflareAdapter({ fetch: impl }).createDnsName(TOKEN, {
+        zoneId: 'z1',
+        hostname: 'a.example.com',
+        externalId: 't-1',
+        replace: ['rec-a', 'rec-aaaa'],
+      }),
+    TunnelProviderError
+  )
+  assert(err.message.includes('already removed: AAAA 2001:db8::10'))
 })
 
 test('a CNAME that already points at the tunnel is kept as it is', async () => {

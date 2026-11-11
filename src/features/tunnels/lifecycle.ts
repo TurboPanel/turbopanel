@@ -26,7 +26,7 @@ import { compareText } from './order.ts'
 import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
 import { retireUnusedOriginCertificates } from './origin-certificate.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
-import type { TunnelAdapter } from './adapter.ts'
+import type { ExistingDnsRecord, TunnelAdapter } from './adapter.ts'
 import {
   BadgeRefused,
   BadgeUnavailable,
@@ -894,7 +894,7 @@ export async function addDoorway(
   if (zone) assertDnsTokenExists(await listBadges(db, owner.id), zone)
   // A name that already has address records is refused, naming them, before
   // anything is written or routed, unless the person agreed to replace exactly those.
-  if (zone) await assertDnsNameFree(db, deps, { row, owner, zone }, input)
+  const replacedRecords = zone ? await assertDnsNameFree(db, deps, { row, owner, zone }, input) : []
   const created = await insertDoorway(
     db,
     row,
@@ -912,7 +912,7 @@ export async function addDoorway(
     return await publishDoorway(
       db,
       deps,
-      { row, owner, account, zone, replaceDnsRecords: input.replaceDnsRecords },
+      { row, owner, account, zone, replaceDnsRecords: input.replaceDnsRecords, replacedRecords },
       created
     )
   } catch (err) {
@@ -933,9 +933,9 @@ async function assertDnsNameFree(
   deps: Deps,
   plan: { row: TunnelRow; owner: CarrierRow; zone: { id: string; name: string } },
   input: { hostname: string; replaceDnsRecords?: readonly string[] }
-): Promise<void> {
+): Promise<ExistingDnsRecord[]> {
   const list = deps.adapter.listDnsConflicts
-  if (!list) return
+  if (!list) return []
   const { row, owner, zone } = plan
   let found
   try {
@@ -950,11 +950,12 @@ async function assertDnsNameFree(
     throw refuse(err, 'edit DNS')
   }
   const conflicts = found.value
-  if (conflicts.length === 0) return
+  if (conflicts.length === 0) return []
   const wanted = new Set(input.replaceDnsRecords ?? [])
   const confirmed =
     wanted.size === conflicts.length && conflicts.every((record) => wanted.has(record.id))
   if (!confirmed) throw dnsNameTakenRefusal(new DnsNameTaken(input.hostname, conflicts))
+  return conflicts
 }
 
 /** Refuse, with the reason, when no active token reaches DNS for this zone. */
@@ -999,6 +1000,8 @@ type PublishPlan = {
   zone: { id: string; name: string } | null
   /** Record ids the person agreed to replace with the tunnel's CNAME. */
   replaceDnsRecords?: readonly string[]
+  /** What those records were, kept on the row as the only record of them once replaced. */
+  replacedRecords?: readonly ExistingDnsRecord[]
 }
 
 type Deps = { adapter: TunnelAdapter; secrets: DerivedSecretsConfig }
@@ -1039,7 +1042,21 @@ async function publishDoorway(
         status: 'live',
         externalDnsRecordId: recordId,
         // The token used is kept for the record only; any token that covers the zone can remove the name later.
-        metadata: zone ? { zoneId: zone.id, dnsBadgeId: dns?.badge.id ?? null } : null,
+        metadata: zone
+          ? {
+              zoneId: zone.id,
+              dnsBadgeId: dns?.badge.id ?? null,
+              ...(plan.replacedRecords?.length
+                ? {
+                    dnsReplaced: plan.replacedRecords.map(({ type, content, proxied }) => ({
+                      type,
+                      content,
+                      proxied,
+                    })),
+                  }
+                : {}),
+            }
+          : null,
       })
       .where(eq(doorway.id, created.id))
       .returning()
