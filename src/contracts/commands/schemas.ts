@@ -9778,6 +9778,7 @@ export function parseCommandPayload(
   | CacheApplyCommandPayload {
   // Held outside the switch, which is at its size limit.
   if (type === 'server.tunnel.status') return parseTunnelStatusPayload(value)
+  if (type === 'cache.apply') return parseCacheApplyPayload(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -9839,8 +9840,6 @@ export function parseCommandPayload(
       return parseStorageRestorePayload(value)
     case 'system.reconcile':
       return parseSystemReconcilePayload(value)
-    case 'cache.apply':
-      return parseCacheApplyPayload(value)
   }
 }
 
@@ -9881,6 +9880,7 @@ export function parseCommandResult(
   | SystemReconcileCommandResult
   | CacheApplyCommandResult {
   if (type === 'server.tunnel.status') return parseTunnelStatusResult(value)
+  if (type === 'cache.apply') return parseCacheApplyResult(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
@@ -9942,7 +9942,5 @@ export function parseCommandResult(
       return parseStorageRestoreResult(value)
     case 'system.reconcile':
       return parseSystemReconcileResult(value)
-    case 'cache.apply':
-      return parseCacheApplyResult(value)
   }
 }

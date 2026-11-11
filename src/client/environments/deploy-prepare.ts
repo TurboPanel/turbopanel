@@ -3814,6 +3814,53 @@ async function applyDeployVariables(
   return withVariables
 }
 
+/** Project caches and helper reach for this server; its warnings join the deploy's. */
+async function prepareCachesStep(
+  db: Db,
+  input: Parameters<typeof prepareProjectCaches>[1],
+  warnings: DeployPrepareWarning[]
+): Promise<PreparedProjectCaches | ProjectCacheRefusal> {
+  const state = await prepareProjectCaches(db, input)
+  if ('kind' in state) return state
+  warnings.push(
+    ...state.warnings.map((warning) => ({
+      ...warning,
+      code: warning.code as DeployPrepareWarningCode,
+    }))
+  )
+  return state
+}
+
+/** What the host runs for caches, not the loopback port picked for a helper later; empty when none. */
+function cacheHashInputs(state: PreparedProjectCaches): Record<string, unknown> {
+  return {
+    ...(state.caches?.length ? { caches: state.caches } : {}),
+    ...(state.helperReach?.length
+      ? {
+          helperReach: state.helperReach.map(({ composeServiceName, containerPort, username }) => ({
+            composeServiceName,
+            containerPort,
+            username,
+          })),
+        }
+      : {}),
+  }
+}
+
+/** Add the helper publishes to the compiled document, or say which container is missing. */
+function injectReachPublishes(
+  data: Record<string, unknown>,
+  state: PreparedProjectCaches
+): ProjectCacheRefusal | null {
+  const missing = injectHelperPublishes(data, state.helperReach ?? [])
+  if (missing.length === 0) return null
+  return {
+    kind: 'project_cache_refused',
+    code: 'helper_reach_invalid',
+    message: `Helper port container ${missing.join(', ')} is not part of this deploy`,
+  }
+}
+
 export async function prepareDeployCompose(
   c: Context<AppEnv>,
   db: Db,
@@ -3919,25 +3966,23 @@ export async function prepareDeployCompose(
   }
   const { pipeline, resolved } = pipelineResolved
 
-  const cacheState = await prepareProjectCaches(db, {
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    secrets: c.get('dataEncryptionSecrets'),
-    application,
-    serviceRows,
-    principalResolution,
-    localServiceNames: pipeline.localServiceNames,
-    expansion: pipeline.expansion,
-    orgOptions: orgRow?.options,
-    serverOptions: serverRow?.options,
-  })
-  if ('kind' in cacheState) return cacheState
-  warnings.push(
-    ...cacheState.warnings.map((warning) => ({
-      ...warning,
-      code: warning.code as DeployPrepareWarningCode,
-    }))
+  const cacheState = await prepareCachesStep(
+    db,
+    {
+      environmentId: params.environmentId,
+      serverId: params.serverId,
+      secrets: c.get('dataEncryptionSecrets'),
+      application,
+      serviceRows,
+      principalResolution,
+      localServiceNames: pipeline.localServiceNames,
+      expansion: pipeline.expansion,
+      orgOptions: orgRow?.options,
+      serverOptions: serverRow?.options,
+    },
+    warnings
   )
+  if ('kind' in cacheState) return cacheState
 
   const withVariables = await applyDeployVariables(c, db, {
     params,
@@ -4089,14 +4134,8 @@ export async function prepareDeployCompose(
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,
   })
-  const missingReach = injectHelperPublishes(compiled.document.data, cacheState.helperReach ?? [])
-  if (missingReach.length > 0) {
-    return {
-      kind: 'project_cache_refused',
-      code: 'helper_reach_invalid',
-      message: `Helper port container ${missingReach.join(', ')} is not part of this deploy`,
-    }
-  }
+  const reachError = injectReachPublishes(compiled.document.data, cacheState)
+  if (reachError) return reachError
   const expansion = overlayCompiledExpansion(pipeline.expansion, compiled.expansion)
   const managedNetworkServices = applyExpansionToNames(managedLogicalNames, expansion)
   const managedNetwork = await resolveManagedNetworkHostName(
@@ -4147,19 +4186,7 @@ export async function prepareDeployCompose(
             // files keeps the hash it already has.
             ...nonEmptyListField('configFiles', withVariables.configFiles),
             storage: storageMaterialRaw,
-            // What the host runs, not the loopback port picked for it later.
-            ...(cacheState.caches?.length ? { caches: cacheState.caches } : {}),
-            ...(!cacheState.helperReach?.length
-              ? {}
-              : {
-                  helperReach: cacheState.helperReach.map(
-                    ({ composeServiceName, containerPort, username }) => ({
-                      composeServiceName,
-                      containerPort,
-                      username,
-                    })
-                  ),
-                }),
+            ...cacheHashInputs(cacheState),
           },
         }),
     projectCaches: cacheState,

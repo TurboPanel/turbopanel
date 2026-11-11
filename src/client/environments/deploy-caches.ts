@@ -42,6 +42,7 @@ import {
   resolveServicePrincipalId,
   type ComposePrincipalResolution,
 } from '../principals/tenancies.ts'
+import { mapSequential } from '../../lib/sequential.ts'
 import { effectiveAccountLimits } from './account-limits.ts'
 import { storedDaemonFeatures } from './destroy-data.ts'
 
@@ -307,16 +308,12 @@ export async function withCacheHostingEnv(
   secrets: DerivedSecretsConfig | undefined,
   delivery: CacheDelivery
 ): Promise<EnvironmentDeployHosting[]> {
-  const out: EnvironmentDeployHosting[] = []
-  for (const entry of hostings) {
+  return await mapSequential(hostings, (entry) => {
     const name = entry.composeServiceName
-    out.push(
-      name === undefined || !hasDelivery(delivery, name)
-        ? entry
-        : await mergeDeliveryIntoHosting(entry, name, secrets, delivery)
-    )
-  }
-  return out
+    return name === undefined || !hasDelivery(delivery, name)
+      ? entry
+      : mergeDeliveryIntoHosting(entry, name, secrets, delivery)
+  })
 }
 
 async function mergeDeliveryIntoHosting(

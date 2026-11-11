@@ -8,6 +8,7 @@
 
 import type { Db } from '../../db/connection.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { listCachesByIds, type CacheWithAccount } from './store.ts'
@@ -103,11 +104,11 @@ export async function applyCacheRows(
   map: ResolvedVariableMap,
   warnings?: CacheVariableWarning[]
 ): Promise<void> {
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const entries = cacheVariableMap(row, await sealUrl(secrets, row))
     for (const [key, entry] of entries) {
       if (map.has(key)) warnings?.push({ code: 'cache_variable_overrides', key })
       map.set(key, entry)
     }
-  }
+  })
 }

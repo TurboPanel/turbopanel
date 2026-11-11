@@ -8,6 +8,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { cache } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   parseCacheApplyPayload,
@@ -50,13 +51,11 @@ export async function writeCacheResults(
   allowed: ReadonlySet<string>,
   appliedAt: string
 ): Promise<number> {
-  let written = 0
-  for (const result of results) {
-    if (!allowed.has(result.id)) continue
-    await db.update(cache).set(cacheResultPatch(result, appliedAt)).where(eq(cache.id, result.id))
-    written += 1
-  }
-  return written
+  const wanted = results.filter((result) => allowed.has(result.id))
+  await forEachSequential(wanted, (result) =>
+    db.update(cache).set(cacheResultPatch(result, appliedAt)).where(eq(cache.id, result.id))
+  )
+  return wanted.length
 }
 
 /** Succeeded `cache.apply` or `environment.deploy`: write the reported caches. */

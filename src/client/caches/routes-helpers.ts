@@ -15,7 +15,7 @@ import { cacheVariableNames } from '../../features/caches/variables.ts'
 export type CacheRequestError = { error: string; message: string; status: 400 | 409 | 422 }
 
 const NAME_RE = /^[a-z][a-z0-9-]{0,62}$/
-const PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+const PREFIX_RE = /^[A-Za-z_]\w{0,63}$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export type CacheCreateInput = {

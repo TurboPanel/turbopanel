@@ -22,6 +22,7 @@ import { enqueueCacheApply } from '../../features/caches/apply-command.ts'
 import { readRecordedHelperPorts } from '../../features/caches/reach.ts'
 import {
   allocateCachePort,
+  type CacheClash,
   type CacheWithAccount,
   deleteCacheRow,
   getEnvironmentCache,
@@ -272,10 +273,8 @@ async function insertWithPort(
     keyPrefix: string
   },
   password: string
-): Promise<
-  { ok: true; id: string } | { ok: false; reason: 'name_taken' | 'prefix_taken' | 'port_taken' }
-> {
-  let lastReason: 'name_taken' | 'prefix_taken' | 'port_taken' = 'port_taken'
+): Promise<{ ok: true; id: string } | { ok: false; reason: CacheClash }> {
+  let lastReason: CacheClash = 'port_taken'
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const port =
       input.access === 'port'
@@ -347,7 +346,7 @@ async function updateWithPort(
   ctx: EnvContext & { serverId: string },
   row: CacheWithAccount,
   patch: { access: 'socket' | 'port'; maxMemoryMb?: number; keyPrefix?: string }
-): Promise<{ ok: true } | { ok: false; reason: 'name_taken' | 'prefix_taken' | 'port_taken' }> {
+): Promise<{ ok: true } | { ok: false; reason: CacheClash }> {
   const fields: Parameters<typeof updateCache>[2] = {
     access: patch.access,
     ...(patch.maxMemoryMb === undefined ? {} : { maxMemoryMb: patch.maxMemoryMb }),

@@ -133,7 +133,7 @@ export function classifyInsertFailure(err: unknown): { ok: false; reason: CacheC
   return { ok: false, reason: 'port_taken' }
 }
 
-type CacheClash = 'name_taken' | 'prefix_taken' | 'port_taken'
+export type CacheClash = 'name_taken' | 'prefix_taken' | 'port_taken'
 
 export type CachePatch = Partial<
   Pick<CacheRow, 'access' | 'port' | 'maxMemoryMb' | 'keyPrefix' | 'status' | 'metadata'>
