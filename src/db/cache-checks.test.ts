@@ -95,7 +95,7 @@ test('cache rows are held to the name, access, memory and uniqueness rules', asy
         ['valkey', 'pending', 'socket', null, 64, 'REDIS']
       )
 
-      await refuses('uniq_cache_environment_name', {})
+      await refuses('uniq_cache_environment_name', { keyPrefix: 'DUP' })
       await refuses('uniq_cache_environment_principal_prefix', { name: 'other' })
       await refuses('cache_name_check', { name: 'App' })
       await refuses('cache_name_check', { name: '1app' })
