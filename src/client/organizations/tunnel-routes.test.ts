@@ -6,7 +6,7 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -118,6 +118,9 @@ const fakeProvider: typeof fetch = async (input, init) => {
     return ok((later ?? provider.nameRecords).filter((r) => r.name === name))
   }
   if (path === '/zones/zone-1/dns_records/rec-old' && method === 'PUT') return ok({ id: 'rec-old' })
+  if (path === '/zones/zone-1/dns_records/rec-old6' && method === 'DELETE') {
+    return ok({ id: 'rec-old6' })
+  }
   if (/^\/accounts\/[a-z]{32}\/cfd_tunnel\/tunnel-ext-\d+$/.test(path) && method === 'DELETE') {
     if (provider.tunnelDeleteConflicts > 0) {
       provider.tunnelDeleteConflicts -= 1
@@ -621,13 +624,13 @@ test('a hostname whose name already has a DNS record is refused with it, and add
     )
     const wrong = await call(f, 'POST', path, f.managerCookie, {
       hostname: 'shop.example.com',
-      replaceDnsRecords: ['rec-other'],
+      replaceDnsRecords: [{ id: 'rec-other', type: 'A', content: '192.0.2.10' }],
     })
     assertEquals(wrong.status, 409)
     assertEquals(wrong.body.error, 'dns_record_exists')
     const replaced = await call(f, 'POST', path, f.managerCookie, {
       hostname: 'shop.example.com',
-      replaceDnsRecords: ['rec-old'],
+      replaceDnsRecords: [{ id: 'rec-old', type: 'A', content: '192.0.2.10' }],
     })
     assertEquals(replaced.status, 201, replaced.text)
     assert(provider.calls.includes('PUT /zones/zone-1/dns_records/rec-old'))
@@ -637,6 +640,64 @@ test('a hostname whose name already has a DNS record is refused with it, and add
     assertEquals((row!.metadata as { dnsReplaced?: unknown }).dnsReplaced, [
       { type: 'A', content: '192.0.2.10', proxied: false },
     ])
+    const [created] = await f.db
+      .select({ context: audit.context })
+      .from(audit)
+      .where(and(eq(audit.organizationId, f.orgA), eq(audit.action, 'doorway.create')))
+    assertEquals((created!.context as { dnsReplaced?: unknown }).dnsReplaced, [
+      { type: 'A', content: '192.0.2.10', proxied: false },
+    ])
+  })
+})
+
+test('an A and an AAAA record on one name are both shown and both replaced by one CNAME', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    provider.nameRecords = [
+      { id: 'rec-old', name: 'two.example.com', type: 'A', content: '192.0.2.10' },
+      { id: 'rec-old6', name: 'two.example.com', type: 'AAAA', content: '2001:db8::10' },
+    ]
+    const path = `/organizations/${f.orgA}/tunnels/${id}/hostnames`
+    const taken = await call(f, 'POST', path, f.managerCookie, { hostname: 'two.example.com' })
+    assertEquals(taken.status, 409, taken.text)
+    assertEquals((taken.body.records as unknown[]).length, 2)
+    assertEquals(taken.body.replaceable, true)
+    const replaced = await call(f, 'POST', path, f.managerCookie, {
+      hostname: 'two.example.com',
+      replaceDnsRecords: [
+        { id: 'rec-old', type: 'A', content: '192.0.2.10' },
+        { id: 'rec-old6', type: 'AAAA', content: '2001:db8::10' },
+      ],
+    })
+    assertEquals(replaced.status, 201, replaced.text)
+    // The AAAA goes first, then the A becomes the CNAME.
+    const writes = provider.calls.filter((c) => c.includes('/dns_records/rec-old'))
+    assertEquals(writes, [
+      'DELETE /zones/zone-1/dns_records/rec-old6',
+      'PUT /zones/zone-1/dns_records/rec-old',
+    ])
+  })
+})
+
+test('a record changed in place since it was shown is refused again, not replaced', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    provider.nameRecords = [
+      { id: 'rec-old', name: 'edited.example.com', type: 'A', content: '192.0.2.77' },
+    ]
+    const edited = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      {
+        hostname: 'edited.example.com',
+        replaceDnsRecords: [{ id: 'rec-old', type: 'A', content: '192.0.2.10' }],
+      }
+    )
+    assertEquals(edited.status, 409, edited.text)
+    assertEquals(edited.body.error, 'dns_record_exists')
+    assert(!provider.calls.some((c) => c.startsWith('PUT /zones/')))
   })
 })
 

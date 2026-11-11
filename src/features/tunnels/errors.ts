@@ -90,3 +90,30 @@ export function dnsNameTakenMessage(
   const it = records.length === 1 ? 'it' : 'them'
   return `${which} for ${hostname} already exist${records.length === 1 ? 's' : ''}: ${listed}. Replace ${it} to point the name at this Tunnel, or remove ${it} at your DNS provider first.`
 }
+
+/**
+ * A confirmed replacement that did not finish: some of the name's records were
+ * already deleted when a later step failed. Carries what was removed, so it is
+ * kept on record (the audit) and can be put back by hand.
+ */
+export class DnsReplaceIncomplete extends Error {
+  readonly hostname: string
+  readonly removed: readonly { type: string; content: string; proxied: boolean }[]
+
+  constructor(
+    hostname: string,
+    removed: readonly { type: string; content: string; proxied: boolean }[],
+    cause: string
+  ) {
+    const listed = removed.map((r) => `${r.type} ${clip(r.content, 100)}`).join(', ')
+    super(
+      clip(
+        `The DNS records for ${hostname} were only partly replaced: ${cause}. Already removed: ${listed}. Add them back at your DNS provider if the name still needs them.`,
+        600
+      )
+    )
+    this.name = 'DnsReplaceIncomplete'
+    this.hostname = hostname
+    this.removed = removed
+  }
+}

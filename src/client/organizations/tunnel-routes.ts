@@ -289,6 +289,14 @@ function addDoorwayResponse(registry: TunnelAdapterRegistry) {
       nudgeServers(c, scope)
       return c.json({ hostname: toApiDoorway(created) }, 201)
     } catch (err) {
+      // Records were deleted and the replacement did not finish: keep what they were on record.
+      if (err instanceof TunnelRefusal && err.code === 'dns_replace_incomplete') {
+        await audit(c, scope, 'doorway.dns_replace_failed', row.id, {
+          tunnelId: row.id,
+          hostname: parsed.value.hostname,
+          dnsRemoved: err.details?.removedRecords ?? [],
+        })
+      }
       return refused(c, err)
     }
   }
