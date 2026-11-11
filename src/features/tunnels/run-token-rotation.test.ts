@@ -9,7 +9,17 @@ import { assert, assertEquals, assertRejects } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { command, key, organization, portal, secret, server, tunnel } from '../../db/schema.ts'
+import {
+  badge,
+  carrier,
+  command,
+  key,
+  organization,
+  portal,
+  secret,
+  server,
+  tunnel,
+} from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -196,6 +206,20 @@ async function withWorld(
       await db.delete(key).where(inArray(key.serverId, servers))
     }
     await db.delete(tunnel).where(eq(tunnel.organizationId, organizationId))
+    // Tokens on the account point at their sealed secrets: they go first.
+    const carriers = await db
+      .select({ id: carrier.id })
+      .from(carrier)
+      .where(eq(carrier.organizationId, organizationId))
+    if (carriers.length > 0) {
+      await db.delete(badge).where(
+        inArray(
+          badge.carrierId,
+          carriers.map((c) => c.id)
+        )
+      )
+    }
+    await db.delete(carrier).where(eq(carrier.organizationId, organizationId))
     await db.delete(secret).where(eq(secret.organizationId, organizationId))
     if (servers.length > 0) await db.delete(server).where(inArray(server.id, servers))
     await db.delete(organization).where(eq(organization.id, organizationId))
