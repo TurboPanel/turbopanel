@@ -748,6 +748,8 @@ export const server = pgTable(
     options: jsonb(),
     organizationId: uuid('organization_id'),
     name: text(),
+    /** What the server is for: `server` (runs workloads) or `witness` (only votes in database failover, holds no data); SERVER_ROLES. */
+    role: text().default('server').notNull(),
     hostname: varchar('hostname', { length: 255 }),
     /**
      * Derived HMAC of the host machine-id (not the raw value, not a sealed
@@ -1058,6 +1060,8 @@ export const server = pgTable(
       sql`trust_pinned_by IS NULL OR trust_pinned_by IN ('install', 'upgrade', 'unsafe')`
     ),
     check('server_trust_level_check', sql`trust_level BETWEEN 0 AND 2`),
+    // Mirror SERVER_ROLES (src/features/servers/server-role.ts) — pinned by enum-checks.test.ts.
+    check('server_role_check', sql`role IN ('server', 'witness')`),
   ]
 )
 /**
@@ -3042,6 +3046,8 @@ export const backup = pgTable(
       .defaultNow()
       .notNull(),
     managedId: uuid('managed_id').notNull(),
+    /** How the file got here: `backup` (made by a backup run) or `import` (brought in to restore); BACKUP_ORIGINS. */
+    origin: text().default('backup').notNull(),
     /**
      * The daemon's own `bk_<hex>` id — minted from random bytes on the host
      * and also the on-disk filename. Unique **per managed engine**, not
@@ -3106,6 +3112,8 @@ export const backup = pgTable(
     check('backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
     check('backup_checksum_format_check', sql`checksum ~ '^[a-f0-9]{64}$'`),
     check('backup_size_bytes_check', sql`size_bytes >= 0`),
+    // Mirror BACKUP_ORIGINS (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check('backup_origin_check', sql`origin IN ('backup', 'import')`),
   ]
 )
 /**
@@ -3796,6 +3804,12 @@ export const service = pgTable(
      * environment's own. Chosen at creation, never changed.
      */
     isCommon: boolean('is_common').default(false).notNull(),
+    /**
+     * Whether this service may use host-level Compose fields (devices, host
+     * network, privileged). Both this switch and the organization's must be on;
+     * nothing reads it yet.
+     */
+    isHostAccessAllowed: boolean('is_host_access_allowed').default(false).notNull(),
   },
   (table) => [
     /** Unique per environment. */
@@ -4086,6 +4100,84 @@ export const label = pgTable(
     ),
   ]
 )
+/**
+ * One device node on a server that a service may be given: a USB drive, a
+ * serial adapter, a printer, a capture card. Keyed by the stable by-id path the
+ * host reports. Groundwork: nothing writes it yet.
+ */
+export const peripheral = pgTable(
+  'peripheral',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    /** The service the device is passed to; NULL when it is not given to any. */
+    serviceId: uuid('service_id'),
+    /** Operator's label. */
+    name: text(),
+    /** PERIPHERAL_KINDS. */
+    kind: text().notNull(),
+    /** PERIPHERAL_STATUSES: `present` when last reported, `missing` when the host no longer has it. */
+    status: text().default('present').notNull(),
+    /** Stable device path under `/dev` (a by-id or by-path link), as the host reports it. */
+    path: text().notNull(),
+    /** USB vendor id, four lower-case hex digits; NULL for a device that is not on USB. */
+    vendorId: text('vendor_id'),
+    /** USB product id, four lower-case hex digits; NULL for a device that is not on USB. */
+    productId: text('product_id'),
+    /** When the host last reported the device. */
+    observedAt: timestamp('observed_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+  },
+  (table) => [
+    unique('uniq_peripheral_server_path').on(table.serverId, table.path),
+    index('idx_peripheral_service_id')
+      .on(table.serviceId)
+      .where(sql`${table.serviceId} IS NOT NULL`),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'peripheral_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'peripheral_service_id_service_id_fk',
+    }).onDelete('set null'),
+    // Mirror PERIPHERAL_KINDS / PERIPHERAL_STATUSES (src/features/hardware/peripheral-vocabulary.ts) — pinned by enum-checks.test.ts.
+    check(
+      'peripheral_kind_check',
+      sql`kind IN ('usb', 'serial', 'printer', 'video', 'audio', 'other')`
+    ),
+    check('peripheral_status_check', sql`status IN ('present', 'missing')`),
+    check(
+      'peripheral_path_check',
+      sql.raw(String.raw`path ~ '^/dev/[A-Za-z0-9._:/+-]+$' AND path !~ '\.\.'`)
+    ),
+    check('peripheral_vendor_id_check', sql`vendor_id IS NULL OR vendor_id ~ '^[0-9a-f]{4}$'`),
+    check('peripheral_product_id_check', sql`product_id IS NULL OR product_id ~ '^[0-9a-f]{4}$'`),
+  ]
+)
 export const hosting = pgTable(
   'hosting',
   {
@@ -4235,6 +4327,53 @@ export const hostname = pgTable(
       foreignColumns: [organization.id],
       name: 'hostname_routing_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+  ]
+)
+/**
+ * One sign-in for a password-protected site: a name and a bcrypt hash the
+ * site's web server checks. Keyed on the site's service, never the hosting.
+ * No route returns `password_hash`. Groundwork: nothing writes it yet.
+ */
+export const visitor = pgTable(
+  'visitor',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serviceId: uuid('service_id').notNull(),
+    /** The user name a visitor types; no `:` and nothing a password file could misread. */
+    name: text().notNull(),
+    /** bcrypt hash (`$2a$`, `$2b$` or `$2y$`, cost 10 to 12) of the visitor's password; never the password itself. */
+    passwordHash: text('password_hash').notNull(),
+  },
+  (table) => [
+    unique('uniq_visitor_service_name').on(table.serviceId, table.name),
+    foreignKey({
+      columns: [table.serviceId],
+      foreignColumns: [service.id],
+      name: 'visitor_service_id_service_id_fk',
+    }).onDelete('cascade'),
+    check('visitor_name_check', sql`name ~ '^[A-Za-z0-9._@-]{1,64}$'`),
+    check(
+      'visitor_password_hash_check',
+      sql.raw(String.raw`password_hash ~ '^\$2[aby]\$1[0-2]\$[./A-Za-z0-9]{53}$'`)
+    ),
   ]
 )
 export const container = pgTable(
@@ -4618,6 +4757,10 @@ export const principalPlacement = pgTable(
     home: text().notNull(),
     /** `compose` | `manual` | `storage` */
     source: text().notNull(),
+    /** Device id of the account's file sync instance on this server, reported by the daemon; NULL while sync is off. */
+    syncDeviceId: text('sync_device_id'),
+    /** Listen port the control plane gave the account's file sync instance on this server; unique per server. */
+    syncPort: integer('sync_port'),
   },
   (table) => [
     index('idx_placement_server_id').using(
@@ -4640,6 +4783,14 @@ export const principalPlacement = pgTable(
     }).onDelete('cascade'),
     check('placement_state_check', sql`state IN ('pending', 'present', 'retiring', 'absent')`),
     check('placement_source_check', sql`source IN ('compose', 'manual', 'storage')`),
+    check(
+      'placement_sync_device_id_check',
+      sql`sync_device_id IS NULL OR sync_device_id ~ '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$'`
+    ),
+    check('placement_sync_port_check', sql`sync_port IS NULL OR sync_port BETWEEN 1024 AND 65535`),
+    uniqueIndex('uniq_placement_server_sync_port')
+      .on(table.serverId, table.syncPort)
+      .where(sql`${table.syncPort} IS NOT NULL`),
   ]
 )
 
@@ -5690,6 +5841,8 @@ export const archive = pgTable(
       .notNull(),
     copyId: uuid('copy_id').notNull(),
     retentionId: uuid('retention_id'),
+    /** How the file got here: `backup` or `import`, as on `backup`; BACKUP_ORIGINS. */
+    origin: text().default('backup').notNull(),
     backupId: text('backup_id').notNull(),
     sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
     checksum: text().notNull(),
@@ -5716,6 +5869,7 @@ export const archive = pgTable(
     check('archive_backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
     check('archive_checksum_format_check', sql`checksum ~ '^[a-f0-9]{64}$'`),
     check('archive_size_bytes_check', sql`size_bytes >= 0`),
+    check('archive_origin_check', sql`origin IN ('backup', 'import')`),
   ]
 )
 /**
@@ -7445,6 +7599,8 @@ export const notificationChannel = pgTable(
     pausedReason: text('paused_reason'),
     /** A person's built-in account email channel: follows their sign-in address and cannot be deleted. */
     isPrimary: boolean('is_primary').default(false).notNull(),
+    /** An instance channel that also hears every organization's events, including organizations created later. */
+    isAllOrganizationsNotified: boolean('is_all_organizations_notified').default(false).notNull(),
   },
   (table) => [
     check('channel_scope_check', sql`scope IN ('instance', 'organization', 'user')`),
@@ -7471,6 +7627,10 @@ export const notificationChannel = pgTable(
       sql`paused_reason IS NULL OR paused_reason IN ('manual', 'failing', 'bounced')`
     ),
     check('channel_primary_check', sql`NOT is_primary OR (scope = 'user' AND kind = 'email')`),
+    check(
+      'channel_all_organizations_check',
+      sql`NOT is_all_organizations_notified OR scope = 'instance'`
+    ),
     uniqueIndex('uniq_channel_primary')
       .on(table.userId, table.kind)
       .where(sql`is_primary`),
@@ -8704,5 +8864,117 @@ export const doorway = pgTable(
     ),
     check('doorway_kind_check', sql`kind IN ('http')`),
     check('doorway_status_check', sql`status IN ('pending', 'live', 'attention', 'removing')`),
+  ]
+)
+/**
+ * One DNS record TurboPanel created (or adopted) at a connected provider, so it
+ * never touches a record it does not own. An organization's records use its
+ * carrier; the control plane's own names use an install-level ingress account.
+ * Groundwork: nothing writes it yet.
+ */
+export const dnsRecord = pgTable(
+  'record',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /** NULL for the control plane's own names. */
+    organizationId: uuid('organization_id'),
+    carrierId: uuid('carrier_id'),
+    ingressId: uuid('ingress_id'),
+    /** Fully qualified record name, lower case. */
+    name: text().notNull(),
+    /** RECORD_KINDS. */
+    kind: text().notNull(),
+    /** RECORD_STATUSES. */
+    status: text().default('pending').notNull(),
+    /** RECORD_PROVIDERS. */
+    provider: text().notNull(),
+    /** Provider zone id the record lives in. */
+    zoneId: text('zone_id').notNull(),
+    /** Provider record id; NULL until the provider created it. */
+    externalId: text('external_id'),
+    /** Record value: an address for `A` / `AAAA`, a host name for `CNAME`. */
+    content: text().notNull(),
+    /** Time to live in seconds; NULL leaves the provider's automatic value. */
+    ttl: integer(),
+    /** Last drift check against the provider. */
+    checkedAt: timestamp('checked_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /** Last provider error, plain words; NULL after a success. */
+    error: text(),
+    /** Whether the provider's proxy fronts the record (tunnel CNAMEs). */
+    isProxied: boolean('is_proxied').default(false).notNull(),
+    /** True when the record existed at the provider and an owner adopted it. */
+    isAdopted: boolean('is_adopted').default(false).notNull(),
+  },
+  (table) => [
+    unique('uniq_record_scope_name_kind_content')
+      .on(table.organizationId, table.name, table.kind, table.content)
+      .nullsNotDistinct(),
+    uniqueIndex('uniq_record_provider_zone_external')
+      .on(table.provider, table.zoneId, table.externalId)
+      .where(sql`${table.externalId} IS NOT NULL`),
+    index('idx_record_carrier_id')
+      .on(table.carrierId)
+      .where(sql`${table.carrierId} IS NOT NULL`),
+    index('idx_record_ingress_id')
+      .on(table.ingressId)
+      .where(sql`${table.ingressId} IS NOT NULL`),
+    index('idx_record_open')
+      .on(table.updatedAt)
+      .where(sql`${table.status} <> 'synced'`),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'record_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.carrierId],
+      foreignColumns: [carrier.id],
+      name: 'record_carrier_id_carrier_id_fk',
+    })
+      // NO ACTION and DEFERRABLE INITIALLY DEFERRED (added by the migration, as
+      // `tunnel_carrier_id_carrier_id_fk`): an organization delete that removes
+      // the carrier and its records in one transaction succeeds; deleting a
+      // carrier that still has records fails at commit.
+      .onDelete('no action'),
+    foreignKey({
+      columns: [table.ingressId],
+      foreignColumns: [ingressAccount.id],
+      name: 'record_ingress_id_ingress_id_fk',
+    }).onDelete('restrict'),
+    // Mirror RECORD_KINDS / RECORD_STATUSES / RECORD_PROVIDERS (src/features/dns/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check('record_kind_check', sql`kind IN ('A', 'AAAA', 'CNAME')`),
+    check(
+      'record_status_check',
+      sql`status IN ('pending', 'synced', 'drifted', 'removing', 'failed')`
+    ),
+    check('record_provider_check', sql`provider IN ('cloudflare')`),
+    check('record_account_check', sql`num_nonnulls(carrier_id, ingress_id) = 1`),
+    check('record_scope_check', sql`(organization_id IS NULL) = (carrier_id IS NULL)`),
+    check('record_name_check', sql`name = lower(name) AND char_length(name) BETWEEN 1 AND 253`),
+    check('record_ttl_check', sql`ttl IS NULL OR ttl BETWEEN 1 AND 86400`),
+    // Record kinds are A, AAAA and CNAME only: an address or a host name, at most 253 characters.
+    check('record_content_check', sql`char_length(content) BETWEEN 1 AND 253`),
   ]
 )
