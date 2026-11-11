@@ -153,32 +153,33 @@ const IN_PROGRESS = 'The run token of this Tunnel is already being replaced'
  * The refusals that come before anything changes. Returns the carrying servers,
  * sorted (the order they are moved in), and the warnings for the person.
  */
-async function checkCanRotate(
+/**
+ * Why a rotation cannot start now (removing, not at the provider, under way,
+ * a daemon that cannot follow, a carrier that cannot be reached), or null.
+ * The screen reads it to hide or disable the action with the reason; a start
+ * throws it. A single carrier is not a block (it needs a confirmation).
+ */
+export async function rotationBlock(
   db: Db,
-  deps: RotationDeps,
   row: TunnelRow,
-  read: RotationState | null,
-  options: { confirmSingleServer: boolean }
-): Promise<{ carrying: string[]; warnings: string[] }> {
-  if (isNoopCommandQueue(deps.commandQueue)) {
-    throw new TunnelRefusal('rotation_unavailable', 409, 'Servers cannot be reached from here')
-  }
+  read: RotationState | null = readRotation(row.metadata)
+): Promise<TunnelRefusal | null> {
   if (row.status === 'removing') {
-    throw new TunnelRefusal('tunnel_removing', 409, 'This Tunnel is being removed')
+    return new TunnelRefusal('tunnel_removing', 409, 'This Tunnel is being removed')
   }
   if (!row.externalId || !row.carrierId) {
-    throw new TunnelRefusal(
+    return new TunnelRefusal(
       'tunnel_not_ready',
       409,
       'This Tunnel does not exist at the provider yet'
     )
   }
-  if (rotationActive(read)) throw new TunnelRefusal('rotation_in_progress', 409, IN_PROGRESS)
+  if (rotationActive(read)) return new TunnelRefusal('rotation_in_progress', 409, IN_PROGRESS)
   const carrying = (await carryingServers(db, row)).toSorted(compareText)
   const old = await serversThatCannotRotate(db, carrying)
   if (old.length > 0) {
     const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
-    throw new TunnelRefusal(
+    return new TunnelRefusal(
       'tunnel_daemon_too_old',
       409,
       `${names} a daemon that cannot move its connector to a new run token. Update it first.`,
@@ -190,13 +191,29 @@ async function checkCanRotate(
   if (notReady.length > 0) {
     const names =
       notReady.length === 1 ? '1 server that runs' : `${notReady.length} servers that run`
-    throw new TunnelRefusal(
+    return new TunnelRefusal(
       'server_not_ready',
       409,
       `${names} this Tunnel cannot be sent its connector right now (offline, or its daemon key is not usable). Try again once it is back.`,
       { serverIds: notReady }
     )
   }
+  return null
+}
+
+async function checkCanRotate(
+  db: Db,
+  deps: RotationDeps,
+  row: TunnelRow,
+  read: RotationState | null,
+  options: { confirmSingleServer: boolean }
+): Promise<{ carrying: string[]; warnings: string[] }> {
+  if (isNoopCommandQueue(deps.commandQueue)) {
+    throw new TunnelRefusal('rotation_unavailable', 409, 'Servers cannot be reached from here')
+  }
+  const blocked = await rotationBlock(db, row, read)
+  if (blocked) throw blocked
+  const carrying = (await carryingServers(db, row)).toSorted(compareText)
   const warnings = rotationWarnings(carrying)
   if (carrying.length === 1 && !options.confirmSingleServer) {
     throw new TunnelRefusal('rotation_single_server', 409, warnings[0]!, { warnings })

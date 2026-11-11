@@ -307,6 +307,21 @@ export const tunnelSchemas = {
       runTokenRotation: {
         oneOf: [{ $ref: '#/components/schemas/TunnelRunTokenRotation' }, { type: 'null' }],
       },
+      runTokenRotationBlock: {
+        description:
+          'Why Replace Run Token would be refused now (`tunnel_removing`, `tunnel_not_ready`, `rotation_in_progress`, `tunnel_daemon_too_old` or `server_not_ready`, the last two with `serverIds`), or null when it can start. A single carrying server is not a block: it needs `confirmSingleServer`.',
+        oneOf: [
+          {
+            type: 'object',
+            properties: {
+              code: { type: 'string' },
+              message: { type: 'string' },
+              serverIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+            },
+          },
+          { type: 'null' },
+        ],
+      },
       doorwayCount: { type: 'integer' },
     },
   },

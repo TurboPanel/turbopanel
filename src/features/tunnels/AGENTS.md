@@ -677,7 +677,10 @@ removing the tunnel:
   daemon keeps the old token, which can no longer reconnect), and for a single
   carrier without `confirmSingleServer` (`rotation_single_server`: visitors
   lose the tunnel for a few seconds). Every start warns that connectors
-  briefly reconnect.
+  briefly reconnect. The same refusals (all but the single carrier) are
+  computed by `rotationBlock` and shown on every tunnel answer as
+  `runTokenRotationBlock` (code, message, serverIds), so the screen can disable
+  the action with the reason before it is pressed.
 - Progress is `tunnel.metadata.runTokenRotation` (no new table, column or
   status value): `phase` (`starting`, `rolling`, `finishing`, `done`,
   `stopped`), a `step` counter every save is guarded on (one writer wins),

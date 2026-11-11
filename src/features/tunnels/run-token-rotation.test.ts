@@ -35,7 +35,11 @@ import { wantedConnectorsByServer } from './connector-sync.ts'
 import { TunnelRefusal } from './lifecycle.ts'
 import { insertBadge, insertCarrier, sealToken } from './records.ts'
 import { readRotation } from './rotation-state.ts'
-import { advanceRunTokenRotation, startRunTokenRotation } from './run-token-rotation.ts'
+import {
+  advanceRunTokenRotation,
+  rotationBlock,
+  startRunTokenRotation,
+} from './run-token-rotation.ts'
 import { RUN_SECRET_PROVIDER } from './vocabulary.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
@@ -316,6 +320,8 @@ test('a server whose daemon cannot follow refuses the rotation before anything c
       )
       assertEquals(err.code, 'tunnel_daemon_too_old')
       assertEquals(w.provider.rotations, 0)
+      // The screen sees the same reason before anything is pressed.
+      assertEquals((await rotationBlock(w.db, row))?.code, 'tunnel_daemon_too_old')
       assertEquals(readRotation((await tunnelRow(w)).metadata), null)
     }
   )
@@ -323,6 +329,8 @@ test('a server whose daemon cannot follow refuses the rotation before anything c
 
 test('one server needs a confirmation that names the short outage, then rotates', async () => {
   await withWorld({ servers: [ALL_FEATURES] }, async (w) => {
+    // A lone server is not a block: the screen offers the action with the extra warning.
+    assertEquals(await rotationBlock(w.db, await tunnelRow(w)), null)
     const err = await assertRejects(
       async () =>
         startRunTokenRotation(w.db, w.deps, await tunnelRow(w), { confirmSingleServer: false }),
@@ -407,6 +415,7 @@ test('an offline carrier refuses the rotation before the provider is asked', asy
     )
     assertEquals(err.code, 'server_not_ready')
     assertEquals(w.provider.rotations, 0)
+    assertEquals((await rotationBlock(w.db, row))?.details?.serverIds, [w.servers[1]])
   })
 })
 
