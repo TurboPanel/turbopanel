@@ -401,9 +401,17 @@ export const tunnelSchemas = {
       replaceDnsRecords: {
         type: 'array',
         maxItems: 10,
-        items: { type: 'string' },
+        items: {
+          type: 'object',
+          required: ['id', 'type', 'content'],
+          properties: {
+            id: { type: 'string' },
+            type: { type: 'string' },
+            content: { type: 'string' },
+          },
+        },
         description:
-          "Ids of the DNS records the person agreed to replace, exactly as a 409 `dns_record_exists` listed them. They are replaced by the Tunnel's CNAME only when they are still exactly the address records on the name; anything else is refused again.",
+          "The DNS records the person agreed to replace, each exactly as a 409 `dns_record_exists` showed it (id, type and content). They are replaced by the Tunnel's CNAME only when they are still exactly the address records on the name; a record added or edited since is refused again.",
       },
     },
   },
@@ -776,7 +784,7 @@ const TUNNEL_ERRORS =
   'Refusals: 400 `tunnel_invalid`, `datacenter_required`, `datacenter_invalid`, `server_invalid`, `server_not_in_datacenter`; 409 `tunnel_exists`, `tunnel_limit`, `server_never_carries`, `badge_cannot_tunnel`, `tunnel_in_use`, `tunnel_removing` (a Tunnel being removed takes no placement change); 503 `secrets_unavailable`; 502 `provider_unavailable`; 400 `badge_rejected` when the provider does not accept the API Token.'
 
 const DOORWAY_ERRORS =
-  'Refusals: 400 `hostname_invalid`; 409 `hostname_in_use`, `doorway_limit`, `tunnel_not_ready`, `tunnel_removing` (a Tunnel being removed takes no new hostnames), `carrier_missing`, `badge_cannot_tunnel`, `badge_cannot_dns` (the message says whether no API Token has DNS rights, none covers the zone, or the provider refused every one; on a removal the route is taken down and the hostname waits in `attention`), `zone_not_found`, `hosting_mismatch`, `dns_record_exists` (the name already has A, AAAA or CNAME records: the answer carries `hostname` and `records` [{ id, type, content, proxied }], and nothing was stored, routed or changed; send the hostname again with `replaceDnsRecords` to replace exactly those; other record types such as MX or TXT are never touched); 400 `badge_rejected`; 503 `secrets_unavailable`; 502 `provider_unavailable`.'
+  'Refusals: 400 `hostname_invalid`; 409 `hostname_in_use`, `doorway_limit`, `tunnel_not_ready`, `tunnel_removing` (a Tunnel being removed takes no new hostnames), `carrier_missing`, `badge_cannot_tunnel`, `badge_cannot_dns` (the message says whether no API Token has DNS rights, none covers the zone, or the provider refused every one; on a removal the route is taken down and the hostname waits in `attention`), `zone_not_found`, `hosting_mismatch`, `dns_record_exists` (the name already has A, AAAA or CNAME records: the answer carries `hostname`, `records` [{ id, type, content, proxied }] and `replaceable` (false past 10 records, which are removed by hand), and nothing was stored, routed or changed; send the hostname again with `replaceDnsRecords` to replace exactly those; other record types such as MX or TXT are never touched); 502 `dns_replace_incomplete` (records were deleted and the replacement did not finish: `removedRecords` names them, and they are kept in the audit); 400 `badge_rejected`; 503 `secrets_unavailable`; 502 `provider_unavailable`.'
 
 Object.assign(tunnelPaths, {
   '/api/client/v1/organizations/{id}/tunnels': {

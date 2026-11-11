@@ -26,7 +26,12 @@ import { compareText } from './order.ts'
 import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
 import { retireUnusedOriginCertificates } from './origin-certificate.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
-import type { ExistingDnsRecord, TunnelAdapter } from './adapter.ts'
+import {
+  type ConfirmedDnsRecord,
+  type ExistingDnsRecord,
+  sameDnsRecords,
+  type TunnelAdapter,
+} from './adapter.ts'
 import {
   BadgeRefused,
   BadgeUnavailable,
@@ -34,7 +39,7 @@ import {
   openBestBadge,
   useBadges,
 } from './badge-use.ts'
-import { DnsNameTaken, TunnelProviderError } from './errors.ts'
+import { DnsNameTaken, DnsReplaceIncomplete, TunnelProviderError } from './errors.ts'
 import {
   type PlacementInput,
   placementWarnings,
@@ -78,11 +83,32 @@ export class TunnelRefusal extends Error {
   }
 }
 
-/** 409 `dns_record_exists`: the name's address records, which the person may agree to replace. */
+/**
+ * 409 `dns_record_exists`: the name's address records, which the person may
+ * agree to replace. More than can be replaced in one go (`replaceable: false`)
+ * have to be removed by hand.
+ */
 export function dnsNameTakenRefusal(err: DnsNameTaken): TunnelRefusal {
-  return new TunnelRefusal('dns_record_exists', 409, err.message, {
+  const replaceable = err.records.length <= MAX_REPLACED_RECORDS
+  const message = replaceable
+    ? err.message
+    : `${err.message.split('. Replace')[0]}. That is more than ${MAX_REPLACED_RECORDS} records: remove them at your DNS provider first.`
+  return new TunnelRefusal('dns_record_exists', 409, message, {
     hostname: err.hostname,
     records: err.records.map((r) => ({ ...r })),
+    replaceable,
+  })
+}
+
+/** 502 `dns_replace_incomplete`: some records were already deleted; the answer (and the audit) names them. */
+export function dnsReplaceIncompleteRefusal(err: DnsReplaceIncomplete): TunnelRefusal {
+  return new TunnelRefusal('dns_replace_incomplete', 502, err.message, {
+    hostname: err.hostname,
+    removedRecords: err.removed.map((r) => ({
+      type: r.type,
+      content: r.content,
+      proxied: r.proxied,
+    })),
   })
 }
 
@@ -554,6 +580,7 @@ async function removeAtProviderQuietly(
 /** A provider failure as a refusal; the message is already scrubbed. */
 export function providerRefusal(err: unknown): unknown {
   if (err instanceof DnsNameTaken) return dnsNameTakenRefusal(err)
+  if (err instanceof DnsReplaceIncomplete) return dnsReplaceIncompleteRefusal(err)
   if (err instanceof TunnelProviderError) {
     if (err.code === 'unauthorized') {
       return new TunnelRefusal('badge_rejected', 400, 'The provider did not accept this API Token.')
@@ -762,10 +789,29 @@ const DNS_RECORD_ID_RE = /^[A-Za-z0-9_-]{1,64}$/
 /** More records than this on one name is not something to replace in one go. */
 const MAX_REPLACED_RECORDS = 10
 
+/** One record of `replaceDnsRecords`: id, type and content as the conflict answer showed them. */
+function parseConfirmedRecord(value: unknown): ConfirmedDnsRecord | null {
+  const r = value as Record<string, unknown> | null
+  if (
+    !r ||
+    typeof r !== 'object' ||
+    typeof r.id !== 'string' ||
+    !DNS_RECORD_ID_RE.test(r.id) ||
+    typeof r.type !== 'string' ||
+    r.type.length === 0 ||
+    r.type.length > 16 ||
+    typeof r.content !== 'string' ||
+    r.content.length > 4096
+  ) {
+    return null
+  }
+  return { id: r.id, type: r.type, content: r.content }
+}
+
 export function parseDoorwayBody(body: Record<string, unknown>): Parsed<{
   hostname: string
   isLocalOnly: boolean
-  replaceDnsRecords: string[]
+  replaceDnsRecords: ConfirmedDnsRecord[]
 }> {
   const raw = typeof body.hostname === 'string' ? body.hostname.trim().toLowerCase() : ''
   if (!isValidHostname(raw)) {
@@ -774,17 +820,17 @@ export function parseDoorwayBody(body: Record<string, unknown>): Parsed<{
   if (body.isLocalOnly !== undefined && typeof body.isLocalOnly !== 'boolean') {
     return { ok: false, field: 'isLocalOnly', detail: 'Must be true or false' }
   }
-  const replace = body.replaceDnsRecords ?? []
+  const sent = body.replaceDnsRecords ?? []
+  const replace = Array.isArray(sent) ? sent.map(parseConfirmedRecord) : [null]
   if (
-    !Array.isArray(replace) ||
     replace.length > MAX_REPLACED_RECORDS ||
-    !replace.every((id) => typeof id === 'string' && DNS_RECORD_ID_RE.test(id)) ||
-    new Set(replace).size !== replace.length
+    replace.includes(null) ||
+    new Set(replace.map((r) => r!.id)).size !== replace.length
   ) {
     return {
       ok: false,
       field: 'replaceDnsRecords',
-      detail: 'Must be the ids of the DNS records to replace',
+      detail: `Must be the DNS records to replace, each with the id, type and content it was shown with (at most ${MAX_REPLACED_RECORDS})`,
     }
   }
   return {
@@ -792,7 +838,7 @@ export function parseDoorwayBody(body: Record<string, unknown>): Parsed<{
     value: {
       hostname: raw,
       isLocalOnly: body.isLocalOnly !== false,
-      replaceDnsRecords: replace as string[],
+      replaceDnsRecords: replace as ConfirmedDnsRecord[],
     },
   }
 }
@@ -866,7 +912,11 @@ export async function addDoorway(
   deps: { adapter: TunnelAdapter; secrets: DerivedSecretsConfig },
   row: TunnelRow,
   owner: CarrierRow,
-  input: { hostname: string; isLocalOnly: boolean; replaceDnsRecords?: readonly string[] }
+  input: {
+    hostname: string
+    isLocalOnly: boolean
+    replaceDnsRecords?: readonly ConfirmedDnsRecord[]
+  }
 ): Promise<DoorwayRow> {
   assertNotRemoving(row)
   if (!row.externalId) {
@@ -936,7 +986,7 @@ async function assertDnsNameFree(
   db: Db,
   deps: Deps,
   plan: { row: TunnelRow; owner: CarrierRow; zone: { id: string; name: string } },
-  input: { hostname: string; replaceDnsRecords?: readonly string[] }
+  input: { hostname: string; replaceDnsRecords?: readonly ConfirmedDnsRecord[] }
 ): Promise<ExistingDnsRecord[]> {
   const list = deps.adapter.listDnsConflicts
   if (!list) return []
@@ -955,10 +1005,10 @@ async function assertDnsNameFree(
   }
   const conflicts = found.value
   if (conflicts.length === 0) return []
-  const wanted = new Set(input.replaceDnsRecords ?? [])
-  const confirmed =
-    wanted.size === conflicts.length && conflicts.every((record) => wanted.has(record.id))
-  if (!confirmed) throw dnsNameTakenRefusal(new DnsNameTaken(input.hostname, conflicts))
+  // Same records by id, type and content: one edited in place since it was shown is not confirmed.
+  if (!sameDnsRecords(conflicts, input.replaceDnsRecords ?? [])) {
+    throw dnsNameTakenRefusal(new DnsNameTaken(input.hostname, conflicts))
+  }
   return conflicts
 }
 
@@ -1003,7 +1053,7 @@ type PublishPlan = {
   account: string | null
   zone: { id: string; name: string } | null
   /** Record ids the person agreed to replace with the tunnel's CNAME. */
-  replaceDnsRecords?: readonly string[]
+  replaceDnsRecords?: readonly ConfirmedDnsRecord[]
   /** What those records were, kept on the row as the only record of them once replaced. */
   replacedRecords?: readonly ExistingDnsRecord[]
 }
@@ -1069,6 +1119,14 @@ async function publishDoorway(
     // The DNS name exists but the row could not be kept: take the name away again.
     if (recordId && zone && dns) {
       await deps.adapter.removeDnsName(dns.token, { zoneId: zone.id, recordId }).catch(() => {})
+    }
+    // Records were replaced to make that name: they are gone now, so say which.
+    if (plan.replacedRecords?.length) {
+      throw new DnsReplaceIncomplete(
+        created.hostname,
+        plan.replacedRecords,
+        'the hostname could not be saved'
+      )
     }
     throw err
   }

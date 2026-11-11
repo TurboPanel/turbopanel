@@ -325,18 +325,24 @@ provider accounts.
   that zone's DNS, `listDnsConflicts`). A CNAME that already points at this
   tunnel is kept and reused. Any other A, AAAA or CNAME record refuses the add
   with 409 `dns_record_exists`, naming each record (type, content, proxied) in
-  the message and in `records`, so the screen can show them and offer to
-  replace them. The person confirms by sending the same hostname with
-  `replaceDnsRecords`, the exact ids shown; the adapter reads the records again
-  when it writes and refuses again (`DnsNameTaken`) if the set changed in
-  between, so a record added meanwhile is never replaced unseen. A CNAME may
-  not sit beside other address records, so it deletes the others first and
-  then turns the first into the tunnel's CNAME (keeping its id); if that last
-  write fails, the error names the records already removed. Other record types
-  on the name (MX, TXT, …) are never listed, replaced or deleted. Removing the
-  hostname later deletes the CNAME; the replaced records are not put back, so
-  what they were (type, content, proxied) is kept in the hostname's
-  `metadata.dnsReplaced` and in the `doorway.create` audit row.
+  the message and in `records`, with `replaceable` (false past
+  `MAX_REPLACED_RECORDS`, 10: those are removed by hand, and the message says
+  so). The person confirms by sending the same hostname with
+  `replaceDnsRecords`: each record as it was shown, `{ id, type, content }`.
+  It is compared by id, type and content (`sameDnsRecords`), so a record
+  edited in place since it was shown is refused again, and the adapter reads
+  the records again when it writes, so a record added meanwhile is never
+  replaced unseen. A CNAME may not sit beside other address records, so the
+  others are deleted first (every delete is tried) and then the first becomes
+  the tunnel's CNAME (keeping its id). If anything fails after a delete, the
+  answer is 502 `dns_replace_incomplete` with `removedRecords`, and the route
+  writes a `doorway.dns_replace_failed` audit row with them: the only record
+  of what was deleted. The same holds when the hostname row cannot be saved
+  after a replacement. Other record types on the name (MX, TXT, …) are never
+  listed, replaced or deleted. Removing the hostname later deletes the CNAME;
+  the replaced records are not put back, so what they were (type, content,
+  proxied) is kept in the hostname's `metadata.dnsReplaced` and in the
+  `doorway.create` audit row.
 - The route builder turns the facts into the `server.tunnel.routes` payload for
   one server: routes only for tunnels the server carries; a name whose site
   runs on this server is `local`; otherwise the upstreams are the datacenter

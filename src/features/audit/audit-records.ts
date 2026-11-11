@@ -106,6 +106,7 @@ export const AUDIT_ACTIONS = [
   'tunnel.run_token.rotate',
   'tunnel.delete',
   'doorway.create',
+  'doorway.dns_replace_failed',
   'doorway.delete',
   'server.tunnel_carrying',
   'tls.dns_certificate.create',

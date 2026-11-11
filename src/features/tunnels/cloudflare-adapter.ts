@@ -11,15 +11,16 @@ import {
   type TokenKind,
   UNKNOWN_TOKEN,
 } from './vocabulary.ts'
-import type {
-  CredentialReport,
-  DeclaredZoneResult,
-  ExistingDnsRecord,
-  TunnelAdapter,
+import {
+  type CredentialReport,
+  type DeclaredZoneResult,
+  type ExistingDnsRecord,
+  sameDnsRecords,
+  type TunnelAdapter,
 } from './adapter.ts'
 import { CloudflareClient, type CloudflareIngressRule } from './cloudflare-client.ts'
 import { cloudflareTokenFormatProblem } from './cloudflare-token-format.ts'
-import { DnsNameTaken, TunnelProviderError } from './errors.ts'
+import { DnsNameTaken, DnsReplaceIncomplete, TunnelProviderError } from './errors.ts'
 
 /** Names of the permissions a token needs, as Cloudflare words them. */
 export const CLOUDFLARE_PERMISSIONS = {
@@ -309,12 +310,6 @@ function tunnelTarget(externalId: string): string {
   return `${externalId}.cfargotunnel.com`
 }
 
-/** Same set of record ids, in any order. */
-function sameIds(records: readonly { id: string }[], ids: readonly string[]): boolean {
-  const wanted = new Set(ids)
-  return wanted.size === records.length && records.every((r) => wanted.has(r.id))
-}
-
 /** The tunnel's own CNAME for the name, if any, and the address records that would have to go. */
 async function readNameRecords(
   api: CloudflareClient,
@@ -334,6 +329,39 @@ async function readNameRecords(
       proxied: r.proxied === true,
     }))
   return { ours: ours ? { id: ours.id } : null, conflicts }
+}
+
+/**
+ * Replace confirmed records with the tunnel's CNAME. A CNAME may not sit beside
+ * other address records, so the others go first (every delete is tried, and a
+ * failure names what was already removed); then the first record becomes the
+ * CNAME, keeping its id. Any failure after a delete is a {@link DnsReplaceIncomplete}.
+ */
+async function replaceRecords(
+  api: CloudflareClient,
+  input: { zoneId: string; hostname: string },
+  conflicts: readonly ExistingDnsRecord[],
+  record: { name: string; content: string }
+): Promise<{ recordId: string }> {
+  const [first, ...rest] = conflicts
+  const deletes = await Promise.allSettled(
+    rest.map((other) => api.deleteDnsRecord(input.zoneId, other.id))
+  )
+  const removed = rest.filter((_, i) => deletes[i]!.status === 'fulfilled')
+  const failed = deletes.find((d): d is PromiseRejectedResult => d.status === 'rejected')
+  if (failed) {
+    const reason = failed.reason instanceof Error ? failed.reason.message : 'a delete failed'
+    if (removed.length === 0) throw failed.reason
+    throw new DnsReplaceIncomplete(input.hostname, removed, reason)
+  }
+  try {
+    const written = await api.putDnsRecord(input.zoneId, first!.id, record)
+    return { recordId: written.id }
+  } catch (err) {
+    if (removed.length === 0) throw err
+    const reason = err instanceof Error ? err.message : 'the last write failed'
+    throw new DnsReplaceIncomplete(input.hostname, removed, reason)
+  }
 }
 
 export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}): TunnelAdapter {
@@ -478,25 +506,10 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       if (found.conflicts.length === 0) {
         return { recordId: (await api.createDnsRecord(input.zoneId, record)).id }
       }
-      if (!sameIds(found.conflicts, input.replace ?? [])) {
+      if (!sameDnsRecords(found.conflicts, input.replace ?? [])) {
         throw new DnsNameTaken(input.hostname, found.conflicts)
       }
-      // Confirmed. A CNAME may not sit beside other address records, so the
-      // others go first; then the first record becomes the CNAME (its id is kept).
-      const [first, ...rest] = found.conflicts
-      await Promise.all(rest.map((other) => api.deleteDnsRecord(input.zoneId, other.id)))
-      try {
-        const written = await api.putDnsRecord(input.zoneId, first!.id, record)
-        return { recordId: written.id }
-      } catch (err) {
-        if (rest.length === 0 || !(err instanceof TunnelProviderError)) throw err
-        const removed = rest.map((r) => `${r.type} ${r.content}`).join(', ')
-        throw new TunnelProviderError(
-          err.code,
-          `${err.message} (already removed: ${removed})`,
-          err.status
-        )
-      }
+      return await replaceRecords(api, input, found.conflicts, record)
     },
 
     async removeDnsName(token, input) {

@@ -11,6 +11,26 @@ export type ExistingDnsRecord = {
   proxied: boolean
 }
 
+/** A record as the person was shown it and agreed to replace. */
+export type ConfirmedDnsRecord = { id: string; type: string; content: string }
+
+/**
+ * Are these exactly the records the person agreed to replace? Same set by id,
+ * and each one still has the type and content it was shown with. Pure.
+ */
+export function sameDnsRecords(
+  found: readonly { id: string; type: string; content: string }[],
+  confirmed: readonly ConfirmedDnsRecord[]
+): boolean {
+  if (found.length !== confirmed.length) return false
+  const byId = new Map(confirmed.map((r) => [r.id, r]))
+  if (byId.size !== confirmed.length) return false
+  return found.every((r) => {
+    const seen = byId.get(r.id)
+    return seen?.type.toUpperCase() === r.type.toUpperCase() && seen.content === r.content
+  })
+}
+
 /** What a credential check found, from read calls only. */
 export type CredentialReport = {
   accounts: ProviderAccount[]
@@ -144,7 +164,8 @@ export type TunnelAdapter = {
   /**
    * Point the name at the tunnel. A CNAME that already points there is kept.
    * Address records that hold the name are replaced only when `replace` lists
-   * exactly their ids (the person confirmed what they saw); otherwise the call
+   * exactly them, by id, type and content (the person confirmed what they
+   * saw; a record edited in place since is not that record); otherwise the call
    * throws {@link DnsNameTaken} naming them, and nothing is changed.
    */
   createDnsName(
@@ -153,7 +174,7 @@ export type TunnelAdapter = {
       zoneId: string
       hostname: string
       externalId: string
-      replace?: readonly string[]
+      replace?: readonly ConfirmedDnsRecord[]
     }
   ): Promise<{ recordId: string }>
   removeDnsName(token: string, input: { zoneId: string; recordId: string }): Promise<void>
