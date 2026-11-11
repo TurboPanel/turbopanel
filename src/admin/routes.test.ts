@@ -1788,6 +1788,41 @@ test('an operator webhook made before the switch existed is switched on when tou
   })
 })
 
+test('the operator webhook cannot be switched off from hearing every organization', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    try {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const put = await app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
+        method: 'PUT',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://hooks.slack.com/services/OP/PATH' }),
+      })
+      assertEquals(put.status, 200)
+      const [row] = await db
+        .select({ id: notificationChannel.id })
+        .from(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const patched = await app.request(`${ADMIN_API_PREFIX}/notification-channels/${row!.id}`, {
+        method: 'PATCH',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ allOrganizations: false }),
+      })
+      assertEquals(patched.status, 400)
+      assertEquals(
+        (await jsonBody<{ error: string }>(patched)).error,
+        'operator_webhook_hears_all_organizations'
+      )
+    } finally {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+    }
+  })
+})
+
 test('PUT /api/admin/v1/settings/alert-webhook accepts a private target on every runtime', async () => {
   // Decided 2026-09-18, "allow everywhere, no exceptions": the rule used to
   // follow the runtime. A Workers instance cannot reach a private address

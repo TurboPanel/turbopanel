@@ -206,6 +206,12 @@
       "tag": "0033_project_cache",
       "when": 1794411347353,
       "sha256": "30255f8a6f15f488d905ec4fa6cc33909daac1420bf6163e6126b73c0ae76272"
+    },
+    {
+      "idx": 34,
+      "tag": "0034_keep_install_channels_hearing_organizations",
+      "when": 1794414017866,
+      "sha256": "36818670521bb08b1839bb1b7fdd3dec4b43823b1e5adada8d3bffeb76323a80"
     }
   ]
 }

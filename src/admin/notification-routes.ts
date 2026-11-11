@@ -25,13 +25,17 @@ import {
   listRecentDeliveriesForChannel,
   listRulesForChannel,
   type NotificationChannelRecord,
+  OPERATOR_WEBHOOK_LABEL,
   replaceRulesForChannel,
   resolveChannelAddress,
   setChannelAllOrganizations,
   setChannelDisabled,
   updateChannelLabel,
 } from '../features/notifications/records.ts'
-import { parseAllOrganizationsField } from '../features/notifications/all-organizations.ts'
+import {
+  parseAllOrganizationsField,
+  refuseOperatorWebhookOff,
+} from '../features/notifications/all-organizations.ts'
 import { applyHoldFields, presentChannelHold } from '../features/notifications/hold-settings.ts'
 import {
   parseChannelCreateBody,
@@ -116,6 +120,7 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
     // The legacy setting, if it still exists, becomes a channel here so the
     // operator sees one list.
+    // This may write: it switches an older operator webhook on (see adoptLegacyAlertWebhook).
     await adoptLegacyAlertWebhook(db, c.get('dataEncryptionSecrets'))
     const channels = await listInstanceChannels(db)
     return c.json({
@@ -204,6 +209,11 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
     if (!allOrganizations.ok) {
       return c.json({ error: allOrganizations.error }, allOrganizations.status)
     }
+    const operatorOff = refuseOperatorWebhookOff(
+      owned.kind === 'webhook' && owned.label === OPERATOR_WEBHOOK_LABEL,
+      allOrganizations.value
+    )
+    if (operatorOff) return c.json(operatorOff, 400)
     if (parsed.value.label !== undefined) {
       await updateChannelLabel(db, owned.id, parsed.value.label)
     }

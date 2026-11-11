@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { parseAllOrganizationsField } from './all-organizations.ts'
+import { parseAllOrganizationsField, refuseOperatorWebhookOff } from './all-organizations.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -21,4 +21,14 @@ test('anything else is refused', () => {
       error: 'all_organizations_invalid',
     })
   }
+})
+
+test('only switching the operator webhook off is refused', () => {
+  assertEquals(
+    refuseOperatorWebhookOff(true, false)?.error,
+    'operator_webhook_hears_all_organizations'
+  )
+  assertEquals(refuseOperatorWebhookOff(true, true), null)
+  assertEquals(refuseOperatorWebhookOff(true, undefined), null)
+  assertEquals(refuseOperatorWebhookOff(false, false), null)
 })
