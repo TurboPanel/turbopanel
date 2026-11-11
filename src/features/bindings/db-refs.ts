@@ -232,13 +232,17 @@ function reportInvalid(pass: Pass, key: string, ref: DbVariableRef, reason: stri
   })
 }
 
-function wholeSecretEntry(info: BindingRefInfo, value: string): ResolvedVariableEntry {
+function wholeSecretEntry(
+  info: BindingRefInfo,
+  entry: ResolvedVariableEntry,
+  value: string
+): ResolvedVariableEntry {
   return {
     value,
     isSecret: true,
     isLiteral: true,
     forBuild: false,
-    forRuntime: true,
+    forRuntime: entry.forRuntime,
     bindingId: info.bindingId,
   }
 }
@@ -272,7 +276,7 @@ function rewriteWhole(
         if (info.delivery === 'host-site' && info.engine === 'postgres' && ref.field === 'url') {
           pass.out.siteUrlNames.push(key)
         }
-        return { kind: 'set', entry: wholeSecretEntry(info, field.value) }
+        return { kind: 'set', entry: wholeSecretEntry(info, entry, field.value) }
       }
       return { kind: 'set', entry: { ...entry, value: field.value, forBuild: false } }
   }
@@ -405,9 +409,13 @@ export async function loadSiteRefNames(
   if (hostings.length === 0) return names
   const table = await loadBindingRefTable(db, serviceId)
   if (table.size === 0) return names
-  for (const row of hostings) {
-    const vars = await resolveHostingVariables(db, row.id)
-    const result = applyDbRefs(vars.map, table, { ownScopeKeys: vars.ownKeys })
+  const results = await Promise.all(
+    hostings.map(async (row) => {
+      const vars = await resolveHostingVariables(db, row.id)
+      return applyDbRefs(vars.map, table, { ownScopeKeys: vars.ownKeys })
+    })
+  )
+  for (const result of results) {
     names.siteCaFileNames.push(...result.siteCaFileNames)
     names.siteUrlNames.push(...result.siteUrlNames)
   }

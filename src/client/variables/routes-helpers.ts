@@ -144,7 +144,7 @@ export function variableValueProblem(normalizedValue: string): string | null {
   return normalizedValue.includes('\r') ? VARIABLE_LONE_CARRIAGE_RETURN_ERROR : null
 }
 
-const SECRET_DB_FIELDS: readonly DbRefField[] = ['password', 'url', 'ca_text']
+const SECRET_DB_FIELDS: ReadonlySet<DbRefField> = new Set(['password', 'url', 'ca_text'])
 
 /**
  * Why a value that holds a `{$db.<binding>.<field>}` reference cannot be saved
@@ -175,7 +175,7 @@ export function variableReferenceProblem(
   if (forBuild)
     return 'Database settings reach the running app only, so this variable cannot be used for builds'
   const embeddedSecret =
-    parts.length > 1 ? refs.find((ref) => SECRET_DB_FIELDS.includes(ref.field)) : undefined
+    parts.length > 1 ? refs.find((ref) => SECRET_DB_FIELDS.has(ref.field)) : undefined
   if (embeddedSecret) {
     return `${embeddedSecret.raw} is secret, so it must be the whole value of the variable`
   }

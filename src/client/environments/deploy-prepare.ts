@@ -3723,6 +3723,60 @@ async function allocateResolvedDeployPipelineForPrepare(
   return { pipeline, resolved }
 }
 
+/**
+ * Resolve every variable of the deploy (expanding database references against
+ * each service's own bindings), then inject them into the compiled document.
+ * Returns the prepare error to stop with, or the result.
+ */
+async function applyDeployVariables(
+  c: Context<AppEnv>,
+  db: Db,
+  input: {
+    params: { environmentId: string; serverId: string }
+    pipeline: Pick<DeployExpandPipeline, 'expandedDocument' | 'expandedServiceNames' | 'expansion'>
+    serviceRows: ServiceRow[]
+    projectId: string
+    warnings: DeployPrepareWarning[]
+  }
+): Promise<ApplyVariablesResult | DeployPrepareError> {
+  const { params, pipeline, warnings } = input
+  const serviceRowByCloneName = buildServiceRowByCloneName(input.serviceRows, pipeline.expansion)
+  const {
+    globalEntries,
+    perServiceEntries: userPerService,
+    perServiceScopes,
+    perServiceDbRefs,
+    dbRefIssues,
+  } = await resolveDeployVariableBuckets(db, {
+    environmentId: params.environmentId,
+    serverId: params.serverId,
+    composeServiceNames: pipeline.expandedServiceNames,
+    serviceRowByComposeName: serviceRowByCloneName,
+    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+  })
+  const dbRefError = dbRefPrepareError(dbRefIssues.errors)
+  if (dbRefError) return dbRefError
+  warnings.push(...dbRefWarnings(dbRefIssues.warnings))
+
+  const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
+    globalEntries,
+    perServiceEntries: stripReservedKeysFromEntries(userPerService),
+    perServiceScopes,
+    perServiceDbRefs,
+    nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
+    projectId: input.projectId,
+    environmentId: params.environmentId,
+    configFilesEnabled: (await storedDaemonFeatures(db, params.serverId)).includes(
+      DEPLOY_CONFIG_FILES_FEATURE
+    ),
+  })
+  if (isApplyVariablesError(withVariables)) {
+    return await variablesPrepareFailure(db, params.serverId, withVariables)
+  }
+  warnings.push(...configFileWarnings(withVariables.configWarnings))
+  return withVariables
+}
+
 export async function prepareDeployCompose(
   c: Context<AppEnv>,
   db: Db,
@@ -3828,42 +3882,14 @@ export async function prepareDeployCompose(
   }
   const { pipeline, resolved } = pipelineResolved
 
-  const serviceRowByCloneName = buildServiceRowByCloneName(serviceRows, pipeline.expansion)
-  const {
-    globalEntries,
-    perServiceEntries: userPerService,
-    perServiceScopes,
-    perServiceDbRefs,
-    dbRefIssues,
-  } = await resolveDeployVariableBuckets(db, {
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    composeServiceNames: pipeline.expandedServiceNames,
-    serviceRowByComposeName: serviceRowByCloneName,
-    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
-  })
-  const dbRefError = dbRefPrepareError(dbRefIssues.errors)
-  if (dbRefError) return dbRefError
-  warnings.push(...dbRefWarnings(dbRefIssues.warnings))
-
-  const perServiceEntries = stripReservedKeysFromEntries(userPerService)
-
-  const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
-    globalEntries,
-    perServiceEntries,
-    perServiceScopes,
-    perServiceDbRefs,
-    nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
+  const withVariables = await applyDeployVariables(c, db, {
+    params,
+    pipeline,
+    serviceRows,
     projectId: envRow.projectId,
-    environmentId: params.environmentId,
-    configFilesEnabled: (await storedDaemonFeatures(db, params.serverId)).includes(
-      DEPLOY_CONFIG_FILES_FEATURE
-    ),
+    warnings,
   })
-  if (isApplyVariablesError(withVariables)) {
-    return await variablesPrepareFailure(db, params.serverId, withVariables)
-  }
-  warnings.push(...configFileWarnings(withVariables.configWarnings))
+  if ('kind' in withVariables) return withVariables
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
     pipeline.optionsByComposeName,
@@ -4622,6 +4648,38 @@ async function takesCentralPair(
   return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
 }
 
+/**
+ * A hosting's bind address and its site environment. Database references in the
+ * hosting's variables are expanded here against the service's bindings (an
+ * error stops the deploy; a warning surfaces through the compose-service
+ * bucket of the same deploy, which reads the same variables).
+ */
+async function resolveHostingBindAndWeb(
+  db: Db,
+  h: HostingRow,
+  serverId: string
+): Promise<
+  | { prepareError: DeployPrepareError }
+  | {
+      bindResolved: Exclude<Awaited<ReturnType<typeof resolveHostingBindAddress>>, { kind: string }>
+      web: Awaited<ReturnType<typeof resolveHostingDeployWeb>>
+    }
+> {
+  const bindResolved = await resolveHostingBindAddress(db, {
+    serverId,
+    options: h.options,
+    ipId: h.ipId,
+  })
+  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
+    return { prepareError: bindResolved }
+  }
+  const webRefIssues: DbRefIssue[] = []
+  const web = await resolveHostingDeployWeb(db, h.id, h.options, webRefIssues)
+  const webRefError = dbRefPrepareError(webRefIssues)
+  if (webRefError) return { prepareError: webRefError }
+  return { bindResolved, web }
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
@@ -4684,19 +4742,9 @@ async function resolveHttpHostingEntry(
     }
   }
 
-  const bindResolved = await resolveHostingBindAddress(db, {
-    serverId,
-    options: h.options,
-    ipId: h.ipId,
-  })
-  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
-    return { prepareError: bindResolved }
-  }
-
-  const webRefIssues: DbRefIssue[] = []
-  const web = await resolveHostingDeployWeb(db, h.id, h.options, webRefIssues)
-  const webRefError = dbRefPrepareError(webRefIssues)
-  if (webRefError) return { prepareError: webRefError }
+  const bindAndWeb = await resolveHostingBindAndWeb(db, h, serverId)
+  if ('prepareError' in bindAndWeb) return bindAndWeb
+  const { bindResolved, web } = bindAndWeb
 
   const lock = await resolveDeployNameLock(db, {
     organizationId,

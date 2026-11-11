@@ -73,6 +73,15 @@ test('a whole secret field passes the sealed envelope through and the variable s
   assertEquals(out.errors, [])
 })
 
+test('a secret reference keeps the runtime flag of the variable it sits in', () => {
+  const out = applyDbRefs(
+    mapOf({ OFF: { ...plain('{$db.DATABASE.password}'), forRuntime: false } }),
+    tableFor('container'),
+    { ownScopeKeys: none }
+  )
+  assertEquals(out.map.get('OFF')?.forRuntime, false)
+})
+
 test('a plain field is replaced anywhere in the text', () => {
   const out = applyDbRefs(
     mapOf({

@@ -15,7 +15,11 @@ import {
 } from '../features/servers/server-identity-db.ts'
 import { reapplyBindingOwnedVariables } from '../features/bindings/materialize.ts'
 import { logWarn } from '../lib/logger.ts'
-import { applyDbRefs, loadBindingRefTable } from '../features/bindings/db-refs.ts'
+import {
+  applyDbRefs,
+  type BindingRefTable,
+  loadBindingRefTable,
+} from '../features/bindings/db-refs.ts'
 import {
   mergeHostingVariablesForService,
   type ResolvedVariableMap,
@@ -158,6 +162,22 @@ export function rehydrateSecretWants(
   return wants
 }
 
+/**
+ * A secret made by `{$db.<binding>.<field>}` rehydrates under its own key, with
+ * the binding's sealed envelope. Issues are not reported to the caller: the
+ * deploy that made the plan already was; they are logged by name.
+ */
+export function expandRehydrateDbRefs(
+  map: ResolvedVariableMap,
+  table: BindingRefTable
+): ResolvedVariableMap {
+  const expanded = applyDbRefs(map, table, { ownScopeKeys: new Set() })
+  for (const issue of expanded.errors) {
+    logWarn('rehydrate', 'database reference not resolved', { variable: issue.key, ref: issue.ref })
+  }
+  return expanded.map
+}
+
 async function resolveServiceVariableMap(
   db: Db,
   environmentId: string,
@@ -175,23 +195,16 @@ async function resolveServiceVariableMap(
     )
     .limit(1)
   if (!row) {
-    const serverVars = await resolveServerScopedVariables(db, serverId)
-    return serverVars
+    return expandRehydrateDbRefs(await resolveServerScopedVariables(db, serverId), new Map())
   }
   const varMap = await resolveInheritedVariablesForService(db, row.id)
   await mergeHostingVariablesForService(db, row.id, varMap)
   await reapplyBindingOwnedVariables(db, row.id, varMap)
   const serverVars = await resolveServerScopedVariables(db, serverId)
-  // A secret made by `{$db.<binding>.<field>}` rehydrates under its own key.
-  // Issues are not reported here: the deploy that made the plan already was.
-  const table = await loadBindingRefTable(db, row.id)
-  const expanded = applyDbRefs(new Map([...varMap, ...serverVars]), table, {
-    ownScopeKeys: new Set(),
-  })
-  for (const issue of expanded.errors) {
-    logWarn('rehydrate', 'database reference not resolved', { variable: issue.key, ref: issue.ref })
-  }
-  return expanded.map
+  return expandRehydrateDbRefs(
+    new Map([...varMap, ...serverVars]),
+    await loadBindingRefTable(db, row.id)
+  )
 }
 
 export async function buildDeploymentSecretsRehydrate(

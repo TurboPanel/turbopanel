@@ -60,7 +60,7 @@ export function containerBindingCaPath(keyPrefix: string): string {
   return `/run/secrets/${bindingPrefixedKeys(keyPrefix).caCert}`
 }
 
-const VERIFY_SSL_MODES: readonly ManagedSslMode[] = ['verify-ca', 'verify-full']
+const VERIFY_SSL_MODES: ReadonlySet<ManagedSslMode> = new Set(['verify-ca', 'verify-full'])
 
 /**
  * A container's Postgres URL names its CA file in the verify modes, so a
@@ -71,7 +71,7 @@ function withContainerRootCert(
   dsn: string,
   params: Readonly<{ keyPrefix: string; engineCode: string; sslMode: ManagedSslMode }>
 ): string {
-  if (params.engineCode !== 'postgres' || !VERIFY_SSL_MODES.includes(params.sslMode)) return dsn
+  if (params.engineCode !== 'postgres' || !VERIFY_SSL_MODES.has(params.sslMode)) return dsn
   return `${dsn}&sslrootcert=${containerBindingCaPath(params.keyPrefix)}`
 }
 
