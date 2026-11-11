@@ -443,7 +443,15 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal that
       assertEquals(await b.json(), {
         error: 'principal_in_use',
         code: 'principal_in_use',
-        usedBy: { tenancies: 0, bindings: 0, storages: 0, secrets: 0, logins: 1, folders: 0 },
+        usedBy: {
+          tenancies: 0,
+          bindings: 0,
+          storages: 0,
+          secrets: 0,
+          logins: 1,
+          caches: 0,
+          folders: 0,
+        },
       })
 
       const rows = await db
@@ -651,7 +659,15 @@ test('DELETE /organizations/:id/principals/:principalId refuses a principal a se
     assertEquals(await res.json(), {
       error: 'principal_in_use',
       code: 'principal_in_use',
-      usedBy: { tenancies: 1, bindings: 0, storages: 0, secrets: 0, logins: 0, folders: 0 },
+      usedBy: {
+        tenancies: 1,
+        bindings: 0,
+        storages: 0,
+        secrets: 0,
+        logins: 0,
+        caches: 0,
+        folders: 0,
+      },
     })
     assertEquals((await db.select().from(principal).where(eq(principal.id, busy))).length, 1)
   })

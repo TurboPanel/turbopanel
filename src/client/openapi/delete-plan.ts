@@ -16,6 +16,7 @@ const usedBy = {
     storages: { type: 'integer' },
     secrets: { type: 'integer' },
     logins: { type: 'integer' },
+    caches: { type: 'integer' },
     folders: { type: 'integer' },
   },
 }

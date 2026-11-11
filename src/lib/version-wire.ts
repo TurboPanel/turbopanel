@@ -238,6 +238,7 @@ export const DAEMON_WIRE_FEATURES = [
   'site-php-lifecycle-v1',
   'tunnel-table-generation-v1',
   'site-db-url-ca-v1',
+  'project-cache-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -519,6 +520,14 @@ export const SITE_DB_BINDINGS_FEATURE: DaemonWireFeature = 'site-db-bindings-v1'
  * URL stays as it was.
  */
 export const SITE_DB_URL_CA_FEATURE: DaemonWireFeature = 'site-db-url-ca-v1'
+
+/**
+ * The daemon runs project caches (`environment.deploy` `caches[]`, the
+ * `cache.apply` command) and opens helper container ports to one Hosting
+ * Account (`helperReach[]`). Without it the control plane sends none of these,
+ * and refuses a deploy or a cache change that needs them with a plain sentence.
+ */
+export const PROJECT_CACHE_FEATURE: DaemonWireFeature = 'project-cache-v1'
 
 /**
  * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`

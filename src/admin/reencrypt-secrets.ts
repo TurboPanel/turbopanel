@@ -57,6 +57,7 @@ import {
   backupTarget,
   monitor,
   principal,
+  cache,
   relay,
   secret,
   setting,
@@ -94,6 +95,7 @@ export const REENCRYPT_STAGES = [
   'certificates',
   'principals',
   'logins',
+  'caches',
   'storage',
   'secrets',
   'forge',
@@ -121,6 +123,7 @@ export const REENCRYPT_COVERED_PLACES = [
   'certificate.key_pem',
   'principal.password',
   'login.password',
+  'cache.password',
   'storage.content_envelope',
   'secret.secret_envelope',
   'forge.envelopes',
@@ -507,6 +510,17 @@ async function sweepPrincipalPasswordsBatch(
   return sweepPasswordColumnBatch(db, secrets, summary, afterId, limit, principal)
 }
 
+/** `cache.password`: the login password of a project cache, sealed like a principal's. */
+async function sweepCachePasswordsBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number
+): Promise<StageBatchResult> {
+  return sweepPasswordColumnBatch(db, secrets, summary, afterId, limit, cache)
+}
+
 /** `login.password`: the same sealed credential as its principal twin, kept in step. */
 async function sweepLoginPasswordsBatch(
   db: Db,
@@ -525,7 +539,7 @@ async function sweepPasswordColumnBatch(
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
   limit: number,
-  table: typeof principal | typeof login
+  table: typeof principal | typeof login | typeof cache
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({ id: table.id, password: table.password })
@@ -1315,6 +1329,8 @@ async function runTableStageBatch(
       return sweepPrincipalPasswordsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
     case 'logins':
       return sweepLoginPasswordsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'caches':
+      return sweepCachePasswordsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
     case 'storage':
       return sweepStorageContentBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
     case 'secrets':

@@ -27,6 +27,7 @@ import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerVariableRoutes } from './variables/routes.ts'
 import { registerTagRoutes } from './tags/routes.ts'
 import { registerTaskRoutes } from './tasks/routes.ts'
+import { registerCacheRoutes } from './caches/routes.ts'
 import { registerBindingRoutes } from './bindings/routes.ts'
 import { registerContainerRoutes } from './containers/routes.ts'
 import { registerDockerRunRoutes } from './docker-run/routes.ts'
@@ -175,6 +176,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerEnvironmentRoutes(client, opts)
   registerEnvironmentFolderRoutes(client, opts)
   registerEnvironmentShareRoutes(client, opts)
+  registerCacheRoutes(client, opts)
   registerEnvironmentDeployPreviewRoutes(client, opts)
   registerEnvironmentConfigViewRoutes(client, opts)
   registerEnvironmentDeployRoutes(client, opts)

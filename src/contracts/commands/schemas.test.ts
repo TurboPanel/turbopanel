@@ -177,6 +177,7 @@ const DAEMON_COMMAND_TYPES = [
   'storage.backup',
   'storage.restore',
   'system.reconcile',
+  'cache.apply',
 ] as const
 
 test('COMMAND_TYPES matches daemon contracts canonical order', () => {

@@ -158,6 +158,20 @@ import {
   PHP_SITE_MODES_FEATURE,
 } from '../../lib/version-wire.ts'
 import { storedDaemonFeatures } from './destroy-data.ts'
+import { effectiveAccountLimits } from './account-limits.ts'
+import {
+  applyDeliveryToMap,
+  type CacheDelivery,
+  EMPTY_CACHE_DELIVERY,
+  NO_PROJECT_CACHES,
+  type PreparedProjectCaches,
+  prepareProjectCaches,
+  type ProjectCacheRefusal,
+  type CacheOverrideWarning,
+  withCacheHostingEnv,
+  withRedisExtension,
+} from './deploy-caches.ts'
+import { injectHelperPublishes } from '../../features/caches/reach.ts'
 import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import { getDaemonSealingKey } from '../../features/servers/daemon-sealing-key.ts'
 import {
@@ -202,9 +216,10 @@ import type {
   EnvironmentDeployCronJob,
   EnvironmentDeployDockerNetwork,
   EnvironmentDeployFabricNetwork,
+  EnvironmentDeployCache,
+  EnvironmentDeployHelperReach,
   EnvironmentDeployHosting,
   EnvironmentDeployIngressService,
-  EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySite,
   EnvironmentDeploySitePrincipal,
@@ -366,6 +381,9 @@ export type DeployPrepareWarningCode =
   | 'storage_service_removed'
   | 'reserved_host_port'
   | 'config_file_ownership_ignored'
+  | 'cache_other_account'
+  | 'cache_other_server'
+  | 'cache_variable_overrides'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -516,6 +534,14 @@ export type { PreparedNativeAppService }
  * contract in `lib/commands/schemas.ts` is untouched.
  */
 export type PreparedDeployCompose = ServerDeployment & {
+  /** Project caches this server runs for the environment (absent: leave the host alone). */
+  caches?: EnvironmentDeployCache[]
+  /** Helper container ports opened to one account (absent: leave the host alone). */
+  helperReach?: EnvironmentDeployHelperReach[]
+  /** Origin service to host port, recorded on the deployment so a redeploy keeps it. */
+  helperPorts?: Record<string, number>
+  /** Origin service to the cache ids it gets, recorded for secret rehydrate. */
+  cacheConsumers?: Record<string, string[]>
   /**
    * Compiled runtime YAML (internal prepare output for hashing/preview).
    * Wire payloads use required `composeFiles` with `role: 'runtime'`.
@@ -617,6 +643,7 @@ export type ConfigFilesPrepareError =
 
 export type DeployPrepareError =
   | ConfigFilesPrepareError
+  | ProjectCacheRefusal
   | { kind: 'health_check'; required: boolean; services: string[] }
   /**
    * The merged effective document failed deploy-time compose validation.
@@ -797,6 +824,8 @@ async function emptyPreparedCompose(
 
 type HardDeployPrepareError =
   | ConfigFilesPrepareError
+  // Hard in preview too: a daemon without caches would refuse them, and a name clash is a real conflict.
+  | ProjectCacheRefusal
   | { kind: 'datacenter_ip_required'; serverId: string }
   // Hard in preview too: a PHP site cannot reach this database, however it is previewed.
   | { kind: 'binding_host_site_unsupported'; message: string }
@@ -1707,6 +1736,9 @@ async function resolveDeployVariableBuckets(
     /** Clone compose key → origin service row (same row for every clone). */
     serviceRowByComposeName: Map<string, ServiceRow>
     dataEncryptionSecrets: Parameters<typeof mapResolvedVariablesToDeployEntries>[1]
+    /** Project cache and helper entries, set after database references. */
+    cacheDelivery?: CacheDelivery
+    cacheWarnings?: Array<{ code: 'cache_variable_overrides'; key: string }>
   }
 ): Promise<{
   globalEntries: DeployVariableEntry[]
@@ -1770,6 +1802,13 @@ async function resolveDeployVariableBuckets(
         })
         dbRefIssues.errors.push(...expanded.errors)
         dbRefIssues.warnings.push(...expanded.warnings)
+        await applyDeliveryToMap(
+          params.dataEncryptionSecrets,
+          params.cacheDelivery ?? EMPTY_CACHE_DELIVERY,
+          row.composeServiceName,
+          expanded.merged,
+          params.cacheWarnings ?? []
+        )
         cached = tagVariableSources(
           await mapResolvedVariablesToDeployEntries(expanded.merged, params.dataEncryptionSecrets),
           expanded.scopes
@@ -2166,35 +2205,6 @@ function localManagedNetworkServiceNames(
   return boundLogicalNames.filter(
     (name) => coResidentNames?.has(name) === true || !remoteHostsByService.has(name)
   )
-}
-
-/**
- * Effective (most restrictive) org ∩ server ceiling for one account.
- *
- * The per-principal systemd slice is generated from this, so a per-app
- * `CPUQuota` can never add up to more than the account is entitled to. Absent
- * fields stay absent — an unset limit means "no slice directive", not zero.
- */
-function effectiveAccountLimits(
-  orgOptions: unknown,
-  serverOptions: unknown
-): EnvironmentDeployNativeAppService['accountLimits'] | undefined {
-  const orgLimits =
-    parseResourceLimits(isPlainObject(orgOptions) ? orgOptions.resourceLimits : null) ?? {}
-  const serverLimits =
-    parseResourceLimits(isPlainObject(serverOptions) ? serverOptions.resourceLimits : null) ?? {}
-  const pick = (a?: number, b?: number): number | undefined => {
-    if (a === undefined) return b
-    if (b === undefined) return a
-    return Math.min(a, b)
-  }
-  const cpus = pick(orgLimits.maxCpus, serverLimits.maxCpus)
-  const memoryBytes = pick(orgLimits.maxMemoryBytes, serverLimits.maxMemoryBytes)
-  if (cpus === undefined && memoryBytes === undefined) return undefined
-  return {
-    ...(cpus === undefined ? {} : { cpus }),
-    ...(memoryBytes === undefined ? {} : { memoryBytes }),
-  }
 }
 
 /**
@@ -3010,6 +3020,7 @@ async function toPreparedDeployResult(
     configFiles?: DeployConfigFileEntry[]
     configSecretRefs?: DeployConfigSecretRef[]
     sourceSelection?: DeploySourceSelection
+    projectCaches?: PreparedProjectCaches
     /**
      * The variables and storage as they are before they are sealed for the
      * daemon (sealing adds a fresh nonce on every send), so the hash compares
@@ -3074,6 +3085,22 @@ async function toPreparedDeployResult(
     ...nonEmptyListField('configFiles', parts.configFiles),
     ...nonEmptyListField('configSecretRefs', parts.configSecretRefs),
     ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
+    ...projectCacheFields(parts.projectCaches ?? NO_PROJECT_CACHES),
+  }
+}
+
+/** The cache fields a prepared deploy carries; absent stays absent. */
+function projectCacheFields(
+  state: PreparedProjectCaches
+): Pick<PreparedDeployCompose, 'caches' | 'helperReach' | 'helperPorts' | 'cacheConsumers'> {
+  return {
+    ...(state.caches === undefined ? {} : { caches: state.caches }),
+    ...(state.helperReach === undefined ? {} : { helperReach: state.helperReach }),
+    // Left out when empty, so an environment with no caches records what it always did.
+    ...(Object.keys(state.helperPorts).length === 0 ? {} : { helperPorts: state.helperPorts }),
+    ...(Object.keys(state.cacheConsumers).length === 0
+      ? {}
+      : { cacheConsumers: state.cacheConsumers }),
   }
 }
 
@@ -3733,13 +3760,18 @@ async function applyDeployVariables(
   db: Db,
   input: {
     params: { environmentId: string; serverId: string }
-    pipeline: Pick<DeployExpandPipeline, 'expandedDocument' | 'expandedServiceNames' | 'expansion'>
+    pipeline: Pick<
+      DeployExpandPipeline,
+      'expandedDocument' | 'expandedServiceNames' | 'expansion' | 'localServiceNames'
+    >
     serviceRows: ServiceRow[]
     projectId: string
     warnings: DeployPrepareWarning[]
+    cacheDelivery: CacheDelivery
   }
 ): Promise<ApplyVariablesResult | DeployPrepareError> {
   const { params, pipeline, warnings } = input
+  const cacheWarnings: Array<{ code: 'cache_variable_overrides'; key: string }> = []
   const serviceRowByCloneName = buildServiceRowByCloneName(input.serviceRows, pipeline.expansion)
   const {
     globalEntries,
@@ -3753,10 +3785,19 @@ async function applyDeployVariables(
     composeServiceNames: pipeline.expandedServiceNames,
     serviceRowByComposeName: serviceRowByCloneName,
     dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+    cacheDelivery: input.cacheDelivery,
+    cacheWarnings,
   })
   const dbRefError = dbRefPrepareError(dbRefIssues.errors)
   if (dbRefError) return dbRefError
   warnings.push(...dbRefWarnings(dbRefIssues.warnings))
+  for (const key of new Set(cacheWarnings.map((entry) => entry.key))) {
+    warnings.push({
+      code: 'cache_variable_overrides',
+      message: `A project cache sets ${key}, which replaces the value from a wider scope.`,
+      details: { variable: key },
+    })
+  }
 
   const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
     globalEntries,
@@ -3775,6 +3816,91 @@ async function applyDeployVariables(
   }
   warnings.push(...configFileWarnings(withVariables.configWarnings))
   return withVariables
+}
+
+/** Project caches and helper reach for this server; its warnings join the deploy's. */
+async function prepareCachesStep(
+  db: Db,
+  input: Parameters<typeof prepareProjectCaches>[1],
+  warnings: DeployPrepareWarning[]
+): Promise<PreparedProjectCaches | ProjectCacheRefusal> {
+  const state = await prepareProjectCaches(db, input)
+  if ('kind' in state) return state
+  warnings.push(
+    ...state.warnings.map((warning) => ({
+      ...warning,
+      code: warning.code as DeployPrepareWarningCode,
+    }))
+  )
+  return state
+}
+
+/** What the host runs for caches, not the loopback port picked for a helper later; empty when none. */
+/** Plain-words warnings for cache names that replaced an inherited variable (names only). */
+function cacheOverrideWarnings(list: readonly CacheOverrideWarning[]): DeployPrepareWarning[] {
+  return [...new Set(list.map((entry) => entry.key))].map((key) => ({
+    code: 'cache_variable_overrides',
+    message: `A project cache sets ${key}, which replaces the value from a wider scope.`,
+    details: { variable: key },
+  }))
+}
+
+function cacheHashInputs(state: PreparedProjectCaches): Record<string, unknown> {
+  return {
+    ...(state.caches?.length ? { caches: state.caches } : {}),
+    ...(state.helperReach?.length
+      ? {
+          helperReach: state.helperReach.map(({ composeServiceName, containerPort, username }) => ({
+            composeServiceName,
+            containerPort,
+            username,
+          })),
+        }
+      : {}),
+  }
+}
+
+type CachesAndVariablesInput = Omit<Parameters<typeof applyDeployVariables>[2], 'cacheDelivery'> & {
+  application: Application
+  principalResolution: ComposePrincipalResolution
+  orgOptions: unknown
+  serverOptions: unknown
+}
+
+/** Caches and helper reach first (their variables are set after everything else), then every variable. */
+async function prepareCachesAndVariables(
+  c: Context<AppEnv>,
+  db: Db,
+  input: CachesAndVariablesInput
+): Promise<
+  | { cacheState: PreparedProjectCaches; withVariables: ApplyVariablesResult }
+  | ProjectCacheRefusal
+  | DeployPrepareError
+> {
+  const { application, principalResolution, orgOptions, serverOptions, ...variableInput } = input
+  const cacheState = await prepareCachesStep(
+    db,
+    {
+      environmentId: input.params.environmentId,
+      serverId: input.params.serverId,
+      secrets: c.get('dataEncryptionSecrets'),
+      application,
+      serviceRows: input.serviceRows,
+      principalResolution,
+      localServiceNames: input.pipeline.localServiceNames,
+      expansion: input.pipeline.expansion,
+      orgOptions,
+      serverOptions,
+    },
+    input.warnings
+  )
+  if ('kind' in cacheState) return cacheState
+  const withVariables = await applyDeployVariables(c, db, {
+    ...variableInput,
+    cacheDelivery: cacheState.delivery,
+  })
+  if ('kind' in withVariables) return withVariables
+  return { cacheState, withVariables }
 }
 
 export async function prepareDeployCompose(
@@ -3882,14 +4008,19 @@ export async function prepareDeployCompose(
   }
   const { pipeline, resolved } = pipelineResolved
 
-  const withVariables = await applyDeployVariables(c, db, {
+  const caching = await prepareCachesAndVariables(c, db, {
     params,
     pipeline,
     serviceRows,
     projectId: envRow.projectId,
     warnings,
+    application,
+    principalResolution,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
   })
-  if ('kind' in withVariables) return withVariables
+  if ('kind' in caching) return caching
+  const { cacheState, withVariables } = caching
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
     pipeline.optionsByComposeName,
@@ -3973,7 +4104,7 @@ export async function prepareDeployCompose(
     tasksByComposeName,
   })
   if ('kind' in localSiteBoundOrError) return localSiteBoundOrError
-  const localSiteBound = localSiteBoundOrError
+  const localSiteBound = withRedisExtension(localSiteBoundOrError, cacheState.delivery)
 
   const nativeLanes = await resolveLocalNativeAppsAndRuntimes(c, db, {
     mode,
@@ -4031,6 +4162,8 @@ export async function prepareDeployCompose(
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,
   })
+  // A reach container missing from the document is the host's to refuse: it names the entry.
+  injectHelperPublishes(compiled.document.data, cacheState.helperReach ?? [])
   const expansion = overlayCompiledExpansion(pipeline.expansion, compiled.expansion)
   const managedNetworkServices = applyExpansionToNames(managedLogicalNames, expansion)
   const managedNetwork = await resolveManagedNetworkHostName(
@@ -4052,6 +4185,8 @@ export async function prepareDeployCompose(
     serverId: params.serverId,
     expansion: expansionToRecord(expansion),
     storageMaterial,
+    cacheDelivery: cacheState.delivery,
+    warnings,
   })
   if (isPrepareStop(edge)) return edge
 
@@ -4080,8 +4215,10 @@ export async function prepareDeployCompose(
             // files keeps the hash it already has.
             ...nonEmptyListField('configFiles', withVariables.configFiles),
             storage: storageMaterialRaw,
+            ...cacheHashInputs(cacheState),
           },
         }),
+    projectCaches: cacheState,
     composeYaml,
     composeFiles,
     hooks,
@@ -5132,6 +5269,8 @@ async function compileServerEdgeDeployment(
     /** Final compose expansion, so a clone routes like the key it came from. */
     expansion: Record<string, string[]>
     storageMaterial: EnvironmentDeployStorageMaterial[]
+    cacheDelivery: CacheDelivery
+    warnings: DeployPrepareWarning[]
   }
 ): Promise<ServerEdgeDeployment | DeployPrepareError | Response> {
   // Scoped to the server's owner, matching the ProxySQL frontend the joining
@@ -5153,13 +5292,20 @@ async function compileServerEdgeDeployment(
   if ('prepareError' in built) return built.prepareError
   if ('error' in built) return built.error
 
+  const overrides: CacheOverrideWarning[] = []
   const sealedHostings = await sealHostingWebSecretsForDaemon(
     c,
     db,
     params.serverId,
-    built.hostings
+    await withCacheHostingEnv(
+      built.hostings,
+      c.get('dataEncryptionSecrets'),
+      params.cacheDelivery,
+      overrides
+    )
   )
   if (sealedHostings instanceof Response) return sealedHostings
+  params.warnings.push(...cacheOverrideWarnings(overrides))
   const hostings = expandHostingsForComposeInstances(sealedHostings, params.expansion)
   const tlsMaterial = await sealTlsMaterialForDaemon(
     c,

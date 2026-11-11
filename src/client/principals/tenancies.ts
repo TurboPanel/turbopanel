@@ -125,6 +125,20 @@ export function pickSolePrincipalId(principalIds: readonly string[]): SolePrinci
   return { status: 'ambiguous' }
 }
 
+/**
+ * The account one service runs as: its declared alias wins outright (even when
+ * the alias has no row yet, which is `undefined`), otherwise the sole assigned
+ * account. More than one assigned account with no alias is ambiguous: `undefined`.
+ */
+export function resolveServicePrincipalId(
+  assignedIds: readonly string[],
+  declared: { principalId: string | undefined } | undefined
+): string | undefined {
+  if (declared) return declared.principalId
+  const sole = pickSolePrincipalId(assignedIds)
+  return sole.status === 'one' ? sole.principalId : undefined
+}
+
 export function parseServiceIdsField(body: Record<string, unknown>): string[] | null {
   if (!('serviceIds' in body)) return []
   const raw = body.serviceIds

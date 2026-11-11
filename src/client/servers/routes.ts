@@ -272,7 +272,11 @@ async function assertServerDeletable(
 
   const plan = await planServerForget(db, serverId, organizationId)
   if (opts.skipForgettableBlockers === true) {
-    if (plan.blockedDatabases.length > 0 || plan.blockedEnvironments.length > 0) {
+    if (
+      plan.blockedDatabases.length > 0 ||
+      plan.blockedEnvironments.length > 0 ||
+      plan.blockedCaches.length > 0
+    ) {
       return serverDeleteBlockersResponse(
         c,
         plan.blockingBlockers,

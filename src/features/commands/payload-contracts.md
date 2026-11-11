@@ -824,3 +824,15 @@ DB helpers: `src/features/commands/command-records.ts` — `createCommandRecord`
 flat `CommandRecord` (mapped from real columns; no payload). Dispatch-payload
 helpers live beside them: `getCommandDispatchPayload`, `deleteCommandDispatch`,
 `retainCommandDispatch`, `sweepExpiredCommandDispatch`.
+
+`cache.apply` (feature `project-cache-v1`, appended last in `COMMAND_TYPES`)
+carries `{ environmentId, caches[], removed?: [{ id, username, deleteData }] }`:
+the complete set one environment has on one host. `caches[]` entries are `{ id,
+name, username, engine: "valkey", version, access: socket | port, port? (18080-18999,
+only with `port`), maxMemoryMb 16-65536, passwordSha256, accountLimits? }`; at most
+16 per command, unique ids, names and ports. It never prunes a cache that is only
+unlisted. Result: `{ caches: [{ id, state: ready | failed | pending, error?,
+runtimeVersion? }] }`. `environment.deploy` carries the same `caches` (absent
+leaves the host alone, empty clears it) and `helperReach[]` (`{ composeServiceName,
+containerPort, hostPort, username }`, at most 32), and its result may carry
+`caches`. Built by `src/features/caches/`; 600s consumer timeout.

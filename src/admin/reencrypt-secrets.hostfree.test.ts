@@ -13,6 +13,7 @@ import {
 import {
   forge,
   gitConnection,
+  cache,
   login,
   principal,
   secret,
@@ -50,6 +51,7 @@ type StageKey =
   | 'tls'
   | 'principals'
   | 'logins'
+  | 'caches'
   | 'storage'
   | 'secrets'
   | 'forge'
@@ -63,6 +65,7 @@ function stageForTable(table: unknown): StageKey | null {
   if (table === tls) return 'tls'
   if (table === principal) return 'principals'
   if (table === login) return 'logins'
+  if (table === cache) return 'caches'
   if (table === storage) return 'storage'
   if (table === secret) return 'secrets'
   if (table === forge) return 'forge'
@@ -102,6 +105,7 @@ function stagedSweepDb(opts: {
     tls: 0,
     principals: 0,
     logins: 0,
+    caches: 0,
     storage: 0,
     secrets: 0,
     forge: 0,
@@ -511,6 +515,25 @@ test('reencryptAtRestSecrets sweeps login passwords the same way as principals',
 
   const batch = await reencryptAtRestSecrets(db, rotated, {
     cursor: { stage: 'logins' },
+    limit: 50,
+  })
+  assertEquals(batch.reencrypted, 1)
+  assertEquals(batch.scanned, 1)
+  assertEquals(batch.completed, true)
+})
+test('reencryptAtRestSecrets reseals project cache passwords', async () => {
+  await resetReencryptSweepLockForTests()
+  const v1Only = await deriveV1Only()
+  const { secrets: rotated } = await deriveRotated()
+  const oldPass = await encryptSecret(v1Only, 'cache-pass')
+  const db = stagedSweepDb({
+    pages: {
+      caches: [[{ id: '00000000-0000-4000-8000-0000000000c1', password: oldPass }]],
+    },
+  })
+
+  const batch = await reencryptAtRestSecrets(db, rotated, {
+    cursor: { stage: 'caches' },
     limit: 50,
   })
   assertEquals(batch.reencrypted, 1)

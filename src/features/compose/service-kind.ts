@@ -348,6 +348,42 @@ type ComposeServiceExtensionFields = {
    * reading those rows and never sees this block.
    */
   hosting?: ComposeHostingExtensionEntry[]
+  /**
+   * A helper container's port, opened to one Hosting Account (`serviceKind:
+   * container` only). The container publishes `port` on `127.0.0.1` at a port
+   * the control plane picks; only the account that runs every service named in
+   * `from` (and root) may connect, and those services get
+   * `TURBOPANEL_HELPER_<NAME>_HOST` and `_PORT`.
+   */
+  reach?: ComposeServiceReachExtension
+}
+
+/** `x-turbopanel.reach`: the container port, and the sites or apps that may reach it. */
+export type ComposeServiceReachExtension = { port: number; from: string[] }
+
+/** Most services one reach port names. */
+export const MAX_REACH_FROM = 8
+
+const REACH_FROM_NAME_RE = /^[A-Za-z0-9._-]+$/
+
+/** True for `{ port: 1-65535, from: 1-8 service names }` and nothing else. */
+export function isValidReachValue(value: unknown): boolean {
+  if (!isPlainMapping(value)) return false
+  const { port, from } = value
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) return false
+  if (!Array.isArray(from) || from.length < 1 || from.length > MAX_REACH_FROM) return false
+  const names = new Set<string>()
+  for (const name of from) {
+    if (typeof name !== 'string' || !REACH_FROM_NAME_RE.test(name) || names.has(name)) return false
+    names.add(name)
+  }
+  return true
+}
+
+function parseServiceReach(value: unknown): ComposeServiceReachExtension | undefined {
+  if (!isValidReachValue(value)) return undefined
+  const { port, from } = value as { port: number; from: string[] }
+  return { port, from: [...from] }
 }
 
 /**
@@ -358,6 +394,9 @@ type CommonServiceExtensionFields = Pick<
   ComposeServiceExtensionFields,
   'serviceKind' | 'description' | 'source' | 'hosting'
 >
+
+/** Container-only fields: a helper port opened to one account. */
+type ContainerOnlyExtensionField = 'reach'
 
 /** Site-only fields: how the content is served, and what serves it. */
 type SiteOnlyExtensionField = 'engine' | 'root' | 'sourceKind' | 'php'
@@ -394,13 +433,14 @@ type NotForThisKind<Field extends keyof ComposeServiceExtensionFields> = {
 /** The default kind. Runs from an image; everything host-native is off-limits. */
 export type ComposeContainerServiceExtension = CommonServiceExtensionFields & {
   serviceKind?: 'container'
-} & NotForThisKind<SiteOnlyExtensionField | NodeOnlyExtensionField | HostNativeExtensionField>
+} & Pick<ComposeServiceExtensionFields, ContainerOnlyExtensionField> &
+  NotForThisKind<SiteOnlyExtensionField | NodeOnlyExtensionField | HostNativeExtensionField>
 
 /** Served by a host engine out of a document root. */
 export type ComposeSiteServiceExtension = CommonServiceExtensionFields & {
   serviceKind: 'site'
 } & Pick<ComposeServiceExtensionFields, SiteOnlyExtensionField | HostNativeExtensionField> &
-  NotForThisKind<NodeOnlyExtensionField>
+  NotForThisKind<NodeOnlyExtensionField | ContainerOnlyExtensionField>
 
 /**
  * A supervised host process built from Git. `source` is **required**, not
@@ -414,7 +454,7 @@ export type ComposeNodeServiceExtension = Omit<
     ComposeServiceExtensionFields,
     NodeOnlyExtensionField | HostNativeExtensionField
   > &
-  NotForThisKind<SiteOnlyExtensionField>
+  NotForThisKind<SiteOnlyExtensionField | ContainerOnlyExtensionField>
 
 /**
  * The per-service `x-turbopanel` block, narrowed by `serviceKind`.
@@ -785,6 +825,8 @@ function applyContentExtensionFields(
   if (php) extension.php = php
   const hosting = parseHostingExtensionEntries(value.hosting)
   if (hosting) extension.hosting = hosting
+  const reach = parseServiceReach(value.reach)
+  if (reach) extension.reach = reach
 }
 
 export function parseServiceTurbopanelExtension(
@@ -918,6 +960,7 @@ const SITE_KIND_ONLY: readonly ComposeServiceKind[] = ['site']
 const NODE_KIND_ONLY: readonly ComposeServiceKind[] = ['node']
 /** Both host-native kinds — the set {@link isHostNativeServiceKind} names. */
 const HOST_NATIVE_KINDS: readonly ComposeServiceKind[] = ['site', 'node']
+const CONTAINER_KIND_ONLY: readonly ComposeServiceKind[] = ['container']
 
 const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRule>> = {
   serviceKind: {
@@ -944,6 +987,12 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
   sourceKind: { kinds: SITE_KIND_ONLY },
   php: { kinds: SITE_KIND_ONLY },
   cron: { kinds: HOST_NATIVE_KINDS },
+  reach: {
+    kinds: CONTAINER_KIND_ONLY,
+    isValid: isValidReachValue,
+    typeMessage:
+      'reach must be { port: 1-65535, from: [1 to 8 site or Node app names] }, with no repeated name',
+  },
   principal: {
     kinds: HOST_NATIVE_KINDS,
     isValid: (value) => isPrincipalAlias(value),
@@ -1068,6 +1117,7 @@ const RAW_FIELD_TYPE_ORDER: readonly string[] = [
   'appMode',
   'enabled',
   'engine',
+  'reach',
   'principal',
 ]
 

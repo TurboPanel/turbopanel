@@ -1233,3 +1233,12 @@ PHP site `ca_file` works as a whole value only (the daemon fills the path) and
 `variableReferenceProblem` in `src/client/variables/routes-helpers.ts`.
 
 The admin tool templates (`src/features/managed/admin-tools/templates.ts`) are the first in-tree users of generated config files: plugin files, a server list and a pass file are `configs.<n>.content` with `{$KEY}` parts. Remember that an environment value must be exactly one reference.
+
+## Helper reach (`x-turbopanel.reach`)
+
+A container may declare `reach: { port, from: [site or node services of one
+account] }`. The field is container-only (`SERVICE_KIND_FIELD_TABLE`). Prepare
+allocates a loopback port from the listen ledger (`../caches/reach.ts`), injects
+`127.0.0.1:<hostPort>:<port>` into the compiled document after the reserved-port
+warning pass, and sends `helperReach`. Cache and helper ports are seeded into the
+ledger by `listReservedListenPorts`. Detail: `../caches/AGENTS.md`.

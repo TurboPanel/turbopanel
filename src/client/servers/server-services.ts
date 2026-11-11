@@ -205,6 +205,10 @@ const SERVER_SERVICES_REMOVAL_TEMPLATES: Record<
   cache: {
     one: 'One project cache is still placed on this server: remove it first.',
     many: '%n project caches are still placed on this server: remove them first.',
+    forgettableOne:
+      'One project cache is still recorded on this server. Because the host is offline, Delete server → Host is gone removes it.',
+    forgettableMany:
+      '%n project caches are still recorded on this server. Because the host is offline, Delete server → Host is gone removes them.',
   },
   deployment: {
     one: 'One deployment is still recorded on this server.',
@@ -263,8 +267,12 @@ const SERVER_SERVICES_REMOVAL_NAMED_COPY: Partial<
       many: 'Managed databases %s are still placed on this server.',
     },
   },
-  // A project cache has no Host is gone variant: it must be removed first.
+  // A cache goes with its environment under Host is gone; one whose environment is elsewhere must be removed first.
   cache: {
+    forgettable: {
+      one: 'The cache %s is recorded on this server. Because the host is offline, Delete server → Host is gone removes it.',
+      many: 'The caches %s are recorded on this server. Because the host is offline, Delete server → Host is gone removes them.',
+    },
     placed: {
       one: 'Remove the cache %s on this server first.',
       many: 'Remove the caches %s on this server first.',
@@ -759,6 +767,7 @@ export async function loadServerServices(
     colocated,
     blockedDatabaseCount: plan.blockedDatabases.length,
     blockedEnvironmentCount: plan.blockedEnvironments.length,
+    blockedCacheCount: plan.blockedCaches.length,
   })
   const reasons = serverServicesRemovalReasons(
     plan.blockers,

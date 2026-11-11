@@ -410,6 +410,7 @@ export function getAdminOpenApiSpec(
                 'certificates',
                 'principals',
                 'logins',
+                'caches',
                 'storage',
                 'secrets',
                 'forge',

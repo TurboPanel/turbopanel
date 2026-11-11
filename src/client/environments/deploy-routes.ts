@@ -42,7 +42,9 @@ import type {
   EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployServiceHook,
+  EnvironmentDeployCache,
   EnvironmentDeployConfigFile,
+  EnvironmentDeployHelperReach,
   EnvironmentDeploySecretPlanEntry,
   EnvironmentDeploySource,
   EnvironmentDeployServiceFolder,
@@ -616,6 +618,10 @@ type DeployCommandCreateParams = DeployActor & {
   desiredHash: string
   replicaCounts: Record<string, number>
   listenerPorts: ManagedIngressPorts
+  /** Project caches for this server (absent leaves the host alone; empty clears it). */
+  caches?: EnvironmentDeployCache[]
+  /** Helper container ports to open (absent leaves the host alone; empty clears it). */
+  helperReach?: EnvironmentDeployHelperReach[]
   selection: DeploySourceSelection
   /** Folder rows this deploy planned on the server, flipped to present when it succeeds. */
   folderIds?: readonly string[]
@@ -809,6 +815,9 @@ async function createDeployCommand(
         ...params.engine.payload,
       }),
       listenerPorts: params.listenerPorts,
+      // Outside `presentFields`: an empty list is a real answer (the host clears its set).
+      ...(params.caches === undefined ? {} : { caches: params.caches }),
+      ...(params.helperReach === undefined ? {} : { helperReach: params.helperReach }),
     },
     // Durable, non-secret read model for deploy history *and* for the release
     // list. `dispatch.payload` is deleted once the command reaches a terminal
@@ -920,7 +929,11 @@ function createParamsForPreparedServer(
   // and native `node` apps are both reverse-proxied on 127.0.0.1, so allocating
   // them separately could hand the same port to a site and an app. It starts
   // from the ports other environments hold on this server.
-  const usedListenPorts = new Set<number>(params.reservedListenPorts)
+  const usedListenPorts = new Set<number>([
+    ...(params.reservedListenPorts ?? []),
+    // Helper ports were picked in prepare; sites and apps must not take them.
+    ...(row.prepared.helperReach ?? []).map((entry) => entry.hostPort),
+  ])
   const serviceFolders = serviceFoldersFor(params.plannedFolders)
   return {
     serverId: row.serverId,
@@ -989,6 +1002,13 @@ function createParamsForPreparedServer(
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
     listenerPorts: row.prepared.listenerPorts,
+    // A hostings-only run leaves the host's caches and helper ports alone.
+    ...(params.hostingsOnly || row.prepared.caches === undefined
+      ? {}
+      : { caches: row.prepared.caches }),
+    ...(params.hostingsOnly || row.prepared.helperReach === undefined
+      ? {}
+      : { helperReach: row.prepared.helperReach }),
     // A hostings-only run creates no folders, so it marks none present.
     ...(params.plannedFolders.folderIds.length > 0 && !params.hostingsOnly
       ? { folderIds: params.plannedFolders.folderIds }
@@ -1011,6 +1031,7 @@ function deployListenPorts(params: DeployCommandCreateParams): number[] {
   return [
     ...(params.sites ?? []).map((site) => site.listenPort),
     ...(params.nativeAppServices ?? []).map((app) => app.listenPort),
+    ...(params.helperReach ?? []).map((entry) => entry.hostPort),
   ]
 }
 
@@ -1060,6 +1081,9 @@ function deploymentTargetsForFanOut(params: {
           // The PHP mode each site was given, so the next deploy keeps it.
           phpModes: recordSitePhpModes(prepared?.sites),
           listenPorts: params.listenPortsByServer.get(serverId) ?? [],
+          // Helper ports and each service's caches, so a redeploy keeps the port and a reboot can rehydrate secrets.
+          ...(prepared?.helperPorts ? { helperPorts: prepared.helperPorts } : {}),
+          ...(prepared?.cacheConsumers ? { cacheConsumers: prepared.cacheConsumers } : {}),
           // What this server was last sent, so a later deploy of another environment
           // can tell a name this one served and no longer holds.
           servedHostnames: prepared ? servedNamesOf(httpHostingNames(prepared)) : [],
