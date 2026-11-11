@@ -36,7 +36,10 @@ import {
 import { listEnvironmentCaches, type CacheWithAccount } from '../../features/caches/store.ts'
 import { applyCacheRows, cacheVariableNames } from '../../features/caches/variables.ts'
 import { cacheWireSet } from '../../features/caches/wire.ts'
-import { listReservedListenPorts } from '../../features/deploy/deployment-records.ts'
+import {
+  listReservedListenPorts,
+  readRecordedListenPorts,
+} from '../../features/deploy/deployment-records.ts'
 import {
   loadPrincipalIdsByServiceIdForEnvironment,
   resolveServicePrincipalId,
@@ -58,6 +61,8 @@ export const EMPTY_CACHE_DELIVERY: CacheDelivery = {
   consumers: new Map(),
   helperVars: new Map(),
 }
+
+export type CacheOverrideWarning = { code: 'cache_variable_overrides'; key: string }
 
 export type ProjectCacheRefusal = {
   kind: 'project_cache_refused'
@@ -146,17 +151,17 @@ async function usernamesFor(db: Db, ids: readonly string[]): Promise<Map<string,
   return new Map(rows.map((row) => [row.id, row.username]))
 }
 
-async function recordedHelperPorts(
+async function recordedDeploymentOptions(
   db: Db,
   environmentId: string,
   serverId: string
-): Promise<Record<string, number>> {
+): Promise<unknown> {
   const [row] = await db
     .select({ options: deployment.options })
     .from(deployment)
     .where(and(eq(deployment.environmentId, environmentId), eq(deployment.serverId, serverId)))
     .limit(1)
-  return readRecordedHelperPorts(row?.options)
+  return row?.options
 }
 
 function refusal(code: ProjectCacheRefusal['code'], message: string): ProjectCacheRefusal {
@@ -260,7 +265,13 @@ async function allocateForServer(
     serverIds: [input.serverId],
   })
   const used = new Set<number>(reserved.get(input.serverId))
-  const preferred = await recordedHelperPorts(db, input.environmentId, input.serverId)
+  const options = await recordedDeploymentOptions(db, input.environmentId, input.serverId)
+  const preferred = readRecordedHelperPorts(options)
+  // Ports this environment's own sites and apps hold stay theirs; a helper's own earlier port is free to keep.
+  const helperHeld = new Set(Object.values(preferred))
+  for (const port of readRecordedListenPorts(options)) {
+    if (!helperHeld.has(port)) used.add(port)
+  }
   return allocateHelperPorts(entries, used, preferred, input.environmentId)
 }
 
@@ -306,13 +317,14 @@ export async function applyDeliveryToMap(
 export async function withCacheHostingEnv(
   hostings: readonly EnvironmentDeployHosting[],
   secrets: DerivedSecretsConfig | undefined,
-  delivery: CacheDelivery
+  delivery: CacheDelivery,
+  warnings: CacheOverrideWarning[] = []
 ): Promise<EnvironmentDeployHosting[]> {
   return await mapSequential(hostings, (entry) => {
     const name = entry.composeServiceName
     return name === undefined || !hasDelivery(delivery, name)
       ? entry
-      : mergeDeliveryIntoHosting(entry, name, secrets, delivery)
+      : mergeDeliveryIntoHosting(entry, name, secrets, delivery, warnings)
   })
 }
 
@@ -320,14 +332,19 @@ async function mergeDeliveryIntoHosting(
   entry: EnvironmentDeployHosting,
   name: string,
   secrets: DerivedSecretsConfig | undefined,
-  delivery: CacheDelivery
+  delivery: CacheDelivery,
+  warnings: CacheOverrideWarning[]
 ): Promise<EnvironmentDeployHosting> {
   const map: ResolvedVariableMap = new Map()
   await applyDeliveryToMap(secrets, delivery, name, map, [])
-  const env = { ...entry.web?.env }
-  const secretEnv = { ...entry.web?.secretEnv }
+  const env: Record<string, string> = { ...entry.web?.env }
+  const secretEnv: Record<string, string> = { ...entry.web?.secretEnv }
   for (const [key, item] of map) {
     if (!item.forRuntime || !isSiteVariableName(key)) continue
+    // A cache name replaces the inherited one wherever it sits; a secret must not beat a plain value.
+    if (key in env || key in secretEnv) warnings.push({ code: 'cache_variable_overrides', key })
+    delete env[key]
+    delete secretEnv[key]
     if (item.isSecret) secretEnv[key] = item.value
     else env[key] = item.value
   }

@@ -38,7 +38,11 @@ export async function buildCacheApplyPayload(
   params: { environmentId: string; serverId: string; removed: readonly CacheRemoval[] },
   deps: Pick<CacheApplyDeps, 'secrets' | 'accountLimits'>
 ): Promise<CacheApplyCommandPayload> {
-  const rows = await listEnvironmentCaches(db, params.environmentId)
+  // A cache being removed is not part of the set that stays.
+  const leaving = new Set(params.removed.map((entry) => entry.id))
+  const rows = (await listEnvironmentCaches(db, params.environmentId)).filter(
+    (row) => !leaving.has(row.id)
+  )
   const caches = await cacheWireSet(rows, params.serverId, deps.secrets, deps.accountLimits)
   return parseCacheApplyPayload({
     environmentId: params.environmentId,

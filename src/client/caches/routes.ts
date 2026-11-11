@@ -50,7 +50,12 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { storedDaemonFeatures } from '../environments/destroy-data.ts'
 import { effectiveAccountLimits } from '../environments/account-limits.ts'
 import { loadTenancyPrincipalIdsForEnvironment } from '../principals/tenancies.ts'
-import { assertCanReadOr403, getOrgId, parseJsonBody } from '../shared.ts'
+import {
+  assertCanReadOr403,
+  assertNotSystemOwnedOr403,
+  getOrgId,
+  parseJsonBody,
+} from '../shared.ts'
 import {
   type CacheRequestError,
   cacheView,
@@ -95,6 +100,10 @@ async function resolveEnvironment(
       ? await assertCanReadOr403(c, 'environment', environmentId)
       : await assertCanOr403(c, 'organization:manage', 'environment', environmentId)
   if (denied) return denied
+  if (mode === 'manage') {
+    const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
+    if (immutable) return immutable
+  }
   const [env] = await db
     .select({ serverId: environment.serverId })
     .from(environment)
@@ -308,6 +317,7 @@ async function patchCache(c: Context<AppEnv>): Promise<Response> {
   if (ctx instanceof Response) return ctx
   const session = c.get('session')
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  if (!c.get('dataEncryptionSecrets')) return c.json({ error: 'Encryption unavailable' }, 503)
   const cacheId = c.req.param('cacheId') ?? ''
   if (!isUuid(cacheId)) return c.json({ error: 'Not found' }, 404)
   const row = await getEnvironmentCache(ctx.db, ctx.environmentId, cacheId)
@@ -382,8 +392,9 @@ async function removeCache(c: Context<AppEnv>): Promise<Response> {
   }
   const gate = await daemonRefusal(c, ctx.db, row.serverId)
   if (gate) return gate
-  await deleteCacheRow(ctx.db, row.id)
+  if (!c.get('dataEncryptionSecrets')) return c.json({ error: 'Encryption unavailable' }, 503)
   const limits = effectiveAccountLimits(ctx.orgOptions, srv.options)
+  // Queued first: if the host cannot be asked, the row stays and nothing is lost.
   const applied = await apply(
     c,
     { ...ctx, serverId: row.serverId },
@@ -391,7 +402,17 @@ async function removeCache(c: Context<AppEnv>): Promise<Response> {
     [{ id: row.id, username: row.username, deleteData }],
     limits
   )
-  return c.json({ ok: true as const, removed: 'host' as const, applied: applied.queued })
+  if (!applied.queued) {
+    return c.json(
+      {
+        error: 'cache_remove_not_queued',
+        message: 'The host could not be asked to remove the cache; try again',
+      },
+      503
+    )
+  }
+  await deleteCacheRow(ctx.db, row.id)
+  return c.json({ ok: true as const, removed: 'host' as const, applied: true })
 }
 
 export function registerCacheRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {

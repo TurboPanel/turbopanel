@@ -80,3 +80,18 @@ test('a helper consumer hosting gets the plain helper variables', async () => {
   assertEquals(entry?.web?.env?.TURBOPANEL_HELPER_SEARCH_PORT, '18101')
   assertEquals(entry?.web?.secretEnv, undefined)
 })
+
+test('a cache name replaces an inherited secret of the same name and says so', async () => {
+  const secrets = await deriveTestSecrets()
+  const warnings: Array<{ code: 'cache_variable_overrides'; key: string }> = []
+  const [entry] = await withCacheHostingEnv(
+    [hosting('web', { secretEnv: { REDIS_HOST: 'sealed-old' }, env: { REDIS_PORT: '1' } })],
+    secrets,
+    await delivery(),
+    warnings
+  )
+  assertEquals(entry?.web?.secretEnv?.REDIS_HOST, undefined)
+  assertEquals(entry?.web?.env?.REDIS_PORT, '0')
+  assertEquals(warnings.map((warning) => warning.key).toSorted(), ['REDIS_HOST', 'REDIS_PORT'])
+  assertEquals(entry?.web?.env?.REDIS_HOST?.startsWith('/run/turbopanel-cache-'), true)
+})

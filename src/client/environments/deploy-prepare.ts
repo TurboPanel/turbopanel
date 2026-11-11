@@ -167,6 +167,7 @@ import {
   type PreparedProjectCaches,
   prepareProjectCaches,
   type ProjectCacheRefusal,
+  type CacheOverrideWarning,
   withCacheHostingEnv,
   withRedisExtension,
 } from './deploy-caches.ts'
@@ -3835,6 +3836,15 @@ async function prepareCachesStep(
 }
 
 /** What the host runs for caches, not the loopback port picked for a helper later; empty when none. */
+/** Plain-words warnings for cache names that replaced an inherited variable (names only). */
+function cacheOverrideWarnings(list: readonly CacheOverrideWarning[]): DeployPrepareWarning[] {
+  return [...new Set(list.map((entry) => entry.key))].map((key) => ({
+    code: 'cache_variable_overrides',
+    message: `A project cache sets ${key}, which replaces the value from a wider scope.`,
+    details: { variable: key },
+  }))
+}
+
 function cacheHashInputs(state: PreparedProjectCaches): Record<string, unknown> {
   return {
     ...(state.caches?.length ? { caches: state.caches } : {}),
@@ -4176,6 +4186,7 @@ export async function prepareDeployCompose(
     expansion: expansionToRecord(expansion),
     storageMaterial,
     cacheDelivery: cacheState.delivery,
+    warnings,
   })
   if (isPrepareStop(edge)) return edge
 
@@ -5259,6 +5270,7 @@ async function compileServerEdgeDeployment(
     expansion: Record<string, string[]>
     storageMaterial: EnvironmentDeployStorageMaterial[]
     cacheDelivery: CacheDelivery
+    warnings: DeployPrepareWarning[]
   }
 ): Promise<ServerEdgeDeployment | DeployPrepareError | Response> {
   // Scoped to the server's owner, matching the ProxySQL frontend the joining
@@ -5280,13 +5292,20 @@ async function compileServerEdgeDeployment(
   if ('prepareError' in built) return built.prepareError
   if ('error' in built) return built.error
 
+  const overrides: CacheOverrideWarning[] = []
   const sealedHostings = await sealHostingWebSecretsForDaemon(
     c,
     db,
     params.serverId,
-    await withCacheHostingEnv(built.hostings, c.get('dataEncryptionSecrets'), params.cacheDelivery)
+    await withCacheHostingEnv(
+      built.hostings,
+      c.get('dataEncryptionSecrets'),
+      params.cacheDelivery,
+      overrides
+    )
   )
   if (sealedHostings instanceof Response) return sealedHostings
+  params.warnings.push(...cacheOverrideWarnings(overrides))
   const hostings = expandHostingsForComposeInstances(sealedHostings, params.expansion)
   const tlsMaterial = await sealTlsMaterialForDaemon(
     c,
