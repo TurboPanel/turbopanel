@@ -35,7 +35,8 @@ CREATE TABLE "record" (
 	CONSTRAINT "record_account_check" CHECK (num_nonnulls(carrier_id, ingress_id) = 1),
 	CONSTRAINT "record_scope_check" CHECK ((organization_id IS NULL) = (carrier_id IS NULL)),
 	CONSTRAINT "record_name_check" CHECK (name = lower(name) AND char_length(name) BETWEEN 1 AND 253),
-	CONSTRAINT "record_ttl_check" CHECK (ttl IS NULL OR ttl BETWEEN 1 AND 86400)
+	CONSTRAINT "record_ttl_check" CHECK (ttl IS NULL OR ttl BETWEEN 1 AND 86400),
+	CONSTRAINT "record_content_check" CHECK (char_length(content) BETWEEN 1 AND 253)
 );
 --> statement-breakpoint
 CREATE TABLE "peripheral" (
@@ -68,7 +69,7 @@ CREATE TABLE "visitor" (
 	"password_hash" text NOT NULL,
 	CONSTRAINT "uniq_visitor_service_name" UNIQUE("service_id","name"),
 	CONSTRAINT "visitor_name_check" CHECK (name ~ '^[A-Za-z0-9._@-]{1,64}$'),
-	CONSTRAINT "visitor_password_hash_check" CHECK (password_hash ~ '^\$2y\$1[0-2]\$[./A-Za-z0-9]{53}$')
+	CONSTRAINT "visitor_password_hash_check" CHECK (password_hash ~ '^\$2[aby]\$1[0-2]\$[./A-Za-z0-9]{53}$')
 );
 --> statement-breakpoint
 ALTER TABLE "archive" ADD COLUMN "origin" text DEFAULT 'backup' NOT NULL;--> statement-breakpoint
@@ -108,7 +109,7 @@ COMMENT ON COLUMN "record"."status" IS '`pending`, `synced`, `drifted`, `removin
 COMMENT ON COLUMN "record"."provider" IS 'Provider that holds the record; `cloudflare` only for now.';--> statement-breakpoint
 COMMENT ON COLUMN "record"."zone_id" IS 'Provider zone id the record lives in.';--> statement-breakpoint
 COMMENT ON COLUMN "record"."external_id" IS 'Provider record id; NULL until the provider created it, unique per provider zone.';--> statement-breakpoint
-COMMENT ON COLUMN "record"."content" IS 'Record value: an address for `A` and `AAAA`, a host name for `CNAME`.';--> statement-breakpoint
+COMMENT ON COLUMN "record"."content" IS 'Record value, 1 to 253 characters: an address for `A` and `AAAA`, a host name for `CNAME`.';--> statement-breakpoint
 COMMENT ON COLUMN "record"."ttl" IS 'Time to live in seconds, 1 to 86400; NULL leaves the provider automatic value.';--> statement-breakpoint
 COMMENT ON COLUMN "record"."checked_at" IS 'When the drift check last compared the record with the provider.';--> statement-breakpoint
 COMMENT ON COLUMN "record"."error" IS 'Last provider error in plain words; NULL after a success.';--> statement-breakpoint
@@ -130,4 +131,4 @@ COMMENT ON COLUMN "server"."role" IS 'What the server is for: `server` runs work
 COMMENT ON COLUMN "service"."is_host_access_allowed" IS 'Whether the service may use host-level Compose fields such as devices and host networking; needs the organization switch on too; default false.';--> statement-breakpoint
 COMMENT ON TABLE "visitor" IS 'One sign-in for a password-protected site: a name and a bcrypt hash the site web server checks, per site service; never returned by a route.';--> statement-breakpoint
 COMMENT ON COLUMN "visitor"."name" IS 'User name a visitor types; letters, digits and `._@-`, 1 to 64 characters, unique per site.';--> statement-breakpoint
-COMMENT ON COLUMN "visitor"."password_hash" IS 'bcrypt hash of the password (`$2y$`, cost 10 to 12) written by the control plane; the password itself is never stored.';
+COMMENT ON COLUMN "visitor"."password_hash" IS 'bcrypt hash of the password (`$2a$`, `$2b$` or `$2y$`, cost 10 to 12) written by the control plane; the password itself is never stored.';

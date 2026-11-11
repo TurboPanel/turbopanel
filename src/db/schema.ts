@@ -4359,7 +4359,7 @@ export const visitor = pgTable(
     serviceId: uuid('service_id').notNull(),
     /** The user name a visitor types; no `:` and nothing a password file could misread. */
     name: text().notNull(),
-    /** bcrypt hash (`$2y$`, cost 10 to 12) of the visitor's password; never the password itself. */
+    /** bcrypt hash (`$2a$`, `$2b$` or `$2y$`, cost 10 to 12) of the visitor's password; never the password itself. */
     passwordHash: text('password_hash').notNull(),
   },
   (table) => [
@@ -4372,7 +4372,7 @@ export const visitor = pgTable(
     check('visitor_name_check', sql`name ~ '^[A-Za-z0-9._@-]{1,64}$'`),
     check(
       'visitor_password_hash_check',
-      sql.raw(String.raw`password_hash ~ '^\$2y\$1[0-2]\$[./A-Za-z0-9]{53}$'`)
+      sql.raw(String.raw`password_hash ~ '^\$2[aby]\$1[0-2]\$[./A-Za-z0-9]{53}$'`)
     ),
   ]
 )
@@ -8974,5 +8974,7 @@ export const dnsRecord = pgTable(
     check('record_scope_check', sql`(organization_id IS NULL) = (carrier_id IS NULL)`),
     check('record_name_check', sql`name = lower(name) AND char_length(name) BETWEEN 1 AND 253`),
     check('record_ttl_check', sql`ttl IS NULL OR ttl BETWEEN 1 AND 86400`),
+    // Record kinds are A, AAAA and CNAME only: an address or a host name, at most 253 characters.
+    check('record_content_check', sql`char_length(content) BETWEEN 1 AND 253`),
   ]
 )

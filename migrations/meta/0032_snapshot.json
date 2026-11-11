@@ -1,5 +1,5 @@
 {
-  "id": "685c102d-4b39-4998-9709-ca4fcae0c770",
+  "id": "e46a7b20-12ba-4ce2-8157-111714e6bea7",
   "prevId": "4090190b-d706-487d-8068-de7a0a31a88a",
   "version": "7",
   "dialect": "postgresql",
@@ -3671,6 +3671,10 @@
         "record_ttl_check": {
           "name": "record_ttl_check",
           "value": "ttl IS NULL OR ttl BETWEEN 1 AND 86400"
+        },
+        "record_content_check": {
+          "name": "record_content_check",
+          "value": "char_length(content) BETWEEN 1 AND 253"
         }
       },
       "isRLSEnabled": false
@@ -20176,7 +20180,7 @@
         },
         "visitor_password_hash_check": {
           "name": "visitor_password_hash_check",
-          "value": "password_hash ~ '^\\$2y\\$1[0-2]\\$[./A-Za-z0-9]{53}$'"
+          "value": "password_hash ~ '^\\$2[aby]\\$1[0-2]\\$[./A-Za-z0-9]{53}$'"
         }
       },
       "isRLSEnabled": false

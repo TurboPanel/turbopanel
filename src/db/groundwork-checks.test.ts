@@ -131,7 +131,18 @@ test('groundwork tables and columns hold the rules the migration gives them', as
     await refuses('visitor_password_hash_check', () =>
       db
         .insert(visitor)
-        .values({ serviceId: svc2!.id, name: 'bob', passwordHash: bcryptShaped('$2b$10$') })
+        .values({ serviceId: svc2!.id, name: 'bob', passwordHash: bcryptShaped('$2x$10$') })
+    )
+    // The three bcrypt prefixes are accepted; another prefix or a cost outside 10 to 12 is not.
+    for (const [i, prefix] of ['$2a$10$', '$2b$12$'].entries()) {
+      await db
+        .insert(visitor)
+        .values({ serviceId: svc2!.id, name: `ok${i}`, passwordHash: bcryptShaped(prefix) })
+    }
+    await refuses('visitor_password_hash_check', () =>
+      db
+        .insert(visitor)
+        .values({ serviceId: svc2!.id, name: 'cost', passwordHash: bcryptShaped('$2y$09$') })
     )
     await refuses('visitor_name_check', () =>
       db.insert(visitor).values({ serviceId: svc2!.id, name: 'a:b', passwordHash: goodHash })
@@ -216,6 +227,12 @@ test('groundwork tables and columns hold the rules the migration gives them', as
     )
     await refuses('record_name_check', () =>
       db.insert(dnsRecord).values({ ...rec, name: 'A.Example.com' })
+    )
+    await refuses('record_content_check', () =>
+      db.insert(dnsRecord).values({ ...rec, content: 'a'.repeat(254) })
+    )
+    await refuses('record_content_check', () =>
+      db.insert(dnsRecord).values({ ...rec, content: '' })
     )
     await refuses('record_ttl_check', () => db.insert(dnsRecord).values({ ...rec, ttl: 0 }))
     await db.insert(dnsRecord).values(rec)

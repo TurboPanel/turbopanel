@@ -1774,7 +1774,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       name: 'User name a visitor types; letters, digits and `._@-`, 1 to 64 characters, unique per site.',
       password_hash:
-        'bcrypt hash of the password (`$2y$`, cost 10 to 12) written by the control plane; the password itself is never stored.',
+        'bcrypt hash of the password (`$2a$`, `$2b$` or `$2y$`, cost 10 to 12) written by the control plane; the password itself is never stored.',
     },
   },
   record: {
@@ -1796,7 +1796,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       zone_id: 'Provider zone id the record lives in.',
       external_id:
         'Provider record id; NULL until the provider created it, unique per provider zone.',
-      content: 'Record value: an address for `A` and `AAAA`, a host name for `CNAME`.',
+      content:
+        'Record value, 1 to 253 characters: an address for `A` and `AAAA`, a host name for `CNAME`.',
       ttl: 'Time to live in seconds, 1 to 86400; NULL leaves the provider automatic value.',
       checked_at: 'When the drift check last compared the record with the provider.',
       error: 'Last provider error in plain words; NULL after a success.',
