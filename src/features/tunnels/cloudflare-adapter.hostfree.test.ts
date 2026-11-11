@@ -5,7 +5,7 @@ import {
   createCloudflareAdapter,
   parseExpiry,
 } from './cloudflare-adapter.ts'
-import { DnsNameTaken, TunnelProviderError } from './errors.ts'
+import { DnsNameTaken, DnsReplaceIncomplete, TunnelProviderError } from './errors.ts'
 import { scrubSecrets } from './scrub.ts'
 
 /**
@@ -195,6 +195,10 @@ test('the DNS name is a proxied CNAME to the tunnel', async () => {
   assertEquals(calls[2]!.method, 'DELETE')
 })
 
+/** What the person was shown and agreed to replace. */
+const SHOWN_A = { id: 'rec-a', type: 'A', content: '192.0.2.10' }
+const SHOWN_AAAA = { id: 'rec-aaaa', type: 'AAAA', content: '2001:db8::10' }
+
 const NAME_RECORDS = [
   { id: 'rec-a', name: 'a.example.com', type: 'A', content: '192.0.2.10', proxied: false },
   { id: 'rec-aaaa', name: 'a.example.com', type: 'AAAA', content: '2001:db8::10', proxied: true },
@@ -220,11 +224,24 @@ test('a name that already has address records is refused with them, and nothing 
   )
   // Only part of what is there, or something else, is not a confirmation.
   await assertRejects(
-    () => adapter.createDnsName(TOKEN, { ...input, replace: ['rec-a'] }),
+    () => adapter.createDnsName(TOKEN, { ...input, replace: [SHOWN_A] }),
     DnsNameTaken
   )
   await assertRejects(
-    () => adapter.createDnsName(TOKEN, { ...input, replace: ['rec-a', 'rec-mx'] }),
+    () =>
+      adapter.createDnsName(TOKEN, {
+        ...input,
+        replace: [SHOWN_A, { id: 'rec-mx', type: 'MX', content: 'mail.example.com' }],
+      }),
+    DnsNameTaken
+  )
+  // The same ids, but one record was edited in place since it was shown: not confirmed.
+  await assertRejects(
+    () =>
+      adapter.createDnsName(TOKEN, {
+        ...input,
+        replace: [SHOWN_A, { ...SHOWN_AAAA, content: '2001:db8::99' }],
+      }),
     DnsNameTaken
   )
   assert(calls.every((call) => call.method === 'GET'))
@@ -240,7 +257,7 @@ test('confirmed records are replaced: the rest are deleted first, then the first
     zoneId: 'z1',
     hostname: 'a.example.com',
     externalId: 't-1',
-    replace: ['rec-aaaa', 'rec-a'],
+    replace: [SHOWN_AAAA, SHOWN_A],
   })
   assertEquals(made, { recordId: 'rec-a' })
   const writes = calls.filter((call) => call.method !== 'GET')
@@ -257,7 +274,7 @@ test('confirmed records are replaced: the rest are deleted first, then the first
   })
 })
 
-test('a failed write after other records were removed says which ones are already gone', async () => {
+test('a failed write after other records were removed names what is already gone', async () => {
   const { impl } = fakeFetch({
     'GET /client/v4/zones/z1/dns_records': ok(NAME_RECORDS),
     'PUT /client/v4/zones/z1/dns_records/rec-a': refused(400, 'record could not be changed'),
@@ -269,11 +286,44 @@ test('a failed write after other records were removed says which ones are alread
         zoneId: 'z1',
         hostname: 'a.example.com',
         externalId: 't-1',
-        replace: ['rec-a', 'rec-aaaa'],
+        replace: [SHOWN_A, SHOWN_AAAA],
       }),
-    TunnelProviderError
+    DnsReplaceIncomplete
   )
-  assert(err.message.includes('already removed: AAAA 2001:db8::10'))
+  assertEquals(
+    err.removed.map((r) => [r.type, r.content]),
+    [['AAAA', '2001:db8::10']]
+  )
+  assert(err.message.includes('Already removed: AAAA 2001:db8::10'))
+})
+
+test('every delete is tried; one that fails stops the write and names what was removed', async () => {
+  const three = [
+    ...NAME_RECORDS.slice(0, 2),
+    { id: 'rec-a2', name: 'a.example.com', type: 'A', content: '192.0.2.11', proxied: false },
+  ]
+  const { impl, calls } = fakeFetch({
+    'GET /client/v4/zones/z1/dns_records': ok(three),
+    'DELETE /client/v4/zones/z1/dns_records/rec-aaaa': refused(500, 'could not delete'),
+    'DELETE /client/v4/zones/z1/dns_records/rec-a2': ok({ id: 'rec-a2' }),
+  })
+  const err = await assertRejects(
+    () =>
+      createCloudflareAdapter({ fetch: impl }).createDnsName(TOKEN, {
+        zoneId: 'z1',
+        hostname: 'a.example.com',
+        externalId: 't-1',
+        replace: [SHOWN_A, SHOWN_AAAA, { id: 'rec-a2', type: 'A', content: '192.0.2.11' }],
+      }),
+    DnsReplaceIncomplete
+  )
+  // Both deletes were tried; the one that worked is named; nothing was written over rec-a.
+  assertEquals(calls.filter((c) => c.method === 'DELETE').length, 2)
+  assertEquals(
+    err.removed.map((r) => r.content),
+    ['192.0.2.11']
+  )
+  assert(!calls.some((c) => c.method === 'PUT'))
 })
 
 test('a CNAME that already points at the tunnel is kept as it is', async () => {
