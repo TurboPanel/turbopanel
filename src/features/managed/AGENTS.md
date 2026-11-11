@@ -46,6 +46,23 @@ a user already holds as their own service variable is skipped, not inserted
 `src/features/compose/AGENTS.md`); references read these stored rows, so they
 follow failover, rotation and CA changes.
 
+**Name presets** (`src/features/bindings/presets.ts`, column `binding.preset`):
+a binding also emits the unprefixed names one preset lists (`postgres`, `mysql`,
+`laravel`, `wordpress`, `metabase`, `uptime-kuma`), written as binding-owned rows
+beside the prefixed set. An entry whose field the delivery kind cannot have is left
+out, never an error (a PHP site's CA file is only known to the daemon, so its name
+travels in `dbCa.variables` instead of a row). At most one preset binding per
+service (`uniq_binding_service_engine_defaults`). A row with no preset and the
+toggle on is the engine's plain preset. API: `preset`, or the older
+`emitEngineDefaults` boolean, never both (400 `binding_preset_conflict`).
+Containers receive a preset's secret names as `<NAME>_FILE` files like every
+binding secret; Metabase reads `MB_DB_USER_FILE` / `MB_DB_PASS_FILE` (its Docker
+page, "Use Docker Secrets", lists `MB_DB_USER`, `MB_DB_PASS` and
+`MB_DB_CONNECTION_URI`), and the preset uses `MB_DB_TYPE=mysql` for both
+MySQL-family engines (its application database page says "MySQL or MariaDB" with
+that value). A preset name equal to one of the binding's own prefixed names (prefix
+`DB` with WordPress) is refused as `binding_key_conflict`.
+
 **Delivery by service kind** (`src/features/bindings/host-run.ts`,
 `computeBindingVariableSet`'s `delivery`): a container service keeps the
 container name, `_CA_CERT`, `_CA_FILE` and the TLS mode. A **PHP site**

@@ -5426,6 +5426,8 @@ export const binding = pgTable(
     keyPrefix: varchar('key_prefix', { length: 64 }).default('DATABASE').notNull(),
     /** When true, also emit the unprefixed conventional engine keys (PG* / MYSQL_*). API JSON still serializes as `emitEngineDefaults`. */
     isEmitEngineDefaults: boolean('is_emit_engine_defaults').default(true).notNull(),
+    /** App naming preset whose unprefixed names this binding also emits; null means the plain engine names when isEmitEngineDefaults is true. */
+    preset: varchar('preset', { length: 16 }),
   },
   (table) => [
     index('idx_binding_database_id').using(
@@ -5455,6 +5457,10 @@ export const binding = pgTable(
     check(
       'binding_key_prefix_format_check',
       sql`(char_length((key_prefix)::text) >= 1) AND (char_length((key_prefix)::text) <= 64) AND ((key_prefix)::text ~ '^[A-Za-z_][A-Za-z0-9_]*$'::text)`
+    ),
+    check(
+      'binding_preset_check',
+      sql`preset IS NULL OR preset IN ('postgres', 'mysql', 'laravel', 'wordpress', 'metabase', 'uptime-kuma')`
     ),
   ]
 )

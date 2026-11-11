@@ -243,8 +243,15 @@
     {
       "idx": 34,
       "version": "7",
-      "when": 1794414017866,
-      "tag": "0034_keep_install_channels_hearing_organizations",
+      "when": 1794412796776,
+      "tag": "0034_binding_preset",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794414184707,
+      "tag": "0035_keep_install_channels_hearing_organizations",
       "breakpoints": true
     }
   ]

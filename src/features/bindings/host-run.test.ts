@@ -27,7 +27,7 @@ const test = Deno.test.bind(Deno)
 const PEM = '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----'
 const base = {
   keyPrefix: 'DATABASE',
-  emitEngineDefaults: false,
+  preset: null,
   databaseName: 'wordpress',
   username: 'wp',
   password: 's3cret',
@@ -60,7 +60,7 @@ test('a container service keeps its container name and the CA as text, unchanged
 })
 
 test('a PHP site dials loopback and gets no multi-line value at all', () => {
-  const rows = render({ delivery: 'host-site', emitEngineDefaults: true })
+  const rows = render({ delivery: 'host-site', preset: 'mysql' })
   assertEquals(rows.get(keys.host)?.value, '127.0.0.1')
   assertEquals(rows.get(keys.port)?.value, '13306')
   assertEquals(rows.get('MYSQL_HOST')?.value, '127.0.0.1')
@@ -76,7 +76,7 @@ test('a PHP site on Postgres gets the same set at the Postgres listener port', (
     delivery: 'host-site',
     engineCode: 'postgres',
     port: 15432,
-    emitEngineDefaults: true,
+    preset: 'postgres',
     sslMode: 'require',
   })
   assertEquals(rows.get(keys.host)?.value, '127.0.0.1')
@@ -154,13 +154,16 @@ test('a PHP site is refused any database listener but the two defaults', () => {
 })
 
 test('required keys name the connection set, plus the engine defaults when emitted', () => {
-  assertEquals(
-    bindingRequiredKeys({ keyPrefix: 'DB', emitEngineDefaults: false, engineCode: 'mysql' }),
-    ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD']
-  )
+  assertEquals(bindingRequiredKeys({ keyPrefix: 'DB', preset: null, engineCode: 'mysql' }), [
+    'DB_HOST',
+    'DB_PORT',
+    'DB_NAME',
+    'DB_USER',
+    'DB_PASSWORD',
+  ])
   const withDefaults = bindingRequiredKeys({
     keyPrefix: 'DB',
-    emitEngineDefaults: true,
+    preset: 'mysql',
     engineCode: 'mysql',
   })
   assertEquals(withDefaults.includes('MYSQL_HOST'), true)
@@ -170,7 +173,7 @@ test('required keys name the connection set, plus the engine defaults when emitt
 test('the advertised binding keys name the CA file for containers and sites, not Node apps', () => {
   const emitted = listBindingEmittedKeys({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     engineCode: 'mysql',
   })
   assertEquals(emitted?.includes('DATABASE_CA_FILE'), true)
@@ -179,7 +182,7 @@ test('the advertised binding keys name the CA file for containers and sites, not
   assertEquals(emitted?.length, 10)
   const node = listBindingEmittedKeys({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     engineCode: 'mysql',
     delivery: 'host-node',
   })

@@ -124,7 +124,8 @@ function baseBindingRow(overrides: Record<string, unknown> = {}) {
     serviceId: 's1',
     databaseName: 'app',
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    isEmitEngineDefaults: false,
+    preset: null,
     loginId: 'l1',
     principalUsername: 'u',
     principalPassword: 'tpsecret.placeholder',
@@ -151,7 +152,7 @@ test('listBindingEmittedKeys returns null for unsupported engines', () => {
   assertEquals(
     listBindingEmittedKeys({
       keyPrefix: 'DATABASE',
-      emitEngineDefaults: true,
+      preset: 'postgres',
       engineCode: 'not-a-real-engine',
     }),
     null
