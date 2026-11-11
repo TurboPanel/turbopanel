@@ -134,6 +134,13 @@ makes an unchanged table a no-op on the daemon). The table sender is
 `src/features/tunnels/name-lock.ts` (a lone carrier sends `127.0.0.1` as its one
 peer because the contract refuses an empty list).
 
+`generation` (feature `tunnel-table-generation-v1`): an optional non-negative
+safe integer at the top level of `server.tunnel.routes` and in
+`hostings[].tunnel`, one counter for the organization's whole table. The daemon
+keeps the highest it applied and ignores a table or deploy below it. It is sent
+only to a daemon that lists the feature (`src/features/tunnels/table-generation.ts`).
+It is not part of the table `hash`.
+
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on
 one server, the same full-set contract as `server.principals.reconcile`:

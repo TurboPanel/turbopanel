@@ -95,6 +95,21 @@ export type EnvironmentDeployHostingTunnel = {
   peers: string[]
   /** Addresses the web server must also listen on so peers can reach it. */
   extraBind?: string[]
+  /**
+   * Generation of the organization tunnel table these peers were taken from
+   * (feature `tunnel-table-generation-v1`). A daemon that already applied a
+   * higher generation keeps its stored peers. Absent = as before.
+   */
+  generation?: number
+}
+
+/** A table generation: a non-negative safe integer, or `undefined` when absent. */
+function parseTunnelGeneration(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError(`Invalid ${label}`)
+  }
+  return value
 }
 
 /** Parse hostings[].tunnel. `siteHostnames` are the hosting's own names. */
@@ -133,6 +148,8 @@ export function parseDeployHostingTunnel(
       max: MAX_TUNNEL_ADDRESSES,
     })
   }
+  const generation = parseTunnelGeneration(value.generation, 'environment.deploy tunnel generation')
+  if (generation !== undefined) tunnel.generation = generation
   return tunnel
 }
 
@@ -208,6 +225,13 @@ export type TunnelRoutesCommandPayload = {
    * as the site's last deploy wrote them.
    */
   inbound?: TunnelInbound[]
+  /**
+   * Monotonic per organization tunnel table (one counter for the whole table,
+   * not per tunnel; `tunnel-table-generation-v1`). A table lower than the last
+   * applied generation is ignored; equal or higher applies. Absent = applied
+   * as before.
+   */
+  generation?: number
 }
 
 /** Must stay in sync with the daemon `server.tunnel.routes` shape. */
@@ -368,6 +392,8 @@ export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPay
     payload.peerMaterial = parseTunnelPeerMaterial(value.peerMaterial)
   }
   if (value.inbound !== undefined) payload.inbound = parseTunnelInboundList(value.inbound)
+  const generation = parseTunnelGeneration(value.generation, 'server.tunnel.routes generation')
+  if (generation !== undefined) payload.generation = generation
   const needsMaterial = routes.length > 0 || peerAddresses.length > 0
   if (needsMaterial && !payload.peerMaterial) {
     throw new TypeError('Invalid server.tunnel.routes peerMaterial: required with routes or peers')

@@ -16,7 +16,8 @@ import { compareText } from './order.ts'
 import { daemonCanCarryTunnels } from './daemon-gate.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
-import { loadServerAddresses } from './route-facts.ts'
+import { loadRoutingFacts, loadServerAddresses } from './route-facts.ts'
+import { generationForDaemon, resolveTunnelGeneration } from './table-generation.ts'
 
 /** Always allowed anyway; sent when no other server forwards here so the list is never empty. */
 export const LOOPBACK_PEER = '127.0.0.1'
@@ -86,7 +87,8 @@ export function buildNameLock(input: NameLockInput): NameLock {
  * be put on a tunnel before the site has it, and the link to the site is only
  * filled in after a deploy (by the sweep and the resend), so the first deploy
  * finds the doorway by the name instead. Read only: a doorway already linked to
- * another site is never taken, and nothing is written from a deploy preparation.
+ * another site is never taken, and the lookup writes nothing (the table generation counter is the one thing a
+ * deploy preparation may store, see `table-generation.ts`).
  */
 export function unlinkedDoorwayNamed(siteHostnames: readonly string[]) {
   const names = [...new Set(siteHostnames.map((name) => name.toLowerCase()))]
@@ -211,7 +213,16 @@ export async function resolveDeployNameLock(
     if (locked.length === 0) return { tunnel: undefined }
     return { refusal: { code: 'tunnel_daemon_too_old', hostnames: locked } }
   }
-  return { tunnel: lock.tunnel, ...(acmePinned ? { dropPublicCertificate: true as const } : {}) }
+  // The generation of the table these peers were taken from, for a daemon that keeps one.
+  const generation = await generationForDaemon(state?.projection?.features, async () =>
+    resolveTunnelGeneration(
+      db,
+      params.organizationId,
+      await loadRoutingFacts(db, params.organizationId)
+    )
+  )
+  const tunnel = generation === undefined ? lock.tunnel : { ...lock.tunnel, generation }
+  return { tunnel, ...(acmePinned ? { dropPublicCertificate: true as const } : {}) }
 }
 
 /**

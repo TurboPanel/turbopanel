@@ -48,6 +48,7 @@ import {
   haltRollout,
 } from '../deploy/rollout.ts'
 import { nudgeTunnelRoutesForEnvironment, tunnelSyncDepsFrom } from '../tunnels/nudge.ts'
+import { noteStaleTunnelTable } from '../tunnels/stale-table-note.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -3211,6 +3212,7 @@ export async function applySucceededSideEffects(
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)
   await applyFirewallPreviewSideEffect(db, record, envelope, result, deps)
+  noteStaleTunnelTable(record, result)
 }
 
 /**
