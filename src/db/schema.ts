@@ -3046,7 +3046,7 @@ export const backup = pgTable(
       .defaultNow()
       .notNull(),
     managedId: uuid('managed_id').notNull(),
-    /** How the artifact got here: `backup` (made by a backup run) or `import` (brought in to restore); BACKUP_ORIGINS. */
+    /** How the file got here: `backup` (made by a backup run) or `import` (brought in to restore); BACKUP_ORIGINS. */
     origin: text().default('backup').notNull(),
     /**
      * The daemon's own `bk_<hex>` id — minted from random bytes on the host
@@ -5841,7 +5841,7 @@ export const archive = pgTable(
       .notNull(),
     copyId: uuid('copy_id').notNull(),
     retentionId: uuid('retention_id'),
-    /** How the artifact got here: `backup` or `import`, as on `backup`; BACKUP_ORIGINS. */
+    /** How the file got here: `backup` or `import`, as on `backup`; BACKUP_ORIGINS. */
     origin: text().default('backup').notNull(),
     backupId: text('backup_id').notNull(),
     sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),

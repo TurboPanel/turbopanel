@@ -1194,7 +1194,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       "One completed managed-engine backup artifact recorded from the daemon's `managed.backup` result; unique per (managed_id, backup_id), cascades with the cluster.",
     columns: {
       origin:
-        '`backup` when a backup run made the artifact, `import` when it was brought in to be restored; existing rows are `backup`.',
+        '`backup` when a backup run made the file, `import` when it was brought in to be restored; existing rows are `backup`.',
       backup_id:
         'Daemon-minted `bk_` plus hex token that is also the artifact filename on the host; unique per managed engine, not globally.',
       size_bytes:
@@ -1596,7 +1596,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One completed storage-copy backup artifact recorded from a daemon report; unique per (copy_id, backup_id), cascades with the copy.',
     columns: {
       origin:
-        '`backup` when a backup run made the artifact, `import` when it was brought in to be restored; existing rows are `backup`.',
+        '`backup` when a backup run made the file, `import` when it was brought in to be restored; existing rows are `backup`.',
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
       backup_id:

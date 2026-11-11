@@ -96,8 +96,8 @@ ALTER TABLE "channel" ADD CONSTRAINT "channel_all_organizations_check" CHECK (NO
 ALTER TABLE "placement" ADD CONSTRAINT "placement_sync_device_id_check" CHECK (sync_device_id IS NULL OR sync_device_id ~ '^[A-Z2-7]{7}(-[A-Z2-7]{7}){7}$');--> statement-breakpoint
 ALTER TABLE "placement" ADD CONSTRAINT "placement_sync_port_check" CHECK (sync_port IS NULL OR sync_port BETWEEN 1024 AND 65535);--> statement-breakpoint
 ALTER TABLE "server" ADD CONSTRAINT "server_role_check" CHECK (role IN ('server', 'witness'));--> statement-breakpoint
-COMMENT ON COLUMN "archive"."origin" IS '`backup` when a backup run made the artifact, `import` when it was brought in to be restored; existing rows are `backup`.';--> statement-breakpoint
-COMMENT ON COLUMN "backup"."origin" IS '`backup` when a backup run made the artifact, `import` when it was brought in to be restored; existing rows are `backup`.';--> statement-breakpoint
+COMMENT ON COLUMN "archive"."origin" IS '`backup` when a backup run made the file, `import` when it was brought in to be restored; existing rows are `backup`.';--> statement-breakpoint
+COMMENT ON COLUMN "backup"."origin" IS '`backup` when a backup run made the file, `import` when it was brought in to be restored; existing rows are `backup`.';--> statement-breakpoint
 COMMENT ON TABLE "record" IS 'A DNS record TurboPanel created or adopted at a connected provider, so it never changes a record it does not own.';--> statement-breakpoint
 COMMENT ON COLUMN "record"."organization_id" IS 'Organization whose name it is; NULL for the control plane own names, which use an `ingress` account.';--> statement-breakpoint
 COMMENT ON COLUMN "record"."carrier_id" IS 'Organization provider account that serves it; checked at commit so an organization delete removes both.';--> statement-breakpoint
