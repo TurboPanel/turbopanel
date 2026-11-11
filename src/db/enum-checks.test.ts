@@ -53,6 +53,7 @@ import {
   LOGIN_GRANT_MODES,
   LOGIN_RECIPES,
 } from '../features/managed/logins.ts'
+import { CACHE_ENGINES, CACHE_STATUSES } from '../features/caches/vocabulary.ts'
 import { PROJECT_ICONS, PROJECT_KINDS } from '../features/projects/vocabulary.ts'
 import { ICON_KEYS } from '../lib/icons.ts'
 import { FABRIC_PEER_KINDS, FABRIC_SERVER_ROLES } from '../features/fabric/membership-vocabulary.ts'
@@ -211,6 +212,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['destination_kind_check', BACKUP_TARGET_STORE_KINDS],
   ['shipment_state_check', BACKUP_COPY_STATES],
   ['snapshot_status_check', BACKUP_RUN_STATUSES],
+  ['cache_engine_check', CACHE_ENGINES],
+  ['cache_status_check', CACHE_STATUSES],
   ['edict_scope_check', FIREWALL_RULE_SCOPES],
   ['edict_action_check', FIREWALL_RULE_ACTIONS],
   ['edict_proto_check', FIREWALL_RULE_PROTOS],

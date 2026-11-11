@@ -40,6 +40,8 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'badge',
   'binding',
   'bulwark',
+  // A project cache: one native Valkey process owned by a Hosting Account.
+  'cache',
   'carrier',
   // A group of notification topics for the settings screens.
   'category',

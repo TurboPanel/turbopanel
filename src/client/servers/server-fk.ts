@@ -97,6 +97,7 @@ export function listServerRestrictForeignKeyTablesFromMigrationSql(
 export const SERVER_RESTRICT_FOREIGN_KEY_HANDLERS: Readonly<
   Record<string, 'purge' | 'fabric' | 'forget-or-block'>
 > = {
+  cache: 'forget-or-block',
   container: 'purge',
   copy: 'purge',
   deployment: 'purge',
@@ -118,6 +119,7 @@ export const SERVER_RESTRICT_FOREIGN_KEY_HANDLERS: Readonly<
 export const ENVIRONMENT_FORGET_FOREIGN_KEY_HANDLERS: Readonly<
   Record<string, 'drop-subtree' | 'cascade-on-environment' | 'set-null-on-environment'>
 > = {
+  cache: 'cascade-on-environment',
   command: 'set-null-on-environment',
   deployment: 'drop-subtree',
   folder: 'drop-subtree',
