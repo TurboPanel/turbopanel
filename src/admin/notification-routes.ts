@@ -86,6 +86,30 @@ async function instanceChannel(
   return channel
 }
 
+/**
+ * An instance email channel must name an administrator's account email, and is
+ * then verified at once; other kinds have no verification time. Returns the
+ * refusal when the address is not an administrator's.
+ */
+async function verifiedAtOrRefusal(
+  c: NotificationAdminCtx,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  value: { kind: string; address: string }
+): Promise<string | null | Response> {
+  if (value.kind !== 'email') return null
+  const known = await instanceAdminEmails(db)
+  if (!known.has(value.address.toLowerCase())) {
+    return c.json(
+      {
+        error: 'address_not_a_member',
+        reason: "the address must be an administrator's account email",
+      },
+      422
+    )
+  }
+  return new Date().toISOString()
+}
+
 export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
   admin.get('/notification-channels', async (c) => {
     const db = getDb(c)
@@ -135,20 +159,8 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
         503
       )
     }
-    let verifiedAt: string | null = null
-    if (parsed.value.kind === 'email') {
-      const known = await instanceAdminEmails(db)
-      if (!known.has(parsed.value.address.toLowerCase())) {
-        return c.json(
-          {
-            error: 'address_not_a_member',
-            reason: "the address must be an administrator's account email",
-          },
-          422
-        )
-      }
-      verifiedAt = new Date().toISOString()
-    }
+    const verifiedAt = await verifiedAtOrRefusal(c, db, parsed.value)
+    if (verifiedAt instanceof Response) return verifiedAt
     const channel = await createNotificationChannel(db, secrets, {
       scope: 'instance',
       kind: parsed.value.kind,
