@@ -7,6 +7,7 @@ const settings = (overrides: Partial<LoginPatchCurrent> = {}): LoginPatchCurrent
   grantMode: 'recipe',
   tool: false,
   databases: [],
+  allDatabases: false,
   privileges: [],
   connectionRole: 'read-write',
   allowedSources: undefined,
@@ -151,4 +152,40 @@ test('an admin login cannot become read-only, and MySQL admin needs no owner rol
     my.summary.some((line) => line.includes('all rights on each listed database')),
     true
   )
+})
+
+test('turning All Databases on or off is a change on its own', () => {
+  const on = planLoginPatch('postgres', user(), { allDatabases: true })
+  if (!on.ok) throw new Error('expected ok')
+  assertEquals(on.patch, { allDatabases: true })
+  assertEquals(
+    on.summary.some((line) => line.includes('every database of the cluster')),
+    true
+  )
+  const off = planLoginPatch('mysql', user({ allDatabases: true }), { allDatabases: false })
+  if (!off.ok) throw new Error('expected ok')
+  assertEquals(off.patch, { allDatabases: false })
+})
+
+test('All Databases is allowed for every kind of user login', () => {
+  for (const privileges of [['read-only'], ['read-write'], ['admin'], ['owner']]) {
+    const plan = planLoginPatch('postgres', user({ privileges }), { allDatabases: true })
+    assertEquals(plan.ok, true)
+  }
+  assertEquals(
+    planLoginPatch('postgres', user({ grantMode: 'self' }), { allDatabases: true }).ok,
+    true
+  )
+})
+
+test('a list of databases and All Databases together is refused', () => {
+  const both = planLoginPatch('postgres', user(), { allDatabases: true, databases: ['a'] })
+  assertEquals(!both.ok && both.error, 'managed_login_all_databases_conflict')
+  const staysOn = planLoginPatch('postgres', user({ allDatabases: true }), { databases: ['a'] })
+  assertEquals(!staysOn.ok && staysOn.error, 'managed_login_all_databases_conflict')
+  const switchedOff = planLoginPatch('postgres', user({ allDatabases: true }), {
+    allDatabases: false,
+    databases: ['a'],
+  })
+  assertEquals(switchedOff.ok, true)
 })

@@ -514,6 +514,7 @@ test('serializeManagedLogin reads settings from the login columns', () => {
     connectionRole: 'read-only',
     grantMode: 'self',
     tool: true,
+    allDatabases: false,
     allowedSources: ['internal'],
     maxConnections: 3,
     // A source-limited login never connects straight through, default or not.
@@ -559,6 +560,7 @@ test('parseManagedUserCreateFields accepts valid postgres user input', () => {
   assertEquals(result, {
     username: 'app_user',
     databases: ['postgres'],
+    allDatabases: false,
     privileges: ['read-only'],
     connectionRole: 'read-write',
   })
@@ -844,4 +846,23 @@ test('assertManagedSeriesUnchanged treats an imageless MariaDB row as 12.3, not 
     assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onEleven)?.error,
     'managed_series_immutable'
   )
+})
+
+test('parseManagedUserCreateFields takes All Databases instead of a list, never both', () => {
+  const ok = parseManagedUserCreateFields(
+    mockContext(),
+    mockManagedContext(),
+    { username: 'bi_reader', allDatabases: true, privileges: ['read-only'] },
+    defaultRowOptions()
+  )
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(ok.allDatabases, true)
+  assertEquals(ok.databases, [])
+  const both = parseManagedUserCreateFields(
+    mockContext(),
+    mockManagedContext(),
+    { username: 'bi_reader', allDatabases: true, databases: ['postgres'] },
+    defaultRowOptions()
+  )
+  assertEquals(both instanceof Response && both.status, 400)
 })

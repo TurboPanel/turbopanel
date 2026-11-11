@@ -101,6 +101,10 @@ import {
   rotateLoginPassword,
   setLoginPassword,
 } from '../../features/managed/logins.ts'
+import {
+  allDatabasesSwitches,
+  loadAllDatabasesRefusal,
+} from '../../features/managed/all-databases.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
 import {
   APP_LOGIN_NAME_SCHEME,
@@ -2509,6 +2513,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       addressNeeded: access?.addressNeeded ?? false,
       externalAccess: { servers: externalAccessServers },
       settings: parsed.settings,
+      allowAllDatabasesLogins: allDatabasesSwitches(ctx.orgDefaults, parsed.settings),
       ssl: buildManagedSslView(
         parsed.settings.ssl.mode,
         ctx.orgDefaults.sslMode,
@@ -2814,7 +2819,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const residual = parseManagedResidual(row.metadata)
     const request = await parseManagedLoginCreateRequest(c, db, ctx, body, options, residual)
     if (request instanceof Response) return request
-    const { databases, privileges, connectionRole } = request.grants
+    const { databases, allDatabases, privileges, connectionRole } = request.grants
+    if (allDatabases) {
+      const refusal = await loadAllDatabasesRefusal(db, ctx.organizationId, options.settings)
+      if (refusal) {
+        return c.json({ error: 'managed_login_all_databases_not_allowed', message: refusal }, 400)
+      }
+    }
     const modeFields = parseManagedLoginModeFields(
       c,
       body,
@@ -2838,7 +2849,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       body,
       targetServerId,
       grantMode,
-      grants: [{ privileges, databases }],
+      grants: [{ privileges, databases: allDatabases ? options.databases : databases }],
     })
     if (gate instanceof Response) return gate
     const { commandQueue, limits, notes } = gate
@@ -2848,6 +2859,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const settings: LoginSettingsPatch = {
       databases,
+      allDatabases,
       privileges,
       connectionRole,
       grantMode,
@@ -2901,6 +2913,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         appliedUsername: userCreate.appliedUsername,
         nameScheme: userCreate.nameScheme,
         databases,
+        allDatabases,
         privileges,
         connectionRole,
         grantMode,
@@ -2970,6 +2983,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
     }
 
+    // An All Databases login is judged on the cluster's whole list.
+    const appliedPatch = applySettingsPatch(target, plan.patch)
+    const afterPatchSettings = appliedPatch.allDatabases
+      ? { ...appliedPatch, databases: options.databases }
+      : appliedPatch
     const daemonRefused = await refuseLoginPatchIfDaemonCannot(
       c,
       db,
@@ -2978,7 +2996,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         engine: ctx.spec.engine,
         readWrite: {
           before: readWriteGrantState(target),
-          after: readWriteGrantState(applySettingsPatch(target, plan.patch)),
+          after: readWriteGrantState(afterPatchSettings),
         },
       },
       targetServerId

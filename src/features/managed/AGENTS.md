@@ -455,7 +455,15 @@ The `login` row carries `grant_mode` (`recipe`: the panel sets permissions from 
 named `recipe` column, the default; `self`: the owner manages permissions by
 hand and `recipe` is NULL), `recipe` (`app`, `migrations`, `read-only`,
 `analyst`, `admin` or `backup`; derived from role, privileges and routing by
-`deriveLoginRecipe` on every write), `is_all_databases`, `is_tool` (database-tool login: everything to
+`deriveLoginRecipe` on every write), `is_all_databases` (the backup login always;
+any other `user` login when it chose All Databases, API `allDatabases`: `scope`
+rows then keep only the explicit picks and `loginDatabasesForApply` gives the
+login every cluster database at apply, minus reserved names, while
+`all-databases.ts` says both switches allow it: organization
+`managedDatabase.allowAllDatabasesLogins`, default on, and cluster
+`settings.allowAllDatabasesLogins`, default off; a switch turned off drops the
+access at the next apply and the picks apply again (only databases the cluster still has; the drop-database guard
+counts the picks like any login's list), `is_tool` (database-tool login: everything to
 the primary), `allowed_sources`, `max_connections`, `access` and `privileges`;
 the databases a login may use are `scope` rows pointing at `database` rows.
 `is_straight_through` (nullable: NULL = the owner never chose) is the

@@ -400,6 +400,11 @@ export const organizationSchemas = {
         description:
           'What an inheriting managed service resolves to today: the org default, else the platform fallback (require).',
       },
+      allowAllDatabasesLogins: {
+        type: 'boolean',
+        description:
+          'Organization switch for All Databases logins (on unless turned off). A login may use All Databases only when this and the Database Cluster switch (`settings.allowAllDatabasesLogins`, off by default) both allow it. PUT accepts it on its own; turning it off takes the access from existing All Databases logins at the next apply.',
+      },
     },
   },
   OrganizationManagedDefaultsUpdate: {

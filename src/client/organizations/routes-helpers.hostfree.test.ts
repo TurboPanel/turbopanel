@@ -122,12 +122,14 @@ test('managed defaults responses separate configured from effective', () => {
     effectiveSslMode: 'require',
     ports: { postgres: null, mysqlFamily: null },
     effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
+    allowAllDatabasesLogins: true,
   })
   assertEquals(managedDefaultsGetResponse({ sslMode: 'prefer' }), {
     sslMode: 'prefer',
     effectiveSslMode: 'prefer',
     ports: { postgres: null, mysqlFamily: null },
     effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
+    allowAllDatabasesLogins: true,
   })
   // One overridden family must not drag the other off its platform listener.
   assertEquals(managedDefaultsGetResponse({ ports: { postgres: 18432 } }), {
@@ -135,6 +137,7 @@ test('managed defaults responses separate configured from effective', () => {
     effectiveSslMode: 'require',
     ports: { postgres: 18432, mysqlFamily: null },
     effectivePorts: { postgres: 18432, mysqlFamily: 13306 },
+    allowAllDatabasesLogins: true,
   })
   assertEquals(managedDefaultsPutResponse({ sslMode: 'disable' }), {
     ok: true,
@@ -142,6 +145,7 @@ test('managed defaults responses separate configured from effective', () => {
     effectiveSslMode: 'disable',
     ports: { postgres: null, mysqlFamily: null },
     effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
+    allowAllDatabasesLogins: true,
   })
 })
 

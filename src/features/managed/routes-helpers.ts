@@ -506,6 +506,7 @@ export function serializeManagedLogin(row: ManagedLoginRow, engine: string) {
     appliedUsername: row.appliedUsername,
     nameScheme: row.nameScheme,
     databases: row.databases,
+    allDatabases: row.allDatabases === true,
     privileges: row.privileges,
     connectionRole: row.connectionRole,
     grantMode: row.grantMode,
@@ -600,6 +601,7 @@ export function parseManagedUserCreateFields(
   | {
       username: string
       databases: string[]
+      allDatabases?: boolean
       privileges: string[]
       connectionRole: ManagedConnectionRole
     }
@@ -643,6 +645,58 @@ export function checkManagedLoginName(
   return null
 }
 
+/** The listed databases must all be strings that the cluster has, and none a system schema. */
+function refuseListedDatabases(
+  c: Context,
+  ctx: ManagedContext,
+  options: ManagedRowOptions,
+  listed: { databases: string[]; listedCount: number }
+): Response | null {
+  const { databases, listedCount } = listed
+  if (databases.length !== listedCount || !databases.every((n) => options.databases.includes(n))) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  // A cluster that predates the reserved-name check may still list a system schema.
+  if (databases.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
+    return c.json(reservedDatabaseNameBody(), 422)
+  }
+  return null
+}
+
+/**
+ * The databases a new login names: a list of the cluster's databases, or All
+ * Databases (then the list is empty and the cluster's list is read at apply).
+ * Both together, or neither, is a 400.
+ */
+function parseLoginDatabaseChoice(
+  c: Context,
+  ctx: ManagedContext,
+  body: Record<string, unknown>,
+  options: ManagedRowOptions
+): { databases: string[]; allDatabases: boolean } | Response {
+  const allDatabases = body.allDatabases === true
+  if (body.allDatabases !== undefined && typeof body.allDatabases !== 'boolean') {
+    return c.json({ error: 'Invalid request', message: 'allDatabases must be true or false.' }, 400)
+  }
+  if (allDatabases && Array.isArray(body.databases) && body.databases.length > 0) {
+    return c.json(
+      {
+        error: 'managed_login_all_databases_conflict',
+        message: 'Choose All Databases or a list of databases, not both.',
+      },
+      400
+    )
+  }
+  if (!allDatabases && (!Array.isArray(body.databases) || body.databases.length === 0)) {
+    return c.json({ error: 'Invalid request' }, 400)
+  }
+  const listed: unknown[] = allDatabases ? [] : (body.databases as unknown[])
+  const databases = listed.filter((entry): entry is string => typeof entry === 'string')
+  const refusal = refuseListedDatabases(c, ctx, options, { databases, listedCount: listed.length })
+  if (refusal) return refusal
+  return { databases, allDatabases }
+}
+
 /**
  * What a login may do, independent of its name: the databases it is granted
  * on, its connection role and its privileges. Shared by a login with a new
@@ -656,25 +710,15 @@ export function parseManagedLoginGrantFields(
 ):
   | {
       databases: string[]
+      /** All Databases chosen: `databases` is then empty (the cluster list is read at apply). */
+      allDatabases?: boolean
       privileges: string[]
       connectionRole: ManagedConnectionRole
     }
   | Response {
-  if (!Array.isArray(body.databases) || body.databases.length === 0) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  const databases = body.databases.filter((entry): entry is string => typeof entry === 'string')
-  if (
-    databases.length === 0 ||
-    databases.length !== body.databases.length ||
-    !databases.every((name) => options.databases.includes(name))
-  ) {
-    return c.json({ error: 'Invalid request' }, 400)
-  }
-  // A cluster that predates the reserved-name check may still list a system schema.
-  if (databases.some((name) => isReservedDatabaseName(ctx.spec.engine, name))) {
-    return c.json(reservedDatabaseNameBody(), 422)
-  }
+  const picked = parseLoginDatabaseChoice(c, ctx, body, options)
+  if (picked instanceof Response) return picked
+  const { databases, allDatabases } = picked
 
   const connectionRole = parseManagedConnectionRole(body.connectionRole)
   if (connectionRole === null) {
@@ -708,6 +752,7 @@ export function parseManagedLoginGrantFields(
 
   return {
     databases,
+    allDatabases,
     privileges: privileges.includes(DATABASE_ADMIN_PRIVILEGE)
       ? [DATABASE_ADMIN_PRIVILEGE]
       : privileges,
@@ -776,6 +821,20 @@ export function parseManagedLoginModeFields(
   }
 }
 
+/** Copies a boolean `allDatabases` onto the patch input; any other value is a 400. */
+function readAllDatabasesPatch(
+  c: Context,
+  body: Record<string, unknown>,
+  input: LoginPatchInput
+): Response | null {
+  if (body.allDatabases === undefined) return null
+  if (typeof body.allDatabases !== 'boolean') {
+    return c.json({ error: 'Invalid request', message: 'allDatabases must be true or false.' }, 400)
+  }
+  input.allDatabases = body.allDatabases
+  return null
+}
+
 /** Fields of a PATCH on a login; everything is optional, validated on its own. */
 export function parseManagedLoginPatchFields(
   c: Context,
@@ -812,6 +871,8 @@ export function parseManagedLoginPatchFields(
     }
     input.databases = [...new Set(list as string[])]
   }
+  const allDatabasesRefusal = readAllDatabasesPatch(c, body, input)
+  if (allDatabasesRefusal) return allDatabasesRefusal
   if (body.connectionRole !== undefined) {
     if (body.connectionRole !== 'read-write' && body.connectionRole !== 'read-only') {
       return c.json({ error: 'Invalid request' }, 400)
@@ -1043,7 +1104,11 @@ export function evaluateManagedDatabaseDelete(
  * while any remain would leave the next apply granting on a missing database.
  */
 export function listUsersReferencingDatabase(
-  logins: ReadonlyArray<{ username: string; role: string; databases: readonly string[] }>,
+  logins: ReadonlyArray<{
+    username: string
+    role: string
+    databases: readonly string[]
+  }>,
   databaseName: string
 ): string[] {
   return logins
@@ -1474,6 +1539,7 @@ export function buildEmptyManagedDetailResponse(organizationSslMode?: ManagedSsl
     addressNeeded: false,
     exposure: null,
     settings: null,
+    allowAllDatabasesLogins: null,
     ssl: buildManagedSslView(undefined, organizationSslMode),
     release: null,
     server: null,
