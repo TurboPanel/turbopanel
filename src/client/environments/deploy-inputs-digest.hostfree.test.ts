@@ -112,3 +112,15 @@ test('inputs without a source list, or with an odd entry, still digest and stay 
   const odd = { ...bare, sourceMaterial: [null] }
   assertNotEquals(await deployInputsDigest(odd), await deployInputsDigest(bare))
 })
+
+test('a changed text-only generated config file changes the digest', async () => {
+  const file = (text: string) => [
+    { composeServiceName: 'web', source: 'web_c', relativePath: 'web--c', parts: [{ text }] },
+  ]
+  const a = await deployInputsDigest(inputs({ configFiles: file('a') }))
+  const b = await deployInputsDigest(inputs({ configFiles: file('b') }))
+  const again = await deployInputsDigest(inputs({ configFiles: file('a') }))
+  assertNotEquals(a, b)
+  assertEquals(a, again)
+  assertNotEquals(a, await deployInputsDigest(inputs()))
+})

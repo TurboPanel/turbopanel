@@ -356,6 +356,22 @@ export const deploySchemas = {
           },
         },
       },
+      configFiles: {
+        type: 'array',
+        description:
+          'Generated config files (Compose configs with content). Secret slots show as {$KEY}; no secret value or byte count is ever shown. Absent when the deploy has none.',
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'source', 'hasSecretValues', 'template'],
+          properties: {
+            serverId: { type: 'string' },
+            composeServiceName: { type: 'string' },
+            source: { type: 'string' },
+            hasSecretValues: { type: 'boolean' },
+            template: { type: 'string' },
+          },
+        },
+      },
       nativeAppVariables: {
         type: 'array',
         description:
