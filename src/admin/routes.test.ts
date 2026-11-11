@@ -27,7 +27,10 @@ import {
   upgrade,
   user,
 } from '../db/schema.ts'
-import { OPERATOR_WEBHOOK_LABEL } from '../features/notifications/records.ts'
+import {
+  createNotificationChannel,
+  OPERATOR_WEBHOOK_LABEL,
+} from '../features/notifications/records.ts'
 import { setUpdateManifestProvider } from '../features/update/manifest.ts'
 import { LATEST_BUILD_SETTINGS_KEY } from '../features/upgrades/target-resolve.ts'
 import {
@@ -1746,6 +1749,41 @@ test('a control plane channel carries the all organizations switch through creat
       assertEquals((await jsonBody<{ error: string }>(bad)).error, 'all_organizations_invalid')
     } finally {
       await send('DELETE', `/${channel.id}`, {})
+    }
+  })
+})
+
+test('an operator webhook made before the switch existed is switched on when touched', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    try {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const enc = await deriveEncryptionSecretsConfig(
+        parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
+        'data-encryption'
+      )
+      const old = await createNotificationChannel(db, enc, {
+        scope: 'instance',
+        kind: 'webhook',
+        label: OPERATOR_WEBHOOK_LABEL,
+        address: 'https://hooks.slack.com/services/OLD/PATH',
+        isAllOrganizationsNotified: false,
+      })
+      const listed = await app.request(`${ADMIN_API_PREFIX}/notification-channels`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(listed.status, 200)
+      const [row] = await db
+        .select({ on: notificationChannel.isAllOrganizationsNotified })
+        .from(notificationChannel)
+        .where(eq(notificationChannel.id, old.id))
+      assertEquals(row?.on, true)
+    } finally {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
     }
   })
 })

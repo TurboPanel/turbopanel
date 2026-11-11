@@ -12,6 +12,7 @@ import {
   describeAlertWebhook,
   getAlertWebhookUrl,
   ALERT_WEBHOOK_POLICY,
+  adoptLegacyAlertWebhook,
   setOperatorWebhookUrl,
 } from './alert-webhook-settings.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -156,4 +157,47 @@ test('a new operator webhook is created hearing every organization', async () =>
   assertEquals(inserted.length, 1)
   assertEquals(inserted[0].scope, 'instance')
   assertEquals(inserted[0].isAllOrganizationsNotified, true)
+})
+
+test('an existing operator webhook with the switch off is switched on before routing', async () => {
+  const updates: Array<Record<string, unknown>> = []
+  const row = {
+    id: 'c1',
+    scope: 'instance',
+    organizationId: null,
+    userId: null,
+    kind: 'webhook',
+    label: 'Operator alert webhook',
+    address: 'x',
+    signingSecret: null,
+    verifiedAt: null,
+    disabledAt: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    digestCadence: null,
+    quietStartMinute: null,
+    quietEndMinute: null,
+    isPrimary: false,
+    isAllOrganizationsNotified: false,
+  }
+  let reads = 0
+  const chain: unknown = new Proxy(() => undefined, {
+    get: (_t, prop) => {
+      if (prop === 'then') {
+        return (resolve: (v: unknown) => void) => resolve(reads++ === 0 ? [row] : [])
+      }
+      return () => chain
+    },
+  })
+  const db = {
+    select: () => chain,
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        updates.push(values)
+        return { where: () => Promise.resolve() }
+      },
+    }),
+  } as unknown as Db
+  const channel = await adoptLegacyAlertWebhook(db, undefined)
+  assertEquals(updates, [{ isAllOrganizationsNotified: true }])
+  assertEquals(channel?.allOrganizations, true)
 })

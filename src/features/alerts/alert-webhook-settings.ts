@@ -57,6 +57,7 @@ import {
   OPERATOR_WEBHOOK_LABEL,
   replaceRulesForChannel,
   resolveChannelAddress,
+  setChannelAllOrganizations,
   updateChannelAddress,
 } from '../notifications/records.ts'
 
@@ -105,6 +106,20 @@ export async function assertAlertWebhookUrlAllowed(
 }
 
 /**
+ * The operator webhook channel, switched on to hear every organization's
+ * events if it was made before that switch existed (it must keep paging when
+ * a server goes dark). Only this channel is touched; the update is guarded on
+ * the switch being off, so it is a no-op once on.
+ */
+async function switchedOnOperatorWebhook(db: Db): Promise<NotificationChannelRecord | null> {
+  const channel = await getOperatorWebhookChannel(db)
+  if (!channel || channel.allOrganizations) return channel
+  await setChannelAllOrganizations(db, channel.id, true)
+  console.info('operator alert webhook switched on to hear every organization')
+  return { ...channel, allOrganizations: true }
+}
+
+/**
  * Fold the legacy `ALERT_WEBHOOK_URL` setting into the notifications model:
  * one instance-scoped webhook channel labelled {@link OPERATOR_WEBHOOK_LABEL}
  * with a `*` rule at `info` — every event, the firehose the setting always
@@ -119,7 +134,7 @@ export async function adoptLegacyAlertWebhook(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<NotificationChannelRecord | null> {
-  const existing = await getOperatorWebhookChannel(db)
+  const existing = await switchedOnOperatorWebhook(db)
   const legacy = await getAlertWebhookUrl(db, dataEncryptionSecrets)
   if (!legacy) return existing
   if (existing) {
