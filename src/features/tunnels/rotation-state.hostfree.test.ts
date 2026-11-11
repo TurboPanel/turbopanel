@@ -5,7 +5,6 @@ import {
   rotationWarnings,
   claimHeld,
   dueForRetry,
-  rotationSplitsTokens,
   runSecretFor,
   settling,
   toApiRotation,
@@ -78,11 +77,6 @@ test('each server gets the old token while it waits its turn, the new one once m
     'adopted'
   )
   assertEquals(runSecretFor({ secretId: 'plain', metadata: null }, A), 'plain')
-  // A waiting server whose connector is down holds no connection: it gets the new token.
-  assertEquals(runSecretFor(row, B, true), 'new-secret')
-  assert(rotationSplitsTokens(rotating({})))
-  assert(!rotationSplitsTokens(rotating({ phase: 'done' })))
-  assert(!rotationSplitsTokens(rotating({ newSecretId: undefined })))
 })
 
 test('moved servers that went out of reach are read back, and keep the new token', () => {

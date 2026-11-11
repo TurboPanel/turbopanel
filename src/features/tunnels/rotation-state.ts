@@ -50,9 +50,10 @@ export type RotationState = {
   /** Servers already given the new token. */
   moved: string[]
   /**
-   * Moved servers that went out of reach before they confirmed the new token.
-   * They keep the new token (a reconnect brings it) and are checked again once
-   * every waiting server has moved.
+   * Servers given the new token that have not confirmed it: the current one
+   * went out of reach, or a waiting one's connector went down and was moved
+   * early. They keep the new token and are checked again once every waiting
+   * server has moved.
    */
   unconfirmed?: string[]
   current?: RotationCurrent
@@ -62,7 +63,7 @@ export type RotationState = {
   /** Why the rotation stopped, in plain words. */
   stoppedReason?: string
   stoppedAt?: string
-  /** The stop was a server that could not be reached: the sweep resumes it on its own. */
+  /** A stop that can clear up by itself: the sweep resumes it on its own. */
   retryable?: boolean
 }
 
@@ -133,26 +134,17 @@ export function rotationActive(state: RotationState | null): boolean {
 /**
  * Which sealed run token a server is given while a rotation is under way: the
  * old one while the server is still waiting its turn, the new one once it has
- * been moved, and the new one for a server that joined after the rotation
- * started (the old token can no longer open a connection). A waiting server
- * whose connector last reported down or in error gets the new one too: its
- * connector is not holding a connection, and the old token could not open one.
- * Pure.
+ * been moved (a waiting server whose connector went down is moved early by the
+ * driver), and the new one for a server that joined after the rotation
+ * started (the old token can no longer open a connection). Pure.
  */
 export function runSecretFor(
   row: Pick<TunnelRow, 'secretId' | 'metadata'>,
-  serverId: string,
-  connectorDown = false
+  serverId: string
 ): string | null {
   const state = readRotation(row.metadata)
   if (!state?.newSecretId || state.phase === 'done') return row.secretId
-  return state.pending.includes(serverId) && !connectorDown ? row.secretId : state.newSecretId
-}
-
-/** A rotation whose servers are split between the old and the new token. Pure. */
-export function rotationSplitsTokens(metadata: unknown): boolean {
-  const state = readRotation(metadata)
-  return state?.newSecretId !== undefined && state.phase !== 'done'
+  return state.pending.includes(serverId) ? row.secretId : state.newSecretId
 }
 
 /**
@@ -195,7 +187,7 @@ export type ApiRotation = {
    * their running connector stays up, but it could not reconnect after a restart.
    */
   oldTokenServerIds: string[]
-  /** A stop the control plane resumes on its own once the server is reachable. */
+  /** A stop the control plane resumes on its own a few minutes later. */
   resumesOnItsOwn: boolean
 }
 
@@ -222,7 +214,7 @@ export function settling(state: RotationState, nowMs: number, settleMs: number):
 
 /** How long one provider attempt may hold the rotation before another may take over. */
 export const ROTATION_CLAIM_MS = 2 * 60 * 1000
-/** How long a stop for an unreachable server waits before the sweep tries again. */
+/** How long a retryable stop waits before the sweep tries again. */
 export const ROTATION_RETRY_MS = 2 * 60 * 1000
 
 /** Is a provider attempt still holding the rotation? Pure. */

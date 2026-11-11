@@ -701,9 +701,11 @@ removing the tunnel:
 - Until the end, `runSecretFor` gives each server the old token while it waits
   its turn and the new one once moved (or when it started carrying the tunnel
   after the rotation began), so a repair resend or a placement change never
-  moves a server early. The one exception: a waiting server whose connector
-  last reported `down` or `error` (portal `reported`) gets the new token at
-  once, since it holds no connection and the old token could not open one.
+  moves a server early. The one exception: the driver moves a waiting server
+  whose connector last reported `down` or `error` (portal `reported`) out of
+  `pending` into `unconfirmed` at once, since it holds no connection and the
+  old token could not open one; it keeps the new token from then on (state,
+  not the latest report, decides) and is checked again at the end.
   Connector sync hashes the secret row id, so moving a server changes its list
   and it is sent.
 - One server at a time: its list goes out with the new token (the daemon

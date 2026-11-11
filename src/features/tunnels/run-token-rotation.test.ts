@@ -657,7 +657,7 @@ test('a provider call that fails after the secret was chosen retries on its own 
   })
 })
 
-test('a waiting server whose connector is down is given the new token at once', async () => {
+test('a waiting server whose connector is down is moved early and keeps the new token', async () => {
   await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
     const [first, second] = w.servers.toSorted() as [string, string]
     await startRunTokenRotation(w.db, w.deps, await tunnelRow(w), { confirmSingleServer: false })
@@ -665,13 +665,24 @@ test('a waiting server whose connector is down is given the new token at once', 
     const before = await wantedConnectorsByServer(w.db, w.organizationId)
     assertEquals(before.get(second)?.[0]?.secretId, w.oldSecretId)
     // Its connector stopped: the old token could not open a connection again.
-    await w.db
-      .update(portal)
-      .set({ reported: 'down' })
-      .where(and(eq(portal.tunnelId, w.tunnelId), eq(portal.serverId, second)))
+    const report = async (reported: string) => {
+      await w.db
+        .update(portal)
+        .set({ reported })
+        .where(and(eq(portal.tunnelId, w.tunnelId), eq(portal.serverId, second)))
+    }
+    await report('down')
+    const moved = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    assertEquals(moved?.pending, [])
+    assertEquals(moved?.unconfirmed, [second])
     const after = await wantedConnectorsByServer(w.db, w.organizationId)
     assertEquals(after.get(second)?.[0]?.secretId, state.newSecretId)
     assertEquals(after.get(first)?.[0]?.secretId, state.newSecretId)
+    // Connected again on the new token: it stays on it, never back to the old one.
+    await report('connected')
+    await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    const still = await wantedConnectorsByServer(w.db, w.organizationId)
+    assertEquals(still.get(second)?.[0]?.secretId, state.newSecretId)
   })
 })
 

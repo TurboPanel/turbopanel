@@ -35,7 +35,7 @@
  */
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, secret, server, tunnel } from '../../db/schema.ts'
+import { command, portal, secret, server, tunnel } from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -788,16 +788,59 @@ export async function advanceRunTokenRotation(
   return (await advanceRunTokenRotation(db, deps, tunnelId, stepsLeft - 1)) ?? next
 }
 
-function stepOnce(
+/** Waiting servers whose connector for this tunnel last reported down or in error. */
+async function waitingWithConnectorDown(
+  db: Db,
+  row: TunnelRow,
+  state: RotationState
+): Promise<string[]> {
+  if (state.pending.length === 0) return []
+  const rows = await db
+    .select({ serverId: portal.serverId })
+    .from(portal)
+    .where(
+      and(
+        eq(portal.tunnelId, row.id),
+        inArray(portal.serverId, state.pending),
+        inArray(portal.reported, ['down', 'error'])
+      )
+    )
+  return rows.map((r) => r.serverId)
+}
+
+/**
+ * A waiting server whose connector is down holds no connection, and the old
+ * token could not open one again: give it the new token now (it is checked
+ * again at the end), instead of leaving it down until its turn.
+ */
+async function moveDownServersEarly(
+  db: Db,
+  row: TunnelRow,
+  state: RotationState
+): Promise<RotationState | null> {
+  const down = await waitingWithConnectorDown(db, row, state)
+  if (down.length === 0) return null
+  const early = new Set(down)
+  return await saveRotation(db, row.id, state, {
+    ...state,
+    pending: state.pending.filter((id) => !early.has(id)),
+    moved: [...state.moved, ...down.filter((id) => !state.moved.includes(id))],
+    unconfirmed: [...(state.unconfirmed ?? []).filter((id) => !early.has(id)), ...down],
+  })
+}
+
+async function stepOnce(
   db: Db,
   deps: RotationDeps,
   row: TunnelRow,
   state: RotationState
 ): Promise<RotationState | null> {
-  if (state.phase === 'starting') return issueNewToken(db, deps, row, state)
-  if (state.phase === 'finishing') return finish(db, deps, row, state)
-  if (state.current) return checkCurrent(db, deps, row, state)
-  return moveNext(db, deps, row, state)
+  if (state.phase === 'starting') return await issueNewToken(db, deps, row, state)
+  if (state.phase === 'finishing') return await finish(db, deps, row, state)
+  const early = await moveDownServersEarly(db, row, state)
+  if (early) return early
+  if (state.current) return await checkCurrent(db, deps, row, state)
+  return await moveNext(db, deps, row, state)
 }
 
 /** The sweep: move every rotation that is under way as far as it can go. */
