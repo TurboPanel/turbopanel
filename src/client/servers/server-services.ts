@@ -202,6 +202,10 @@ const SERVER_SERVICES_REMOVAL_TEMPLATES: Record<
     forgettableMany:
       '%n database members are still recorded on this server. Because the host is offline, you can remove them with Delete server → Host is gone.',
   },
+  cache: {
+    one: 'One project cache is still placed on this server: remove it first.',
+    many: '%n project caches are still placed on this server: remove them first.',
+  },
   deployment: {
     one: 'One deployment is still recorded on this server.',
     many: '%n deployments are still recorded on this server.',
@@ -257,6 +261,13 @@ const SERVER_SERVICES_REMOVAL_NAMED_COPY: Partial<
     placed: {
       one: 'Managed database %s is still placed on this server.',
       many: 'Managed databases %s are still placed on this server.',
+    },
+  },
+  // A project cache has no Host is gone variant: it must be removed first.
+  cache: {
+    placed: {
+      one: 'Remove the cache %s on this server first.',
+      many: 'Remove the caches %s on this server first.',
     },
   },
   replica: {

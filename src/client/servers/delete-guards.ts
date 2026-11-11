@@ -7,6 +7,7 @@ import {
 } from '../../features/projects/project-delete.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import {
+  cache,
   container,
   deployment,
   environment,
@@ -34,6 +35,7 @@ export const SERVER_DELETE_BLOCKER_KIND_VALUES = [
   'environment',
   'managed',
   'replica',
+  'cache',
   'deployment',
   'slot',
   'copy',
@@ -73,6 +75,7 @@ export const SERVER_DELETE_BLOCKER_LABELS: Record<ServerDeleteBlockerKind, strin
   environment: 'an app environment',
   managed: 'a managed database is still placed on this server',
   replica: 'a database member is still placed on this server',
+  cache: 'a project cache is still placed on this server',
   deployment: 'a deployment',
   slot: 'a replica slot',
   copy: 'a storage copy',
@@ -876,55 +879,61 @@ export async function planServerForget(
     .limit(1)
   if (!serverRow) return emptyForgetPlan()
 
-  const [placedEnvironments, managedTouches, replicasHere, blockers] = await Promise.all([
-    db
-      .select({
-        id: environment.id,
-        name: environment.name,
-        projectId: project.id,
-        projectName: project.name,
-        managedId: managed.id,
-      })
-      .from(environment)
-      .innerJoin(project, eq(project.id, environment.projectId))
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .leftJoin(managed, eq(managed.environmentId, environment.id))
-      .where(and(eq(environment.serverId, serverId), notSystemWorkspace())),
-    db
-      .select({
-        id: managed.id,
-        name: managed.name,
-        engine: managed.engine,
-        managedServerId: managed.serverId,
-        environmentServerId: environment.serverId,
-      })
-      .from(managed)
-      .innerJoin(environment, eq(environment.id, managed.environmentId))
-      .innerJoin(project, eq(project.id, environment.projectId))
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .where(
-        and(
-          notSystemWorkspace(),
-          or(eq(managed.serverId, serverId), eq(environment.serverId, serverId))
-        )
-      ),
-    db
-      .select({
-        id: replica.id,
-        managedId: replica.managedId,
-        serverId: replica.serverId,
-        role: replica.role,
-        databaseName: managed.name,
-        engine: managed.engine,
-      })
-      .from(replica)
-      .innerJoin(managed, eq(managed.id, replica.managedId))
-      .innerJoin(environment, eq(environment.id, managed.environmentId))
-      .innerJoin(project, eq(project.id, environment.projectId))
-      .innerJoin(workspace, eq(workspace.id, project.workspaceId))
-      .where(and(eq(replica.serverId, serverId), notSystemWorkspace())),
-    listServerDeleteBlockers(db, serverId, organizationId),
-  ])
+  const [placedEnvironments, managedTouches, replicasHere, blockers, placedCaches] =
+    await Promise.all([
+      db
+        .select({
+          id: environment.id,
+          name: environment.name,
+          projectId: project.id,
+          projectName: project.name,
+          managedId: managed.id,
+        })
+        .from(environment)
+        .innerJoin(project, eq(project.id, environment.projectId))
+        .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+        .leftJoin(managed, eq(managed.environmentId, environment.id))
+        .where(and(eq(environment.serverId, serverId), notSystemWorkspace())),
+      db
+        .select({
+          id: managed.id,
+          name: managed.name,
+          engine: managed.engine,
+          managedServerId: managed.serverId,
+          environmentServerId: environment.serverId,
+        })
+        .from(managed)
+        .innerJoin(environment, eq(environment.id, managed.environmentId))
+        .innerJoin(project, eq(project.id, environment.projectId))
+        .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+        .where(
+          and(
+            notSystemWorkspace(),
+            or(eq(managed.serverId, serverId), eq(environment.serverId, serverId))
+          )
+        ),
+      db
+        .select({
+          id: replica.id,
+          managedId: replica.managedId,
+          serverId: replica.serverId,
+          role: replica.role,
+          databaseName: managed.name,
+          engine: managed.engine,
+        })
+        .from(replica)
+        .innerJoin(managed, eq(managed.id, replica.managedId))
+        .innerJoin(environment, eq(environment.id, managed.environmentId))
+        .innerJoin(project, eq(project.id, environment.projectId))
+        .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+        .where(and(eq(replica.serverId, serverId), notSystemWorkspace())),
+      listServerDeleteBlockers(db, serverId, organizationId),
+      db
+        .select({ id: cache.id, name: cache.name })
+        .from(cache)
+        .where(eq(cache.serverId, serverId))
+        .orderBy(asc(cache.name)),
+    ])
 
   const replicaTouches: ReplicaTouch[] = replicasHere.map((row) => ({
     id: row.id,
@@ -983,6 +992,7 @@ export async function planServerForget(
       environment: environmentItems,
       managed: databaseItems(placedDatabases),
       replica: databaseItems(replicaTouches),
+      cache: placedCaches.map((row) => ({ id: row.id, name: row.name })),
     }),
     environmentIds: environments.map((row) => row.id),
     memberIds: members.map((row) => row.id),
@@ -1030,6 +1040,7 @@ export async function listServerDeleteBlockers(
     [environmentCountRow],
     [managedCountRow],
     [replicaCountRow],
+    [cacheCountRow],
     [deploymentCountRow],
     [slotCountRow],
     [copyCountRow],
@@ -1061,6 +1072,7 @@ export async function listServerDeleteBlockers(
       .innerJoin(project, eq(project.id, environment.projectId))
       .innerJoin(workspace, eq(workspace.id, project.workspaceId))
       .where(and(eq(replica.serverId, serverId), notSystemWorkspace())),
+    db.select({ value: count() }).from(cache).where(eq(cache.serverId, serverId)),
     db
       .select({ value: count() })
       .from(deployment)
@@ -1086,6 +1098,7 @@ export async function listServerDeleteBlockers(
   pushBlocker(blockers, 'environment', countValue(environmentCountRow))
   pushBlocker(blockers, 'managed', countValue(managedCountRow))
   pushBlocker(blockers, 'replica', countValue(replicaCountRow))
+  pushBlocker(blockers, 'cache', countValue(cacheCountRow))
   pushBlocker(blockers, 'deployment', countValue(deploymentCountRow))
   pushBlocker(blockers, 'slot', countValue(slotCountRow))
   pushBlocker(blockers, 'copy', countValue(copyCountRow))
