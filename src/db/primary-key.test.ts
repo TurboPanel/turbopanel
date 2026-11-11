@@ -11,7 +11,7 @@
  * model).
  */
 
-import { assertEquals } from '@std/assert'
+import { assert, assertEquals } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
 
 /**
@@ -54,8 +54,10 @@ const INLINE_PK_LINE_RE = /^\s*"([^"]+)"\s+(\w+)\b([^\n]*)\bPRIMARY KEY\b([^\n]*
  * `bigserial` / `smallserial` pseudo-types, SQL-standard identity columns,
  * and explicit `nextval()` defaults all pin inserts to a node-local sequence.
  */
+// `serial` only as a column type (`"col" serial`), so a CHECK value such as
+// `kind IN ('serial', …)` is not mistaken for one.
 const SEQUENCE_BACKED_RE =
-  /\b(?:small|big)?serial\b|GENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY|nextval\s*\(/i
+  /^\s*"[^"]+"\s+(?:small|big)?serial\b|GENERATED\s+(?:ALWAYS|BY\s+DEFAULT)\s+AS\s+IDENTITY|nextval\s*\(/im
 
 type TableBlock = { name: string; body: string; file: string }
 
@@ -231,4 +233,11 @@ test('drizzle-orm migrator bookkeeping DDL matches the documented public.migrati
   // migration 0011 until 0020 re-keyed it; the 2026-09-17 fold regenerated
   // 0000_base.sql without either file, so the historical entry is gone.)
   assertEquals(NATURAL_KEY_PRIMARY_KEYS.size, 4)
+})
+
+test('sequence guard catches a serial column but not a CHECK value named serial', () => {
+  const column = `  "n" serial NOT NULL,\n  "name" text`
+  const checkValue = `  "kind" text NOT NULL,\n  CONSTRAINT "x_kind_check" CHECK (kind IN ('usb', 'serial'))`
+  assert(SEQUENCE_BACKED_RE.test(column))
+  assert(!SEQUENCE_BACKED_RE.test(checkValue))
 })
