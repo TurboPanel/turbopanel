@@ -10,7 +10,12 @@ import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { grant, hosting, portal, user } from '../../db/schema.ts'
+import { grant, hosting, portal, server, user } from '../../db/schema.ts'
+import {
+  TUNNEL_CONNECTOR_FEATURE,
+  TUNNEL_FORWARDING_FEATURE,
+  TUNNEL_LOCK_FOLLOW_FEATURE,
+} from '../../lib/version-wire.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -266,6 +271,42 @@ test('barring a server from carrying tunnels empties its table once the request 
       assertEquals((await connectorListOf(s, connectorsTo(s, s.siteBId).at(-1)!)).remove, [
         s.providerTunnelId,
       ])
+    })
+  })
+})
+
+test('a tunnel warns while a server that runs its site applies the lock only at a deploy', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('tunnel nudge route tests')
+    return
+  }
+  await withScenario({}, async (s) => {
+    await withApi(s, async (api) => {
+      const path = `/organizations/${s.organizationId}/tunnels/${s.tunnelId}`
+      const warningsOf = async () =>
+        ((await (await api(path, 'GET')).json()) as { tunnel: { warnings: string[] } }).tunnel
+          .warnings
+      const DEPLOY_ONLY = '1 server that runs this Tunnel’s sites applies'
+      assert((await warningsOf()).some((w) => w.startsWith(DEPLOY_ONLY)))
+      // Site A's daemon now takes the lock from the forwarding table: no warning.
+      await s.db
+        .update(server)
+        .set({
+          daemon: {
+            projection: {
+              features: [
+                TUNNEL_FORWARDING_FEATURE,
+                TUNNEL_CONNECTOR_FEATURE,
+                TUNNEL_LOCK_FOLLOW_FEATURE,
+              ],
+            },
+          },
+        })
+        .where(eq(server.id, s.siteAId))
+      assertEquals(
+        (await warningsOf()).filter((w) => w.startsWith(DEPLOY_ONLY)),
+        []
+      )
     })
   })
 })

@@ -300,3 +300,27 @@ test('server.tunnel.routes: a carrier-only server may send no peer addresses', (
   assertEquals(parsed.peerAddresses, [])
   assertEquals(parsed.routes.length, 2)
 })
+
+test('server.tunnel.routes: inbound names parse with or without peers and bad lists are refused', () => {
+  const inbound = [
+    { hostname: 'here.example.com', peers: ['10.0.0.5', 'fd00::5'] },
+    { hostname: 'solo.example.com', peers: [] },
+  ]
+  assertEquals(
+    parseCommandPayload('server.tunnel.routes', payload({ inbound })),
+    payload({ inbound })
+  )
+  const alone = { hash: HASH, routes: [], peerAddresses: [], inbound: [inbound[1]] }
+  assertEquals(parseCommandPayload('server.tunnel.routes', alone), alone)
+  const entry = inbound[0]!
+  for (const bad of [
+    {},
+    [{ ...entry, hostname: 'not a name' }],
+    [{ ...entry, peers: ['10.0.0.0/24'] }],
+    [{ ...entry, peers: ['10.0.0.5', '10.0.0.5'] }],
+    [{ hostname: entry.hostname }],
+    [entry, { ...entry, hostname: 'HERE.example.com' }],
+  ]) {
+    assertThrows(() => parseCommandPayload('server.tunnel.routes', payload({ inbound: bad })))
+  }
+})

@@ -232,6 +232,7 @@ export const DAEMON_WIRE_FEATURES = [
   'signed-ha-events-v1',
   'panel-keyset-key-signature-v1',
   'acme-issue-one-cert-v1',
+  'tunnel-lock-follow-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -288,6 +289,12 @@ export const TUNNEL_STATUS_FEATURE: DaemonWireFeature = 'tunnel-status-v1'
  * so the control plane reads them when present and needs no gate to send.
  */
 export const TUNNEL_STATUS_FACTS_FEATURE: DaemonWireFeature = 'tunnel-status-facts-v1'
+/**
+ * `server.tunnel.routes` may carry `inbound`: the tunnel names whose site runs
+ * on the server, with who may forward them. The daemon sets those names' lock
+ * from it without a deploy. Without it the lock follows the site's next deploy.
+ */
+export const TUNNEL_LOCK_FOLLOW_FEATURE: DaemonWireFeature = 'tunnel-lock-follow-v1'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`

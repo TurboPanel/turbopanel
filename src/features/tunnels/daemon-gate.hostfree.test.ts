@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
-import { TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
-import { daemonCanCarryTunnels } from './daemon-gate.ts'
+import { TUNNEL_FORWARDING_FEATURE, TUNNEL_LOCK_FOLLOW_FEATURE } from '../../lib/version-wire.ts'
+import { daemonCanCarryTunnels, daemonLockFollowsTable } from './daemon-gate.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -15,4 +15,13 @@ test('only a daemon that advertises the feature can carry tunnel names', () => {
   assertEquals(daemonCanCarryTunnels([]), false)
   assertEquals(daemonCanCarryTunnels(['deploy-cancel-v1']), false)
   assertEquals(daemonCanCarryTunnels(['deploy-cancel-v1', TUNNEL_FORWARDING_FEATURE]), true)
+})
+
+test('only a daemon that advertises it takes the name lock from the forwarding table', () => {
+  assertEquals(daemonLockFollowsTable(undefined), false)
+  assertEquals(daemonLockFollowsTable([TUNNEL_FORWARDING_FEATURE]), false)
+  assertEquals(
+    daemonLockFollowsTable([TUNNEL_FORWARDING_FEATURE, TUNNEL_LOCK_FOLLOW_FEATURE]),
+    true
+  )
 })

@@ -8,6 +8,7 @@
  * addresses.
  */
 import type {
+  TunnelInbound,
   TunnelPeerMaterial,
   TunnelRoute,
   TunnelRouteUpstream,
@@ -42,6 +43,8 @@ export type RouteBuildResult = {
   routes: TunnelRoute[]
   peerAddresses: string[]
   listenAddresses: string[]
+  /** Set only when asked for (`withInbound`): the names whose site runs here and who may forward each. */
+  inbound?: TunnelInbound[]
   needsPeerMaterial: boolean
   /** Names that could not be routed, with a plain-words reason. */
   skipped: { hostname: string; reason: string }[]
@@ -109,24 +112,57 @@ function routeFor(
 export function buildTunnelRoutes(
   serverId: string,
   tunnels: readonly TunnelFact[],
-  addresses: AddressBook
+  addresses: AddressBook,
+  options: { withInbound?: boolean } = {}
 ): RouteBuildResult {
   const routes = new Map<string, TunnelRoute>()
   const peers = new Set<string>()
+  const inbound = new Map<string, Set<string>>()
   const skipped: RouteBuildResult['skipped'] = []
 
   for (const tunnel of tunnels) {
     const carriesHere = tunnel.carrying.includes(serverId)
     for (const doorway of tunnel.doorways) {
       const siteHere = doorway.siteServerIds.includes(serverId)
-      if (siteHere) addInboundPeers(peers, tunnel, serverId, addresses)
+      if (siteHere) {
+        addInboundPeers(peers, tunnel, serverId, addresses)
+        const own = inbound.get(doorway.hostname) ?? new Set<string>()
+        addInboundPeers(own, tunnel, serverId, addresses)
+        inbound.set(doorway.hostname, own)
+      }
       if (!carriesHere || routes.has(doorway.hostname)) continue
       const built = routeFor(doorway, siteHere, addresses)
       if ('route' in built) routes.set(doorway.hostname, built.route)
       else skipped.push({ hostname: doorway.hostname, reason: built.reason })
     }
   }
-  return finishTable(serverId, routes, peers, skipped, addresses)
+  const table = finishTable(serverId, routes, peers, skipped, addresses)
+  return options.withInbound ? { ...table, inbound: finishInbound(inbound, table.warnings) } : table
+}
+
+/**
+ * Per name, the exact addresses allowed to forward it, sorted and cut at the
+ * contract caps (with a note). A name that only this server carries keeps an
+ * empty list: the daemon then admits loopback alone.
+ */
+function finishInbound(
+  inbound: ReadonlyMap<string, ReadonlySet<string>>,
+  warnings: string[]
+): TunnelInbound[] {
+  const all = [...inbound.entries()]
+    .map(([hostname, peers]) => ({ hostname, peers: [...peers].toSorted(compareText) }))
+    .toSorted(byHostname)
+  const kept = all.slice(0, TUNNEL_TABLE_CAPS.routes)
+  if (all.length > kept.length) {
+    warnings.push(`Only ${TUNNEL_TABLE_CAPS.routes} locked names can be sent to one server`)
+  }
+  return kept.map((entry) => {
+    if (entry.peers.length <= TUNNEL_TABLE_CAPS.addresses) return entry
+    warnings.push(
+      `Only ${TUNNEL_TABLE_CAPS.addresses} peer addresses can be sent for ${entry.hostname}`
+    )
+    return { ...entry, peers: entry.peers.slice(0, TUNNEL_TABLE_CAPS.addresses) }
+  })
 }
 
 /** Sort, cut at the contract caps (with a note), and decide whether a certificate is needed. */
@@ -170,7 +206,7 @@ async function sha256Hex(text: string): Promise<string> {
  * sealing the same key twice gives different text.
  */
 export async function hashTunnelRoutes(
-  built: Pick<RouteBuildResult, 'routes' | 'peerAddresses' | 'listenAddresses'>,
+  built: Pick<RouteBuildResult, 'routes' | 'peerAddresses' | 'listenAddresses' | 'inbound'>,
   material: Pick<TunnelPeerMaterial, 'certificatePem' | 'caCertPem'> | undefined
 ): Promise<string> {
   return await sha256Hex(
@@ -180,6 +216,8 @@ export async function hashTunnelRoutes(
       listenAddresses: built.listenAddresses,
       certificatePem: material?.certificatePem ?? null,
       caCertPem: material?.caCertPem ?? null,
+      // Only when sent, so a daemon without the feature keeps the hash it had.
+      ...(built.inbound ? { inbound: built.inbound } : {}),
     })
   )
 }
@@ -199,5 +237,6 @@ export async function toRoutesPayload(
   }
   if (built.listenAddresses.length > 0) payload.listenAddresses = built.listenAddresses
   if (material) payload.peerMaterial = material
+  if (built.inbound) payload.inbound = built.inbound
   return payload
 }

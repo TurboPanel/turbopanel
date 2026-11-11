@@ -70,7 +70,7 @@ export async function loadServerAddresses(
 }
 
 /** Servers that have a finished deployment for each environment a hosting's service lives in. */
-async function siteServersByHosting(
+export async function siteServersByHosting(
   db: Db,
   hostingIds: readonly string[],
   organizationId: string
@@ -131,4 +131,21 @@ export async function loadRoutingFacts(db: Db, organizationId: string): Promise<
     t.doorways.forEach((d) => d.siteServerIds.forEach((id) => involved.add(id)))
   }
   return { tunnels, addresses: await loadServerAddresses(db, organizationId, [...involved]) }
+}
+
+/** The servers that run a site with one of the tunnel's names (its non-removing doorways), sorted. */
+export async function siteServersOfTunnel(
+  db: Db,
+  organizationId: string,
+  tunnelId: string
+): Promise<string[]> {
+  const rows = await db
+    .select({ hostingId: doorway.hostingId, status: doorway.status })
+    .from(doorway)
+    .where(and(eq(doorway.tunnelId, tunnelId), isNotNull(doorway.hostingId)))
+  const hostingIds = rows.flatMap((r) =>
+    r.hostingId && r.status !== 'removing' ? [r.hostingId] : []
+  )
+  const sites = await siteServersByHosting(db, hostingIds, organizationId)
+  return [...new Set([...sites.values()].flat())].toSorted(compareText)
 }
