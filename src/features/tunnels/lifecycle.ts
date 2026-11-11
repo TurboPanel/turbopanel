@@ -820,7 +820,7 @@ export function parseDoorwayBody(body: Record<string, unknown>): Parsed<{
   const replace = Array.isArray(sent) ? sent.map(parseConfirmedRecord) : [null]
   if (
     replace.length > MAX_REPLACED_RECORDS ||
-    replace.some((r) => r === null) ||
+    replace.includes(null) ||
     new Set(replace.map((r) => r!.id)).size !== replace.length
   ) {
     return {
