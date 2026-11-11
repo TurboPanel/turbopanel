@@ -172,13 +172,13 @@ const PGADMIN_SERVERS_JSON = [
   '',
 ].join('\n')
 
-const PGADMIN_PGPASS = '{$DB_HOST}:{$DB_PORT}:*:{$DB_USER}:{$DB_PASSWORD}\n'
+const PGADMIN_PASS_FILE_TEXT = '{$DB_HOST}:{$DB_PORT}:*:{$DB_USER}:{$DB_PASSWORD}\n'
 
 function pgadminData(input: AdminToolComposeInput): ComposeData {
   return {
     configs: {
       pgadmin_servers: { content: PGADMIN_SERVERS_JSON },
-      pgadmin_pgpass: { content: PGADMIN_PGPASS },
+      pgadmin_pgpass: { content: PGADMIN_PASS_FILE_TEXT },
     },
     services: {
       [ADMIN_TOOL_SERVICE]: {

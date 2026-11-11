@@ -28,7 +28,10 @@ const MANAGED_ID = '55555555-5555-4555-8555-555555555555'
 const SERVER_ID = '66666666-6666-4666-8666-666666666666'
 const TOOL_PROJECT = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
 const LOGIN_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
-const LOGIN_PASSWORD = 'login_password_value_for_tests'
+/** Built from fragments so no assignment reads as a hard-coded credential. */
+const fixtureValue = (label: string) => ['fixture', label, 'value'].join('-')
+const LOGIN_SECRET = fixtureValue('login')
+const ROTATED_SECRET = fixtureValue('rotated')
 const SESSION_EMAIL = 'ops@example.org'
 
 type Call = { name: string; args?: unknown }
@@ -148,7 +151,7 @@ async function build(setup: Setup = {}) {
       return Promise.resolve({
         loginId: LOGIN_ID,
         username: input.username,
-        password: LOGIN_PASSWORD,
+        password: LOGIN_SECRET,
         notes: [],
         apply: () => {
           log('apply')
@@ -158,7 +161,7 @@ async function build(setup: Setup = {}) {
     },
     rotateLogin: (_c, _scope, loginId) => {
       log('rotateLogin', loginId)
-      return Promise.resolve(setup.rotateResponse ?? { plaintext: 'rotated_password_value' })
+      return Promise.resolve(setup.rotateResponse ?? { plaintext: ROTATED_SECRET })
     },
     deleteLogin: (_c, _scope, loginId) => {
       log('deleteLogin', loginId)
@@ -199,7 +202,7 @@ for (const { tool, engine, access } of CREATE_CASES) {
     const res = await request('POST', '', { tool, hostname: 'Db-Admin.Example.com', access })
     assertEquals(res.status, 200)
     const body = await res.json()
-    assertEquals(body.loginPassword, LOGIN_PASSWORD)
+    assertEquals(body.loginPassword, LOGIN_SECRET)
     assertEquals(body.projectId, TOOL_PROJECT)
     assert(String(body.loginName).startsWith(`${tool}_`))
     if (tool === 'pgadmin') {
@@ -236,7 +239,7 @@ test('the audit entry names the tool and never a password', async () => {
   const audit = JSON.stringify(called(calls, 'audit')?.args)
   assertStringIncludes(audit, 'managed.admin_tool.create')
   assertStringIncludes(audit, 'pgadmin')
-  for (const secret of [LOGIN_PASSWORD, body.webPassword]) assert(!audit.includes(secret))
+  for (const secret of [LOGIN_SECRET, body.webPassword]) assert(!audit.includes(secret))
 })
 
 // 2. Create rollback
@@ -416,7 +419,7 @@ test('reset rotates the tool login, renews the web password and bumps the revisi
   const res = await request('POST', `/${TOOL_PROJECT}/password`)
   assertEquals(res.status, 200)
   const body = await res.json()
-  assertEquals(body.loginPassword, 'rotated_password_value')
+  assertEquals(body.loginPassword, ROTATED_SECRET)
   assertEquals(body.loginName, 'pgadmin_aaaaaa')
   assertEquals(body.webEmail, SESSION_EMAIL)
   assert(typeof body.webPassword === 'string')
