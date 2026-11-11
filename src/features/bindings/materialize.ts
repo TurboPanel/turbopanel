@@ -28,6 +28,13 @@ import type { ManagedSslMode } from '../managed/ssl.ts'
 import { resolveEffectiveManagedSsl } from '../managed/external-access-tls.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { bindingPrefixedKeys } from '../../lib/naming.ts'
+import {
+  type BindingPreset,
+  effectivePreset,
+  presetEntryNames,
+  type PresetFieldValues,
+  renderPresetRows,
+} from './presets.ts'
 import type { ResolvedVariableEntry, ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { ensureActiveOrganizationCa } from '../managed/apply-prepare.ts'
 import { loadManagedOptions } from '../managed/options.ts'
@@ -82,6 +89,38 @@ export type DesiredBindingVariable = {
 }
 
 /**
+ * The field values a preset template can read. A field this delivery kind
+ * cannot have is left out: a PHP site gets no CA text and its CA file path is
+ * only known to the daemon; a native Node app has no CA file.
+ */
+function presetFieldValues(
+  p: Readonly<{
+    host: string
+    port: number
+    databaseName: string
+    username: string
+    password: string
+    dsn: string
+    sslModeText: string
+    caCertPem: string
+    delivery: BindingDelivery
+    keyPrefix: string
+  }>
+): PresetFieldValues {
+  return {
+    host: p.host,
+    port: String(p.port),
+    name: p.databaseName,
+    user: p.username,
+    password: p.password,
+    url: p.dsn,
+    ssl_mode: p.sslModeText,
+    ...(p.delivery === 'host-site' ? {} : { ca_text: p.caCertPem }),
+    ...(p.delivery === 'container' ? { ca_file: containerBindingCaPath(p.keyPrefix) } : {}),
+  }
+}
+
+/**
  * Pure: compute the key/value set a binding emits for unit tests and
  * materialization. Secret values are still plaintext here — the materialize
  * path seals them before write.
@@ -89,7 +128,8 @@ export type DesiredBindingVariable = {
 export function computeBindingVariableSet(
   params: Readonly<{
     keyPrefix: string
-    emitEngineDefaults: boolean
+    /** The effective preset (see `effectivePreset`), or `null` for none. */
+    preset: BindingPreset | null
     databaseName: string
     username: string
     password: string
@@ -169,22 +209,29 @@ export function computeBindingVariableSet(
       : []),
   ]
 
-  if (params.emitEngineDefaults) {
-    const u = spec.binding.unprefixed
-    rows.push(
-      { key: u.host, value: host, isSecret: false },
-      { key: u.port, value: String(params.port), isSecret: false },
-      { key: u.database, value: params.databaseName, isSecret: false },
-      { key: u.user, value: params.username, isSecret: false },
-      { key: u.password, value: params.password, isSecret: true }
-    )
-    if (u.sslMode) {
-      rows.push({
-        key: u.sslMode,
-        value: spec.formatSslMode(params.sslMode),
-        isSecret: false,
-      })
-    }
+  if (params.preset !== null) {
+    // A preset name that equals one of the binding's own prefixed names (prefix
+    // `DB` with a preset naming `DB_HOST`) would be a second row of one key.
+    // The create and update checks refuse that pairing; an older binding is
+    // never crashed by it, the prefixed row wins.
+    const taken = new Set(rows.map((row) => row.key))
+    const presetRows = renderPresetRows(params.preset, {
+      engineCode: params.engineCode,
+      sslMode: params.sslMode,
+      fields: presetFieldValues({
+        host,
+        port: params.port,
+        databaseName: params.databaseName,
+        username: params.username,
+        password: params.password,
+        dsn,
+        sslModeText: spec.formatSslMode(params.sslMode),
+        caCertPem: params.caCertPem,
+        delivery,
+        keyPrefix: params.keyPrefix,
+      }),
+    })
+    rows.push(...presetRows.filter((row) => !taken.has(row.key)))
   }
 
   return rows
@@ -194,7 +241,7 @@ export function computeBindingVariableSet(
 export function listBindingEmittedKeys(
   params: Readonly<{
     keyPrefix: string
-    emitEngineDefaults: boolean
+    preset: BindingPreset | null
     engineCode: string
     /**
      * Omitted lists `<PREFIX>_CA_FILE` (a container stores it; the daemon sets
@@ -209,11 +256,7 @@ export function listBindingEmittedKeys(
   const { caFile, ...rest } = bindingPrefixedKeys(params.keyPrefix)
   const keys = Object.values(rest)
   if (params.delivery !== 'host-node') keys.push(caFile)
-  if (params.emitEngineDefaults) {
-    const u = spec.binding.unprefixed
-    keys.push(u.host, u.port, u.database, u.user, u.password)
-    if (u.sslMode) keys.push(u.sslMode)
-  }
+  if (params.preset !== null) keys.push(...presetEntryNames(params.preset, params.engineCode))
   return keys
 }
 
@@ -352,7 +395,8 @@ export async function materializeBinding(
       serviceId: binding.serviceId,
       databaseName: managedDatabase.name,
       keyPrefix: binding.keyPrefix,
-      emitEngineDefaults: binding.isEmitEngineDefaults,
+      isEmitEngineDefaults: binding.isEmitEngineDefaults,
+      preset: binding.preset,
       loginId: login.id,
       // Applied login — bindings hand services the real engine credential.
       principalUsername: login.appliedUsername,
@@ -444,7 +488,7 @@ export async function materializeBinding(
 
   const desired = computeBindingVariableSet({
     keyPrefix: row.keyPrefix,
-    emitEngineDefaults: row.emitEngineDefaults,
+    preset: effectivePreset(row, row.managedEngine),
     databaseName: row.databaseName,
     username: row.principalUsername,
     password: plaintextPassword,

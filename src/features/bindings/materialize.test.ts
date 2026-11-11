@@ -17,7 +17,7 @@ const test = Deno.test.bind(Deno)
 test('computeBindingVariableSet emits prefixed keys for postgres', () => {
   const result = computeBindingVariableSet({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     databaseName: 'appdb',
     username: 'appuser',
     password: 's3cret',
@@ -48,7 +48,7 @@ test('computeBindingVariableSet emits prefixed keys for postgres', () => {
 test('computeBindingVariableSet gates unprefixed engine defaults', () => {
   const result = computeBindingVariableSet({
     keyPrefix: 'DB',
-    emitEngineDefaults: true,
+    preset: 'postgres',
     databaseName: 'appdb',
     username: 'appuser',
     password: 's3cret',
@@ -74,7 +74,7 @@ test('computeBindingVariableSet gates unprefixed engine defaults', () => {
 test('computeBindingVariableSet emits mysql-family unprefixed keys', () => {
   const result = computeBindingVariableSet({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: true,
+    preset: 'mysql',
     databaseName: 'appdb',
     username: 'appuser',
     password: 's3cret',
@@ -100,7 +100,7 @@ test('the effective ssl mode reaches both the DSN and the engine default key', (
   // chain validation against a platform-CA certificate it does not trust.
   const result = computeBindingVariableSet({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: true,
+    preset: 'postgres',
     databaseName: 'appdb',
     username: 'appuser',
     password: 's3cret',
@@ -124,12 +124,12 @@ test('the effective ssl mode reaches both the DSN and the engine default key', (
 test('listBindingEmittedKeys drops stale unprefixed keys when gated off', () => {
   const withDefaults = listBindingEmittedKeys({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: true,
+    preset: 'postgres',
     engineCode: 'postgres',
   })
   const without = listBindingEmittedKeys({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     engineCode: 'postgres',
   })
   assertEquals(withDefaults?.includes('PGHOST'), true)
@@ -140,12 +140,12 @@ test('listBindingEmittedKeys drops stale unprefixed keys when gated off', () => 
 test('prefix change swaps emitted key set', () => {
   const before = listBindingEmittedKeys({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     engineCode: 'postgres',
   })
   const after = listBindingEmittedKeys({
     keyPrefix: 'APP',
-    emitEngineDefaults: false,
+    preset: null,
     engineCode: 'postgres',
   })
   assertEquals(before?.includes('DATABASE_URL'), true)
@@ -156,7 +156,7 @@ test('prefix change swaps emitted key set', () => {
 function renderSet(extra: Partial<Parameters<typeof computeBindingVariableSet>[0]>) {
   const result = computeBindingVariableSet({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     databaseName: 'appdb',
     username: 'appuser',
     password: 's3cret',

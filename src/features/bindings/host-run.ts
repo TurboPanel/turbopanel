@@ -13,9 +13,9 @@ import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { binding, login, managed, variable } from '../../db/schema.ts'
 import { isNodeComposeService, isSiteComposeService } from '../compose/service-kind.ts'
-import { getManagedEngineSpec } from '../managed/index.ts'
 import { MANAGED_INGRESS_MYSQL_PORT, MANAGED_INGRESS_PGSQL_PORT } from '../managed/ingress-ports.ts'
 import { bindingPrefixedKeys, HOST_RUN_LOOPBACK_HOST } from '../../lib/naming.ts'
+import { type BindingPreset, effectivePreset, presetSiteNames } from './presets.ts'
 
 export { HOST_RUN_LOOPBACK_HOST }
 
@@ -108,19 +108,18 @@ export function hostSiteBindingRefusal(listenerPort: number): string | null {
 
 /** Variable names a host-run service cannot work without. */
 export function bindingRequiredKeys(
-  params: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean; engineCode: string }>
+  params: Readonly<{
+    keyPrefix: string
+    preset: BindingPreset | null
+    engineCode: string
+    /** The stored TLS mode text, when known (decides the verify-only names). */
+    sslMode?: string | null
+  }>
 ): string[] {
   const keys = bindingPrefixedKeys(params.keyPrefix)
   const out = [keys.host, keys.port, keys.database, keys.user, keys.password]
-  const unprefixed = getManagedEngineSpec(params.engineCode)?.binding?.unprefixed
-  if (params.emitEngineDefaults && unprefixed) {
-    out.push(
-      unprefixed.host,
-      unprefixed.port,
-      unprefixed.database,
-      unprefixed.user,
-      unprefixed.password
-    )
+  if (params.preset !== null) {
+    out.push(...presetSiteNames(params.preset, params.engineCode, params.sslMode ?? null).required)
   }
   return out
 }
@@ -133,6 +132,24 @@ export type HostSiteBindingNeeds = {
   requiredKeys: string[]
 }
 
+/** Stored `<PREFIX>_SSL_MODE` text per binding id (the mode every kind keeps as a plain row). */
+async function loadStoredSslModes(
+  db: Db,
+  rows: readonly { id: string; keyPrefix: string }[]
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  if (rows.length === 0) return out
+  const keyById = new Map(rows.map((row) => [row.id, bindingPrefixedKeys(row.keyPrefix).sslMode]))
+  const stored = await db
+    .select({ bindingId: variable.bindingId, key: variable.key, value: variable.value })
+    .from(variable)
+    .where(and(inArray(variable.bindingId, [...keyById.keys()]), eq(variable.isSecret, false)))
+  for (const row of stored) {
+    if (row.bindingId && keyById.get(row.bindingId) === row.key) out.set(row.bindingId, row.value)
+  }
+  return out
+}
+
 /** Per service id: what the daemon must deliver for its bindings. */
 export async function loadHostSiteBindingNeeds(
   db: Db,
@@ -142,26 +159,33 @@ export async function loadHostSiteBindingNeeds(
   if (serviceIds.length === 0) return out
   const rows = await db
     .select({
+      id: binding.id,
       serviceId: binding.serviceId,
       keyPrefix: binding.keyPrefix,
-      emitEngineDefaults: binding.isEmitEngineDefaults,
+      isEmitEngineDefaults: binding.isEmitEngineDefaults,
+      preset: binding.preset,
       engine: managed.engine,
     })
     .from(binding)
     .innerJoin(login, eq(login.id, binding.loginId))
     .innerJoin(managed, eq(managed.id, login.managedId))
     .where(and(inArray(binding.serviceId, [...serviceIds])))
+  const sslModes = await loadStoredSslModes(db, rows)
   for (const row of rows) {
     if (!row.engine) continue
     const needs = out.get(row.serviceId) ?? { caFileKeys: [], urlKeys: [], requiredKeys: [] }
-    needs.caFileKeys.push(bindingPrefixedKeys(row.keyPrefix).caFile)
-    if (row.engine === 'postgres') needs.urlKeys.push(bindingPrefixedKeys(row.keyPrefix).url)
+    const keys = bindingPrefixedKeys(row.keyPrefix)
+    const preset = effectivePreset(row, row.engine)
+    const sslMode = sslModes.get(row.id) ?? null
+    needs.caFileKeys.push(keys.caFile)
+    if (row.engine === 'postgres') needs.urlKeys.push(keys.url)
+    if (preset !== null) {
+      const names = presetSiteNames(preset, row.engine, sslMode)
+      needs.caFileKeys.push(...names.caFile)
+      needs.urlKeys.push(...names.url)
+    }
     needs.requiredKeys.push(
-      ...bindingRequiredKeys({
-        keyPrefix: row.keyPrefix,
-        emitEngineDefaults: row.emitEngineDefaults,
-        engineCode: row.engine,
-      })
+      ...bindingRequiredKeys({ keyPrefix: row.keyPrefix, preset, engineCode: row.engine, sslMode })
     )
     out.set(row.serviceId, needs)
   }

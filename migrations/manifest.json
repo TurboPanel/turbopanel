@@ -206,6 +206,12 @@
       "tag": "0033_project_cache",
       "when": 1794411347353,
       "sha256": "30255f8a6f15f488d905ec4fa6cc33909daac1420bf6163e6126b73c0ae76272"
+    },
+    {
+      "idx": 34,
+      "tag": "0034_binding_preset",
+      "when": 1794412796776,
+      "sha256": "1299a864a690fa28aff3bc3950ac4442e73d637324459f3400a4e68f6457645a"
     }
   ]
 }
