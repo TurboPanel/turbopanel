@@ -235,6 +235,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tunnel-lock-follow-v1',
   'tunnel-connector-token-change-v1',
   'deploy-config-files-v1',
+  'site-php-lifecycle-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -473,6 +474,14 @@ export const METRICS_V8_SIZES_FEATURE: DaemonWireFeature = 'metrics-v8-sizes'
  * Caddy sites ignore `php.mode` either way.
  */
 export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
+
+/**
+ * The daemon runs a site's post-deploy commands (`sites[].postDeploy`) and
+ * keeps its background workers (`sites[].workers`) running. An older daemon
+ * would refuse the whole environment deploy at parse time, so the control plane
+ * refuses first, naming the server, and nothing is sent.
+ */
+export const SITE_PHP_LIFECYCLE_FEATURE: DaemonWireFeature = 'site-php-lifecycle-v1'
 
 /**
  * The daemon understands `deploy-cancel` and stops an `environment.deploy`

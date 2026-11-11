@@ -32,6 +32,11 @@ const RESERVED_BUILD_ENV_KEYS = new Set([
   'GIT_CONFIG_GLOBAL',
   'GIT_CONFIG_SYSTEM',
   'GIT_CONFIG_COUNT',
+  // The PHP package manager's folders and series choice belong to the build.
+  'COMPOSER_HOME',
+  'COMPOSER_CACHE_DIR',
+  'COMPOSER_AUTH',
+  'TURBOPANEL_PHP',
 ])
 
 /** A name a shell can carry. */
@@ -55,6 +60,18 @@ export function isBuildEnvNameAllowed(name: string): boolean {
     !RESERVED_BUILD_ENV_KEYS.has(name) &&
     !name.startsWith('LD_')
   )
+}
+
+/**
+ * A plain sentence when a variable may not be saved for builds, else `null`.
+ * A build variable is an argument of `env(1)` inside the build and is not
+ * secret, so a registry token must never travel that way.
+ */
+export function buildEnvSaveProblem(key: string, forBuild: boolean): string | null {
+  if (forBuild && key === 'COMPOSER_AUTH') {
+    return 'Private PHP packages are not supported yet, so COMPOSER_AUTH cannot be set for a build.'
+  }
+  return null
 }
 
 const encoder = new TextEncoder()

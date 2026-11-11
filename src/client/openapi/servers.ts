@@ -1546,6 +1546,15 @@ export const serverSchemas = {
           name: { type: 'string' },
           project: { type: 'string' },
           environment: { type: 'string' },
+          phpVersion: {
+            type: 'string',
+            description: 'PHP version this service runs, when the daemon reported its sites.',
+          },
+          phpRestartPending: {
+            type: 'boolean',
+            description:
+              'True when the service runs an older PHP than is installed and is waiting for a restart.',
+          },
           containers: cappedListSchema({
             type: 'object',
             required: ['name', 'status', 'role'],
@@ -1621,6 +1630,23 @@ export const serverSchemas = {
           properties: {
             kind: { type: 'string' },
             versions: { type: 'array', items: { type: 'string' } },
+            patches: {
+              type: 'object',
+              additionalProperties: { type: 'string' },
+              description:
+                'PHP only: installed patch version by series, when the daemon reported it.',
+            },
+            restartError: {
+              type: 'object',
+              description: 'PHP only: why the last restart after a patch update stopped.',
+              properties: {
+                series: { type: 'string' },
+                environmentId: { type: 'string' },
+                composeServiceName: { type: 'string' },
+                message: { type: 'string' },
+                at: { type: 'string' },
+              },
+            },
           },
         },
       },

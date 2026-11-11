@@ -16,6 +16,7 @@ import {
   type ServerHostResources,
   type ServerDockerMetadata,
   type ServerReleaseLinkScanMetadata,
+  publicServerRuntimeMetadata,
   type ServerRuntimeMetadata,
 } from '../../features/servers/server-metadata.ts'
 import type { OrganizationOptions } from '../../features/organizations/organization-options.ts'
@@ -571,7 +572,7 @@ export function shapeServerPresenceFields(
     ips: ips ?? live?.ips ?? null,
     timeSync: live?.timeSync ?? null,
     docker: live?.docker ?? null,
-    runtimes: live?.runtimes ?? null,
+    runtimes: publicServerRuntimeMetadata(live?.runtimes),
     releaseLinkScan: live?.releaseLinkScan ?? null,
     hardwareProfile: live?.hardwareProfile ?? null,
   }

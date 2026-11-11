@@ -4,6 +4,7 @@ import {
   parseServiceOptions,
   type ParseServiceOptionsOptions,
 } from '../../features/projects/service-options.ts'
+import { validateSiteLifecycleOptions } from '../../features/projects/site-lifecycle-options.ts'
 import {
   buildPatchUpdateFields,
   parseDescription,
@@ -104,7 +105,7 @@ export type OptionalServiceOptionsResult =
       kind: 'value'
       value: NonNullable<ReturnType<typeof parseServiceOptions>>
     }
-  | { kind: 'invalid' }
+  | { kind: 'invalid'; message?: string }
 
 /**
  * What the write path persists is the *parsed* options document, so the
@@ -119,6 +120,10 @@ export function parseOptionalServiceOptions(
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') return { kind: 'invalid' }
   if (optionsResult === null) return { kind: 'absent' }
+  // Run on the raw document: the parse drops what it cannot read, so a bad
+  // command or worker would otherwise be saved away with a success answer.
+  const lifecycleProblem = validateSiteLifecycleOptions(optionsResult)
+  if (lifecycleProblem) return { kind: 'invalid', message: lifecycleProblem }
   const parsed = parseServiceOptions(optionsResult, parseOptions)
   if (parsed === null) return { kind: 'invalid' }
   return { kind: 'value', value: parsed }
@@ -153,7 +158,11 @@ export function parseServiceCreateFields(body: Record<string, unknown>):
 
     const optionsResult = parseOptionalServiceOptions(body)
     if (optionsResult.kind === 'invalid') {
-      return { ok: false, error: 'invalid_service_options', status: 400 }
+      return {
+        ok: false,
+        error: optionsResult.message ?? 'invalid_service_options',
+        status: 400,
+      }
     }
 
     const metadata = metadataResult === null ? null : stripServicePromotedMetadata(metadataResult)
@@ -212,7 +221,11 @@ export function parseServicePatchFields(
 
   const optionsResult = parseOptionalServiceOptions(body, parseOptions)
   if (optionsResult.kind === 'invalid') {
-    return { ok: false, error: 'invalid_service_options', status: 400 }
+    return {
+      ok: false,
+      error: optionsResult.message ?? 'invalid_service_options',
+      status: 400,
+    }
   }
   if (optionsResult.kind === 'value') {
     patch.options = optionsResult.value

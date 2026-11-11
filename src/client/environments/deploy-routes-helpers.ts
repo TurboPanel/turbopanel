@@ -373,7 +373,11 @@ function mapSitePrepareError(
   prepared: Extract<
     DeployPrepareError,
     {
-      kind: 'site_principal_ambiguous' | 'site_cron_unowned' | 'site_managed_directory_unowned'
+      kind:
+        | 'site_principal_ambiguous'
+        | 'site_cron_unowned'
+        | 'site_lifecycle_unowned'
+        | 'site_managed_directory_unowned'
     }
   >
 ): PrepareErrorResponse {
@@ -394,6 +398,16 @@ function mapSitePrepareError(
         error: 'site_cron_unowned',
         composeServiceName: prepared.composeServiceName,
         message: `Site "${prepared.composeServiceName}" has scheduled jobs but no project principal to run them as. Assign a principal to the service — a timer with no account would run as root, which TurboPanel will not do.`,
+      },
+    }
+  }
+  if (prepared.kind === 'site_lifecycle_unowned') {
+    return {
+      status: 422,
+      body: {
+        error: 'site_lifecycle_unowned',
+        composeServiceName: prepared.composeServiceName,
+        message: `Site "${prepared.composeServiceName}" has post-deploy commands or background workers but no project principal to run them as. Assign a principal to the service — they run as that account, never as root.`,
       },
     }
   }
@@ -620,6 +634,7 @@ function tryMapSitePrepareError(prepared: DeployPrepareError): PrepareErrorRespo
   if (
     prepared.kind !== 'site_principal_ambiguous' &&
     prepared.kind !== 'site_cron_unowned' &&
+    prepared.kind !== 'site_lifecycle_unowned' &&
     prepared.kind !== 'site_managed_directory_unowned'
   ) {
     return null
@@ -700,6 +715,20 @@ function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErro
       error: 'site_engine_feature_missing',
       composeServiceName: prepared.composeServiceName,
       message: `Site "${prepared.composeServiceName}" uses the nginx+apache web server pair, but the TurboPanel daemon on this server is too old to run it. Update the daemon on this server, then deploy again.`,
+    },
+  }
+}
+
+function tryMapSiteLifecycleUnsupportedError(
+  prepared: DeployPrepareError
+): PrepareErrorResponse | null {
+  if (prepared.kind !== 'site_lifecycle_unsupported') return null
+  return {
+    status: 409,
+    body: {
+      error: 'site_lifecycle_unsupported',
+      message: prepared.message,
+      servers: prepared.servers,
     },
   }
 }
@@ -796,6 +825,7 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     tryMapPhpModePrepareError(prepared) ??
     tryMapNodeVersionPrepareError(prepared) ??
     tryMapSiteEngineFeatureError(prepared) ??
+    tryMapSiteLifecycleUnsupportedError(prepared) ??
     tryMapBindingHostSiteError(prepared) ??
     tryMapDenoPrepareError(prepared) ??
     tryMapNodeAppModeFeatureError(prepared) ??

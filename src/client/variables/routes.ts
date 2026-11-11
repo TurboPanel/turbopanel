@@ -9,6 +9,7 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { variable } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { buildEnvSaveProblem } from '../../features/compose/build-env.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -251,6 +252,11 @@ async function buildVariablePatchFields(
   return updateFields
 }
 
+/** Why a new variable's value or build flag cannot be saved, as one plain sentence, or null. */
+function variableCreateProblem(value: string, key: string, forBuild: boolean): string | null {
+  return variableValueProblem(value) ?? buildEnvSaveProblem(key, forBuild)
+}
+
 type VariableCreateFields = {
   parent: ParsedVariableParent
   key: string
@@ -309,7 +315,7 @@ async function parseVariableCreateFields(
   if (parsedDescription instanceof Response) return parsedDescription
 
   const plaintextValue = trimVariableValueOnWrite(parsedValue ?? '')
-  const valueProblem = variableValueProblem(plaintextValue)
+  const valueProblem = variableCreateProblem(plaintextValue, key, forBuild)
   if (valueProblem) return c.json({ error: valueProblem }, 400)
   const storedValue = await sealOrPlainValue(c, plaintextValue, isSecret)
   if (storedValue instanceof Response) return storedValue

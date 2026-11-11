@@ -628,7 +628,7 @@ save, so reaching it means a stale or unlinted document).
 including `node`) skip `pickSolePrincipalId` entirely for that service. The
 sole-steward lookup remains the fallback for a document that declares none, so
 `site_principal_ambiguous`, `source_principal_ambiguous`,
-`site_managed_directory_unowned`, and `site_cron_unowned` become unreachable for
+`site_managed_directory_unowned`, `site_cron_unowned`, and `site_lifecycle_unowned` become unreachable for
 an aliased service but still fire on the un-aliased path. A host-native service
 with neither an alias nor any steward is
 **`422
