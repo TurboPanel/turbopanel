@@ -423,12 +423,15 @@ async function buildCredentials(
   dataEncryptionSecrets: DerivedSecretsConfig,
   managedId: string,
   serverId: string,
-  omitLoginIds: string[] | undefined,
-  /** Every database the cluster has after this apply; the backup login reaches all of them. */
-  clusterDatabases: readonly string[],
-  /** Both All Databases switches allow it, and the engine whose reserved names stay out. */
-  allDatabases: { active: boolean; engine: string }
+  scopeInput: {
+    omitLoginIds: string[] | undefined
+    /** Every database the cluster has after this apply; the backup login reaches all of them. */
+    clusterDatabases: readonly string[]
+    /** Both All Databases switches allow it, and the engine whose reserved names stay out. */
+    allDatabases: { active: boolean; engine: string }
+  }
 ): Promise<ManagedApplyCommandPayload['credentials'] | ManagedApplyPrepareError> {
+  const { omitLoginIds, clusterDatabases, allDatabases } = scopeInput
   const omit = new Set(omitLoginIds ?? [])
   const rows = (await listManagedLoginCredentials(db, managedId)).filter((row) => !omit.has(row.id))
   if (rows.length === 0) {
@@ -1475,13 +1478,18 @@ async function buildPayloadForMember(
     dataEncryptionSecrets,
     input.managedRow.id,
     member.serverId,
-    input.omitLoginIds,
-    input.databases,
     {
-      active: allDatabasesAllowed(
-        allDatabasesSwitches(await loadManagedOrgDefaults(db, input.organizationId), input.settings)
-      ),
-      engine: input.spec.engine,
+      omitLoginIds: input.omitLoginIds,
+      clusterDatabases: input.databases,
+      allDatabases: {
+        active: allDatabasesAllowed(
+          allDatabasesSwitches(
+            await loadManagedOrgDefaults(db, input.organizationId),
+            input.settings
+          )
+        ),
+        engine: input.spec.engine,
+      },
     }
   )
   if (!Array.isArray(credentials)) return credentials

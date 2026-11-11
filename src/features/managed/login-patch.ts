@@ -235,8 +235,8 @@ export function planLoginPatch(
   }
   const tool = patch.tool ?? current.tool
   const summary = describeApply(engine, after, tool, becomesAdmin)
-  summary.push(...describeAllDatabasesChange(input.allDatabases))
   summary.push(
+    ...describeAllDatabasesChange(input.allDatabases),
     ...describePatchedLimits(current, input),
     ...describeStraightThroughPatch(engine, current, patch)
   )

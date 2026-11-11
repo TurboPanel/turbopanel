@@ -821,6 +821,20 @@ export function parseManagedLoginModeFields(
   }
 }
 
+/** Copies a boolean `allDatabases` onto the patch input; any other value is a 400. */
+function readAllDatabasesPatch(
+  c: Context,
+  body: Record<string, unknown>,
+  input: LoginPatchInput
+): Response | null {
+  if (body.allDatabases === undefined) return null
+  if (typeof body.allDatabases !== 'boolean') {
+    return c.json({ error: 'Invalid request', message: 'allDatabases must be true or false.' }, 400)
+  }
+  input.allDatabases = body.allDatabases
+  return null
+}
+
 /** Fields of a PATCH on a login; everything is optional, validated on its own. */
 export function parseManagedLoginPatchFields(
   c: Context,
@@ -857,15 +871,8 @@ export function parseManagedLoginPatchFields(
     }
     input.databases = [...new Set(list as string[])]
   }
-  if (body.allDatabases !== undefined) {
-    if (typeof body.allDatabases !== 'boolean') {
-      return c.json(
-        { error: 'Invalid request', message: 'allDatabases must be true or false.' },
-        400
-      )
-    }
-    input.allDatabases = body.allDatabases
-  }
+  const allDatabasesRefusal = readAllDatabasesPatch(c, body, input)
+  if (allDatabasesRefusal) return allDatabasesRefusal
   if (body.connectionRole !== undefined) {
     if (body.connectionRole !== 'read-write' && body.connectionRole !== 'read-only') {
       return c.json({ error: 'Invalid request' }, 400)
