@@ -611,11 +611,11 @@ test('a server that drops mid-move keeps the new token, waits behind the others 
     assertEquals(w.provider.drops, 0)
     // A person may resume at once: an unreachable server no longer blocks a resume.
     assertEquals(await rotationBlock(w.db, await tunnelRow(w)), null)
-    // Back (the list it never answered has expired): the sweep checks it again
+    // Back (the list it never answered has timed out): the sweep checks it again
     // with the new token, then finishes.
     await w.db
       .update(command)
-      .set({ status: 'expired' })
+      .set({ status: 'timed_out' })
       .where(eq(command.id, sentTo(w, first, 'server.tunnel.connectors')[0]!.commandId))
     await setConnected(w, first, true)
     await retryWaitOver(w)
