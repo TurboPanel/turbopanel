@@ -77,6 +77,7 @@ import {
   FIREWALL_SOURCE_KINDS,
   FIREWALL_STATES,
 } from '../features/firewall/vocabulary.ts'
+import { BINDING_PRESETS } from '../features/bindings/presets.ts'
 import { PRINCIPAL_ACCESS_LEVELS } from '../features/principals/principal-access.ts'
 import { PLACEMENT_SOURCES, PLACEMENT_STATES } from '../features/principals/placement-vocabulary.ts'
 import { FOLDER_KINDS, FOLDER_STATES } from '../features/folders/vocabulary.ts'
@@ -131,6 +132,7 @@ function checkValues(constraintName: string): string[] {
 }
 
 const CASES: Array<[constraint: string, values: readonly string[]]> = [
+  ['binding_preset_check', BINDING_PRESETS],
   ['custodian_alg_check', ROTATION_PASSKEY_ALGS],
   ['rotation_kind_check', KEYSET_STATEMENT_KINDS],
   ['rotation_state_check', KEYSET_STATEMENT_STATES],

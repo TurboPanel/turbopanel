@@ -11,6 +11,13 @@ import { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX } from '../../li
 import { parseManagedSettings } from '../../features/managed/options.ts'
 import { listBindingEmittedKeys } from '../../features/bindings/materialize.ts'
 import {
+  type BindingPreset,
+  effectivePreset,
+  isBindingPreset,
+  plainPresetForEngine,
+  presetFitsEngine,
+} from '../../features/bindings/presets.ts'
+import {
   isBindingEndpointError,
   resolveBindingEndpoint,
 } from '../../features/bindings/resolve-endpoint.ts'
@@ -25,6 +32,8 @@ export { assertSafeBindingKeyPrefix, DEFAULT_BINDING_KEY_PREFIX }
 
 export const BINDING_KEY_PREFIX_IN_USE_ERROR = 'binding_key_prefix_in_use'
 export const BINDING_ENGINE_DEFAULTS_IN_USE_ERROR = 'binding_engine_defaults_in_use'
+export const BINDING_PRESET_CONFLICT_ERROR = 'binding_preset_conflict'
+export const BINDING_PRESET_ENGINE_MISMATCH_ERROR = 'binding_preset_engine_mismatch'
 export const BINDING_KEY_CONFLICT_ERROR = 'binding_key_conflict'
 export const BINDING_ENDPOINT_UNAVAILABLE_ERROR = 'binding_endpoint_unavailable'
 
@@ -35,6 +44,8 @@ export type BindingRow = {
   databaseName: string
   keyPrefix: string
   emitEngineDefaults: boolean
+  /** The stored preset (null on a binding written before presets). */
+  preset: string | null
   createdAt: string
   updatedAt: string
 }
@@ -86,28 +97,61 @@ export function checkBindingDatabaseTarget(
   return null
 }
 
+export type PresetRequestResult =
+  { ok: true; preset: BindingPreset | null } | { ok: false; error: string }
+
 /**
- * Resolve PATCH field overrides for `keyPrefix` / `emitEngineDefaults`.
+ * The preset a request asks for. `preset` names one (or `null` for none); the
+ * older `emitEngineDefaults` boolean maps to the engine's plain preset or none.
+ * Both in one body is refused. When the body says neither, `fallback` stands.
+ */
+export function resolveRequestedPreset(
+  body: Readonly<Record<string, unknown>>,
+  engineCode: string,
+  fallback: BindingPreset | null
+): PresetRequestResult {
+  const hasPreset = body.preset !== undefined
+  const hasToggle = body.emitEngineDefaults !== undefined && body.emitEngineDefaults !== null
+  if (hasPreset && hasToggle) return { ok: false, error: BINDING_PRESET_CONFLICT_ERROR }
+  if (hasPreset) {
+    if (body.preset === null) return { ok: true, preset: null }
+    if (!isBindingPreset(body.preset)) return { ok: false, error: 'Invalid request' }
+    if (!presetFitsEngine(body.preset, engineCode)) {
+      return { ok: false, error: BINDING_PRESET_ENGINE_MISMATCH_ERROR }
+    }
+    return { ok: true, preset: body.preset }
+  }
+  if (!hasToggle) return { ok: true, preset: fallback }
+  const toggle = parseEmitEngineDefaults(body.emitEngineDefaults)
+  if (!toggle.ok) return toggle
+  return { ok: true, preset: toggle.value ? plainPresetForEngine(engineCode) : null }
+}
+
+/** The preset a request for a new binding gets: the plain names unless it says otherwise. */
+export function resolveCreatePreset(
+  body: Readonly<Record<string, unknown>>,
+  engineCode: string
+): PresetRequestResult {
+  return resolveRequestedPreset(body, engineCode, plainPresetForEngine(engineCode))
+}
+
+/**
+ * Resolve PATCH field overrides for `keyPrefix` / `preset`.
  */
 export function resolvePatchBindingFields(
   body: Readonly<Record<string, unknown>>,
-  row: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean }>
-): { ok: true; keyPrefix: string; emitEngineDefaults: boolean } | { ok: false; error: string } {
+  row: Readonly<{ keyPrefix: string; preset: BindingPreset | null }>,
+  engineCode: string
+): { ok: true; keyPrefix: string; preset: BindingPreset | null } | { ok: false; error: string } {
   let keyPrefix = row.keyPrefix
   if (body.keyPrefix !== undefined) {
     const prefixParsed = parseBindingKeyPrefix(body.keyPrefix)
     if (!prefixParsed.ok) return { ok: false, error: prefixParsed.error }
     keyPrefix = prefixParsed.prefix
   }
-
-  let emitEngineDefaults = row.emitEngineDefaults
-  if (body.emitEngineDefaults !== undefined) {
-    const emitParsed = parseEmitEngineDefaults(body.emitEngineDefaults)
-    if (!emitParsed.ok) return { ok: false, error: emitParsed.error }
-    emitEngineDefaults = emitParsed.value
-  }
-
-  return { ok: true, keyPrefix, emitEngineDefaults }
+  const presetParsed = resolveRequestedPreset(body, engineCode, row.preset)
+  if (!presetParsed.ok) return presetParsed
+  return { ok: true, keyPrefix, preset: presetParsed.preset }
 }
 
 export type BindingConflictError =
@@ -120,20 +164,20 @@ export async function detectBindingCreateConflicts(
   params: Readonly<{
     serviceId: string
     keyPrefix: string
-    emitEngineDefaults: boolean
+    preset: BindingPreset | null
     engineCode: string
   }>
 ): Promise<BindingConflictError | null> {
   if (await isPrefixInUse(db, params.serviceId, params.keyPrefix)) {
     return { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
   }
-  if (params.emitEngineDefaults && (await isEngineDefaultsInUse(db, params.serviceId))) {
+  if (params.preset !== null && (await isEngineDefaultsInUse(db, params.serviceId))) {
     return { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
   }
   const keyCheck = await assertNoBindingKeyConflicts(db, {
     serviceId: params.serviceId,
     keyPrefix: params.keyPrefix,
-    emitEngineDefaults: params.emitEngineDefaults,
+    preset: params.preset,
     engineCode: params.engineCode,
   })
   if (!keyCheck.ok) {
@@ -148,9 +192,9 @@ export async function detectBindingUpdateConflicts(
     id: string
     serviceId: string
     previousKeyPrefix: string
-    previousEmitEngineDefaults: boolean
+    previousPreset: BindingPreset | null
     nextKeyPrefix: string
-    nextEmitEngineDefaults: boolean
+    nextPreset: BindingPreset | null
     engineCode: string
   }>
 ): Promise<BindingConflictError | null> {
@@ -161,8 +205,8 @@ export async function detectBindingUpdateConflicts(
     return { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
   }
   if (
-    params.nextEmitEngineDefaults &&
-    !params.previousEmitEngineDefaults &&
+    params.nextPreset !== null &&
+    params.previousPreset === null &&
     (await isEngineDefaultsInUse(db, params.serviceId, params.id))
   ) {
     return { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
@@ -170,7 +214,7 @@ export async function detectBindingUpdateConflicts(
   const keyCheck = await assertNoBindingKeyConflicts(db, {
     serviceId: params.serviceId,
     keyPrefix: params.nextKeyPrefix,
-    emitEngineDefaults: params.nextEmitEngineDefaults,
+    preset: params.nextPreset,
     engineCode: params.engineCode,
     excludeBindingId: params.id,
   })
@@ -236,7 +280,10 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
       keys =
         listBindingEmittedKeys({
           keyPrefix: row.keyPrefix,
-          emitEngineDefaults: row.emitEngineDefaults,
+          preset: effectivePreset(
+            { preset: row.preset, isEmitEngineDefaults: row.emitEngineDefaults },
+            mrow.engine
+          ),
           engineCode: mrow.engine,
         }) ?? []
       if (spec) {
@@ -263,6 +310,10 @@ export async function serializeBindingRow(db: Db, row: BindingRow) {
     databaseName: row.databaseName,
     keyPrefix: row.keyPrefix,
     emitEngineDefaults: row.emitEngineDefaults,
+    preset: effectivePreset(
+      { preset: row.preset, isEmitEngineDefaults: row.emitEngineDefaults },
+      engine
+    ),
     keys,
     endpoint,
     engine,
@@ -281,6 +332,7 @@ export type BindingListRow = {
   databaseName: string
   keyPrefix: string
   emitEngineDefaults: boolean
+  preset: BindingPreset | null
   createdAt: string
   updatedAt: string
   keys: string[]
@@ -342,6 +394,8 @@ export async function findBindingKeyConflicts(
     eq(variable.serviceId, params.serviceId),
     inArray(variable.key, [...params.keys]),
   ]
+  // Any row of the service counts, another binding's included: its names are
+  // unique per service. Only the binding being changed is left out.
   if (params.excludeBindingId) {
     serviceConds.push(
       or(
@@ -349,8 +403,6 @@ export async function findBindingKeyConflicts(
         sql`${variable.bindingId} != ${params.excludeBindingId}`
       )!
     )
-  } else {
-    serviceConds.push(sql`${variable.bindingId} IS NULL`)
   }
 
   const [serviceHit] = await db
@@ -391,17 +443,24 @@ export async function assertNoBindingKeyConflicts(
   params: Readonly<{
     serviceId: string
     keyPrefix: string
-    emitEngineDefaults: boolean
+    preset: BindingPreset | null
     engineCode: string
     excludeBindingId?: string
   }>
 ): Promise<{ ok: true } | { ok: false; key: string }> {
   const keys = listBindingEmittedKeys({
     keyPrefix: params.keyPrefix,
-    emitEngineDefaults: params.emitEngineDefaults,
+    preset: params.preset,
     engineCode: params.engineCode,
   })
   if (!keys) return { ok: true }
+  // A preset name equal to one of the binding's own prefixed names (prefix
+  // `DB` with the WordPress preset) would be one key twice.
+  const seen = new Set<string>()
+  for (const key of keys) {
+    if (seen.has(key)) return { ok: false, key }
+    seen.add(key)
+  }
   const conflict = await findBindingKeyConflicts(db, {
     serviceId: params.serviceId,
     keys,

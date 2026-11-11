@@ -893,7 +893,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       key_prefix:
         'Environment variable prefix for the emitted credential keys (default `DATABASE`), unique per service; identifier charset, 1-64 chars.',
       is_emit_engine_defaults:
-        'When true, also emit the unprefixed conventional engine keys (PG*, MYSQL_*); at most one such binding per service (API field `emitEngineDefaults`).',
+        'True when the binding also emits unprefixed names (its preset, or the plain PG*/MYSQL_* names when preset is NULL); at most one such binding per service.',
+      preset:
+        'App naming preset whose unprefixed names this binding also emits; NULL means the plain engine names when is_emit_engine_defaults is true.',
     },
   },
   container: {

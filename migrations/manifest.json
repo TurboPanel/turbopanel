@@ -194,6 +194,12 @@
       "tag": "0031_rotation_prev_key_signature",
       "when": 1794316446162,
       "sha256": "94e36e4fb647f234c1258f6b75ed15558ebaf41d8ad1417e630f034f40fad5cd"
+    },
+    {
+      "idx": 32,
+      "tag": "0032_binding_preset",
+      "when": 1794408967932,
+      "sha256": "1299a864a690fa28aff3bc3950ac4442e73d637324459f3400a4e68f6457645a"
     }
   ]
 }

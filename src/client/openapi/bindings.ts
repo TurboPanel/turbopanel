@@ -1,3 +1,4 @@
+import { BINDING_PRESETS } from '../../features/bindings/presets.ts'
 import { buildResourceCrudPaths, clientErrorJson } from './shared.ts'
 
 export const bindingSchemas = {
@@ -13,6 +14,12 @@ export const bindingSchemas = {
       databaseName: { type: 'string' },
       keyPrefix: { type: 'string' },
       emitEngineDefaults: { type: 'boolean' },
+      preset: {
+        type: ['string', 'null'],
+        enum: [...BINDING_PRESETS, null],
+        description:
+          'The app naming preset whose unprefixed names this binding also sets, or null for none.',
+      },
       keys: {
         type: 'array',
         items: { type: 'string' },
@@ -65,7 +72,13 @@ export const bindingSchemas = {
       emitEngineDefaults: {
         type: 'boolean',
         description:
-          'When true, also emit unprefixed PG*/MYSQL_* engine defaults (at most one binding per service)',
+          'Older form of `preset`: true is the engine plain preset, false is none. 400 `binding_preset_conflict` when sent with `preset`.',
+      },
+      preset: {
+        type: ['string', 'null'],
+        enum: [...BINDING_PRESETS, null],
+        description:
+          'App naming preset whose unprefixed names the binding also sets (at most one preset binding per service; the default is the engine plain preset). 400 `binding_preset_engine_mismatch` when it does not fit the engine.',
       },
     },
   },
@@ -74,6 +87,10 @@ export const bindingSchemas = {
     properties: {
       keyPrefix: { type: 'string' },
       emitEngineDefaults: { type: 'boolean' },
+      preset: {
+        type: ['string', 'null'],
+        enum: [...BINDING_PRESETS, null],
+      },
     },
   },
 }

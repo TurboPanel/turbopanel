@@ -257,7 +257,10 @@ ones and never rewrites stored values.
 Physical boolean columns use an `is_` prefix (`is_connected`,
 `is_read_eligible`, `is_for_build`, `is_for_runtime`, `is_emit_engine_defaults`,
 `is_read_only`). Public API JSON still uses `connected`, `readEligible`,
-`forBuild`, `forRuntime`, `emitEngineDefaults`, and `readOnly`.
+`forBuild`, `forRuntime`, `emitEngineDefaults`, and `readOnly`. `binding.preset`
+(nullable, `CHECK`) is the app naming preset a binding also emits; when it is
+NULL, `is_emit_engine_defaults` true means the engine's plain names
+(`effectivePreset`).
 
 The co-located dev server has live data — treat every database change as
 production-adjacent.

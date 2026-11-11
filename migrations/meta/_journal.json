@@ -225,6 +225,13 @@
       "when": 1794316446162,
       "tag": "0031_rotation_prev_key_signature",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1794408967932,
+      "tag": "0032_binding_preset",
+      "breakpoints": true
     }
   ]
 }

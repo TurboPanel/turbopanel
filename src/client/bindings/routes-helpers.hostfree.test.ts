@@ -27,6 +27,7 @@ import {
   parseEmitEngineDefaults,
   resolveBindingEngine,
   resolveBindingManagedId,
+  resolveCreatePreset,
   resolvePatchBindingFields,
   resolveServiceIdForHosting,
   serializeBindingRow,
@@ -150,19 +151,50 @@ test('checkBindingDatabaseTarget validates engine + database', () => {
 })
 
 test('resolvePatchBindingFields applies and validates overrides', () => {
-  const base = { keyPrefix: 'DATABASE', emitEngineDefaults: true }
-  assertEquals(resolvePatchBindingFields({}, base), {
+  const base = { keyPrefix: 'DATABASE', preset: 'postgres' as const }
+  assertEquals(resolvePatchBindingFields({}, base, 'postgres'), {
     ok: true,
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: true,
+    preset: 'postgres',
   })
-  assertEquals(resolvePatchBindingFields({ keyPrefix: 'APP', emitEngineDefaults: false }, base), {
+  assertEquals(
+    resolvePatchBindingFields({ keyPrefix: 'APP', emitEngineDefaults: false }, base, 'postgres'),
+    { ok: true, keyPrefix: 'APP', preset: null }
+  )
+  assertEquals(resolvePatchBindingFields({ preset: 'laravel' }, base, 'postgres'), {
     ok: true,
-    keyPrefix: 'APP',
-    emitEngineDefaults: false,
+    keyPrefix: 'DATABASE',
+    preset: 'laravel',
   })
-  assertEquals(resolvePatchBindingFields({ keyPrefix: 'TURBOPANEL' }, base).ok, false)
-  assertEquals(resolvePatchBindingFields({ emitEngineDefaults: 'yes' }, base).ok, false)
+  assertEquals(resolvePatchBindingFields({ keyPrefix: 'TURBOPANEL' }, base, 'postgres').ok, false)
+  assertEquals(resolvePatchBindingFields({ emitEngineDefaults: 'yes' }, base, 'postgres').ok, false)
+})
+
+test('resolveCreatePreset maps the toggle and checks the engine', () => {
+  assertEquals(resolveCreatePreset({}, 'postgres'), { ok: true, preset: 'postgres' })
+  assertEquals(resolveCreatePreset({}, 'mariadb'), { ok: true, preset: 'mysql' })
+  assertEquals(resolveCreatePreset({ emitEngineDefaults: true }, 'mysql'), {
+    ok: true,
+    preset: 'mysql',
+  })
+  assertEquals(resolveCreatePreset({ emitEngineDefaults: false }, 'mysql'), {
+    ok: true,
+    preset: null,
+  })
+  assertEquals(resolveCreatePreset({ preset: null }, 'postgres'), { ok: true, preset: null })
+  assertEquals(resolveCreatePreset({ preset: 'wordpress' }, 'mariadb'), {
+    ok: true,
+    preset: 'wordpress',
+  })
+  assertEquals(resolveCreatePreset({ preset: 'wordpress' }, 'postgres'), {
+    ok: false,
+    error: 'binding_preset_engine_mismatch',
+  })
+  assertEquals(resolveCreatePreset({ preset: 'laravel', emitEngineDefaults: true }, 'postgres'), {
+    ok: false,
+    error: 'binding_preset_conflict',
+  })
+  assertEquals(resolveCreatePreset({ preset: 'nope' }, 'postgres').ok, false)
 })
 
 test('findBindingKeyConflicts returns null for empty key sets', async () => {
@@ -218,7 +250,7 @@ test('assertNoBindingKeyConflicts maps emitted key collisions', async () => {
   const ok = await assertNoBindingKeyConflicts(selectQueueDb([[]]), {
     serviceId: 'svc',
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     engineCode: 'postgres',
   })
   assertEquals(ok, { ok: true })
@@ -226,7 +258,7 @@ test('assertNoBindingKeyConflicts maps emitted key collisions', async () => {
   const bad = await assertNoBindingKeyConflicts(selectQueueDb([[{ key: 'DATABASE_URL' }]]), {
     serviceId: 'svc',
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     engineCode: 'postgres',
     excludeBindingId: 'b1',
   })
@@ -239,7 +271,7 @@ test('assertNoBindingKeyConflicts short-circuits unknown engines', async () => {
     await assertNoBindingKeyConflicts(selectQueueDb([]), {
       serviceId: 'svc',
       keyPrefix: 'DATABASE',
-      emitEngineDefaults: true,
+      preset: 'postgres',
       engineCode: 'not-a-real-engine',
     }),
     { ok: true }
@@ -251,7 +283,7 @@ test('detectBindingCreateConflicts covers prefix / defaults / keys', async () =>
     await detectBindingCreateConflicts(selectQueueDb([[{ id: 'b1' }]]), {
       serviceId: 'svc',
       keyPrefix: 'DB',
-      emitEngineDefaults: false,
+      preset: null,
       engineCode: 'postgres',
     }),
     { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
@@ -266,7 +298,7 @@ test('detectBindingCreateConflicts covers prefix / defaults / keys', async () =>
       {
         serviceId: 'svc',
         keyPrefix: 'DB',
-        emitEngineDefaults: true,
+        preset: 'postgres',
         engineCode: 'postgres',
       }
     ),
@@ -282,7 +314,7 @@ test('detectBindingCreateConflicts covers prefix / defaults / keys', async () =>
       {
         serviceId: 'svc',
         keyPrefix: 'DATABASE',
-        emitEngineDefaults: false,
+        preset: null,
         engineCode: 'postgres',
       }
     ),
@@ -299,7 +331,7 @@ test('detectBindingCreateConflicts covers prefix / defaults / keys', async () =>
       {
         serviceId: 'svc',
         keyPrefix: 'DATABASE',
-        emitEngineDefaults: false,
+        preset: null,
         engineCode: 'postgres',
       }
     ),
@@ -313,9 +345,9 @@ test('detectBindingUpdateConflicts only checks changed fields', async () => {
       id: 'b1',
       serviceId: 'svc',
       previousKeyPrefix: 'DATABASE',
-      previousEmitEngineDefaults: false,
+      previousPreset: null,
       nextKeyPrefix: 'APP',
-      nextEmitEngineDefaults: false,
+      nextPreset: null,
       engineCode: 'postgres',
     }),
     { error: BINDING_KEY_PREFIX_IN_USE_ERROR }
@@ -326,9 +358,9 @@ test('detectBindingUpdateConflicts only checks changed fields', async () => {
       id: 'b1',
       serviceId: 'svc',
       previousKeyPrefix: 'DATABASE',
-      previousEmitEngineDefaults: false,
+      previousPreset: null,
       nextKeyPrefix: 'DATABASE',
-      nextEmitEngineDefaults: true,
+      nextPreset: 'postgres',
       engineCode: 'postgres',
     }),
     { error: BINDING_ENGINE_DEFAULTS_IN_USE_ERROR }
@@ -339,9 +371,9 @@ test('detectBindingUpdateConflicts only checks changed fields', async () => {
       id: 'b1',
       serviceId: 'svc',
       previousKeyPrefix: 'DATABASE',
-      previousEmitEngineDefaults: true,
+      previousPreset: 'postgres',
       nextKeyPrefix: 'DATABASE',
-      nextEmitEngineDefaults: true,
+      nextPreset: 'postgres',
       engineCode: 'postgres',
     }),
     null
@@ -394,6 +426,7 @@ test('serializeBindingRow fills keys without endpoint when cluster empty', async
     databaseName: 'app',
     keyPrefix: 'DATABASE',
     emitEngineDefaults: false,
+    preset: null,
     createdAt: '2020-01-01T00:00:00.000Z',
     updatedAt: '2020-01-01T00:00:00.000Z',
   }
@@ -491,5 +524,29 @@ test('bindingDatabaseTargetHttpStatus and unique-violation mapping', () => {
   assertEquals(
     mapBindingUniqueViolation(Object.assign(new Error('other'), { code: '23505' })),
     null
+  )
+})
+
+test('a preset name equal to a prefixed name is refused as a key conflict', async () => {
+  assertEquals(
+    await assertNoBindingKeyConflicts(selectQueueDb([]), {
+      serviceId: 'svc',
+      keyPrefix: 'DB',
+      preset: 'wordpress',
+      engineCode: 'mysql',
+    }),
+    { ok: false, key: 'DB_HOST' }
+  )
+})
+
+test('a second preset binding on a service is refused', async () => {
+  assertEquals(
+    await detectBindingCreateConflicts(selectQueueDb([[], [{ id: 'other' }]]), {
+      serviceId: 'svc',
+      keyPrefix: 'APP',
+      preset: 'laravel',
+      engineCode: 'postgres',
+    }),
+    { error: 'binding_engine_defaults_in_use' }
   )
 })
