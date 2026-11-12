@@ -22,11 +22,13 @@ import { evaluateSocketHealth } from './socket-health.ts'
 import type { ServerGeo } from '../../features/geo/server-geo.ts'
 import { parseServerGeo } from '../../features/geo/server-geo.ts'
 import {
+  parseServerRuntimeMetadata,
   resourcesFromDaemonPresence,
   type ServerDockerMetadata,
   type ServerHostResources,
   type ServerOsMetadata,
   type ServerReleaseLinkScanMetadata,
+  type ServerRuntimeMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
 import {
@@ -1317,6 +1319,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      runtimes?: ServerRuntimeMetadata
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: ServiceRunState[]
       features?: string[]
@@ -1333,6 +1336,7 @@ export class DaemonCellObject {
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
         hostIdentity?.docker ||
+        hostIdentity?.runtimes ||
         hostIdentity?.releaseLinkScan ||
         hostIdentity?.services ||
         hostIdentity?.features ||
@@ -1345,6 +1349,7 @@ export class DaemonCellObject {
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
           docker: hostIdentity.docker,
+          runtimes: hostIdentity.runtimes,
           releaseLinkScan: hostIdentity.releaseLinkScan,
           services: hostIdentity.services,
           ...(hostIdentity.features !== undefined ? { features: hostIdentity.features } : {}),
@@ -2291,6 +2296,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      runtimes?: unknown
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: unknown
       features?: string[]
@@ -2309,6 +2315,7 @@ export class DaemonCellObject {
       timeSync: parsed.timeSync,
       resources: resourcesFromDaemonPresence(parsed),
       docker: parsed.docker,
+      runtimes: parseServerRuntimeMetadata(parsed.runtimes),
       releaseLinkScan: parsed.releaseLinkScan,
       services: parseServiceRunStates(parsed.services),
     }
@@ -2316,6 +2323,7 @@ export class DaemonCellObject {
       presenceFacts.timeSync ||
       presenceFacts.resources ||
       presenceFacts.docker ||
+      presenceFacts.runtimes ||
       presenceFacts.releaseLinkScan ||
       presenceFacts.services
     )
@@ -2329,6 +2337,7 @@ export class DaemonCellObject {
           resources?: ServerHostResources
           timeSync?: ServerTimeSync
           docker?: ServerDockerMetadata
+          runtimes?: ServerRuntimeMetadata
           releaseLinkScan?: ServerReleaseLinkScanMetadata
           services?: ServiceRunState[]
           features?: string[]
@@ -2354,6 +2363,7 @@ export class DaemonCellObject {
       hostIdentity?.resources ||
       hostIdentity?.timeSync ||
       hostIdentity?.docker ||
+      hostIdentity?.runtimes ||
       hostIdentity?.releaseLinkScan ||
       hostIdentity?.services ||
       hostIdentity?.features ||

@@ -207,6 +207,7 @@ export function mergeServerMetadataIdentity(
     | 'resources'
     | 'timeSync'
     | 'docker'
+    | 'runtimes'
     | 'releaseLinkScan'
     | 'services'
   >

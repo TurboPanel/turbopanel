@@ -40,3 +40,15 @@ test('mergeServerMetadataIdentity drops a malformed link scan', () => {
     null
   )
 })
+
+const runtimes = {
+  php: { series: ['8.3'], versions: { '8.3': '8.3.30' } },
+  node: { series: ['24'] },
+}
+
+test('mergeServerMetadataIdentity stores the runtimes inventory and ignores an unchanged one', () => {
+  const merged = mergeServerMetadataIdentity({ geo: { country: 'US' } }, { runtimes })
+  assertEquals(merged?.runtimes, runtimes)
+  assertEquals(merged?.geo, { country: 'US' })
+  assertEquals(mergeServerMetadataIdentity({ runtimes }, { runtimes }), null)
+})

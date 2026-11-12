@@ -1,6 +1,7 @@
 import type { ServerReportedIp } from './server-addresses.ts'
 import type {
   ServerDockerMetadata,
+  ServerRuntimeMetadata,
   ServerHardwareProfile,
   ServerHostResources,
   ServerOsMetadata,
@@ -778,6 +779,12 @@ export type DaemonMessage =
        */
       docker?: ServerDockerMetadata
       /**
+       * Runtimes installed on the host (PHP series and patch versions, vendored
+       * Node and OpenLiteSpeed PHP series); persisted to
+       * `server.metadata.runtimes`. Omitted when none are found.
+       */
+      runtimes?: ServerRuntimeMetadata
+      /**
        * Per-service run state (running, restart count, last error); persisted to
        * `server.metadata.services`. Omitted when the daemon is not watching
        * Docker; `[]` means no services on the host.
@@ -837,6 +844,8 @@ export type DaemonMessage =
        * Omit when Docker is not installed.
        */
       docker?: ServerDockerMetadata
+      /** Change-detected runtimes inventory; persisted to `server.metadata.runtimes`. */
+      runtimes?: ServerRuntimeMetadata
       /** Change-detected link-check summary; persisted to `server.metadata.releaseLinkScan`. */
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       /**
