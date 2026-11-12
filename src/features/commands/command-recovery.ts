@@ -88,8 +88,7 @@ export const REDELIVERABLE_COMMAND_TYPES: ReadonlySet<string> = new Set([
 const REDELIVER_REQUEST_LIMIT = 50
 
 /** The cell calls {@link redeliverLostCommands} needs. */
-export type RedeliveryCell = Pick<DaemonCell, 'getRequest' | 'listRequests'> &
-  Required<Pick<DaemonCell, 'redeliverSent'>>
+export type RedeliveryCell = Pick<DaemonCell, 'getRequest' | 'listRequests' | 'redeliverSent'>
 
 /** The database reads {@link redeliverLostCommands} makes, replaceable in a test. */
 export type RedeliveryReads = {
@@ -186,6 +185,7 @@ async function redeliverOne(
     if (payload === null) return false
     // The database reads are done; the cell checks the request again, in one
     // step, and only replaces the delivery of a request still `sent` and unacked.
+    if (cell.redeliverSent === undefined) return false
     return await cell.redeliverSent({
       kind: 'command-dispatch',
       requestId: commandId,
