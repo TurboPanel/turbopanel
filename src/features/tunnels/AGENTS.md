@@ -79,7 +79,12 @@ member there, a widened CHECK (forward migration) and one adapter.
   certificate timer in `src/platform/deno/server.ts`
   (`runSelfHostedTunnelSweeps`, fresh database client, no overlap, skipped
   while the command queue is the no-op one). Each sweep fails alone and
-  throttles itself from the database, so the minute tick is cheap. Add a new
+  throttles itself from the database, so the minute tick is cheap. The status sweep asks a server
+  at most every 10 minutes, except that a server with a portal made in the last
+  10 minutes that no answer has covered yet (`last_seen_at` empty) is asked again
+  after 15 s, so a new tunnel or a placement change shows its first status within
+  about a tick; a connector that never reports stops speeding it up once the portal is
+  10 minutes old. Add a new
   tunnel sweep to the list, never to one scheduler:
   `src/platform/deno/tunnel-sweeps.hostfree.test.ts` fails when a scheduler
   calls a tunnel sweep directly, or when the hosted cron runs a sweep the
@@ -735,7 +740,9 @@ removing the tunnel:
   its turn and the new one once moved (or when it started carrying the tunnel
   after the rotation began), so a repair resend or a placement change never
   moves a server early. The one exception: the driver moves a waiting server
-  whose connector last reported `down` or `error` (portal `reported`) out of
+  whose connector reported `down` or `error` (portal `reported`) at or after
+  the rotation's `startedAt` (`last_seen_at`; an older or missing reading is
+  ignored, because the connector may have been restarted since) out of
   `pending` into `unconfirmed` at once, since it holds no connection and the
   old token could not open one; it keeps the new token from then on (state,
   not the latest report, decides) and is checked again at the end.

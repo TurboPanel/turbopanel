@@ -33,7 +33,7 @@
  * the end. Only a gone provider account or chosen secret stops it for good.
  * The token and the secret are never logged, audited or returned.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, gte, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, portal, secret, server, tunnel } from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
@@ -789,7 +789,13 @@ export async function advanceRunTokenRotation(
   return (await advanceRunTokenRotation(db, deps, tunnelId, stepsLeft - 1)) ?? next
 }
 
-/** Waiting servers whose connector for this tunnel last reported down or in error. */
+/**
+ * Waiting servers whose connector for this tunnel reported down or in error
+ * since the rotation started. An older reading proves nothing: the connector
+ * may have been restarted since, and the next status question can be ten
+ * minutes away. `last_seen_at` is the time of the last status answer (only
+ * `recordTunnelStatus` writes it), so a portal never answered is not read.
+ */
 async function waitingWithConnectorDown(
   db: Db,
   row: TunnelRow,
@@ -803,7 +809,8 @@ async function waitingWithConnectorDown(
       and(
         eq(portal.tunnelId, row.id),
         inArray(portal.serverId, state.pending),
-        inArray(portal.reported, ['down', 'error'])
+        inArray(portal.reported, ['down', 'error']),
+        gte(portal.lastSeenAt, state.startedAt)
       )
     )
   return rows.map((r) => r.serverId)

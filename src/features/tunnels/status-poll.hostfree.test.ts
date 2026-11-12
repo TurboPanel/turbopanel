@@ -1,6 +1,12 @@
 import { assertEquals } from '@std/assert'
 import { daemonCanReportTunnelStatus } from './daemon-gate.ts'
-import { readAskedState } from './status-poll.ts'
+import {
+  readAskedState,
+  statusGapMs,
+  TUNNEL_STATUS_NEW_PORTAL_GAP_MS,
+  TUNNEL_STATUS_POLL_GAP_MS,
+  TUNNEL_STATUS_STALE_MS,
+} from './status-poll.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -26,4 +32,14 @@ test('the last question is read back from the server metadata, and odd metadata 
   assertEquals(readAskedState(null), null)
   assertEquals(readAskedState({ tunnelStatus: { commandId: 5 } }), null)
   assertEquals(readAskedState({}), null)
+})
+
+test('the gap to the next question: short for an unheard new connector, steady otherwise', () => {
+  assertEquals(statusGapMs(true, true), TUNNEL_STATUS_NEW_PORTAL_GAP_MS)
+  assertEquals(statusGapMs(true, false), TUNNEL_STATUS_POLL_GAP_MS)
+  // An unanswered question always waits out its own life.
+  assertEquals(statusGapMs(false, true), TUNNEL_STATUS_STALE_MS)
+  assertEquals(statusGapMs(false, false), TUNNEL_STATUS_STALE_MS)
+  // The steady gap is not raised or lowered by this.
+  assertEquals(TUNNEL_STATUS_POLL_GAP_MS, 10 * 60 * 1000)
 })
