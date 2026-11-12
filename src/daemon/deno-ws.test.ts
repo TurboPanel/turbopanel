@@ -38,7 +38,7 @@ import {
   startDaemonOutboxPump,
   wsMessageDataToString,
 } from './deno-ws.ts'
-import { RedisDaemonCell } from './cell/redis/cell.ts'
+import { OUTBOX_CONSUMER_SUPERSEDED, RedisDaemonCell } from './cell/redis/cell.ts'
 import type { handleManagedHaEvent } from '../features/managed/ha-event.ts'
 import type { RedisCellClient } from './cell/redis/client.ts'
 import { createFakeRedisCellClient } from './cell/redis/fake-redis-cell-client.ts'
@@ -1307,6 +1307,37 @@ test('isClosedConnectionError matches closed-socket errors', () => {
   assertEquals(isClosedConnectionError(new Error('Connection is closed')), true)
   assertEquals(isClosedConnectionError('connection is closed by peer'), true)
   assertEquals(isClosedConnectionError(new Error('network timeout')), false)
+})
+
+test('a pump whose socket was replaced stops at once, with no pause and no second read', async () => {
+  assertEquals(isClosedConnectionError(new Error(OUTBOX_CONSUMER_SUPERSEDED)), true)
+  const abortRef = { abort: false }
+  let reads = 0
+  const pauses: number[] = []
+  startDaemonOutboxPump({
+    cell: {
+      readOutboxBatch: () => {
+        reads += 1
+        return Promise.reject(new Error(OUTBOX_CONSUMER_SUPERSEDED))
+      },
+      markSent: () => Promise.reject(new Error('must not send')),
+      ackOutbox: () => Promise.reject(new Error('must not ack')),
+      putSnapshot: () => Promise.reject(new Error('must not snapshot')),
+    },
+    serverId: 'srv',
+    connectionId: 'conn-old',
+    consumer: 'ws:conn-old',
+    send: () => Promise.reject(new Error('must not send')),
+    abortRef,
+    sleep: (ms) => {
+      pauses.push(ms)
+      return Promise.resolve()
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assertEquals(reads, 1)
+  assertEquals(pauses, [])
+  assertEquals(abortRef.abort, true)
 })
 
 test('wsMessageDataToString accepts string, Blob, and ArrayBuffer views', async () => {
