@@ -1,5 +1,13 @@
 # Notifications — AGENTS.md
 
+**Merges only together with the database reset.** Rules, inbox rows and delivery
+rows are now read by `topic_code` and the scope columns, and a rule with neither
+`topic_code` nor `category_code` means every event. Rows written before the
+reset have those columns NULL (the old code wrote only `event`), so on a
+database that was not wiped, every one-event rule would route every event. This
+code is correct only on a freshly created database; do not add a fallback to
+`event`.
+
 "An event happened and someone should hear about it", as one data model for
 self-hosted, High Availability and the store apps (decided 2026-09-18), rebuilt
 around scoped, per-person preferences (2026-11-06).

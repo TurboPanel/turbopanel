@@ -928,3 +928,71 @@ test('every copy an emit writes names its event and its topic, and rules are sto
     assertEquals(copy!.eventId, inboxRow!.eventId)
   })
 })
+
+test('a rule for one event does not route another event, and a category rule matches only its category', async () => {
+  await withFixture(async ({ db, organizationId, memberId }) => {
+    const enc = await secrets()
+    const make = (label: string) =>
+      createNotificationChannel(db, enc, {
+        scope: 'organization',
+        organizationId,
+        kind: 'webhook',
+        label,
+        address: `https://hooks.example.com/${label}`,
+        createdByUserId: memberId,
+      })
+    const topicOnly = await make('topic-only')
+    await replaceRulesForChannel(db, topicOnly.id, [
+      { event: 'server.deleted', minSeverity: 'info' },
+    ])
+
+    // An emit of another event reaches nothing through that rule.
+    const captured: Captured[] = []
+    const result = await emitNotification(
+      db,
+      enc,
+      {
+        event: 'server.offline',
+        organizationId,
+        context: { serverName: 'db-3', serverId: 'z' },
+        targetType: 'server',
+      },
+      { fetchImpl: fakeFetch(200, captured) }
+    )
+    assertEquals(result.deliveries, 0)
+    assertEquals(captured.length, 0)
+    const rows = await db
+      .select({ id: notificationDelivery.id })
+      .from(notificationDelivery)
+      .where(eq(notificationDelivery.channelId, topicOnly.id))
+    assertEquals(rows, [])
+    const ids = (channels: { id: string }[]) => channels.map((c) => c.id)
+    assertEquals(
+      ids(await channelsForEvent(db, 'server.deleted', 'critical', organizationId, 'servers')),
+      [topicOnly.id]
+    )
+    assertEquals(
+      await channelsForEvent(db, 'server.offline', 'critical', organizationId, 'servers'),
+      []
+    )
+
+    // A category rule: its category matches, another category does not.
+    const byCategory = await make('by-category')
+    await db.delete(notificationRule).where(eq(notificationRule.channelId, byCategory.id))
+    await db.insert(notificationRule).values({
+      channelId: byCategory.id,
+      event: '*',
+      topicCode: null,
+      categoryCode: 'servers',
+      minSeverity: 'info',
+    })
+    assertEquals(
+      ids(await channelsForEvent(db, 'server.offline', 'critical', organizationId, 'servers')),
+      [byCategory.id]
+    )
+    assertEquals(
+      await channelsForEvent(db, 'access.grant_created', 'info', organizationId, 'access'),
+      []
+    )
+  })
+})

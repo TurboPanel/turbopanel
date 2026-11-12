@@ -17,13 +17,15 @@ import { systemRotationContext } from './system-context.ts'
 
 export type DnsCertWiring = {
   secrets: DerivedSecretsConfig
-  /** With these a renewed certificate is sent to its sites at once; without, the next deploy carries it. */
-  push?: { commandQueue: CommandQueue; secretsConfig: SecretsConfig | null }
-  fetch?: typeof fetch
+}
+
+/** What `renewalPusher` needs: the secrets and the queue a renewed certificate is sent through. */
+export type RenewalPushWiring = DnsCertWiring & {
+  push: { commandQueue: CommandQueue; secretsConfig: SecretsConfig | null }
 }
 
 /** Send a renewed certificate to every site that pins it, by the same apply a pick in the library queues. */
-export function renewalPusher(db: Db, wiring: Required<Pick<DnsCertWiring, 'push' | 'secrets'>>) {
+export function renewalPusher(db: Db, wiring: RenewalPushWiring) {
   const context = systemRotationContext({
     secretsConfig: wiring.push.secretsConfig,
     dataEncryptionSecrets: wiring.secrets,
@@ -56,10 +58,9 @@ export function renewalPusher(db: Db, wiring: Required<Pick<DnsCertWiring, 'push
 }
 
 export function buildDnsCertContext(db: Db, wiring: DnsCertWiring): DnsCertContext {
-  const { fetch: providerFetch } = wiring
   return {
     db,
     secrets: wiring.secrets,
-    dns: (_provider, token) => createCloudflareDnsChallenge({ token, fetch: providerFetch }),
+    dns: (_provider, token) => createCloudflareDnsChallenge({ token }),
   }
 }

@@ -46,12 +46,6 @@ export type DnsChallengeProvider = {
   remove(ref: ChallengeRecordRef): Promise<void>
 }
 
-/** The name a CA looks at for a name's DNS-01 challenge (a wildcard uses its base name). */
-export function challengeRecordName(name: string): string {
-  const base = name.startsWith('*.') ? name.slice(2) : name
-  return `_acme-challenge.${base}`
-}
-
 /**
  * The challenge name is a CNAME, so the record has to go where it points, and
  * that place cannot be edited with the connected account. Nothing was changed.

@@ -13,7 +13,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { audit, carrier, grant, organization, tls, user } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { withDnsCertState } from '../../features/tls/dns-certificates/order-state.ts'
+import { DNS_CERT_KEY } from '../../features/tls/dns-certificates/order-state.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
@@ -115,23 +115,21 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         status: 'pending',
         notAfter: new Date(0).toISOString(),
         fingerprintSha256: null,
-        metadata: withDnsCertState(
-          {
-            dnsNames: ['a.example.com'],
-            hasWildcard: false,
-            notBefore: new Date(0).toISOString(),
-            subject: '',
-            issuer: '',
-            acme: {
-              challengeType: 'dns-01',
-              managedBy: 'panel',
-              createdFor: 'library',
-              stage: 'queued',
-              staging: true,
-              attempts: 0,
-            },
+        metadata: {
+          dnsNames: ['a.example.com'],
+          hasWildcard: false,
+          notBefore: new Date(0).toISOString(),
+          subject: '',
+          issuer: '',
+          acme: {
+            challengeType: 'dns-01',
+            managedBy: 'panel',
+            createdFor: 'library',
+            stage: 'queued',
+            staging: true,
+            attempts: 0,
           },
-          {
+          [DNS_CERT_KEY]: {
             carrierId: c!.id,
             zones: [{ id: 'z1', name: 'example.com' }],
             staging: true,
@@ -143,8 +141,8 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
             renewAt: null,
             ariCheckedAt: null,
             ariNextCheckAt: null,
-          }
-        ),
+          },
+        },
         options: { autoRenew: true, requestedHostnames: ['a.example.com'] },
       })
       .returning({ id: tls.id })
