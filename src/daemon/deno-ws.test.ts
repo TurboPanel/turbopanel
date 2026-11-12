@@ -2434,6 +2434,50 @@ test('live WS heartbeat carrying only a link scan writes server metadata', async
   )
 })
 
+test('live WS heartbeat carrying only runtimes writes server metadata', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-heartbeat-runtimes'
+  const { db, getPatches } = createProjectionTrackingDb(
+    serverId,
+    { key: baseDaemonKey },
+    {
+      connected: true,
+      statusChangedAt: '2020-01-01T00:00:00.000Z',
+    }
+  )
+  const tracking = createTrackingDaemonCell(serverId)
+
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db,
+      registry: createTrackingRegistry(tracking.cell),
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = await openLiveDaemonWs({
+        port,
+        token: issued.token,
+        remoteIp: LIVE_REMOTE_IP,
+      })
+      ws.send(
+        JSON.stringify({
+          type: 'heartbeat',
+          at: new Date().toISOString(),
+          runtimes: { php: { series: ['8.3'], versions: { '8.3': '8.3.30' } } },
+        })
+      )
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      assertEquals(
+        getPatches().some((patch) => 'metadata' in patch),
+        true
+      )
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+    }
+  )
+})
+
 const STALE_SWEEP_FRAMES: ReadonlyArray<{ name: string; frame: Record<string, unknown> }> = [
   { name: 'hello', frame: { type: 'hello', daemonBuild: { commit: 'same', buildId: '1' } } },
   {
