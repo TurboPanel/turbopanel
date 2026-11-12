@@ -318,7 +318,7 @@ test('planRelayPath picks shared-datacenter LAN before public', () => {
   )
 })
 
-test('planRelayPath omits direct_lan for an untrusted shared datacenter and falls to public', () => {
+test('planRelayPath runs the tunnel over an untrusted-only shared datacenter ahead of public', () => {
   const caches = emptyCaches()
   caches.datacenterMembershipsByServer.set('self', [membershipPin('self', 'dc-shared', '10.0.0.1')])
   caches.datacenterMembershipsByServer.set('other', [
@@ -337,8 +337,16 @@ test('planRelayPath omits direct_lan for an untrusted shared datacenter and fall
       caches,
     }),
     {
-      candidates: [{ kind: 'direct_public', address: '203.0.113.5' }],
-      selected: { kind: 'direct_public', endpoint: '203.0.113.5' },
+      candidates: [
+        { kind: 'direct_lan', address: '10.0.0.5', datacenterId: 'dc-shared', untrusted: true },
+        { kind: 'direct_public', address: '203.0.113.5' },
+      ],
+      selected: {
+        kind: 'direct_lan',
+        endpoint: '10.0.0.5',
+        datacenterId: 'dc-shared',
+        untrusted: true,
+      },
       ...unimplementedPathFields(),
     }
   )

@@ -17,18 +17,27 @@ import { type AuditAction, type AuditEntry, recordAudit } from '../audit/audit-r
 import { emitNotification } from './emit.ts'
 import { getEmailQueue } from '../email/types.ts'
 import { resolvePublicBaseUrl } from '../install/resolve-public-base-url.ts'
-import type { NotificationContext, NotificationEvent } from './events.ts'
+import { eventScope, type NotificationContext, type NotificationEvent } from './events.ts'
 
 export const AUDIT_EVENTS: Partial<Record<AuditAction, NotificationEvent>> = {
   'server.daemon_key.revoke': 'server.daemon_key_revoked',
   'server.delete': 'server.deleted',
   'grant.create': 'access.grant_created',
   'grant.delete': 'access.grant_revoked',
-  'member.remove': 'access.grant_revoked',
+  // Its own event, so the words say a person left or was removed.
+  'member.remove': 'member.removed',
+  'server.license_tier.set': 'server.license_tier_changed',
+  'panel.identity_next.set': 'panel.identity_next_changed',
+  'panel.identity_next.clear': 'panel.identity_next_changed',
+  'server.panel_pin.mismatch': 'panel.pin_mismatch',
+  'panel.key.rotate': 'panel.key_changed',
+  'panel.key.revoke': 'panel.key_changed',
+  'panel.approver.mark': 'panel.approvers_changed',
+  'panel.approver.unmark': 'panel.approvers_changed',
 }
 
 /** The non-secret facts an event renders from: the audit context plus who acted. */
-function contextFor(entry: AuditEntry, extra: NotificationContext): NotificationContext {
+export function contextFor(entry: AuditEntry, extra: NotificationContext): NotificationContext {
   const context: NotificationContext = {}
   for (const [key, value] of Object.entries(entry.context ?? {})) {
     if (
@@ -44,7 +53,7 @@ function contextFor(entry: AuditEntry, extra: NotificationContext): Notification
   return { ...context, ...extra }
 }
 
-type AuditNotifyEnv = {
+export type AuditNotifyEnv = {
   Variables: {
     db?: Db
     emailQueue?: EmailQueue
@@ -58,10 +67,27 @@ export async function recordAuditAndNotify(
   entry: AuditEntry,
   extra: NotificationContext = {}
 ): Promise<void> {
-  const db = c.get('db')
-  await recordAudit(db, entry)
+  await recordAudit(c.get('db'), entry)
   const event = AUDIT_EVENTS[entry.action]
-  if (!event || !db || !entry.organizationId) return
+  if (!event) return
+  await notifyFromAudit(c, event, entry, extra)
+}
+
+/**
+ * Emit one event for an audit row already written, with this request's
+ * database, secrets and mail queue. For actions that notify only sometimes
+ * (a backup target change that moves the data, not a rename), which the
+ * action-to-event map above cannot express. Never throws.
+ */
+export async function notifyFromAudit(
+  c: Context<AuditNotifyEnv>,
+  event: NotificationEvent,
+  entry: AuditEntry,
+  extra: NotificationContext = {}
+): Promise<void> {
+  const db = c.get('db')
+  if (!db) return
+  if (eventScope(event) === 'organization' && !entry.organizationId) return
   const queue = getEmailQueue(c)
   const email = queue
     ? {
@@ -81,6 +107,7 @@ export async function recordAuditAndNotify(
       context: contextFor(entry, extra),
       targetType: entry.targetType,
       targetId: entry.targetId ?? null,
+      actorUserId: entry.actorUserId ?? null,
     },
     { allowPrivateTargets: true, email }
   )

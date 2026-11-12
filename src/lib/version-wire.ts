@@ -46,10 +46,14 @@ export const CLIENT_VERSION_HEADER = 'x-turbopanel-client-version'
 
 /**
  * The oldest daemon this control plane will dispatch commands to. Bump when
- * a wire change stops being expand-only — never past what the current
- * release's installer ships.
+ * a wire change stops being expand-only — never past what the release this
+ * control plane ships with installs (the daemon ships first).
+ *
+ * 0.1.18 is a pre-launch hard cutoff: it is the first daemon line that
+ * registers a sealing key, opens sealed decrypt answers and opens the sealed
+ * reconcile password hash. Older daemons are refused.
  */
-export const MIN_SUPPORTED_DAEMON_VERSION = '0.1.0'
+export const MIN_SUPPORTED_DAEMON_VERSION = '0.1.18'
 
 const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
 
@@ -193,6 +197,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-database-owner-v1',
   'managed-database-convert-v1',
   'tls-capture-v1',
+  'acme-issue-v1',
   'command-recovery-v1',
   'managed-switchover-final-position-v1',
   'host-capacity-v1',
@@ -200,9 +205,57 @@ export const DAEMON_WIRE_FEATURES = [
   'backup-s3-copy-v1',
   'deploy-hostings-only-v1',
   'custom-node-app-mode-v1',
+  'tunnel-forwarding-v1',
+  'tunnel-connector-v1',
+  'tunnel-status-v1',
+  'managed-backup-login-v1',
+  'fabric-retain-keys-v1',
+  'fabric-peer-report-v1',
+  'fabric-lan-routes-v1',
+  'repo-key-report-v1',
+  'daemon-sealed-secrets-v1',
+  'instance-edge-trust-v1',
+  'instance-hostname-public-port-v1',
+  'daemon-sealed-principal-reconcile-v1',
+  'install-token-v2',
+  'tunnel-status-facts-v1',
+  'panel-identity-v1',
+  'panel-signed-frames-v1',
+  'signin-v2',
+  'hosting-via-header-v1',
+  'dev-host-v1',
+  'topology-generation-optional-v1',
+  'signed-reports-v1',
+  'panel-bound-session-v1',
+  'panel-keyset-statements-v1',
+  'environment-stop-remove-volumes-v1',
+  'signed-ha-events-v1',
+  'panel-keyset-key-signature-v1',
+  'acme-issue-one-cert-v1',
+  'tunnel-lock-follow-v1',
+  'tunnel-connector-token-change-v1',
+  'deploy-config-files-v1',
+  'site-php-lifecycle-v1',
+  'tunnel-table-generation-v1',
+  'site-db-url-ca-v1',
+  'project-cache-v1',
+  'tunnel-lock-add-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
+
+/**
+ * The control plane no longer needs the daemon's topology generation numbers:
+ * it matches a metrics sample to the stored topology by the entity ids the
+ * sample names, and tells topology reports apart by their content
+ * (`src/features/servers/topology-identity.ts`). A daemon attached to a
+ * control plane that lists this leaves `metadata.topologyGeneration` off its
+ * samples, `generation` and `bootGeneration` off its `topology-report`, and
+ * stops sending the `topology_generation_changed` event. Both are still
+ * accepted from older daemons.
+ */
+export const TOPOLOGY_GENERATION_OPTIONAL_FEATURE: DaemonWireFeature =
+  'topology-generation-optional-v1'
 
 /**
  * This daemon honours `hostingsOnly` on `environment.deploy`: it rewrites only
@@ -214,6 +267,15 @@ export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
 export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-only-v1'
 
 /**
+ * The daemon honours `removeVolumes` on `environment.stop`: after the stack is
+ * down it removes each named registered Docker volume and reports what it did
+ * per volume (`volumes[]`). A Destroy that deletes data is refused unless the
+ * daemon of every server the stop goes to lists this; an older daemon would
+ * ignore the field and keep the data without saying so.
+ */
+export const STOP_REMOVE_VOLUMES_FEATURE: DaemonWireFeature = 'environment-stop-remove-volumes-v1'
+
+/**
  * The daemon takes any application mode in `nativeAppServices[].appMode` that
  * matches the deploy parser's rule (`staging`, `test`, ...), not only
  * `production` and `development`. Without it the daemon would refuse the whole
@@ -221,12 +283,49 @@ export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-
  */
 export const CUSTOM_NODE_APP_MODE_FEATURE: DaemonWireFeature = 'custom-node-app-mode-v1'
 
+/** The daemon applies `server.tunnel.routes` and `hostings[].tunnel`. */
+export const TUNNEL_FORWARDING_FEATURE: DaemonWireFeature = 'tunnel-forwarding-v1'
+
+/** The daemon applies `server.tunnel.connectors` (installs and removes tunnel connectors). */
+export const TUNNEL_CONNECTOR_FEATURE: DaemonWireFeature = 'tunnel-connector-v1'
+/** The daemon answers `server.tunnel.status` with each connector's state and version. */
+export const TUNNEL_STATUS_FEATURE: DaemonWireFeature = 'tunnel-status-v1'
+/**
+ * Each `server.tunnel.status` connector may carry `edgeConnections` (the
+ * connector's `/ready`) and `hostnames` (its `/config`). Both stay optional,
+ * so the control plane reads them when present and needs no gate to send.
+ */
+export const TUNNEL_STATUS_FACTS_FEATURE: DaemonWireFeature = 'tunnel-status-facts-v1'
+/**
+ * `server.tunnel.routes` may carry `inbound`: the tunnel names whose site runs
+ * on the server, with who may forward them. The daemon sets those names' lock
+ * from it without a deploy. Without it the lock follows the site's next deploy.
+ */
+export const TUNNEL_LOCK_FOLLOW_FEATURE: DaemonWireFeature = 'tunnel-lock-follow-v1'
+/**
+ * The daemon moves an installed connector to a new run token when the list
+ * carries one (the tunnel's token was rotated). Run-token rotation is refused
+ * while any carrying server lacks it: an older daemon would keep the old token,
+ * which can no longer reconnect.
+ */
+export const TUNNEL_CONNECTOR_TOKEN_CHANGE_FEATURE: DaemonWireFeature =
+  'tunnel-connector-token-change-v1'
+
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`
  * (`keyEnvelope`) and `tunnel-token` (`tokenEnvelope`). Without it the
  * control plane still sends the legacy plaintext fields.
  */
 export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instance-secrets-v1'
+
+/**
+ * The daemon reads `publicPort` on each `public-urls-update` hostname (the
+ * port visitors use, which an edge in front of the control plane can make
+ * different from the origin's 8443) and sends a request on any other port to
+ * it. The control plane sends `publicPort` only to a daemon that lists this.
+ */
+export const INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE: DaemonWireFeature =
+  'instance-hostname-public-port-v1'
 
 /**
  * The daemon sends the certificate and key Caddy issued for a hostname to
@@ -242,6 +341,32 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
 export const BACKUP_S3_COPY_FEATURE: DaemonWireFeature = 'backup-s3-copy-v1'
 
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
+
+/**
+ * The daemon places the certificate order for a name set when the control plane
+ * asks (`acme-issue-request`), and passes the HTTP proof path on for another
+ * server (`acme-proof-forward`). The control plane sends these messages only to
+ * a daemon that lists the feature. No message ever carries the certificate or
+ * its key; the finished pair goes through `POST /api/daemon/v1/tls/issued`.
+ */
+export const ACME_ISSUE_FEATURE: DaemonWireFeature = 'acme-issue-v1'
+
+/**
+ * The daemon places a server-placed order with its own ACME client and gets one
+ * certificate that covers every name of the request, reported once per name. A
+ * request with several names (apex and www, or more) goes only to a daemon that
+ * lists this feature; an older one would get one certificate per name.
+ */
+export const ACME_ISSUE_ONE_CERT_FEATURE: DaemonWireFeature = 'acme-issue-one-cert-v1'
+
+/**
+ * The daemon puts generated config files together from `configFiles[]` on
+ * `environment.deploy` (text parts plus secret keys read from the sealed
+ * `variableMaterial[]`) and mounts them read-only. A deploy whose compose
+ * carries a `configs` entry with `content` that uses `{$…}` values goes only to
+ * a daemon that lists this feature; an older one would drop the field.
+ */
+export const DEPLOY_CONFIG_FILES_FEATURE: DaemonWireFeature = 'deploy-config-files-v1'
 
 /**
  * The daemon keeps each command's final result on the host until this control
@@ -355,6 +480,23 @@ export const METRICS_V8_SIZES_FEATURE: DaemonWireFeature = 'metrics-v8-sizes'
 export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
 
 /**
+ * The daemon runs a site's post-deploy commands (`sites[].postDeploy`) and
+ * keeps its background workers (`sites[].workers`) running. An older daemon
+ * would refuse the whole environment deploy at parse time, so the control plane
+ * refuses first, naming the server, and nothing is sent.
+ */
+export const SITE_PHP_LIFECYCLE_FEATURE: DaemonWireFeature = 'site-php-lifecycle-v1'
+
+/**
+ * The daemon keeps the highest tunnel table `generation` it applied and ignores
+ * a `server.tunnel.routes` table or a deploy's `hostings[].tunnel` below it, so
+ * a deploy and a table update that cross never bring back an older carrier
+ * list. The control plane sends the field only to a daemon that lists this: an
+ * older daemon would drop it.
+ */
+export const TUNNEL_TABLE_GENERATION_FEATURE: DaemonWireFeature = 'tunnel-table-generation-v1'
+
+/**
  * The daemon understands `deploy-cancel` and stops an `environment.deploy`
  * before it switches over, leaving the previous version serving. Without it the
  * control plane never sends the message and answers 409 `cancel_unsupported`
@@ -370,6 +512,31 @@ export const DEPLOY_CANCEL_FEATURE: DaemonWireFeature = 'deploy-cancel-v1'
  * no CA and a deploy warning, never a multi-line value.
  */
 export const SITE_DB_BINDINGS_FEATURE: DaemonWireFeature = 'site-db-bindings-v1'
+
+/**
+ * The daemon takes `sites[].dbCa.urlVariables` and adds `sslrootcert=<the CA
+ * file>` to each listed Postgres URL that uses `verify-ca` or `verify-full` and
+ * names no root certificate, and it takes up to 16 `dbCa.variables`. Without it
+ * the control plane sends neither (and refuses more than 8 names), so a site's
+ * URL stays as it was.
+ */
+export const SITE_DB_URL_CA_FEATURE: DaemonWireFeature = 'site-db-url-ca-v1'
+
+/**
+ * The daemon runs project caches (`environment.deploy` `caches[]`, the
+ * `cache.apply` command) and opens helper container ports to one Hosting
+ * Account (`helperReach[]`). Without it the control plane sends none of these,
+ * and refuses a deploy or a cache change that needs them with a plain sentence.
+ */
+export const PROJECT_CACHE_FEATURE: DaemonWireFeature = 'project-cache-v1'
+
+/**
+ * An `inbound` entry of `server.tunnel.routes` may carry `lock: true` (a
+ * local-only name). The daemon then adds the lock to that name's site block
+ * when the block has none, so a hostname added after the site was deployed is
+ * locked without a deploy. Without it that lock waits for the next deploy.
+ */
+export const TUNNEL_LOCK_ADD_FEATURE: DaemonWireFeature = 'tunnel-lock-add-v1'
 
 /**
  * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`
@@ -395,6 +562,127 @@ export const MANAGED_INGRESS_IPV6_FEATURE: DaemonWireFeature = 'managed-ingress-
  * so a limited login is left out of that server's payload instead.
  */
 export const MANAGED_LOGIN_LIMITS_FEATURE: DaemonWireFeature = 'managed-login-limits-v1'
+
+/**
+ * The daemon understands `server.fabric.reconcile` `{ enabled: false,
+ * retainKeys: true }`: it takes `tp0` down and keeps its key, routed bridges
+ * and forwarding rules, so turning TurboFabric back on is instant. Without it
+ * the control plane refuses to pause (an older daemon would read the message
+ * as a full tear down and drop its key); removing TurboFabric still works.
+ */
+export const FABRIC_RETAIN_KEYS_FEATURE: DaemonWireFeature = 'fabric-retain-keys-v1'
+
+/**
+ * The daemon pushes `fabric-peers-report` (every `tp0` peer's handshake reading
+ * from its 60 s refresh) when a peer's health class changes, and at most every
+ * 5 minutes otherwise. The control plane stamps it into
+ * `relay.metadata.observed` (at most once per 60 s per server), so tunnel
+ * health never goes stale between reconciles. Listing it is what lets a daemon
+ * send the frame; an older daemon simply never does.
+ */
+export const FABRIC_PEER_REPORT_FEATURE: DaemonWireFeature = 'fabric-peer-report-v1'
+
+/**
+ * On a signed session the daemon signs `command-outcome` and
+ * `fabric-peers-report` with its own key, and this control plane verifies
+ * them (`src/daemon/authn/report-signature.ts`). Listed by both sides; a
+ * daemon signs only for a control plane that lists it. Unsigned reports are
+ * still accepted until a later floor bump.
+ */
+export const SIGNED_REPORTS_FEATURE: DaemonWireFeature = 'signed-reports-v1'
+
+/**
+ * On a signed session the daemon also signs every `managed-ha-event` (dead
+ * primary and boot-hold reports), with the same envelope as the signed
+ * reports. This control plane acts on a `managed-ha-event` only when its
+ * signature verifies (`SIGNATURE_REQUIRED_TYPES` in
+ * `src/daemon/authn/report-signature.ts`): an unsigned one, from any daemon
+ * or session, is refused and recorded. Listed by both sides; a daemon signs
+ * them for a control plane that lists it. No floor moves: an older daemon
+ * still connects and works, but its failover reports are not acted on.
+ */
+export const SIGNED_HA_EVENTS_FEATURE: DaemonWireFeature = 'signed-ha-events-v1'
+
+/**
+ * Passkey-approved key changes: the control plane serves the key-set chain at
+ * `GET /api/daemon/v1/instance/identity/statements` and the identity
+ * document's `rotation` block; the daemon pins rotation passkeys, follows the
+ * chain, and signs a `passkeys` hash into its pin report. Listed by both
+ * sides; nothing on either side waits for the other (expand-only).
+ */
+export const PANEL_KEYSET_STATEMENTS_FEATURE: DaemonWireFeature = 'panel-keyset-statements-v1'
+
+/**
+ * Key-set statements carry the replaced key's `keySig` (`"tp-keyset\n"` + the
+ * statement bytes) for `rotate` and `passkeys`, and a revoke needs two
+ * different pinned passkeys; a daemon that lists it refuses anything less.
+ * Informational only: nothing switches on it (an older daemon ignores
+ * `keySig` and still follows the chain).
+ */
+export const PANEL_KEYSET_KEY_SIGNATURE_FEATURE: DaemonWireFeature = 'panel-keyset-key-signature-v1'
+
+/**
+ * The daemon understands `tunnel: false` and `lanRoutes` on
+ * `server.fabric.reconcile`: with no tunnel it keeps `tp0` down (and its key),
+ * and it routes each listed container range via that server's LAN address.
+ * Two servers that share a trusted datacenter network skip the tunnel only
+ * when both daemons list it; otherwise the pair keeps its tunnel over the LAN.
+ */
+export const FABRIC_LAN_ROUTES_FEATURE: DaemonWireFeature = 'fabric-lan-routes-v1'
+
+/**
+ * The daemon holds an X25519 sealing key and opens `sealed` answers from
+ * `/secrets/decrypt` (and the sealed Hosting Account password hash). Older
+ * daemons keep the plaintext answer until the floor bump.
+ */
+export const DAEMON_SEALED_SECRETS_FEATURE: DaemonWireFeature = 'daemon-sealed-secrets-v1'
+
+/**
+ * The daemon opens `passwordHashEnvelope` on `server.principals.reconcile` too
+ * (through `/secrets/decrypt`). Informational only: the control plane seals
+ * that hash whenever a sealing key is on file, never on this unsigned listing,
+ * because no released daemon registers a key without this support.
+ */
+export const DAEMON_SEALED_PRINCIPAL_RECONCILE_FEATURE: DaemonWireFeature =
+  'daemon-sealed-principal-reconcile-v1'
+
+/**
+ * The daemon reports `repo-key-changed` when a package source's signing key
+ * is not one it expects, and this control plane tells the organization's
+ * managers. Listing it is what lets a daemon send the frame; an older daemon
+ * never does.
+ */
+export const REPO_KEY_REPORT_FEATURE: DaemonWireFeature = 'repo-key-report-v1'
+
+/**
+ * The daemon installer reads one signed `TOKEN` (and pins the panel key). The
+ * Add Server command uses that form whenever the control plane has an
+ * identity key (`features/install/install-token-command.ts`).
+ */
+export const INSTALL_TOKEN_V2_FEATURE: DaemonWireFeature = 'install-token-v2'
+
+/**
+ * Informational only: the peer can run a signed session (the daemon sends
+ * `hello-nonce` and the control plane answers with a signed `hello`). Nothing
+ * reads this list to decide enforcement: the daemon's pin file and
+ * `server.trust_level` do, because the list arrives unsigned.
+ */
+export const PANEL_IDENTITY_FEATURE: DaemonWireFeature = 'panel-identity-v1'
+
+/**
+ * The daemon offers this in its `hello-nonce` frame. The signed hello always
+ * names the server id and the daemon key id (`forServer`, `forKey`), offer or
+ * not, and the daemon refuses a hello naming another server or key. With the
+ * offer, every signed frame names them too. Stripping the offer therefore
+ * cannot downgrade a session: the hello is bound anyway.
+ */
+export const PANEL_BOUND_SESSION_FEATURE: DaemonWireFeature = 'panel-bound-session-v1'
+
+/** Informational only: every frame after the hello carries a signed envelope. */
+export const PANEL_SIGNED_FRAMES_FEATURE: DaemonWireFeature = 'panel-signed-frames-v1'
+
+/** Informational only: enroll and session proofs may be v2, naming the control plane's key. */
+export const SIGNIN_V2_FEATURE: DaemonWireFeature = 'signin-v2'
 
 /**
  * The daemon answers `managed-permissions-request` with
@@ -443,12 +731,37 @@ export const MANAGED_DATABASE_OWNER_FEATURE: DaemonWireFeature = 'managed-databa
 export const MANAGED_DATABASE_CONVERT_FEATURE: DaemonWireFeature = 'managed-database-convert-v1'
 
 /**
+ * The daemon honours `credentials[].kind: 'backup'` on `managed.apply`: it
+ * gives that login the read-only rights a full logical dump needs on every
+ * database (per engine), instead of an ordinary login's rights. Without it the
+ * control plane refuses to add a backup login with 409
+ * `managed_backup_login_needs_daemon_update`.
+ */
+export const MANAGED_BACKUP_LOGIN_FEATURE: DaemonWireFeature = 'managed-backup-login-v1'
+
+/**
  * The daemon answers `server-network-check-request` with
  * `server-network-check-result`: whether the host can open a TCP connection to
  * each listed peer address, and from which local address. Without it the
  * control plane never sends the message and the UI hides the check.
  */
 export const SERVER_NETWORK_CHECK_FEATURE: DaemonWireFeature = 'server-network-check-v1'
+
+/**
+ * The daemon honours `sendViaHeader` on `environment.deploy`: true keeps
+ * `Via: 1.1 Caddy` on responses from the server's public hosting web server.
+ * The control plane sends the field only to a daemon that lists this feature;
+ * an older daemon keeps tying Via to `hideWebServerNames`, as before.
+ */
+export const HOSTING_VIA_HEADER_FEATURE: DaemonWireFeature = 'hosting-via-header-v1'
+
+/**
+ * Development installs only: the co-located daemon pushes `dev-host-status`
+ * (the four development checkouts and units, and the current host job) and
+ * answers `dev-host-action` with `dev-host-action-result`. Each side sends only
+ * when the peer lists this feature; nothing is stored and no floor moved.
+ */
+export const DEV_HOST_FEATURE: DaemonWireFeature = 'dev-host-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

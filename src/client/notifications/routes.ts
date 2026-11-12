@@ -41,11 +41,18 @@ import {
 } from '../../features/notifications/records.ts'
 import {
   describeEvent,
+  eventAudience,
+  eventCategory,
   eventLabel,
   eventScope,
   eventSeverity,
   NOTIFICATION_EVENTS,
 } from '../../features/notifications/events.ts'
+import {
+  accountEmails,
+  ensurePrimaryEmailChannels,
+} from '../../features/notifications/fanout-records.ts'
+import { registerNotificationPreferenceRoutes } from './preference-routes.ts'
 import { applyHoldFields, presentChannelHold } from '../../features/notifications/hold-settings.ts'
 import {
   type ChannelCreate,
@@ -70,17 +77,27 @@ async function presentNotificationChannel(c: NotificationCtx, channel: Notificat
       new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
     ),
   ])
+  // The account email channel sends to the account's address as it is now,
+  // not the snapshot taken when the channel row was made.
+  const account =
+    channel.isPrimary && channel.kind === 'email' && channel.userId
+      ? (await accountEmails(db, [channel.userId])).get(channel.userId)
+      : undefined
+  const verifiedAt = account?.verified ? (channel.verifiedAt ?? channel.createdAt) : null
   return {
     id: channel.id,
     scope: channel.scope,
     organizationId: channel.organizationId,
     kind: channel.kind,
-    label: channel.label,
-    address: describeChannelAddress(channel.kind, await resolveChannelAddress(secrets, channel)),
+    label: channel.isPrimary && channel.kind === 'email' ? 'Account Email' : channel.label,
+    address:
+      account?.email ??
+      describeChannelAddress(channel.kind, await resolveChannelAddress(secrets, channel)),
     signed: channel.signingSecret !== null,
-    verifiedAt: channel.verifiedAt,
+    verifiedAt: account ? verifiedAt : channel.verifiedAt,
     disabledAt: channel.disabledAt,
     createdAt: channel.createdAt,
+    isPrimary: channel.isPrimary,
     ...(await presentChannelHold(db, channel)),
     rules: rules.map((r) => ({ event: r.event, minSeverity: r.minSeverity })),
     recentDeliveries: deliveries.map((d) => ({
@@ -149,6 +166,8 @@ async function listNotificationChannels(c: NotificationCtx): Promise<Response> {
     return c.json({ error: 'scope must be user or organization' }, 400)
   }
   if (scope === 'user') {
+    // The built-in account email channel exists for everyone, set up or not.
+    await ensurePrimaryEmailChannels(db, [sess.userId])
     const channels = await listChannelsForUser(db, sess.userId)
     return c.json({
       channels: await Promise.all(channels.map((ch) => presentNotificationChannel(c, ch))),
@@ -192,6 +211,7 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/notification-channels', session)
   router.use('/notification-channels/*', session)
   router.use('/notification-events', session)
+  registerNotificationPreferenceRoutes(router, opts)
 
   /** The catalogue, for the preferences matrix. */
   router.get('/notification-events', (c) => {
@@ -202,6 +222,8 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
         event,
         severity: eventSeverity(event),
         scope: eventScope(event),
+        audience: eventAudience(event),
+        category: eventCategory(event),
         label: eventLabel(event),
         example: describeEvent(event).title,
       })),
@@ -311,7 +333,11 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       createdByUserId: sess.userId,
       verifiedAt,
     })
-    await replaceRulesForChannel(db, channel.id, parsed.value.rules)
+    // A personal channel is tuned by the person's preferences, not by rules;
+    // rules route shared (organization) channels only.
+    if (channel.scope !== 'user') {
+      await replaceRulesForChannel(db, channel.id, parsed.value.rules)
+    }
     await applyHoldFields(db, channel, parsed.value.hold)
     const fresh = (await getChannel(db, channel.id)) ?? channel
     return c.json({ ok: true, channel: await presentNotificationChannel(c, fresh) }, 201)
@@ -335,7 +361,7 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     if (parsed.value.disabled !== undefined) {
       await setChannelDisabled(db, owned.id, parsed.value.disabled)
     }
-    if (parsed.value.rules !== undefined) {
+    if (parsed.value.rules !== undefined && owned.scope !== 'user') {
       await replaceRulesForChannel(db, owned.id, parsed.value.rules)
     }
     await applyHoldFields(db, owned, parsed.value.hold)
@@ -356,6 +382,15 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     const body = await c.req.json().catch(() => null)
     const parsed = parseRulesBody((body as { rules?: unknown } | null)?.rules)
     if (!parsed.ok) return refuseChannelWrite(c, parsed)
+    if (owned.scope === 'user') {
+      return c.json(
+        {
+          error: 'personal_channel_uses_preferences',
+          reason: 'set what a personal channel receives under notification preferences',
+        },
+        422
+      )
+    }
     await replaceRulesForChannel(db, owned.id, parsed.value)
     return c.json({ ok: true, rules: parsed.value })
   })
@@ -367,6 +402,12 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     if (!sess) return c.json({ error: 'Unauthorized' }, 401)
     const owned = await ownedChannel(c, sess.userId, c.req.param('id'))
     if (owned instanceof Response) return owned
+    if (owned.isPrimary) {
+      return c.json(
+        { error: 'primary_channel', reason: 'your account email channel cannot be deleted' },
+        409
+      )
+    }
     await deleteChannel(db, owned.id)
     return c.json({ ok: true })
   })

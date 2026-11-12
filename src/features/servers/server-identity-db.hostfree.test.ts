@@ -15,6 +15,8 @@ import type { ServerDaemonKey } from './daemon-state.ts'
 import {
   attachDaemonStateToServer,
   clearServerDaemonState,
+  DaemonKeyAlreadyRegisteredError,
+  DaemonKeyRevokedError,
   getServerDaemonStateByFingerprint,
   getServerDaemonStateByServerId,
   revokeDaemonKey,
@@ -48,6 +50,21 @@ function assertClearedProjectionColumns(updates: Array<Record<string, unknown>>)
   assertEquals(patch?.daemonCommit, null)
   assertEquals(patch?.daemonBuiltAt, null)
   assertEquals(patch?.daemonUpdateStatus, null)
+}
+
+/** The old daemon's sealing key goes whenever the identity key is replaced or removed. */
+function assertClearedSealingKey(updates: Array<Record<string, unknown>>): void {
+  const patch = updates.find((entry) => 'daemon' in entry)
+  assertEquals(patch?.sealingKeyKid, null)
+  assertEquals(patch?.sealingKeyPub, null)
+  assertEquals(patch?.sealingKeyReportedAt, null)
+}
+
+/** The signed-reports ratchet resets with the identity key (owner decision 2026-11-06). */
+function assertClearedTrustReports(updates: Array<Record<string, unknown>>): void {
+  const patch = updates.find((entry) => 'daemon' in entry)
+  assertEquals(patch !== undefined && 'trustReportsSignedAt' in patch, true)
+  assertEquals(patch?.trustReportsSignedAt, null)
 }
 
 function limitResult<T>(rows: T[]) {
@@ -226,22 +243,24 @@ test('attachDaemonStateToServer inserts the key row and writes default status co
   // Re-enrollment always clears projection too — a full replace, not a merge.
   assertEquals(fake.getServerRow().daemon, null)
   assertClearedProjectionColumns(fake.getUpdates())
+  assertClearedSealingKey(fake.getUpdates())
+  assertClearedTrustReports(fake.getUpdates())
 })
 
-test('attachDaemonStateToServer mints a new key id and clears revocation on re-enroll', async () => {
-  const fake = createIdentityFakeDb({
-    ...activeKey,
-    revokedAt: '2020-06-01T00:00:00.000Z',
-  })
+test('attachDaemonStateToServer mints a new key id when the same key is presented again', async () => {
+  const fake = createIdentityFakeDb(activeKey)
   const originalId = fake.getKey()?.id
   const result = await attachDaemonStateToServer(fake.db, SERVER_ID, {
-    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'new' },
-    fingerprint: 'fp-replaced',
+    publicJwk: activeKey.publicJwk,
+    fingerprint: activeKey.fingerprint,
   })
-  // A re-enroll is a new key, not an edit of the old row.
+  // A repeat enroll is a new key row id, not an edit of the old row.
   assertEquals(result.keyId !== originalId, true)
-  assertEquals(fake.getKey()?.fingerprint, 'fp-replaced')
+  assertEquals(fake.getKey()?.fingerprint, activeKey.fingerprint)
   assertEquals(fake.getKey()?.revokedAt, null)
+  // The same key presented again still drops the old sealing key and resets the ratchet.
+  assertClearedSealingKey(fake.getUpdates())
+  assertClearedTrustReports(fake.getUpdates())
 })
 
 test('attachDaemonStateToServer throws when the server row is missing', async () => {
@@ -273,6 +292,43 @@ test('attachDaemonStateToServer throws when the server row is missing', async ()
   )
 })
 
+/** The upsert's `setWhere` refused (empty `returning`); `held` is what a read of the key row finds. */
+function refusedUpsertDb(held: { revokedAt: string | null } | undefined): Db {
+  const db = {
+    insert: () => ({
+      values: () => ({
+        onConflictDoUpdate: () => ({ returning: () => Promise.resolve([]) }),
+      }),
+    }),
+    select: () => ({ from: () => ({ where: () => limitResult(held ? [held] : []) }) }),
+    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db as unknown as Db),
+  } as unknown as Db
+  return db
+}
+
+test('attachDaemonStateToServer refuses a different key while the existing key is live', async () => {
+  await assertRejects(
+    () =>
+      attachDaemonStateToServer(refusedUpsertDb({ revokedAt: null }), SERVER_ID, {
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'other' },
+        fingerprint: 'fp-other',
+      }),
+    DaemonKeyAlreadyRegisteredError
+  )
+})
+
+test('attachDaemonStateToServer keeps reporting a revoked key as revoked', async () => {
+  await assertRejects(
+    () =>
+      attachDaemonStateToServer(
+        refusedUpsertDb({ revokedAt: '2020-06-01T00:00:00.000Z' }),
+        SERVER_ID,
+        { publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'other' }, fingerprint: 'fp-other' }
+      ),
+    DaemonKeyRevokedError
+  )
+})
+
 test('touchDaemonKeyLastUsed and revokeDaemonKey are targeted single-column writes', async () => {
   const fake = createIdentityFakeDb(activeKey)
   await touchDaemonKeyLastUsed(fake.db, SERVER_ID, '2020-02-01T00:00:00.000Z')
@@ -295,4 +351,6 @@ test('clearServerDaemonState deletes the key row and resets server status column
   assertEquals(fake.getServerRow().daemon, null)
   assertEquals(fake.getServerRow().connected, false)
   assertClearedProjectionColumns(fake.getUpdates())
+  assertClearedSealingKey(fake.getUpdates())
+  assertClearedTrustReports(fake.getUpdates())
 })

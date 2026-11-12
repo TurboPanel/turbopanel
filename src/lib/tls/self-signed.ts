@@ -644,10 +644,53 @@ export function readKeyUsageBits(certificatePem: string): number[] | null {
   return parseKeyUsageBitString(bitStringNode)
 }
 
+/** Signature algorithm OID → the key type and hash a verifier needs. */
+const VERIFY_ALGORITHMS: Readonly<
+  Record<string, { key: 'rsa' | 'ec'; hash: 'SHA-256' | 'SHA-384' | 'SHA-512' }>
+> = {
+  '1.2.840.113549.1.1.11': { key: 'rsa', hash: 'SHA-256' },
+  '1.2.840.113549.1.1.12': { key: 'rsa', hash: 'SHA-384' },
+  '1.2.840.113549.1.1.13': { key: 'rsa', hash: 'SHA-512' },
+  '1.2.840.10045.4.3.2': { key: 'ec', hash: 'SHA-256' },
+  '1.2.840.10045.4.3.3': { key: 'ec', hash: 'SHA-384' },
+  '1.2.840.10045.4.3.4': { key: 'ec', hash: 'SHA-512' },
+}
+
+type VerifyScheme = {
+  importParams: RsaHashedImportParams | EcKeyImportParams
+  verifyParams: AlgorithmIdentifier | EcdsaParams
+  ecCoordinateBytes?: number
+}
+
 /**
- * Verify that leaf cert was signed by the CA public key: sha256WithRSAEncryption
- * for an RSA CA, ecdsa-with-SHA256 / ecdsa-with-SHA384 for a P-256 / P-384 CA.
- * Any other pairing reports `false`.
+ * How to check a signature made with `signatureOid` by the issuer whose
+ * SubjectPublicKeyInfo is `caSpki`. The hash comes from the certificate, not
+ * the key, so an RSA issuer that signs with SHA-384 verifies too. Null when
+ * the algorithm is unknown or does not fit the key type.
+ */
+export function verifySchemeFor(signatureOid: string, caSpki: Uint8Array): VerifyScheme | null {
+  const algorithm = VERIFY_ALGORITHMS[signatureOid]
+  if (!algorithm) return null
+  const issuer = signatureSchemeForSpki(caSpki)
+  const ecIssuer = issuer.ecCoordinateBytes !== undefined
+  if (ecIssuer !== (algorithm.key === 'ec')) return null
+  if (!ecIssuer) {
+    return {
+      importParams: { name: 'RSASSA-PKCS1-v1_5', hash: algorithm.hash },
+      verifyParams: { name: 'RSASSA-PKCS1-v1_5' },
+    }
+  }
+  return {
+    importParams: issuer.importParams,
+    verifyParams: { name: 'ECDSA', hash: algorithm.hash },
+    ecCoordinateBytes: issuer.ecCoordinateBytes,
+  }
+}
+
+/**
+ * Verify that leaf cert was signed by the CA public key. RSA (PKCS #1 v1.5)
+ * and ECDSA on P-256 / P-384, each with SHA-256, SHA-384 or SHA-512 as the
+ * certificate's signature algorithm names. Any other pairing reports `false`.
  */
 export async function verifyCertificateSignature(
   leafCertificatePem: string,
@@ -668,9 +711,10 @@ export async function verifyCertificateSignature(
   const tbsDer = leafDer.subarray(tbs.contentOffset - tbs.headerLength, tbs.end)
   const caSpki = extractSpkiDer(caCertificatePem)
   try {
-    const scheme = signatureSchemeForSpki(caSpki)
     const sigAlgOid = children(sigAlgNode)[0]
-    if (!sigAlgOid || readOid(sigAlgOid) !== scheme.signatureOid) return false
+    if (!sigAlgOid) return false
+    const scheme = verifySchemeFor(readOid(sigAlgOid), caSpki)
+    if (!scheme) return false
     const signature =
       scheme.ecCoordinateBytes === undefined
         ? encodedSignature
@@ -684,7 +728,7 @@ export async function verifyCertificateSignature(
       ['verify']
     )
     return await crypto.subtle.verify(
-      scheme.signParams,
+      scheme.verifyParams,
       publicKey,
       asBufferSource(signature),
       asBufferSource(tbsDer)
@@ -753,6 +797,49 @@ export async function mintSelfSignedCertificate(
   const parsed = await parseCertificatePem(certificatePem)
 
   return { certificatePem, privateKeyPem, parsed }
+}
+
+/** 1.2.840.113549.1.9.14 extensionRequest (PKCS#9) */
+const OID_EXTENSION_REQUEST = Uint8Array.of(0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x0e)
+
+export type CertificateRequestMaterial = {
+  /** PKCS#10 request, PEM `CERTIFICATE REQUEST`, signed by the new key. */
+  csrPem: string
+  /** PKCS#8 private key, PEM `PRIVATE KEY`. */
+  privateKeyPem: string
+}
+
+/**
+ * Make a fresh ECDSA P-256 key and a PKCS#10 certificate request that lists
+ * `dnsNames` as subject alternative names (CN is the first name). A provider
+ * that issues the certificate signs only the public key, so the private key
+ * never leaves this process.
+ */
+export async function mintCertificateRequest(
+  dnsNames: readonly string[]
+): Promise<CertificateRequestMaterial> {
+  const names = dnsNames.map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0)
+  if (names.length === 0) {
+    throw new TypeError('at least one DNS name is required')
+  }
+  const keyPair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, [
+    'sign',
+    'verify',
+  ])
+  const { spki, pkcs8 } = await exportKeyPair(keyPair)
+  const extensions = seq(buildSanExtension({ dnsNames: names }))
+  const attributes = context(0, seq(concat(oid(OID_EXTENSION_REQUEST), set(extensions))))
+  const info = seq(concat(integer(Uint8Array.of(0x00)), seq(rdnCn(names[0]!)), spki, attributes))
+  const raw = new Uint8Array(
+    await crypto.subtle.sign(ECDSA_P256_SHA256.signParams, keyPair.privateKey, asBufferSource(info))
+  )
+  const request = seq(
+    concat(info, ECDSA_P256_SHA256.algorithmIdentifier, signBitString(ecdsaRawToDer(raw)))
+  )
+  return {
+    csrPem: encodePemBlock('CERTIFICATE REQUEST', request),
+    privateKeyPem: encodePemBlock('PRIVATE KEY', pkcs8),
+  }
 }
 
 /** Organization CA lifetime in calendar years when `validDays` is not given. */

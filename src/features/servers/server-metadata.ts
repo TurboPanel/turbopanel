@@ -11,6 +11,7 @@ import {
   type NtpDefaults,
   parseHideWebServerNames,
   parseNtpDefaults,
+  parseSendViaHeader,
   parseSshPort,
 } from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
@@ -408,6 +409,11 @@ export type ServerOptions = {
    */
   hideWebServerNames?: boolean
   /**
+   * Keep `Via: 1.1 Caddy` on site responses from this host. Omitted → the
+   * organization's setting, which is off unless it says otherwise.
+   */
+  sendViaHeader?: boolean
+  /**
    * Desired state for Docker-hosting provisioning; consumed by later phases to
    * choose self-heal vs report-only.
    */
@@ -437,6 +443,8 @@ export type ServerOptions = {
    * Set through `/servers/:id/managed-external-access`, never a server PATCH.
    */
   managedExternalAccess?: ManagedExternalAccess
+  /** `carry: false` = this server never runs a tunnel connector, whatever a tunnel's placement says. */
+  tunnels?: { carry: boolean }
 }
 
 const OS_FAMILIES = new Set<ServerOsFamily>(['linux', 'windows', 'freebsd', 'darwin'])
@@ -1213,10 +1221,41 @@ function parseDockerVersionToken(value: unknown): string | undefined {
  * same discipline `docker` follows.
  */
 export type ServerRuntimeMetadata = {
-  php?: { series: string[]; extensions?: Record<string, string[]> }
+  php?: {
+    series: string[]
+    extensions?: Record<string, string[]>
+    /** Installed patch version by series, as the daemon read it from the package database. */
+    versions?: Record<string, string>
+    /** Per-site runtimes and the version each runs; at most 256. */
+    sites?: ServerPhpPatchSite[]
+    /** Why the last restart pass stopped while a site is still held back. */
+    restartError?: ServerPhpRestartError
+  }
   node?: { series: string[] }
   lsphp?: { series: string[] }
 }
+
+export type ServerPhpPatchSite = {
+  environmentId: string
+  composeServiceName: string
+  series: string
+  version?: string
+  outdated?: true
+}
+
+export type ServerPhpRestartError = {
+  series: string
+  environmentId?: string
+  composeServiceName?: string
+  message: string
+  at: string
+}
+
+const PHP_PATCH_VERSION = /^\d+\.\d+\.\d+$/
+const MAX_PHP_PATCH_SITES = 256
+const MAX_PHP_RESTART_MESSAGE = 500
+const UUID_TOKEN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const SITE_NAME_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
 
 /** `8.4` or `24` — the exec boundary, matching the daemon's registry. */
 const RUNTIME_SERIES_TOKEN = /^\d{1,3}(\.\d{1,3})?$/
@@ -1263,14 +1302,88 @@ function parseRuntimeExtensionsBySeries(value: unknown): Record<string, string[]
   return extensions
 }
 
+function parsePhpPatchVersions(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {}
+  const out: Record<string, string> = {}
+  for (const [series, version] of Object.entries(value)) {
+    if (RUNTIME_SERIES_TOKEN.test(series) && typeof version === 'string') {
+      if (PHP_PATCH_VERSION.test(version)) out[series] = version
+    }
+  }
+  return out
+}
+
+function parsePhpPatchSite(raw: unknown): ServerPhpPatchSite | null {
+  if (!isRecord(raw)) return null
+  const { environmentId, composeServiceName, series, version, outdated } = raw
+  if (
+    typeof environmentId !== 'string' ||
+    !UUID_TOKEN.test(environmentId) ||
+    typeof composeServiceName !== 'string' ||
+    !SITE_NAME_TOKEN.test(composeServiceName) ||
+    typeof series !== 'string' ||
+    !RUNTIME_SERIES_TOKEN.test(series)
+  ) {
+    return null
+  }
+  return {
+    environmentId,
+    composeServiceName,
+    series,
+    ...(typeof version === 'string' && PHP_PATCH_VERSION.test(version) ? { version } : {}),
+    ...(outdated === true ? { outdated: true as const } : {}),
+  }
+}
+
+function parsePhpPatchSites(value: unknown): ServerPhpPatchSite[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .slice(0, MAX_PHP_PATCH_SITES)
+    .map(parsePhpPatchSite)
+    .filter((site): site is ServerPhpPatchSite => site !== null)
+}
+
+function parsePhpRestartError(value: unknown): ServerPhpRestartError | undefined {
+  if (!isRecord(value)) return undefined
+  const { series, message, at, environmentId, composeServiceName } = value
+  if (
+    typeof series !== 'string' ||
+    !RUNTIME_SERIES_TOKEN.test(series) ||
+    typeof message !== 'string' ||
+    typeof at !== 'string' ||
+    at.length > 40
+  ) {
+    return undefined
+  }
+  return {
+    series,
+    message: message.slice(0, MAX_PHP_RESTART_MESSAGE),
+    at,
+    ...(typeof environmentId === 'string' && UUID_TOKEN.test(environmentId)
+      ? { environmentId }
+      : {}),
+    ...(typeof composeServiceName === 'string' && SITE_NAME_TOKEN.test(composeServiceName)
+      ? { composeServiceName }
+      : {}),
+  }
+}
+
 /** The `php` area, which is the one that also carries per-series extensions. */
 function parsePhpRuntimeMetadata(value: unknown): ServerRuntimeMetadata['php'] {
   if (!isRecord(value)) return undefined
   const series = parseRuntimeSeriesList(value.series)
   if (series.length === 0) return undefined
   const extensions = parseRuntimeExtensionsBySeries(value.extensions)
-  if (Object.keys(extensions).length === 0) return { series }
-  return { series, extensions }
+  const versions = parsePhpPatchVersions(value.versions)
+  const sites = parsePhpPatchSites(value.sites)
+  const restartError = parsePhpRestartError(value.restartError)
+  return {
+    series,
+    ...(Object.keys(extensions).length > 0 ? { extensions } : {}),
+    ...(Object.keys(versions).length > 0 ? { versions } : {}),
+    ...(sites.length > 0 ? { sites } : {}),
+    ...(restartError ? { restartError } : {}),
+  }
 }
 
 export function parseServerRuntimeMetadata(value: unknown): ServerRuntimeMetadata | undefined {
@@ -1288,6 +1401,16 @@ export function parseServerRuntimeMetadata(value: unknown): ServerRuntimeMetadat
   }
 
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+/** The runtimes block for a client: never the per-site list, which stays on the control plane. */
+export function publicServerRuntimeMetadata(
+  runtimes: ServerRuntimeMetadata | null | undefined
+): ServerRuntimeMetadata | null {
+  if (!runtimes) return null
+  if (!runtimes.php?.sites) return runtimes
+  const { sites: _sites, ...php } = runtimes.php
+  return { ...runtimes, php }
 }
 
 export function serverRuntimeMetadataEquals(
@@ -1911,9 +2034,11 @@ export function redactServerOptions<T>(value: T): T {
   return copy as T
 }
 
-function assignHideWebServerNames(options: ServerOptions, value: Record<string, unknown>): void {
+function assignWebServerSettings(options: ServerOptions, value: Record<string, unknown>): void {
   const hide = parseHideWebServerNames(value.hideWebServerNames)
   if (hide !== undefined) options.hideWebServerNames = hide
+  const via = parseSendViaHeader(value.sendViaHeader)
+  if (via !== undefined) options.sendViaHeader = via
 }
 
 /** Parse operator-controlled `server.options` jsonb. */
@@ -1934,7 +2059,7 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
-  assignHideWebServerNames(options, value)
+  assignWebServerSettings(options, value)
   if ('metricsCapabilityPlan' in value) {
     const metricsCapabilityPlan = parseServerMetricsCapabilityPlanOverride(
       value.metricsCapabilityPlan
@@ -1949,7 +2074,12 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   if ('managedExternalAccess' in value) {
     options.managedExternalAccess = parseManagedExternalAccess(value.managedExternalAccess)
   }
+  assignTunnelCarry(options, value.tunnels)
   return Object.keys(options).length > 0 ? options : {}
+}
+
+function assignTunnelCarry(options: ServerOptions, value: unknown): void {
+  if (isRecord(value) && typeof value.carry === 'boolean') options.tunnels = { carry: value.carry }
 }
 
 function assignServerPhpModes(options: ServerOptions, value: unknown): void {

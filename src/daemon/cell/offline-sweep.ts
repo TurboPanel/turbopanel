@@ -3,7 +3,7 @@
  * that closes the "hard poweroff never shows offline" gap: a daemon that
  * disappears without a clean WebSocket close (power loss, network partition,
  * kernel panic) leaves no `webSocketClose`/`webSocketError` event, so nothing
- * ever tells Postgres the server went away (see AGENTS.md → Daemon Cell →
+ * ever tells Postgres the server went away (see src/daemon/cell/AGENTS.md →
  * "Presence model" disconnect-first trade-off).
  *
  * Design ("Option B"):
@@ -34,7 +34,7 @@
  *
  * This intentionally does NOT reintroduce a per-DO recurring alarm — every
  * `setAlarm()` reschedule is a billed SQLite row write (see do.ts "Alarm /
- * hibernation" + AGENTS.md Daemon Cell billing model). Centralizing the
+ * hibernation" + src/daemon/cell/AGENTS.md billing model). Centralizing the
  * "when to check" clock into one Cron Trigger avoids that cost entirely and
  * scales with the number of *connected* servers, not the number of ticks.
  *
@@ -49,6 +49,7 @@
  * phases race remaining time, and `OFFLINE_SWEEP_LOCK.expiresAt` covers the
  * enforced live runtime so a still-running holder cannot be stolen.
  */
+import { platformControlPlaneOrigin } from '../../features/install/control-plane-origins.ts'
 import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { sweepStalledFencing } from '../../features/managed/ha-recovery.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
@@ -72,18 +73,26 @@ import { runPrincipalRemovalSweep } from '../../client/principals/removal-sweep.
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
+import { runDnsCertificateCleanupTick } from '../../features/tls/dns-certificates/cleanup.ts'
+import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
+import { runHttpIssuanceSweepTick } from '../../client/tls/http-issuance-sweep.ts'
+import { peerLeafDelivery } from '../../features/tunnels/sync.ts'
+import { runTunnelSweeps } from '../../features/tunnels/sweeps.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
 import { cachedForEnv } from './notification-email-cache.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { pruneNotificationHistory } from '../../features/notifications/cleanup.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
 import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
 } from '../../features/alerts/notify-demotions.ts'
+import { noticeDisconnectedServers } from './disconnect-notice.ts'
 import { isMassDisconnect } from './mass-disconnect.ts'
+import { sweepPinSilence } from '../pin-silence.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createWorkersCommandQueue } from '../../features/commands/workers-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -138,6 +147,7 @@ import {
 import {
   type ConnectedServerForSweep,
   listConnectedServersForSweep,
+  claimDisconnectNotices,
   listRecentlyOfflineServersForSweep,
   type RecentlyOfflineServerForSweep,
   rotateSweepBatch,
@@ -271,6 +281,8 @@ export {
   MASS_DISCONNECT_MIN_SERVERS,
   MASS_DISCONNECT_RATIO,
 } from './mass-disconnect.ts'
+import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
+import { closeSocketsWithStaleKeys } from './stale-key-sweep.ts'
 
 async function withBoundedConcurrency<T>(
   items: T[],
@@ -973,6 +985,26 @@ export async function sweepExpiredWebhookDeliveriesSafely(db: Db): Promise<void>
 }
 
 /**
+ * Drop used sign-in challenges past their window, then close hosted sockets
+ * whose daemon key was revoked or replaced (one read; a cell is reached only
+ * for a row it returns). Each half is isolated.
+ */
+export async function sweepDaemonTrustSafely(db: Db, registry: DaemonCellRegistry): Promise<void> {
+  try {
+    const pruned = await pruneExpiredNonces(db)
+    if (pruned > 0) sweepTrace('daemon-nonces-swept', { pruned })
+  } catch (err) {
+    sweepTrace('daemon-nonce-sweep-failed', { error: sweepErrorMessage(err) })
+  }
+  try {
+    const closed = await closeSocketsWithStaleKeys(db, registry)
+    if (closed > 0) sweepTrace('stale-key-sockets-closed', { closed })
+  } catch (err) {
+    sweepTrace('stale-key-sweep-failed', { error: sweepErrorMessage(err) })
+  }
+}
+
+/**
  * Prune aged upgrade steps and terminal runs. Rides this cron's already-open
  * db on the 15-minute window and is isolated so a failure never aborts the
  * other sweeps.
@@ -1132,6 +1164,7 @@ async function runQueuedCronSweeps(
   tlsRenewal: CronTlsRenewal | null | undefined,
   firewallApplyGate: FirewallApplyGate,
   registry: DaemonCellRegistry,
+  env: CloudflareBindings,
   signal?: AbortSignal
 ): Promise<void> {
   try {
@@ -1157,12 +1190,12 @@ async function runQueuedCronSweeps(
     )
     // Hosting Accounts of deleted projects whose folders are gone.
     await runIsolatedSweep(signal, 'principal-removal-sweep-failed', () =>
-      runPrincipalRemovalSweep(db, commandQueue)
+      runPrincipalRemovalSweep(db, commandQueue, tlsRenewal?.secretsConfig)
     )
     // A fresh folder listing from servers that have folders, every few hours, so
     // a folder removed or added by hand is noticed.
     await runIsolatedSweep(signal, 'folder-reconcile-sweep-failed', () =>
-      runFolderReconcileSweep(db, commandQueue)
+      runFolderReconcileSweep(db, commandQueue, tlsRenewal?.secretsConfig)
     )
     // Firewall previews after a reconnect. The gate is the deploy-time apply
     // key: without it an opted-in host that applied would be sent a teardown on
@@ -1173,9 +1206,9 @@ async function runQueuedCronSweeps(
     // Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
     // pinned certificate goes out at once; without it the panel asks for a redeploy.
     await runIsolatedSweep(signal, 'hosting-letsencrypt-sweep-failed', () =>
-      runHostingLetsEncryptSweepTick(
-        db,
-        tlsRenewal
+      runHostingLetsEncryptSweepTick(db, {
+        ...(signal ? { signal } : {}),
+        ...(tlsRenewal
           ? {
               apply: {
                 commandQueue,
@@ -1183,14 +1216,39 @@ async function runQueuedCronSweeps(
                 dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
               },
             }
-          : {}
-      )
+          : {}),
+      })
     )
     if (tlsRenewal) {
       // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
       // bounded batch; reset when the sweep completes or the cursor is invalid).
       await runIsolatedSweep(signal, 'leaf-renewal-sweep-failed', () =>
-        runLeafRenewalSweepTick(db, commandQueue, tlsRenewal)
+        runLeafRenewalSweepTick(db, commandQueue, {
+          ...tlsRenewal,
+          deliverPeerLeaf: peerLeafDelivery(commandQueue, tlsRenewal),
+        })
+      )
+      // Tunnel tables, connectors, removals, token recheck and connector status:
+      // the one list the self-hosted timer also runs (`features/tunnels/sweeps.ts`).
+      await runTunnelSweeps(db, { commandQueue, ...tlsRenewal }, (label, sweep) =>
+        runIsolatedSweep(signal, label, sweep)
+      )
+      // DNS-validated certificates: the control plane no longer orders or renews them.
+      // Only challenge records it made are removed, through the DNS provider.
+      await runIsolatedSweep(signal, 'dns-certificate-sweep-failed', () =>
+        runDnsCertificateCleanupTick(
+          buildDnsCertContext(db, { secrets: tlsRenewal.dataEncryptionSecrets })
+        )
+      )
+      // Certificates a serving server orders at the panel's request: moves each open
+      // request on, hands a finished pair to the sites, starts first orders and renewals.
+      await runIsolatedSweep(signal, 'http-certificate-sweep-failed', () =>
+        runHttpIssuanceSweepTick(db, {
+          registry,
+          push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
+          secrets: tlsRenewal.dataEncryptionSecrets,
+          env: env as unknown as Record<string, string | undefined>,
+        })
       )
       // Orphaned ProxySQL frontends: teardown needs a full
       // `managed.ingress.reconcile`, so it can only run when the cron has the
@@ -1248,7 +1306,7 @@ export function optionalPhaseNames(
   scheduledTime: number | undefined,
   upgradeTickMinutes: number = UPGRADE_TICK_DEFAULT_MINUTES
 ): string[] {
-  const names = ['command-dispatch', 'webhook-deliveries']
+  const names = ['command-dispatch', 'webhook-deliveries', 'daemon-trust']
   if (shouldRunScheduledPhase(scheduledTime, shouldSweepExecutionLogs)) {
     names.push('execution-logs')
   }
@@ -1414,11 +1472,10 @@ async function resolveWorkersNotificationEmail(
   try {
     const queue = await resolveWorkersEmailQueue(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
     const settings = await resolveEmailSettings(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
-    const publicUrls = platformEnv.TURBOPANEL_PUBLIC_URLS?.split(',')[0]?.trim()
     return {
       queue,
       from: settings.from,
-      consoleBaseUrl: platformEnv.TURBOPANEL_BASE_URL?.trim() || publicUrls || null,
+      consoleBaseUrl: platformControlPlaneOrigin(platformEnv),
     }
   } catch {
     return undefined
@@ -1437,14 +1494,13 @@ async function sweepTierNoticesPhase(
     platformEnv,
     tlsRenewal?.dataEncryptionSecrets
   )
-  const publicUrls = platformEnv.TURBOPANEL_PUBLIC_URLS?.split(',')[0]?.trim()
   await sweepTierNotices({
     db,
     emailQueue,
     deployment: 'hosted',
     ignoreElapsedGate: true,
     nowMs: opts.nowMs,
-    consoleBaseUrl: platformEnv.TURBOPANEL_BASE_URL?.trim() || publicUrls,
+    consoleBaseUrl: platformControlPlaneOrigin(platformEnv) ?? undefined,
   })
 }
 
@@ -1471,7 +1527,11 @@ async function runBillingOptionalPhases(
       phasesSkipped,
       async () => {
         const client = createStripeClient(billingConfig)
-        await runPendingStripeProjections({ db, client })
+        await runPendingStripeProjections({
+          db,
+          client,
+          daemonCellRegistry: createDurableObjectDaemonCellRegistry(env, db),
+        })
       }
     ))
   ) {
@@ -1528,6 +1588,38 @@ async function runOptionalCronPhases(
       opts.scheduledTime,
       phasesSkipped,
       () => runWithDbTimeout(db, sweepExpiredWebhookDeliveriesSafely, capDbTimeout(deadlineMs))
+    ))
+  ) {
+    return
+  }
+
+  if (
+    !(await runOptionalPhase(deadlineMs, 'daemon-trust', opts.scheduledTime, phasesSkipped, () =>
+      runWithDbTimeout(
+        db,
+        (database) =>
+          sweepDaemonTrustSafely(database, createDurableObjectDaemonCellRegistry(env, database)),
+        capDbTimeout(deadlineMs)
+      )
+    ))
+  ) {
+    return
+  }
+
+  // Pinned servers that are up (a TurboFabric peer still reaches them) but
+  // not talking to us: staged pin silence alarms (daemon/pin-silence.ts).
+  // Postgres only, no cell is woken; the sweep never throws.
+  if (
+    !(await runOptionalPhase(deadlineMs, 'pin-silence', opts.scheduledTime, phasesSkipped, () =>
+      runWithDbTimeout(
+        db,
+        async (database) => {
+          await sweepPinSilence(database, tlsRenewal?.dataEncryptionSecrets, {
+            email: await workersNotificationEmail(env, db, tlsRenewal),
+          })
+        },
+        capDbTimeout(deadlineMs)
+      )
     ))
   ) {
     return
@@ -1592,6 +1684,25 @@ async function runOptionalCronPhases(
     return
   }
 
+  // Inbox rows after 90 days, events and the ledger after 30, and settings of
+  // people who left an organization (features/notifications/cleanup.ts). On
+  // the upgrade-history 15-minute window, like the self-hosted tick: the
+  // settings pass reads the whole preference table.
+  if (
+    !(await runScheduledOptionalPhase(
+      deadlineMs,
+      'notification-prune',
+      opts.scheduledTime,
+      phasesSkipped,
+      shouldSweepUpgradeHistory,
+      async () => {
+        await pruneNotificationHistory(db)
+      }
+    ))
+  ) {
+    return
+  }
+
   if (
     !(await runScheduledOptionalPhase(
       deadlineMs,
@@ -1646,6 +1757,7 @@ async function runOptionalCronPhases(
       tlsRenewal,
       opts.firewallApplyGate,
       createDurableObjectDaemonCellRegistry(env, db),
+      env,
       signal
     )
   )
@@ -1721,27 +1833,41 @@ export async function runOfflineSweep(
 
     try {
       const ranLiveness = await runBoundedPhase(deadlineMs, 'liveness', async () => {
+        const alertSender =
+          opts.sweepOnceDeps?.alertSender ??
+          (await resolveAlertSender(
+            db,
+            tlsRenewal?.dataEncryptionSecrets,
+            sweepTrace,
+            undefined,
+            // Resolved only if an alert is actually sent this tick.
+            () => workersNotificationEmail(env, db, tlsRenewal),
+            // The legacy-webhook adoption is a one-time migration touch: the
+            // 15-minute window is plenty, not every minute.
+            {
+              adoptLegacy:
+                opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
+            }
+          ))
         stats = await sweepOnceSafely(env, db, {
           ...opts.sweepOnceDeps,
-          alertSender:
-            opts.sweepOnceDeps?.alertSender ??
-            (await resolveAlertSender(
-              db,
-              tlsRenewal?.dataEncryptionSecrets,
-              sweepTrace,
-              undefined,
-              // Resolved only if an alert is actually sent this tick.
-              () => workersNotificationEmail(env, db, tlsRenewal),
-              // The legacy-webhook adoption is a one-time migration touch: the
-              // 15-minute window is plenty, not every minute.
-              {
-                adoptLegacy:
-                  opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
-              }
-            )),
+          alertSender,
           nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
           deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
         })
+        // After the demotions and the self-heal, so a server healed this tick
+        // is not announced; an ordinary disconnect past the grace is.
+        await runIsolatedSweep(undefined, 'disconnect-notice-failed', () =>
+          noticeDisconnectedServers(db, {
+            claim: (claimDb, claimOpts) =>
+              runWithDbTimeout(claimDb, (leaseDb) => claimDisconnectNotices(leaseDb, claimOpts)),
+            graceMs: OFFLINE_SWEEP_STALE_MS,
+            nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
+            resolveSender: () => Promise.resolve(alertSender),
+            awaitDelivery: true,
+            budgetMs: Math.min(remainingMs(deadlineMs), ALERT_DELIVERY_BUDGET_MS),
+          })
+        )
       })
       if (!ranLiveness) {
         markSkippedFrom(phasesSkipped, 'command-dispatch', opts.scheduledTime)

@@ -20,6 +20,7 @@ import {
 } from '../../db/schema.ts'
 import { getTierByLabel, insertTier } from '../tiers/tier-records.ts'
 import { getServerLicenseBinding, resolveServerId, touchServerMetadata } from './server-registry.ts'
+import { parseServerDaemonState } from './daemon-state.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -149,11 +150,13 @@ test('resolveServerId creates row for licensed enrollment', async () => {
         throw new Error('expected resolveServerId to return server id for valid license')
       }
       const [row] = await db
-        .select({ machineKey: server.machineKey })
+        .select({ machineKey: server.machineKey, name: server.name })
         .from(server)
         .where(eq(server.id, resolved))
         .limit(1)
       assertEquals(row?.machineKey, machineKey)
+      // The name typed in Add Server is the new server's display name.
+      assertEquals(row?.name, 'Server Registry Test License')
     } finally {
       if (resolved) {
         await deleteOrganizationServerTree(db, organizationId, resolved)
@@ -448,6 +451,9 @@ test('resolveServerId rejects a second host once the license is latched', async 
       })
       assertEquals(second, null)
 
+      // An operator renames the server; enrolling again must not undo it.
+      await db.update(server).set({ name: 'Renamed By Operator' }).where(eq(server.id, first))
+
       const reenroll = await resolveServerId(db, {
         serverId: first,
         hostname: `first-again-${crypto.randomUUID()}`,
@@ -456,6 +462,12 @@ test('resolveServerId rejects a second host once the license is latched', async 
         licenseToken,
       })
       assertEquals(reenroll, first)
+      const [row] = await db
+        .select({ name: server.name })
+        .from(server)
+        .where(eq(server.id, first))
+        .limit(1)
+      assertEquals(row?.name, 'Renamed By Operator')
     } finally {
       if (first) {
         await deleteOrganizationServerTree(db, organizationId, first)
@@ -523,6 +535,43 @@ test('touchServerMetadata merges a capacity heartbeat without dropping hello-onl
         blockSizeBytes: 128 * MIB,
       })
       assertEquals(resources?.dynamicMemory, { driver: 'hv_balloon', totalMoved: 1528 * MIB })
+    } finally {
+      await db.delete(server).where(eq(server.id, serverId))
+    }
+  })
+})
+
+test('a later hello refreshes the stored daemon features, so a feature the panel learned is picked up', async () => {
+  await withTestDb(async (db) => {
+    const now = new Date().toISOString()
+    const [inserted] = await db
+      .insert(server)
+      .values({
+        createdAt: now,
+        updatedAt: now,
+        hostname: `features-${crypto.randomUUID()}`,
+        machineKey: randomMachineKey(),
+      })
+      .returning({ id: server.id })
+    const serverId = inserted!.id
+    const storedFeatures = async (): Promise<readonly string[] | undefined> => {
+      const [row] = await db
+        .select({ daemon: server.daemon })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      return parseServerDaemonState(row?.daemon)?.projection?.features
+    }
+    try {
+      // First hello: an older panel only knew one of the two names the daemon advertises.
+      await touchServerMetadata(db, serverId, { features: ['managed-upgrade-v1'] })
+      assertEquals(await storedFeatures(), ['managed-upgrade-v1'])
+      // The panel is deployed, the socket drops, the daemon reconnects and says hello again:
+      // the newly known name is stored.
+      await touchServerMetadata(db, serverId, {
+        features: ['managed-upgrade-v1', 'update-progress-v1'],
+      })
+      assertEquals(await storedFeatures(), ['managed-upgrade-v1', 'update-progress-v1'])
     } finally {
       await db.delete(server).where(eq(server.id, serverId))
     }

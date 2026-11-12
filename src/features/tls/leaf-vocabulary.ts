@@ -5,6 +5,16 @@
  * pins them together.
  */
 
+/**
+ * What a `leaf` row tracks: the ProxySQL frontend (`ingress`, one per server),
+ * a database engine replica (`engine`), or the certificate a server's web
+ * server presents to the other servers of the organization (`peer`, one per
+ * server).
+ */
+export const LEAF_KINDS = ['ingress', 'engine', 'peer'] as const
+
+export type LeafKind = (typeof LEAF_KINDS)[number]
+
 /** `active` leaves are counted and renewed; `stale` ones wait on nothing. */
 export const LEAF_STATES = ['active', 'stale'] as const
 

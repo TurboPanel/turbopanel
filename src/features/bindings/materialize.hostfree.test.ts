@@ -124,7 +124,8 @@ function baseBindingRow(overrides: Record<string, unknown> = {}) {
     serviceId: 's1',
     databaseName: 'app',
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    isEmitEngineDefaults: false,
+    preset: null,
     loginId: 'l1',
     principalUsername: 'u',
     principalPassword: 'tpsecret.placeholder',
@@ -151,7 +152,7 @@ test('listBindingEmittedKeys returns null for unsupported engines', () => {
   assertEquals(
     listBindingEmittedKeys({
       keyPrefix: 'DATABASE',
-      emitEngineDefaults: true,
+      preset: 'postgres',
       engineCode: 'not-a-real-engine',
     }),
     null
@@ -373,6 +374,44 @@ test('upsertBindingOwnedVariables inserts updates and deletes stale keys', async
   assertEquals(inserts[0]?.key, 'DATABASE_HOST')
   assertEquals(inserts[0]?.value, 'db')
   assertEquals(deletes.length, 1)
+})
+
+test('upsertBindingOwnedVariables leaves a hand-set variable of the same name alone', async () => {
+  const secrets = await dataSecrets()
+  const inserts: Array<Record<string, unknown>> = []
+  const selects: unknown[][] = [
+    [{ id: 'v-url', key: 'DATABASE_URL' }],
+    [{ key: 'DATABASE_SSL_MODE' }, { key: 'DATABASE_URL' }],
+  ]
+  const tx = {
+    select: () => ({ from: () => ({ where: () => Promise.resolve(selects.shift() ?? []) }) }),
+    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+    insert: () => ({
+      values: (row: Record<string, unknown>) => {
+        inserts.push(row)
+        return Promise.resolve()
+      },
+    }),
+    delete: () => ({ where: () => Promise.resolve() }),
+  }
+  const db = {
+    transaction: async (fn: (inner: typeof tx) => Promise<void>) => {
+      await fn(tx)
+    },
+  } as unknown as Db
+  await upsertBindingOwnedVariables(db, secrets, {
+    bindingId: 'b1',
+    serviceId: 'svc',
+    desired: [
+      { key: 'DATABASE_SSL_MODE', value: 'verify-full', isSecret: false },
+      { key: 'DATABASE_HOST', value: 'db', isSecret: false },
+    ],
+  })
+  // The hand-set name is skipped (no insert, so no unique-index failure); a new name is written.
+  assertEquals(
+    inserts.map((row) => row.key),
+    ['DATABASE_HOST']
+  )
 })
 
 test('reapplyBindingOwnedVariables and loadBindingOwnedKeysForService', async () => {

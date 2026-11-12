@@ -38,7 +38,7 @@ delivery, presence, and request correlation only.
 > not hold Hyperdrive connections open across handler returns. Never build
 > general command queues inside Durable Objects — Cloudflare Queues / RabbitMQ
 > own durable transport; the cell owns only the live WS outbox + pending-request
-> row. Cloudflare Workers (Durable Object) mode and self-hosted Deno/Redis mode
+> row. Cloudflare Workers (Durable Object) mode and self-hosted Deno (RabbitMQ + Redis cell) mode
 > must keep behavioral parity for every command feature. Production daemon
 > commands must be typed handlers — never arbitrary shell strings.
 
@@ -131,16 +131,103 @@ in the execution-log store — there is no Postgres column for them. See
 
 ### Queue transport
 
+**Same policy on both runtimes** (`server-turn.ts`, `delivery-retry.ts`,
+`delivery-failure.ts`):
+
+- **One command per server, in order.** Before a command starts,
+  `claimServerTurn` locks the server's row for one short transaction
+  (`FOR NO KEY UPDATE`, which does not clash with the key-share locks of
+  inserts that reference the server; `lock_timeout` 2 s; Postgres drops the
+  lock on commit, rollback or a lost connection), checks the `command` table
+  for another command of that server that is still live, or an older one still
+  `queued` and touched in the last 15 minutes (`OLDER_QUEUED_WAIT_MS`, longer
+  than the longest retry wait; every busy check stamps the waiting command's
+  `updated_at`, so a command waiting its turn keeps its place however long the
+  server is busy, and one whose message was lost stops holding the server),
+  and only then marks this one `dispatching`. A deploy stops counting once the
+  server has taken it over (`deployMayLeaveLane`). Nothing is held while the
+  command runs; a run that dies leaves its row live until the stale sweep ends
+  it. Busy: the envelope goes back on the queue and the attempt is not counted.
+- **Busy checks are cheap.** A busy server is the common answer, so one
+  unlocked statement finds it and stamps the waiting command in the same round
+  trip (`blockedAndStamped`, a data-modifying CTE); the lock is taken only when
+  nothing seems to block (and the check runs again under it; a "busy" found
+  there, or a lock timeout, stamps too). The waiting command is stamped at most
+  every 30 s (`WAITING_STAMP_INTERVAL_MS`), and each stamp keeps its expiry at
+  least `WAITING_EXPIRY_FLOOR_MS` away (the longest wait plus a minute), so a
+  waiting command never expires before its next look. Its dispatch payload is
+  read, and a superseded re-seed refused, only after it wins its turn. It looks
+  again after 10 s for the first minute, then every 30 s
+  (`serverBusyDelaySeconds`, `SERVER_BUSY_LONGEST_DELAY_SECONDS`), so the next
+  command starts at most 30 s after the one ahead of it ends. The owner chose
+  this cap over waking the next command on finish (2026-11-04): a wake-up needs
+  a second copy of the message, and two copies of one command could both run
+  it without an ownership token on every message. The claim only succeeds
+  against the row exactly as the consumer read it (`status` and
+  `dispatch_started_at`), so a second delivery of the same command that read
+  the row before the claim loses and does nothing. A load review on 2026-11-04
+  put the old cost at about 960 database round trips a minute for 20 commands
+  behind one 30-minute backup; now about 2 per look and 64 looks per waiter.
+- **Waiting never counts.** A busy check also moves the command's
+  `expires_at` on by the time it waited since it was last seen, and the stale
+  sweep times a `queued` command from its last stamp (`updated_at`), so a short
+  command waiting behind a 30-minute backup is not timed out while it waits.
+- **Quick commands skip the line.** `QUICK_COMMAND_TYPES` (`daemon.ping`,
+  `server.firewall.confirm`, `server.tunnel.status`) never wait their server's
+  turn and never hold it; the server runs them beside a long command. A
+  firewall confirm must arrive before the server's own deadline or the server
+  undoes the new rules, so it can never queue behind a backup. Only add a type
+  that is short and safe beside any other command.
+- **Passing failures wait, then fail.** A transient error (`isTransientError`)
+  puts a new envelope back with `attempt + 1` after 5 s, 30 s, 2 min and 10 min
+  (`COMMAND_RETRY_DELAYS_SECONDS`), and the delivery is acked. A deploy
+  hand-off re-enqueues with `attempt: 1`, so errors spread over a long deploy
+  never add up. After the last wait, a command that never reached its server
+  (`sent_at` null) is failed (`error_code` `queue_retry_exhausted`, a plain
+  reason, the same release of held rows as a command that never got there),
+  after its request is taken back from the server's outbox (a request can sit
+  there when the write that marks it `sent` failed; if it cannot be taken back,
+  or the server already answered, the command is not failed). One already sent
+  is left: failing it would free its server's turn while it may still run, and
+  with nothing waiting on it any more the stale sweep ends it. If even that
+  cannot be written, the message is dead-lettered and the stale sweep ends the
+  command. A retry that cannot be queued hands the message back (Deno
+  nack-requeue, Workers `retry({ delaySeconds: 30 })`).
+- **Known limit.** Retries and busy waits publish the new message before
+  acking the old one: if the ack is lost in between, the command is delivered
+  twice and the second copy re-sends it to the server, which drops a command
+  id it has already seen.
+- **Long commands** (a 30-minute backup or restore). The request record
+  keeps the cell's default 300 s to be delivered and acknowledged (so an
+  undelivered command never reaches a server long after it was given up on),
+  then, from the daemon's ack, the command's whole budget plus 15 minutes
+  (`commandRequestLifetime`, `CellEnqueueOptions.ackedTtlSeconds`): the Redis
+  cell extends the record on ack; the Durable Object cell already keeps an
+  acknowledged request until its result. Before this, a self-hosted command
+  running past 5 minutes lost its record and ended `timed_out` even when it
+  succeeded. One consumer run waits at most `COMMAND_WAIT_HOLD_MS` (10
+  minutes, under the Workers consumer limit) and then hands the wait back to
+  the queue (`attempt: 1`); the next run resumes the wait on the same request
+  (`resumeSentWait`) instead of sending the command again, and a command whose
+  request is gone is sent again as before. Deploys keep their own clocks.
+- **Broken messages** (unparseable, or a permanent error) are dead-lettered.
+- `CommandQueue.enqueue(envelope, { delaySeconds })` is the one way to delay:
+  Workers passes it to `send`; Deno publishes to the delay queue of the next
+  tier up (`turbopanel.commands.delay.{5,10,30,120,600}s`, queue-level TTL,
+  dead-lettered back into the dispatch queue).
+
 - **Workers:** `TURBOPANEL_COMMAND_QUEUE` binding → per-env queue names in
   `wrangler.jsonc`: `live` uses `daemon-commands` / `daemon-commands-dlq`;
-  `testing` uses `staging-daemon-commands` / `staging-daemon-commands-dlq`;
+  `staging` uses `staging-daemon-commands` / `staging-daemon-commands-dlq`;
+  `testing` uses `testing-daemon-commands` / `testing-daemon-commands-dlq`;
   local top-level worker uses `dev-daemon-commands` / `dev-daemon-commands-dlq`
   (max 3 retries). Declared under `queues.producers` and `queues.consumers`.
-  Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`. Failed
-  messages are never acked: permanent failures (malformed/poisoned) log
-  `command.permanent_failure` and `retry()` like transient ones, so
-  `max_retries` exhaustion routes them to the `dead_letter_queue` (the DLQ
-  must exist: `wrangler queues create <name>-dlq`).
+  Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`. A
+  dead-lettered message is never acked: it logs `command.permanent_failure`
+  and is `retry()`d until `max_retries` routes it to the `dead_letter_queue`
+  (the DLQ must exist: `wrangler queues create <name>-dlq`). Retries and busy
+  waits are new delayed messages, not `retry()`, so they never use up
+  `max_retries`.
 - **Deno:** `TURBOPANEL_AMQP_URL` (same URL as email queue, different topology).
   Exchange `turbopanel.commands`, queue `turbopanel.commands.dispatch`, routing
   key `command.dispatch`, DLX `turbopanel.commands.dlx` → DLQ
@@ -151,35 +238,37 @@ in the execution-log store — there is no Postgres column for them. See
   topology and prefetch all wait on the broker, and an `error` with no listener
   is a thrown exception), a failed setup closes the half-open connection, and a
   first session lost during start goes through the same reconnect loop as a
-  later loss. The mailer consumer (`lib/email/mailer/deno-mailer-consumer.ts`)
-  follows the same rule.
-  Commands run **one at a time per server** (`command-lanes.ts`): the consumer
-  parses each delivery, hands it to the lane of its envelope's `serverId`, and
-  acks or nacks only after the command has finished. Different servers run in
-  parallel (cap `COMMAND_LANE_CONCURRENCY`, lanes take turns); same-server
-  commands keep arrival order, which keeps same-service ordering because a
-  managed service lives on one server. A deploy (`environment.deploy`) is the
-  one command that gives its lane up before it ends: once the server reports
-  it (`progress.runningSince` set or `null`), or `DEPLOY_SIGNAL_GRACE_MS`
-  after it was sent with no word (`deployMayLeaveLane` in `deploy-wait.ts`),
-  the rest of its wait runs outside the lane and the delivery is acked or
-  nacked when that wait ends. Before this a deploy the server had lost, or one
-  waiting on a result, held its server's lane in 12 minute turns for up to the
-  6 hour reconcile window, and every other command for that server waited
-  behind it. Order still holds: the deploy is put on the server's connection
-  inside the lane, the server deploys one environment at a time under the
+  later loss. A broker that is still unreachable when the first connect gives up
+  (30 tries a second apart) does not stop the consumer either: start returns and
+  the same loop keeps trying in the background, so a slow broker start never
+  leaves the control plane accepting commands that nothing runs. The mailer
+  consumer (`lib/email/mailer/deno-mailer-consumer.ts`) follows the same rules.
+  The producers (`platform/deno/commands/deno-amqp-queue.ts` and the email one)
+  publish through `platform/deno/amqp-confirm-publisher.ts`, which applies the
+  same listener rule: a lost connection or channel only drops the session, and
+  the next publish opens a new one (a publish in flight at that moment fails to
+  its caller).
+  Each delivery runs in a slot of its own (`command-lanes.ts`, keyed by
+  command id; it only caps how many run at once, `COMMAND_LANE_CONCURRENCY`)
+  and is acked or nacked only after the command has finished. Per-server order
+  is the server-turn check above, the same as on Workers: a command whose
+  server is busy is acked and put back, so it never holds a delivery slot and
+  one busy server cannot fill `COMMAND_CONSUMER_PREFETCH` and stall the others
+  (before, same-server commands waited in an in-memory lane holding a slot,
+  unseen by the database, and 32 of them stopped every other server's
+  commands from being delivered). A deploy (`environment.deploy`) gives its
+  slot up once the server has taken it over (`progress.runningSince` set or
+  `null`), or `DEPLOY_SIGNAL_GRACE_MS` after it was sent with no word
+  (`deployMayLeaveLane` in `deploy-wait.ts`); the delivery is acked or nacked
+  when its wait ends. The server deploys one environment at a time under the
   environment's lock (a stop or destroy of that environment waits for it) and
-  runs one build at a time. Cross-server ordering is never assumed:
-  it lives in command metadata (see multi-command sequencing). `prefetch` is
-  `COMMAND_CONSUMER_PREFETCH` so a backlog can wait in its lane; a delivery
-  still waiting when the session is lost or closed is skipped (left
-  unacknowledged for the broker to redeliver), never run late. An unparseable delivery bypasses the lanes (dead-lettered at once). A
-  delivery waiting in a lane stays unacknowledged, and RabbitMQ closes a channel
-  whose delivery stays unacknowledged past its `consumer_timeout` (30 minutes by
-  default; the broker is configured in the daemon repo's `rabbitmq` role, not
-  here), so a very deep backlog on one server can outlast it. A command's valid
-  time counts from when it was queued, so waiting behind the same server's
-  earlier command counts and waiting behind other servers no longer does.
+  runs one build at a time. Cross-server ordering is never assumed: it lives
+  in command metadata (see multi-command sequencing). A delivery still waiting
+  for a slot when the session is lost or closed is skipped (left
+  unacknowledged for the broker to redeliver), never run late. An unparseable
+  delivery is dead-lettered at once. RabbitMQ closes a channel whose delivery
+  stays unacknowledged past its `consumer_timeout` (two hours, set in the
+  daemon repo's `rabbitmq` role).
   **TODO:** extract to a dedicated `turbopanel-command-consumer.service` systemd
   unit in a future pass (mirrors the mailer pattern).
 - Shared abstraction: `CommandQueue` interface in `src/features/commands/queue.ts`;
@@ -243,7 +332,9 @@ base64-encodes it, and streams `dev-sync-begin` → `dev-sync-chunk*` →
 console: **Sync source to attached checkouts**. Managed remotes (no checkout)
 skip source-sync; upgrade them with **Rebuild daemon and upgrade connected
 servers** (`POST /api/developer/v1/daemon/update` after `deno task release:dev`
-writes the overlay catalog). Co-located is skipped on both paths.
+writes the overlay catalog) or Admin > Updates **Build and Push Daemon**
+(`POST /api/admin/v1/instance/updates/development/push`, which builds when the
+checkout changed). Co-located is skipped on all paths.
 
 ### Instance Cloudflare tunnel
 
@@ -264,7 +355,9 @@ public-urls apply, and managed logs (`managed-logs-request` /
 **Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno
 only) sends a `public-urls-update` WS message to the co-located daemon with the
 current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to
-**`/etc/turbopanel/instance/runtime.env`** — never the checkout, re-runs the
+**`/etc/turbopanel/instance/runtime.env`** — never the checkout (a derived
+copy for the `instance-certs` role only; the self-hosted control plane never
+reads it back as a hostname source), re-runs the
 `instance-certs` Ansible role (regenerating the leaf cert with updated SANs, CA
 preserved), and reloads `turbopanel-caddy`. Replies with
 `public-urls-update-result { ok, error? }`. On Workers, the endpoint returns 422
@@ -319,6 +412,39 @@ A replica that fails, expires, or never enqueues simply never opens the gate:
 the primary gets no command row and the `managed` row survives for a retry — or
 for `?force=true`, which skips the gate deliberately because a member host may
 be unreachable.
+
+### A command lost with a closing connection is sent again on reconnect
+
+The cell marks an outbox entry delivered the moment it is written to the
+socket, so a command written to a connection that was already closing (the
+daemon's own periodic recycle) never reaches the daemon yet stays `sent` and
+unacknowledged, and holds its server's turn until its consumer times out.
+`redeliverLostCommands` (`command-recovery.ts`) runs on `hello` only, on both
+runtimes, with no timer: it lists the cell's `command-dispatch` requests that
+are `sent` with no `ackAt` and whose id is in neither `commands.running` nor
+`commands.unacked` of that hello. For each it reads the command row and the
+`dispatch` payload first, then calls the cell's `redeliverSent`, one
+conditional step (a single synchronous statement in the Durable Object, a
+status check in the Redis cell) that replaces the delivery under a **new
+`deliveryId` and the same `requestId`** only while the request is still `sent`
+with no `ackAt`, and **never inserts**: an expired request is deleted from the
+Durable Object table and purged from Redis, so a plain `enqueue` would have
+created a request nobody waits on. The request status stays `sent`, so the
+command row stays `sent` and the consumer already waiting keeps waiting on the
+same request (a second queue message would start a second waiter). Rules:
+only for a hello that lists `command-recovery-v1` (without it the lists are
+unknown, not empty); only for `REDELIVERABLE_COMMAND_TYPES`, an explicit
+allowlist of reconcile types and read-only probes; never for a row that is no
+longer `sent` or already has `acked_at`; the database opens only when the cell
+holds a candidate; `dispatching` is left alone because a consumer may be about
+to write it.
+
+Why an allowlist: a daemon that restarted since it received a frame cannot
+list it in its first hello (its journal is read after attach) and has
+forgotten its seen ids, so a resend could run a deploy, destroy, rollback or
+rotation twice. Those types stay on their current paths (the deploy lane grace
+and waiter, the 45 s ack deadline on Workers). Widening the allowlist needs a
+daemon feature that reports journal ids, or a process start id, in the hello.
 
 ### A deploy survives a lost link or a restart (`command-recovery-v1`)
 

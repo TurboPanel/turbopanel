@@ -17,6 +17,7 @@ import {
   grant,
   invitation,
   notification,
+  notificationEvent,
   organization,
   project,
   server,
@@ -33,6 +34,7 @@ import { createAuthRateLimiter } from '../authn/auth-rate-limit.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createOrganizationForUser } from '../authn/install-state.ts'
 import { createSession } from '../authn/session-store.ts'
+import { mintInvitationToken } from '../access/invitation-token.ts'
 import { can } from '../authz/index.ts'
 import { registerBillingRoutes } from '../billing/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -317,12 +319,12 @@ test('revoking a grant refuses the former manager at once and records the access
     )
 
     const notes = await fx.db
-      .select({ event: notification.event })
-      .from(notification)
+      .select({ topic: notificationEvent.topicCode })
+      .from(notificationEvent)
       .where(
         and(
-          eq(notification.organizationId, fx.organizationId),
-          eq(notification.event, 'access.grant_revoked')
+          eq(notificationEvent.organizationId, fx.organizationId),
+          eq(notificationEvent.topicCode, 'access.grant_revoked')
         )
       )
     assert(notes.length >= 1, 'a revoke must raise an access.grant_revoked notification')
@@ -373,6 +375,7 @@ test('the deploy time limit is stored in its own column: default 30, set, read b
 test('an expired invitation is refused with a plain 410 and adds nobody to the team', async () => {
   await withFixture(async (fx) => {
     const invitee = await fx.addPerson('outsider')
+    const { tokenHash } = await mintInvitationToken()
     const [row] = await fx.db
       .insert(invitation)
       .values({
@@ -381,6 +384,7 @@ test('an expired invitation is refused with a plain 410 and adds nobody to the t
         email: invitee.email,
         status: 'pending',
         expiresAt: new Date(Date.now() - 60_000).toISOString(),
+        tokenHash,
       })
       .returning({ id: invitation.id })
 
@@ -492,15 +496,15 @@ test('removing a member deletes the membership and every grant, refuses their ne
     assertEquals(await readsOrganization(fx, fx.owner), 200, 'the owner keeps access')
 
     const [note] = await fx.db
-      .select({ event: notification.event })
-      .from(notification)
+      .select({ topic: notificationEvent.topicCode })
+      .from(notificationEvent)
       .where(
         and(
-          eq(notification.organizationId, fx.organizationId),
-          eq(notification.event, 'access.grant_revoked')
+          eq(notificationEvent.organizationId, fx.organizationId),
+          eq(notificationEvent.topicCode, 'member.removed')
         )
       )
-    assert(note, 'removal raises the existing access.grant_revoked notification')
+    assert(note, 'removal raises its own member.removed notification')
     const [auditRow] = await fx.db
       .select({ action: audit.action, targetId: audit.targetId })
       .from(audit)
@@ -650,6 +654,7 @@ test('removal is scoped to one organization: another organization keeps the pers
 test('a removed person can be invited again and accept', async () => {
   await withFixture(async (fx) => {
     const member = await fx.addPerson('manager')
+    const { tokenHash } = await mintInvitationToken()
     const [oldInvite] = await fx.db
       .insert(invitation)
       .values({
@@ -658,6 +663,7 @@ test('a removed person can be invited again and accept', async () => {
         email: member.email,
         status: 'accepted',
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        tokenHash,
       })
       .returning({ id: invitation.id })
     assertEquals(

@@ -15,6 +15,7 @@ import { createCommandRecord, transitionCommand } from '../commands/command-reco
 import {
   findInFlightRecovery,
   findLatestAcceptedAutomaticFailover,
+  findLatestActedRecovery,
   findLatestRecovery,
   findRecoveryById,
   insertRecoveryIfFree,
@@ -2012,7 +2013,7 @@ const ABORT_RESTART_CLAIM_MS = 120_000
  * or the cluster's primary is no longer the member the switchover started from.
  */
 export async function abortRestartStaleReason(db: Db, row: RecoveryRecord): Promise<string | null> {
-  const latest = await findLatestRecovery(db, row.managedId)
+  const latest = await findLatestActedRecovery(db, row.managedId)
   if (latest && latest.id !== row.id) return 'a newer recovery exists for the cluster'
   const members = await listManagedMembers(db, row.managedId)
   const primary = members.find((member) => member.role === 'primary')

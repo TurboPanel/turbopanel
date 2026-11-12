@@ -11,6 +11,7 @@ import {
   getInstanceHostnamesLegacyShim,
   INSTANCE_ACME_HTTP01_ISSUER_UNREACHABLE,
   instanceAcmeHttp01PreflightFailure,
+  listInstanceHostnames,
   migrateLegacyPublicUrls,
   recordInstanceAcmeIssuance,
   replaceInstanceHostnames,
@@ -18,6 +19,7 @@ import {
   upsertInstanceHostname,
   validateHostnameSource,
 } from './instance-hostnames.ts'
+import { SELF_HOSTED_PUBLIC_PORT_ERROR, setSelfHostedAddress } from './ingress-modes.ts'
 import { getPublicUrls, PUBLIC_URLS_SETTING_KEY, setPublicUrls } from './public-urls.ts'
 
 /**
@@ -110,27 +112,27 @@ function createMemoryDb(): { db: Db; hostnames: MemRow[]; settings: MemRow[] } {
 }
 
 test("validateHostnameSource rejects private and wildcard Let's Encrypt names", () => {
-  const privateName = validateHostnameSource('192.168.1.10', 'lets-encrypt')
+  const privateName = validateHostnameSource('192.168.1.10', 'acme-http-01')
   assertEquals(privateName.ok, false)
   if (!privateName.ok) assertEquals(privateName.invalid, ['192.168.1.10'])
 
-  const lan = validateHostnameSource('panel.lan', 'lets-encrypt')
+  const lan = validateHostnameSource('panel.lan', 'acme-http-01')
   assertEquals(lan.ok, false)
 
-  const wildcard = validateHostnameSource('*.example.com', 'lets-encrypt')
+  const wildcard = validateHostnameSource('*.example.com', 'acme-http-01')
   assertEquals(wildcard.ok, false)
   if (!wildcard.ok) {
     assertEquals(wildcard.error.includes('wildcard'), true)
   }
 
   assertEquals(validateHostnameSource('*.example.com', 'platform-ca').ok, true)
-  assertEquals(validateHostnameSource('panel.example.com', 'lets-encrypt').ok, true)
+  assertEquals(validateHostnameSource('panel.example.com', 'acme-http-01').ok, true)
 })
 
 test('deriveInstanceHostnameStatus prefers failure, then expiry, then pending', () => {
   assertEquals(
     deriveInstanceHostnameStatus({
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       acmeLastError: 'rate limited',
       notAfter: '2099-01-01T00:00:00.000Z',
     }),
@@ -149,7 +151,7 @@ test('deriveInstanceHostnameStatus prefers failure, then expiry, then pending', 
   )
   assertEquals(
     deriveInstanceHostnameStatus({
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       acmeLastError: null,
       notAfter: null,
     }),
@@ -198,7 +200,7 @@ test("replaceInstanceHostnames keeps Let's Encrypt state when a portless row is 
   const saved = await replaceInstanceHostnames(db, [
     {
       host: 'https://panel.example.com:8443',
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       uploadedCertId: null,
     },
   ])
@@ -213,7 +215,7 @@ test("replaceInstanceHostnames keeps Let's Encrypt state when a portless row is 
   const again = await replaceInstanceHostnames(db, [
     {
       host: 'https://panel.example.com',
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       uploadedCertId: null,
     },
   ])
@@ -222,7 +224,7 @@ test("replaceInstanceHostnames keeps Let's Encrypt state when a portless row is 
   assertEquals(again.hostnames.length, 1)
   assertEquals(again.hostnames[0]?.id, id)
   assertEquals(again.hostnames[0]?.host, 'https://panel.example.com:8443')
-  assertEquals(again.hostnames[0]?.source, 'lets-encrypt')
+  assertEquals(again.hostnames[0]?.source, 'acme-http-01')
   assertEquals(again.hostnames[0]?.notAfter, '2099-01-01T00:00:00.000Z')
   assertEquals(again.hostnames[0]?.acmeLastAttemptAt, '2026-09-01T00:00:00.000Z')
   assertEquals(again.hostnames[0]?.acmeLastError, null)
@@ -233,7 +235,7 @@ test('replaceInstanceHostnames rejects two certificate sources for one hostname'
   const saved = await replaceInstanceHostnames(db, [
     {
       host: 'https://panel.example.com:8443',
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       uploadedCertId: null,
     },
   ])
@@ -242,7 +244,7 @@ test('replaceInstanceHostnames rejects two certificate sources for one hostname'
   const conflict = await replaceInstanceHostnames(db, [
     {
       host: 'https://panel.example.com:8443',
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       uploadedCertId: null,
     },
     {
@@ -255,17 +257,17 @@ test('replaceInstanceHostnames rejects two certificate sources for one hostname'
   if (conflict.ok) throw new TypeError('expected a conflict')
   assertEquals(conflict.error, 'The same hostname is listed more than once')
   assertEquals(hostnames[0]?.id, id)
-  assertEquals(hostnames[0]?.source, 'lets-encrypt')
+  assertEquals(hostnames[0]?.source, 'acme-http-01')
 
   const deduped = await replaceInstanceHostnames(db, [
     {
       host: 'https://panel.example.com',
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       uploadedCertId: null,
     },
     {
       host: 'https://panel.example.com:8443',
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       uploadedCertId: null,
     },
   ])
@@ -273,14 +275,14 @@ test('replaceInstanceHostnames rejects two certificate sources for one hostname'
   if (!deduped.ok) throw new TypeError('expected one hostname')
   assertEquals(deduped.hostnames.length, 1)
   assertEquals(deduped.hostnames[0]?.host, 'https://panel.example.com:8443')
-  assertEquals(deduped.hostnames[0]?.source, 'lets-encrypt')
+  assertEquals(deduped.hostnames[0]?.source, 'acme-http-01')
 })
 
 test("replaceInstanceHostnames rejects Let's Encrypt on a private name and keeps the prior set", async () => {
   const { db, hostnames } = createMemoryDb()
   await replacePublicUrlList(db, ['https://panel.example.com'])
   const rejected = await replaceInstanceHostnames(db, [
-    { host: '10.1.2.3', source: 'lets-encrypt', uploadedCertId: null },
+    { host: '10.1.2.3', source: 'acme-http-01', uploadedCertId: null },
   ])
   assertEquals(rejected.ok, false)
   if (!rejected.ok) assertEquals(rejected.invalid, ['10.1.2.3'])
@@ -290,7 +292,7 @@ test("replaceInstanceHostnames rejects Let's Encrypt on a private name and keeps
   )
 
   const wildcard = await replaceInstanceHostnames(db, [
-    { host: '*.example.com', source: 'lets-encrypt', uploadedCertId: null },
+    { host: '*.example.com', source: 'acme-http-01', uploadedCertId: null },
   ])
   assertEquals(wildcard.ok, false)
 
@@ -300,7 +302,7 @@ test("replaceInstanceHostnames rejects Let's Encrypt on a private name and keeps
   assertEquals(missingCert.ok, false)
 })
 
-test('recordInstanceAcmeIssuance updates the matching lets-encrypt hostname', async () => {
+test('recordInstanceAcmeIssuance updates the matching acme-http-01 hostname', async () => {
   const updates: Array<Record<string, unknown>> = []
   const db = {
     select() {
@@ -312,7 +314,7 @@ test('recordInstanceAcmeIssuance updates the matching lets-encrypt hostname', as
                 {
                   id: 'row-1',
                   host: 'https://panel.example.com',
-                  source: 'lets-encrypt',
+                  source: 'acme-http-01',
                 },
               ]),
           }
@@ -387,7 +389,7 @@ test('recordInstanceAcmeIssuance stores notAfter only on success', async () => {
                 {
                   id: 'row-1',
                   host: 'panel.example.com',
-                  source: 'lets-encrypt',
+                  source: 'acme-http-01',
                 },
               ]),
           }
@@ -421,7 +423,7 @@ test('recordInstanceAcmeIssuance stores notAfter only on success', async () => {
 test('certificateSourceForInstallOrigin matches the dialed host', () => {
   const hostnames = [
     { host: 'https://panel.example.com:8443', source: 'platform-ca' as const },
-    { host: 'hooks.example.com', source: 'lets-encrypt' as const },
+    { host: 'hooks.example.com', source: 'acme-http-01' as const },
   ]
   assertEquals(
     certificateSourceForInstallOrigin('https://panel.example.com:8443', hostnames),
@@ -429,7 +431,7 @@ test('certificateSourceForInstallOrigin matches the dialed host', () => {
   )
   assertEquals(
     certificateSourceForInstallOrigin('https://hooks.example.com', hostnames),
-    'lets-encrypt'
+    'acme-http-01'
   )
   assertEquals(
     certificateSourceForInstallOrigin('https://other.example.com:8443', hostnames),
@@ -449,7 +451,7 @@ test('instanceAcmeHttp01PreflightFailure parses only the preflight prefix', () =
 test("replaceInstanceHostnames clears notAfter when the source leaves Let's Encrypt", async () => {
   const { db, hostnames } = createMemoryDb()
   const saved = await replaceInstanceHostnames(db, [
-    { host: 'panel.example.com', source: 'lets-encrypt', uploadedCertId: null },
+    { host: 'panel.example.com', source: 'acme-http-01', uploadedCertId: null },
   ])
   assertEquals(saved.ok, true)
   const current = hostnames[0]
@@ -468,7 +470,7 @@ test('upsertInstanceHostname replaces the canonical row and replace-all still re
   const saved = await replaceInstanceHostnames(db, [
     {
       host: 'https://panel.example.com:8443',
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       uploadedCertId: null,
     },
   ])
@@ -493,7 +495,7 @@ test('upsertInstanceHostname replaces the canonical row and replace-all still re
     },
     {
       host: 'panel.example.com',
-      source: 'lets-encrypt',
+      source: 'acme-http-01',
       uploadedCertId: null,
     },
   ])
@@ -503,4 +505,84 @@ test('upsertInstanceHostname replaces the canonical row and replace-all still re
   assertEquals(hostnames.length, 1)
   assertEquals(hostnames[0]?.id, id)
   assertEquals(hostnames[0]?.source, 'platform-ca')
+})
+
+const platformCa = { source: 'platform-ca', uploadedCertId: null } as const
+
+test('replaceInstanceHostnames stores the public port and primary, and a later save without them keeps both', async () => {
+  const { db } = createMemoryDb()
+  const saved = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa, publicPort: 443, isPrimary: true },
+    { host: 'b.example.com', ...platformCa },
+  ])
+  assertEquals(saved.ok, true)
+  const again = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa },
+    { host: 'b.example.com', ...platformCa },
+  ])
+  if (!again.ok) throw new TypeError('expected the hostnames to save')
+  assertEquals(
+    again.hostnames.map((row) => [row.publicPort, row.isPrimary]),
+    [
+      [443, true],
+      [8443, false],
+    ]
+  )
+})
+
+test('replaceInstanceHostnames moves the primary to the one row that asks and refuses two', async () => {
+  const { db } = createMemoryDb()
+  await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa, isPrimary: true },
+    { host: 'b.example.com', ...platformCa },
+  ])
+  const moved = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa },
+    { host: 'b.example.com', ...platformCa, isPrimary: true },
+  ])
+  if (!moved.ok) throw new TypeError('expected the hostnames to save')
+  assertEquals(
+    moved.hostnames.map((row) => row.isPrimary),
+    [false, true]
+  )
+  const two = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa, isPrimary: true },
+    { host: 'b.example.com', ...platformCa, isPrimary: true },
+  ])
+  assertEquals(two.ok, false)
+})
+
+test('replaceInstanceHostnames refuses a public port outside 1 to 65535', async () => {
+  const { db } = createMemoryDb()
+  for (const publicPort of [0, 65536, 8443.5]) {
+    const refused = await replaceInstanceHostnames(db, [
+      { host: 'a.example.com', ...platformCa, publicPort },
+    ])
+    assertEquals(refused.ok, false, String(publicPort))
+  }
+})
+
+test('self-hosted: replaceInstanceHostnames refuses any port but 8443, and a stored 443 reads as 8443', async () => {
+  const { db } = createMemoryDb()
+  // Saved on High Availability rules first, as an older save would have.
+  const saved = await replaceInstanceHostnames(db, [
+    { host: 'a.example.com', ...platformCa, publicPort: 443 },
+  ])
+  assertEquals(saved.ok && saved.hostnames[0]?.publicPort, 443)
+  setSelfHostedAddress(true)
+  try {
+    assertEquals((await listInstanceHostnames(db))[0]?.publicPort, 8443)
+    for (const publicPort of [443, 80, 9443]) {
+      const refused = await replaceInstanceHostnames(db, [
+        { host: 'a.example.com', ...platformCa, publicPort },
+      ])
+      assertEquals(refused.ok ? '' : refused.error, SELF_HOSTED_PUBLIC_PORT_ERROR)
+    }
+    const kept = await replaceInstanceHostnames(db, [
+      { host: 'a.example.com', ...platformCa, publicPort: 8443 },
+    ])
+    assertEquals(kept.ok && kept.hostnames[0]?.publicPort, 8443)
+  } finally {
+    setSelfHostedAddress(false)
+  }
 })

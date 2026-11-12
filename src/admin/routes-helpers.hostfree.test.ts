@@ -11,6 +11,7 @@ import {
   MAX_CELL_PURGE_BATCH_SIZE,
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
+  parseInstanceHostnamesBody,
   parsePayloadBody,
   parseReencryptRequestBody,
   parseServerMetricsLiveSettingsBody,
@@ -366,5 +367,23 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
       urls
     ),
     { kind: 'error', error: 'string-fail' }
+  )
+})
+
+test('parseInstanceHostnamesBody reads the optional public port and primary flag', () => {
+  const entry = { host: 'a.example.test', source: 'platform-ca' } as const
+  assertEquals(
+    parseInstanceHostnamesBody({ hostnames: [{ ...entry, publicPort: 443, isPrimary: true }] }),
+    {
+      ok: true,
+      hostnames: [{ ...entry, uploadedCertId: null, publicPort: 443, isPrimary: true }],
+    }
+  )
+  for (const bad of [{ publicPort: 0 }, { publicPort: 70000 }, { publicPort: '443' }]) {
+    assertEquals(parseInstanceHostnamesBody({ hostnames: [{ ...entry, ...bad }] }).ok, false)
+  }
+  assertEquals(
+    parseInstanceHostnamesBody({ hostnames: [{ ...entry, isPrimary: 'yes' }] }).ok,
+    false
   )
 })

@@ -27,7 +27,15 @@ export type UpgradeCheckSchedule = {
    * starts the update) stays where it was.
    */
   lastManualCheckAt?: string | null
+  /**
+   * When a superadmin last pressed Update Now. Rate-limited on its own field,
+   * so a Check Now just before it does not make Update Now wait.
+   */
+  lastUpdateNowAt?: string | null
 }
+
+/** The field a manual press is claimed on: Check Now or Update Now. */
+export type ManualPressField = 'lastManualCheckAt' | 'lastUpdateNowAt'
 
 /** Check Now may run at most this often per install. */
 export const UPGRADE_MANUAL_CHECK_MIN_GAP_MS = 60_000
@@ -94,9 +102,13 @@ export function latestUpgradeCheckAt(schedule: UpgradeCheckSchedule): string | n
   return schedule.lastCheckAt
 }
 
-/** Whole seconds until Check Now may run again; 0 when it may run now. */
-export function manualCheckWaitSeconds(schedule: UpgradeCheckSchedule, now: Date): number {
-  const last = parsedMs(schedule.lastManualCheckAt)
+/** Whole seconds until Check Now (or Update Now) may run again; 0 when it may run now. */
+export function manualCheckWaitSeconds(
+  schedule: UpgradeCheckSchedule,
+  now: Date,
+  field: ManualPressField = 'lastManualCheckAt'
+): number {
+  const last = parsedMs(schedule[field])
   if (last === null) return 0
   const remaining = last + UPGRADE_MANUAL_CHECK_MIN_GAP_MS - now.getTime()
   if (remaining <= 0) return 0
@@ -111,13 +123,21 @@ export type AutoStartInput = {
   runActive: boolean
   /** An administrator paused all updates (Admin > Updates). */
   paused: boolean
+  /**
+   * Explicit development mode (`TURBOPANEL_DEV_SURFACE=1`): the control plane
+   * and its co-located daemon run from source checkouts.
+   */
+  development: boolean
 }
 
 /**
- * Whether a check should start an automatic run. Never while paused, against
- * no drift, or while a run is active.
+ * Whether a check should start an automatic run. Never in development, while
+ * paused, against no drift, or while a run is active. A dev box's co-located
+ * daemon runs from source and refuses every update, so an automatic run there
+ * can only fail; dev updates go through the developer surface instead.
  */
 export function shouldAutoStartRun(input: AutoStartInput): boolean {
+  if (input.development) return false
   if (input.paused) return false
   if (input.runActive) return false
   return input.targetDiffers

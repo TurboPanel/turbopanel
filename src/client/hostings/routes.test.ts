@@ -615,6 +615,64 @@ test("DELETE /hostings removes the Let's Encrypt entry made for it once no other
   })
 })
 
+test("PATCH /hostings releases the Let's Encrypt entry it stops using, and only that kind", async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const certificate = async (source: string, createdFor?: string) => {
+      const [row] = await db
+        .insert(tls)
+        .values({
+          organizationId,
+          source,
+          status: source === 'lets_encrypt' ? 'automatic' : 'ready',
+          metadata: {
+            dnsNames: ['old.example.test'],
+            ...(createdFor ? { acme: { createdFor } } : {}),
+          },
+        })
+        .returning({ id: tls.id })
+      return row!.id
+    }
+    const site = async (tlsId: string) => {
+      const [row] = await db
+        .insert(hosting)
+        .values({ serviceId, name: 'Site', tlsId, options: { hostnames: ['old.example.test'] } })
+        .returning({ id: hosting.id })
+      return row!.id
+    }
+    const unpin = (id: string) =>
+      app.request(`/hostings/${id}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ tlsId: null }),
+      })
+    const exists = async (id: string) =>
+      (await db.select({ id: tls.id }).from(tls).where(eq(tls.id, id))).length === 1
+    try {
+      const shared = await certificate('lets_encrypt', 'hosting')
+      const handAdded = await certificate('lets_encrypt')
+      const first = await site(shared)
+      const second = await site(shared)
+      const third = await site(handAdded)
+
+      assertEquals((await unpin(first)).status, 200)
+      assertEquals(await exists(shared), true, 'another site still uses it')
+      assertEquals((await unpin(second)).status, 200)
+      assertEquals(await exists(shared), false, 'no site uses it any more')
+      assertEquals((await unpin(third)).status, 200)
+      assertEquals(await exists(handAdded), true, 'a library entry a person added stays')
+    } finally {
+      await db.delete(hosting).where(eq(hosting.serviceId, serviceId))
+      await db.delete(audit).where(eq(audit.organizationId, organizationId))
+      await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    }
+  })
+})
+
 type HostingCall = (method: string, path: string, body: unknown) => Promise<Response>
 
 function hostingCaller(app: Hono<AppEnv>, cookie: string, organizationId: string): HostingCall {

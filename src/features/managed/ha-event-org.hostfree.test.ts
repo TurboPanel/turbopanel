@@ -73,7 +73,7 @@ test('an org-B server hosting a member of an org-A cluster is rejected on the jo
   const result = await handleManagedHaEvent(
     db,
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_B }
+    { signature: 'verified', reporterServerId: SERVER_B }
   )
   assertEquals(result, null)
   assertEquals(db.rows(recovery).length, 0)
@@ -86,6 +86,7 @@ test('the same event from an org-A member server passes the gate (control)', asy
     { managedId: MANAGED_ID },
     {
       reporterServerId: SERVER_A,
+      signature: 'verified',
       binding: {
         reporterBindsInstance: async () => false,
         primaryDial: async () => null,

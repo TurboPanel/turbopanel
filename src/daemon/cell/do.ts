@@ -7,6 +7,8 @@ import {
   type DerivedSecretsConfig,
 } from '../../lib/secrets/secrets.ts'
 import { emitCertificateRenewalFailed } from '../../features/notifications/certificate-alerts.ts'
+import { handleRepoKeyChanged } from '../../features/notifications/repo-key-alerts.ts'
+import { intakeHelloPinReport } from '../pin-report-intake.ts'
 import {
   createWorkersDb,
   type Db,
@@ -20,11 +22,13 @@ import { evaluateSocketHealth } from './socket-health.ts'
 import type { ServerGeo } from '../../features/geo/server-geo.ts'
 import { parseServerGeo } from '../../features/geo/server-geo.ts'
 import {
+  parseServerRuntimeMetadata,
   resourcesFromDaemonPresence,
   type ServerDockerMetadata,
   type ServerHostResources,
   type ServerOsMetadata,
   type ServerReleaseLinkScanMetadata,
+  type ServerRuntimeMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
 import {
@@ -33,10 +37,20 @@ import {
   cellFreshStandbyMarginMs,
   handleCellManagedHaEvent,
 } from './managed-ha-inbound.ts'
+import { haEventSignature, type HaEventSignature } from '../../features/managed/ha-event.ts'
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
+import {
+  handleHttpIssuanceInbound,
+  isHttpIssuanceMessage,
+} from '../../features/tls/http-issuance/events.ts'
 import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
+import {
+  FabricPeerReportThrottle,
+  handleFabricPeersReport,
+  takeFabricPeersReport,
+} from '../../features/fabric/peer-report.ts'
 import {
   backupRunReportResultMessage,
   createBackupRunReportStore,
@@ -47,11 +61,12 @@ import {
   createBackupCopyReportStore,
   handleBackupCopyReport,
 } from '../../features/backups/copy-report.ts'
-import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
+import { recordInstanceAcmeIssuanceFromServer } from '../instance-acme-inbound.ts'
 import { recordCommandProgress } from '../../features/commands/command-progress.ts'
 import {
   ackForReportedOutcome,
   noteReportedCommands,
+  redeliverLostCommands,
 } from '../../features/commands/command-recovery.ts'
 import {
   persistDaemonReachedTarget,
@@ -63,7 +78,43 @@ import { recordTopologyGeneration } from '../../features/servers/server-topology
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
+import {
+  type DaemonSessionPhase,
+  decideFirstFrame,
+  PANEL_IDENTITY_CLOSE_CODE,
+  SIGNED_SEND_FAILED_REASON,
+} from '../signed-session-gate.ts'
+import {
+  type PanelIdentity,
+  resolvePanelIdentityFromBinding,
+} from '../../lib/panel-identity/identity.ts'
+import {
+  buildSignedHello,
+  envelopeFrame,
+  type SignedSessionState,
+} from '../../lib/panel-identity/signed-session.ts'
+import { platformControlPlaneOrigins } from '../../features/install/control-plane-origins.ts'
+import { HEARTBEAT_SECONDS_DEFAULT } from '../../features/install/heartbeat-policy.ts'
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
+import {
+  ATTACH_PROOF_CLOSE_CODE,
+  ATTACH_PROOF_MISSING_REASON,
+  ATTACH_PROOF_REFUSED_REASON,
+  DAEMON_PROOF_TRUST_LEVEL,
+  decideAttachProof,
+  ed25519PublicJwk,
+} from '../authn/attach-proof.ts'
+import {
+  helloListsSignedReports,
+  intakeSignedSessionReport,
+  type ReportSignature,
+  type ReportVerdict,
+} from '../authn/report-signature.ts'
+import {
+  raiseServerTrustLevel,
+  recordServerSignsReports,
+  recordTrustDowngradeRefused,
+} from '../../features/servers/trust-level.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { inboundHeartbeatProjectionDue } from './postgres-projection.ts'
 import { mergeSnapshotPresence } from './snapshot-merge.ts'
@@ -93,11 +144,16 @@ import type {
   CommandRecoveryReport,
   DaemonBuildInfo,
   DaemonInboundEnvelope,
+  DaemonInboundFrameResult,
   DaemonMessage,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
 } from '../../contracts/cell-protocol.ts'
-import { deriveInboundOutcome } from './inbound-outcome.ts'
+import {
+  answerKindMismatchWarning,
+  deriveInboundOutcome,
+  inboundAnswersRequest,
+} from './inbound-outcome.ts'
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -189,6 +245,71 @@ const OUTBOX_PUMP_ALARM_MS = 2_000
 const OUTBOX_MAX_RETRIES = 10
 const OUTBOX_RETRY_MAX_MS = 300_000
 const CELL_GEO_HEADER = 'X-Turbopanel-Cell-Geo'
+/** Stamped by `workers-ws.ts` from `server.trust_level`; clients cannot set it. */
+const CELL_TRUST_LEVEL_HEADER = 'X-Turbopanel-Cell-Trust-Level'
+/** Stamped by `workers-ws.ts`: `<keyId>:<x>` of the server's current daemon key. */
+const CELL_DAEMON_KEY_HEADER = 'X-Turbopanel-Cell-Daemon-Key'
+/** Stamped by `workers-ws.ts`: `1` when `server.trust_reports_signed_at` is set. */
+const CELL_REPORTS_SIGNED_HEADER = 'X-Turbopanel-Cell-Reports-Signed'
+
+function parseCellDaemonKey(value: string | null): { id: string; x: string } | undefined {
+  const at = value?.indexOf(':') ?? -1
+  if (!value || at < 1) return undefined
+  return { id: value.slice(0, at), x: value.slice(at + 1) }
+}
+
+/**
+ * Session state kept on a daemon socket's hibernation attachment. `session`
+ * (with the next `seq`) is written there before each signed send, so a wake
+ * from hibernation continues the count. A socket from an older build has no
+ * `phase` and is treated as unsigned.
+ */
+type SocketSessionAttachment = {
+  connectionId: string
+  serverId: string
+  connectedAtMs?: number
+  phase?: DaemonSessionPhase
+  trustLevel?: number
+  session?: SignedSessionState
+  /** The key id the upgrade's token named (`kid`); a bound signed session signs it. */
+  tokenKeyId?: string
+  /** The server's daemon key at upgrade (id and public `x`), for the attach proof. */
+  daemonKey?: { id: string; x: string }
+  /** Signed session: the outbox waits for the daemon's hello and its attach proof. */
+  awaitingAttach?: boolean
+  /** Signed session: the daemon's hello listed `signed-reports-v1`. */
+  signsReports?: boolean
+  /**
+   * The server has sent a verified signed report (`server.trust_reports_signed_at`
+   * at upgrade, or earlier on this socket): its unsigned reports are refused.
+   */
+  reportsSigned?: boolean
+  /** The unsigned-report warning was logged on this socket (once per connection). */
+  warnedUnsigned?: boolean
+  /**
+   * `managedId` -> ms of the last refused `managed-ha-event` written from this
+   * socket, so the daemon's every-minute re-sends open no database client
+   * (`#haRefusalRecorded`, stamped only after a successful write).
+   */
+  haRefusalsAt?: Record<string, number>
+}
+
+/** A refused HA report from one socket is recorded at most this often per cluster and reason. */
+const HA_REFUSAL_RECORD_EVERY_MS = 10 * 60_000
+/**
+ * Distinct clusters one socket remembers. Each entry is about 55 bytes (a
+ * UUID and a timestamp); the serialized attachment is capped at 2 KiB, so keep
+ * this small.
+ */
+const HA_REFUSAL_KEYS_MAX = 4
+
+/** The server and key a socket's signed hello names; none (refused) when no key id was kept. */
+function sessionBindingOf(
+  attachment: Pick<SocketSessionAttachment, 'serverId' | 'tokenKeyId' | 'daemonKey'>
+): { serverId: string; keyId: string } | undefined {
+  const keyId = attachment.tokenKeyId || attachment.daemonKey?.id
+  return keyId ? { serverId: attachment.serverId, keyId } : undefined
+}
 /** Schema stamp in `_cell_schema.version` — bump when `#ensureSchema` DDL changes.
  * DO SQLite rejects `PRAGMA user_version` (`SQLITE_AUTH`); `#readSchemaVersion`
  * tries that pragma first and falls back to this table on failure. */
@@ -200,6 +321,7 @@ type DaemonJwtKeyringFactory = () => Promise<DaemonJwtKeyring>
 let projectionDbFactoryForTests: ProjectionDbFactory | null = null
 let daemonJwtKeyringFactoryForTests: DaemonJwtKeyringFactory | null = null
 let forceOutboxSendErrorForTests: Error | null = null
+let panelIdentityBindingForTests: string | null = null
 let forceAlarmErrorForTests: Error | null = null
 /** When set, `#collectStaleDemotions` treats auto-response age as this many ms. */
 let forceAutoResponseAgeMsForTests: number | null = null
@@ -209,6 +331,11 @@ export function setDaemonCellProjectionDbFactoryForTests(
   factory: ProjectionDbFactory | null
 ): void {
   projectionDbFactoryForTests = factory
+}
+
+/** Test-only seam: the `TURBOPANEL_IDENTITY_KEYS` value a cell reads (null = the env binding). */
+export function setDaemonCellPanelIdentityBindingForTests(raw: string | null): void {
+  panelIdentityBindingForTests = raw
 }
 
 /** Test-only seam: override JWT keyring derivation on the WS-upgrade path. */
@@ -421,12 +548,19 @@ export class DaemonCellObject {
   #schemaReady = false
   #daemonJwtKeyring: DaemonJwtKeyring | null = null
   #daemonJwtKeyringPromise: Promise<DaemonJwtKeyring> | null = null
+  #panelIdentityPromise: Promise<PanelIdentity | null> | null = null
+  /** Per-socket send order (in memory: nothing is in flight across hibernation). */
+  readonly #sendChains = new WeakMap<WebSocket, Promise<void>>()
+  /** The first frame's answer while it is in flight, so a second frame cannot open a second session. */
+  readonly #openingSessions = new WeakMap<WebSocket, Promise<boolean>>()
   readonly #diag: CellDiagnostics = createInitialCellDiagnostics()
   readonly #debugStorage: boolean
   #serverId: string | null = null
   readonly #sweptOffline = new Set<string>()
   #runtimeConnected = false
   #lastProjectedAtMs: number | null = null
+  /** `fabric-peers-report` stamps at most once per 60 s (in memory, no SQLite). */
+  readonly #fabricPeerReportThrottle = new FabricPeerReportThrottle()
   #lastKnownDaemonBuild: DaemonBuildInfo | undefined
   #lastRemoteAddress: string | undefined
   #lastConnectedAt: string | undefined
@@ -1186,9 +1320,11 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      runtimes?: ServerRuntimeMetadata
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: ServiceRunState[]
       features?: string[]
+      panelPin?: { pinnedBy: string }
     },
     geo?: ServerGeo,
     runtimeWasOffline?: boolean
@@ -1201,9 +1337,11 @@ export class DaemonCellObject {
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
         hostIdentity?.docker ||
+        hostIdentity?.runtimes ||
         hostIdentity?.releaseLinkScan ||
         hostIdentity?.services ||
-        hostIdentity?.features
+        hostIdentity?.features ||
+        hostIdentity?.panelPin
       ) {
         await touchServerMetadata(db, serverId, {
           hostname: hostIdentity.hostname,
@@ -1212,9 +1350,11 @@ export class DaemonCellObject {
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
           docker: hostIdentity.docker,
+          runtimes: hostIdentity.runtimes,
           releaseLinkScan: hostIdentity.releaseLinkScan,
           services: hostIdentity.services,
           ...(hostIdentity.features !== undefined ? { features: hostIdentity.features } : {}),
+          ...(hostIdentity.panelPin ? { panelPin: hostIdentity.panelPin } : {}),
         })
       }
       await onDaemonInbound(db, serverId, this.#projectionCell(serverId), {
@@ -1509,7 +1649,12 @@ export class DaemonCellObject {
   }
 
   async #pumpOutboxToDaemonSockets(serverId: string): Promise<void> {
-    const sockets = this.#ctx.getWebSockets()
+    // A socket still waiting for the daemon's first frame takes nothing: the
+    // batch is not even read for it, so no entry sits in flight meanwhile.
+    const sockets = this.#ctx.getWebSockets().filter((ws) => {
+      const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
+      return attachment?.phase !== 'await-first-frame' && attachment?.awaitingAttach !== true
+    })
     if (sockets.length === 0) return
 
     this.#requeueExpiredInflightOutbox()
@@ -1534,10 +1679,7 @@ export class DaemonCellObject {
     ws: WebSocket,
     batch: DaemonOutboundEnvelope[]
   ): Promise<void> {
-    const attachment = ws.deserializeAttachment() as {
-      connectionId: string
-      serverId: string
-    } | null
+    const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
     if (attachment?.serverId !== serverId) return
 
     await forEachSequential(batch, async (envelope) => {
@@ -1553,7 +1695,7 @@ export class DaemonCellObject {
         if (forceOutboxSendErrorForTests) {
           throw forceOutboxSendErrorForTests
         }
-        ws.send(JSON.stringify(wireMsg))
+        await this.#sendToDaemon(ws, wireMsg)
         this.#markSent(serverId, envelope.deliveryId, attachment.connectionId)
         await this.#ackOutbox(serverId, [envelope.deliveryId])
       } catch {
@@ -1630,6 +1772,11 @@ export class DaemonCellObject {
       connectedAtMs,
       ...(remoteAddress ? { remoteAddress } : {}),
       ...(geo ? { geo } : {}),
+      phase: 'await-first-frame',
+      tokenKeyId: keyId,
+      trustLevel: Number(request.headers.get(CELL_TRUST_LEVEL_HEADER) ?? '0') || 0,
+      daemonKey: parseCellDaemonKey(request.headers.get(CELL_DAEMON_KEY_HEADER)),
+      ...(request.headers.get(CELL_REPORTS_SIGNED_HEADER) === '1' ? { reportsSigned: true } : {}),
     })
 
     this.#applyDaemonSocketAttach(serverId, connectionId, {
@@ -1648,21 +1795,399 @@ export class DaemonCellObject {
       `daemon-cell event=attach serverId=${serverId} conn=${connectionId} remoteAddress=${remoteAddress}`
     )
 
-    try {
-      server.send(JSON.stringify(instanceAttachVersionFrame(connectedAt, this.#env)))
-    } catch (err) {
-      console.error(
-        `daemon-cell event=attach-version-failed serverId=${serverId} error=${
-          err instanceof Error ? err.message : String(err)
-        }`
-      )
-    }
-
+    // The `version` frame and the outbox pump wait for the daemon's first
+    // frame (`#openSession`): a pinned daemon must hear a signed hello first.
     this.#ctx.waitUntil(this.#projectConnected(serverId, connectedAt, geo ?? undefined, keyId))
-    this.#runBoundedBackground('pump-outbox', serverId, this.#pumpOutboxToDaemonSockets(serverId))
     await this.#scheduleNearestAlarm()
 
     return new Response(null, { status: 101, webSocket: client })
+  }
+
+  /** The identity key from the Workers binding, once per isolate; null = feature off. */
+  #getPanelIdentity(): Promise<PanelIdentity | null> {
+    this.#panelIdentityPromise ??= resolvePanelIdentityFromBinding(
+      panelIdentityBindingForTests ?? this.#env.TURBOPANEL_IDENTITY_KEYS
+    ).catch((err: unknown) => {
+      console.error(
+        `daemon-cell event=panel-identity-failed error=${err instanceof Error ? err.message : String(err)}`
+      )
+      this.#panelIdentityPromise = null
+      return null
+    })
+    return this.#panelIdentityPromise
+  }
+
+  /** True when `raw` is then handled as usual; later frames wait for the first one's answer. */
+  async #firstFrameGate(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<boolean> {
+    const opening = this.#openingSessions.get(ws)
+    if (opening) {
+      await opening
+      const after = ws.deserializeAttachment() as SocketSessionAttachment | null
+      return after?.phase === 'legacy' || after?.phase === 'signed'
+    }
+    const first = this.#openSession(ws, attachment, raw)
+    this.#openingSessions.set(ws, first)
+    return await first
+  }
+
+  /**
+   * The daemon's first frame picks the session. True when the frame is then
+   * handled as usual (an unsigned session's first frame).
+   */
+  async #openSession(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<boolean> {
+    const decision = await decideFirstFrame(raw, {
+      trustLevel: attachment.trustLevel ?? 0,
+      panelIdentity: () => this.#getPanelIdentity(),
+      binding: sessionBindingOf(attachment),
+    })
+    if (decision.kind === 'refused') {
+      console.warn(
+        `daemon-cell event=session-refused serverId=${attachment.serverId} reason=${decision.reason}`
+      )
+      ws.close(PANEL_IDENTITY_CLOSE_CODE, decision.reason)
+      return false
+    }
+    if (decision.kind === 'legacy') {
+      ws.serializeAttachment({ ...attachment, phase: 'legacy' })
+      this.#startSession(ws, attachment, true)
+      return true
+    }
+    // High availability: the platform environment names the control plane;
+    // stored hostname rows are ignored on this runtime.
+    const urls = platformControlPlaneOrigins(this.#env)
+    const hello = await buildSignedHello(decision.identity, decision.nonce, decision.session, {
+      heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
+      urls,
+    })
+    // Nothing may be awaited between marking the socket signed and sending the
+    // hello: from the mark on, a pump (the outbox alarm, an enqueue) may send an
+    // enveloped frame to this socket, and none may reach the daemon before the
+    // hello. The session (next seq 1) is on the attachment before any such frame.
+    ws.serializeAttachment({
+      ...attachment,
+      phase: 'signed',
+      session: decision.session,
+      awaitingAttach: true,
+    })
+    ws.send(hello)
+    this.#startSession(ws, attachment, false)
+    return false
+  }
+
+  /** The socket's signed session while its first presence hello is still awaited. */
+  #awaitingAttachSession(ws: WebSocket): SocketSessionAttachment | null {
+    const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
+    return attachment?.awaitingAttach && attachment.session ? attachment : null
+  }
+
+  /** Keep on the signed socket whether its daemon signs its reports (survives hibernation). */
+  #noteSignsReports(ws: WebSocket, features: unknown): void {
+    const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
+    if (latest?.phase !== 'signed') return
+    const signsReports = helloListsSignedReports(features)
+    if ((latest.signsReports ?? false) === signsReports) return
+    ws.serializeAttachment({ ...latest, signsReports })
+  }
+
+  /**
+   * One `managed-ha-event`: a verified one goes to the failover path; a
+   * refused one is written at most every {@link HA_REFUSAL_RECORD_EVERY_MS}
+   * per cluster from this socket (`#haRefusalRecorded`).
+   */
+  async #handleManagedHaEventInbound(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    parsed: Extract<DaemonMessage, { type: 'managed-ha-event' }>,
+    signature: HaEventSignature
+  ): Promise<void> {
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
+    const refused = signature !== 'verified'
+    if (refused && this.#haRefusalRecorded(ws, parsed.managedId)) return
+    const handled = await this.#withProjectionDbResult(
+      'managed-ha-event',
+      attachment.serverId,
+      async (db) => {
+        await handleCellManagedHaEvent(db, parsed, {
+          reporterServerId: attachment.serverId,
+          signature,
+          commandQueue: cellCommandQueue(this.#env),
+          autoFailover: cellAutoFailover(this.#env),
+          // Other servers' cells via their DO stubs; never this one.
+          probeStandby: createFreshStandbyProbe(
+            db,
+            createDurableObjectDaemonCellRegistry(this.#env, db),
+            { skipServerId: attachment.serverId }
+          ),
+          freshStandbyMarginMs: cellFreshStandbyMarginMs(this.#env),
+        })
+        return true
+      }
+    )
+    // Only a refusal that was written holds back the next one.
+    if (refused && handled) this.#stampHaRefusal(ws, parsed.managedId)
+  }
+
+  /**
+   * True when a refused `managed-ha-event` for this cluster was written from
+   * this socket in the last {@link HA_REFUSAL_RECORD_EVERY_MS}, whatever the
+   * reason: the daemon re-sends every minute, and the journal folds repeats
+   * per cluster and server anyway, so no database client is opened for it.
+   * Kept on the attachment so it survives hibernation.
+   */
+  #haRefusalRecorded(ws: WebSocket, managedId: string): boolean {
+    const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
+    const last = latest?.haRefusalsAt?.[managedId]
+    return last !== undefined && Date.now() - last < HA_REFUSAL_RECORD_EVERY_MS
+  }
+
+  /** Note that a refused report for this cluster was just written (see `#haRefusalRecorded`). */
+  #stampHaRefusal(ws: WebSocket, managedId: string): void {
+    const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
+    if (!latest) return
+    const nowMs = Date.now()
+    const kept = Object.entries(latest.haRefusalsAt ?? {})
+      .filter(([id, at]) => id !== managedId && nowMs - at < HA_REFUSAL_RECORD_EVERY_MS)
+      .slice(-(HA_REFUSAL_KEYS_MAX - 1))
+    ws.serializeAttachment({
+      ...latest,
+      haRefusalsAt: { ...Object.fromEntries(kept), [managedId]: nowMs },
+    })
+  }
+
+  /** A signed session's report checked and unwrapped; `raw` null = drop it. */
+  async #screenSignedReport(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<{ raw: string | null; signature: ReportSignature }> {
+    if (attachment.phase !== 'signed' || !attachment.session) return { raw, signature: 'none' }
+    // The latest attachment: an earlier report on this socket may have set the flags.
+    const current = (ws.deserializeAttachment() as SocketSessionAttachment | null) ?? attachment
+    const intake = await intakeSignedSessionReport(raw, {
+      sessionId: attachment.session.sessionId,
+      keyId: attachment.daemonKey?.id,
+      publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
+      daemonSignsReports: current.signsReports === true,
+      serverSignsReports: current.reportsSigned === true,
+      nowMs: Date.now(),
+    })
+    if (intake.verdict === 'verified' && current.reportsSigned !== true) {
+      this.#noteReportsSigned(ws, attachment.serverId)
+    }
+    if (intake.warning && this.#shouldLogReportWarning(ws, intake.verdict, current)) {
+      console.warn(
+        `daemon-cell event=report-signature serverId=${attachment.serverId} conn=${attachment.connectionId} ${intake.warning}`
+      )
+    }
+    return { raw: intake.raw, signature: intake.signature }
+  }
+
+  /**
+   * The first verified signed report on this socket from a server not yet
+   * known to sign: refuse its unsigned reports from now on (the attachment
+   * survives hibernation) and record it on the row in the background, so
+   * later sessions start refusing them too. One bounded, conditional write
+   * per socket that first sees one (a no-op once the row is set).
+   */
+  #noteReportsSigned(ws: WebSocket, serverId: string): void {
+    const latest = ws.deserializeAttachment() as SocketSessionAttachment | null
+    if (latest && latest.reportsSigned !== true) {
+      ws.serializeAttachment({ ...latest, reportsSigned: true })
+    }
+    this.#runBoundedBackground(
+      'reports-signed',
+      serverId,
+      this.#withProjectionDb('reports-signed', serverId, async (db) => {
+        await recordServerSignsReports(db, serverId)
+      })
+    )
+  }
+
+  /** Refusals always log; the unsigned-report warning once per connection. */
+  #shouldLogReportWarning(
+    ws: WebSocket,
+    verdict: ReportVerdict,
+    current: SocketSessionAttachment
+  ): boolean {
+    if (verdict !== 'unsigned') return true
+    if (current.warnedUnsigned === true) return false
+    const latest = (ws.deserializeAttachment() as SocketSessionAttachment | null) ?? current
+    ws.serializeAttachment({ ...latest, warnedUnsigned: true })
+    return true
+  }
+
+  /**
+   * A signed report checked, then the frame validated; null when it was
+   * dropped or refused (a refused frame has already been answered).
+   */
+  async #acceptedInboundFrame(
+    ws: WebSocket,
+    attachment: SocketSessionAttachment,
+    raw: string
+  ): Promise<
+    (Extract<DaemonInboundFrameResult, { ok: true }> & { signature: ReportSignature }) | null
+  > {
+    const screened = await this.#screenSignedReport(ws, attachment, raw)
+    if (screened.raw === null) return null
+    const validated = validateDaemonInboundFrame(screened.raw)
+    if (validated.ok) return { ...validated, signature: screened.signature }
+    this.#refuseInboundFrame(ws, attachment, validated)
+    return null
+  }
+
+  /** Record the hello's signed pin report in the background (never holds up the session). */
+  #intakePinReport(attachment: SocketSessionAttachment, panelPin: unknown): void {
+    const session = attachment.session
+    if (!session || panelPin === undefined) return
+    this.#runBoundedBackground(
+      'pin-report',
+      attachment.serverId,
+      (async () => {
+        await intakeHelloPinReport(panelPin, {
+          sessionId: session.sessionId,
+          serverId: attachment.serverId,
+          keyId: attachment.daemonKey?.id,
+          publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
+          identity: () => this.#getPanelIdentity(),
+          secrets: await this.#dataEncryptionSecrets(),
+          withDb: (fn) => this.#withProjectionDbResult('pin-report', attachment.serverId, fn),
+        })
+      })()
+    )
+  }
+
+  /**
+   * The first presence hello of a signed session: check the attach proof
+   * against the key stamped at upgrade, raise the server once it verified,
+   * then let the outbox run. False when the socket was closed.
+   */
+  async #acceptAttach(ws: WebSocket, attach: unknown): Promise<boolean> {
+    const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
+    if (!attachment?.awaitingAttach || !attachment.session) return true
+    const trustLevel = attachment.trustLevel ?? 0
+    const decision = await decideAttachProof(attach, {
+      sessionId: attachment.session.sessionId,
+      panelFingerprint: attachment.session.kid,
+      serverId: attachment.serverId,
+      keyId: attachment.daemonKey?.id,
+      publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
+      trustLevel,
+      nowMs: Date.now(),
+    })
+    if (decision.kind === 'refused') {
+      console.warn(
+        `daemon-cell event=attach-refused serverId=${attachment.serverId} reason=${decision.reason}`
+      )
+      ws.close(ATTACH_PROOF_CLOSE_CODE, ATTACH_PROOF_REFUSED_REASON)
+      if (decision.reason === ATTACH_PROOF_MISSING_REASON) {
+        this.#runBoundedBackground(
+          'trust-downgrade-audit',
+          attachment.serverId,
+          this.#withProjectionDb('trust-downgrade-audit', attachment.serverId, async (db) => {
+            await recordTrustDowngradeRefused(db, attachment.serverId, {
+              stage: 'attach',
+              reason: decision.reason,
+            })
+          })
+        )
+      }
+      return false
+    }
+    // The row first: the socket says level 2 only once the database does
+    // (a failed write is retried by the next proof).
+    const raised =
+      decision.kind === 'verified' &&
+      trustLevel < DAEMON_PROOF_TRUST_LEVEL &&
+      (await this.#withProjectionDbResult('trust-level', attachment.serverId, async (db) => {
+        await raiseServerTrustLevel(db, attachment.serverId, DAEMON_PROOF_TRUST_LEVEL)
+        return true
+      })) === true
+    // Re-read: a signed send may have moved `seq` on while the proof was checked.
+    const latest = (ws.deserializeAttachment() as SocketSessionAttachment | null) ?? attachment
+    ws.serializeAttachment({
+      ...latest,
+      awaitingAttach: false,
+      ...(raised ? { trustLevel: DAEMON_PROOF_TRUST_LEVEL } : {}),
+    })
+    this.#runBoundedBackground(
+      'pump-outbox',
+      attachment.serverId,
+      this.#pumpOutboxToDaemonSockets(attachment.serverId)
+    )
+    return true
+  }
+
+  /** `version` first, then the outbox, both through {@link #sendToDaemon}. */
+  #startSession(ws: WebSocket, attachment: SocketSessionAttachment, pump: boolean): void {
+    const connectedAt = new Date(attachment.connectedAtMs ?? Date.now()).toISOString()
+    this.#sendToDaemon(
+      ws,
+      instanceAttachVersionFrame(connectedAt, this.#env, {
+        heartbeatSeconds: HEARTBEAT_SECONDS_DEFAULT,
+      })
+    ).catch((err: unknown) => {
+      console.error(
+        `daemon-cell event=attach-version-failed serverId=${attachment.serverId} error=${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    })
+    if (!pump) return
+    this.#runBoundedBackground(
+      'pump-outbox',
+      attachment.serverId,
+      this.#pumpOutboxToDaemonSockets(attachment.serverId)
+    )
+  }
+
+  /**
+   * Every control plane → daemon frame except the transport pong goes out
+   * here, one at a time per socket. In a signed session the next `seq` is
+   * written to the attachment (no await between read and write) before the
+   * frame is signed and sent; a send that fails after that closes the socket,
+   * because the daemon refuses any frame after a gap.
+   */
+  #sendToDaemon(ws: WebSocket, wire: { type: string }): Promise<void> {
+    const prior = this.#sendChains.get(ws) ?? Promise.resolve()
+    const run = prior.then(() => this.#sendNow(ws, wire))
+    this.#sendChains.set(
+      ws,
+      run.catch(() => undefined)
+    )
+    return run
+  }
+
+  async #sendNow(ws: WebSocket, wire: { type: string }): Promise<void> {
+    const attachment = ws.deserializeAttachment() as SocketSessionAttachment | null
+    const session = attachment?.phase === 'signed' ? attachment.session : undefined
+    if (!attachment || !session) {
+      ws.send(JSON.stringify(wire))
+      return
+    }
+    const seq = session.nextSeq
+    ws.serializeAttachment({ ...attachment, session: { ...session, nextSeq: seq + 1 } })
+    try {
+      const identity = await this.#getPanelIdentity()
+      if (identity?.current.kid !== session.kid) {
+        throw new Error('identity key changed during the session')
+      }
+      ws.send(await envelopeFrame(identity, session, wire, seq))
+    } catch (err) {
+      try {
+        ws.close(1011, SIGNED_SEND_FAILED_REASON)
+      } catch {
+        // Already closing.
+      }
+      throw err
+    }
   }
 
   #parseConnectGeoHeader(request: Request): ServerGeo | null {
@@ -1738,6 +2263,24 @@ export class DaemonCellObject {
     }
   }
 
+  /**
+   * A hello first passes the attach-proof check of a signed session (a refused
+   * one has closed the socket and is dropped); a heartbeat always goes on.
+   */
+  async #handleAdmittedPresence(
+    ws: WebSocket,
+    attachment: { connectionId: string; serverId: string; geo?: ServerGeo },
+    parsed: Extract<DaemonMessage, { type: 'hello' | 'heartbeat' }>
+  ): Promise<void> {
+    if (parsed.type === 'hello') {
+      const session = this.#awaitingAttachSession(ws)
+      if (!(await this.#acceptAttach(ws, parsed.attach))) return
+      if (session) this.#intakePinReport(session, parsed.panelPin)
+      this.#noteSignsReports(ws, parsed.features)
+    }
+    await this.#handlePresenceMessage(attachment, parsed)
+  }
+
   async #handlePresenceMessage(
     attachment: {
       connectionId: string
@@ -1754,10 +2297,12 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      runtimes?: unknown
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       services?: unknown
       features?: string[]
       commands?: CommandRecoveryReport
+      panelPin?: { pinnedBy: string }
     }
   ): Promise<void> {
     this.#bumpDiag('heartbeatCount')
@@ -1771,6 +2316,7 @@ export class DaemonCellObject {
       timeSync: parsed.timeSync,
       resources: resourcesFromDaemonPresence(parsed),
       docker: parsed.docker,
+      runtimes: parseServerRuntimeMetadata(parsed.runtimes),
       releaseLinkScan: parsed.releaseLinkScan,
       services: parseServiceRunStates(parsed.services),
     }
@@ -1778,6 +2324,7 @@ export class DaemonCellObject {
       presenceFacts.timeSync ||
       presenceFacts.resources ||
       presenceFacts.docker ||
+      presenceFacts.runtimes ||
       presenceFacts.releaseLinkScan ||
       presenceFacts.services
     )
@@ -1791,9 +2338,11 @@ export class DaemonCellObject {
           resources?: ServerHostResources
           timeSync?: ServerTimeSync
           docker?: ServerDockerMetadata
+          runtimes?: ServerRuntimeMetadata
           releaseLinkScan?: ServerReleaseLinkScanMetadata
           services?: ServiceRunState[]
           features?: string[]
+          panelPin?: { pinnedBy: string }
         }
       | undefined
     if (parsed.type === 'hello') {
@@ -1802,6 +2351,7 @@ export class DaemonCellObject {
         machineKey: parsed.machineKey,
         os: parsed.os,
         features: parsed.features ?? [],
+        ...(parsed.panelPin ? { panelPin: parsed.panelPin } : {}),
         ...presenceFacts,
       }
     } else if (hasPresenceFacts) {
@@ -1814,9 +2364,11 @@ export class DaemonCellObject {
       hostIdentity?.resources ||
       hostIdentity?.timeSync ||
       hostIdentity?.docker ||
+      hostIdentity?.runtimes ||
       hostIdentity?.releaseLinkScan ||
       hostIdentity?.services ||
-      hostIdentity?.features
+      hostIdentity?.features ||
+      hostIdentity?.panelPin
     )
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined
     // Heartbeats: daemon-build change, presence facts, or offline repair only —
@@ -1845,6 +2397,31 @@ export class DaemonCellObject {
         noteReportedCommands(db, attachment.serverId, reported)
       )
     }
+    if (parsed.type === 'hello') {
+      await this.#redeliverLostCommands(attachment.serverId, parsed.features, reported)
+    }
+  }
+
+  /**
+   * On a hello, send again a command written to the previous connection that
+   * the daemon never received. The cell is read first (SQLite only); the
+   * database opens only when there is such a request.
+   */
+  async #redeliverLostCommands(
+    serverId: string,
+    features: string[] | undefined,
+    report: CommandRecoveryReport | undefined
+  ): Promise<void> {
+    await redeliverLostCommands(
+      {
+        redeliverSent: (outbound) => Promise.resolve(this.#redeliverSent(serverId, outbound)),
+        getRequest: (requestId) => Promise.resolve(this.#getRequest(serverId, requestId)),
+        listRequests: (limit, filter) =>
+          Promise.resolve(this.#listRequests(serverId, limit ?? 50, filter?.requestKind)),
+      },
+      (fn) => this.#withProjectionDb('command-redelivery', serverId, fn),
+      { serverId, features, report }
+    )
   }
 
   /**
@@ -1935,7 +2512,8 @@ export class DaemonCellObject {
 
   /**
    * Fire-and-forget daemon reports that only write a projection
-   * (`managed-health-report`, `topology-report`). Returns true when handled.
+   * (`managed-health-report`, `fabric-peers-report`, `repo-key-changed`, `topology-report`).
+   * Returns true when handled.
    */
   async #handleReportInbound(
     attachment: { connectionId: string; serverId: string },
@@ -1948,6 +2526,44 @@ export class DaemonCellObject {
           reporterServerId: attachment.serverId,
           members: parsed.members,
         })
+      })
+      return true
+    }
+    if (parsed.type === 'fabric-peers-report') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      // In-memory gate first: a same-class frame inside 60 s opens no database client.
+      const take = takeFabricPeersReport(
+        this.#fabricPeerReportThrottle,
+        attachment.serverId,
+        parsed,
+        Date.now()
+      )
+      if (!take) return true
+      await this.#withProjectionDb('fabric-peers-report', attachment.serverId, async (db) => {
+        await handleFabricPeersReport(db, {
+          reporterServerId: attachment.serverId,
+          peers: parsed.peers,
+          observedAt: parsed.observedAt,
+        })
+      })
+      return true
+    }
+    if (parsed.type === 'repo-key-changed') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('repo-key-changed', attachment.serverId, async (db) => {
+        await handleRepoKeyChanged(
+          db,
+          await this.#dataEncryptionSecrets(),
+          attachment.serverId,
+          parsed
+        )
+      })
+      return true
+    }
+    if (isHttpIssuanceMessage(parsed)) {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb(parsed.type, attachment.serverId, async (db) => {
+        await handleHttpIssuanceInbound(db, attachment.serverId, parsed)
       })
       return true
     }
@@ -1966,6 +2582,32 @@ export class DaemonCellObject {
     return false
   }
 
+  /** One bounded warning line per note the frame validator produced (see `filterHelloFeatures`). */
+  #warnInboundNotes(
+    attachment: { connectionId: string; serverId: string },
+    notes: readonly string[] | undefined
+  ): void {
+    for (const note of notes ?? []) {
+      console.warn(
+        `daemon-cell event=inbound-note serverId=${attachment.serverId} conn=${attachment.connectionId} ${note}`
+      )
+    }
+  }
+
+  /** An unknown frame type is ignored; anything else malformed closes the socket. */
+  #refuseInboundFrame(
+    ws: WebSocket,
+    attachment: { connectionId: string; serverId: string },
+    failure: { reason: string; ignored?: boolean }
+  ): void {
+    this.#trace(failure.ignored ? 'inbound-ignored-unknown-type' : 'inbound-rejected', {
+      serverId: attachment.serverId,
+      conn: attachment.connectionId,
+      reason: failure.reason,
+    })
+    if (!failure.ignored) ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'policy_violation')
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -1980,25 +2622,15 @@ export class DaemonCellObject {
 
     const raw = typeof message === 'string' ? message : new TextDecoder().decode(message)
 
-    const validated = validateDaemonInboundFrame(raw)
-    if (!validated.ok) {
-      if (validated.ignored) {
-        this.#trace('inbound-ignored-unknown-type', {
-          serverId: attachment.serverId,
-          conn: attachment.connectionId,
-          reason: validated.reason,
-        })
-        return
-      }
-      this.#trace('inbound-rejected', {
-        serverId: attachment.serverId,
-        conn: attachment.connectionId,
-        reason: validated.reason,
-      })
-      ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'policy_violation')
+    const session = attachment as SocketSessionAttachment
+    if (session.phase === 'await-first-frame' && !(await this.#firstFrameGate(ws, session, raw))) {
       return
     }
+
+    const validated = await this.#acceptedInboundFrame(ws, session, raw)
+    if (!validated) return
     const parsed = validated.message
+    this.#warnInboundNotes(attachment, validated.notes)
 
     this.#trace('inbound', {
       serverId: attachment.serverId,
@@ -2010,26 +2642,17 @@ export class DaemonCellObject {
       this.#ensureSchema()
 
       if (parsed.type === 'hello' || parsed.type === 'heartbeat') {
-        await this.#handlePresenceMessage(attachment, parsed)
+        await this.#handleAdmittedPresence(ws, attachment, parsed)
         return
       }
 
       if (parsed.type === 'managed-ha-event') {
-        await this.#recordInboundRepairingPresence(attachment, parsed.at)
-        await this.#withProjectionDb('managed-ha-event', attachment.serverId, async (db) => {
-          await handleCellManagedHaEvent(db, parsed, {
-            reporterServerId: attachment.serverId,
-            commandQueue: cellCommandQueue(this.#env),
-            autoFailover: cellAutoFailover(this.#env),
-            // Other servers' cells via their DO stubs; never this one.
-            probeStandby: createFreshStandbyProbe(
-              db,
-              createDurableObjectDaemonCellRegistry(this.#env, db),
-              { skipServerId: attachment.serverId }
-            ),
-            freshStandbyMarginMs: cellFreshStandbyMarginMs(this.#env),
-          })
-        })
+        await this.#handleManagedHaEventInbound(
+          ws,
+          attachment,
+          parsed,
+          haEventSignature(validated.signature, session.phase === 'signed')
+        )
         return
       }
 
@@ -2063,13 +2686,7 @@ export class DaemonCellObject {
           'instance-acme-issuance-event',
           attachment.serverId,
           async (db) => {
-            await recordInstanceAcmeIssuance(db, {
-              hostname: parsed.hostname,
-              ok: parsed.ok,
-              at: parsed.at,
-              ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
-              ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
-            })
+            await recordInstanceAcmeIssuanceFromServer(db, attachment.serverId, parsed)
           }
         )
         return
@@ -2425,6 +3042,14 @@ export class DaemonCellObject {
           ),
         })
 
+      case '/rpc/redeliver-sent':
+        return jsonResponse({
+          redelivered: this.#redeliverSent(
+            this.#requireServerId(request, body),
+            body?.outbound as DaemonOutboundEnvelope
+          ),
+        })
+
       case '/rpc/expire-request':
         return jsonResponse({
           record: await this.#expireRequest(
@@ -2735,6 +3360,47 @@ export class DaemonCellObject {
     }
   }
 
+  /**
+   * Deliver an existing request again under a new delivery id, in one
+   * synchronous step and only while it is `sent` with no ack. Never inserts: an
+   * expired request is deleted from the table, so nothing is queued for it.
+   */
+  #redeliverSent(serverId: string, outbound: DaemonOutboundEnvelope): boolean {
+    const row = readFirstSqlRow(
+      this.#sql(
+        'redeliver-sent',
+        'SELECT delivery_id, status, ack_at FROM request WHERE request_id = ?',
+        outbound.requestId
+      )
+    )
+    if (!row || sqlString(row.status) !== 'sent' || sqlString(row.ack_at)) return false
+    if (sqlString(row.delivery_id) === outbound.deliveryId) return true
+    this.#sql(
+      'redeliver-sent',
+      `UPDATE request SET
+         delivery_id = ?,
+         payload_json = ?,
+         delivery_status = 'queued',
+         retry_count = 0,
+         retry_at = NULL,
+         sent_at = NULL,
+         updated_at = ?
+       WHERE request_id = ? AND status = 'sent' AND ack_at IS NULL`,
+      outbound.deliveryId,
+      JSON.stringify(outbound),
+      nowIso(),
+      outbound.requestId
+    )
+    this.#runBoundedBackground('pump-outbox', serverId, this.#pumpOutboxToDaemonSockets(serverId))
+    void this.#scheduleOutboxRetryIfNeeded()
+    this.#trace('redeliver-sent', {
+      serverId,
+      requestId: outbound.requestId,
+      deliveryId: outbound.deliveryId,
+    })
+    return true
+  }
+
   #markSent(serverId: string, deliveryId: string, _connectionId: string, sentAt?: string): void {
     const at = sentAt ?? nowIso()
     this.#sql(
@@ -2787,7 +3453,7 @@ export class DaemonCellObject {
       const ack = await this.#withProjectionDbResult('command-outcome-ack', serverId, (db) =>
         ackForReportedOutcome(db, { serverId, envelope: inbound, record })
       )
-      if (ack) ws.send(JSON.stringify(ack))
+      if (ack) await this.#sendToDaemon(ws, ack)
     }
   }
 
@@ -2807,7 +3473,7 @@ export class DaemonCellObject {
       })
     )
     if (!outcome || !ws) return
-    ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
+    await this.#sendToDaemon(ws, backupRunReportResultMessage(msg.id, outcome, nowIso()))
   }
 
   /** Answer a `backup-copy-report` on its socket; no answer (a null outcome) makes the daemon resend. */
@@ -2822,7 +3488,7 @@ export class DaemonCellObject {
       })
     )
     if (!outcome || !ws) return
-    ws.send(JSON.stringify(backupCopyReportResultMessage(msg.id, outcome, nowIso())))
+    await this.#sendToDaemon(ws, backupCopyReportResultMessage(msg.id, outcome, nowIso()))
   }
 
   #readRequestRow(serverId: string, requestId: string): PendingRequestRecord | null {
@@ -3032,6 +3698,17 @@ export class DaemonCellObject {
     if (!row) return null
 
     const existing = parseRequestRow(serverId, row)
+    if (!inboundAnswersRequest(existing.requestKind, inbound.kind)) {
+      // Refused, not failed: the request stays pending for its real answer.
+      const warning = answerKindMismatchWarning({
+        serverId,
+        requestId: inbound.requestId,
+        requestKind: existing.requestKind,
+        inboundKind: inbound.kind,
+      })
+      console.warn(`daemon-cell ${warning}`)
+      return null
+    }
     if (isTerminalStatus(existing.status)) {
       return this.#applyLateTerminalAck(serverId, inbound, existing) ?? existing
     }

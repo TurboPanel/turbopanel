@@ -194,7 +194,7 @@ async function buildTlsApp(opts: TlsAppOptions = {}): Promise<{
   state.organizations.push({
     id: ORG_ID,
     name: 'TLS Hostfree Org',
-    options: { acmeEnabled: opts.acmeEnabled ?? true },
+    isAcmeEnabled: opts.acmeEnabled ?? true,
   })
 
   const authDb = createMockAuthDb(state)
@@ -279,7 +279,7 @@ function authHeaders(cookie: string, extra: Record<string, string> = {}): Record
 async function expectJson(
   response: Response,
   status: number,
-  body: Record<string, unknown>
+  body: Record<string, unknown> | null
 ): Promise<void> {
   assertEquals(response.status, status)
   assertEquals(await response.json(), body)
@@ -876,6 +876,24 @@ test('DELETE /tls/:id covers uuid, not-found, children, and success', async () =
   await expectJson(ok, 200, { ok: true })
 })
 
+test('DELETE /tls/:id refuses the Organization CA, active or retired', async () => {
+  for (const caState of ['active', 'retired']) {
+    const { app, cookie } = await buildTlsApp({
+      tlsRows: [organizationCaRow({ caState })],
+      transaction: () => Promise.reject(new Error('the Organization CA must not be deleted')),
+    })
+    const res = await app.request(`/tls/${TLS_ID}`, {
+      method: 'DELETE',
+      headers: authHeaders(cookie),
+    })
+    await expectJson(res, 409, {
+      error: 'tls_organization_ca',
+      message:
+        "The Organization CA can't be deleted. Use Rotate on the Organization CA panel to replace it.",
+    })
+  }
+})
+
 test('POST /tls/ca/rotate returns 503 without encryption and 404 when the minted CA vanished', async () => {
   const noKey = await buildTlsApp({ encryption: false })
   const missing = await noKey.app.request('/tls/ca/rotate', {
@@ -902,7 +920,8 @@ test('GET /tls/ca/rotation and POST /tls/ca/retire cover missing journals', asyn
   const missing = await app.request('/tls/ca/rotation', {
     headers: authHeaders(cookie),
   })
-  await expectJson(missing, 404, { error: 'Not found' })
+  // No rotation yet is an ordinary answer, not a 404 the browser logs as an error.
+  await expectJson(missing, 200, null)
 
   const retire = await app.request('/tls/ca/retire', {
     method: 'POST',

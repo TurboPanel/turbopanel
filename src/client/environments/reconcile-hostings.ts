@@ -36,7 +36,8 @@
  */
 
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
-import { eq, inArray } from 'drizzle-orm'
+import { readProviderOrigin } from '../../features/tunnels/origin-certificate.ts'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   type ComposeDocument,
@@ -70,13 +71,13 @@ import {
   letsEncryptNames,
   letsEncryptRefusal,
   pendingLetsEncryptPatch,
+  readPendingLetsEncrypt,
 } from '../../features/hostings/hosting-certificate.ts'
-import type { LetsEncryptStore } from '../../features/hostings/use-letsencrypt.ts'
 import {
   certificateIdsPinnedBy,
   removeUnusedSiteCertificates,
 } from '../../features/tls/unused-letsencrypt.ts'
-import { createLetsEncryptStore, loadAcmeEnabled } from '../hostings/letsencrypt-store.ts'
+import { findManagedCertificate, loadAcmeEnabled } from '../hostings/letsencrypt-store.ts'
 import {
   type HostingOptions,
   parseHostingOptions,
@@ -197,6 +198,11 @@ export type ComposeHostingReconcileResult =
       removed: string[]
       /** `hosting.id` of adopted rows handed back to the panel. */
       released: string[]
+      /**
+       * `hosting.id` of `automatic` routes holding their Let's Encrypt request
+       * until the certificate pre-check passes (pinned nothing yet).
+       */
+      letsEncryptWaiting: string[]
     }
   | { ok: false; error: ComposeHostingError }
 
@@ -219,6 +225,8 @@ type ExistingRow = {
   serviceId: string
   metadata: unknown
   options: unknown
+  tlsId: string | null
+  pendingAt: string | null
 }
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
@@ -421,6 +429,8 @@ async function loadEnvironmentHostingRows(
       serviceId: hosting.serviceId,
       metadata: hosting.metadata,
       options: hosting.options,
+      tlsId: hosting.tlsId,
+      pendingAt: hosting.pendingAt,
     })
     .from(hosting)
     .innerJoin(service, eq(hosting.serviceId, service.id))
@@ -498,8 +508,12 @@ type RouteReconcileContext = {
   resolveIp: (ref: string) => RefResolution
   /** The organization's "Allow Let's Encrypt certificates" switch; read only when a route asks for `automatic`. */
   acmeEnabled: boolean
-  /** Finds or creates the managed Let's Encrypt row an `automatic` route pins (the button's store). */
-  letsEncrypt: Pick<LetsEncryptStore, 'managedCertificateFor'>
+  /** The organization's live managed Let's Encrypt row for these names, if there is one (never creates). */
+  findLetsEncryptCertificate: (names: readonly string[]) => Promise<string | null>
+  /** When this reconcile runs; stamps a new waiting Let's Encrypt request. */
+  now: Date
+  /** Rows of `automatic` routes waiting for the certificate pre-check. */
+  letsEncryptWaiting: string[]
   panelAuthored: readonly ExistingRow[]
   existingByKey: Map<string, ExistingRow>
   keptIds: Set<string>
@@ -561,12 +575,12 @@ async function reconcileDeclaredRoute(
   // hosting for if it ever happens.
   if (!serviceId) return null
 
-  const pins = await resolveRoutePins(route, ctx)
-  if (!pins.ok) return pins.error
-
   const matched = matchOrAdoptExistingRow(ctx, serviceId, route)
   if (isComposeHostingError(matched)) return matched
   const { existing, isAdoption } = matched
+
+  const pins = await resolveRoutePinsKeepingOrigin(db, route, ctx, existing)
+  if (!pins.ok) return pins.error
 
   const options = mergeComposeHostingOptions(existing?.options, route.entry, route.serviceKind)
   const tlsMode = hostingTlsModeOf(route.entry)
@@ -576,7 +590,9 @@ async function reconcileDeclaredRoute(
     tlsMode,
     ...(isAdoption ? { adopted: true } : {}),
   })
-  const { metadata, pendingAt } = waitingRequestFor(owned, tlsMode)
+  const { metadata, pendingAt } = pins.letsEncryptWaiting
+    ? heldLetsEncryptRequest(owned, existing, ctx.now)
+    : waitingRequestFor(owned, tlsMode)
 
   if (existing) {
     return persistExistingDeclaredRoute({
@@ -588,11 +604,34 @@ async function reconcileDeclaredRoute(
       pins,
       metadata,
       pendingAt,
+      existingPendingAt: existing.pendingAt,
       options,
       isAdoption,
     })
   }
-  return insertDeclaredRoute(db, route, ctx, serviceId, pins, metadata, options)
+  return insertDeclaredRoute(db, route, ctx, serviceId, pins, {
+    metadata,
+    pendingAt: pendingAt ?? null,
+    options,
+  })
+}
+
+/**
+ * The waiting request an `automatic` route holds until the certificate
+ * pre-check passes: the one already recorded (its first request time and its
+ * growing wait are kept), else a new one from now.
+ */
+function heldLetsEncryptRequest(
+  metadata: Record<string, unknown>,
+  existing: ExistingRow | undefined,
+  now: Date
+): { metadata: Record<string, unknown>; pendingAt: string } {
+  const previous = existing ? readPendingLetsEncrypt(existing) : null
+  if (previous !== null) return { metadata, pendingAt: previous.requestedAt }
+  return pendingLetsEncryptPatch(metadata, { requestedAt: now.toISOString(), dns: null }) as {
+    metadata: Record<string, unknown>
+    pendingAt: string
+  }
 }
 
 /**
@@ -617,8 +656,10 @@ async function persistExistingDeclaredRoute(input: {
   serviceId: string
   pins: PinnedRoute
   metadata: ExistingRow['metadata']
-  /** `null` clears a waiting Let's Encrypt request; `undefined` leaves the column alone. */
-  pendingAt: null | undefined
+  /** A time records a waiting Let's Encrypt request, `null` clears it, `undefined` leaves the column alone. */
+  pendingAt: string | null | undefined
+  /** The column as it was, for the row kept in `ctx` when `pendingAt` leaves it alone. */
+  existingPendingAt: string | null
   options: ExistingRow['options']
   isAdoption: boolean
 }): Promise<ComposeHostingError | null> {
@@ -660,11 +701,14 @@ async function persistExistingDeclaredRoute(input: {
   if (isAdoption) ctx.adopted.push(existingId)
   else ctx.updated.push(existingId)
   ctx.keptIds.add(existingId)
+  if (pins.letsEncryptWaiting) ctx.letsEncryptWaiting.push(existingId)
   ctx.existingByKey.set(existingRowKey(serviceId, route.route), {
     id: existingId,
     serviceId,
     metadata,
     options,
+    tlsId: pins.tlsId,
+    pendingAt: pendingAt === undefined ? input.existingPendingAt : pendingAt,
   })
   return null
 }
@@ -675,9 +719,9 @@ async function insertDeclaredRoute(
   ctx: RouteReconcileContext,
   serviceId: string,
   pins: PinnedRoute,
-  metadata: ExistingRow['metadata'],
-  options: ExistingRow['options']
+  row: Pick<ExistingRow, 'metadata' | 'options' | 'pendingAt'>
 ): Promise<ComposeHostingError | null> {
+  const { metadata, options, pendingAt } = row
   let insertedId: string
   try {
     insertedId = await db.transaction(async (tx) => {
@@ -690,6 +734,7 @@ async function insertDeclaredRoute(
           ipId: pins.ipId,
           metadata,
           options,
+          pendingAt,
         })
         .returning({ id: hosting.id })
       await replaceHostingHostnames(tx, inserted.id, ctx.organizationId, [route.entry.hostname])
@@ -714,11 +759,14 @@ async function insertDeclaredRoute(
   }
   ctx.created.push(insertedId)
   ctx.keptIds.add(insertedId)
+  if (pins.letsEncryptWaiting) ctx.letsEncryptWaiting.push(insertedId)
   ctx.existingByKey.set(existingRowKey(serviceId, route.route), {
     id: insertedId,
     serviceId,
     metadata,
     options,
+    tlsId: pins.tlsId,
+    pendingAt,
   })
   return null
 }
@@ -786,6 +834,8 @@ type ReconcileHostingsParams = {
   environmentId: string
   merged: ComposeDocument
   serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+  /** When the reconcile runs (stamps a new waiting Let's Encrypt request); now when omitted. */
+  now?: Date
 }
 
 /** Thrown inside the transaction to roll it back; carries the refusal out. */
@@ -816,6 +866,7 @@ async function reconcileHostingsInTransaction(
       adopted: [],
       removed: [],
       released: [],
+      letsEncryptWaiting: [],
     }
   }
 
@@ -842,7 +893,9 @@ async function reconcileHostingsInTransaction(
     resolveTls,
     resolveIp,
     acmeEnabled,
-    letsEncrypt: createLetsEncryptStore(db),
+    findLetsEncryptCertificate: (names) => findManagedCertificate(db, params.organizationId, names),
+    now: params.now ?? new Date(),
+    letsEncryptWaiting: [],
     panelAuthored,
     existingByKey,
     keptIds: new Set<string>(),
@@ -900,31 +953,43 @@ async function reconcileHostingsInTransaction(
     adopted: ctx.adopted,
     removed: [...early.removed, ...late.removed],
     released: [...early.released, ...late.released],
+    letsEncryptWaiting: ctx.letsEncryptWaiting,
   }
 }
 
 type ResolvedPins =
-  | { ok: true; tlsId: string | null; ipId: string | null }
+  | {
+      ok: true
+      tlsId: string | null
+      ipId: string | null
+      /** An `automatic` route that pins nothing until the certificate pre-check passes. */
+      letsEncryptWaiting?: true
+    }
   | { ok: false; error: ComposeHostingRefError | ComposeHostingLetsEncryptError }
 
 type PinnedRoute = Extract<ResolvedPins, { ok: true }>
 
 /**
- * The managed Let's Encrypt row an `automatic` route pins, found or created.
+ * The managed Let's Encrypt row an `automatic` route keeps, or a hold.
  *
- * The same rules and the same store as the one-click button
- * (`features/hostings/use-letsencrypt.ts`): the organization switch, a public
- * bind, and names that can get a public certificate, then the organization's
- * existing row for these names (or one that already covers them) before a new
- * one. There is no DNS check here: the route deploys right away with the
- * `acme` wire mode and the server's web server keeps retrying until DNS points
- * at it. The deploy that runs this reconcile carries the pin, so nothing else
- * needs to be queued.
+ * The same rules as the one-click button (`features/hostings/use-letsencrypt.ts`):
+ * the organization switch, a public bind, and names that can get a public
+ * certificate. A route already pinned to the organization's row for these names
+ * keeps it (it passed the pre-check before). Anything else pins nothing yet and holds
+ * a waiting request: the site serves its self-signed certificate, no order is
+ * placed, and the certificate pre-check (DNS, port 80, CAA) runs after this
+ * transaction, then on the sweep's growing wait, exactly as for a hostname
+ * added in the Hosting tab. A name with no DNS never reaches the web server's
+ * own issuance, so it cannot use up Let's Encrypt's failed-validation limit.
  */
 async function automaticCertificatePin(
   route: DeclaredRoute,
-  ctx: RouteReconcileContext
-): Promise<{ ok: true; tlsId: string } | { ok: false; error: ComposeHostingLetsEncryptError }> {
+  ctx: RouteReconcileContext,
+  existing: ExistingRow | undefined
+): Promise<
+  | { ok: true; tlsId: string | null; letsEncryptWaiting?: true }
+  | { ok: false; error: ComposeHostingLetsEncryptError }
+> {
   const hostnames = [route.entry.hostname]
   const www = route.entry.www ?? 'off'
   const names = letsEncryptNames(hostnames, www)
@@ -947,20 +1012,61 @@ async function automaticCertificatePin(
       },
     }
   }
-  const { id } = await ctx.letsEncrypt.managedCertificateFor(ctx.organizationId, names)
-  return { ok: true, tlsId: id }
+  const pinned = existing?.tlsId ?? null
+  if (pinned !== null && (await ctx.findLetsEncryptCertificate(names)) === pinned) {
+    return { ok: true, tlsId: pinned }
+  }
+  return { ok: true, tlsId: null, letsEncryptWaiting: true }
+}
+
+/**
+ * The origin certificate a site is pinned to by its tunnel's verified
+ * connection, when the declaration does not name a certificate of its own.
+ * Compose is the truth for the pin, but a site on a tunnel name with a verified
+ * connection can only be served by that certificate: giving the pin back to
+ * Let's Encrypt (the default) would drop it at deploy and the connector would
+ * answer 502. A retired origin certificate is not kept, so turning the verified
+ * connection off lets the next deploy hand the site back to the declaration.
+ */
+async function keptOriginPin(
+  db: Db,
+  hostingId: string | undefined,
+  tlsMode: ComposeHostingTlsMode
+): Promise<string | null> {
+  if (hostingId === undefined || tlsMode === 'certificate') return null
+  const [row] = await db
+    .select({ id: tls.id, metadata: tls.metadata })
+    .from(hosting)
+    .innerJoin(tls, eq(tls.id, hosting.tlsId))
+    .where(and(eq(hosting.id, hostingId), eq(tls.source, 'provider_origin')))
+    .limit(1)
+  return row && readProviderOrigin(row.metadata)?.retiredAt === null ? row.id : null
+}
+
+/** {@link resolveRoutePins}, except a site pinned to its tunnel's origin certificate keeps that pin. */
+async function resolveRoutePinsKeepingOrigin(
+  db: Db,
+  route: DeclaredRoute,
+  ctx: RouteReconcileContext,
+  existing: ExistingRow | undefined
+): Promise<ResolvedPins> {
+  const kept = await keptOriginPin(db, existing?.id, hostingTlsModeOf(route.entry))
+  if (kept === null) return await resolveRoutePins(route, ctx, existing)
+  const pins = resolvePins(route, ctx.resolveTls, ctx.resolveIp)
+  return pins.ok ? { ...pins, tlsId: kept } : pins
 }
 
 /** {@link resolvePins}, plus the managed row an `automatic` route pins. */
 async function resolveRoutePins(
   route: DeclaredRoute,
-  ctx: RouteReconcileContext
+  ctx: RouteReconcileContext,
+  existing: ExistingRow | undefined
 ): Promise<ResolvedPins> {
   const pins = resolvePins(route, ctx.resolveTls, ctx.resolveIp)
   if (!pins.ok || hostingTlsModeOf(route.entry) !== 'automatic') return pins
-  const automatic = await automaticCertificatePin(route, ctx)
+  const automatic = await automaticCertificatePin(route, ctx, existing)
   if (!automatic.ok) return automatic
-  return { ...pins, tlsId: automatic.tlsId }
+  return { ...pins, ...automatic }
 }
 
 /**

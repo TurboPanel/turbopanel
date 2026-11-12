@@ -18,6 +18,7 @@ import {
 import type { ManagedMemberRow } from './members.ts'
 import { managedMemberRow } from '../../test-fixtures/managed-member.ts'
 import type { RecoveryRecord } from './recovery.ts'
+import { findLatestActedRecovery } from './recovery-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -357,4 +358,50 @@ test('a refused Resync leaves the return-fence stop alone; a queued one cancels 
   assertEquals(cancelled, 0)
   assertEquals(await cancelStopsOnceQueued([{ commandId: 'c1' }], cancel), true)
   assertEquals(cancelled, 1)
+})
+
+/** Db double: each awaited query takes the next result set, in call order. */
+function queuedDb(resultSets: unknown[][]): Db {
+  const queue = [...resultSets]
+  const chain: unknown = new Proxy(
+    {},
+    {
+      get(_target, prop) {
+        if (prop === 'then') {
+          const promise = Promise.resolve(queue.shift() ?? [])
+          return promise.then.bind(promise)
+        }
+        if (prop === 'catch' || prop === 'finally') return undefined
+        return () => chain
+      },
+    }
+  )
+  return { select: () => chain } as unknown as Db
+}
+
+test('a refused report filed after a failover that needs an operator does not release the held primary', async () => {
+  // 1. The failover for the old primary failed and needs an operator.
+  const needsOperator = recovery({
+    id: 'rec-failed',
+    state: 'failed',
+    targetMemberId: null,
+    startedAt: '2026-10-06T12:00:00.000Z',
+    metadata: { needsOperator: true, failedReason: 'promote unconfirmed' },
+  })
+  // 2. It rebooted uncleanly with an unpinned daemon: its boot-hold report was refused and filed.
+  const refused = recovery({
+    id: 'rec-refused',
+    state: 'blocked',
+    targetMemberId: null,
+    startedAt: '2026-10-06T12:05:00.000Z',
+    metadata: { reportRefused: 'session-unsigned', blockedReason: 'x', detector: 'boot-hold' },
+  })
+  // The journal query filters refused rows in SQL (the database-backed test in
+  // `ha-host-loss-sweep.test.ts` proves that); here it returns what is left.
+  assertEquals(refused.metadata.reportRefused, 'session-unsigned')
+  const { deps, spy } = seams([member({ id: MEM_OLD, serverId: SERVER_OLD, role: 'primary' })], {
+    latest: await findLatestActedRecovery(queuedDb([[], [needsOperator]]), MANAGED_ID),
+  })
+  assertEquals(await report(deps), 'kept')
+  assertEquals(spy.starts, [])
 })

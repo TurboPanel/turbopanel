@@ -9,9 +9,13 @@ import {
 } from '../features/install/instance-secret-sealing.ts'
 import { decryptSecretForDaemon, encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../lib/secrets/secrets.ts'
-import { SEALED_INSTANCE_SECRETS_FEATURE } from '../lib/version-wire.ts'
+import {
+  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
+  SEALED_INSTANCE_SECRETS_FEATURE,
+} from '../lib/version-wire.ts'
 import { recordingRedisRegistry } from '../test-fixtures/recording-redis-registry.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
+import { setSelfHostedAddress } from '../features/install/ingress-modes.ts'
 import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
 import { waitForPublicUrlsApply } from './routes-helpers.ts'
 
@@ -179,5 +183,87 @@ test('a daemon without the feature still receives the legacy plaintext key', asy
     const entry = payload.hostnames?.find((candidate) => candidate.host === host)
     assertEquals(entry?.keyPem, UPLOADED_KEY)
     assertEquals(entry?.keyEnvelope, undefined)
+  })
+})
+
+test('only tunnel hostnames carry the public port, and only for a daemon that lists the feature', async () => {
+  await withRollback(async (tx) => {
+    const id = crypto.randomUUID()
+    const direct = `direct-${id}.example.test`
+    const tunnel = `tunnel-${id}.example.test`
+    await tx.insert(instanceHostname).values([
+      { host: direct, source: 'platform-ca', publicPort: 8443 },
+      { host: tunnel, source: 'platform-ca', publicPort: 443, mode: 'cloudflare-tunnel' },
+    ])
+    const build = (features: string[]) =>
+      resolvePublicUrlsApplyPayload(tx, [direct, tunnel], '0.1.1', undefined, {}, null, {
+        daemonFeatures: features,
+      })
+    const entryFor = (
+      payload: Awaited<ReturnType<typeof build>>,
+      host: string
+    ): Record<string, unknown> => payload.hostnames?.find((entry) => entry.host === host) ?? {}
+
+    const legacy = await build([SEALED_INSTANCE_SECRETS_FEATURE])
+    assertEquals(entryFor(legacy, tunnel).source, 'platform-ca')
+    assertEquals('publicPort' in entryFor(legacy, tunnel), false)
+
+    const capable = await build([INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE])
+    assertEquals(entryFor(capable, tunnel).publicPort, 443)
+    // A direct name never redirects: ports 80 and 443 there belong to hosting.
+    assertEquals('publicPort' in entryFor(capable, direct), false)
+
+    // Self-hosted, the daemon is always sent 8443 whatever the row stored.
+    setSelfHostedAddress(true)
+    try {
+      const fixed = await build([INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE])
+      assertEquals(entryFor(fixed, tunnel).publicPort, 8443)
+      assertEquals('publicPort' in entryFor(fixed, direct), false)
+    } finally {
+      setSelfHostedAddress(false)
+    }
+  })
+})
+
+test('a DNS-01 name reaches the daemon as uploaded while its pair is live, else as platform-ca', async () => {
+  await withRollback(async (tx) => {
+    const now = Date.parse('2026-11-01T00:00:00.000Z')
+    const notAfter = '2026-12-01T00:00:00.000Z'
+    const [cert] = await tx
+      .insert(instanceUploadedCertificate)
+      .values({
+        label: 'DNS-01 payload fixture',
+        certPem: 'dns01-certificate-pem',
+        keyPem: await encryptSecret(await dataEncryption(), UPLOADED_KEY),
+        dnsNames: [],
+        notAfter,
+        kind: 'acme-dns-01',
+      })
+      .returning({ id: instanceUploadedCertificate.id })
+    const id = crypto.randomUUID()
+    const issued = `dns01-issued-${id}.example.test`
+    const waiting = `dns01-waiting-${id}.example.test`
+    await tx.insert(instanceHostname).values([
+      { host: issued, source: 'acme-dns-01', uploadedCertId: cert!.id, notAfter },
+      { host: waiting, source: 'acme-dns-01' },
+    ])
+    const secrets = await dataEncryption()
+    const build = (at: number) =>
+      resolvePublicUrlsApplyPayload(tx, [issued, waiting], '0.1.1', secrets, {}, null, { now: at })
+    const sourceOf = (payload: Awaited<ReturnType<typeof build>>, host: string) =>
+      payload.hostnames?.find((entry) => entry.host === host)?.source
+
+    const live = await build(now)
+    assertEquals(sourceOf(live, issued), 'uploaded')
+    assertEquals(
+      live.hostnames?.find((entry) => entry.host === issued)?.certPem,
+      'dns01-certificate-pem'
+    )
+    assertEquals(sourceOf(live, waiting), 'platform-ca')
+    // The stored name never reaches the wire.
+    assertEquals(JSON.stringify(live.hostnames).includes('acme-dns-01'), false)
+
+    const expired = await build(Date.parse(notAfter) + 1000)
+    assertEquals(sourceOf(expired, issued), 'platform-ca')
   })
 })

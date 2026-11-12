@@ -16,6 +16,7 @@ import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secret
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import {
   notificationDelivery,
+  notificationPreference,
   organization,
   server,
   team,
@@ -124,6 +125,10 @@ async function withFixture(
     .values({ name: 'Delivery Team', organizationId })
     .returning({ id: team.id })
   await db.insert(teammate).values({ teamId: t!.id, userId: member!.id })
+  // Nothing arrives until a person turns it on (owner decision 2026-11-06).
+  await db
+    .insert(notificationPreference)
+    .values({ userId: member!.id, kind: 'inbox', level: 'all' })
   try {
     await fn({ db, receiver, organizationId, memberId: member!.id })
   } finally {

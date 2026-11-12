@@ -87,7 +87,7 @@ test('isPlainObject accepts records only', () => {
 
 test('managedSessionPaths lists every managed session route', () => {
   const paths = managedSessionPaths()
-  assertEquals(paths.length, 29)
+  assertEquals(paths.length, 34)
   assertEquals(paths.includes('/environments/:id/managed/databases/:databaseName/owner-role'), true)
   assertEquals(paths.includes('/environments/:id/managed/databases/:databaseName/app-logins'), true)
   assertEquals(
@@ -95,6 +95,11 @@ test('managedSessionPaths lists every managed session route', () => {
     true
   )
   assertEquals(paths.includes('/environments/:id/managed/privilege-catalogue'), true)
+  assertEquals(paths.includes('/environments/:id/managed/admin-tools'), true)
+  assertEquals(paths.includes('/environments/:id/managed/admin-tools/:projectId'), true)
+  assertEquals(paths.includes('/environments/:id/managed/admin-tools/:projectId/password'), true)
+  assertEquals(paths.includes('/environments/:id/managed/admin-tools/:projectId/update'), true)
+  assertEquals(paths.includes('/environments/:id/managed/backup-login'), true)
   assertEquals(paths.includes('/environments/:id/managed/logs'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies'), true)
   assertEquals(paths.includes('/environments/:id/managed/backup-policies/:policyId'), true)
@@ -513,6 +518,7 @@ test('serializeManagedLogin reads settings from the login columns', () => {
     connectionRole: 'read-only',
     grantMode: 'self',
     tool: true,
+    allDatabases: false,
     allowedSources: ['internal'],
     maxConnections: 3,
     // A source-limited login never connects straight through, default or not.
@@ -558,6 +564,7 @@ test('parseManagedUserCreateFields accepts valid postgres user input', () => {
   assertEquals(result, {
     username: 'app_user',
     databases: ['postgres'],
+    allDatabases: false,
     privileges: ['read-only'],
     connectionRole: 'read-write',
   })
@@ -843,4 +850,23 @@ test('assertManagedSeriesUnchanged treats an imageless MariaDB row as 12.3, not 
     assertManagedSeriesUnchanged(mariadbEngineSpec, imageless, onEleven)?.error,
     'managed_series_immutable'
   )
+})
+
+test('parseManagedUserCreateFields takes All Databases instead of a list, never both', () => {
+  const ok = parseManagedUserCreateFields(
+    mockContext(),
+    mockManagedContext(),
+    { username: 'bi_reader', allDatabases: true, privileges: ['read-only'] },
+    defaultRowOptions()
+  )
+  if (ok instanceof Response) throw new TypeError('expected parsed fields')
+  assertEquals(ok.allDatabases, true)
+  assertEquals(ok.databases, [])
+  const both = parseManagedUserCreateFields(
+    mockContext(),
+    mockManagedContext(),
+    { username: 'bi_reader', allDatabases: true, databases: ['postgres'] },
+    defaultRowOptions()
+  )
+  assertEquals(both instanceof Response && both.status, 400)
 })

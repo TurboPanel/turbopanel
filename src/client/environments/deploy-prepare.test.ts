@@ -2434,6 +2434,32 @@ describe('findUnavailableStorageCopy', () => {
 })
 
 describe('hostingTlsWireFromResolved', () => {
+  it('sends the pair as a pinned certificate when the flow ordered it, and keeps the gates', () => {
+    const base = { tlsId: 'tls-le', status: 'automatic' as const, centralPair: true }
+    assertEquals(hostingTlsWireFromResolved({ ...base, bindScope: 'public', acmeEnabled: true }), {
+      ok: true,
+      tlsId: 'tls-le',
+    })
+    assertEquals(hostingTlsWireFromResolved({ ...base, bindScope: 'local', acmeEnabled: true }), {
+      ok: false,
+      error: 'acme_requires_public_bind',
+    })
+    assertEquals(hostingTlsWireFromResolved({ ...base, bindScope: 'public', acmeEnabled: false }), {
+      ok: false,
+      error: 'acme_requires_org_opt_in',
+    })
+    assertEquals(
+      hostingTlsWireFromResolved({
+        tlsId: 'tls-le',
+        status: 'automatic',
+        bindScope: 'public',
+        acmeEnabled: true,
+        centralPair: false,
+      }),
+      { ok: true, tlsId: null, tlsMode: 'acme' }
+    )
+  })
+
   it('sets acme mode for a public-bound managed pin and excludes tlsId from sealing', () => {
     assertEquals(
       hostingTlsWireFromResolved({

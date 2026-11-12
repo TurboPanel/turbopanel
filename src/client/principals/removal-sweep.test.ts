@@ -8,6 +8,7 @@ import { eq, inArray, sql } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import {
+  audit,
   command,
   environment,
   folder,
@@ -134,6 +135,7 @@ async function withWorld(fn: (world: World) => Promise<void>): Promise<void> {
       await db.delete(project).where(inArray(project.id, projectIds))
     }
     await db.delete(principal).where(eq(principal.organizationId, organizationId))
+    await db.delete(audit).where(eq(audit.organizationId, organizationId))
     await db.delete(server).where(eq(server.id, serverId))
     await db.delete(workspace).where(eq(workspace.id, ws!.id))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -221,10 +223,10 @@ test('the removal waits for the folders, the server and the stop, retries an unc
     const { queue, sent } = recordingQueue()
 
     // The folder is still on the server: nothing happens yet.
-    assertEquals(await removeRequestedPrincipal(db, queue, owner), 'waiting')
+    assertEquals(await removeRequestedPrincipal(db, queue, undefined, owner), 'waiting')
     // The host confirmed it gone, but the server is offline now.
     await db.delete(folder).where(eq(folder.principalId, owner))
-    assertEquals(await removeRequestedPrincipal(db, queue, owner), 'waiting')
+    assertEquals(await removeRequestedPrincipal(db, queue, undefined, owner), 'waiting')
     assertEquals(sent.length, 0)
 
     await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
@@ -239,16 +241,16 @@ test('the removal waits for the folders, the server and the stop, retries an unc
         actorId: serverId,
       })
       .returning({ id: command.id })
-    assertEquals(await removeRequestedPrincipal(db, queue, owner), 'waiting')
+    assertEquals(await removeRequestedPrincipal(db, queue, undefined, owner), 'waiting')
     await db.update(command).set({ status: 'succeeded' }).where(eq(command.id, stop!.id))
 
     // Now the server is asked; the row stays until the host confirms.
-    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 0 })
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(sent.length, 1)
     assertEquals(await placementState(db, owner), 'retiring')
     assertEquals(typeof (await readPrincipal(db, owner))?.removalRequestedAt, 'string')
     // Not asked again right away.
-    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 0 })
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(sent.length, 1)
 
     // No confirmation came: after the retry window the server is asked again.
@@ -256,13 +258,25 @@ test('the removal waits for the folders, the server and the stop, retries an unc
       .update(principalPlacement)
       .set({ updatedAt: sql`now() - interval '1 hour'` })
       .where(eq(principalPlacement.principalId, owner))
-    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 0 })
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(sent.length, 2)
 
     // The host reports it retired (the command consumer marks it absent): the row goes.
     await markPlacementsAbsent(db, serverId, [await appliedName(db, owner)])
-    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 1 })
+    const retiredName = await appliedName(db, owner)
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 1 })
     assertEquals(await readPrincipal(db, owner), undefined)
+    // The activity log keeps the delete, with no person as its actor.
+    const audited = await db
+      .select({ actorUserId: audit.actorUserId, context: audit.context })
+      .from(audit)
+      .where(eq(audit.targetId, owner))
+    assertEquals(audited, [
+      {
+        actorUserId: null,
+        context: { username: retiredName, appliedUsername: retiredName, serverIds: [serverId] },
+      },
+    ])
     const commands = await db
       .select({ name: command.name })
       .from(command)
@@ -288,7 +302,7 @@ test('the removal sweep leaves out an account still placed on an offline server'
     })
     assertEquals((await deleteProjectCascade(db, doomed.projectId)).ok, true)
     const { queue, sent } = recordingQueue()
-    assertEquals(await runPrincipalRemovalSweep(db, queue), { removed: 0 })
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(sent.length, 0)
     assertEquals(await placementState(db, owner), 'present')
   })
@@ -313,7 +327,7 @@ test('a Hosting Account that is used again before its removal keeps its row and 
     assertEquals(result.ok, true)
     await db.insert(tenancy).values({ principalId: owner, serviceId: other.serviceId })
 
-    assertEquals(await removeRequestedPrincipal(db, undefined, owner), 'kept')
+    assertEquals(await removeRequestedPrincipal(db, undefined, undefined, owner), 'kept')
     const row = await readPrincipal(db, owner)
     assertEquals(row?.removalRequestedAt, null)
   })

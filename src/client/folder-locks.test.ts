@@ -28,6 +28,7 @@ import {
   send,
   withFolderFixtures as withFixtures,
 } from '../test-fixtures/folder-world.test.support.ts'
+import { confirmedPath } from '../test-fixtures/confirm-name.test.support.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -179,7 +180,11 @@ test('an environment with a folder cannot be renamed or deleted and the blocking
       (preview.json.blockers as Array<{ error: string }>).map((row) => row.error),
       ['server_offline']
     )
-    const deleted = await send(ctx, 'DELETE', `/environments/${envId}`)
+    const deleted = await send(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'environment', envId, `/environments/${envId}`)
+    )
     assertEquals(deleted.status, 409)
     assertEquals(deleted.json.error, 'server_offline')
   })
@@ -308,7 +313,11 @@ test('a project with folders is refused while their server is offline, and delet
         metadata: { composeOwned: true, composeServiceName: 'example.com' },
       })
 
-      const refused = await send(ctx, 'DELETE', `/projects/${projectId}`)
+      const refused = await send(
+        ctx,
+        'DELETE',
+        await confirmedPath(ctx.db, 'project', projectId, `/projects/${projectId}`)
+      )
       assertEquals(refused.status, 409)
       assertEquals(refused.json.error, 'server_offline')
       assertMatch(String(refused.json.message), /Alpha is offline/)
@@ -327,7 +336,11 @@ test('a project with folders is refused while their server is offline, and delet
         ]
       )
 
-      const deleted = await send(ctx, 'DELETE', `/projects/${projectId}`)
+      const deleted = await send(
+        ctx,
+        'DELETE',
+        await confirmedPath(ctx.db, 'project', projectId, `/projects/${projectId}`)
+      )
       assertEquals(deleted.status, 200)
       assertEquals((deleted.json.cleanup as { folderServerIds: string[] }).folderServerIds, [
         ctx.serverId,
@@ -367,7 +380,11 @@ test('a project with a deploy in flight is refused in the plan and again under t
       .values({ environmentId: envId, serverId: ctx.serverId, status: 'applying' })
     await ctx.db.update(server).set({ isConnected: true }).where(eq(server.id, ctx.serverId))
 
-    const refused = await send(ctx, 'DELETE', `/projects/${projectId}`)
+    const refused = await send(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'project', projectId, `/projects/${projectId}`)
+    )
     assertEquals(refused.status, 409)
     assertEquals(refused.json.error, 'project_deploy_running')
     assertMatch(String(refused.json.message), /deploy is running/)
@@ -376,7 +393,16 @@ test('a project with a deploy in flight is refused in the plan and again under t
     assertEquals(locked.ok ? null : locked.error, 'project_deploy_running')
 
     await ctx.db.delete(deployment).where(eq(deployment.environmentId, envId))
-    assertEquals((await send(ctx, 'DELETE', `/projects/${projectId}`)).status, 200)
+    assertEquals(
+      (
+        await send(
+          ctx,
+          'DELETE',
+          await confirmedPath(ctx.db, 'project', projectId, `/projects/${projectId}`)
+        )
+      ).status,
+      200
+    )
   })
 })
 
@@ -429,7 +455,11 @@ test('a project delete keeps a volume set to keep its data, with its folder and 
       [['keepvol', 'keep']]
     )
 
-    const deleted = await send(ctx, 'DELETE', `/projects/${projectId}`)
+    const deleted = await send(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'project', projectId, `/projects/${projectId}`)
+    )
     assertEquals(deleted.status, 200)
     const cleanup = deleted.json.cleanup as {
       hostingAccounts: { removing: unknown[]; kept: Array<{ username: string }> }
@@ -483,7 +513,11 @@ test('an environment with folders is deleted in one step; its folders wait for t
       .values({ name: 'staging', projectId })
       .returning({ id: environment.id })
     await addServiceFolder(ctx, staging!.id, 'stage.example.com', 'present', 'staging')
-    const deleted = await send(ctx, 'DELETE', `/environments/${staging!.id}`)
+    const deleted = await send(
+      ctx,
+      'DELETE',
+      await confirmedPath(ctx.db, 'environment', staging!.id, `/environments/${staging!.id}`)
+    )
     assertEquals(deleted.status, 200)
     const rows = await ctx.db
       .select({ state: folder.state, environmentId: folder.environmentId })

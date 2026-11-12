@@ -1,4 +1,5 @@
 import { buildResourceCrudPaths } from './shared.ts'
+import { POST_DEPLOY_RETRY_NOTE } from '../../features/projects/site-lifecycle-options.ts'
 
 export const serviceSchemas = {
   ServiceRow: {
@@ -43,7 +44,10 @@ export const serviceSchemas = {
       options: {
         type: 'object',
         nullable: true,
-        description: 'Service settings (healthCheck, resources, hooks)',
+        description:
+          'Service settings (healthCheck, resources, hooks). A PHP site also takes `postDeployCommands` (command lines, at most 10), `postDeployTimeoutSeconds` (30 to 1800), `postDeployTiming` (`before-traffic` or `after-switch`) and `workers` (at most 10: `name`, `command`, `processes` 1 to 8, `stopTimeoutSeconds` 10 to 3600, `memoryMb` 64 to 65536, `enabled`). ' +
+          POST_DEPLOY_RETRY_NOTE +
+          ' A bad command or worker is refused with 400 and a sentence in `error`.',
         additionalProperties: true,
       },
       createdAt: { type: 'string', format: 'date-time' },
@@ -124,7 +128,10 @@ export const serviceSchemas = {
       options: {
         type: 'object',
         nullable: true,
-        description: 'Service settings (healthCheck, resources, hooks)',
+        description:
+          'Service settings (healthCheck, resources, hooks). A PHP site also takes `postDeployCommands` (command lines, at most 10), `postDeployTimeoutSeconds` (30 to 1800), `postDeployTiming` (`before-traffic` or `after-switch`) and `workers` (at most 10: `name`, `command`, `processes` 1 to 8, `stopTimeoutSeconds` 10 to 3600, `memoryMb` 64 to 65536, `enabled`). ' +
+          POST_DEPLOY_RETRY_NOTE +
+          ' A bad command or worker is refused with 400 and a sentence in `error`.',
       },
     },
   },
@@ -156,7 +163,10 @@ export const serviceSchemas = {
       options: {
         type: 'object',
         nullable: true,
-        description: 'Service settings (healthCheck, resources, hooks)',
+        description:
+          'Service settings (healthCheck, resources, hooks). A PHP site also takes `postDeployCommands` (command lines, at most 10), `postDeployTimeoutSeconds` (30 to 1800), `postDeployTiming` (`before-traffic` or `after-switch`) and `workers` (at most 10: `name`, `command`, `processes` 1 to 8, `stopTimeoutSeconds` 10 to 3600, `memoryMb` 64 to 65536, `enabled`). ' +
+          POST_DEPLOY_RETRY_NOTE +
+          ' A bad command or worker is refused with 400 and a sentence in `error`.',
       },
     },
   },

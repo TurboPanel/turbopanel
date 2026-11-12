@@ -1,5 +1,6 @@
 import type { Db } from '../../db/connection.ts'
 import type {
+  CellEnqueueOptions,
   ClearUpdateStatusOptions,
   CellDiagnostics,
   DaemonCell,
@@ -231,7 +232,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
 
   enqueue(
     outbound: DaemonOutboundEnvelope,
-    opts?: { ttlSeconds?: number }
+    opts?: CellEnqueueOptions
   ): Promise<PendingRequestRecord> {
     return this.#rpc('/rpc/enqueue', {
       serverId: this.#serverId,
@@ -394,6 +395,15 @@ class DurableObjectStubDaemonCell implements DaemonCell {
       idempotent: true,
     })
     return expired.record
+  }
+
+  async redeliverSent(outbound: DaemonOutboundEnvelope): Promise<boolean> {
+    const result = await this.#rpc<{ redelivered: boolean }>('/rpc/redeliver-sent', {
+      serverId: this.#serverId,
+      body: { outbound },
+      idempotent: true,
+    })
+    return result.redelivered
   }
 
   async dropDaemonConnection(reason: string): Promise<void> {

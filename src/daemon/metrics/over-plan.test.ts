@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type { ServerHostResources } from '../../features/servers/server-metadata.ts'
 import { evaluateOverPlan, evaluateOverPlanFromPeak, isOverPlan } from './over-plan.ts'
+import { peakReadingFromReport, readOverPlanStamp } from './over-plan-flag.ts'
 
 const GIB = 1024 ** 3
 
@@ -52,4 +53,31 @@ it('the grace-window peak decides: a high reading flags, no reading never does',
   assertEquals(isOverPlan(evaluateOverPlanFromPeak(1, { memoryBytes: 8 * GIB, cores: 4 })), false)
   assertEquals(isOverPlan(evaluateOverPlanFromPeak(1, null)), false)
   assertEquals(evaluateOverPlanFromPeak(null, { memoryBytes: 64 * GIB, cores: 64 }), null)
+})
+
+it('the peak reading takes the higher RAM of sample and host report, and physical cores only from the host report', () => {
+  const metadata = { resources: withRam(sockets(3, 3), 8) }
+  assertEquals(peakReadingFromReport(metadata, 64 * GIB), { memoryBytes: 64 * GIB, cores: 6 })
+  assertEquals(peakReadingFromReport(metadata, 4 * GIB), { memoryBytes: 8 * GIB, cores: 6 })
+})
+
+it('an older daemon with no sample sizes falls back to the host report, and no report reads as nothing', () => {
+  assertEquals(peakReadingFromReport({ resources: withRam(sockets(4), 16) }, undefined), {
+    memoryBytes: 16 * GIB,
+    cores: 4,
+  })
+  assertEquals(peakReadingFromReport(null, null), { memoryBytes: 0, cores: 0 })
+  assertEquals(peakReadingFromReport({}, Number.NaN), { memoryBytes: 0, cores: 0 })
+})
+
+it('an over-plan stamp from before `since` existed reads its refresh time as the start', () => {
+  const at = '2026-10-20T00:00:00.000Z'
+  assertEquals(readOverPlanStamp({ overPlan: { at, memory: true } }), {
+    at,
+    since: at,
+    memory: true,
+    cpu: false,
+  })
+  assertEquals(readOverPlanStamp({ overPlan: { memory: true } }), null)
+  assertEquals(readOverPlanStamp(null), null)
 })

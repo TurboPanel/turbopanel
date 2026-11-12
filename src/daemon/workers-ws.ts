@@ -1,55 +1,80 @@
-import type { Env, Hono } from "hono";
-import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
-import { getDb } from "../db/connection.ts";
-import { DAEMON_WS_PATH } from "../app/surfaces.ts";
-import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
+import type { Env, Hono } from 'hono'
+import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
+import { getDb } from '../db/connection.ts'
+import { DAEMON_WS_PATH } from '../app/surfaces.ts'
+import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from "../features/servers/server-identity-db.ts";
-import {
-  resolveCellLocationHint,
-} from "./cell/location.ts";
-import { extractCloudflareGeo } from "../features/geo/server-geo.ts";
-import type { RateLimiter } from "./rate-limit/contracts.ts";
-import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
-import { resolvePeerAddress } from "../lib/peer-address.ts";
+} from '../features/servers/server-identity-db.ts'
+import { resolveCellLocationHint } from './cell/location.ts'
+import { extractCloudflareGeo } from '../features/geo/server-geo.ts'
+import type { RateLimiter } from './rate-limit/contracts.ts'
+import { daemonConnectRateLimitKey } from './rate-limit/keys.ts'
+import { resolvePeerAddress } from '../lib/peer-address.ts'
+import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
+import { refuseUnsignedDaemonUpgrade } from './authn/upgrade-signature.ts'
 
-const CELL_SERVER_ID_HEADER = "X-Turbopanel-Cell-Server-Id";
-const CELL_GEO_HEADER = "X-Turbopanel-Cell-Geo";
-const REAL_IP_HEADER = "X-Real-IP";
+const CELL_SERVER_ID_HEADER = 'X-Turbopanel-Cell-Server-Id'
+const CELL_GEO_HEADER = 'X-Turbopanel-Cell-Geo'
+const REAL_IP_HEADER = 'X-Real-IP'
+/** `server.trust_level` read at upgrade; the cell refuses an unsigned session at 1 or more. */
+export const CELL_TRUST_LEVEL_HEADER = 'X-Turbopanel-Cell-Trust-Level'
+/**
+ * `<keyId>:<x>` of the server's current daemon key, read at upgrade, so the
+ * cell checks the daemon's attach proof without a database read.
+ */
+export const CELL_DAEMON_KEY_HEADER = 'X-Turbopanel-Cell-Daemon-Key'
+/**
+ * `1` when `server.trust_reports_signed_at` is set (read at upgrade): the
+ * cell refuses this server's unsigned reports on a signed session.
+ */
+export const CELL_REPORTS_SIGNED_HEADER = 'X-Turbopanel-Cell-Reports-Signed'
 
 /** Internal headers stamped by the Workers isolate — never pass through from clients. */
 const INTERNAL_CELL_FORWARD_HEADERS = [
   CELL_SERVER_ID_HEADER,
   CELL_GEO_HEADER,
   REAL_IP_HEADER,
-] as const;
+  CELL_TRUST_LEVEL_HEADER,
+  CELL_DAEMON_KEY_HEADER,
+  CELL_REPORTS_SIGNED_HEADER,
+] as const
 
 export type WorkersDaemonWebSocketOptions = {
-  secrets?: DaemonJwtKeyring;
+  secrets?: DaemonJwtKeyring
   /** Cloudflare Rate Limit binding adapter — gates reconnect storms before the DO wakes. */
-  connectLimiter?: RateLimiter;
-};
+  connectLimiter?: RateLimiter
+  /** The control plane identity key; checks a signed upgrade. Null = feature off. */
+  panelIdentity?: () => Promise<PanelIdentity | null>
+}
 
 export function buildWorkersDaemonCellForwardHeaders(
   inbound: Headers,
   options: {
-    serverId: string;
-    cf?: unknown;
-    cfConnectingIp?: string | null;
-  },
+    serverId: string
+    cf?: unknown
+    cfConnectingIp?: string | null
+    trustLevel?: number
+    daemonKey?: { id: string; x: string }
+    reportsSigned?: boolean
+  }
 ): Headers {
-  const headers = new Headers(inbound);
+  const headers = new Headers(inbound)
   for (const name of INTERNAL_CELL_FORWARD_HEADERS) {
-    headers.delete(name);
+    headers.delete(name)
   }
 
-  headers.set(CELL_SERVER_ID_HEADER, options.serverId);
+  headers.set(CELL_SERVER_ID_HEADER, options.serverId)
+  headers.set(CELL_TRUST_LEVEL_HEADER, String(options.trustLevel ?? 0))
+  if (options.daemonKey) {
+    headers.set(CELL_DAEMON_KEY_HEADER, `${options.daemonKey.id}:${options.daemonKey.x}`)
+  }
+  if (options.reportsSigned) headers.set(CELL_REPORTS_SIGNED_HEADER, '1')
 
-  const geo = extractCloudflareGeo(options.cf);
+  const geo = extractCloudflareGeo(options.cf)
   if (geo) {
-    headers.set(CELL_GEO_HEADER, JSON.stringify(geo));
+    headers.set(CELL_GEO_HEADER, JSON.stringify(geo))
   }
 
   // The edge strips any client-supplied CF-Connecting-IP, so this is the one
@@ -57,13 +82,13 @@ export function buildWorkersDaemonCellForwardHeaders(
   // transport so both agree on what "peer address" means.
   const peer = resolvePeerAddress(
     { cfConnectingIp: options.cfConnectingIp },
-    { runtime: "workers" },
-  );
+    { runtime: 'workers' }
+  )
   if (peer) {
-    headers.set(REAL_IP_HEADER, peer.address);
+    headers.set(REAL_IP_HEADER, peer.address)
   }
 
-  return headers;
+  return headers
 }
 
 /**
@@ -79,38 +104,36 @@ export function buildWorkersDaemonCellForwardHeaders(
  */
 export function registerWorkersDaemonWebSocket<E extends Env>(
   app: Hono<E>,
-  options: WorkersDaemonWebSocketOptions,
+  options: WorkersDaemonWebSocketOptions
 ): void {
   app.get(DAEMON_WS_PATH, async (c) => {
-    if (c.req.header("Upgrade")?.toLowerCase() !== "websocket") {
-      return c.text("Expected WebSocket", 426);
+    if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
+      return c.text('Expected WebSocket', 426)
     }
 
-    const authHeader = c.req.header("authorization")?.trim() ?? "";
-    const token = authHeader.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length).trim()
-      : "";
+    const authHeader = c.req.header('authorization')?.trim() ?? ''
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : ''
     if (!token || !options.secrets) {
-      return new Response("Unauthorized", { status: 401 });
+      return new Response('Unauthorized', { status: 401 })
     }
-    const payload = await verifyDaemonJwt(token, options.secrets);
+    const payload = await verifyDaemonJwt(token, options.secrets)
     if (!payload) {
-      return new Response("Unauthorized", { status: 401 });
+      return new Response('Unauthorized', { status: 401 })
     }
 
-    const serverId = payload.sub;
+    const serverId = payload.sub
     if (options.connectLimiter) {
       const { success } = await options.connectLimiter.limit({
         key: daemonConnectRateLimitKey(serverId),
-      });
+      })
       if (!success) {
-        return new Response("Too Many Requests", { status: 429 });
+        return new Response('Too Many Requests', { status: 429 })
       }
     }
 
-    const db = getDb(c);
+    const db = getDb(c)
     if (db === undefined) {
-      return new Response("Database unavailable", { status: 503 });
+      return new Response('Database unavailable', { status: 503 })
     }
 
     // A valid JWT is not enough to open a socket.
@@ -124,29 +147,42 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
     // (`deno-ws.ts` assertDaemonKeyStillActive), and hosted checked nothing.
     // The kid in the payload is the daemon key id, so the same row answers
     // both questions: is this still the current key, and is it still active.
-    const daemonState = await getServerDaemonStateByServerId(db, serverId);
-    if (
-      daemonState?.key.id !== payload.kid || !isDaemonKeyActive(daemonState.key)
-    ) {
-      return new Response("Forbidden", { status: 403 });
+    const daemonState = await getServerDaemonStateByServerId(db, serverId)
+    if (daemonState?.key.id !== payload.kid || !isDaemonKeyActive(daemonState.key)) {
+      return new Response('Forbidden', { status: 403 })
     }
 
-    const locationHint = await resolveCellLocationHint(db, serverId);
-    const logicalName = serverId;
+    const refused = await refuseUnsignedDaemonUpgrade({
+      db,
+      request: c.req.raw,
+      serverId,
+      cnfJkt: payload.cnf?.jkt,
+      state: daemonState,
+      panelIdentity: options.panelIdentity,
+    })
+    if (refused) return new Response(refused.error, { status: refused.status })
 
-    const env = c.env as CloudflareBindings;
+    const locationHint = await resolveCellLocationHint(db, serverId)
+    const logicalName = serverId
+
+    const env = c.env as CloudflareBindings
     const stub = locationHint
       ? env.DAEMON_CELL.getByName(logicalName, {
-        locationHint: locationHint as DurableObjectLocationHint,
-      })
-      : env.DAEMON_CELL.getByName(logicalName);
+          locationHint: locationHint as DurableObjectLocationHint,
+        })
+      : env.DAEMON_CELL.getByName(logicalName)
 
     const headers = buildWorkersDaemonCellForwardHeaders(c.req.raw.headers, {
       serverId,
       cf: (c.req.raw as Request & { cf?: unknown }).cf,
-      cfConnectingIp: c.req.header("CF-Connecting-IP"),
-    });
+      cfConnectingIp: c.req.header('CF-Connecting-IP'),
+      trustLevel: daemonState.trustLevel ?? 0,
+      reportsSigned: daemonState.reportsSigned === true,
+      ...(typeof daemonState.key.publicJwk.x === 'string'
+        ? { daemonKey: { id: daemonState.key.id, x: daemonState.key.publicJwk.x } }
+        : {}),
+    })
 
-    return stub.fetch(new Request(c.req.raw, { headers }));
-  });
+    return stub.fetch(new Request(c.req.raw, { headers }))
+  })
 }

@@ -54,6 +54,7 @@ import {
   registerStripeWebhookRoutes,
   STRIPE_WEBHOOK_MAX_BODY_BYTES,
   STRIPE_WEBHOOK_NOT_CONFIGURED,
+  type StripeWebhookRouteOpts,
 } from './stripe.ts'
 
 /**
@@ -287,6 +288,7 @@ async function buildApp(
     stripeFetch?: StripeFetch
     /** The rate limiter refuses every request (answers `success: false`). */
     rateLimited?: boolean
+    taskDaemonCellRegistry?: StripeWebhookRouteOpts['taskDaemonCellRegistry']
   } = {}
 ): Promise<Harness> {
   const runtime = opts.runtime ?? 'deno'
@@ -329,6 +331,9 @@ async function buildApp(
         createStripeClient(config, {
           fetch: opts.stripeFetch ?? stripeFetchDouble(stripeCalls, opts.subscriptionFromStripe),
         }),
+      ...(opts.taskDaemonCellRegistry
+        ? { taskDaemonCellRegistry: opts.taskDaemonCellRegistry }
+        : {}),
     })
   }
   return { app, trace, db, scheduled, stripeCalls }
@@ -435,6 +440,23 @@ test('a signed body with no event id is 400', async () => {
   const res = await h.app.request(await signedPost(JSON.stringify({ object: 'event', type: 'x' })))
   assertEquals(res.status, 400)
   assertEquals(h.trace.includes('insert:delivery'), false)
+})
+
+test('the deferred projection gets a cell registry built over its own database client', async () => {
+  const registryDbs: unknown[] = []
+  const h = await buildApp({
+    taskDaemonCellRegistry: (_c, db) => {
+      registryDbs.push(db)
+      return undefined
+    },
+  })
+  const res = await h.app.request(
+    await signedPost(
+      event('customer.subscription.updated', { id: 'sub_1', object: 'subscription' })
+    )
+  )
+  assertEquals(res.status, 200)
+  assertEquals(registryDbs, [h.db])
 })
 
 test('a duplicate event id answers 204 and schedules nothing', async () => {

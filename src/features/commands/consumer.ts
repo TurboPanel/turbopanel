@@ -12,7 +12,12 @@ import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DeployFailureNotice } from '../deploy/deploy-failure-notice.ts'
 import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
-import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
+import type {
+  CellEnqueueOptions,
+  DaemonCell,
+  DaemonCellRegistry,
+  PendingRequestRecord,
+} from '../../contracts/cell.ts'
 import { generateDeliveryId } from '../../contracts/cell-protocol.ts'
 import { resultSummaryForPersist } from './result-summary.ts'
 import { getResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
@@ -42,6 +47,8 @@ import {
   failTimedOutDeploy,
   haltRollout,
 } from '../deploy/rollout.ts'
+import { nudgeTunnelRoutesForEnvironment, tunnelSyncDepsFrom } from '../tunnels/nudge.ts'
+import { healStaleTunnelTableOf } from '../tunnels/stale-table-heal.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -54,6 +61,7 @@ import {
   stampRelayPublicKey,
   stampRelayReconcileSuccess,
 } from '../fabric/fabric-records.ts'
+import { fabricReconcileAction, stampFabricReconcileFinished } from '../fabric/reconcile-outcome.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
 import {
   command,
@@ -78,6 +86,7 @@ import { parseReseedGuard, reseedSupersededReason } from '../managed/reseed-guar
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
 import { applyBackupsReconcileSideEffect } from '../backups/reconcile-effects.ts'
+import { applyCacheFailureSideEffect, applyCacheResultSideEffect } from '../caches/results.ts'
 import {
   applyBackupTargetTestFailure,
   applyBackupTargetTestSideEffect,
@@ -204,6 +213,8 @@ import {
 import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
 import { isValidWireguardPublicKey } from '../fabric/wg.ts'
 import { type CommandType, TERMINAL_COMMAND_STATUSES } from './types.ts'
+import { claimServerTurn } from './server-turn.ts'
+import { QUEUE_RETRY_EXHAUSTED_CODE, ServerBusyError } from './delivery-retry.ts'
 
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { daemonUnsupportedReason, resolveDaemonSupport } from '../../lib/version-wire.ts'
@@ -262,6 +273,12 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'server.backups.test-target': 120_000,
   // One `rm -rf` through the root helper per folder, up to 100 folders; a big volume takes minutes.
   'server.folders.remove': 600_000,
+  // Writes one site file, validates it with the web server and reloads once.
+  'server.tunnel.routes': 120_000,
+  // Installs or removes a few services; a first install may fetch the connector program.
+  'server.tunnel.connectors': 300_000,
+  // Reads the connectors' records and asks each one if it is connected; never waits for an update.
+  'server.tunnel.status': 30_000,
   // The run cap: counted from when the server starts the deploy, not from when it was sent.
   'environment.deploy': DEPLOY_RUN_CAP_MS,
   'environment.lifecycle': 120_000,
@@ -280,6 +297,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   // Stops the copy's containers, extracts one archive, starts them again.
   'storage.restore': 1_800_000,
   'system.reconcile': 300_000,
+  // The first cache on a host downloads and verifies the engine, then starts each process.
+  'cache.apply': 600_000,
 }
 
 /**
@@ -308,6 +327,9 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.backups.reconcile' ||
     type === 'server.backups.test-target' ||
     type === 'server.folders.remove' ||
+    type === 'server.tunnel.routes' ||
+    type === 'server.tunnel.connectors' ||
+    type === 'server.tunnel.status' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -322,7 +344,8 @@ export function commandTimeoutMs(type: string): number {
     type === 'managed.ha.failover' ||
     type === 'storage.backup' ||
     type === 'storage.restore' ||
-    type === 'system.reconcile'
+    type === 'system.reconcile' ||
+    type === 'cache.apply'
   ) {
     return COMMAND_TIMEOUT_MS[type]
   }
@@ -461,10 +484,22 @@ export function commandIsExpired(
   return Boolean(expiresAt) && Date.parse(expiresAt as string) < nowMs
 }
 
+/** The command row and its dispatch payload, or `null` when there is nothing to run. */
 async function loadDispatchableRecord(
   db: Db,
   envelope: CommandEnvelope
 ): Promise<DispatchableCommandRecord | null> {
+  const record = await loadOpenCommand(db, envelope)
+  return record ? await attachDispatchPayload(db, record, envelope) : null
+}
+
+/**
+ * The command row, when it is still open, not expired and for this envelope's
+ * server. The dispatch payload is read separately ({@link attachDispatchPayload}),
+ * only once the command may run: a command waiting its server's turn is
+ * checked often and never needs it.
+ */
+async function loadOpenCommand(db: Db, envelope: CommandEnvelope): Promise<CommandRecord | null> {
   const record = await getCommandRecord(db, envelope.commandId)
   if (!record) {
     return null
@@ -502,6 +537,15 @@ async function loadDispatchableRecord(
     return null
   }
 
+  return record
+}
+
+/** Read the dispatch payload; a missing one fails the command (`dispatch_payload_missing`). */
+async function attachDispatchPayload(
+  db: Db,
+  record: CommandRecord,
+  envelope: CommandEnvelope
+): Promise<DispatchableCommandRecord | null> {
   const payload = await getCommandDispatchPayload(db, record.id)
   if (payload === null) {
     compatLogWarn('command-consumer', `missing dispatch payload for command ${envelope.commandId}`)
@@ -530,22 +574,33 @@ async function loadDispatchableRecord(
   return { ...record, payload }
 }
 
+/**
+ * Take the server's turn and mark the command `dispatching`. Throws
+ * {@link ServerBusyError} when another command of the server runs or comes
+ * first (the runtime puts the message back for a little later); `false` when
+ * the command finished meanwhile.
+ */
 async function markDispatching(
   db: Db,
-  record: DispatchableCommandRecord,
+  record: CommandRecord,
   envelope: CommandEnvelope
-): Promise<void> {
+): Promise<boolean> {
+  const turn = await claimServerTurn(db, {
+    commandId: record.id,
+    serverId: envelope.serverId,
+    type: record.type as CommandType,
+    attempts: record.attempts,
+    status: record.status,
+    dispatchStartedAt: record.dispatchStartedAt,
+  })
+  if (turn === 'busy') throw new ServerBusyError(envelope.serverId)
+  if (turn === 'finished') return false
   commandConsumerTrace('dispatch-start', {
     commandId: record.id,
     commandType: record.type,
     serverId: envelope.serverId,
   })
-
-  await transitionCommand(db, record.id, {
-    status: 'dispatching',
-    dispatchStartedAt: nowIso(),
-    attempts: record.attempts + 1,
-  })
+  return true
 }
 
 /** `null` when the command can be delivered; otherwise the error it was failed with. */
@@ -673,6 +728,35 @@ export async function awaitOutcomeWithAckDeadline(
   }
 }
 
+/**
+ * How long one run of the consumer waits on a non-deploy command before it
+ * hands the wait back to the queue (and the next run picks it up), kept under
+ * the Workers queue consumer's wall-clock limit of about 15 minutes. Deploys
+ * have their own, shorter hold (`DEPLOY_QUEUE_HOLD_MS`).
+ */
+export const COMMAND_WAIT_HOLD_MS = 10 * 60_000
+
+/** Extra life a command's request keeps past its wait budget, so a late result still finds it. */
+const COMMAND_REQUEST_MARGIN_SECONDS = 15 * 60
+
+/**
+ * The request record's lifetime for a command. A deploy may wait hours for
+ * the server, so its request outlives the default five minutes from the
+ * start. Any other command keeps the default to be delivered and acknowledged
+ * (an undelivered one should not reach a server long after it was given up
+ * on), then, once the daemon has it, its whole budget plus a margin: a
+ * 30-minute backup's record, and so its result, must outlive the backup.
+ */
+export function commandRequestLifetime(record: {
+  type: string
+  payload?: unknown
+}): CellEnqueueOptions {
+  if (record.type === 'environment.deploy') return { ttlSeconds: DEPLOY_REQUEST_TTL_SECONDS }
+  return {
+    ackedTtlSeconds: Math.ceil(commandWaitMs(record) / 1000) + COMMAND_REQUEST_MARGIN_SECONDS,
+  }
+}
+
 async function enqueueAndAwaitOutcome(
   db: Db,
   registry: DaemonCellRegistry,
@@ -691,11 +775,7 @@ async function enqueueAndAwaitOutcome(
   }
 
   const cell = registry.getCell(envelope.serverId)
-  // A deploy may wait hours for the server, so its request must outlive the default five minutes.
-  await cell.enqueue(
-    outbound,
-    record.type === 'environment.deploy' ? { ttlSeconds: DEPLOY_REQUEST_TTL_SECONDS } : undefined
-  )
+  await cell.enqueue(outbound, commandRequestLifetime(record))
   commandConsumerTrace('dispatch-enqueued', {
     commandId: record.id,
     commandType: record.type,
@@ -713,11 +793,67 @@ async function enqueueAndAwaitOutcome(
 }
 
 /**
+ * Wait for a non-deploy command's result in holds of at most
+ * {@link COMMAND_WAIT_HOLD_MS}, counted against its budget from `sentAt`.
+ * When the budget is not used up after a hold and its request is still live,
+ * the message goes back on the queue and this run lets go (`null`, nothing
+ * settled); the next run resumes the wait on the same request
+ * (`resumeSentWait`) instead of sending the command again. Without a usable
+ * queue the whole budget is waited in one go, as before.
+ */
+async function isSentButUnacked(cell: DaemonCell, requestId: string): Promise<boolean> {
+  const current = await cell.getRequest(requestId).catch(() => null)
+  return current?.status === 'sent' && !current.ackAt
+}
+
+async function awaitWithHandOff(
+  db: Db,
+  cell: DaemonCell,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  deps: CommandConsumerDeps | undefined,
+  sentAt: string,
+  resumed: boolean
+): Promise<PendingRequestRecord | null> {
+  const sentMs = Date.parse(sentAt)
+  const startMs = Number.isFinite(sentMs) ? sentMs : Date.now()
+  const leftMs = Math.max(0, startMs + commandWaitMs(record) - Date.now())
+  const queue = deps?.commandQueue
+  const canHandOff = queue !== undefined && !isNoopCommandQueue(queue)
+  const holdMs = canHandOff ? Math.min(leftMs, COMMAND_WAIT_HOLD_MS) : leftMs
+  // A wait picked up again has usually been through the ack check already; one
+  // whose run died before the daemon acknowledged it has not, so it gets the
+  // check again instead of waiting out its whole budget on a dead connection.
+  const unacked = resumed ? await isSentButUnacked(cell, record.id) : true
+  const pending = unacked
+    ? await awaitOutcomeWithAckDeadline(cell, record.id, holdMs, COMMAND_ACK_DEADLINE_MS)
+    : await cell.waitForRequest(record.id, holdMs)
+  if (pending) return pending
+  if (canHandOff && leftMs > holdMs) {
+    const live = await cell.getRequest(record.id)
+    if (live && (live.status === 'queued' || live.status === 'sent' || live.status === 'acked')) {
+      // Not a failure: the next run starts a fresh retry count.
+      await queue.enqueue({ ...envelope, attempt: 1 })
+      commandConsumerTrace('dispatch-result', {
+        commandId: record.id,
+        commandType: record.type,
+        serverId: envelope.serverId,
+        resultStatus: 'handed_off',
+      })
+      return null
+    }
+    if (live && (live.status === 'done' || live.status === 'failed')) return live
+  }
+  await settleUnansweredCommand(db, cell, record, envelope, deps, undefined)
+  return null
+}
+
+/**
  * Wait for what the server reports. A deploy has two clocks (see
  * `deploy-wait.ts`): the run cap counts from when the server starts it, and a
  * deploy that has not started is not timed out for being queued. When it is
  * still waiting after one hold, the message goes back on the queue and this
- * run lets go; the next run picks the wait up (`resumeDeployWait`).
+ * run lets go; the next run picks the wait up (`resumeSentWait`).
  */
 async function awaitCommandOutcome(
   db: Db,
@@ -733,6 +869,9 @@ async function awaitCommandOutcome(
     record.type === 'environment.deploy'
       ? await makeDeployWaiter(db, record, envelope.serverId, sentAt, deps)
       : undefined
+  if (!waiter) {
+    return awaitWithHandOff(db, cell, record, envelope, deps, sentAt, resumed)
+  }
 
   // A wait picked up again has been through the ack check already.
   const pending =
@@ -800,7 +939,9 @@ async function settleUnansweredCommand(
       resultStatus,
     })
   if (waiter?.verdict === 'handoff') {
-    await deps?.commandQueue?.enqueue(envelope)
+    // A hand-off is not a failure: the next run starts a fresh retry count, so
+    // passing errors spread over a long deploy never add up to giving it up.
+    await deps?.commandQueue?.enqueue({ ...envelope, attempt: 1 })
     trace('handed_off')
     return
   }
@@ -826,7 +967,7 @@ async function settleUnansweredCommand(
     'timed_out',
     deps
   )
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, timeoutMessage ?? 'Command timed out')
 }
 
 /**
@@ -835,17 +976,26 @@ async function settleUnansweredCommand(
  * request that is already on the server instead of sending it twice.
  * `null` when there is nothing to resume.
  */
-async function resumeDeployWait(
+async function resumeSentWait(
   db: Db,
   registry: DaemonCellRegistry,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
   deps?: CommandConsumerDeps
 ): Promise<{ pending: PendingRequestRecord | null } | null> {
-  if (record.type !== 'environment.deploy' || record.sentAt === null) return null
+  if (record.sentAt === null) return null
   if (!['sent', 'acked', 'running'].includes(record.status)) return null
   const cell = registry.getCell(envelope.serverId)
   const existing = await cell.getRequest(record.id)
+  if (record.type !== 'environment.deploy') {
+    // A long command whose wait was handed back (or whose consumer died
+    // mid-wait): keep waiting on the request already on the server rather than
+    // sending it twice. With its request gone it is sent again, as before.
+    if (existing === null || existing.status === 'expired') return null
+    return {
+      pending: await awaitCommandOutcome(db, registry, record, envelope, deps, record.sentAt, true),
+    }
+  }
   if (existing === null || existing.status === 'expired') {
     // The deploy may already be running on the server, so it is never sent again:
     // with its request gone no result can reach it, and it is given up on.
@@ -1087,6 +1237,14 @@ async function applyEnabledFabricReconcileSideEffect(
   const payload = parseFabricReconcilePayload(record.payload)
   if (!payload.enabled) return
   const fabricResult = parseFabricReconcileResult(result)
+  if (payload.tunnel === false) {
+    // No tunnel, so no key comes back: the applied hash alone is the proof.
+    // Without a fabric row there is no relay to record it on.
+    if (payload.fabricId) {
+      await stampFabricSuccessFromResult(db, record, envelope, payload.fabricId, fabricResult)
+    }
+    return
+  }
   // Stamp-match skips (`skipped: true`) still carry a valid publicKey — stamp
   // the desired hash so membership convergence does not re-enqueue forever.
   if (!fabricResult.publicKey) return
@@ -1113,6 +1271,7 @@ async function applyFabricSideEffect(
 ): Promise<void> {
   if (record.type !== 'server.fabric.reconcile') return
   try {
+    await stampFabricOutcomeFromResult(db, record, envelope, result)
     await applyEnabledFabricReconcileSideEffect(db, record, envelope, result, deps)
   } catch (err) {
     compatLogWarn(
@@ -1122,14 +1281,45 @@ async function applyFabricSideEffect(
   }
 }
 
+/** Record that the server answered, with the warnings an apply came back with. */
+async function stampFabricOutcomeFromResult(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown
+): Promise<void> {
+  const payload = parseFabricReconcilePayload(record.payload)
+  let warnings: string[] | undefined
+  try {
+    warnings = parseFabricReconcileResult(result).warnings
+  } catch {
+    warnings = undefined
+  }
+  await stampFabricReconcileFinished(db, {
+    serverId: envelope.serverId,
+    commandId: record.id,
+    action: fabricReconcileAction(payload),
+    ok: true,
+    ...(warnings ? { warnings } : {}),
+  })
+}
+
 async function applyFabricFailedSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  error: string
 ): Promise<void> {
   if (record.type !== 'server.fabric.reconcile') return
   try {
     const payload = parseFabricReconcilePayload(record.payload)
+    await stampFabricReconcileFinished(db, {
+      serverId: envelope.serverId,
+      commandId: record.id,
+      action: fabricReconcileAction(payload),
+      ok: false,
+      error,
+    })
     await clearRelayAppliedPayloadHash(db, {
       serverId: envelope.serverId,
       ...(payload.enabled && payload.fabricId ? { fabricId: payload.fabricId } : {}),
@@ -1278,6 +1468,7 @@ async function applyEnvironmentDeploySideEffect(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
+  let landedEnvironmentId: string | null = null
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     // Only the newest deploy of the environment decides which folders are still in use. A
@@ -1303,6 +1494,7 @@ async function applyEnvironmentDeploySideEffect(
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
       current = marked !== null
+      if (current) landedEnvironmentId = payload.environmentId
     }
     // A hostings-only run changed the web server config and nothing else: no
     // folders, accounts, sites or containers to record.
@@ -1354,6 +1546,21 @@ async function applyEnvironmentDeploySideEffect(
       'command-consumer',
       `container reconcile failed for command ${record.id}: ${message}`
     )
+  } finally {
+    // The very last step, so the deploy bookkeeping above never waits for it: a
+    // site now runs here (or no longer does), and servers forwarding to it need the new table.
+    if (landedEnvironmentId !== null) {
+      const secrets = consumerFabricSecretFields(deps)
+      await nudgeTunnelRoutesForEnvironment(
+        db,
+        tunnelSyncDepsFrom({
+          commandQueue: deps?.commandQueue,
+          secretsConfig: secrets.secretsConfig,
+          dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+        }),
+        landedEnvironmentId
+      )
+    }
   }
 }
 
@@ -2953,11 +3160,15 @@ async function recordLeafRenewalFailure(
   }
 }
 
-async function applyPendingTlsLeafSideEffect(
+export async function applyPendingTlsLeafSideEffect(
   db: Db,
   record: DispatchableCommandRecord
 ): Promise<void> {
-  if (record.type !== 'managed.apply' && record.type !== 'managed.ingress.reconcile') {
+  if (
+    record.type !== 'managed.apply' &&
+    record.type !== 'managed.ingress.reconcile' &&
+    record.type !== 'server.tunnel.routes'
+  ) {
     return
   }
   try {
@@ -3000,11 +3211,23 @@ export async function applySucceededSideEffects(
   await applyManagedPromoteSideEffect(db, record, envelope, result, deps)
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
   await applyBackupsReconcileSideEffect(db, record, result)
+  await applyCacheResultSideEffect(db, record, result)
   await applyBackupTargetTestSideEffect(db, record, result)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)
   await applyFirewallPreviewSideEffect(db, record, envelope, result, deps)
+  const tunnelSecrets = consumerFabricSecretFields(deps)
+  await healStaleTunnelTableOf(
+    db,
+    record,
+    result,
+    tunnelSyncDepsFrom({
+      commandQueue: deps?.commandQueue,
+      secretsConfig: tunnelSecrets.secretsConfig,
+      dataEncryptionSecrets: tunnelSecrets.dataEncryptionSecrets,
+    })
+  )
 }
 
 /**
@@ -3502,9 +3725,10 @@ async function handlePendingFailed(
   })
   await applyManagedFailedSideEffect(db, record, deps, error)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, error)
   await applyFirewallFailedSideEffect(db, record, envelope, error)
   await applyPrincipalIdRefusedSideEffect(db, record, error)
+  await applyCacheFailureSideEffect(db, record, error)
 }
 
 async function handlePendingExpired(
@@ -3539,8 +3763,9 @@ async function handlePendingExpired(
     'timed_out',
     deps
   )
-  await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFabricFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
   await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
+  await applyCacheFailureSideEffect(db, record, pending.error ?? 'Command timed out')
 }
 
 async function handlePendingUnexpected(
@@ -3654,7 +3879,7 @@ async function absorbRefusedReseed(
  * primary's data. If the switchover was overtaken before the command was sent
  * (a second switchover or failover), refuse it instead of wiping.
  */
-async function failSupersededReseed(db: Db, record: DispatchableCommandRecord): Promise<boolean> {
+async function failSupersededReseed(db: Db, record: CommandRecord): Promise<boolean> {
   if (record.type !== 'managed.apply') return false
   const guard = parseReseedGuard(await getCommandMetadata(db, record.id))
   if (!guard) return false
@@ -3670,36 +3895,126 @@ async function failSupersededReseed(db: Db, record: DispatchableCommandRecord): 
   return true
 }
 
+/** The failure side effects of a command that never reached its server. */
+async function applyUndeliveredSideEffects(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  error: string,
+  deps?: CommandConsumerDeps
+): Promise<void> {
+  // A managed apply/restore flips its row to `applying` before enqueue; a command
+  // that never reached its server must release that row or it blocks every
+  // later change until the stale sweep gets to it.
+  await applyManagedFailedSideEffect(db, record, deps, error)
+  // A deploy that never reached its server fails its row and halts the
+  // rollout, or later batches would wait on an `applying` row forever.
+  await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error, 'failed', deps)
+  await applyFabricFailedSideEffect(db, record, envelope, error)
+  await settleIngressRecoveryOfCommand(db, record)
+}
+
+/** What {@link failCommandAfterRetries} did. */
+export type GiveUpResult =
+  /** The command never reached its server and is now failed. */
+  | 'failed'
+  /** The server may be running it: left for the stale sweep to end. */
+  | 'left_running'
+  /** Nothing to do: the command is gone or already finished. */
+  | 'none'
+
+/**
+ * The runtime gave up on a command whose processing kept failing for a
+ * passing reason (database or cell unreachable). One that never reached its
+ * server is failed with that reason and releases what it held, like a command
+ * that never got there. One that was sent may be running on the server right
+ * now: failing it would free its server's turn under it, so it is left, and
+ * with nothing waiting on it any more the stale sweep ends it.
+ *
+ * A request can already sit in the server's cell outbox when the write that
+ * marks it `sent` failed; it is taken back first (`registry`), so a command
+ * failed here can never still reach its server.
+ */
+export async function failCommandAfterRetries(
+  db: Db,
+  envelope: CommandEnvelope,
+  error: string,
+  deps?: CommandConsumerDeps,
+  registry?: DaemonCellRegistry
+): Promise<GiveUpResult> {
+  const record = await loadDispatchableRecord(db, envelope)
+  if (!record) return 'none'
+  if (record.sentAt !== null) return 'left_running'
+  const cell = registry?.getCell(envelope.serverId)
+  if (cell?.expireRequest) {
+    // Could not take it back, or the server already answered: not ours to fail.
+    const taken = await cell.expireRequest(record.id).catch(() => null)
+    if (taken?.status !== 'expired') return 'left_running'
+  }
+  const failed = await transitionCommand(db, record.id, {
+    status: 'failed',
+    error,
+    errorCode: QUEUE_RETRY_EXHAUSTED_CODE,
+  })
+  if (failed === null) return 'none'
+  await applyUndeliveredSideEffects(db, record, envelope, error, deps)
+  return 'failed'
+}
+
+/**
+ * A command already sent: resume waiting on it (rare, so the payload is read
+ * up front). `done` when it was handled here (or its payload is missing);
+ * the loaded record when its request is gone, so the normal path sends it
+ * again; `null` when it is not a sent command, so the normal path runs it.
+ */
+async function resumeIfSent(
+  db: Db,
+  registry: DaemonCellRegistry,
+  open: CommandRecord,
+  envelope: CommandEnvelope,
+  deps?: CommandConsumerDeps
+): Promise<'done' | DispatchableCommandRecord | null> {
+  if (open.sentAt === null || !['sent', 'acked', 'running'].includes(open.status)) return null
+  const record = await attachDispatchPayload(db, open, envelope)
+  if (!record) return 'done'
+  const resumed = await resumeSentWait(db, registry, record, envelope, deps)
+  if (resumed === null) return record
+  if (resumed.pending) {
+    await applyPendingOutcome(
+      db,
+      record,
+      envelope,
+      resumed.pending,
+      deps ? { ...deps, registry } : deps
+    )
+  }
+  return 'done'
+}
+
 export async function processCommandEnvelope(
   db: Db,
   registry: DaemonCellRegistry,
   envelope: CommandEnvelope,
   deps?: CommandConsumerDeps
 ): Promise<void> {
-  const record = await loadDispatchableRecord(db, envelope)
+  const open = await loadOpenCommand(db, envelope)
+  if (!open) return
+
+  const resumed = await resumeIfSent(db, registry, open, envelope, deps)
+  if (resumed === 'done') return
+
+  // Take the server's turn before reading the payload: a command whose server
+  // is busy is checked often and only needs the row.
+  if (!(await markDispatching(db, open, envelope))) return
+  // A re-seed overtaken by a later switchover is refused before it is sent;
+  // checked once the command has its turn, not on every busy look.
+  if (await failSupersededReseed(db, open)) return
+  const record = resumed ?? (await attachDispatchPayload(db, open, envelope))
   if (!record) return
-
-  if (await failSupersededReseed(db, record)) return
-
-  const resumed = await resumeDeployWait(db, registry, record, envelope, deps)
-  if (resumed !== null) {
-    if (resumed.pending) await applyPendingOutcome(db, record, envelope, resumed.pending, deps)
-    return
-  }
-
-  await markDispatching(db, record, envelope)
 
   const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
   if (notReady !== null) {
-    // A managed apply/restore flips its row to `applying` before enqueue; a command
-    // that never reached its server must release that row or it blocks every
-    // later change until the stale sweep gets to it.
-    await applyManagedFailedSideEffect(db, record, deps, notReady)
-    // A deploy that never reached its server fails its row and halts the
-    // rollout, or later batches would wait on an `applying` row forever.
-    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady, 'failed', deps)
-    await applyFabricFailedSideEffect(db, record, envelope)
-    await settleIngressRecoveryOfCommand(db, record)
+    await applyUndeliveredSideEffects(db, record, envelope, notReady, deps)
     return
   }
 

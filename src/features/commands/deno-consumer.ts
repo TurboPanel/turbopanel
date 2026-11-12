@@ -1,6 +1,7 @@
 import amqplib from 'amqplib'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import { createClosablePause } from '../../lib/closable-pause.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
 import { assertCommandAmqpTopology, COMMAND_AMQP_QUEUE } from './command-amqp-topology.ts'
 import {
@@ -10,6 +11,7 @@ import {
   type CommandResealDeps,
 } from './consumer.ts'
 import { createLaneScheduler, type LaneScheduler } from './command-lanes.ts'
+import { type DeliveryOutcome, settleFailedDelivery } from './delivery-failure.ts'
 import { parseCommandEnvelope, type CommandEnvelope } from './envelope.ts'
 import type { CommandQueue } from './queue.ts'
 
@@ -63,34 +65,46 @@ export function commandMessageDisposition(
   return isTransientError(outcome.error) ? 'nack_requeue' : 'nack_dead'
 }
 
+/** How a shared delivery outcome maps onto ack/nack. */
+const DELIVERY_DISPOSITION: Record<DeliveryOutcome, CommandMessageDisposition> = {
+  ack: 'ack',
+  dead_letter: 'nack_dead',
+  redeliver: 'nack_requeue',
+}
+
 /**
- * Unacknowledged deliveries the broker hands this consumer at once. Commands
- * for a busy server wait in their lane holding a slot, so this is the room
- * for that backlog; it is also the most that is redelivered after a crash.
+ * Unacknowledged deliveries the broker hands this consumer at once: the ones
+ * running plus the ones waiting for a run slot. A command whose server is busy
+ * does not hold one (it is acked and put back). It is also the most that is
+ * redelivered after a crash.
  */
 export const COMMAND_CONSUMER_PREFETCH = 32
 
-/** Servers whose commands may run at the same moment. */
+/** Commands this consumer runs at the same moment. */
 export const COMMAND_LANE_CONCURRENCY = 8
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-async function connectAmqp(url: string): Promise<AmqpConnection> {
+/**
+ * `stopped` ends the retries early once the consumer is closed, and `pause`
+ * is the consumer's own wait, which close() cuts short.
+ */
+async function connectAmqp(
+  url: string,
+  stopped: () => boolean,
+  pause: (ms: number) => Promise<void>
+): Promise<AmqpConnection> {
   const maxAttempts = 30
   const tryConnect = async (attempt: number): Promise<AmqpConnection> => {
     try {
       return await amqplib.connect(url)
     } catch (error) {
-      if (attempt === maxAttempts) throw error
+      if (attempt === maxAttempts || stopped()) throw error
       const errMsg = error instanceof Error ? error.message : String(error)
       compatLogWarn(
         'command-consumer',
         `AMQP connect failed (attempt ${attempt}/${maxAttempts}): ${errMsg}`
       )
     }
-    await sleep(1000)
+    await pause(1000)
     return tryConnect(attempt + 1)
   }
   return tryConnect(1)
@@ -170,6 +184,8 @@ export async function startCommandConsumer(
   let closed = false
   let reconnecting = false
   let session: ConsumerSession | undefined
+  const waits = createClosablePause()
+  const pause = waits.pause
 
   /**
    * Attach the listeners amqplib requires us to attach.
@@ -203,7 +219,7 @@ export async function startCommandConsumer(
   }
 
   async function openSession(): Promise<ConsumerSession> {
-    const connection = await connectAmqp(opts.amqpUrl)
+    const connection = await connectAmqp(opts.amqpUrl, () => closed, pause)
     // `channel` is filled in below; the object has to exist first so the
     // connection's listeners can be attached before anything else awaits.
     const opened = {
@@ -243,6 +259,10 @@ export async function startCommandConsumer(
     // `close` and `error` both fire for the same loss, and a session that has
     // already been replaced can still emit late; one rebuild per loss.
     if (closed || reconnecting || session !== from) return
+    await rebuild(reason)
+  }
+
+  async function rebuild(reason: string): Promise<void> {
     reconnecting = true
     session = undefined
     compatLogWarn('command-consumer', `AMQP ${reason} — reconnecting`)
@@ -279,7 +299,7 @@ export async function startCommandConsumer(
           `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`
         )
       }
-      await sleep(delay)
+      await pause(delay)
       return attempt(Math.min(delay * 2, RECONNECT_MAX_DELAY_MS))
     }
     await attempt(RECONNECT_BASE_DELAY_MS)
@@ -292,12 +312,16 @@ export async function startCommandConsumer(
   }
 
   /**
-   * Parse the delivery and hand it to its server's lane. The ack or nack
-   * happens only after the command has finished, so a delivery that has not
-   * finished stays unacknowledged and the broker redelivers it if this
-   * process or the channel goes away. A deploy gives its lane up once the
-   * server has taken it over (`leaveLane`), so the rest of its wait never holds
-   * up the server's other commands.
+   * Parse the delivery and run it in a lane of its own (the lane scheduler
+   * only caps how many run at once). Per-server order is the server-turn
+   * check every command passes (`server-turn.ts`), as on Workers: a command
+   * whose server is busy is acked and put back for a little later, so it never
+   * holds a delivery slot or waits unseen in memory, and its waiting never
+   * counts against its time limit. The ack or nack happens only after the
+   * command has finished, so a delivery that has not finished stays
+   * unacknowledged and the broker redelivers it if this process or the
+   * channel goes away. A deploy gives its slot up once the server has taken it
+   * over (`leaveLane`).
    */
   async function handleMessage(
     channel: AmqpChannel,
@@ -315,7 +339,7 @@ export async function startCommandConsumer(
       return
     }
 
-    await lanes.run(envelope.serverId, async (release) => {
+    await lanes.run(envelope.commandId, async (release) => {
       // Waiting in a lane can outlast the session. Shutdown, or a broker
       // loss, leaves this delivery unacknowledged and the broker redelivers
       // it, so running it now would run it twice.
@@ -340,21 +364,37 @@ export async function startCommandConsumer(
       )
       disposition = commandMessageDisposition({ ok: true })
     } catch (error) {
-      const errMsg = errorMessage(error)
-      disposition = commandMessageDisposition({ ok: false, error })
-      if (disposition === 'nack_requeue') {
-        compatLogWarn('command-consumer', `transient error, requeueing: ${errMsg}`)
-      } else {
-        compatLogError('command-consumer', `permanent error, dead-lettering: ${errMsg}`)
-      }
+      // A busy server, a passing outage or a broken command: the same policy
+      // as the Workers consumer (`delivery-failure.ts`).
+      const outcome = await settleFailedDelivery({
+        db: opts.db,
+        queue: opts.commandQueue,
+        envelope,
+        error,
+        deps: consumerDeps,
+        registry: opts.registry,
+      })
+      disposition = DELIVERY_DISPOSITION[outcome]
     }
     // Outside the try: a failed ack is a broker problem, not a reason to
     // re-classify a command that processed fine as a processing failure.
     disposeSafely(channel, msg, disposition)
   }
 
-  session = await openSession()
-  if (session.lost) {
+  try {
+    session = await openSession()
+  } catch (error) {
+    // The broker is not up yet (a cold start can take longer than the first
+    // connect's retries). Keep trying in the background like after a loss:
+    // giving up here would leave the control plane accepting commands that
+    // nothing ever runs, until someone restarts it.
+    compatLogError(
+      'command-consumer',
+      `AMQP broker unreachable at start: ${errorMessage(error)} — retrying in the background`
+    )
+    void rebuild('broker unreachable at start')
+  }
+  if (session?.lost) {
     // The broker went away while the first session was being set up. Its
     // listeners fired before it was the live session, so nothing else will
     // rebuild it — hand it to the reconnect loop instead of keeping it.
@@ -368,6 +408,7 @@ export async function startCommandConsumer(
   return {
     async close(): Promise<void> {
       closed = true
+      waits.close()
       const open = session
       session = undefined
       if (!open) return

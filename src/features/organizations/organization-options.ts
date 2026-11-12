@@ -16,6 +16,7 @@ import {
   type NtpDefaults,
   parseHideWebServerNames,
   parseNtpDefaults,
+  parseSendViaHeader,
   parseSshPort,
 } from '../servers/host-defaults.ts'
 import {
@@ -85,6 +86,11 @@ export type OrganizationOptions = {
    */
   hideWebServerNames?: boolean
   /**
+   * Keep `Via: 1.1 Caddy` on site responses for servers that do not set their
+   * own. Omitted → off.
+   */
+  sendViaHeader?: boolean
+  /**
    * Preferred TurboFabric state for this organization. Does not create or tear
    * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
    */
@@ -149,18 +155,6 @@ export type OrganizationOptions = {
    */
   docker?: OrganizationDockerNetworking
   /**
-   * Gate for Let's Encrypt / ACME certificate issuance — the tenant `tls`
-   * library (`POST /tls` with `source: 'lets_encrypt'`), the one-click button,
-   * compose `tls.mode: automatic`, and the deploy-time `tlsMode: 'acme'` wire
-   * the resolved TLS status can produce. New organizations start with it on
-   * ({@link NEW_ORGANIZATION_OPTIONS}); a row without the key (an organization
-   * made before that) reads as off, so existing organizations keep what they
-   * had. Some operators do not want Let's Encrypt used against their servers
-   * at all and turn it off. Toggling off does not revoke certificates already
-   * issued.
-   */
-  acmeEnabled?: boolean
-  /**
    * Step-up re-authentication for permanent actions (delete a project, remove
    * a member, revoke a key, ...). When on, those routes refuse with
    * `reauth_required` until the signed-in person has just proved who they are
@@ -197,6 +191,18 @@ export type OrganizationOptions = {
    * then the options parser drops hook fields and no deploy carries them.
    */
   deployHooksEnabled?: boolean
+  /**
+   * Whether the new-project form opens its Environment section (the primary
+   * environment name) without being asked. Off by default: most projects keep
+   * one environment, so the name stays tucked away. A display preference for
+   * the client; nothing on the server branches on it.
+   */
+  openEnvironmentSectionByDefault?: boolean
+  /**
+   * Whether the new-project form opens its Workspace section without being
+   * asked. Off by default: a new project goes into the default workspace.
+   */
+  openWorkspaceSectionByDefault?: boolean
   /**
    * Per-service ceiling applied at deploy to any container service whose
    * compose sets none (`mem_limit` / `cpus` / `deploy.resources.limits`).
@@ -296,12 +302,14 @@ function assignMaxServers(options: OrganizationOptions, value: Record<string, un
   if (parsed.ok) options.maxServers = parsed.value
 }
 
-function assignHideWebServerNames(
+function assignWebServerSettings(
   options: OrganizationOptions,
   value: Record<string, unknown>
 ): void {
   const hide = parseHideWebServerNames(value.hideWebServerNames)
   if (hide !== undefined) options.hideWebServerNames = hide
+  const via = parseSendViaHeader(value.sendViaHeader)
+  if (via !== undefined) options.sendViaHeader = via
 }
 
 function assignManagedDatabase(options: OrganizationOptions, value: Record<string, unknown>): void {
@@ -346,6 +354,19 @@ function assignRequireReauth(options: OrganizationOptions, value: Record<string,
   }
 }
 
+/** The new-project form's "open by default" switches; anything but a boolean is dropped. */
+function assignProjectFormDefaults(
+  options: OrganizationOptions,
+  value: Record<string, unknown>
+): void {
+  if (typeof value.openEnvironmentSectionByDefault === 'boolean') {
+    options.openEnvironmentSectionByDefault = value.openEnvironmentSectionByDefault
+  }
+  if (typeof value.openWorkspaceSectionByDefault === 'boolean') {
+    options.openWorkspaceSectionByDefault = value.openWorkspaceSectionByDefault
+  }
+}
+
 /** Parse organization.options jsonb (missing/invalid keys → omitted). */
 export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (!isRecord(value)) return {}
@@ -360,7 +381,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (sshPort !== undefined) options.sshPort = sshPort
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
-  assignHideWebServerNames(options, value)
+  assignWebServerSettings(options, value)
   if (typeof value.defaultFabricEnabled === 'boolean') {
     options.defaultFabricEnabled = value.defaultFabricEnabled
   }
@@ -382,14 +403,12 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   }
   assignMetricsCapabilityPlan(options, value)
   assignDocker(options, value)
-  if (typeof value.acmeEnabled === 'boolean') {
-    options.acmeEnabled = value.acmeEnabled
-  }
   assignRequireReauth(options, value)
   assignComposeOptIns(options, value)
   if (typeof value.deployHooksEnabled === 'boolean') {
     options.deployHooksEnabled = value.deployHooksEnabled
   }
+  assignProjectFormDefaults(options, value)
   assignComposeDefaultResourceLimits(options, value)
   assignPhpModes(options, value)
   assignDirectoryNames(options, value)
@@ -458,18 +477,57 @@ export function resolveTemperatureUnit(options: OrganizationOptions): Temperatur
   return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT
 }
 
-/**
- * `organization.options` for an organization being created: Let's Encrypt
- * allowed. Only new rows get this; nothing rewrites existing organizations.
- */
-export const NEW_ORGANIZATION_OPTIONS: Readonly<OrganizationOptions> = Object.freeze({
-  acmeEnabled: true,
-})
+/** Longest address the authority accepts as a contact (the mailbox limit). */
+export const ACME_CONTACT_EMAIL_MAX_LENGTH = 254
+const LOCAL_PART_CHARS = /^[A-Za-z0-9_+-]+$/
+const LABEL_CHARS = /^[a-z0-9-]+$/
 
-/** Effective Let's Encrypt gate: off unless the key is set (new organizations set it on). */
-export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
-  return options.acmeEnabled ?? false
+/**
+ * One public mailbox for the authority's contact field, lowercased, or `null`.
+ * Stricter than a general address check: a conservative ASCII local part, no
+ * display name or control characters, and a dotted domain that is not an address literal (the
+ * authority refuses contacts on names that cannot receive mail).
+ */
+export function normalizeAcmeContactEmail(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (trimmed.length === 0 || trimmed.length > ACME_CONTACT_EMAIL_MAX_LENGTH) return null
+  const at = trimmed.indexOf('@')
+  if (at <= 0 || at !== trimmed.lastIndexOf('@')) return null
+  const local = trimmed.slice(0, at)
+  const domain = trimmed.slice(at + 1).toLowerCase()
+  // The address becomes a mailto: contact, so the local part is limited to
+  // letters, digits and . _ - + (no ? & # % that would add header fields or a
+  // percent-encoded line break). Dots only between non-empty parts.
+  if (local.length > 64) return null
+  if (!local.split('.').every((part) => part.length > 0 && LOCAL_PART_CHARS.test(part))) return null
+  const labels = domain.split('.')
+  if (labels.length < 2 || labels.some((label) => label.length === 0 || label.length > 63)) {
+    return null
+  }
+  if (
+    !labels.every(
+      (label) => LABEL_CHARS.test(label) && !label.startsWith('-') && !label.endsWith('-')
+    )
+  ) {
+    return null
+  }
+  // A numeric last label is an IP address, not a public mail domain.
+  if (/^\d+$/.test(labels.at(-1) ?? '')) return null
+  return `${local}@${domain}`
 }
+
+/** Refusal code: Let's Encrypt cannot be on without accepted terms. */
+export const ORG_ACME_TERMS_NOT_ACCEPTED_CODE = 'acme_terms_not_accepted'
+
+/** Refusal code: the agreement accepted is no longer the one Let's Encrypt names. */
+export const ORG_ACME_TERMS_CHANGED_CODE = 'acme_terms_changed'
+
+/** Refusal code: Let's Encrypt's current terms could not be read. */
+export const ORG_ACME_TERMS_UNAVAILABLE_CODE = 'acme_terms_unavailable'
+
+/** Refusal code: Let's Encrypt cannot be on without a contact address. */
+export const ORG_ACME_CONTACT_EMAIL_REQUIRED_CODE = 'acme_contact_email_required'
 
 /** Effective step-up gate for permanent actions: off unless an owner turned it on. */
 export function resolveRequireReauthForDestructive(options: OrganizationOptions): boolean {

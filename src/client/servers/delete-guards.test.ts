@@ -10,6 +10,7 @@ import {
   ip,
   managed,
   network,
+  cache,
   replica,
   server,
   slot,
@@ -209,6 +210,10 @@ function deleteBlockersDb(opts: {
             return thenableRows(opts.otherReplicaRows ?? [])
           }
           return joinedCount(opts.replicaCount ?? 0)
+        }
+        if (table === cache) {
+          if (fields && 'name' in fields) return thenableRows([])
+          return joinedCount(0)
         }
         if (table === deployment) {
           if (fields && 'environmentId' in fields) {

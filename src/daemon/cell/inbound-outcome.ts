@@ -1,4 +1,4 @@
-import type { PendingRequestStatus } from '../../contracts/cell.ts'
+import type { PendingRequestKind, PendingRequestStatus } from '../../contracts/cell.ts'
 import type { DaemonInboundEnvelope } from '../../contracts/cell-protocol.ts'
 import { redactUrlSecrets } from '../../features/upgrades/redact-url-secrets.ts'
 
@@ -114,6 +114,12 @@ function deriveRawInboundOutcome(inbound: DaemonInboundEnvelope): InboundOutcome
         results: inbound.results,
         error: inbound.error,
       })
+    case 'dev-host-action-result':
+      return inboundOutcomeFromOk(inbound.ok, inbound.error, {
+        ok: inbound.ok,
+        jobId: inbound.jobId,
+        error: inbound.error,
+      })
     case 'repo-read-result':
       return inboundOutcomeFromOk(inbound.ok, inbound.error, repoReadResultPayload(inbound))
     case 'repo-default-branch-result':
@@ -167,4 +173,72 @@ function deriveRawInboundOutcome(inbound: DaemonInboundEnvelope): InboundOutcome
  */
 function unhandledInbound(_inbound: never): null {
   return null
+}
+
+type InboundKind = DaemonInboundEnvelope['kind']
+
+/**
+ * The answers each request kind may receive. A pending request is completed
+ * (or acked) only by one of these, so an answer frame of another kind that
+ * names the request's id is refused: without this, any unsigned `*-result`
+ * frame could complete a `command-dispatch` and skip the signature and
+ * ratchet that `command-outcome` goes through. `command-ack` belongs to
+ * `command-dispatch` only. Fire-and-forget requests (`echo` and the
+ * certificate order messages, answered by their own events) take none.
+ *
+ * A `Record` over every outbound kind, so a new request kind does not compile
+ * until it names its answers here.
+ */
+const REQUEST_ANSWER_KINDS: Readonly<Record<PendingRequestKind, readonly InboundKind[]>> = {
+  'addresses-request': ['addresses-result'],
+  'managed-logs-request': ['managed-logs-result'],
+  'managed-health-request': ['managed-health-result'],
+  'managed-permissions-request': ['managed-permissions-result'],
+  'server-network-check-request': ['server-network-check-result'],
+  'dev-host-action': ['dev-host-action-result'],
+  'container-logs-request': ['container-logs-result'],
+  'repo-read-request': ['repo-read-result'],
+  'repo-default-branch-request': ['repo-default-branch-result'],
+  'fabric-paths-request': ['fabric-paths-result'],
+  'dev-sync': ['dev-sync-result'],
+  'tunnel-token': ['tunnel-token-result'],
+  'public-urls-update': ['public-urls-update-result'],
+  'metrics-live-start': ['metrics-live-start-result'],
+  'metrics-live-stop': ['metrics-live-stop-result'],
+  'metrics-capabilities-request': ['metrics-capabilities-result'],
+  'topology-overrides-update': ['topology-overrides-update-result'],
+  'capability-plan-update': ['capability-plan-update-result'],
+  'capability-plan-clear': ['capability-plan-clear-result'],
+  'deploy-cancel': ['deploy-cancel-result'],
+  update: ['update-result'],
+  'instance-update': ['instance-update-result'],
+  'acme-issue-request': [],
+  'acme-proof-forward': [],
+  'acme-proof-forward-end': [],
+  echo: [],
+  'command-dispatch': ['command-ack', 'command-outcome'],
+}
+
+/**
+ * True when `inboundKind` is an answer the request of `requestKind` may
+ * receive. An unknown or empty stored kind is never answered.
+ */
+export function inboundAnswersRequest(requestKind: string, inboundKind: string): boolean {
+  if (!Object.hasOwn(REQUEST_ANSWER_KINDS, requestKind)) return false
+  const allowed = REQUEST_ANSWER_KINDS[requestKind as PendingRequestKind]
+  return (allowed as readonly string[]).includes(inboundKind)
+}
+
+/** The one warn line both runtimes log for an answer of the wrong kind. */
+export function answerKindMismatchWarning(params: {
+  serverId: string
+  requestId: string
+  requestKind: string
+  inboundKind: string
+}): string {
+  return (
+    `event=answer-kind-refused serverId=${params.serverId} ` +
+    `requestId=${params.requestId} requestKind=${params.requestKind || 'unknown'} ` +
+    `answerKind=${params.inboundKind}: an answer of this kind cannot complete this request`
+  )
 }

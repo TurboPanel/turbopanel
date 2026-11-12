@@ -45,15 +45,57 @@ manifests and may start one. Hello, heartbeat, and
 
 ## Updates are always automatic (2026-10-27)
 
-There is no on/off switch and no manual start, retry or cancel. The routes that
-did those (`POST /instance/updates/instance`, `/daemon`, `/preflight`, `/runs`,
+There is no on/off switch and no manual retry or cancel. The one manual start
+is **Update Now** (below, owner decision 2026-11-03): the hourly check, run at
+once. The routes that did the old manual starts, retries and cancels
+(`POST /instance/updates/instance`, `/daemon`, `/preflight`, `/runs`,
 `/steps/:id/retry`, `/runs/:id/cancel`, client `POST /servers/updates`
 and `POST /servers/:id/update`) answer **410** `updates_automatic`
 (`updatesAutomaticBody` in `decisions.ts`, one body for admin and client). The
 legacy per-server updater and the client update gate are gone. The developer
 surface's own daemon update route (`../../developer/update-routes.ts`) stays.
 `UPGRADE_SOURCES` keeps `manual` and
-`server` because older history rows carry them; new runs are `auto`.
+`server` because older history rows carry them; new runs are `auto`, or
+`manual` when Update Now started them.
+
+- **Development is the exception.** With `TURBOPANEL_DEV_SURFACE=1`
+  (`isExplicitDevelopmentMode()`, the coordinator's `development`) there is no
+  check at all: `claimScheduledUpgradeCheck` (`maintenance.ts`) never claims
+  the slot, so no manifest is resolved, no target saved and no run started
+  (`shouldAutoStartRun` also refuses in development). The co-located daemon
+  runs from source and refuses every update. The only way a dev box updates
+  is the manual **Build and Push Daemon** action in Admin > Updates
+  (`GET /instance/updates/development`, `POST …/development/push`, see
+  `../../admin/AGENTS.md`): it rebuilds the daemon overlay from the local
+  checkout and pushes `update` to the connected remote servers. The rebuild
+  spawns `deno task release:dev` with the spelling of the runtime path that
+  the unit's `--allow-run` names (`resolveDenoBinary` in
+  `../../developer/dev-update-overlay.ts` asks the permission set): Deno
+  matches the allow-list against the path as spawned and does not follow
+  symlinks, and `Deno.execPath()` is the versioned file behind the unit's
+  `vendor/deno/current/deno`, so spawning it directly is refused. The developer
+  surface route (`../../developer/update-routes.ts`, the dev console's
+  **Rebuild daemon and upgrade connected servers**) shares its fan-out
+  (`../../developer/daemon-update-fanout.ts`). The dev update overlay gives
+  the daemon the BUILT overlay identity as target (`dist/manifest.json`,
+  `<sha>+<unix>`) or none, never a pending target for an unbuilt checkout,
+  and gives the control plane and the web interface no target
+  (`resolveUpdateManifest` answers null for `instance` and `ui` while the
+  overlay provider is set), because a dev box runs both from its checkouts
+  and any channel build would be a rollback. `GET /instance/updates` reports
+  `development: true`, the co-located daemon's `updateAvailable` is false,
+  and `daemonsBehind` leaves the co-located server out
+  (`anyDaemonBehind(commit, builtAt, excludeServerId)`).
+  The dev box itself (the four development checkouts and their units) is
+  updated by the co-located daemon, never by the control plane: Admin >
+  Updates **Update and Restart** and **Restart Only**
+  (`POST …/development/host/update`, `…/host/restart`) send `dev-host-action`
+  (feature `dev-host-v1`) and the daemon runs the job (fast-forward pull of
+  checkouts on trunk without blocking changes, install, migrate with a backup
+  first, restarts with the daemon last). The control plane never resets,
+  stashes or pulls a checkout itself; the old developer surface
+  `POST /api/developer/v1/system/upgrade` (which reset checkouts to trunk) is
+  removed.
 
 - **The hourly check.** The `UPGRADE_CHECK` setting row holds this install's
   minute of the hour (drawn at random once, then stable, so many installs never
@@ -77,6 +119,46 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   of the two. The press is claimed with one conditional `jsonb_set` on that
   field, and the scheduled check writes only `lastCheckAt`, so neither
   overwrites the other.
+  When every manifest the channel publishes comes back empty
+  (`releaseServerUnreachable`) it answers 503 `release_unreachable` with the
+  Update Now sentence, keeps the saved build and skips the status read, which
+  would ask the release server a second time (`checkNowRefresh` in
+  `update-now.ts`). The press is already claimed, so a retry within the
+  minute answers 429.
+- **Update Now** (`POST /instance/updates/now`, superadmin, audited as
+  `upgrade.start_now`, no step-up like Pause / Resume, release installs on both
+  runtimes): the hourly check, run at once. `coordinator.updateNow()` refuses
+  first, before any manifest fetch: `upgrade_run_active` (409 `run_active`
+  with `activeRunId`) while a run is open, `upgrade_paused` (409 `paused`)
+  while paused, `upgrade_development` on a development install (the route
+  answers 403 `development` before that). Otherwise it runs `checkForUpdates`
+  with a fresh target (`resolveUpdateManifest(…, { fresh: true })`), which
+  saves it as the latest build and, when something is behind, calls
+  `start({ source: 'manual', startedBy, updateNow: true })`: the same
+  preflight, order and fleet hard gate as the hourly check, plus the automatic
+  start's no-op rule and retry backoff. Answers: 202 `{ ok, runId }`, 200
+  `{ ok, upToDate: true }` (nothing behind, or every step already done), 409
+  `update_blocked` with `blockers` (a preflight blocker or `retry_later`), 429
+  `check_too_soon`, 503 `release_unreachable` (below).
+  `update-now.ts` maps the result to HTTP. Single-flight: a second press, or
+  the hourly check at the same moment, loses at the run insert (the
+  transaction's active-run read, `uniq_upgrade_active` and the reserved run
+  id's primary key) and answers `run_active`; each step is claimed with a
+  conditional `saveStep` before it is enqueued, so no server gets it twice.
+  It does not move the schedule; Check Now's minute stays its own.
+  Update Now refuses while any run is open, including one waiting only on
+  offline servers (the same as the hourly tick; only a direct `start()`
+  settles such a run first).
+  It is rate-limited like Check Now: once a minute per install, claimed with
+  `claimManualUpgradeCheck(…, 'lastUpdateNowAt')` (its own field, so a Check
+  Now just before does not make it wait) after the open-run and pause
+  refusals and before any manifest fetch; sooner answers 429
+  `check_too_soon` with `retryAfterSeconds` and `Retry-After`. When every
+  manifest the channel publishes comes back empty (`releaseServerUnreachable`
+  in `target-resolve.ts`: the release server was not reached) it answers 503
+  `release_unreachable` and keeps the saved build, instead of "up to date".
+  A `fresh` manifest read never caches an empty answer, so the next read asks
+  again instead of serving the miss for `MANIFEST_CACHE_MS`.
 - **Pause** (`UPGRADE_PAUSE` row, `../settings/upgrade-control.ts`): `POST
 /instance/updates/pause` / `resume`, admins only, recorded in the activity log
   (`upgrade.pause` / `upgrade.resume`). It snapshots who paused and when, so the
@@ -86,6 +168,9 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   `updates_paused`; steps already sent, and their retries, finish. The run then
   ends `cancelled` with `error` `updates_paused`. Resume just deletes the row;
   the next check starts what is waiting.
+  The sentences people read (`UPGRADE_PAUSED_MESSAGE`, `SKIPPED_PAUSED_MESSAGE`,
+  `UPDATE_NOW_PAUSED_MESSAGE`) name the Pause All Updates switch, never "resume":
+  the web interface has a switch, not a Resume button.
 - **Automatic retry with backoff** (`retry-backoff.ts`). An automatic start
   reads, in one grouped query, earlier `failed` / `rolled_back` /
   `needs_attention` steps at the target commits. A fleet server still inside its
@@ -128,12 +213,13 @@ On the hourly check (above), resolve the daemon / instance / UI manifests for
 the channel through `resolveUpdateManifest` (cached — daemons never poll
 GitHub). Compute pinned targets with `pinnedChannelManifestUrl`; the dev overlay
 provider (`../../developer/dev-update-overlay.ts`) still wins for the daemon
-kind. Store the latest available build in a setting row.
+kind (a development install never runs this check; see above). Store the latest available build in a setting row.
 
 ## Runs
 
-- **Starting a run** (`start()`, called by the check with `source: 'auto'`;
-  the manual sources remain for tests and history only) — pre-flight first; 409 when a run is already active
+- **Starting a run** (`start()`, called by the check with `source: 'auto'`
+  and by Update Now with `source: 'manual'`; `server` remains for tests and
+  history only) — pre-flight first; 409 when a run is already active
   (`uniq_upgrade_active`), except a run whose only open steps are fleet
   `waiting` rows (never dispatched) for servers that are not connected:
   `start()` settles those as `skipped` (`server_offline`) and opens the new
@@ -142,8 +228,9 @@ kind. Store the latest available build in a setting row.
   Preflight reports `canStart` in that case and does not mutate. A fleet host
   that is not connected when a run is planned (manual or automatic, not a
   single-server start) gets its step `skipped` at once with `server_offline`
-  and "It was offline when the update started. It updates on its own when it
-  reconnects."; a connected `pending` host is never skipped.
+  and "Skipped: offline when the update started. It updates at the next
+  automatic check after it reconnects (within the hour), unless updates are
+  paused."; a connected `pending` host is never skipped.
 - **Automatic** — on every runtime and channel, unless paused. Only when the target differs
   from what's installed (`differsFromInstalled`), and only when no run is
   active. Control-plane drift counts only where the run would plan the
@@ -266,8 +353,9 @@ working.
   (`attempts === 0`) **fleet** step on a host that went offline during the run;
   one still waiting after that is `skipped` (`skip_offline`, strictly more than
   15:00 elapsed) with `errorCode`
-  `server_offline` and "It stayed offline for 15 minutes during the update. It
-  updates on its own when it reconnects." The run then ends `succeeded` when
+  `server_offline` and "Skipped: offline for 15 minutes during the update. It updates at the
+  next automatic check after it reconnects (within the hour), unless updates
+  are paused." The run then ends `succeeded` when
   every other step is done/skipped. Co-located daemon and control-plane steps
   still become `needs_attention` / `server_offline` (the fleet gate depends on
   them). A host that dropped mid-install (`attempts > 0`) is never skipped: it
@@ -282,7 +370,8 @@ working.
 - A run whose last open step settles this tick finishes this tick (the
   recount covers the whole run, not just the page the tick read).
 - No endpoint retries a step or cancels a run: a failed server is retried by a
-  later automatic run (see **Automatic retry with backoff**) and Pause stops a run.
+  later automatic run or Update Now, after its backoff (see **Automatic retry
+  with backoff**), and Pause stops a run.
 - A control-plane (`instance`) step is never settled by the commit alone once it
   was dispatched: the new binary answers as soon as it restarts, while the
   daemon is still verifying it (and may roll it back). Only the daemon's `done`
@@ -362,7 +451,8 @@ grouped `count(*)`, not a materialised server or step list.
   (`ServerUpdateBlockedCode` in `decisions.ts`). Clients branch on the code,
   never the sentence.
 - Admin API (`../../admin/instance-updates-routes.ts` + `openapi/`): status,
-  pause, resume, runs, history, servers list, batch settings; the retired
+  Check Now, Update Now, pause, resume, runs, history, servers list, batch
+  settings; the retired
   manual routes answer 410. `GET /instance/updates/run` answers
   `{ run, lastRun }`: when nothing is active, `lastRun` is the most recent
   finished run (steps, `error`, each step's `errorCode` / `errorMessage`) if it

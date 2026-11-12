@@ -1746,7 +1746,7 @@ test('DELETE hard-deletes an unplaced cluster', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({ managedRows: [managedRow({ serverId: null })] }),
   })
-  const res = await app.request(envPath(), {
+  const res = await app.request(envPath('?confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -1765,7 +1765,7 @@ test('DELETE / lifecycle / members reject a busy cluster', async () => {
     'content-type': 'application/json',
   }
   for (const [method, path] of [
-    ['DELETE', envPath()],
+    ['DELETE', envPath('?confirmName=Production')],
     ['POST', envPath('/members')],
     ['PATCH', envPath(`/members/${MEMBER_ID}`)],
     ['DELETE', envPath(`/members/${MEMBER_ID}`)],
@@ -2021,7 +2021,7 @@ test('DELETE database refuses the initial database and unknown names', async () 
     db: fakeDb({ managedRows: [managedRow()] }),
   })
   await expectJson(
-    await app.request(envPath('/databases/defaultdb'), {
+    await app.request(envPath('/databases/defaultdb?confirmName=defaultdb'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -2029,7 +2029,7 @@ test('DELETE database refuses the initial database and unknown names', async () 
     { error: 'cannot_drop_initial_database' }
   )
   await expectJson(
-    await app.request(envPath('/databases/missing'), {
+    await app.request(envPath('/databases/missing?confirmName=missing'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -2069,7 +2069,7 @@ test('DELETE database returns 409 listing the SQL users that still have access',
       ],
     }),
   })
-  const res = await app.request(envPath('/databases/appdb'), {
+  const res = await app.request(envPath('/databases/appdb?confirmName=appdb'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -2103,7 +2103,45 @@ test('DELETE database reports bindings before users', async () => {
       ],
     }),
   })
-  const res = await app.request(envPath('/databases/appdb'), {
+  const res = await app.request(envPath('/databases/appdb?confirmName=appdb'), {
+    method: 'DELETE',
+    headers: authHeaders(cookie),
+  })
+  assertEquals(res.status, 409)
+  assertEquals((await jsonOf(res)).error, 'managed_database_has_bindings')
+})
+
+test('DELETE database needs its exact name before anything else is checked or changed', async () => {
+  const { db, writes } = writeCountingDb({
+    managedRows: [managedRow()],
+    bindingRows: [
+      {
+        id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        serviceId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+        name: 'web',
+        environmentId: ENV_ID,
+        projectId: PROJECT_ID,
+        keyPrefix: 'DATABASE',
+      },
+    ],
+  })
+  const { app, cookie } = await buildApp({ db })
+  for (const query of ['', '?confirmName=', '?confirmName=AppDb', '?confirmName=defaultdb']) {
+    await expectJson(
+      await app.request(envPath(`/databases/appdb${query}`), {
+        method: 'DELETE',
+        headers: authHeaders(cookie),
+      }),
+      400,
+      {
+        error: 'confirm_name_required',
+        message: 'Type the database name to delete this database.',
+      }
+    )
+  }
+  assertEquals(writes(), 0)
+  // The typed name lets the delete go on to its own checks.
+  const res = await app.request(envPath('/databases/appdb?confirmName=appdb'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -2360,6 +2398,49 @@ test('GET org managed returns 404 when the path org does not match the session',
     }),
     404,
     { error: 'Not found' }
+  )
+})
+
+test('GET org managed needs no organization header or query: the path names it', async () => {
+  const { app, cookie } = await buildApp({ db: fakeDb({ managedRows: [] }) })
+  await expectJson(
+    await app.request(`/organizations/${ORG_ID}/managed`, { headers: { Cookie: cookie } }),
+    200,
+    { managed: [] }
+  )
+  await expectJson(
+    await app.request(`/organizations/${ORG_ID}/managed?organizationId=${ORG_ID}`, {
+      headers: { Cookie: cookie },
+    }),
+    200,
+    { managed: [] }
+  )
+})
+
+test('GET org managed refuses a query or path that names another organization', async () => {
+  const { app, cookie } = await buildApp({ db: fakeDb() })
+  await expectJson(
+    await app.request(`/organizations/${ORG_ID}/managed?organizationId=${OTHER_ORG}`, {
+      headers: { Cookie: cookie },
+    }),
+    404,
+    { error: 'Not found' }
+  )
+  await expectJson(
+    await app.request('/organizations/not-an-id/managed', { headers: { Cookie: cookie } }),
+    404,
+    { error: 'Not found' }
+  )
+})
+
+test('GET org managed without the header still answers 403 when manage is denied', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({ executeRows: [{ allowed: false, organization_id: ORG_ID }] }),
+  })
+  await expectJson(
+    await app.request(`/organizations/${ORG_ID}/managed`, { headers: { Cookie: cookie } }),
+    403,
+    { error: 'Forbidden' }
   )
 })
 
@@ -2746,7 +2827,7 @@ test('DELETE of a placed cluster returns 503 without dispatch infrastructure', a
     db: fakeDb({ managedRows: [managedRow()] }),
   })
   await expectJson(
-    await app.request(envPath(), {
+    await app.request(envPath('?confirmName=Production'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -2762,7 +2843,7 @@ test('DELETE hard-deletes pending containers for environment services', async ()
       serviceRows: [{ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }],
     }),
   })
-  const res = await app.request(envPath(), {
+  const res = await app.request(envPath('?confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -2977,7 +3058,7 @@ test('POST lifecycle / DELETE placed / backups enqueue when the host is online',
     { status: 'queued' }
   )
   await expectQueued(
-    await app.request(envPath(), {
+    await app.request(envPath('?confirmName=Production'), {
       method: 'DELETE',
       headers: authHeaders(cookie),
     }),
@@ -3026,7 +3107,7 @@ test('DELETE cluster refuses with the bound services listed, and queues nothing'
     registry: stubRegistry(),
     commandQueue: countingQueue(enqueued),
   })
-  const res = await app.request(envPath(), {
+  const res = await app.request(envPath('?confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3056,7 +3137,7 @@ test('DELETE cluster with ?detach=true queues the destroy and leaves the binding
     registry: stubRegistry(),
     commandQueue: countingQueue(enqueued),
   })
-  const res = await app.request(envPath('?detach=true'), {
+  const res = await app.request(envPath('?detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3090,7 +3171,7 @@ test('DELETE cluster with ?detach=true whose destroy cannot be queued answers 50
     registry: stubRegistry(),
     commandQueue: failingQueue(),
   })
-  const res = await app.request(envPath('?detach=true'), {
+  const res = await app.request(envPath('?detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3129,13 +3210,13 @@ test('DELETE cluster with ?detach=true needs the same rights as the destroy: man
     commandQueue: countingQueue(enqueued),
   })
   executeCalls = 0
-  const detach = await app.request(envPath('?detach=true'), {
+  const detach = await app.request(envPath('?detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
   assertEquals(detach.status, 403)
   executeCalls = 0
-  const forced = await app.request(envPath('?force=true&detach=true'), {
+  const forced = await app.request(envPath('?force=true&detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3159,13 +3240,13 @@ test('DELETE cluster with ?force=true&detach=true removes the bindings before th
     registry: stubRegistry(),
     commandQueue: countingQueue([]),
   })
-  const refused = await app.request(envPath('?force=true'), {
+  const refused = await app.request(envPath('?force=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
   assertEquals(refused.status, 409)
   assertEquals(deletedTables.length, 0)
-  const res = await app.request(envPath('?force=true&detach=true'), {
+  const res = await app.request(envPath('?force=true&detach=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3201,7 +3282,7 @@ test('DELETE ?force=true reports hostCleanup with an offline member', async () =
     registry: stubRegistry(),
     commandQueue: partiallyFailingMemberQueue(failed, REPLICA_SERVER_ID),
   })
-  const res = await app.request(envPath('?force=true'), {
+  const res = await app.request(envPath('?force=true&confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3221,7 +3302,7 @@ test('DELETE cluster with no bindings is unchanged and reports no detached list'
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath(), {
+  const res = await app.request(envPath('?confirmName=Production'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -3440,8 +3521,8 @@ test('POST users past apply-ready hits namespace and insert short-circuits', asy
  * Wraps a fake db so the test can see which principal rows were inserted
  * (the new login) and which commands were queued.
  */
-function recordingUserCreate(memberRows: unknown[]) {
-  const base = applyReadyDb({ principalRows: [], loginRows: [], memberRows })
+function recordingUserCreate(memberRows: unknown[], extra: FakeDbConfig = {}) {
+  const base = applyReadyDb({ principalRows: [], loginRows: [], memberRows, ...extra })
   const inserted: Array<Record<string, unknown>> = []
   const db = {
     ...base,
@@ -3759,7 +3840,7 @@ test('DELETE database past apply-ready maps a later prepare error', async () => 
     registry: stubRegistry(),
     commandQueue: recordingQueue(),
   })
-  const res = await app.request(envPath('/databases/appdb'), {
+  const res = await app.request(envPath('/databases/appdb?confirmName=appdb'), {
     method: 'DELETE',
     headers: authHeaders(cookie),
   })
@@ -4360,4 +4441,208 @@ test('GET status?refresh=1 falls back quietly when the daemon lacks the feature 
     observed: 0,
     unavailable: 1,
   })
+})
+
+// ---------------------------------------------------------------------------
+// The cluster's backup login (`/managed/backup-login`)
+// ---------------------------------------------------------------------------
+
+const BACKUP_FEATURES = ['managed-backup-login-v1', 'managed-login-limits-v1']
+const BACKUP_LOGIN_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+
+function backupLoginRow(overrides: Record<string, unknown> = {}) {
+  return loginRow({
+    id: BACKUP_LOGIN_ID,
+    role: 'backup',
+    username: 'backup',
+    appliedUsername: 'backup',
+    isTool: true,
+    databases: [],
+    privileges: [],
+    allowedSources: ['internal'],
+    ...overrides,
+  })
+}
+
+async function postBackupLogin(
+  body: Record<string, unknown>,
+  features: string[] = BACKUP_FEATURES,
+  loginRows: unknown[] = []
+) {
+  const { db, inserted, commandQueue } = recordingUserCreate(PRIMARY_ONLY, {
+    loginRows,
+    serverRows: [serverAdvertising(features)],
+  })
+  const { app, cookie } = await buildApp({ db, registry: stubRegistry(), commandQueue })
+  const res = await app.request(envPath('/backup-login'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return { res, inserted: inserted.filter((row) => row.role === 'backup') }
+}
+
+test('GET backup-login answers null without a cluster or a backup login, and the login when there is one', async () => {
+  const empty = await buildApp({ db: fakeDb({ managedRows: [] }) })
+  await expectJson(
+    await empty.app.request(envPath('/backup-login'), { headers: authHeaders(empty.cookie) }),
+    200,
+    { login: null }
+  )
+  const none = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()], loginRows: [loginRow()] }),
+  })
+  await expectJson(
+    await none.app.request(envPath('/backup-login'), { headers: authHeaders(none.cookie) }),
+    200,
+    { login: null }
+  )
+  const withBackup = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()], loginRows: [loginRow(), backupLoginRow()] }),
+  })
+  const body = await jsonOf(
+    await withBackup.app.request(envPath('/backup-login'), {
+      headers: authHeaders(withBackup.cookie),
+    })
+  )
+  const found = body.login as Record<string, unknown>
+  assertEquals(found.id, BACKUP_LOGIN_ID)
+  assertEquals(found.username, 'backup')
+  assertEquals(found.tool, true)
+  assertEquals(found.allowedSources, ['internal'])
+  // The ordinary users list never shows it.
+  const users = await jsonOf(
+    await withBackup.app.request(envPath('/users'), { headers: authHeaders(withBackup.cookie) })
+  )
+  assertEquals(
+    (users.users as Array<{ id: string }>).map((entry) => entry.id),
+    [LOGIN_ID]
+  )
+})
+
+test('POST backup-login refuses a login with no place to connect from, or anywhere', async () => {
+  for (const body of [{}, { allowedSources: null }, { allowedSources: ['any'] }]) {
+    const { res, inserted } = await postBackupLogin(body)
+    const answer = await jsonOf(res)
+    assertEquals(res.status, 400)
+    assertEquals(answer.error, 'managed_backup_login_sources_required')
+    assertEquals(inserted, [])
+  }
+  const bad = await postBackupLogin({ allowedSources: ['nowhere'] })
+  assertEquals(bad.res.status, 400)
+  assertEquals((await jsonOf(bad.res)).error, 'managed_login_source_invalid')
+  assertEquals(bad.inserted, [])
+})
+
+test('POST backup-login refuses an invalid or reserved name', async () => {
+  const invalid = await postBackupLogin({ allowedSources: ['internal'], username: 'bad name' })
+  assertEquals(invalid.res.status, 400)
+  const reserved = await postBackupLogin({ allowedSources: ['internal'], username: 'tp_backup' })
+  assertEquals(reserved.res.status, 422)
+  assertEquals((await jsonOf(reserved.res)).error, 'reserved_username')
+  const wrongType = await postBackupLogin({ allowedSources: ['internal'], username: 7 })
+  assertEquals(wrongType.res.status, 400)
+})
+
+test('POST backup-login refuses a server whose daemon cannot give the login its rights', async () => {
+  const { res, inserted } = await postBackupLogin({ allowedSources: ['internal'] }, [
+    'managed-login-limits-v1',
+  ])
+  assertEquals(res.status, 409)
+  assertEquals((await jsonOf(res)).error, 'managed_backup_login_needs_daemon_update')
+  assertEquals(inserted, [])
+})
+
+test('POST backup-login refuses a second backup login on the cluster', async () => {
+  const { res, inserted } = await postBackupLogin(
+    { allowedSources: ['internal'] },
+    BACKUP_FEATURES,
+    [backupLoginRow()]
+  )
+  await expectJson(res, 409, {
+    error: 'managed_backup_login_exists',
+    message: 'This cluster already has a backup login. Delete it first to make a new one.',
+  })
+  assertEquals(inserted, [])
+})
+
+// The fake db has no organization CA, so the apply step after the insert may
+// still answer an error: this test judges only the row that was written.
+test('POST backup-login stores a panel-set backup tool login limited to its places', async () => {
+  const { inserted } = await postBackupLogin({ allowedSources: ['internal'] })
+  assertEquals(inserted.length, 1)
+  const row = inserted[0]
+  assertEquals(row.role, 'backup')
+  assertEquals(row.recipe, 'backup')
+  assertEquals(row.grantMode, 'recipe')
+  assertEquals(row.username, 'backup')
+  assertEquals(row.isTool, true)
+  assertEquals(row.isAllDatabases, true)
+  assertEquals(row.privileges, [])
+  assertEquals(row.allowedSources, ['internal'])
+  const named = await postBackupLogin({ allowedSources: ['internal'], username: 'nightly' })
+  assertEquals(named.inserted[0]?.username, 'nightly')
+})
+
+test('DELETE backup-login answers 404 when the cluster has none', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()], loginRows: [loginRow()] }),
+  })
+  await expectJson(
+    await app.request(envPath('/backup-login'), {
+      method: 'DELETE',
+      headers: authHeaders(cookie),
+    }),
+    404,
+    { error: 'Not found' }
+  )
+})
+
+test('POST backup-login answers 409, not 500, when a create racing it took the one backup login', async () => {
+  const { db, commandQueue } = recordingUserCreate(PRIMARY_ONLY, {
+    serverRows: [serverAdvertising(BACKUP_FEATURES)],
+  })
+  // The unique index refuses the insert: the shape postgres.js gives drizzle.
+  const raced = {
+    ...db,
+    transaction: () =>
+      Promise.reject(
+        Object.assign(
+          new Error('duplicate key value violates unique constraint "uniq_login_managed_backup"'),
+          { code: '23505' }
+        )
+      ),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db: raced, registry: stubRegistry(), commandQueue })
+  const res = await app.request(envPath('/backup-login'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ allowedSources: ['internal'] }),
+  })
+  await expectJson(res, 409, {
+    error: 'managed_backup_login_exists',
+    message: 'This cluster already has a backup login. Delete it first to make a new one.',
+  })
+})
+
+test('POST backup-login lets any other database error through', async () => {
+  const { db, commandQueue } = recordingUserCreate(PRIMARY_ONLY, {
+    serverRows: [serverAdvertising(BACKUP_FEATURES)],
+  })
+  const broken = {
+    ...db,
+    transaction: () =>
+      Promise.reject(
+        Object.assign(new Error('duplicate key value violates unique constraint "other"'), {
+          code: '23505',
+        })
+      ),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db: broken, registry: stubRegistry(), commandQueue })
+  const res = await app.request(envPath('/backup-login'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({ allowedSources: ['internal'] }),
+  })
+  assertEquals(res.status, 500)
 })

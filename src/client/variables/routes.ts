@@ -9,6 +9,7 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { variable } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { buildEnvSaveProblem } from '../../features/compose/build-env.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -43,6 +44,7 @@ import {
   switchingSecretRequiresValue,
   trimVariableValueOnWrite,
   variableKeyUniqueConflictMessage,
+  variableReferenceProblem,
   variableValueProblem,
   type ParsedVariableParent,
 } from './routes-helpers.ts'
@@ -106,6 +108,7 @@ async function sealVariableValue(c: Context<AppEnv>, value: string): Promise<str
 type ExistingVariableForPatch = {
   isSecret: boolean
   value: string
+  isForBuild: boolean
 }
 
 type VariablePatchFields = {
@@ -150,6 +153,24 @@ async function sealOrPlainValue(
   return await sealVariableValue(c, plaintext)
 }
 
+/** The save checks for a database reference, on what the variable will hold after the patch. */
+function patchReferenceProblem(
+  body: Record<string, unknown>,
+  existing: ExistingVariableForPatch,
+  nextIsSecret: boolean,
+  updateFields: VariablePatchFields
+): string | null {
+  let candidate = existing.isSecret ? '' : existing.value
+  if (body.value !== undefined) {
+    candidate = typeof body.value === 'string' ? trimVariableValueOnWrite(body.value) : ''
+  }
+  return variableReferenceProblem(
+    candidate,
+    nextIsSecret,
+    updateFields.isForBuild ?? existing.isForBuild
+  )
+}
+
 async function applyValueAndSecretPatch(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
@@ -159,6 +180,8 @@ async function applyValueAndSecretPatch(
 ): Promise<Response | undefined> {
   const valueProvided = body.value !== undefined
   const switchingToSecret = nextIsSecret && !existing.isSecret
+  const referenceProblem = patchReferenceProblem(body, existing, nextIsSecret, updateFields)
+  if (referenceProblem) return c.json({ error: referenceProblem }, 400)
 
   if (valueProvided) {
     if (body.value !== null && typeof body.value !== 'string') {
@@ -251,6 +274,19 @@ async function buildVariablePatchFields(
   return updateFields
 }
 
+/** Why a new variable's value or build flag cannot be saved, as one plain sentence, or null. */
+function variableCreateProblem(
+  value: string,
+  key: string,
+  flags: Readonly<{ isSecret: boolean; forBuild: boolean }>
+): string | null {
+  return (
+    variableValueProblem(value) ??
+    variableReferenceProblem(value, flags.isSecret, flags.forBuild) ??
+    buildEnvSaveProblem(key, flags.forBuild)
+  )
+}
+
 type VariableCreateFields = {
   parent: ParsedVariableParent
   key: string
@@ -309,7 +345,7 @@ async function parseVariableCreateFields(
   if (parsedDescription instanceof Response) return parsedDescription
 
   const plaintextValue = trimVariableValueOnWrite(parsedValue ?? '')
-  const valueProblem = variableValueProblem(plaintextValue)
+  const valueProblem = variableCreateProblem(plaintextValue, key, { isSecret, forBuild })
   if (valueProblem) return c.json({ error: valueProblem }, 400)
   const storedValue = await sealOrPlainValue(c, plaintextValue, isSecret)
   if (storedValue instanceof Response) return storedValue
@@ -570,6 +606,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       .select({
         isSecret: variable.isSecret,
         value: variable.value,
+        isForBuild: variable.isForBuild,
       })
       .from(variable)
       .where(eq(variable.id, id))

@@ -28,9 +28,9 @@ import {
 } from '../../features/compose/compile-runtime.ts'
 import { sha256HexUtf8 } from '../../features/compose/desired-hash.ts'
 import { deployInputsDigest } from './deploy-inputs-digest.ts'
+import { sealPrincipalPasswordHashes } from './deploy-principal-password-seal.ts'
 import {
   parseOrganizationOptions,
-  resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveComposeRemoteBuildSourcesEnabled,
@@ -40,11 +40,16 @@ import {
   type ApplyVariablesError,
   type ApplyVariablesResult,
   applyVariablesToComposeDocument,
+  type DbRefLookup,
   type DeployVariableEntry,
   type DeployVariableMaterial,
   isApplyVariablesError,
   type VariableScopeEntryMap,
 } from '../../features/compose/apply-variables.ts'
+import type {
+  DeployConfigFileEntry,
+  DeployConfigSecretRef,
+} from '../../features/compose/config-files.ts'
 import type { DeploySecretPlanEntry } from '../../features/compose/secret-files.ts'
 import {
   type ComposeDeployValidationError,
@@ -111,6 +116,8 @@ import {
   shellForAccessLevel,
 } from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
+import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
+import { resolveDeployNameLock } from '../../features/tunnels/name-lock.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
   type NativeAppNodeVersionView,
@@ -129,6 +136,13 @@ import {
 } from './deploy-deno-gate.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import {
+  renderSiteLifecycleForDeploy,
+  type SiteLifecycleUnsupportedError,
+  siteLifecycleUnowned,
+  siteLifecycleUnsupported,
+  sitesCarryLifecycle,
+} from './deploy-site-lifecycle.ts'
+import {
   type NodeAppModeFeatureError,
   withCustomNodeAppModes,
 } from './deploy-node-app-mode-gate.ts'
@@ -138,7 +152,28 @@ import {
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
 } from '../../features/bindings/host-run.ts'
-import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
+import {
+  ACME_ISSUE_FEATURE,
+  DEPLOY_CONFIG_FILES_FEATURE,
+  PHP_SITE_MODES_FEATURE,
+} from '../../lib/version-wire.ts'
+import { storedDaemonFeatures } from './destroy-data.ts'
+import { effectiveAccountLimits } from './account-limits.ts'
+import {
+  applyDeliveryToMap,
+  type CacheDelivery,
+  EMPTY_CACHE_DELIVERY,
+  NO_PROJECT_CACHES,
+  type PreparedProjectCaches,
+  prepareProjectCaches,
+  type ProjectCacheRefusal,
+  type CacheOverrideWarning,
+  withCacheHostingEnv,
+  withRedisExtension,
+} from './deploy-caches.ts'
+import { injectHelperPublishes } from '../../features/caches/reach.ts'
+import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
+import { getDaemonSealingKey } from '../../features/servers/daemon-sealing-key.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -154,6 +189,7 @@ import {
 } from '../../features/projects/project-options.ts'
 import {
   parseServiceOptions,
+  type ServiceOptions,
   resolveServiceInstances,
 } from '../../features/projects/service-options.ts'
 import { resolveRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
@@ -180,9 +216,10 @@ import type {
   EnvironmentDeployCronJob,
   EnvironmentDeployDockerNetwork,
   EnvironmentDeployFabricNetwork,
+  EnvironmentDeployCache,
+  EnvironmentDeployHelperReach,
   EnvironmentDeployHosting,
   EnvironmentDeployIngressService,
-  EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySite,
   EnvironmentDeploySitePrincipal,
@@ -214,7 +251,10 @@ import {
   storageCopy,
   tls,
 } from '../../db/schema.ts'
-import { loadHideWebServerNames } from '../../features/servers/web-server-settings.ts'
+import {
+  loadWebServerSettings,
+  webServerDeployFields,
+} from '../../features/servers/web-server-settings.ts'
 import {
   checkResourceLimits,
   parseResourceLimits,
@@ -230,6 +270,7 @@ import {
 import { inetAddressToString } from '../../lib/ip-address.ts'
 import { loadServerDatacenterAddress } from '../../features/net/private-endpoint.ts'
 import { reconcileServicesFromCompose } from '../../features/deploy/reconcile-services.ts'
+import { precheckHeldLetsEncrypt } from '../hostings/letsencrypt-held.ts'
 import { type ComposeHostingError, reconcileHostingsFromCompose } from './reconcile-hostings.ts'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -248,6 +289,13 @@ import {
   pickSolePrincipalId,
   reconcilePrincipalsFromCompose,
 } from '../principals/tenancies.ts'
+import {
+  type DbRefIssue,
+  dbRefLookupFor,
+  dropDbRefs,
+  loadBindingRefTable,
+  resolveDbRefsForService,
+} from '../../features/bindings/db-refs.ts'
 import {
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
@@ -319,6 +367,7 @@ export type DeployPrepareWarningCode =
   | 'site_principal_ambiguous'
   | 'site_managed_directory_unowned'
   | 'site_cron_unowned'
+  | 'site_lifecycle_unowned'
   | 'source_principal_ambiguous'
   | 'principal_alias_unknown'
   | 'principal_required_for_service_kind'
@@ -326,10 +375,15 @@ export type DeployPrepareWarningCode =
   | 'site_db_ca_unavailable'
   | 'php_series_not_installed'
   | 'compose_variable_unresolved'
+  | 'variable_db_ref_unresolved'
   | 'php_mode_not_allowed'
   | 'node_version_unresolved'
   | 'storage_service_removed'
   | 'reserved_host_port'
+  | 'config_file_ownership_ignored'
+  | 'cache_other_account'
+  | 'cache_other_server'
+  | 'cache_variable_overrides'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -480,6 +534,14 @@ export type { PreparedNativeAppService }
  * contract in `lib/commands/schemas.ts` is untouched.
  */
 export type PreparedDeployCompose = ServerDeployment & {
+  /** Project caches this server runs for the environment (absent: leave the host alone). */
+  caches?: EnvironmentDeployCache[]
+  /** Helper container ports opened to one account (absent: leave the host alone). */
+  helperReach?: EnvironmentDeployHelperReach[]
+  /** Origin service to host port, recorded on the deployment so a redeploy keeps it. */
+  helperPorts?: Record<string, number>
+  /** Origin service to the cache ids it gets, recorded for secret rehydrate. */
+  cacheConsumers?: Record<string, string[]>
   /**
    * Compiled runtime YAML (internal prepare output for hashing/preview).
    * Wire payloads use required `composeFiles` with `role: 'runtime'`.
@@ -507,6 +569,10 @@ export type PreparedDeployCompose = ServerDeployment & {
   envFile?: string
   /** File-only secret mounts (no plaintext). */
   secretPlan?: DeploySecretPlanEntry[]
+  /** Generated config files as parts (text and secret key names, no values). */
+  configFiles?: DeployConfigFileEntry[]
+  /** Secrets the generated files read; kept so a reboot can ask for their values. */
+  configSecretRefs?: DeployConfigSecretRef[]
   /**
    * What each native app's process gets as environment variables, for people:
    * every name, where it came from, and whether it reaches the process. Secret
@@ -560,7 +626,24 @@ export type NativeAppVariablesView = {
   variables: NativeAppVariableView[]
 }
 
+/** A generated config file the compose cannot compile, or the daemon cannot take. */
+export type ConfigFilesPrepareError =
+  | {
+      kind: 'config_interpolation' | 'config_file_invalid' | 'config_file_shared'
+      message: string
+      composeServiceName?: string
+      envKey?: string
+    }
+  | {
+      kind: 'config_files_need_daemon_update'
+      message: string
+      /** The servers whose daemon lacks `deploy-config-files-v1`. */
+      servers: Array<{ serverId: string; name: string }>
+    }
+
 export type DeployPrepareError =
+  | ConfigFilesPrepareError
+  | ProjectCacheRefusal
   | { kind: 'health_check'; required: boolean; services: string[] }
   /**
    * The merged effective document failed deploy-time compose validation.
@@ -631,9 +714,11 @@ export type DeployPrepareError =
   | ComposeHostingError
   | { kind: 'site_managed_directory_unowned'; composeServiceName: string }
   | { kind: 'site_cron_unowned'; composeServiceName: string }
+  | { kind: 'site_lifecycle_unowned'; composeServiceName: string }
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
   | SiteEngineFeatureError
+  | SiteLifecycleUnsupportedError
   /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
   | DenoAppFeatureError
   /** An app with a custom application mode goes to a daemon that would refuse it. */
@@ -738,12 +823,17 @@ async function emptyPreparedCompose(
 }
 
 type HardDeployPrepareError =
+  | ConfigFilesPrepareError
+  // Hard in preview too: a daemon without caches would refuse them, and a name clash is a real conflict.
+  | ProjectCacheRefusal
   | { kind: 'datacenter_ip_required'; serverId: string }
   // Hard in preview too: a PHP site cannot reach this database, however it is previewed.
   | { kind: 'binding_host_site_unsupported'; message: string }
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
   | SiteEngineFeatureError
+  // Hard in preview too: an older daemon would refuse the whole deploy.
+  | SiteLifecycleUnsupportedError
   // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
   | DenoAppFeatureError
   // Hard in preview too: an older daemon would refuse the whole deploy.
@@ -846,6 +936,12 @@ function warningFromPrepareError(
         message: `Site "${error.composeServiceName}" has scheduled jobs but no project principal to run them as.`,
         details: { composeServiceName: error.composeServiceName },
       }
+    case 'site_lifecycle_unowned':
+      return {
+        code: 'site_lifecycle_unowned',
+        message: `Site "${error.composeServiceName}" has post-deploy commands or background workers but no project principal to run them as.`,
+        details: { composeServiceName: error.composeServiceName },
+      }
     case 'source_principal_ambiguous':
       return {
         code: 'source_principal_ambiguous',
@@ -869,7 +965,7 @@ function warningFromPrepareError(
     case 'principal_required_for_service_kind':
       return {
         code: 'principal_required_for_service_kind',
-        message: `${error.serviceKind} service "${error.composeServiceName}" has no principal — declare one under x-turbopanel.principals and name it with x-turbopanel.principal.`,
+        message: `This ${error.serviceKind === 'site' ? 'site' : 'Node app'} ("${error.composeServiceName}") needs a Hosting Account. Add one under Bindings first.`,
         details: {
           composeServiceName: error.composeServiceName,
           serviceKind: error.serviceKind,
@@ -918,6 +1014,32 @@ async function resolveDaemonSealContext(
     dataEncryptionSecrets,
     recipient: { serverId, keyId: daemonState.key.id },
   }
+}
+
+/**
+ * The deploy's Hosting Accounts with their password hashes sealed for the
+ * daemon, or the material unchanged when no account has a hash, the deploy is a
+ * preview, or the server has no sealing key on file. The choice keys on the
+ * registered key, never on the unsigned hello `features` list (only a daemon
+ * with `daemon-sealed-secrets-v1` registers a key, and it signs the
+ * registration with the server's identity key).
+ */
+export async function sealPrincipalMaterialForDaemon(
+  c: Context<AppEnv>,
+  db: Db,
+  mode: DeployPrepareMode,
+  serverId: string,
+  material: EnvironmentDeployPrincipalMaterial[]
+): Promise<EnvironmentDeployPrincipalMaterial[] | Response> {
+  if (mode === 'preview' || material.every((entry) => entry.passwordHash === undefined)) {
+    return material
+  }
+  if (!(await getDaemonSealingKey(db, serverId))) return material
+  const sealing = await resolveDaemonSealContext(c, db, serverId)
+  if (sealing instanceof Response) return sealing
+  return await sealPrincipalPasswordHashes(material, (plaintext) =>
+    encryptSecretForDaemon(sealing.secretsConfig, sealing.recipient, plaintext)
+  )
 }
 
 async function sealVariableMaterialForDaemon(
@@ -1614,21 +1736,29 @@ async function resolveDeployVariableBuckets(
     /** Clone compose key → origin service row (same row for every clone). */
     serviceRowByComposeName: Map<string, ServiceRow>
     dataEncryptionSecrets: Parameters<typeof mapResolvedVariablesToDeployEntries>[1]
+    /** Project cache and helper entries, set after database references. */
+    cacheDelivery?: CacheDelivery
+    cacheWarnings?: Array<{ code: 'cache_variable_overrides'; key: string }>
   }
 ): Promise<{
   globalEntries: DeployVariableEntry[]
   perServiceEntries: Map<string, DeployVariableEntry[]>
   perServiceScopes: Map<string, VariableScopeEntryMap>
+  perServiceDbRefs: Map<string, DbRefLookup>
+  dbRefIssues: { errors: DbRefIssue[]; warnings: DbRefIssue[] }
 }> {
   const envVars = await resolveInheritedVariablesForEnvironment(db, params.environmentId)
   const serverVars = await resolveServerScopedVariables(db, params.serverId)
-  const fallbackGlobal = new Map([...envVars, ...serverVars])
+  const perServiceDbRefs = new Map<string, DbRefLookup>()
+  const dbRefIssues: { errors: DbRefIssue[]; warnings: DbRefIssue[] } = { errors: [], warnings: [] }
+  // No service row to read a binding from: a database reference is left out.
+  const fallbackGlobal = dropDbRefs(new Map([...envVars, ...serverVars]))
   const fallbackEntries = await mapResolvedVariablesToDeployEntries(
     fallbackGlobal,
     params.dataEncryptionSecrets
   )
   const serverScopeEntries = await mapResolvedVariablesToDeployEntries(
-    serverVars,
+    dropDbRefs(serverVars),
     params.dataEncryptionSecrets
   )
   const serverScopeMap = new Map(
@@ -1641,15 +1771,16 @@ async function resolveDeployVariableBuckets(
   const perServiceScopes = new Map<string, VariableScopeEntryMap>()
 
   if (composeServices.length === 0) {
-    return { globalEntries, perServiceEntries, perServiceScopes }
+    return { globalEntries, perServiceEntries, perServiceScopes, perServiceDbRefs, dbRefIssues }
   }
   if (params.serviceRowByComposeName.size === 0) {
     globalEntries.push(...fallbackEntries)
-    return { globalEntries, perServiceEntries, perServiceScopes }
+    return { globalEntries, perServiceEntries, perServiceScopes, perServiceDbRefs, dbRefIssues }
   }
 
   const userEntriesByServiceId = new Map<string, DeployVariableEntry[]>()
   const scopesByServiceId = new Map<string, VariableScopeEntryMap>()
+  const dbLookupByServiceId = new Map<string, DbRefLookup>()
 
   await forEachSequential(composeServices, async (composeServiceName) => {
     const row = params.serviceRowByComposeName.get(composeServiceName)
@@ -1662,24 +1793,39 @@ async function resolveDeployVariableBuckets(
         const bundle = await resolveInheritedVariableBundleForService(db, row.id)
         const hostingMap = await mergeHostingVariablesForService(db, row.id, bundle.inherited)
         await reapplyBindingOwnedVariables(db, row.id, bundle.inherited)
-        const mergedServer = new Map([...bundle.inherited, ...serverVars])
-        const scopeMaps: ResolvedVariableScopes = {
-          ...bundle.scopes,
-          hosting: hostingMap,
-          server: serverVars,
-        }
+        const refTable = await loadBindingRefTable(db, row.id)
+        const expanded = resolveDbRefsForService(refTable, {
+          merged: new Map([...bundle.inherited, ...serverVars]),
+          scopes: { ...bundle.scopes, hosting: hostingMap, server: serverVars },
+          ownScopeKeys: new Set([...(bundle.scopes.service?.keys() ?? []), ...hostingMap.keys()]),
+          serviceName: composeServiceName,
+        })
+        dbRefIssues.errors.push(...expanded.errors)
+        dbRefIssues.warnings.push(...expanded.warnings)
+        await applyDeliveryToMap(
+          params.dataEncryptionSecrets,
+          params.cacheDelivery ?? EMPTY_CACHE_DELIVERY,
+          row.composeServiceName,
+          expanded.merged,
+          params.cacheWarnings ?? []
+        )
         cached = tagVariableSources(
-          await mapResolvedVariablesToDeployEntries(mergedServer, params.dataEncryptionSecrets),
-          scopeMaps
+          await mapResolvedVariablesToDeployEntries(expanded.merged, params.dataEncryptionSecrets),
+          expanded.scopes
         )
         cachedScopes = await mapResolvedScopesToDeployEntries(
-          scopeMaps,
+          expanded.scopes,
           params.dataEncryptionSecrets
         )
-        cachedScopes.server = serverScopeMap
         userEntriesByServiceId.set(row.id, cached)
         scopesByServiceId.set(row.id, cachedScopes)
+        dbLookupByServiceId.set(
+          row.id,
+          dbRefLookupFor(refTable, new Map(cached.map((entry) => [entry.key, entry])))
+        )
       }
+      const dbLookup = dbLookupByServiceId.get(row.id)
+      if (dbLookup) perServiceDbRefs.set(composeServiceName, dbLookup)
       userEntries = cached
       scopes = cachedScopes
     } else {
@@ -1689,7 +1835,24 @@ async function resolveDeployVariableBuckets(
     perServiceEntries.set(composeServiceName, userEntries)
     perServiceScopes.set(composeServiceName, scopes)
   })
-  return { globalEntries, perServiceEntries, perServiceScopes }
+  return { globalEntries, perServiceEntries, perServiceScopes, perServiceDbRefs, dbRefIssues }
+}
+
+/** The first database-reference error as the prepare error a deploy returns, or null. */
+function dbRefPrepareError(errors: readonly DbRefIssue[]): DeployPrepareError | null {
+  const first = errors[0]
+  if (!first) return null
+  if (first.code === 'variable_ref_invalid')
+    return { kind: 'variable_ref_invalid', message: first.message }
+  return { kind: 'variable_unresolved', message: first.message, ref: first.ref }
+}
+
+function dbRefWarnings(list: readonly DbRefIssue[]): DeployPrepareWarning[] {
+  return list.map((issue) => ({
+    code: 'variable_db_ref_unresolved',
+    message: issue.message,
+    details: { variable: issue.key, reference: issue.ref },
+  }))
 }
 
 async function mapResolvedScopesToDeployEntries(
@@ -2042,35 +2205,6 @@ function localManagedNetworkServiceNames(
   return boundLogicalNames.filter(
     (name) => coResidentNames?.has(name) === true || !remoteHostsByService.has(name)
   )
-}
-
-/**
- * Effective (most restrictive) org ∩ server ceiling for one account.
- *
- * The per-principal systemd slice is generated from this, so a per-app
- * `CPUQuota` can never add up to more than the account is entitled to. Absent
- * fields stay absent — an unset limit means "no slice directive", not zero.
- */
-function effectiveAccountLimits(
-  orgOptions: unknown,
-  serverOptions: unknown
-): EnvironmentDeployNativeAppService['accountLimits'] | undefined {
-  const orgLimits =
-    parseResourceLimits(isPlainObject(orgOptions) ? orgOptions.resourceLimits : null) ?? {}
-  const serverLimits =
-    parseResourceLimits(isPlainObject(serverOptions) ? serverOptions.resourceLimits : null) ?? {}
-  const pick = (a?: number, b?: number): number | undefined => {
-    if (a === undefined) return b
-    if (b === undefined) return a
-    return Math.min(a, b)
-  }
-  const cpus = pick(orgLimits.maxCpus, serverLimits.maxCpus)
-  const memoryBytes = pick(orgLimits.maxMemoryBytes, serverLimits.maxMemoryBytes)
-  if (cpus === undefined && memoryBytes === undefined) return undefined
-  return {
-    ...(cpus === undefined ? {} : { cpus }),
-    ...(memoryBytes === undefined ? {} : { memoryBytes }),
-  }
 }
 
 /**
@@ -2483,9 +2617,8 @@ async function resolveBindingMaterializationOutcome(
     bindResult.kind === 'binding_endpoint_unavailable' ||
     bindResult.kind === 'datacenter_ip_required' ||
     bindResult.kind === 'private_path_unavailable' ||
-    // `client-backend` never raises this; listed so the mapping over
-    // `PrivateEndpointError` stays total.
-    bindResult.kind === 'failover_requires_trusted_datacenter'
+    // An untrusted-only pair with nothing to ride; still a soft binding error.
+    bindResult.kind === 'untrusted_network_needs_fabric'
 
   const error: DeployPrepareError = { kind: 'binding_endpoint_unavailable' }
   if (isSoftBindingError) {
@@ -2853,6 +2986,11 @@ async function toPreparedDeployResult(
     variableMaterial: EnvironmentDeployVariableMaterial[]
     storageMaterial: EnvironmentDeployStorageMaterial[]
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    /**
+     * The accounts before their password hashes are sealed (a sealed envelope
+     * carries a fresh nonce on every send). The hash compares these.
+     */
+    hashPrincipalMaterial?: EnvironmentDeployPrincipalMaterial[]
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
     nativeAppVariables?: NativeAppVariablesView[]
@@ -2879,7 +3017,10 @@ async function toPreparedDeployResult(
     replicaCounts: Record<string, number>
     envFile?: string
     secretPlan?: DeploySecretPlanEntry[]
+    configFiles?: DeployConfigFileEntry[]
+    configSecretRefs?: DeployConfigSecretRef[]
     sourceSelection?: DeploySourceSelection
+    projectCaches?: PreparedProjectCaches
     /**
      * The variables and storage as they are before they are sealed for the
      * daemon (sealing adds a fresh nonce on every send), so the hash compares
@@ -2898,7 +3039,10 @@ async function toPreparedDeployResult(
       parts.composeYaml,
       parts.sourceMaterial,
       parts.nativeAppServices,
-      deployHashInputs(parts)
+      deployHashInputs({
+        ...parts,
+        principalMaterial: parts.hashPrincipalMaterial ?? parts.principalMaterial,
+      })
     ),
     replicaCounts: parts.replicaCounts,
     hooks: parts.hooks,
@@ -2932,17 +3076,90 @@ async function toPreparedDeployResult(
     ...(parts.edge?.hideWebServerNames === undefined
       ? {}
       : { hideWebServerNames: parts.edge.hideWebServerNames }),
+    ...(parts.edge?.sendViaHeader === undefined ? {} : { sendViaHeader: parts.edge.sendViaHeader }),
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
     ...(parts.envFile !== undefined ? { envFile: parts.envFile } : {}),
     ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
+    ...nonEmptyListField('configFiles', parts.configFiles),
+    ...nonEmptyListField('configSecretRefs', parts.configSecretRefs),
     ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
+    ...projectCacheFields(parts.projectCaches ?? NO_PROJECT_CACHES),
   }
+}
+
+/** The cache fields a prepared deploy carries; absent stays absent. */
+function projectCacheFields(
+  state: PreparedProjectCaches
+): Pick<PreparedDeployCompose, 'caches' | 'helperReach' | 'helperPorts' | 'cacheConsumers'> {
+  return {
+    ...(state.caches === undefined ? {} : { caches: state.caches }),
+    ...(state.helperReach === undefined ? {} : { helperReach: state.helperReach }),
+    // Left out when empty, so an environment with no caches records what it always did.
+    ...(Object.keys(state.helperPorts).length === 0 ? {} : { helperPorts: state.helperPorts }),
+    ...(Object.keys(state.cacheConsumers).length === 0
+      ? {}
+      : { cacheConsumers: state.cacheConsumers }),
+  }
+}
+
+/** The server this slice compiles for, named the way people know it. */
+async function namedServer(db: Db, serverId: string): Promise<{ serverId: string; name: string }> {
+  const [row] = await db
+    .select({ name: server.name, hostname: server.hostname })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  return { serverId, name: row?.name?.trim() || row?.hostname || serverId }
+}
+
+/** Refuses commands or workers for a server whose daemon cannot run them; names the server only then. */
+async function withSiteLifecycleGate(
+  db: Db,
+  serverId: string,
+  sites: readonly EnvironmentDeploySite[],
+  features: readonly string[]
+): Promise<SiteLifecycleUnsupportedError | undefined> {
+  if (!sitesCarryLifecycle(sites)) return undefined
+  return siteLifecycleUnsupported(sites, features, await namedServer(db, serverId))
+}
+
+/** A list as a one-key object, or nothing when it is absent or empty (keeps old hashes and payloads as they were). */
+function nonEmptyListField<K extends string, T>(
+  key: K,
+  list: readonly T[] | undefined
+): Partial<Record<K, T[]>> {
+  if (list === undefined || list.length === 0) return {}
+  return { [key]: [...list] } as Partial<Record<K, T[]>>
+}
+
+/** The prepare error for a failed variable pass; the daemon gate names this slice's server. */
+async function variablesPrepareFailure(
+  db: Db,
+  serverId: string,
+  error: ApplyVariablesError
+): Promise<DeployPrepareError> {
+  const prepareError = toApplyVariablesPrepareError(error)
+  if (prepareError.kind !== 'config_files_need_daemon_update') return prepareError
+  return { ...prepareError, servers: [await namedServer(db, serverId)] }
+}
+
+function configFileWarnings(
+  list: ReadonlyArray<{ composeServiceName: string; source: string; message: string }>
+): DeployPrepareWarning[] {
+  return list.map((warning) => ({
+    code: 'config_file_ownership_ignored',
+    message: warning.message,
+    details: { composeServiceName: warning.composeServiceName, config: warning.source },
+  }))
 }
 
 function toApplyVariablesPrepareError(error: ApplyVariablesError): DeployPrepareError {
   const { kind, message, ref, composeServiceName, envKey } = error
+  if (kind === 'config_files_need_daemon_update') {
+    return { kind, message, servers: [] }
+  }
   if (kind === 'variable_unresolved') {
     return {
       kind,
@@ -3170,6 +3387,19 @@ async function reconcileComposeDeclaredRows(
   if (!hostingReconcile.ok) {
     return { ok: false, failure: hostingReconcile.error }
   }
+  // Routes asking for Let's Encrypt pin nothing until the certificate
+  // pre-check passes, the same hold as a hostname added in the Hosting tab.
+  // Checked here, after the reconcile's transaction and before the fan-out
+  // reads the rows, so a name that is ready goes out with this deploy. A
+  // preview never probes; the sweep checks what it leaves waiting.
+  if (args.mode !== 'preview') {
+    await precheckHeldLetsEncrypt(
+      db,
+      args.organizationId,
+      hostingReconcile.letsEncryptWaiting,
+      c.get('letsEncryptPrecheck')
+    )
+  }
 
   // Re-materialize bindings so endpoint / CA / topology drift is picked up.
   const bindingOutcome = await resolveBindingMaterializationOutcome(
@@ -3261,6 +3491,13 @@ async function resolveManagedNetworkHostName(
     organizationId,
   })
   return network.hostName
+}
+
+/** A prepare step answered with a refusal (a `Response` or a `DeployPrepareError`) instead of its value. */
+function isPrepareStop<T>(value: T): value is Extract<T, Response | DeployPrepareError> {
+  return (
+    value instanceof Response || (typeof value === 'object' && value !== null && 'kind' in value)
+  )
 }
 
 /**
@@ -3425,6 +3662,13 @@ async function resolveLocalSitesBoundForDeploy(
   const localSite = sitesOnScheduledServer(siteResolved, args.pipeline.localServiceNames)
   const engineGate = await withSiteEngineFeature(db, args.params.serverId, localSite)
   if ('kind' in engineGate) return engineGate
+  const lifecycleGate = await withSiteLifecycleGate(
+    db,
+    args.params.serverId,
+    localSite,
+    phpDaemonState?.projection?.features ?? []
+  )
+  if (lifecycleGate) return lifecycleGate
   const dbBindingWarnings: SiteDbBindingsWarning[] = []
   const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
     organizationId: args.params.organizationId,
@@ -3504,6 +3748,164 @@ async function allocateResolvedDeployPipelineForPrepare(
   if (gateErr) return gateErr
 
   return { pipeline, resolved }
+}
+
+/**
+ * Resolve every variable of the deploy (expanding database references against
+ * each service's own bindings), then inject them into the compiled document.
+ * Returns the prepare error to stop with, or the result.
+ */
+async function applyDeployVariables(
+  c: Context<AppEnv>,
+  db: Db,
+  input: {
+    params: { environmentId: string; serverId: string }
+    pipeline: Pick<
+      DeployExpandPipeline,
+      | 'expandedDocument'
+      | 'expandedServiceNames'
+      | 'expansion'
+      | 'localServiceNames'
+      | 'localReplicaCounts'
+    >
+    serviceRows: ServiceRow[]
+    projectId: string
+    warnings: DeployPrepareWarning[]
+    cacheDelivery: CacheDelivery
+  }
+): Promise<ApplyVariablesResult | DeployPrepareError> {
+  const { params, pipeline, warnings } = input
+  const cacheWarnings: Array<{ code: 'cache_variable_overrides'; key: string }> = []
+  const serviceRowByCloneName = buildServiceRowByCloneName(input.serviceRows, pipeline.expansion)
+  const {
+    globalEntries,
+    perServiceEntries: userPerService,
+    perServiceScopes,
+    perServiceDbRefs,
+    dbRefIssues,
+  } = await resolveDeployVariableBuckets(db, {
+    environmentId: params.environmentId,
+    serverId: params.serverId,
+    composeServiceNames: pipeline.expandedServiceNames,
+    serviceRowByComposeName: serviceRowByCloneName,
+    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+    cacheDelivery: input.cacheDelivery,
+    cacheWarnings,
+  })
+  const dbRefError = dbRefPrepareError(dbRefIssues.errors)
+  if (dbRefError) return dbRefError
+  warnings.push(...dbRefWarnings(dbRefIssues.warnings))
+  for (const key of new Set(cacheWarnings.map((entry) => entry.key))) {
+    warnings.push({
+      code: 'cache_variable_overrides',
+      message: `A project cache sets ${key}, which replaces the value from a wider scope.`,
+      details: { variable: key },
+    })
+  }
+
+  const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
+    globalEntries,
+    perServiceEntries: stripReservedKeysFromEntries(userPerService),
+    perServiceScopes,
+    perServiceDbRefs,
+    nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
+    projectId: input.projectId,
+    environmentId: params.environmentId,
+    configFilesEnabled: (await storedDaemonFeatures(db, params.serverId)).includes(
+      DEPLOY_CONFIG_FILES_FEATURE
+    ),
+  })
+  if (isApplyVariablesError(withVariables)) {
+    return await variablesPrepareFailure(db, params.serverId, withVariables)
+  }
+  warnings.push(...configFileWarnings(withVariables.configWarnings))
+  return withVariables
+}
+
+/** Project caches and helper reach for this server; its warnings join the deploy's. */
+async function prepareCachesStep(
+  db: Db,
+  input: Parameters<typeof prepareProjectCaches>[1],
+  warnings: DeployPrepareWarning[]
+): Promise<PreparedProjectCaches | ProjectCacheRefusal> {
+  const state = await prepareProjectCaches(db, input)
+  if ('kind' in state) return state
+  warnings.push(
+    ...state.warnings.map((warning) => ({
+      ...warning,
+      code: warning.code as DeployPrepareWarningCode,
+    }))
+  )
+  return state
+}
+
+/** What the host runs for caches, not the loopback port picked for a helper later; empty when none. */
+/** Plain-words warnings for cache names that replaced an inherited variable (names only). */
+function cacheOverrideWarnings(list: readonly CacheOverrideWarning[]): DeployPrepareWarning[] {
+  return [...new Set(list.map((entry) => entry.key))].map((key) => ({
+    code: 'cache_variable_overrides',
+    message: `A project cache sets ${key}, which replaces the value from a wider scope.`,
+    details: { variable: key },
+  }))
+}
+
+function cacheHashInputs(state: PreparedProjectCaches): Record<string, unknown> {
+  return {
+    ...(state.caches?.length ? { caches: state.caches } : {}),
+    ...(state.helperReach?.length
+      ? {
+          helperReach: state.helperReach.map(({ composeServiceName, containerPort, username }) => ({
+            composeServiceName,
+            containerPort,
+            username,
+          })),
+        }
+      : {}),
+  }
+}
+
+type CachesAndVariablesInput = Omit<Parameters<typeof applyDeployVariables>[2], 'cacheDelivery'> & {
+  application: Application
+  principalResolution: ComposePrincipalResolution
+  orgOptions: unknown
+  serverOptions: unknown
+}
+
+/** Caches and helper reach first (their variables are set after everything else), then every variable. */
+async function prepareCachesAndVariables(
+  c: Context<AppEnv>,
+  db: Db,
+  input: CachesAndVariablesInput
+): Promise<
+  | { cacheState: PreparedProjectCaches; withVariables: ApplyVariablesResult }
+  | ProjectCacheRefusal
+  | DeployPrepareError
+> {
+  const { application, principalResolution, orgOptions, serverOptions, ...variableInput } = input
+  const cacheState = await prepareCachesStep(
+    db,
+    {
+      environmentId: input.params.environmentId,
+      serverId: input.params.serverId,
+      secrets: c.get('dataEncryptionSecrets'),
+      application,
+      serviceRows: input.serviceRows,
+      principalResolution,
+      localServiceNames: input.pipeline.localServiceNames,
+      expansion: input.pipeline.expansion,
+      localReplicaCounts: input.pipeline.localReplicaCounts,
+      orgOptions,
+      serverOptions,
+    },
+    input.warnings
+  )
+  if ('kind' in cacheState) return cacheState
+  const withVariables = await applyDeployVariables(c, db, {
+    ...variableInput,
+    cacheDelivery: cacheState.delivery,
+  })
+  if ('kind' in withVariables) return withVariables
+  return { cacheState, withVariables }
 }
 
 export async function prepareDeployCompose(
@@ -3606,37 +4008,24 @@ export async function prepareDeployCompose(
     application,
     principalResolution,
   })
-  if ('kind' in pipelineResolved || pipelineResolved instanceof Response) {
+  if (isPrepareStop(pipelineResolved)) {
     return pipelineResolved
   }
   const { pipeline, resolved } = pipelineResolved
 
-  const serviceRowByCloneName = buildServiceRowByCloneName(serviceRows, pipeline.expansion)
-  const {
-    globalEntries,
-    perServiceEntries: userPerService,
-    perServiceScopes,
-  } = await resolveDeployVariableBuckets(db, {
-    environmentId: params.environmentId,
-    serverId: params.serverId,
-    composeServiceNames: pipeline.expandedServiceNames,
-    serviceRowByComposeName: serviceRowByCloneName,
-    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
-  })
-
-  const perServiceEntries = stripReservedKeysFromEntries(userPerService)
-
-  const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
-    globalEntries,
-    perServiceEntries,
-    perServiceScopes,
-    nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
+  const caching = await prepareCachesAndVariables(c, db, {
+    params,
+    pipeline,
+    serviceRows,
     projectId: envRow.projectId,
-    environmentId: params.environmentId,
+    warnings,
+    application,
+    principalResolution,
+    orgOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
   })
-  if (isApplyVariablesError(withVariables)) {
-    return toApplyVariablesPrepareError(withVariables)
-  }
+  if ('kind' in caching) return caching
+  const { cacheState, withVariables } = caching
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
     pipeline.optionsByComposeName,
@@ -3720,7 +4109,7 @@ export async function prepareDeployCompose(
     tasksByComposeName,
   })
   if ('kind' in localSiteBoundOrError) return localSiteBoundOrError
-  const localSiteBound = localSiteBoundOrError
+  const localSiteBound = withRedisExtension(localSiteBoundOrError, cacheState.delivery)
 
   const nativeLanes = await resolveLocalNativeAppsAndRuntimes(c, db, {
     mode,
@@ -3738,7 +4127,7 @@ export async function prepareDeployCompose(
     tasksByComposeName,
     localServiceNames: pipeline.localServiceNames,
   })
-  if ('kind' in nativeLanes || nativeLanes instanceof Response) {
+  if (isPrepareStop(nativeLanes)) {
     return nativeLanes
   }
   const { nativeVariables, localSourceMaterial, nodeVersions } = nativeLanes
@@ -3778,6 +4167,8 @@ export async function prepareDeployCompose(
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,
   })
+  // A reach container missing from the document is the host's to refuse: it names the entry.
+  injectHelperPublishes(compiled.document.data, cacheState.helperReach ?? [])
   const expansion = overlayCompiledExpansion(pipeline.expansion, compiled.expansion)
   const managedNetworkServices = applyExpansionToNames(managedLogicalNames, expansion)
   const managedNetwork = await resolveManagedNetworkHostName(
@@ -3799,12 +4190,22 @@ export async function prepareDeployCompose(
     serverId: params.serverId,
     expansion: expansionToRecord(expansion),
     storageMaterial,
+    cacheDelivery: cacheState.delivery,
+    warnings,
   })
-  if (edge instanceof Response) return edge
-  if ('kind' in edge) return edge
+  if (isPrepareStop(edge)) return edge
 
   const sourceMaterial = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
   if (!Array.isArray(sourceMaterial)) return toApplyVariablesPrepareError(sourceMaterial)
+
+  const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
+    c,
+    db,
+    mode,
+    params.serverId,
+    principalMaterial
+  )
+  if (sealedPrincipalMaterial instanceof Response) return sealedPrincipalMaterial
 
   return await toPreparedDeployResult(mode, {
     serverId: resolved.serverId,
@@ -3813,15 +4214,23 @@ export async function prepareDeployCompose(
       : {
           hashInputs: {
             secretVariables: withVariables.secretMaterial,
+            // The compiled YAML names only the file path, so the parts are what
+            // tells a changed text-only config from an unchanged one.
+            // Left out when there are none, so an environment without generated
+            // files keeps the hash it already has.
+            ...nonEmptyListField('configFiles', withVariables.configFiles),
             storage: storageMaterialRaw,
+            ...cacheHashInputs(cacheState),
           },
         }),
+    projectCaches: cacheState,
     composeYaml,
     composeFiles,
     hooks,
     variableMaterial,
     storageMaterial,
-    principalMaterial,
+    principalMaterial: sealedPrincipalMaterial,
+    hashPrincipalMaterial: principalMaterial,
     sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
@@ -3842,6 +4251,8 @@ export async function prepareDeployCompose(
     replicaCounts: replicaCountsFromMap(pipeline.localReplicaCounts),
     envFile: withVariables.envFileContent,
     secretPlan: withVariables.secretPlan,
+    configFiles: withVariables.configFiles,
+    configSecretRefs: withVariables.configSecretRefs,
     sourceSelection: params.sourceSelection,
   })
 }
@@ -3849,7 +4260,11 @@ export async function prepareDeployCompose(
 /** Why one site could not be pinned to a principal. */
 export type SitePrincipalError =
   | {
-      kind: 'site_principal_ambiguous' | 'site_managed_directory_unowned' | 'site_cron_unowned'
+      kind:
+        | 'site_principal_ambiguous'
+        | 'site_managed_directory_unowned'
+        | 'site_cron_unowned'
+        | 'site_lifecycle_unowned'
       composeServiceName: string
     }
   | {
@@ -3925,7 +4340,8 @@ function prepareSiteForDeploy(
   principalById: ReadonlyMap<string, EnvironmentDeployPrincipalMaterial>,
   /** `principal.id` the service's declared alias resolved to, if it declared one. */
   declared: { alias: string; principalId: string | undefined } | undefined,
-  tasks: readonly TaskRecord[] = []
+  tasks: readonly TaskRecord[] = [],
+  options: ServiceOptions | undefined = undefined
 ):
   | { ok: true; site: EnvironmentDeploySite }
   | {
@@ -3958,6 +4374,11 @@ function prepareSiteForDeploy(
   const cron = renderCronForDeploy(authoredCron, tasks)
   // A timer with no `User=` runs as root; the wire refuses that.
   if (cron.length > 0 && !principalPin) return fail('site_cron_unowned')
+  // Commands and workers run as the site's account, never as root.
+  const lifecycle = renderSiteLifecycleForDeploy(options, site.sourceKind)
+  if (siteLifecycleUnowned(lifecycle, principalPin !== undefined)) {
+    return fail('site_lifecycle_unowned')
+  }
 
   return {
     ok: true,
@@ -3965,6 +4386,7 @@ function prepareSiteForDeploy(
       ...rest,
       ...(php ? { php } : {}),
       ...(cron.length > 0 ? { cron } : {}),
+      ...lifecycle,
       ...(principalPin ? { principal: principalPin } : {}),
     },
   }
@@ -3980,7 +4402,7 @@ function prepareSiteForDeploy(
 export async function attachPrincipalsToSites(
   db: Db,
   environmentId: string,
-  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>,
+  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string; options?: unknown }>,
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
   sites: readonly SiteSpec[],
   principalResolution: ComposePrincipalResolution,
@@ -3991,8 +4413,11 @@ export async function attachPrincipalsToSites(
   const principalById = new Map(principalMaterial.map((entry) => [entry.principalId, entry]))
   const principalIdsByServiceId = await loadPrincipalIdsByServiceIdForEnvironment(db, environmentId)
   const serviceIdByComposeName = new Map<string, string>()
+  const optionsByComposeName = new Map<string, ServiceOptions>()
   for (const row of serviceRows) {
     serviceIdByComposeName.set(row.composeServiceName, row.id)
+    const options = parseServiceOptions(row.options)
+    if (options) optionsByComposeName.set(row.composeServiceName, options)
   }
 
   const out: EnvironmentDeploySite[] = []
@@ -4010,7 +4435,8 @@ export async function attachPrincipalsToSites(
             alias,
             principalId: principalResolution.principalIdByAlias.get(alias),
           },
-      tasksByComposeName.get(site.composeServiceName)
+      tasksByComposeName.get(site.composeServiceName),
+      optionsByComposeName.get(site.composeServiceName)
     )
     if (!prepared.ok) return prepared.error
     out.push(prepared.site)
@@ -4218,6 +4644,8 @@ function isTlsSource(value: string): value is TlsSource {
 type OrgTlsCandidate = TlsCandidate & {
   certificatePem: string | null
   privateKeyPem: string | null
+  /** The stored pair was ordered by a serving server at the panel's request (see `http-issuance`). */
+  httpCentralPair?: boolean
 }
 
 export type HostingTlsWire =
@@ -4229,7 +4657,7 @@ export type HostingTlsWire =
  * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
  * fall back to `tls internal`, and they are excluded from `tlsMaterial`.
  *
- * `acmeEnabled` is the org's gate (`organization.options.acmeEnabled`, on for
+ * `acmeEnabled` is the org's gate (`organization.is_acme_enabled`, off for
  * new organizations) — checked here as defense in depth even though `POST
  * /tls` and the compose reconcile already refuse while the org is opted out,
  * because an `automatic` row can predate the org later disabling the gate.
@@ -4239,6 +4667,12 @@ export function hostingTlsWireFromResolved(params: {
   status: TlsStatus | undefined
   bindScope: HostingBindScope
   acmeEnabled: boolean
+  /**
+   * The row holds a pair this panel had a server order for it and the target
+   * daemon takes it as a pinned certificate: send the pair, and the server's own
+   * web server stops ordering. Never true for a pair a server captured itself.
+   */
+  centralPair?: boolean
 }): HostingTlsWire {
   if (params.status !== 'automatic') {
     return { ok: true, tlsId: params.tlsId }
@@ -4249,6 +4683,7 @@ export function hostingTlsWireFromResolved(params: {
   if (params.bindScope === 'local' || params.bindScope === 'datacenter') {
     return { ok: false, error: 'acme_requires_public_bind' }
   }
+  if (params.centralPair === true) return { ok: true, tlsId: params.tlsId }
   return { ok: true, tlsId: null, tlsMode: 'acme' }
 }
 
@@ -4296,16 +4731,19 @@ function tlsPinErrorResponse(
   const missing = hostingCertificateNames(hosting).filter(
     (name) => !coversAllHostnames(dnsNames, [name])
   )
-  const message =
-    error === 'pin_mismatch' && typedCovered && missing.length > 0
-      ? `The certificate on this hosting covers ${hosting.hostnames.join(
-          ', '
-        )} but not ${missing.join(
-          ', '
-        )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
-          ', '
-        )}".`
-      : undefined
+  let message: string | undefined
+  if (error === 'pin_mismatch' && typedCovered && missing.length > 0) {
+    message = `The certificate on this hosting covers ${hosting.hostnames.join(
+      ', '
+    )} but not ${missing.join(
+      ', '
+    )}, which its www setting adds. Upload one that lists every name, or set www to "Only ${hosting.hostnames.join(
+      ', '
+    )}".`
+  } else if (error === 'pin_staging') {
+    message =
+      "The certificate on this hosting is a Test Certificate. Test certificates are only for trying out ordering. Browsers show a security warning for them, so they can't be attached to a site. Order a normal certificate instead."
+  }
   return Response.json(
     {
       error: tlsPinErrorCode(error),
@@ -4316,13 +4754,82 @@ function tlsPinErrorResponse(
   )
 }
 
+/** The 409 for a hosting whose tunnel names cannot be locked; `serverId` is named when the daemon is the problem. */
+function nameLockRefusalResponse(
+  refusal: { code: string; hostnames: string[] },
+  hostingId: string,
+  serverId: string
+): Response {
+  return Response.json(
+    {
+      error: refusal.code,
+      hostingId,
+      hostnames: refusal.hostnames,
+      ...(refusal.code === 'tunnel_daemon_too_old' ? { serverId } : {}),
+    },
+    { status: 409 }
+  )
+}
+
+/** The pinned row holds a pair ordered by this flow, and the target server's daemon lists the feature. */
+async function takesCentralPair(
+  db: Db,
+  pinned: OrgTlsCandidate | undefined,
+  serverId: string,
+  site: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
+): Promise<boolean> {
+  if (!pinned?.httpCentralPair || !pinned.certificatePem || !pinned.privateKeyPem) return false
+  // One stored pair serves every site that pins the row, so it must cover all the
+  // row's names, and every name this site answers on (its www mode adds the other
+  // spelling, which a pinned pair serves too). A pair that covers only some of
+  // them stays with the server's own web server.
+  const stored = pinned.metadata.acme?.storedNames
+  if (!stored || !coversAllHostnames(stored, pinned.metadata.dnsNames)) return false
+  if (!coversAllHostnames(stored, hostingCertificateNames(site))) return false
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
+}
+
+/**
+ * A hosting's bind address and its site environment. Database references in the
+ * hosting's variables are expanded here against the service's bindings (an
+ * error stops the deploy; a warning surfaces through the compose-service
+ * bucket of the same deploy, which reads the same variables).
+ */
+async function resolveHostingBindAndWeb(
+  db: Db,
+  h: HostingRow,
+  serverId: string
+): Promise<
+  | { prepareError: DeployPrepareError }
+  | {
+      bindResolved: Exclude<Awaited<ReturnType<typeof resolveHostingBindAddress>>, { kind: string }>
+      web: Awaited<ReturnType<typeof resolveHostingDeployWeb>>
+    }
+> {
+  const bindResolved = await resolveHostingBindAddress(db, {
+    serverId,
+    options: h.options,
+    ipId: h.ipId,
+  })
+  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
+    return { prepareError: bindResolved }
+  }
+  const webRefIssues: DbRefIssue[] = []
+  const web = await resolveHostingDeployWeb(db, h.id, h.options, webRefIssues)
+  const webRefError = dbRefPrepareError(webRefIssues)
+  if (webRefError) return { prepareError: webRefError }
+  return { bindResolved, web }
+}
+
 async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
@@ -4364,6 +4871,7 @@ async function resolveHttpHostingEntry(
     status: pinned?.metadata.status,
     bindScope,
     acmeEnabled,
+    centralPair: await takesCentralPair(db, pinned, serverId, { hostnames, www }),
   })
   if (!tlsWire.ok) {
     return {
@@ -4376,27 +4884,37 @@ async function resolveHttpHostingEntry(
     }
   }
 
-  const bindResolved = await resolveHostingBindAddress(db, {
+  const bindAndWeb = await resolveHostingBindAndWeb(db, h, serverId)
+  if ('prepareError' in bindAndWeb) return bindAndWeb
+  const { bindResolved, web } = bindAndWeb
+
+  const lock = await resolveDeployNameLock(db, {
+    organizationId,
     serverId,
-    options: h.options,
-    ipId: h.ipId,
+    hostingId: h.id,
+    siteHostnames: hostnames,
+    www,
+    tlsMode: tlsWire.tlsMode,
   })
-  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
-    return { prepareError: bindResolved }
+  if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id, serverId) }
+
+  // A hosting whose names are all tunnel-only never asks for a public certificate,
+  // and keeps no Let's Encrypt row waiting on one.
+  if (lock.dropPublicCertificate === true) {
+    await settleTunnelOnlyHosting(db, { organizationId, hostingId: h.id })
   }
-
-  const web = await resolveHostingDeployWeb(db, h.id, h.options)
-
+  const tlsMode = lock.dropPublicCertificate === true ? undefined : tlsWire.tlsMode
   return {
     entry: {
       hostingId: h.id,
       serviceId: svc.id,
       composeServiceName: svc.composeServiceName,
       hostnames,
+      ...(lock.tunnel === undefined ? {} : { tunnel: lock.tunnel }),
       pathPrefix: readPathPrefix(h.options),
       targetPort: readTargetPort(h.options),
       tlsId: tlsWire.tlsId,
-      ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
+      ...(tlsMode === undefined ? {} : { tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
       ...(www === 'off' ? {} : { www }),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
@@ -4453,7 +4971,8 @@ function resolveHostingEntry(
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
@@ -4462,7 +4981,7 @@ function resolveHostingEntry(
 > {
   const protocol = readHostingProtocol(h.options)
   if (protocol === 'http') {
-    return resolveHttpHostingEntry(db, h, svc, candidates, serverId, acmeEnabled)
+    return resolveHttpHostingEntry(db, h, svc, candidates, serverId, acmeEnabled, organizationId)
   }
   return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId)
 }
@@ -4501,6 +5020,7 @@ async function loadOrgTlsCandidates(db: Db, organizationId: string): Promise<Org
       ...(isTlsSource(row.source) ? { source: row.source } : {}),
       certificatePem: row.certificatePem,
       privateKeyPem: row.privateKeyPem,
+      httpCentralPair: readHttpIssuanceState(row.metadata)?.centralPair === true,
     })
   }
   return out
@@ -4511,7 +5031,8 @@ async function buildHostingsForService(
   svc: HostingServiceRow,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean
+  acmeEnabled: boolean,
+  organizationId: string
 ): Promise<
   | { hostings: DeployHostingPayload[]; tlsIds: string[] }
   | { error: Response }
@@ -4537,7 +5058,8 @@ async function buildHostingsForService(
       { id: svc.id, composeServiceName },
       candidates,
       serverId,
-      acmeEnabled
+      acmeEnabled,
+      organizationId
     )
     if ('skip' in result) continue
     if ('error' in result) return result
@@ -4566,16 +5088,23 @@ async function buildHostingPayload(
 
   const candidates = await loadOrgTlsCandidates(db, organizationId)
   const [orgRow] = await db
-    .select({ options: organization.options })
+    .select({ isAcmeEnabled: organization.isAcmeEnabled })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1)
-  const acmeEnabled = resolveAcmeEnabled(parseOrganizationOptions(orgRow?.options))
+  const acmeEnabled = orgRow?.isAcmeEnabled === true
   const hostingPayload: DeployHostingPayload[] = []
   const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
-    const built = await buildHostingsForService(db, svc, candidates, serverId, acmeEnabled)
+    const built = await buildHostingsForService(
+      db,
+      svc,
+      candidates,
+      serverId,
+      acmeEnabled,
+      organizationId
+    )
     if ('error' in built) return built
     if ('prepareError' in built) return built
     hostingPayload.push(...built.hostings)
@@ -4716,6 +5245,7 @@ type ServerEdgeDeployment = Pick<
   | 'hostingIngress'
   | 'hostingIngressNetwork'
   | 'hideWebServerNames'
+  | 'sendViaHeader'
 >
 
 /**
@@ -4744,6 +5274,8 @@ async function compileServerEdgeDeployment(
     /** Final compose expansion, so a clone routes like the key it came from. */
     expansion: Record<string, string[]>
     storageMaterial: EnvironmentDeployStorageMaterial[]
+    cacheDelivery: CacheDelivery
+    warnings: DeployPrepareWarning[]
   }
 ): Promise<ServerEdgeDeployment | DeployPrepareError | Response> {
   // Scoped to the server's owner, matching the ProxySQL frontend the joining
@@ -4765,13 +5297,20 @@ async function compileServerEdgeDeployment(
   if ('prepareError' in built) return built.prepareError
   if ('error' in built) return built.error
 
+  const overrides: CacheOverrideWarning[] = []
   const sealedHostings = await sealHostingWebSecretsForDaemon(
     c,
     db,
     params.serverId,
-    built.hostings
+    await withCacheHostingEnv(
+      built.hostings,
+      c.get('dataEncryptionSecrets'),
+      params.cacheDelivery,
+      overrides
+    )
   )
   if (sealedHostings instanceof Response) return sealedHostings
+  params.warnings.push(...cacheOverrideWarnings(overrides))
   const hostings = expandHostingsForComposeInstances(sealedHostings, params.expansion)
   const tlsMaterial = await sealTlsMaterialForDaemon(
     c,
@@ -4800,10 +5339,13 @@ async function compileServerEdgeDeployment(
     listenerPorts,
     ...(hostingIngress ? { hostingIngress } : {}),
     ...(hostingIngressNetwork ? { hostingIngressNetwork } : {}),
-    hideWebServerNames: await loadHideWebServerNames(
-      db,
-      params.serverId,
-      params.serverOrganizationId ?? params.organizationId
+    ...webServerDeployFields(
+      await loadWebServerSettings(
+        db,
+        params.serverId,
+        params.serverOrganizationId ?? params.organizationId
+      ),
+      (await getServerDaemonStateByServerId(db, params.serverId))?.projection?.features
     ),
   }
 }

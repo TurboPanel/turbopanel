@@ -10,10 +10,10 @@ import { leaf } from '../../db/schema.ts'
 import { parsePendingTlsLeafTracking, type UpsertTlsLeafTrackingParams } from './leaf-tracking.ts'
 import { clipLeafText } from './leaf-vocabulary.ts'
 
-/** The `leaf` row a pending deploy refers to: ingress per server, engine per replica. */
+/** The `leaf` row a pending deploy refers to: ingress and peer per server, engine per replica. */
 function leafTarget(pending: UpsertTlsLeafTrackingParams): SQL | undefined {
-  if (pending.kind === 'ingress') {
-    return and(eq(leaf.kind, 'ingress'), eq(leaf.serverId, pending.serverId))
+  if (pending.kind === 'ingress' || pending.kind === 'peer') {
+    return and(eq(leaf.kind, pending.kind), eq(leaf.serverId, pending.serverId))
   }
   if (!pending.replicaId) return undefined
   return and(eq(leaf.kind, 'engine'), eq(leaf.replicaId, pending.replicaId))

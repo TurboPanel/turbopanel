@@ -98,6 +98,16 @@ test('GET /instance/ca serves the injected Platform CA PEM', async () => {
   assertEquals(response.headers.get('content-type'), 'application/x-pem-file')
 })
 
+test('GET /instance/ca hides the read error from the caller', async () => {
+  const app = daemonApp({
+    readPlatformCaPem: () =>
+      Promise.reject(new Error('ENOENT: /etc/turbopanel/tls/private/ca.pem')),
+  })
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`)
+  assertEquals(response.status, 500)
+  assertEquals(await response.json(), { error: 'platform CA unavailable' })
+})
+
 test('readiness, enroll, and session fail closed without a database', async () => {
   const app = daemonApp()
   assertEquals((await app.request(`${DAEMON_API_PREFIX}/readiness`)).status, 503)
@@ -141,6 +151,34 @@ test('anonymous challenge issues a token from the stateless store', async () => 
   if (typeof body.challengeId !== 'string') {
     throw new TypeError('expected challengeId')
   }
+})
+
+test('an enroll challenge echoes a well-formed client nonce and nothing else', async () => {
+  const challengeSigningSecrets = await deriveSecretsConfig(
+    parseTestSecretsConfig(),
+    'daemon-challenge-signing'
+  )
+  const app = daemonApp({ challengeSigningSecrets })
+  const ask = async (clientNonce: unknown) => {
+    const response = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ clientNonce }),
+    })
+    assertEquals(response.status, 200)
+    return (await response.json()) as { clientNonce?: unknown; sealedLicense?: unknown }
+  }
+  assertEquals((await ask('AAAAAAAAAAAAAAAAAAAAAAAA')).clientNonce, 'AAAAAAAAAAAAAAAAAAAAAAAA')
+  assertEquals((await ask('not a nonce')).clientNonce, undefined)
+  // The marker is there whatever the request carried, so stripping the nonce changes nothing.
+  assertEquals((await ask('not a nonce')).sealedLicense, 1)
+  const bare = await app.request(`${DAEMON_API_PREFIX}/auth/challenge`, {
+    method: 'POST',
+    headers: { 'content-length': '0' },
+  })
+  const bareBody = (await bare.json()) as { sealedLicense?: unknown; kind?: unknown }
+  assertEquals(bareBody.sealedLicense, 1)
+  assertEquals(bareBody.kind, 'enroll')
 })
 
 test('auth challenge with only serverId does not query the database', async () => {
@@ -624,4 +662,23 @@ test('POST /tls/issued rejects bad JSON, missing fields and an oversized body, a
     })
   )
   assertEquals(tooBig.status, 413)
+})
+
+test('POST /tls/issued rejects a requestId that is not 1 to 64 plain characters', async () => {
+  const { app, token } = await tlsIssuedApp()
+  const post = (requestId: unknown) =>
+    app.request(`${DAEMON_API_PREFIX}/tls/issued`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...JSON.parse(TLS_ISSUED_BODY), requestId }),
+    })
+  for (const bad of ['', 'x'.repeat(65), 'has space', 'a/b', 12, null, ['a']]) {
+    const response = await post(bad)
+    assertEquals(response.status, 400, String(bad))
+    const text = await response.text()
+    assertEquals(text.includes('PRIVATE KEY'), false)
+    assertEquals(text.includes('BEGIN'), false)
+  }
+  // A well-formed id passes the shape check and reaches the storage check (no database here).
+  assertEquals((await post('req_0123-abc')).status, 503)
 })

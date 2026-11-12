@@ -14,6 +14,14 @@ import {
   isDaemonKeyActive,
 } from '../features/servers/server-identity-db.ts'
 import { reapplyBindingOwnedVariables } from '../features/bindings/materialize.ts'
+import { readRecordedCacheConsumers } from '../features/caches/reach.ts'
+import { reapplyCacheVariables } from '../features/caches/variables.ts'
+import { logWarn } from '../lib/logger.ts'
+import {
+  applyDbRefs,
+  type BindingRefTable,
+  loadBindingRefTable,
+} from '../features/bindings/db-refs.ts'
 import {
   mergeHostingVariablesForService,
   type ResolvedVariableMap,
@@ -40,6 +48,12 @@ export type RehydrateDeploymentResult = {
   generation: number
   secretPlan: EnvironmentDeploySecretPlanEntry[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
+}
+
+/** A requested deployment whose environment no longer exists in this project. */
+export type RehydrateGoneDeployment = {
+  projectId: string
+  environmentId: string
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -108,8 +122,89 @@ function secretPlanFromOptions(options: unknown): EnvironmentDeploySecretPlanEnt
   }
 }
 
+/** A secret a generated config file reads: its service and key, no mount flags. */
+type ConfigSecretRef = { composeServiceName: string; key: string }
+
+export function configSecretRefsFromOptions(options: unknown): ConfigSecretRef[] {
+  if (!isRecord(options) || !Array.isArray(options.configSecretRefs)) return []
+  const refs: ConfigSecretRef[] = []
+  for (const item of options.configSecretRefs) {
+    if (!isRecord(item)) continue
+    const { composeServiceName, key } = item
+    if (typeof composeServiceName === 'string' && typeof key === 'string') {
+      refs.push({ composeServiceName, key })
+    }
+  }
+  return refs
+}
+
+/**
+ * What to ask values for: every secret plan entry, then each secret only a
+ * generated config file reads (deduped by service and key). A config-only
+ * secret has no mount, so it carries neither flag.
+ */
+export type RehydrateSecretWant = ConfigSecretRef & { forBuild: boolean; forRuntime: boolean }
+
+export function rehydrateSecretWants(
+  secretPlan: readonly EnvironmentDeploySecretPlanEntry[],
+  configRefs: readonly ConfigSecretRef[]
+): RehydrateSecretWant[] {
+  const wants: RehydrateSecretWant[] = secretPlan.map((plan) => ({
+    composeServiceName: plan.composeServiceName,
+    key: plan.key,
+    forBuild: plan.forBuild,
+    forRuntime: plan.forRuntime,
+  }))
+  for (const ref of configRefs) {
+    if (wants.some((w) => w.key === ref.key && w.composeServiceName === ref.composeServiceName)) {
+      continue
+    }
+    wants.push({ ...ref, forBuild: false, forRuntime: false })
+  }
+  return wants
+}
+
+/**
+ * A secret made by `{$db.<binding>.<field>}` rehydrates under its own key, with
+ * the binding's sealed envelope. Issues are not reported to the caller: the
+ * deploy that made the plan already was; they are logged by name.
+ */
+export function expandRehydrateDbRefs(
+  map: ResolvedVariableMap,
+  table: BindingRefTable
+): ResolvedVariableMap {
+  const expanded = applyDbRefs(map, table, { ownScopeKeys: new Set() })
+  for (const issue of expanded.errors) {
+    logWarn('rehydrate', 'database reference not resolved', { variable: issue.key, ref: issue.ref })
+  }
+  return expanded.map
+}
+
+/** The cache entries this service got at its last deploy, set last like the deploy did. */
+async function applyRecordedCacheVariables(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  where: { environmentId: string; composeServiceName: string; serverId: string },
+  map: ResolvedVariableMap
+): Promise<ResolvedVariableMap> {
+  const [row] = await db
+    .select({ options: deployment.options })
+    .from(deployment)
+    .where(
+      and(
+        eq(deployment.environmentId, where.environmentId),
+        eq(deployment.serverId, where.serverId)
+      )
+    )
+    .limit(1)
+  const ids = readRecordedCacheConsumers(row?.options)[where.composeServiceName] ?? []
+  if (ids.length > 0) await reapplyCacheVariables(db, secrets, ids, map)
+  return map
+}
+
 async function resolveServiceVariableMap(
   db: Db,
+  secrets: DerivedSecretsConfig,
   environmentId: string,
   composeServiceName: string,
   serverId: string
@@ -125,21 +220,31 @@ async function resolveServiceVariableMap(
     )
     .limit(1)
   if (!row) {
-    const serverVars = await resolveServerScopedVariables(db, serverId)
-    return serverVars
+    return expandRehydrateDbRefs(await resolveServerScopedVariables(db, serverId), new Map())
   }
   const varMap = await resolveInheritedVariablesForService(db, row.id)
   await mergeHostingVariablesForService(db, row.id, varMap)
   await reapplyBindingOwnedVariables(db, row.id, varMap)
   const serverVars = await resolveServerScopedVariables(db, serverId)
-  return new Map([...varMap, ...serverVars])
+  const expanded = expandRehydrateDbRefs(
+    new Map([...varMap, ...serverVars]),
+    await loadBindingRefTable(db, row.id)
+  )
+  return await applyRecordedCacheVariables(
+    db,
+    secrets,
+    { environmentId, composeServiceName, serverId },
+    expanded
+  )
 }
 
 export async function buildDeploymentSecretsRehydrate(
   c: Context,
   db: Db,
   body: unknown
-): Promise<{ deployments: RehydrateDeploymentResult[] } | Response> {
+): Promise<
+  { deployments: RehydrateDeploymentResult[]; gone: RehydrateGoneDeployment[] } | Response
+> {
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   const secretsConfig = c.get('secretsConfig')
   if (!dataEncryptionSecrets || !secretsConfig) {
@@ -161,6 +266,7 @@ export async function buildDeploymentSecretsRehydrate(
   }
 
   const results: RehydrateDeploymentResult[] = []
+  const gone: RehydrateGoneDeployment[] = []
   await forEachSequential(requested, async (item) => {
     const result = await rehydrateOneDeployment(
       db,
@@ -170,10 +276,17 @@ export async function buildDeploymentSecretsRehydrate(
       dataEncryptionSecrets,
       secretsConfig
     )
-    if (result) results.push(result)
+    if (result === 'gone') {
+      // Definitive only: the environment row is absent (the project or
+      // environment was deleted). A live environment with no deployment row on
+      // this server, or a generation mismatch, is never reported as gone.
+      gone.push({ projectId: item.projectId, environmentId: item.environmentId })
+    } else if (result) {
+      results.push(result)
+    }
   })
 
-  return { deployments: results }
+  return { deployments: results, gone }
 }
 
 async function collectRehydrateVariableMaterial(
@@ -181,18 +294,19 @@ async function collectRehydrateVariableMaterial(
   item: RehydrateDeploymentRequest,
   daemonServerId: string,
   keyId: string,
-  secretPlan: EnvironmentDeploySecretPlanEntry[],
+  wants: readonly RehydrateSecretWant[],
   dataEncryptionSecrets: DerivedSecretsConfig,
   secretsConfig: SecretsConfig
 ): Promise<EnvironmentDeployVariableMaterial[]> {
   const variableMaterial: EnvironmentDeployVariableMaterial[] = []
   const maps = new Map<string, ResolvedVariableMap>()
 
-  await forEachSequential(secretPlan, async (plan) => {
+  await forEachSequential(wants, async (plan) => {
     let varMap = maps.get(plan.composeServiceName)
     if (!varMap) {
       varMap = await resolveServiceVariableMap(
         db,
+        dataEncryptionSecrets,
         item.environmentId,
         plan.composeServiceName,
         daemonServerId
@@ -227,13 +341,14 @@ async function rehydrateOneDeployment(
   keyId: string,
   dataEncryptionSecrets: DerivedSecretsConfig,
   secretsConfig: SecretsConfig
-): Promise<RehydrateDeploymentResult | null> {
+): Promise<RehydrateDeploymentResult | 'gone' | null> {
   const [envRow] = await db
     .select({ id: environment.id, projectId: environment.projectId })
     .from(environment)
     .where(eq(environment.id, item.environmentId))
     .limit(1)
-  if (envRow?.projectId !== item.projectId) return null
+  if (!envRow) return 'gone'
+  if (envRow.projectId !== item.projectId) return null
 
   const [deployRow] = await db
     .select()
@@ -255,7 +370,7 @@ async function rehydrateOneDeployment(
       item,
       daemonServerId,
       keyId,
-      secretPlan,
+      rehydrateSecretWants(secretPlan, configSecretRefsFromOptions(deployRow.options)),
       dataEncryptionSecrets,
       secretsConfig
     )

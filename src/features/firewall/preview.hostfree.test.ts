@@ -7,7 +7,7 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { createNoopCommandQueue } from '../commands/noop-command-queue.ts'
-import type { LoadedFirewallFacts } from './facts.ts'
+import { type LoadedFirewallFacts, panelAcmeExposures } from './facts.ts'
 import { DEFAULT_FIREWALL_ORG_POLICY } from './policy.ts'
 import {
   bulwarkStateOfResult,
@@ -367,4 +367,30 @@ test('a later success clears the recorded failure', async () => {
   assertEquals(record.status, 'previewed')
   assertEquals('error' in record, false)
   assertEquals('failedAt' in record, false)
+})
+
+test("the panel's Let's Encrypt names open hosting's port 80 on its own host, never a control-plane port", () => {
+  assertEquals(panelAcmeExposures(true, true, []), [
+    {
+      source: 'hosting',
+      scope: 'host',
+      proto: 'tcp',
+      ports: '80',
+      reach: 'public',
+      comment: 'Hosting HTTP (panel certificate)',
+    },
+  ])
+  assertEquals(panelAcmeExposures(false, true, []), [])
+  assertEquals(panelAcmeExposures(true, false, []), [])
+  const hostingOpen = [
+    {
+      source: 'hosting',
+      scope: 'host' as const,
+      proto: 'tcp' as const,
+      ports: '80',
+      reach: 'public' as const,
+      comment: 'Hosting HTTP',
+    },
+  ]
+  assertEquals(panelAcmeExposures(true, true, hostingOpen), [])
 })

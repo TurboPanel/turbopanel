@@ -23,12 +23,15 @@ import { servicePaths, serviceSchemas } from './services.ts'
 import { variablePaths, variableSchemas } from './variables.ts'
 import { tagPaths, tagSchemas } from './tags.ts'
 import { taskPaths, taskSchemas } from './tasks.ts'
+import { cachePaths, cacheSchemas } from './caches.ts'
 import { bindingPaths, bindingSchemas } from './bindings.ts'
 import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
 import { storageBackupPaths, storageBackupSchemas } from './storage-backups.ts'
 import { firewallPaths, firewallSchemas } from './firewall.ts'
 import { backupTargetPaths, backupTargetSchemas } from './backup-targets.ts'
+import { dnsCertificatePaths, dnsCertificateSchemas } from './dns-certificates.ts'
+import { tunnelPaths, tunnelSchemas } from './tunnels.ts'
 import { activityPaths, activitySchemas } from './activity.ts'
 import { organizationMemberPaths, organizationMemberSchemas } from './organization-members.ts'
 import { repositoryPaths, repositorySchemas } from './repositories.ts'
@@ -107,7 +110,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       { name: 'Servers', description: 'Servers and update management' },
       { name: 'Commands', description: 'Command lifecycle status polling' },
       { name: 'Networks', description: 'Organization network registry' },
-      { name: 'Datacenters', description: 'Datacenter CRUD' },
+      { name: 'Datacenters', description: 'Datacenter network CRUD' },
       { name: 'IPs', description: 'Managed IP address registry' },
       { name: 'Licenses', description: 'License lifecycle' },
       { name: 'System', description: 'Platform-managed system components' },
@@ -173,11 +176,14 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...variableSchemas,
         ...tagSchemas,
         ...taskSchemas,
+        ...cacheSchemas,
         ...bindingSchemas,
         ...storageSchemas,
         ...storageBackupSchemas,
         ...firewallSchemas,
         ...backupTargetSchemas,
+        ...tunnelSchemas,
+        ...dnsCertificateSchemas,
         ...organizationMemberSchemas,
         ...activitySchemas,
         ...repositorySchemas,
@@ -212,11 +218,14 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       ...variablePaths,
       ...tagPaths,
       ...taskPaths,
+      ...cachePaths,
       ...bindingPaths,
       ...storagePaths,
       ...storageBackupPaths,
       ...firewallPaths,
       ...backupTargetPaths,
+      ...tunnelPaths,
+      ...dnsCertificatePaths,
       ...organizationMemberPaths,
       ...activityPaths,
       ...repositoryPaths,

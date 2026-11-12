@@ -1,3 +1,4 @@
+import type { TlsPinError } from '../../lib/tls/types.ts'
 import { attachWebMetadataToSites } from '../../features/hostings/hosting-web-env.ts'
 import { panelHostnameInUseMessage } from '../../features/hostings/panel-hostname-guard.ts'
 import { hostnameUnsupportedReason } from '../../features/hostings/hosting-certificate.ts'
@@ -16,6 +17,7 @@ import type {
 import type {
   DeployPrepareError,
   NativeAppVariablesView,
+  PreparedDeployCompose,
   PreparedNativeAppService,
 } from './deploy-prepare.ts'
 import {
@@ -100,8 +102,10 @@ export function composeProjectName(environmentId: string): string {
   return environmentId
 }
 
-export function tlsPinErrorCode(error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready'): string {
+export function tlsPinErrorCode(error: TlsPinError): string {
   switch (error) {
+    case 'pin_staging':
+      return 'tls_pin_staging'
     case 'pin_mismatch':
       return 'tls_pin_mismatch'
     case 'pin_not_ready':
@@ -119,6 +123,9 @@ export type PrepareErrorResponse = {
 export function fabricGateErrorResponse(
   outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>
 ): PrepareErrorResponse {
+  if (outcome.kind === 'turned_off') {
+    return { status: 409, body: { error: 'fabric_turned_off', message: outcome.message } }
+  }
   if (outcome.kind === 'failed') {
     return {
       status: 422,
@@ -205,7 +212,13 @@ export function deployMaterialsErrorResponse(
 type VariablePrepareError = Extract<
   DeployPrepareError,
   {
-    kind: 'variable_unresolved' | 'variable_ref_invalid' | 'variable_secret_interpolation'
+    kind:
+      | 'variable_unresolved'
+      | 'variable_ref_invalid'
+      | 'variable_secret_interpolation'
+      | 'config_interpolation'
+      | 'config_file_invalid'
+      | 'config_file_shared'
   }
 >
 
@@ -349,7 +362,7 @@ function mapComposeHostAccessActorError(
   const message =
     prepared.kind === 'compose_host_access_requires_manager'
       ? `This compose document reaches the host through ${paths}. Only an organization manager or owner can deploy host-level Compose features.`
-      : `This compose document reaches the host through ${paths}, and no organization manager or owner has deployed it in this form yet. Deploy it once from the console to approve it; automated deploys of the same content will then run.`
+      : `This compose document reaches the host through ${paths}, and no organization manager or owner has deployed it in this form yet. Deploy it once from the web interface to approve it; automated deploys of the same content will then run.`
   return {
     status: 403,
     body: { error: prepared.kind, issues: prepared.issues, message },
@@ -360,7 +373,11 @@ function mapSitePrepareError(
   prepared: Extract<
     DeployPrepareError,
     {
-      kind: 'site_principal_ambiguous' | 'site_cron_unowned' | 'site_managed_directory_unowned'
+      kind:
+        | 'site_principal_ambiguous'
+        | 'site_cron_unowned'
+        | 'site_lifecycle_unowned'
+        | 'site_managed_directory_unowned'
     }
   >
 ): PrepareErrorResponse {
@@ -381,6 +398,16 @@ function mapSitePrepareError(
         error: 'site_cron_unowned',
         composeServiceName: prepared.composeServiceName,
         message: `Site "${prepared.composeServiceName}" has scheduled jobs but no project principal to run them as. Assign a principal to the service — a timer with no account would run as root, which TurboPanel will not do.`,
+      },
+    }
+  }
+  if (prepared.kind === 'site_lifecycle_unowned') {
+    return {
+      status: 422,
+      body: {
+        error: 'site_lifecycle_unowned',
+        composeServiceName: prepared.composeServiceName,
+        message: `Site "${prepared.composeServiceName}" has post-deploy commands or background workers but no project principal to run them as. Assign a principal to the service — they run as that account, never as root.`,
       },
     }
   }
@@ -424,7 +451,7 @@ function hostingLetsEncryptRefusedMessage(
     return `${asks}, but this organization does not allow Let's Encrypt certificates. An organization owner or manager can turn on ${LETS_ENCRYPT_SETTING_PLACE}. Or set tls.mode to "internal" for a self-signed certificate.`
   }
   if (prepared.reason === 'acme_requires_public_bind') {
-    return `${asks}, but the route is not reachable from the internet. Let's Encrypt needs bind.scope "public"; use tls.mode "internal" for a local or datacenter route.`
+    return `${asks}, but the route is not reachable from the internet. Let's Encrypt needs bind.scope "public"; use tls.mode "internal" for a local or datacenter network route.`
   }
   const unsupported = prepared.names.find((name) => hostnameUnsupportedReason(name) !== null)
   if (prepared.reason === 'letsencrypt_hostname_unsupported' && unsupported !== undefined) {
@@ -580,14 +607,14 @@ function mapPrincipalPrepareError(
     }
   }
   if (prepared.kind === 'principal_required_for_service_kind') {
-    const kindLabel = prepared.serviceKind === 'site' ? 'Site' : 'Node app'
+    const kindLabel = prepared.serviceKind === 'site' ? 'site' : 'Node app'
     return {
       status: 422,
       body: {
         error: 'principal_required_for_service_kind',
         composeServiceName: prepared.composeServiceName,
         serviceKind: prepared.serviceKind,
-        message: `${kindLabel} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
+        message: `This ${kindLabel} ("${prepared.composeServiceName}") needs a Hosting Account. Add one under Bindings first.`,
       },
     }
   }
@@ -607,6 +634,7 @@ function tryMapSitePrepareError(prepared: DeployPrepareError): PrepareErrorRespo
   if (
     prepared.kind !== 'site_principal_ambiguous' &&
     prepared.kind !== 'site_cron_unowned' &&
+    prepared.kind !== 'site_lifecycle_unowned' &&
     prepared.kind !== 'site_managed_directory_unowned'
   ) {
     return null
@@ -687,6 +715,20 @@ function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErro
       error: 'site_engine_feature_missing',
       composeServiceName: prepared.composeServiceName,
       message: `Site "${prepared.composeServiceName}" uses the nginx+apache web server pair, but the TurboPanel daemon on this server is too old to run it. Update the daemon on this server, then deploy again.`,
+    },
+  }
+}
+
+function tryMapSiteLifecycleUnsupportedError(
+  prepared: DeployPrepareError
+): PrepareErrorResponse | null {
+  if (prepared.kind !== 'site_lifecycle_unsupported') return null
+  return {
+    status: 409,
+    body: {
+      error: 'site_lifecycle_unsupported',
+      message: prepared.message,
+      servers: prepared.servers,
     },
   }
 }
@@ -783,6 +825,7 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
     tryMapPhpModePrepareError(prepared) ??
     tryMapNodeVersionPrepareError(prepared) ??
     tryMapSiteEngineFeatureError(prepared) ??
+    tryMapSiteLifecycleUnsupportedError(prepared) ??
     tryMapBindingHostSiteError(prepared) ??
     tryMapDenoPrepareError(prepared) ??
     tryMapNodeAppModeFeatureError(prepared) ??
@@ -833,7 +876,7 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
     case 'compose_field_requires_org_opt_in':
       return mapComposeOptInError(prepared)
     // The organization has host-level features on, but this actor may not use
-    // them — a person without organization:manage, or a webhook deploy of
+    // them — a person without organization:manage, or an automated deploy of
     // host-level content no manager or owner has deployed in this form.
     case 'compose_host_access_requires_manager':
     case 'compose_host_access_requires_approval':
@@ -868,9 +911,26 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
     case 'variable_unresolved':
     case 'variable_ref_invalid':
     case 'variable_secret_interpolation':
+    case 'config_interpolation':
+    case 'config_file_invalid':
+    case 'config_file_shared':
       return variablePrepareErrorResponse(prepared)
+    case 'config_files_need_daemon_update':
+      return {
+        status: 409,
+        body: {
+          error: 'config_files_need_daemon_update',
+          message: prepared.message,
+          servers: prepared.servers,
+        },
+      }
     case 'storage_location_unavailable':
       return storageLocationUnavailableResponse(prepared)
+    case 'project_cache_refused':
+      return {
+        status: prepared.code === 'daemon_update_needed' ? 409 : 422,
+        body: { error: prepared.code, message: prepared.message },
+      }
     case 'resource_limit':
       return {
         status: 409,
@@ -1267,4 +1327,25 @@ export function hostingsOnlyFits(
     previous.filter((target) => target.status === 'applied').map((target) => target.serverId)
   )
   return planServerIds.every((serverId) => applied.has(serverId))
+}
+
+/** A generated config file as the preview shows it: secret slots by name, never a value or a size. */
+export type PreviewConfigFile = {
+  serverId?: string
+  composeServiceName: string
+  source: string
+  hasSecretValues: boolean
+  template: string
+}
+
+export function previewConfigFiles(prepared: PreparedDeployCompose): PreviewConfigFile[] {
+  return (prepared.configFiles ?? []).map((file) => ({
+    ...(prepared.serverId === undefined ? {} : { serverId: prepared.serverId }),
+    composeServiceName: file.composeServiceName,
+    source: file.source,
+    hasSecretValues: file.parts.some((part) => 'secretKey' in part),
+    template: file.parts
+      .map((part) => ('text' in part ? part.text : '{$' + part.secretKey + '}'))
+      .join(''),
+  }))
 }

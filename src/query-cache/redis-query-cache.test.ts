@@ -1,14 +1,10 @@
 import { assert, assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../db/connection.ts'
-import {
-  createRedisCellClient,
-  type RedisCellClient,
-} from '../daemon/cell/redis/client.ts'
+import { createRedisCellClient, type RedisCellClient } from '../daemon/cell/redis/client.ts'
 import { createRedisQueryCache } from './redis-query-cache.ts'
 import { queryCacheKey } from './keys.ts'
 
-const DEFAULT_SOCKET = Deno.env.get('TURBOPANEL_REDIS_SOCKET') ??
-  '/run/turbopanel/redis.sock'
+const DEFAULT_SOCKET = Deno.env.get('TURBOPANEL_REDIS_SOCKET') ?? '/run/turbopanel/redis.sock'
 
 async function redisAvailable(): Promise<boolean> {
   try {
@@ -20,17 +16,11 @@ async function redisAvailable(): Promise<boolean> {
 }
 
 function withRedisQueryCache(
-  fn: (ctx: {
-    client: RedisCellClient
-    namespace: string
-    db: Db
-  }) => Promise<void>,
+  fn: (ctx: { client: RedisCellClient; namespace: string; db: Db }) => Promise<void>
 ): () => Promise<void> {
   return async () => {
     if (!(await redisAvailable())) {
-      console.warn(
-        `Skipping Redis query cache test: socket not found at ${DEFAULT_SOCKET}`,
-      )
+      console.warn(`Skipping Redis query cache test: socket not found at ${DEFAULT_SOCKET}`)
       return
     }
 
@@ -61,14 +51,16 @@ test(
     const cache = createRedisQueryCache({ client, db })
     const key = queryCacheKey(namespace, 'miss-hit')
     let loadCount = 0
-    const listRows = [{
-      id: 'srv-1',
-      name: 'Test',
-      organizationId: 'org-1',
-      licenseId: null,
-      options: null,
-      createdAt: '2024-01-01T00:00:00.000Z',
-    }]
+    const listRows = [
+      {
+        id: 'srv-1',
+        name: 'Test',
+        organizationId: 'org-1',
+        licenseId: null,
+        options: null,
+        createdAt: '2024-01-01T00:00:00.000Z',
+      },
+    ]
 
     const first = await cache.getReadModel({
       readModel: 'servers-list',
@@ -99,7 +91,7 @@ test(
     })
     assertEquals(second, listRows)
     assertEquals(loadCount, 1)
-  }),
+  })
 )
 
 test(
@@ -118,7 +110,7 @@ test(
     const pttl = await client.pttl(key)
     assert(pttl > 0)
     assert(pttl <= 60_000)
-  }),
+  })
 )
 
 test('cached falls back to loader when Redis get throws', async () => {
@@ -174,6 +166,79 @@ test('cached returns loader result when Redis set throws', async () => {
   assertEquals(setKey, queryCacheKey('servers-list', 'redis-set-error'))
 })
 
+function neverSettles<T>(): Promise<T> {
+  return new Promise<T>(() => {
+    // Stands in for a Redis command queued on a connection that never comes back.
+  })
+}
+
+async function timedLoaderFallback(client: RedisCellClient, keySuffix: string) {
+  const db = null as unknown as Db
+  let loadCount = 0
+  const cache = createRedisQueryCache({ client, db })
+  const started = performance.now()
+  const result = await cache.getReadModel({
+    readModel: 'servers-list',
+    key: queryCacheKey('stub', keySuffix),
+    ttlSeconds: 60,
+    load: async () => {
+      loadCount += 1
+      return { fromLoader: true }
+    },
+  })
+  return { result, loadCount, elapsed: performance.now() - started }
+}
+
+test('cached falls back to loader when Redis get never answers', async () => {
+  const client = {
+    get: () => neverSettles<string | null>(),
+    set: () => Promise.resolve(),
+  } as unknown as RedisCellClient
+
+  const { result, loadCount, elapsed } = await timedLoaderFallback(client, 'redis-get-hangs')
+
+  assertEquals(result, { fromLoader: true })
+  assertEquals(loadCount, 1)
+  assert(elapsed < 1000, `fallback took ${elapsed} ms`)
+})
+
+test('cached returns loader result when Redis set never answers', async () => {
+  const client = {
+    get: () => Promise.resolve(null),
+    set: () => neverSettles<void>(),
+  } as unknown as RedisCellClient
+
+  const { result, loadCount, elapsed } = await timedLoaderFallback(client, 'redis-set-hangs')
+
+  assertEquals(result, { fromLoader: true })
+  assertEquals(loadCount, 1)
+  assert(elapsed < 1000, `write took ${elapsed} ms`)
+})
+
+test('cached falls back to loader when Redis get rejects after the deadline', async () => {
+  const db = null as unknown as Db
+  let rejectLate: ((err: Error) => void) | undefined
+  const client = {
+    get: () =>
+      new Promise<string | null>((_, reject) => {
+        rejectLate = reject
+      }),
+    set: () => Promise.resolve(),
+  } as unknown as RedisCellClient
+
+  const cache = createRedisQueryCache({ client, db })
+  const result = await cache.getReadModel({
+    readModel: 'servers-list',
+    key: queryCacheKey('stub', 'redis-get-late-reject'),
+    ttlSeconds: 60,
+    load: async () => ({ fromLoader: true }),
+  })
+
+  assertEquals(result, { fromLoader: true })
+  rejectLate?.(new Error('redis connection closed'))
+  await Promise.resolve()
+})
+
 test('getReadModel rejects unapproved read models', async () => {
   const db = null as unknown as Db
   const client = {
@@ -190,7 +255,7 @@ test('getReadModel rejects unapproved read models', async () => {
         load: async () => ({ ok: true }),
       } as unknown as Parameters<typeof cache.getReadModel>[0]),
     Error,
-    'Unapproved read model',
+    'Unapproved read model'
   )
 })
 
@@ -381,5 +446,5 @@ test(
 
     assertEquals(result, { recovered: true })
     assertEquals(loadCount, 1)
-  }),
+  })
 )

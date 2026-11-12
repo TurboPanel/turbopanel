@@ -1,6 +1,8 @@
 import { eq } from 'drizzle-orm'
+import { confirmationName, refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -39,8 +41,10 @@ import {
 import { hierarchyDeleteHasChildrenResponse, isForeignKeyViolation } from '../hierarchy-delete.ts'
 import { reclaimDeletedEnvironmentHosts, stopEnvironmentHosts } from './teardown.ts'
 import {
+  environmentDeleteAuditEntry,
   planEnvironmentDelete,
   refuseOnPlanBlockers,
+  snapshotDeleteForAudit,
   startDeleteCleanup,
 } from '../projects/delete-flow.ts'
 import {
@@ -683,11 +687,21 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const stepUp = await requireStepUpIfConfigured(c, organizationId, 'environment.delete')
     if (stepUp) return stepUp
 
+    const [named] = await db
+      .select({ name: environment.name })
+      .from(environment)
+      .where(eq(environment.id, id))
+      .limit(1)
+    const needsName = refuseUnlessNameConfirmed(c, 'environment', confirmationName(named?.name, id))
+    if (needsName) return needsName
+
     // The plan is read while the rows the stop is built from still exist. A
     // reason the delete cannot run refuses here, before anything is stopped.
     const { plan, teardownPlans } = await planEnvironmentDelete(db, id)
     const refused = refuseOnPlanBlockers(c, plan)
     if (refused) return refused
+    // Read now: the name and hostnames are gone once the rows are.
+    const snapshot = await snapshotDeleteForAudit(db, plan)
 
     // A running stack is stopped before the rows go (the stop retires no
     // account: the environment still names them until it is deleted). The
@@ -702,8 +716,20 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
     if (!result.ok) return environmentDeleteRefusal(c, result.error, result.detail)
 
+    // Recorded as soon as the rows are gone and before any host is asked to
+    // remove anything, so the trail has the delete even if the cleanup fails.
+    await recordAudit(
+      db,
+      environmentDeleteAuditEntry(
+        { organizationId, actorUserId: session.userId, actorEmail: session.email ?? null },
+        id,
+        snapshot
+      )
+    )
+
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, session.userId)
     const cleanup = await startDeleteCleanup(c, db, session.userId, result.cleanup)
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
 
     return c.json({
       ok: true as const,

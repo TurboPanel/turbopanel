@@ -6,7 +6,7 @@ concurrent edits to the Deno test file list cannot tear the merge Python
 mid-run — that previously produced SyntaxError: unmatched ']' on a corrupted
 line like ``primary_hits = lint]:``.
 
-Merge rule (matches turbopanel/AGENTS.md):
+Merge rule (matches scripts/AGENTS.md):
   Per SF, the report with more covered lines (LH) is primary. Secondary may
   only max shared hits or add *executed* lines — never zero-hit V8 transitive
   rows that dilute Workers/DO Istanbul.

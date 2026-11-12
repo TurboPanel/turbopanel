@@ -27,94 +27,84 @@
  * install command is authoritative.
  */
 
-import { coversHostname } from "../../lib/tls/match.ts";
+import { coversHostname } from '../../lib/tls/match.ts'
 
-export type InstallOriginCertificateSource =
-  | "platform-ca"
-  | "uploaded"
-  | "lets-encrypt";
+export type InstallOriginCertificateSource = 'platform-ca' | 'uploaded' | 'acme-http-01'
 
 export type InstallOriginTlsOptions = {
   /** Certificate source of the hostname this origin dials. */
-  source?: InstallOriginCertificateSource;
+  source?: InstallOriginCertificateSource
   /**
    * The uploaded leaf for this hostname chains to a public root. Honored
    * only when `source` is `uploaded`, and only for the hostname that was
    * dialed. A sibling upload's trust does not apply.
    */
-  publicUploaded?: boolean;
+  publicUploaded?: boolean
   /**
    * The origin is dialed on the self-hosted control-plane listener. A
    * Platform CA name on that listener, including a private IP or `.lan`
    * alias, is the catch-all leaf.
    */
-  selfHostedListener?: boolean;
-};
+  selfHostedListener?: boolean
+}
 
 /** Managed control-plane HTTPS listener. The Platform CA catch-all binds here. */
-const SELF_HOSTED_LISTENER_PORT = "8443";
+const SELF_HOSTED_LISTENER_PORT = '8443'
 
 /**
  * Returned when an unlisted public `:8443` override is not a name the
  * Platform CA catch-all leaf covers. The install command is not emitted.
  */
 export const UNLISTED_INSTALL_HOSTNAME_UNCOVERED =
-  "Add this hostname under Admin → Access before installing. The Platform CA certificate does not cover it.";
+  'Add this hostname under Admin → Access before installing. The Platform CA certificate does not cover it.'
 
 /** One stored hostname plus that upload's own public-trust result. */
 export type InstallHostnameTrust = {
-  host?: string;
-  source: InstallOriginCertificateSource;
+  host?: string
+  source: InstallOriginCertificateSource
   /**
    * This uploaded certificate chains to a public root. Absent means the
    * certificate was not checked; the aggregate flag then applies only when
    * no sibling is Let's Encrypt.
    */
-  publicUploaded?: boolean;
-};
+  publicUploaded?: boolean
+}
 
 export type InstallOriginTlsContext = {
   /** Sibling hostnames, including the dialed row's uploaded public trust. */
-  hostnames?: readonly InstallHostnameTrust[];
+  hostnames?: readonly InstallHostnameTrust[]
   /** Dialed install origin. Selects that hostname's uploaded public trust. */
-  origin?: string;
-  selfHostedListener?: boolean;
-};
+  origin?: string
+  selfHostedListener?: boolean
+}
 
-const LOCAL_TLDS = new Set([
-  "lan",
-  "local",
-  "internal",
-  "home",
-  "corp",
-  "localhost",
-]);
+const LOCAL_TLDS = new Set(['lan', 'local', 'internal', 'home', 'corp', 'localhost'])
 
 function stripIpv6Brackets(host: string): string {
-  return host.replace(/^\[/, "").replace(/\]$/, "");
+  return host.replace(/^\[/, '').replace(/\]$/, '')
 }
 
 function ipv4Octets(host: string): number[] | null {
-  const parts = host.split(".");
-  if (parts.length !== 4) return null;
-  const octets: number[] = [];
+  const parts = host.split('.')
+  if (parts.length !== 4) return null
+  const octets: number[] = []
   for (const part of parts) {
-    if (!/^\d{1,3}$/.test(part)) return null;
-    const value = Number(part);
-    if (!Number.isInteger(value) || value < 0 || value > 255) return null;
-    octets.push(value);
+    if (!/^\d{1,3}$/.test(part)) return null
+    const value = Number(part)
+    if (!Number.isInteger(value) || value < 0 || value > 255) return null
+    octets.push(value)
   }
-  return octets;
+  return octets
 }
 
 function isPrivateOrLoopbackIpv4(octets: number[]): boolean {
-  const [a, b] = octets;
-  if (a === undefined || b === undefined) return false;
-  if (a === 10 || a === 127) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 169 && b === 254) return true;
-  return false;
+  const [a, b] = octets
+  if (a === undefined || b === undefined) return false
+  if (a === 10 || a === 127) return true
+  if (a === 192 && b === 168) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 169 && b === 254) return true
+  return false
 }
 
 /**
@@ -125,39 +115,34 @@ function isPrivateOrLoopbackIpv4(octets: number[]): boolean {
  * route to is a host GitHub cannot deliver a webhook to.
  */
 export function isLoopbackOrPrivateHostname(hostname: string): boolean {
-  const host = stripIpv6Brackets(hostname).toLowerCase();
-  if (!host) return true;
-  if (host === "localhost" || host.endsWith(".localhost")) return true;
-  if (host.includes(":")) {
-    if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
-    if (host.startsWith("fe80:")) return true;
+  const host = stripIpv6Brackets(hostname).toLowerCase()
+  if (!host) return true
+  if (host === 'localhost' || host.endsWith('.localhost')) return true
+  if (host.includes(':')) {
+    if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true
+    if (host.startsWith('fe80:')) return true
     // Unique local IPv6 (fc00::/7).
-    if (host.startsWith("fc") || host.startsWith("fd")) return true;
+    if (host.startsWith('fc') || host.startsWith('fd')) return true
   }
 
-  const octets = ipv4Octets(host);
-  if (octets) return isPrivateOrLoopbackIpv4(octets);
+  const octets = ipv4Octets(host)
+  if (octets) return isPrivateOrLoopbackIpv4(octets)
 
-  const tld = host.split(".").at(-1);
-  return Boolean(tld && LOCAL_TLDS.has(tld));
+  const tld = host.split('.').at(-1)
+  return Boolean(tld && LOCAL_TLDS.has(tld))
 }
 
-function envFlag(
-  env: Record<string, string | undefined>,
-  key: string,
-): boolean {
-  const raw = env[key]?.trim().toLowerCase();
-  return raw === "1" || raw === "true";
+function envFlag(env: Record<string, string | undefined>, key: string): boolean {
+  const raw = env[key]?.trim().toLowerCase()
+  return raw === '1' || raw === 'true'
 }
 
 /**
  * True when `TURBOPANEL_TLS_PUBLIC` is set (`1` / `true`, case-insensitive).
  * Pure; no module-load I/O (Workers-bundle safe).
  */
-export function resolvePublicInstanceTls(
-  env: Record<string, string | undefined>,
-): boolean {
-  return envFlag(env, "TURBOPANEL_TLS_PUBLIC");
+export function resolvePublicInstanceTls(env: Record<string, string | undefined>): boolean {
+  return envFlag(env, 'TURBOPANEL_TLS_PUBLIC')
 }
 
 /**
@@ -168,24 +153,22 @@ export function resolvePublicInstanceTls(
  */
 export function shouldServePlatformCaBundle(
   tlsPublic: boolean,
-  presentsPlatformCaLeaf: boolean,
+  presentsPlatformCaLeaf: boolean
 ): boolean {
-  if (!tlsPublic) return true;
-  return presentsPlatformCaLeaf;
+  if (!tlsPublic) return true
+  return presentsPlatformCaLeaf
 }
 
 /** Host label of a URL, `Host` header, or stored hostname entry. */
 export function hostLabel(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
+  const trimmed = value.trim()
+  if (!trimmed) return null
   try {
-    const host = new URL(
-      trimmed.includes("://") ? trimmed : `https://${trimmed}`,
-    ).hostname;
-    const bare = host.replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
-    return bare.length > 0 ? bare : null;
+    const host = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`).hostname
+    const bare = host.replace(/^\[/, '').replace(/\]$/, '').toLowerCase()
+    return bare.length > 0 ? bare : null
   } catch {
-    return null;
+    return null
   }
 }
 
@@ -193,19 +176,16 @@ export function hostLabel(value: string): string | null {
  * Hostname the CA route was dialed as. The `Host` header wins; the request
  * URL is the fallback when that header is absent.
  */
-export function dialedInstallHostname(
-  hostHeader: string | undefined,
-  requestUrl: string,
-): string {
-  const header = hostHeader?.trim() ?? "";
+export function dialedInstallHostname(hostHeader: string | undefined, requestUrl: string): string {
+  const header = hostHeader?.trim() ?? ''
   if (header.length > 0) {
-    const fromHeader = hostLabel(header);
-    if (fromHeader) return fromHeader;
+    const fromHeader = hostLabel(header)
+    if (fromHeader) return fromHeader
   }
   try {
-    return new URL(requestUrl).hostname.toLowerCase();
+    return new URL(requestUrl).hostname.toLowerCase()
   } catch {
-    return "";
+    return ''
   }
 }
 
@@ -217,52 +197,48 @@ export function dialedInstallHostname(
 export function hostnamePresentsPlatformCaLeaf(
   requestHost: string,
   hostnames: readonly {
-    host: string;
-    source: InstallOriginCertificateSource;
-  }[],
+    host: string
+    source: InstallOriginCertificateSource
+  }[]
 ): boolean {
-  const wanted = hostLabel(requestHost);
-  if (!wanted) return true;
-  const match = hostnames.find((row) => hostLabel(row.host) === wanted);
-  if (!match) return true;
-  return match.source === "platform-ca";
+  const wanted = hostLabel(requestHost)
+  if (!wanted) return true
+  const match = hostnames.find((row) => hostLabel(row.host) === wanted)
+  if (!match) return true
+  return match.source === 'platform-ca'
 }
 
-function letsEncryptSibling(
-  hostnames: InstallOriginTlsContext["hostnames"],
-): boolean {
-  return hostnames?.some((row) => row.source === "lets-encrypt") === true;
+function letsEncryptSibling(hostnames: InstallOriginTlsContext['hostnames']): boolean {
+  return hostnames?.some((row) => row.source === 'acme-http-01') === true
 }
 
-function declaredUploadedTrust(
-  context: InstallOriginTlsContext,
-): boolean | undefined {
-  const origin = context.origin?.trim();
-  if (!origin || !context.hostnames) return undefined;
-  const wanted = hostLabel(origin);
-  if (!wanted) return undefined;
-  const match = context.hostnames.find((row) =>
-    row.source === "uploaded" && hostLabel(row.host ?? "") === wanted
-  );
-  return match?.publicUploaded;
+function declaredUploadedTrust(context: InstallOriginTlsContext): boolean | undefined {
+  const origin = context.origin?.trim()
+  if (!origin || !context.hostnames) return undefined
+  const wanted = hostLabel(origin)
+  if (!wanted) return undefined
+  const match = context.hostnames.find(
+    (row) => row.source === 'uploaded' && hostLabel(row.host ?? '') === wanted
+  )
+  return match?.publicUploaded
 }
 
 function uploadedLeafIsPublic(
   env: Record<string, string | undefined>,
-  context: InstallOriginTlsContext,
+  context: InstallOriginTlsContext
 ): boolean {
-  const declared = declaredUploadedTrust(context);
-  if (declared !== undefined) return declared;
-  if (letsEncryptSibling(context.hostnames)) return false;
-  return resolvePublicInstanceTls(env);
+  const declared = declaredUploadedTrust(context)
+  if (declared !== undefined) return declared
+  if (letsEncryptSibling(context.hostnames)) return false
+  return resolvePublicInstanceTls(env)
 }
 
 function withSelfHostedListener(
   options: InstallOriginTlsOptions,
-  selfHostedListener: boolean | undefined,
+  selfHostedListener: boolean | undefined
 ): InstallOriginTlsOptions {
-  if (selfHostedListener !== true) return options;
-  return { ...options, selfHostedListener: true };
+  if (selfHostedListener !== true) return options
+  return { ...options, selfHostedListener: true }
 }
 
 /**
@@ -273,36 +249,37 @@ function withSelfHostedListener(
 export function installOriginTlsOptions(
   source: InstallOriginCertificateSource | undefined,
   env: Record<string, string | undefined>,
-  context: InstallOriginTlsContext = {},
+  context: InstallOriginTlsContext = {}
 ): InstallOriginTlsOptions {
   if (!source) {
-    return withSelfHostedListener({}, context.selfHostedListener);
+    return withSelfHostedListener({}, context.selfHostedListener)
   }
-  if (source === "uploaded") {
-    return withSelfHostedListener({
-      source,
-      publicUploaded: uploadedLeafIsPublic(env, context),
-    }, context.selfHostedListener);
+  if (source === 'uploaded') {
+    return withSelfHostedListener(
+      {
+        source,
+        publicUploaded: uploadedLeafIsPublic(env, context),
+      },
+      context.selfHostedListener
+    )
   }
-  return withSelfHostedListener({ source }, context.selfHostedListener);
+  return withSelfHostedListener({ source }, context.selfHostedListener)
 }
 
 function dialsSelfHostedListener(origin: string): URL | null {
   try {
-    const url = new URL(origin);
-    if (url.protocol !== "https:") return null;
-    if (url.port !== SELF_HOSTED_LISTENER_PORT) return null;
-    if (url.hostname.length === 0) return null;
-    return url;
+    const url = new URL(origin)
+    if (url.protocol !== 'https:') return null
+    if (url.port !== SELF_HOSTED_LISTENER_PORT) return null
+    if (url.hostname.length === 0) return null
+    return url
   } catch {
-    return null;
+    return null
   }
 }
 
-function servedByPlatformCaCatchAll(
-  source: InstallOriginCertificateSource | undefined,
-): boolean {
-  return source === undefined || source === "platform-ca";
+function servedByPlatformCaCatchAll(source: InstallOriginCertificateSource | undefined): boolean {
+  return source === undefined || source === 'platform-ca'
 }
 
 /**
@@ -315,34 +292,31 @@ function servedByPlatformCaCatchAll(
 export function unlistedSelfHostedInstallRefusal(
   origin: string,
   opts: {
-    source?: InstallOriginCertificateSource;
-    selfHostedListener?: boolean;
-    leafNames: readonly string[] | null;
-  },
-): string | null {
-  if (!servedByPlatformCaCatchAll(opts.source)) return null;
-  if (opts.selfHostedListener !== true) return null;
-  const url = dialsSelfHostedListener(origin.trim());
-  if (!url) return null;
-  if (
-    opts.leafNames && coversHostname([...opts.leafNames], url.hostname)
-  ) {
-    return null;
+    source?: InstallOriginCertificateSource
+    selfHostedListener?: boolean
+    leafNames: readonly string[] | null
   }
-  return UNLISTED_INSTALL_HOSTNAME_UNCOVERED;
+): string | null {
+  if (!servedByPlatformCaCatchAll(opts.source)) return null
+  if (opts.selfHostedListener !== true) return null
+  const url = dialsSelfHostedListener(origin.trim())
+  if (!url) return null
+  if (opts.leafNames && coversHostname([...opts.leafNames], url.hostname)) {
+    return null
+  }
+  return UNLISTED_INSTALL_HOSTNAME_UNCOVERED
 }
 
 function unlistedOriginNeedsInsecureTls(
   origin: string,
-  opts: InstallOriginTlsOptions | undefined,
+  opts: InstallOriginTlsOptions | undefined
 ): boolean {
   try {
-    const url = new URL(origin);
-    if (isLoopbackOrPrivateHostname(url.hostname)) return true;
-    return opts?.selfHostedListener === true &&
-      url.port === SELF_HOSTED_LISTENER_PORT;
+    const url = new URL(origin)
+    if (isLoopbackOrPrivateHostname(url.hostname)) return true
+    return opts?.selfHostedListener === true && url.port === SELF_HOSTED_LISTENER_PORT
   } catch {
-    return false;
+    return false
   }
 }
 
@@ -355,25 +329,23 @@ function unlistedOriginNeedsInsecureTls(
  */
 export function installOriginNeedsInsecureTls(
   origin: string,
-  opts?: InstallOriginTlsOptions,
+  opts?: InstallOriginTlsOptions
 ): boolean {
-  const trimmed = origin.trim();
-  if (!trimmed.startsWith("https://")) return false;
-  if (trustedCertificateSource(opts)) return false;
-  if (opts?.source === "platform-ca" || opts?.source === "uploaded") {
-    return true;
+  const trimmed = origin.trim()
+  if (!trimmed.startsWith('https://')) return false
+  if (trustedCertificateSource(opts)) return false
+  if (opts?.source === 'platform-ca' || opts?.source === 'uploaded') {
+    return true
   }
-  return unlistedOriginNeedsInsecureTls(trimmed, opts);
+  return unlistedOriginNeedsInsecureTls(trimmed, opts)
 }
 
-function trustedCertificateSource(
-  opts: InstallOriginTlsOptions | undefined,
-): boolean {
-  if (opts?.source === "lets-encrypt") return true;
-  return opts?.source === "uploaded" && opts.publicUploaded === true;
+function trustedCertificateSource(opts: InstallOriginTlsOptions | undefined): boolean {
+  if (opts?.source === 'acme-http-01') return true
+  return opts?.source === 'uploaded' && opts.publicUploaded === true
 }
 
 /** Overlay artifact catalog on the same origin the installer was fetched from. */
 export function formatInstanceDlBase(origin: string): string {
-  return `${origin.replace(/\/$/, "")}/downloads/daemon`;
+  return `${origin.replace(/\/$/, '')}/downloads/daemon`
 }

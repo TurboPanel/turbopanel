@@ -4,10 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import {
-  generateLicenseToken,
-  verifyLicenseToken,
-} from './license.ts'
+import { generateLicenseToken, verifyLicenseToken } from './license.ts'
 import { verifyDaemonLicense } from './verify-daemon-license.ts'
 
 /**
@@ -27,9 +24,7 @@ function queryResult<T>(rows: T[]) {
   }
 }
 
-function createLicenseLookupDb(
-  row: { organizationId: string; token: string } | null,
-): Db {
+function createLicenseLookupDb(row: { organizationId: string; token: string | null } | null): Db {
   return {
     select: () => ({
       from: () => ({
@@ -58,10 +53,7 @@ test('verifyDaemonLicense returns null when the token does not verify', async ()
     organizationId: ORG_ID,
     token: hashed,
   })
-  assertEquals(
-    await verifyDaemonLicense(db, LICENSE_ID, 'wrong-token-value'),
-    null,
-  )
+  assertEquals(await verifyDaemonLicense(db, LICENSE_ID, 'wrong-token-value'), null)
 })
 
 test('verifyDaemonLicense returns organizationId for a valid pair', async () => {
@@ -74,4 +66,9 @@ test('verifyDaemonLicense returns organizationId for a valid pair', async () => 
   assertEquals(await verifyDaemonLicense(db, `  ${LICENSE_ID}  `, plaintext), {
     organizationId: ORG_ID,
   })
+})
+
+test('verifyDaemonLicense returns null for an erased token', async () => {
+  const db = createLicenseLookupDb({ organizationId: ORG_ID, token: null })
+  assertEquals(await verifyDaemonLicense(db, LICENSE_ID, 'any-token'), null)
 })

@@ -28,6 +28,7 @@ test('withoutPassword drops the credential and keeps every other field', () => {
     grantMode: 'recipe' as const,
     tool: false,
     databases: ['app'],
+    allDatabases: false,
     privileges: ['read-write'],
     connectionRole: 'read-write' as const,
     allowedSources: undefined,
@@ -46,6 +47,7 @@ test('applySettingsPatch keeps unset settings and clears limits on null', () => 
     grantMode: 'recipe' as const,
     tool: false,
     databases: ['a'],
+    allDatabases: false,
     privileges: ['read-write'],
     connectionRole: 'read-write' as const,
     allowedSources: ['internal'],
@@ -59,6 +61,8 @@ test('applySettingsPatch keeps unset settings and clears limits on null', () => 
     applySettingsPatch(before, { allowedSources: null, maxConnections: null, tool: true }),
     { ...before, allowedSources: undefined, maxConnections: undefined, tool: true }
   )
+  assertEquals(applySettingsPatch(before, { allDatabases: true }).allDatabases, true)
+  assertEquals(applySettingsPatch(before, {}).allDatabases, false)
   assertEquals(isLoginGrantMode('self'), true)
   assertEquals(isLoginGrantMode('bogus'), false)
 })

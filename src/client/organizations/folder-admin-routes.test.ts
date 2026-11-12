@@ -215,7 +215,7 @@ test('what the host said about a kept folder shows as the reason, and clears whe
     const offline = await send(ctx, 'GET', `/organizations/${ctx.organizationId}/folders`)
     assertStringIncludes(
       String((offline.json.folders as Array<Record<string, unknown>>)[0]!.reason),
-      'waiting for server Alpha to come back'
+      'waiting for Alpha to come back'
     )
   })
 })

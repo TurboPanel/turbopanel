@@ -12,6 +12,9 @@ export const COMMAND_TYPES = [
   'server.backups.reconcile',
   'server.backups.test-target',
   'server.folders.remove',
+  'server.tunnel.routes',
+  'server.tunnel.connectors',
+  'server.tunnel.status',
   'environment.deploy',
   'environment.lifecycle',
   'environment.stop',
@@ -27,6 +30,7 @@ export const COMMAND_TYPES = [
   'storage.backup',
   'storage.restore',
   'system.reconcile',
+  'cache.apply',
 ] as const
 
 export type CommandType = (typeof COMMAND_TYPES)[number]

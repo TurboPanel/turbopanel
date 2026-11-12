@@ -902,6 +902,19 @@ test('Postgres upgrades: the check row is created once with a stable minute, and
     assertEquals(afterPresses?.lastCheckAt, minutesAfter(T0, 30))
     assertEquals(afterPresses?.lastManualCheckAt, minutesAfter(T0, 32))
     assertEquals(afterPresses?.minute, 30)
+    // Update Now claims on its own field: a Check Now just before does not
+    // make it wait, and it never touches the Check Now field.
+    assertEquals(
+      await claimManualUpgradeCheck(db, minutesAfter(T0, 32.2), 60_000, 'lastUpdateNowAt'),
+      true
+    )
+    assertEquals(
+      await claimManualUpgradeCheck(db, minutesAfter(T0, 32.5), 60_000, 'lastUpdateNowAt'),
+      false
+    )
+    const afterUpdateNow = await readUpgradeCheckSchedule(db)
+    assertEquals(afterUpdateNow?.lastUpdateNowAt, minutesAfter(T0, 32.2))
+    assertEquals(afterUpdateNow?.lastManualCheckAt, minutesAfter(T0, 32))
 
     // The installed web interface: a console report stands in until an install records one.
     await recordInstalledUi(db, { commit: 'console-a', source: 'console', at: T0 })

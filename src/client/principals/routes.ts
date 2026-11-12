@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { type Db, getDb } from '../../db/connection.ts'
@@ -31,6 +32,8 @@ import {
   parseServiceIdsField,
   servicesBelongToProject,
 } from './tenancies.ts'
+import { principalDeleteAuditEntry } from './delete-audit.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import {
   reconcilePrincipalAccess,
@@ -398,6 +401,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
         ? await reconcilePrincipalAccess(
             db,
             getCommandQueue(c),
+            c.get('secretsConfig'),
             {
               actorType: 'user',
               actorId: session.userId,
@@ -433,6 +437,9 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
     if (immutable) return immutable
 
+    const needsName = refuseUnlessNameConfirmed(c, 'Hosting Account', row.username)
+    if (needsName) return needsName
+
     // Removal is an explicit action and never silent: refused while a
     // service, binding, storage entry, secret or database login still names
     // the principal.
@@ -445,12 +452,25 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const serverIds = await serversForPrincipal(db, id)
 
     await db.delete(principal).where(eq(principal.id, id))
+    await recordAudit(
+      db,
+      principalDeleteAuditEntry(
+        {
+          organizationId: row.organizationId,
+          actorUserId: session.userId,
+          actorEmail: session.email ?? null,
+        },
+        id,
+        { username: row.username, appliedUsername: row.appliedUsername, serverIds, projectId }
+      )
+    )
 
     // The row is gone; now the account. Same best-effort outcome shape as a
     // PATCH, so the operator sees which servers were and were not reached.
     const reconciled = await retireDeletedPrincipal(
       db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: session.userId },
       { serverIds, appliedUsername: row.appliedUsername }
     )
@@ -510,6 +530,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: ctx.userId },
       ctx.principalId
     )
@@ -529,6 +550,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: ctx.userId },
       ctx.principalId
     )
@@ -566,6 +588,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: ctx.userId },
       ctx.principalId
     )
@@ -588,6 +611,7 @@ export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthR
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
+      c.get('secretsConfig'),
       { actorType: 'user', actorId: ctx.userId },
       ctx.principalId
     )

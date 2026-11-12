@@ -21,7 +21,10 @@ test('every event has a plain label a person can pick it by', () => {
     assertEquals(label.includes('.'), false, event)
   }
   assertEquals(eventLabel('folder.orphans_found'), 'A folder was left behind on a server')
-  assertEquals(eventLabel('certificate.renewal_failed'), 'A certificate failed to renew')
+  assertEquals(
+    eventLabel('certificate.renewal_failed'),
+    'A certificate could not be issued or renewed'
+  )
 })
 
 test('the orphan alert goes to managers, as a warning, and may wait for a digest', () => {

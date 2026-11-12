@@ -27,7 +27,7 @@ const test = Deno.test.bind(Deno)
 const PEM = '-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----'
 const base = {
   keyPrefix: 'DATABASE',
-  emitEngineDefaults: false,
+  preset: null,
   databaseName: 'wordpress',
   username: 'wp',
   password: 's3cret',
@@ -53,12 +53,14 @@ test('a container service keeps its container name and the CA as text, unchanged
   assertEquals([...explicit], [...omitted])
   assertEquals(omitted.get(keys.host)?.value, 'abc-in')
   assertEquals(omitted.get(keys.caCert)?.value, PEM)
-  assertEquals(omitted.has(keys.caFile), false)
+  assertEquals(omitted.get(keys.caFile)?.value, '/run/secrets/DATABASE_CA_CERT')
+  assertEquals(omitted.get(keys.caFile)?.isSecret, false)
+  assertEquals(omitted.get(keys.sslMode)?.value, 'VERIFY_CA')
   assertEquals(omitted.get(keys.url)?.value.includes('abc-in:13306'), true)
 })
 
 test('a PHP site dials loopback and gets no multi-line value at all', () => {
-  const rows = render({ delivery: 'host-site', emitEngineDefaults: true })
+  const rows = render({ delivery: 'host-site', preset: 'mysql' })
   assertEquals(rows.get(keys.host)?.value, '127.0.0.1')
   assertEquals(rows.get(keys.port)?.value, '13306')
   assertEquals(rows.get('MYSQL_HOST')?.value, '127.0.0.1')
@@ -74,7 +76,7 @@ test('a PHP site on Postgres gets the same set at the Postgres listener port', (
     delivery: 'host-site',
     engineCode: 'postgres',
     port: 15432,
-    emitEngineDefaults: true,
+    preset: 'postgres',
     sslMode: 'require',
   })
   assertEquals(rows.get(keys.host)?.value, '127.0.0.1')
@@ -152,28 +154,40 @@ test('a PHP site is refused any database listener but the two defaults', () => {
 })
 
 test('required keys name the connection set, plus the engine defaults when emitted', () => {
-  assertEquals(
-    bindingRequiredKeys({ keyPrefix: 'DB', emitEngineDefaults: false, engineCode: 'mysql' }),
-    ['DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD']
-  )
+  assertEquals(bindingRequiredKeys({ keyPrefix: 'DB', preset: null, engineCode: 'mysql' }), [
+    'DB_HOST',
+    'DB_PORT',
+    'DB_NAME',
+    'DB_USER',
+    'DB_PASSWORD',
+  ])
   const withDefaults = bindingRequiredKeys({
     keyPrefix: 'DB',
-    emitEngineDefaults: true,
+    preset: 'mysql',
     engineCode: 'mysql',
   })
   assertEquals(withDefaults.includes('MYSQL_HOST'), true)
   assertEquals(withDefaults.length, 10)
 })
 
-test('the advertised binding keys do not grow: the CA file path is set by the daemon', () => {
+test('the advertised binding keys name the CA file for containers and sites, not Node apps', () => {
   const emitted = listBindingEmittedKeys({
     keyPrefix: 'DATABASE',
-    emitEngineDefaults: false,
+    preset: null,
     engineCode: 'mysql',
   })
-  assertEquals(emitted?.includes('DATABASE_CA_FILE'), false)
+  assertEquals(emitted?.includes('DATABASE_CA_FILE'), true)
+  assertEquals(emitted?.includes('DATABASE_SSL_MODE'), true)
   assertEquals(emitted?.includes('DATABASE_CA_CERT'), true)
-  assertEquals(emitted?.length, 8)
+  assertEquals(emitted?.length, 10)
+  const node = listBindingEmittedKeys({
+    keyPrefix: 'DATABASE',
+    preset: null,
+    engineCode: 'mysql',
+    delivery: 'host-node',
+  })
+  assertEquals(node?.includes('DATABASE_CA_FILE'), false)
+  assertEquals(node?.length, 9)
 })
 
 /** A `Db` whose one select returns the binding's stored variable rows. */

@@ -359,6 +359,10 @@ test('parseServerOptions and resolveEffectiveServerTimezone', () => {
   )
   assertEquals(parseServerOptions({ hideWebServerNames: false }), { hideWebServerNames: false })
   assertEquals(parseServerOptions({ hideWebServerNames: null }), {})
+  assertEquals(parseServerOptions({ sendViaHeader: true }), { sendViaHeader: true })
+  assertEquals(parseServerOptions({ sendViaHeader: false }), { sendViaHeader: false })
+  assertEquals(parseServerOptions({ sendViaHeader: null }), {})
+  assertEquals(parseServerOptions({ sendViaHeader: 'on' }), {})
   assertEquals(parseServerOptions(null), null)
   assertEquals(parseServerOptions({}), {})
 

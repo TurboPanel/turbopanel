@@ -92,6 +92,24 @@ after structural checks — unknown keys, services missing `image`/`build` (exce
 warnings are allowed). Deploy uses `composeDocumentToRuntimeYaml` (presentation
 stripped).
 
+`x-turbopanel.source.buildKind` is `native` or `image` ("Container Image
+(Auto-Detected)"). It is a different key from a service's own `image:`, which
+names an image to pull. Documents saved before the rename hold the old value
+(`LEGACY_IMAGE_BUILD_KIND`); the reader accepts both and returns `image`
+(`readSourceBuildKind`), and the linter treats either as an image-built source
+(`isImageBuildKind`). The panel still sends the old value to the daemon
+(`IMAGE_BUILD_WIRE_KIND` in `src/contracts/commands/schemas.ts`), because a
+released daemon rejects `image`. Release records sent to the web interface
+carry only `builderFrontendVersion` / `builderPlanVersion`, while the readers of
+stored daemon results (`imageIdentitiesFromResult` in `src/features/git/releases.ts`
+and the deploy result parser in `schemas.ts`) still accept the old field names.
+
+There is no backfill: live and staging keep their data until wipe day. On wipe
+day, when every database is wiped and every server reinstalled, one step flips
+the wire send to `image` and removes these read-side fallbacks (the old build
+kind value in compose documents and the old result field names), together with
+the daemon's acceptance of the old value.
+
 ### Validation pipeline (five stages, in this order)
 
 Ordering is load-bearing — each stage assumes the ones before it passed, and
@@ -128,7 +146,7 @@ Ordering is load-bearing — each stage assumes the ones before it passed, and
    `environment.server_id`).
 3. **Semantic linter** — `lintComposeYaml` (`lint.ts`): unknown keys against
    `field-policy.ts`, services missing `image`/`build` (host-native and
-   Railpack-built kinds exempt), `x-turbopanel.source.sourceId` resolution +
+   image-built kinds exempt), `x-turbopanel.source.sourceId` resolution +
    one-repository-per-project, `x-turbopanel.principal` alias resolution,
    hosting hostname/`targetPort`-matches-kind and `tls`/`bind` ref resolution,
    overlay tag advisories, and the `deploy:` field-state pass below. (The
@@ -200,7 +218,7 @@ that server. The first ten were flagged by the 2026-09-15 security audit
 (`sec-compose-privileged-gate`), already denylisted three times for the
 _managed_-engine `dockerOptions` path (`lib/managed/settings.ts`'s
 `MANAGED_DOCKER_OPTION_DENYLIST`,
-`turbopaneld/src/contracts/commands-contracts.ts`). `cap_drop`, `ports` and
+`../turbopaneld/src/contracts/commands-contracts.ts`). `cap_drop`, `ports` and
 `user` are deliberately _not_ gated.
 
 **Builds, refused with no opt-in (`build-policy.ts`).** Until builds leave the
@@ -214,7 +232,8 @@ secret whose top-level `file` is outside (`build_secret_outside_project`),
 `extra_hosts` to `host-gateway`, loopback, link-local, unspecified or metadata
 addresses (`build_extra_host_internal`), a `context`, `dockerfile` or
 `additional_contexts` path outside (`build_context_outside_project`), and a
-remote context on a non-public IP or reserved name
+remote context on a non-public IP, a reserved name or a local network ending
+(`.lan`, `.corp`, `.intranet`, `.private`, `.home`; `src/lib/internal-host.ts`)
 (`build_context_internal_url`). One rule has an opt-in:
 a public remote `context` or `additional_contexts` entry (URL, `git@`,
 `github.com/...`) is `build_remote_source_refused` unless the organization
@@ -265,16 +284,29 @@ from a `HostAccessActor` the route resolves (`resolveHostAccessActor` in
 otherwise as `403 compose_host_access_requires_manager`. Every session route
 that reaches a deploy already requires that grant; the explicit check keeps a
 future lower deploy grant from inheriting host-level access. An **automated**
-deploy (the Git webhook, `actorType: 'system'`) has no person to check, so it
+deploy (`actorType: 'system'`: a git push delivered by the repository webhook,
+or a run the control plane starts itself) has no person to check, so it
 runs host-level content only when a manager or owner has deployed that exact
 host-level content before: each such deploy records
 `environment.metadata.composeHostAccessApproval = { fingerprint, approvedBy,
 approvedAt }`, where `fingerprint` is `hostAccessFingerprint` — SHA-256 over
 the sorted gated keys and host-path findings with their values — and the
-webhook deploy must match it, else `403
+automated deploy must match it, else `403
 compose_host_access_requires_approval`. An unrelated edit keeps the
 fingerprint; any change to what reaches the host voids it. A preview records
-nothing. The key is in `ENVIRONMENT_PROMOTED_METADATA_KEYS`, so no client
+nothing. Each new approval also writes a `compose.host_access.approve` audit
+row (planner, right after the metadata write), and each automated deploy that
+runs under one writes `compose.host_access.use` (route, once the deploy is
+persisted), so the history survives the next approval
+(`src/features/schedule/host-access-audit.ts`: ids, fingerprint, paths, never
+values). The use row's context says what started the deploy: `trigger: 'push'`
+with the repository (`sourceId`), `branch` and `commitSha` the push named, or
+`trigger: 'system'` for any other run the control plane starts
+(`hostAccessUseTrigger`, the same "names a ref or a commit" rule as the
+deployment history). A **hostings-only** run (`hostingsOnly`, sent after a
+hosting gets a certificate) writes no use row: the host rewrites the web
+server config and certificates and never brings Compose up, so no host-level
+field is applied under the approval. The key is in `ENVIRONMENT_PROMOTED_METADATA_KEYS`, so no client
 create or patch can set it. The fingerprint's canonical form sorts in UTF-16
 code-unit order (never `localeCompare`) so it is byte-stable across hosts, and a
 test pins one known value — changing the canonical form voids every stored
@@ -332,7 +364,7 @@ caller that does is `applyServiceOptionsToComposeDocument` when
 daemon runs it **inside that service's container** — `docker compose run
 --rm --no-deps -T --entrypoint sh <service> -c …` before `up`, `compose exec`
 after — refusing any command-bearing hook without the field or naming a
-service outside the deploy (`../../../turbopaneld/src/deploy/run-deploy-hooks.ts`).
+service outside the deploy (`../turbopaneld/src/deploy/run-deploy-hooks.ts`).
 
 ### Unbounded resources: an advisory, and an opt-in default
 
@@ -455,7 +487,7 @@ with an explicit compose `services.<key>.container_name`; replica identity is
 keys) → **`registerComposeVolumes`** + **`renameComposeVolumes`** (auto-register
 top-level named volumes as `storage` rows and rewrite keys to their UUID
 `volumeName`, and pin each with `name:` unless the author set `name`/`external`, so a volume does not depend on the Compose project name; the project is per environment, and the first deploy after that change leaves a stack's old `<project>_<uuid>` volumes on the host unused) → build service-options map → resource-limit + health gates →
-**`apply-variables.ts`** (parse `{$KEY}` / `{$scope.KEY}` on `environment` /
+**`apply-variables.ts`** (parse `{$KEY}` / `{$scope.KEY}` / `{$db.<binding>.<field>}` on `environment` /
 `build.args`; non-secrets → project `.env` + `${service__KEY}`; secrets →
 Compose `secrets:` + `KEY_FILE`; unreferenced secrets not auto-injected except
 bindings; reserved `TURBOPANEL_*` keys stripped from user variables via
@@ -551,7 +583,7 @@ daemon injects `extra_hosts: host.docker.internal:host-gateway` plus
 container service (instance does not duplicate those fields in the payload).
 Daemon applies nginx/apache/OpenLiteSpeed vhosts + hosting Caddy reverse_proxy
 to `127.0.0.1:<listenPort>` — see
-`../../../../turbopaneld/src/deploy/AGENTS.md`. Editor | Visual tab preference
+`../turbopaneld/src/deploy/AGENTS.md`. Editor | Visual tab preference
 lives in `presentation.editorView` only (never in compose YAML). Swarm `deploy:`
 (replicas, constraints, spread) is scheduler input compiled out of runtime YAML;
 it is not a per-service compose pin.
@@ -596,7 +628,7 @@ save, so reaching it means a stale or unlinted document).
 including `node`) skip `pickSolePrincipalId` entirely for that service. The
 sole-steward lookup remains the fallback for a document that declares none, so
 `site_principal_ambiguous`, `source_principal_ambiguous`,
-`site_managed_directory_unowned`, and `site_cron_unowned` become unreachable for
+`site_managed_directory_unowned`, `site_cron_unowned`, and `site_lifecycle_unowned` become unreachable for
 an aliased service but still fire on the un-aliased path. A host-native service
 with neither an alias nor any steward is
 **`422
@@ -635,12 +667,18 @@ merged.
 **`tls.mode`.** `internal` (the default when `tls` is omitted) is the web
 server's own self-signed certificate; `certificate` resolves `certificateRef`
 to a `tls` row and pins it; `automatic` asks for a free Let's Encrypt
-certificate. At deploy the reconcile pins the organization's managed Let's
-Encrypt row for the name and the www name its `www` setting adds (an existing
-row with exactly those names, else one that covers them, else a new one; the
-same store as the one-click button), and deploy-prepare sends it as the `acme`
-wire mode. There is no DNS check on this path: the server keeps retrying until
-DNS points at it. The deploy is refused with **`400 acme_requires_org_opt_in`**
+certificate. It goes through the same certificate pre-check (DNS, port 80,
+CAA) and hold as a hostname added in the Hosting tab: the reconcile keeps a pin
+only when the route is already pinned to the organization's managed row for the
+name and the www name its `www` setting adds; otherwise it pins nothing (the
+site serves `tls internal`) and records a waiting request (`pending_at`). After
+the reconcile's transaction, deploy-prepare runs the pre-check on those rows
+(`client/hostings/letsencrypt-held.ts`, never in a preview): a name that passes
+is pinned (an existing row with exactly those names, else one that covers them,
+else a new one) and goes out with this deploy as the `acme` wire mode; a name
+that fails stays waiting and the sweep checks it again with a growing wait. No
+name reaches the web server's own issuance before it passes, so a name with no
+DNS never spends Let's Encrypt's failed-validation limit. The deploy is refused with **`400 acme_requires_org_opt_in`**
 when the organization has not turned on "Allow Let's Encrypt certificates",
 **`400 acme_requires_public_bind`** for a non-public route, and **`400
 letsencrypt_hostname_unsupported`** for a wildcard, IP or private name. The
@@ -721,7 +759,7 @@ the repository's `defaultBranch`) is the pushed branch, and `deployOnPush: false
 opts a binding out of push deploys while leaving a manual deploy untouched — see
 `src/webhook/AGENTS.md` ("Which environments a push deploys") and
 `src/features/git/environment-branch-tracking.ts`.
-The daemon release engine (`../../../../turbopaneld/src/deploy/release/`) checks
+The daemon release engine (`../turbopaneld/src/deploy/release/`) checks
 out, builds, and atomically promotes
 `<principalHome>/sites/<serviceId>/current`.
 
@@ -887,7 +925,7 @@ systemd applies the environment file over the unit's own `Environment=` lines;
 names or values the daemon would refuse are held back and listed with a reason
 rather than failing the deploy. `source` comes from `resolveVariableSource`
 (`features/variables/resolve-inherited.ts`) in the same order deploy merges
-scopes. The daemon side is `../../../../turbopaneld/src/deploy/native/AGENTS.md`
+scopes. The daemon side is `../turbopaneld/src/deploy/native/AGENTS.md`
 ("Variables").
 
 Both ride the wire. `deploy-prepare.ts` copies them onto
@@ -926,7 +964,7 @@ inputs would point a unit's `WorkingDirectory` at a tree nothing ever published.
 `resources` comes from the same clamped service options containers use;
 `accountLimits` is the effective org ∩ server ceiling, repeated on every app of
 a principal so the daemon can build one `turbopanel-<username>.slice` per
-account. Daemon side: `../../../../turbopaneld/src/deploy/native/`.
+account. Daemon side: `../turbopaneld/src/deploy/native/`.
 
 ### Changes for {env} are a partial layer
 
@@ -1007,6 +1045,33 @@ envelopes, never in YAML. Daemon overlay fragments (storage, Traefik, site
 reachability) merge **into that single file** on the host and do **not** inject
 secrets. The deprecated **`composeYaml`** field is the same compiled body for
 older daemons and for UI display; it is not a second file.
+
+### Generated config files (`apply-config-files.ts`)
+
+Standard Compose `configs:` with `content` (top level) mounted by a service's
+`configs: [{ source, target }]`. The text may use `{$KEY}` / `{$scope.KEY}` /
+`{$db.<binding>.<field>}` anywhere (`splitEmbeddedRefs` in `variable-refs.ts`;
+the one place the reference grammar widens). Per service, each content config becomes its own
+source `<service>_<name>` and file `<service>--<name>`, so no file is bound into
+two services; the compiled document gets `configs.<source>.file` under
+`/run/turbopanel/deployments/<p>/<e>/configs/`, never `content`. A secret
+reference becomes a `{ secretKey }` part and rides sealed in
+`variableMaterial[]` (no `secretPlan` entry, no `/run/secrets` mount); the
+control plane never decrypts it, and `deployment.options.configSecretRefs`
+lets boot rehydrate ask for the value. `$` rules: literal `$` is `$$`, literal
+`{$name}` is `{$$name}`, Compose `${X}` / `$X` is refused
+(`config_interpolation`); references are scanned on the raw text, `$$` is
+reduced in text parts only, inserted values are never scanned again. `uid`,
+`gid` and `mode` are dropped with a warning (files are fixed read-only and
+readable by every user in the container). Refused as `config_file_invalid`: a
+name ending in `.tmp`, a generated name another config already uses, over the
+limits (64 KiB text per file, 16 per service, 256 KiB per deploy);
+`config_file_shared` when a service names another service's generated source.
+The target daemon must list `deploy-config-files-v1`: otherwise a content
+config with a real `{$…}` token returns `409 config_files_need_daemon_update`
+(naming the servers) and one without a token stays as authored (Compose's own
+`content`). `desiredHash` covers `configFiles` (the parts) so a text-only change
+is not skipped as unchanged; an environment with none keeps its hash.
 
 ### The compiler IR — four models (`ir.ts`)
 
@@ -1140,3 +1205,40 @@ rather than a special case: a spanning network is authored `driver: overlay` and
 never sets `external:`, and `collectComposeExternalDockerNetworkNames` matches
 only an authored `external:` on the _pre-compile_ document. It also gives the
 daemon a belt-and-braces path if `server.fabric.reconcile` lands stale.
+
+### Database references (`{$db.<binding>.<field>}`)
+
+`db` is the only scope that takes three segments (`variable-refs.ts`:
+`DB_REF_FIELDS`, `isDbRef`, `formatVariableRef`); it is not a variable-storage
+scope. `<binding>` is the binding's key prefix as stored; fields are `host port
+name user password url ca_file ca_text ssl_mode driver read_split`.
+They resolve from the service's own binding rows
+(`src/features/bindings/db-refs.ts`, one implementation for all three places:
+deploy buckets, hosting web env, daemon reboot rehydrate), never another
+service's.
+
+| Place | Plain field | Secret field (`password`, `url`, `ca_text`) |
+| --- | --- | --- |
+| Stored plain variable value, any scope | anywhere in the text | whole value only; the variable becomes secret (sealed envelope passed through, never decrypted on the site path) |
+| Stored secret variable | not parsed; save refuses a `{$db.` token | not parsed |
+| Compose `environment:` / `build.args` | whole value | whole value, as a file |
+| `configs.content` | anywhere | anywhere (sealed parts) |
+
+In a stored value only `db` tokens expand; `{$$db.` is the escape for a literal
+`{$db.`; inserted values are never scanned again. A reference to a binding the
+service lacks is an error when the variable is set on the service or its
+hostname, and a warning with the variable left out when it is set higher. On a
+PHP site `ca_file` works as a whole value only (the daemon fills the path) and
+`ca_text` is refused; a Node app has no CA file yet. Save checks:
+`variableReferenceProblem` in `src/client/variables/routes-helpers.ts`.
+
+The admin tool templates (`src/features/managed/admin-tools/templates.ts`) are the first in-tree users of generated config files: plugin files, a server list and a pass file are `configs.<n>.content` with `{$KEY}` parts. Remember that an environment value must be exactly one reference.
+
+## Helper reach (`x-turbopanel.reach`)
+
+A container may declare `reach: { port, from: [site or node services of one
+account] }`. The field is container-only (`SERVICE_KIND_FIELD_TABLE`). Prepare
+allocates a loopback port from the listen ledger (`../caches/reach.ts`), injects
+`127.0.0.1:<hostPort>:<port>` into the compiled document after the reserved-port
+warning pass, and sends `helperReach`. Cache and helper ports are seeded into the
+ledger by `listReservedListenPorts`. Detail: `../caches/AGENTS.md`.

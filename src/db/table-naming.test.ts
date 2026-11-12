@@ -37,8 +37,14 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'attempt',
   'audit',
   'backup',
+  'badge',
   'binding',
   'bulwark',
+  // A project cache: one native Valkey process owned by a Hosting Account.
+  'cache',
+  'carrier',
+  // A group of notification topics for the settings screens.
+  'category',
   'certificate',
   'changeover',
   'channel',
@@ -46,21 +52,30 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'connection',
   'container',
   'copy',
+  // A sign-in passkey marked to approve control plane key changes.
+  'custodian',
   'database',
   'datacenter',
   'delivery',
   'deployment',
   // An organization's S3-compatible place to copy finished backups to.
   'destination',
+  // A phone or tablet that can receive push notifications for one person.
+  'device',
   'dispatch',
+  'doorway',
   'edict',
   'environment',
+  // One thing that happened, the outbox notification copies hang from.
+  'event',
   'fabric',
   // One service or volume directory per server under a site owner's tree.
   'folder',
   'forge',
   'hosting',
   'hostname',
+  // Install-level provider account (tunnel, DNS, certificates) for the control plane's own names.
+  'ingress',
   'invitation',
   'ip',
   'key',
@@ -74,23 +89,37 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'monitor',
   'mount',
   'network',
+  'nonce',
   'notification',
   'organization',
   'origin',
   'passkey',
   'payer',
+  // A device node on a server (USB drive, printer, serial adapter) a service can be given.
+  'peripheral',
   // Highest RAM and cores of one server per hour (the over-tier rules).
   'peak',
   'permission',
   // `principal` × `server`: where a system principal is a Linux account (2026-10-13).
   'placement',
+  // An organization's default notification level for its members or a team.
+  'policy',
+  'portal',
+  // One person's notification level for one scope.
+  'preference',
   'principal',
   'project',
+  // A DNS record the control plane manages at a connected provider.
+  'record',
   'recovery',
   'relay',
   'replica',
   'repository',
   'retention',
+  // One approved control plane key-set statement (the chain servers follow).
+  // The word was retired when the Organization CA journal became `changeover`;
+  // no migration creates that old table any more, so it is free for this one.
+  'rotation',
   'rule',
   'seat',
   'scope',
@@ -109,19 +138,29 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'storage',
   'subnet',
   'subscription',
+  // An email address no notification is sent to.
+  'suppression',
   'tag',
   'task',
   'team',
   'teammate',
   'tenancy',
+  'ticket',
   'tier',
   'tls',
+  // One notification event type in the catalog.
+  'topic',
   'totp',
+  'tunnel',
   'upgrade',
   'user',
   'variable',
   'verification',
+  // One sign-in (name and bcrypt hash) for a password-protected site.
+  'visitor',
   'watch',
+  // Mark-all-read time for one person's inbox.
+  'watermark',
   'workspace',
 ])
 
@@ -156,7 +195,6 @@ const RETIRED_TABLE_NAMES = new Set<string>([
   'credential',
   'node',
   'segment',
-  'rotation',
   'backuppolicy',
   'backuprun',
   'volumebackup',

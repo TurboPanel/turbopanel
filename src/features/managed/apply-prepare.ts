@@ -56,7 +56,13 @@ import { REPLICATION_PASSWORD_LENGTH } from '../principals/store.ts'
 import { findManagedLoginByRole, listManagedLoginCredentials, setLoginPassword } from './logins.ts'
 import { ensureManagedReplicationLogin } from './cluster-logins.ts'
 import { keepLivePrimaryEpoch } from './primary-epoch.ts'
-import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
+import { loadManagedOrgDefaults, loadPrincipalNamePolicy } from './load-org-defaults.ts'
+import {
+  allDatabasesAllowed,
+  allDatabasesSwitches,
+  loginDatabasesForApply,
+} from './all-databases.ts'
+import { isReservedDatabaseName } from './routes-helpers.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
   isOrganizationCaUniqueViolation,
@@ -351,7 +357,7 @@ export function prepareErrorResponse(c: Context, error: ManagedApplyPrepareError
       return c.json({ error: 'managed_listener_bind_conflict' }, 422)
     case 'private_path_unavailable':
     case 'private_family_mismatch':
-    case 'failover_requires_trusted_datacenter':
+    case 'untrusted_network_needs_fabric':
       return privateEndpointErrorResponse(c, error)
   }
 }
@@ -417,8 +423,15 @@ async function buildCredentials(
   dataEncryptionSecrets: DerivedSecretsConfig,
   managedId: string,
   serverId: string,
-  omitLoginIds?: string[]
+  scopeInput: {
+    omitLoginIds: string[] | undefined
+    /** Every database the cluster has after this apply; the backup login reaches all of them. */
+    clusterDatabases: readonly string[]
+    /** Both All Databases switches allow it, and the engine whose reserved names stay out. */
+    allDatabases: { active: boolean; engine: string }
+  }
 ): Promise<ManagedApplyCommandPayload['credentials'] | ManagedApplyPrepareError> {
+  const { omitLoginIds, clusterDatabases, allDatabases } = scopeInput
   const omit = new Set(omitLoginIds ?? [])
   const rows = (await listManagedLoginCredentials(db, managedId)).filter((row) => !omit.has(row.id))
   if (rows.length === 0) {
@@ -454,13 +467,20 @@ async function buildCredentials(
       sealed
     )
 
+    if (row.role === 'backup') {
+      credentials.push(backupCredential(row, resealed, clusterDatabases))
+      return undefined
+    }
     const credential: ManagedApplyCommandPayload['credentials'][number] = {
       principalId: row.id,
       // Applied login — the engine role name, not the internal short name.
       username: row.appliedUsername,
-      // The daemon knows three roles; a backup login is an ordinary login on the wire for now.
-      role: row.role === 'backup' ? 'user' : row.role,
-      databases: row.databases,
+      role: row.role,
+      databases: loginDatabasesForApply(row, {
+        databases: clusterDatabases,
+        active: allDatabases.active,
+        isReserved: (name) => isReservedDatabaseName(allDatabases.engine, name),
+      }),
       password: resealed,
     }
     const privileges = row.privileges
@@ -477,6 +497,27 @@ async function buildCredentials(
   if (failure) return failure
 
   return credentials
+}
+
+/**
+ * The backup login on the wire: role `user` (the daemon knows three roles, and
+ * an older one drops `kind` and makes a login with no rights), `kind: 'backup'`,
+ * every database of the cluster and no privileges. The daemon derives the
+ * per-engine dump rights from `kind`.
+ */
+export function backupCredential(
+  row: { id: string; appliedUsername: string },
+  password: string,
+  clusterDatabases: readonly string[]
+): ManagedApplyCommandPayload['credentials'][number] {
+  return {
+    principalId: row.id,
+    username: row.appliedUsername,
+    role: 'user',
+    kind: 'backup',
+    databases: [...new Set(clusterDatabases)],
+    password,
+  }
 }
 
 function organizationCaSetOrSealedError(
@@ -1437,7 +1478,19 @@ async function buildPayloadForMember(
     dataEncryptionSecrets,
     input.managedRow.id,
     member.serverId,
-    input.omitLoginIds
+    {
+      omitLoginIds: input.omitLoginIds,
+      clusterDatabases: input.databases,
+      allDatabases: {
+        active: allDatabasesAllowed(
+          allDatabasesSwitches(
+            await loadManagedOrgDefaults(db, input.organizationId),
+            input.settings
+          )
+        ),
+        engine: input.spec.engine,
+      },
+    }
   )
   if (!Array.isArray(credentials)) return credentials
 

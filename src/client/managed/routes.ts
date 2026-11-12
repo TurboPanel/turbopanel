@@ -3,7 +3,9 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { confirmationName, refuseUnlessNameConfirmed } from '../confirm-name.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -27,6 +29,14 @@ import { registerManagedExternalAccessRoutes } from './external-access-routes.ts
 import { checkLoginMayBeDeleted, MANAGED_LOGIN_CHECK_TIMEOUT_MS } from './definer-guard.ts'
 import { probeManagedPermissions } from './permissions-probe.ts'
 import { registerManagedPrivilegeRoutes } from './privilege-routes.ts'
+import {
+  BACKUP_LOGIN_DEFAULT_NAME,
+  BACKUP_LOGIN_EXISTS,
+  BACKUP_LOGIN_UNIQUE_INDEX,
+  backupLoginSettings,
+  backupLoginSourcesRefusal,
+  refuseBackupLoginOnOldDaemon,
+} from '../../features/managed/backup-login.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import {
   checkManagedSslModeForExternalAccess,
@@ -83,13 +93,26 @@ import {
   isManagedLoginNameTaken,
   isManagedLoginNameTakenInFamily,
   listManagedLogins,
+  type DatabaseLoginRole,
   type LoginSettingsPatch,
+  type ManagedLoginCredentialRow,
   type ManagedLoginRow,
   patchLogin,
   removeNewManagedLogins,
   rotateLoginPassword,
   setLoginPassword,
 } from '../../features/managed/logins.ts'
+import {
+  allDatabasesSwitches,
+  loadAllDatabasesRefusal,
+} from '../../features/managed/all-databases.ts'
+import { registerManagedAdminToolRoutes } from './admin-tool-routes.ts'
+import {
+  ADMIN_TOOL_LOGIN_SOURCES,
+  adminToolLoginGrants,
+} from '../../features/managed/admin-tools/login-settings.ts'
+import { unlistFromLogins } from '../../features/managed/admin-tools/unlist.ts'
+import { adminToolLoginIds } from '../../features/managed/admin-tools/projects.ts'
 import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
 import {
   APP_LOGIN_NAME_SCHEME,
@@ -107,7 +130,9 @@ import { getCommandQueue } from '../../features/commands/queue.ts'
 import { cancelOpenReturnFenceStops } from '../../features/commands/command-records.ts'
 import { cancelStopsOnceQueued } from '../../features/managed/ha-return-fence.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
-import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
+import { assertCanManageOr403, parseJsonBody, requireStringField } from '../shared.ts'
+import { isUuid } from '../access/routes-helpers.ts'
+import { namesAnotherOrganization } from '../org-context.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
 import {
   privateEndpointErrorResponse,
@@ -260,6 +285,7 @@ import {
   parseManagedLoginGrantFields,
   parseManagedLoginModeFields,
   parseManagedPatchName,
+  checkManagedLoginName,
   parseManagedUserCreateFields,
   parseManagedVersionSelection,
   parseMemberPatch,
@@ -267,6 +293,7 @@ import {
   parsePromoteForce,
   parseReplicaClassCreate,
   pickPrimaryCommandResult,
+  placementNeedsHealthyFabric,
   readInitialDatabase,
   replicaEndpointPurpose,
   replicaPlacementNeedsDatacenter,
@@ -1322,6 +1349,10 @@ async function resolveReplicaPlacement(
     purpose,
   })
   if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
+  // A pair on an untrusted network never gets a new placement that would fall
+  // to the public address in plain; TurboFabric has to carry it.
+  if (placementNeedsHealthyFabric(toPrimary))
+    return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
   if (params.replicaClass === 'failover') {
     const transportErr = assertFailoverReplicaTransportAllowed(toPrimary.transport)
     if (transportErr) {
@@ -1343,6 +1374,8 @@ async function resolveReplicaPlacement(
   if ('kind' in fromPrimary) {
     return privateEndpointErrorResponse(c, fromPrimary)
   }
+  if (placementNeedsHealthyFabric(fromPrimary))
+    return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
 
   const offline = await assertTargetServerOnline(c, db, params.serverId)
   if (offline) return offline
@@ -1359,10 +1392,10 @@ async function resolveReplicaPlacement(
  * caller can surface the class-conversion error instead.
  *
  * Resolver errors (`private_path_unavailable`, `private_family_mismatch`,
- * `failover_requires_trusted_datacenter`) are surfaced as their own 422 via
+ * `untrusted_network_needs_fabric`) are surfaced as their own 422 via
  * `privateEndpointErrorResponse` — never collapsed into
  * `failover_replica_requires_datacenter_transport`, because the operator
- * needs the specific reason (e.g. "mark the shared datacenter trusted").
+ * needs the specific reason (e.g. "turn on TurboFabric or mark the datacenter trusted").
  */
 async function resolveFailoverConversionPlacement(
   c: Context<AppEnv>,
@@ -1375,6 +1408,8 @@ async function resolveFailoverConversionPlacement(
     purpose: replicaEndpointPurpose('failover'),
   })
   if ('kind' in toPrimary) return privateEndpointErrorResponse(c, toPrimary)
+  if (placementNeedsHealthyFabric(toPrimary))
+    return c.json({ error: 'untrusted_network_needs_fabric' }, 422)
   if (assertFailoverReplicaTransportAllowed(toPrimary.transport)) return false
   if (replicaPlacementNeedsDatacenter(toPrimary.transport, 'failover')) {
     const dcReady = await assertServerDatacenterReady(db, params.memberServerId)
@@ -1455,7 +1490,7 @@ async function hasManagedUsernameNamespaceConflict(
       // this server, its containers and the organization's servers); its name is
       // made from the cluster id, so it cannot collide with another login.
       // The replication login never reaches the frontend.
-      if (entry.role !== 'user') continue
+      if (entry.role !== 'user' && entry.role !== 'backup') continue
       // The applied login is what lands on the shared ProxySQL frontend —
       // that's the name that must be free in the new owner's namespace.
       const ownPrincipalId = entry.principalId ?? undefined
@@ -1498,8 +1533,13 @@ async function refuseDatabaseDropWhenInUse(
       409
     )
   }
+  // An admin tool's login is listed on every database; that is not a reason to
+  // keep one (the listing goes with the database).
+  const toolLoginIds = new Set(await adminToolLoginIds(db, managedId))
   const users = listUsersReferencingDatabase(
-    (await listManagedLogins(db, managedId)).filter((entry) => entry.id !== ownerLoginId),
+    (await listManagedLogins(db, managedId)).filter(
+      (entry) => entry.id !== ownerLoginId && !toolLoginIds.has(entry.id)
+    ),
     databaseName
   )
   if (users.length > 0) {
@@ -1666,6 +1706,8 @@ async function createLoginWithNewName(
   params: LoginCreateShared & {
     username: string
     nameScheme: PrincipalNameScheme
+    /** `user` unless said otherwise (the backup login passes `backup`). */
+    role?: DatabaseLoginRole
   }
 ): Promise<LoginCreateOutcome> {
   const { ctx, managedId, existingLogins, owningOrgIds, settings, username, nameScheme } = params
@@ -1694,6 +1736,7 @@ async function createLoginWithNewName(
     username,
     appliedUsername,
     nameScheme,
+    ...(params.role ? { role: params.role } : {}),
   })
   return { ok: true, principalId: null, ...created, username, appliedUsername, nameScheme }
 }
@@ -1832,7 +1875,6 @@ async function inLoginCreateTransaction<T>(
 ): Promise<T> {
   const { ctx, managedId, targetServerId } = params
   return await db.transaction(async (tx) => {
-    const existingLogins = await listManagedLogins(tx, managedId)
     await ensureManagedPrimaryMember(tx, { managedId, serverId: targetServerId })
     const owningOrgIds = await resolveManagedOwningOrganizationIds(
       tx,
@@ -1841,6 +1883,9 @@ async function inLoginCreateTransaction<T>(
       ctx.organizationId
     )
     await lockOrganizationsForUpdate(tx, owningOrgIds)
+    // Read under the lock, so a check against them (one backup login per
+    // cluster, a name already on the cluster) cannot race another create.
+    const existingLogins = await listManagedLogins(tx, managedId)
     return await fn(tx, { ctx, managedId, existingLogins, owningOrgIds })
   })
 }
@@ -2066,6 +2111,451 @@ async function createAppLogins(c: Context<AppEnv>): Promise<Response> {
   })
 }
 
+/**
+ * Insert the backup login under the organization lock. The one-per-cluster
+ * check reads the logins under that lock; a create that still lands second
+ * (the unique index `uniq_login_managed_backup`) answers the same 409.
+ */
+async function insertBackupLogin(
+  db: ManagedDb,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  params: {
+    ctx: ManagedContext
+    managedId: string
+    targetServerId: string
+    settings: LoginSettingsPatch
+    username: string
+    nameScheme: PrincipalNameScheme
+  }
+): Promise<LoginCreateOutcome> {
+  const exists = { ok: false, error: BACKUP_LOGIN_EXISTS.error, status: 409 } as const
+  try {
+    return await inLoginCreateTransaction(db, params, (tx, shared) =>
+      shared.existingLogins.some((entry) => entry.role === 'backup')
+        ? Promise.resolve(exists)
+        : createLoginWithNewName(tx, dataEncryptionSecrets, {
+            ...shared,
+            settings: params.settings,
+            username: params.username,
+            nameScheme: params.nameScheme,
+            role: 'backup',
+          })
+    )
+  } catch (err) {
+    if (isUniqueViolationOn(err, BACKUP_LOGIN_UNIQUE_INDEX)) return exists
+    throw err
+  }
+}
+
+/** The 409 for a refused backup login create, with plain words when the cluster already has one. */
+function loginCreateRefusal(c: Context<AppEnv>, outcome: { error: string; status: 409 }): Response {
+  if (outcome.error === BACKUP_LOGIN_EXISTS.error) return c.json(BACKUP_LOGIN_EXISTS, 409)
+  return c.json({ error: outcome.error }, outcome.status)
+}
+
+/** The backup login's typed name (default `backup`) and the name scheme the organization allows. */
+async function parseBackupLoginName(
+  c: Context<AppEnv>,
+  db: ManagedDb,
+  ctx: ManagedContext,
+  row: ManagedRowRecord,
+  body: Record<string, unknown>
+): Promise<Response | { username: string; nameScheme: PrincipalNameScheme }> {
+  if (body.username !== undefined && typeof body.username !== 'string') {
+    return c.json({ error: 'Invalid username' }, 400)
+  }
+  const policy = await loadPrincipalNamePolicy(db, ctx.organizationId)
+  const schemeChoice = resolveRequestedNameScheme(policy, body.nameScheme)
+  if (!schemeChoice.ok) return c.json({ error: schemeChoice.error }, schemeChoice.status)
+  const username = body.username ?? BACKUP_LOGIN_DEFAULT_NAME
+  const nameError = checkManagedLoginName(
+    c,
+    ctx,
+    username,
+    parseManagedResidual(row.metadata).rootUsername,
+    schemeChoice.scheme
+  )
+  return nameError ?? { username, nameScheme: schemeChoice.scheme }
+}
+
+/**
+ * `POST /managed/backup-login`: the cluster's one backup login. Takes
+ * `allowedSources` (required, never `any`), an optional `username` (default
+ * `backup`) and an optional `maxConnections`. The password shows once.
+ */
+async function createBackupLoginRoute(c: Context<AppEnv>): Promise<Response> {
+  const scope = await loadManagedRowScope(c)
+  if (scope instanceof Response) return scope
+  const { db, auth, ctx, row } = scope
+
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+  const options = await loadManagedOptions(db, ctx.spec, row)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+  const sourcesRefused = backupLoginSourcesRefusal(body.allowedSources)
+  if (sourcesRefused) return c.json(sourcesRefused, 400)
+  const name = await parseBackupLoginName(c, db, ctx, row, body)
+  if (name instanceof Response) return name
+  const { username, nameScheme } = name
+
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!dataEncryptionSecrets) return c.json({ error: 'Encryption unavailable' }, 503)
+  const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+
+  const daemonRefused = await refuseBackupLoginOnOldDaemon(db, targetServerId)
+  if (daemonRefused) return c.json(daemonRefused, 409)
+
+  const gate = await gateLoginCreate(c, db, {
+    ctx,
+    row,
+    options,
+    body,
+    targetServerId,
+    grantMode: 'recipe',
+    grants: [],
+  })
+  if (gate instanceof Response) return gate
+  const { commandQueue, limits } = gate
+
+  const userCreate = await insertBackupLogin(db, dataEncryptionSecrets, {
+    ctx,
+    managedId: row.id,
+    targetServerId,
+    settings: backupLoginSettings(limits),
+    username,
+    nameScheme,
+  })
+  if (!userCreate.ok) return loginCreateRefusal(c, userCreate)
+
+  const enqueued = await applyCreatedLogins(c, db, {
+    ctx,
+    row,
+    options,
+    targetServerId,
+    commandQueue,
+    userId: auth.userId,
+    loginIds: [userCreate.loginId],
+  })
+  if (enqueued instanceof Response) return enqueued
+
+  // This login reads every database on the cluster: keep who made it.
+  await recordAudit(db, {
+    organizationId: auth.organizationId,
+    actorUserId: auth.userId,
+    action: 'managed.backup_login.create',
+    targetType: 'managed',
+    targetId: row.id,
+    context: {
+      login: userCreate.appliedUsername,
+      allowedSources: limits.allowedSources ?? null,
+    },
+  })
+  const created = await findManagedLogin(db, row.id, userCreate.loginId)
+  const primaryResult = pickPrimaryCommandResult(enqueued)
+  return c.json({
+    ok: true,
+    login: created ? serializeManagedLogin(created, ctx.spec.engine) : null,
+    password: userCreate.password,
+    commandId: primaryResult?.commandId,
+    serverId: primaryResult?.serverId ?? targetServerId,
+    results: enqueued,
+  })
+}
+
+/** Takes the database off every admin tool login's list for the drop's apply; `restore` puts it back. */
+async function unlistToolLoginsFromDatabase(db: Db, managedId: string, databaseName: string) {
+  return await unlistFromLogins(await adminToolLoginIds(db, managedId), async (id) => {
+    const target = await findManagedLogin(db, managedId, id)
+    return target ? await unlistLoginFromDatabase(db, target, databaseName) : null
+  })
+}
+
+/**
+ * The login of an admin tool, made like `POST /managed/users` makes one but with
+ * fixed settings: a tool login, reachable only from the server itself, listed
+ * on every current database (explicit grants, not All Databases, so that switch
+ * keeps governing ordinary logins; the cluster's database creation keeps the
+ * list in step). The login row is saved here and the apply is queued by the
+ * returned `apply`, after the caller has bound the tool to it.
+ */
+async function createManagedToolLogin(
+  c: Context<AppEnv>,
+  scope: {
+    db: Db
+    auth: { userId: string; organizationId: string }
+    ctx: ManagedContext
+    row: ManagedRowRecord
+  },
+  input: { username: string; access: 'admin' | 'read-only' }
+) {
+  const { db, auth, ctx, row } = scope
+  const options = await loadManagedOptions(db, ctx.spec, row)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+  const grants = adminToolLoginGrants({
+    access: input.access,
+    engine: ctx.spec.engine,
+    clusterDatabases: options.databases,
+  })
+  const { databases, privileges } = grants
+  if (databases.length === 0) {
+    return c.json(
+      {
+        error: 'admin_tool_needs_database',
+        message: 'Add a database to this Database Cluster before adding an admin tool.',
+      },
+      409
+    )
+  }
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!dataEncryptionSecrets) return c.json({ error: 'Encryption unavailable' }, 503)
+  const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+  const gate = await gateLoginCreate(c, db, {
+    ctx,
+    row,
+    options,
+    body: { allowedSources: [...ADMIN_TOOL_LOGIN_SOURCES] },
+    targetServerId,
+    grantMode: grants.grantMode,
+    grants: [{ privileges, databases }],
+  })
+  if (gate instanceof Response) return gate
+  const settings: LoginSettingsPatch = {
+    databases,
+    allDatabases: grants.allDatabases,
+    privileges,
+    connectionRole: grants.connectionRole,
+    grantMode: grants.grantMode,
+    tool: grants.tool,
+    ...loginLimitSettings(gate.limits),
+  }
+  const created = await inLoginCreateTransaction(
+    db,
+    { ctx, managedId: row.id, targetServerId },
+    (tx, shared) =>
+      createLoginWithNewName(tx, dataEncryptionSecrets, {
+        ...shared,
+        settings,
+        username: input.username,
+        nameScheme: APP_LOGIN_NAME_SCHEME,
+      })
+  )
+  if (!created.ok) return c.json({ error: created.error }, created.status)
+  return {
+    loginId: created.loginId,
+    username: created.username,
+    password: created.password,
+    notes: gate.notes,
+    apply: () =>
+      applyCreatedLogins(c, db, {
+        ctx,
+        row,
+        options,
+        targetServerId,
+        commandQueue: gate.commandQueue,
+        userId: auth.userId,
+        loginIds: [created.loginId],
+      }),
+  }
+}
+
+/**
+ * Rotates one login's password, rewrites its bindings' variables and queues the
+ * apply that makes it real; any failure puts the old password back. Used by
+ * `POST /managed/users/:loginId/password` and by an admin tool's Reset Password.
+ */
+async function rotateManagedLogin(
+  c: Context<AppEnv>,
+  scope: {
+    db: Db
+    auth: { userId: string; organizationId: string }
+    ctx: ManagedContext
+    row: ManagedRowRecord
+  },
+  target: ManagedLoginCredentialRow
+) {
+  const { db, auth, ctx, row } = scope
+  const rotateGuard = evaluateManagedLoginRotateGuard(target.role)
+  if (rotateGuard) {
+    return c.json({ error: rotateGuard.error }, rotateGuard.status)
+  }
+
+  const options = await loadManagedOptions(db, ctx.spec, row)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  if (!dataEncryptionSecrets) {
+    return c.json({ error: 'Encryption unavailable' }, 503)
+  }
+
+  const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+
+  const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
+  if (commandQueue instanceof Response) return commandQueue
+
+  const previousPassword = target.password
+
+  const { plaintext } = await rotateLoginPassword(db, dataEncryptionSecrets, target.id)
+
+  const materializeResult = await materializeBindingsForLogin(db, dataEncryptionSecrets, target.id)
+  // Every failure from here on must undo BOTH the stored password and the
+  // project variables that were just rewritten with the new one.
+  const rollBack = () =>
+    rollBackLoginRotation(db, dataEncryptionSecrets, {
+      loginId: target.id,
+      previousPassword,
+    })
+  if (!('ok' in materializeResult)) {
+    await rollBack()
+    return c.json({ error: materializeResult.kind }, 422)
+  }
+
+  const residual = parseManagedResidual(row.metadata)
+  const preparedApply = await prepareManagedApplyPayloads(c, db, {
+    managedRow: row,
+    spec: ctx.spec,
+    settings: options.settings,
+    databases: options.databases,
+    ownerRoleDatabases: options.ownerRoleDatabases,
+    databaseOwners: options.databaseOwners,
+    serverId: targetServerId,
+    environmentId: ctx.environmentId,
+    organizationId: ctx.organizationId,
+    rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
+  })
+  if (isPrepareError(preparedApply)) {
+    await rollBack()
+    return mapManagedApplyPrepareError(c, preparedApply)
+  }
+
+  const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
+    userId: auth.userId,
+    managedId: row.id,
+    members: preparedApply.members,
+  })
+  if (enqueued instanceof Response) {
+    await rollBack()
+    return enqueued
+  }
+
+  const primaryResult = pickPrimaryCommandResult(enqueued)
+  const redeployRequired = await listBindingImpactForLogin(db, target.id)
+  return {
+    plaintext,
+    commandId: primaryResult?.commandId,
+    serverId: primaryResult?.serverId ?? targetServerId,
+    results: enqueued,
+    redeployRequired,
+  }
+}
+
+/**
+ * Delete one login of the cluster (`DELETE /managed/users/:loginId` and
+ * `DELETE /managed/backup-login`): `pickTarget` finds it. The host drops the
+ * account through an apply; the row goes when that apply succeeds.
+ */
+async function deleteManagedLoginRoute(
+  c: Context<AppEnv>,
+  pickTarget: (db: ManagedDb, managedId: string) => Promise<ManagedLoginRow | undefined>
+): Promise<Response> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+  const environmentId = c.req.param('id') as string
+  const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+  if (auth instanceof Response) return auth
+
+  const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
+  if (ctx instanceof Response) return ctx
+
+  const row = await findManagedForEnvironment(db, environmentId)
+  if (!row) return c.json({ error: 'Not found' }, 404)
+
+  const target = await pickTarget(db, row.id)
+  if (!target) return c.json({ error: 'Not found' }, 404)
+
+  const dropGuard = evaluateManagedLoginDropGuard(target.role)
+  if (dropGuard) {
+    return c.json({ error: dropGuard.error }, dropGuard.status)
+  }
+
+  if (await hasBindingsForLogin(db, target.id)) {
+    const redeployRequired = await listBindingImpactForLogin(db, target.id)
+    return c.json(
+      {
+        error: 'managed_user_has_bindings',
+        services: redeployRequired.services,
+      },
+      409
+    )
+  }
+
+  const options = await loadManagedOptions(db, ctx.spec, row)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+  const targetServerId = resolveManagedTargetServerId(c, row.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+
+  // MySQL and MariaDB: ask the host first, so nothing is removed for a login
+  // that still owns views, triggers, routines or events.
+  const deleteCheck = await checkLoginMayBeDeleted(ctx.spec.engine, target.appliedUsername, () =>
+    probeManagedPermissions(db, getDaemonCellRegistry(c), {
+      serverId: targetServerId,
+      managedId: row.id,
+      engine: ctx.spec.engine,
+      logins: [target.appliedUsername],
+      databases: [],
+      timeoutMs: MANAGED_LOGIN_CHECK_TIMEOUT_MS,
+    })
+  )
+  if (deleteCheck.kind === 'refuse') return c.json(deleteCheck.body, deleteCheck.status)
+
+  const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId, {
+    dropUsers: [target.appliedUsername],
+    omitLoginIds: [target.id],
+  })
+  if (prepared instanceof Response) return prepared
+
+  // The login row stays until the host has dropped the account: the apply
+  // consumer removes it when the apply succeeds (see
+  // `removeLoginsDroppedByApply`), so a host that refuses leaves the panel
+  // and the host agreeing.
+  const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+    userId: auth.userId,
+    managedId: row.id,
+    members: prepared.members,
+  })
+  if (enqueued instanceof Response) return enqueued
+  if (target.role === 'backup') {
+    await recordAudit(db, {
+      organizationId: auth.organizationId,
+      actorUserId: auth.userId,
+      action: 'managed.backup_login.delete',
+      targetType: 'managed',
+      targetId: row.id,
+      context: { login: target.appliedUsername },
+    })
+  }
+
+  // A database this login owned goes back to its default owner role on the
+  // server (the apply above hands it back before dropping the login), and
+  // the panel records that.
+  const handedBack = databasesOwnedByLogin(options.databaseOwners, target.id)
+
+  const primaryFanout = pickPrimaryCommandResult(enqueued)
+  return c.json({
+    ok: true,
+    ...handedBackNotes(handedBack),
+    ...(deleteCheck.note ? { note: deleteCheck.note } : {}),
+    commandId: primaryFanout?.commandId,
+    serverId: primaryFanout?.serverId ?? targetServerId,
+    results: enqueued,
+  })
+}
+
 export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for managed routes')
@@ -2076,6 +2566,24 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   }
   registerManagedExternalAccessRoutes(router)
   registerManagedPrivilegeRoutes(router)
+  registerManagedAdminToolRoutes(router, {
+    loadScope: (c) => loadManagedRowScope(c),
+    loadReadScope: async (c) => {
+      const scope = await loadManagedAuthScope(c)
+      if (scope instanceof Response) return scope
+      const row = await findManagedForEnvironment(scope.db, scope.environmentId)
+      if (!row) return c.json({ tools: [] })
+      return { db: scope.db, auth: scope.auth, managedId: row.id }
+    },
+    createLogin: createManagedToolLogin,
+    rotateLogin: async (c, scope, loginId) => {
+      const target = await findManagedLogin(scope.db, scope.row.id, loginId)
+      if (!target) return c.json({ error: 'Not found' }, 404)
+      return await rotateManagedLogin(c, scope, target)
+    },
+    deleteLogin: (c, _scope, loginId) =>
+      deleteManagedLoginRoute(c, (db, managedId) => findManagedLogin(db, managedId, loginId)),
+  })
 
   router.post('/environments/:id/managed', async (c) => {
     const scope = await loadManagedContextScope(c)
@@ -2224,6 +2732,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       addressNeeded: access?.addressNeeded ?? false,
       externalAccess: { servers: externalAccessServers },
       settings: parsed.settings,
+      allowAllDatabasesLogins: allDatabasesSwitches(ctx.orgDefaults, parsed.settings),
       ssl: buildManagedSslView(
         parsed.settings.ssl.mode,
         ctx.orgDefaults.sslMode,
@@ -2397,6 +2906,20 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
     if (stepUp) return stepUp
 
+    // A managed database is shown, and confirmed, by the name of its project.
+    const [named] = await db
+      .select({ name: project.name, projectId: project.id })
+      .from(environment)
+      .innerJoin(project, eq(project.id, environment.projectId))
+      .where(eq(environment.id, environmentId))
+      .limit(1)
+    const needsName = refuseUnlessNameConfirmed(
+      c,
+      'managed database',
+      confirmationName(named?.name, named?.projectId, environmentId)
+    )
+    if (needsName) return needsName
+
     const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
@@ -2515,7 +3038,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const residual = parseManagedResidual(row.metadata)
     const request = await parseManagedLoginCreateRequest(c, db, ctx, body, options, residual)
     if (request instanceof Response) return request
-    const { databases, privileges, connectionRole } = request.grants
+    const { databases, allDatabases, privileges, connectionRole } = request.grants
+    if (allDatabases) {
+      const refusal = await loadAllDatabasesRefusal(db, ctx.organizationId, options.settings)
+      if (refusal) {
+        return c.json({ error: 'managed_login_all_databases_not_allowed', message: refusal }, 400)
+      }
+    }
     const modeFields = parseManagedLoginModeFields(
       c,
       body,
@@ -2539,7 +3068,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       body,
       targetServerId,
       grantMode,
-      grants: [{ privileges, databases }],
+      grants: [{ privileges, databases: allDatabases ? options.databases : databases }],
     })
     if (gate instanceof Response) return gate
     const { commandQueue, limits, notes } = gate
@@ -2549,6 +3078,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const settings: LoginSettingsPatch = {
       databases,
+      allDatabases,
       privileges,
       connectionRole,
       grantMode,
@@ -2602,6 +3132,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         appliedUsername: userCreate.appliedUsername,
         nameScheme: userCreate.nameScheme,
         databases,
+        allDatabases,
         privileges,
         connectionRole,
         grantMode,
@@ -2671,6 +3202,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
     }
 
+    // An All Databases login is judged on the cluster's whole list.
+    const appliedPatch = applySettingsPatch(target, plan.patch)
+    const afterPatchSettings = appliedPatch.allDatabases
+      ? { ...appliedPatch, databases: options.databases }
+      : appliedPatch
     const daemonRefused = await refuseLoginPatchIfDaemonCannot(
       c,
       db,
@@ -2679,7 +3215,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         engine: ctx.spec.engine,
         readWrite: {
           before: readWriteGrantState(target),
-          after: readWriteGrantState(applySettingsPatch(target, plan.patch)),
+          after: readWriteGrantState(afterPatchSettings),
         },
       },
       targetServerId
@@ -2754,172 +3290,40 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const target = await findManagedLogin(db, row.id, loginId)
     if (!target) return c.json({ error: 'Not found' }, 404)
-    const rotateGuard = evaluateManagedLoginRotateGuard(target.role)
-    if (rotateGuard) {
-      return c.json({ error: rotateGuard.error }, rotateGuard.status)
-    }
-
-    const options = await loadManagedOptions(db, ctx.spec, row)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-
-    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-    if (!dataEncryptionSecrets) {
-      return c.json({ error: 'Encryption unavailable' }, 503)
-    }
-
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
-    if (targetServerId instanceof Response) return targetServerId
-
-    const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
-    if (commandQueue instanceof Response) return commandQueue
-
-    const previousPassword = target.password
-
-    const { plaintext } = await rotateLoginPassword(db, dataEncryptionSecrets, target.id)
-
-    const materializeResult = await materializeBindingsForLogin(
-      db,
-      dataEncryptionSecrets,
-      target.id
-    )
-    // Every failure from here on must undo BOTH the stored password and the
-    // project variables that were just rewritten with the new one.
-    const rollBack = () =>
-      rollBackLoginRotation(db, dataEncryptionSecrets, {
-        loginId: target.id,
-        previousPassword,
-      })
-    if (!('ok' in materializeResult)) {
-      await rollBack()
-      return c.json({ error: materializeResult.kind }, 422)
-    }
-
-    const residual = parseManagedResidual(row.metadata)
-    const preparedApply = await prepareManagedApplyPayloads(c, db, {
-      managedRow: row,
-      spec: ctx.spec,
-      settings: options.settings,
-      databases: options.databases,
-      ownerRoleDatabases: options.ownerRoleDatabases,
-      databaseOwners: options.databaseOwners,
-      serverId: targetServerId,
-      environmentId: ctx.environmentId,
-      organizationId: ctx.organizationId,
-      rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
-    })
-    if (isPrepareError(preparedApply)) {
-      await rollBack()
-      return mapManagedApplyPrepareError(c, preparedApply)
-    }
-
-    const enqueued = await enqueuePreparedManagedApply(c, db, commandQueue, {
-      userId: auth.userId,
-      managedId: row.id,
-      members: preparedApply.members,
-    })
-    if (enqueued instanceof Response) {
-      await rollBack()
-      return enqueued
-    }
-
-    const primaryResult = pickPrimaryCommandResult(enqueued)
-    const redeployRequired = await listBindingImpactForLogin(db, target.id)
+    const rotated = await rotateManagedLogin(c, { db, auth, ctx, row }, target)
+    if (rotated instanceof Response) return rotated
     return c.json({
       ok: true,
-      password: plaintext,
-      commandId: primaryResult?.commandId,
-      serverId: primaryResult?.serverId ?? targetServerId,
-      results: enqueued,
-      redeployRequired,
+      password: rotated.plaintext,
+      commandId: rotated.commandId,
+      serverId: rotated.serverId,
+      results: rotated.results,
+      redeployRequired: rotated.redeployRequired,
     })
   })
 
-  router.delete('/environments/:id/managed/users/:loginId', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  router.delete('/environments/:id/managed/users/:loginId', (c) =>
+    deleteManagedLoginRoute(c, (db, managedId) =>
+      findManagedLogin(db, managedId, c.req.param('loginId'))
+    )
+  )
 
-    const environmentId = c.req.param('id')
-    const loginId = c.req.param('loginId')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
+  router.get('/environments/:id/managed/backup-login', async (c) => {
+    const scope = await loadManagedAuthScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId } = scope
 
     const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
-
-    const target = await findManagedLogin(db, row.id, loginId)
-    if (!target) return c.json({ error: 'Not found' }, 404)
-
-    const dropGuard = evaluateManagedLoginDropGuard(target.role)
-    if (dropGuard) {
-      return c.json({ error: dropGuard.error }, dropGuard.status)
-    }
-
-    if (await hasBindingsForLogin(db, target.id)) {
-      const redeployRequired = await listBindingImpactForLogin(db, target.id)
-      return c.json(
-        {
-          error: 'managed_user_has_bindings',
-          services: redeployRequired.services,
-        },
-        409
-      )
-    }
-
-    const options = await loadManagedOptions(db, ctx.spec, row)
-    if (!options) return c.json({ error: 'Invalid managed options' }, 400)
-
-    const targetServerId = resolveManagedTargetServerId(c, row.serverId)
-    if (targetServerId instanceof Response) return targetServerId
-
-    // MySQL and MariaDB: ask the host first, so nothing is removed for a login
-    // that still owns views, triggers, routines or events.
-    const deleteCheck = await checkLoginMayBeDeleted(ctx.spec.engine, target.appliedUsername, () =>
-      probeManagedPermissions(db, getDaemonCellRegistry(c), {
-        serverId: targetServerId,
-        managedId: row.id,
-        engine: ctx.spec.engine,
-        logins: [target.appliedUsername],
-        databases: [],
-        timeoutMs: MANAGED_LOGIN_CHECK_TIMEOUT_MS,
-      })
-    )
-    if (deleteCheck.kind === 'refuse') return c.json(deleteCheck.body, deleteCheck.status)
-
-    const prepared = await prepareApplyForManaged(c, db, ctx, row, options, targetServerId, {
-      dropUsers: [target.appliedUsername],
-      omitLoginIds: [target.id],
-    })
-    if (prepared instanceof Response) return prepared
-
-    // The login row stays until the host has dropped the account: the apply
-    // consumer removes it when the apply succeeds (see
-    // `removeLoginsDroppedByApply`), so a host that refuses leaves the panel
-    // and the host agreeing.
-    const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
-      userId: auth.userId,
-      managedId: row.id,
-      members: prepared.members,
-    })
-    if (enqueued instanceof Response) return enqueued
-
-    // A database this login owned goes back to its default owner role on the
-    // server (the apply above hands it back before dropping the login), and
-    // the panel records that.
-    const handedBack = databasesOwnedByLogin(options.databaseOwners, target.id)
-
-    const primaryFanout = pickPrimaryCommandResult(enqueued)
-    return c.json({
-      ok: true,
-      ...handedBackNotes(handedBack),
-      ...(deleteCheck.note ? { note: deleteCheck.note } : {}),
-      commandId: primaryFanout?.commandId,
-      serverId: primaryFanout?.serverId ?? targetServerId,
-      results: enqueued,
-    })
+    if (!row) return c.json({ login: null })
+    const found = await findManagedLoginByRole(db, row.id, 'backup')
+    return c.json({ login: found ? serializeManagedLogin(found, row.engine) : null })
   })
+
+  router.post('/environments/:id/managed/backup-login', (c) => createBackupLoginRoute(c))
+
+  router.delete('/environments/:id/managed/backup-login', (c) =>
+    deleteManagedLoginRoute(c, (db, managedId) => findManagedLoginByRole(db, managedId, 'backup'))
+  )
 
   router.get('/environments/:id/managed/databases', async (c) => {
     const scope = await loadManagedContextScope(c)
@@ -3208,6 +3612,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (deleteError) {
       return c.json({ error: deleteError.error }, deleteError.status)
     }
+    const needsName = refuseUnlessNameConfirmed(c, 'database', databaseName)
+    if (needsName) return needsName
 
     const ownerEntry = options.databaseOwners?.[databaseName]
     const inUse = await refuseDatabaseDropWhenInUse(
@@ -3244,8 +3650,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const unlisting = ownerLogin
       ? await unlistLoginFromDatabase(db, ownerLogin, databaseName)
       : null
+    // An admin tool's login is listed on every database; it stops listing this one too.
+    const toolUnlisting = await unlistToolLoginsFromDatabase(db, row.id, databaseName)
     const restoreOwnerLogin = async () => {
       await unlisting?.restore()
+      await toolUnlisting.restore()
     }
 
     const prepared = await restoringOnFailure(restoreOwnerLogin, () =>
@@ -4146,9 +4555,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    if (orgResult !== organizationId) {
+    // The path names the organization, so the header or query value is not
+    // needed as well; one that names another organization is refused.
+    if (!isUuid(organizationId) || namesAnotherOrganization(c, organizationId)) {
       return c.json({ error: 'Not found' }, 404)
     }
 

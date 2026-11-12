@@ -11,6 +11,10 @@
  *     `app/`, `cli/`).
  *   - `src/platform/deno/**` is unreachable from `src/workers.ts`.
  *   - `src/platform/workers/**` is unreachable from `src/deno.ts`.
+ *   - `src/platform/deno/ingress/**` (self-hosted-only ingress) is imported
+ *     only from `src/platform/deno/**`, `src/deno.ts` and `src/deno-dev.ts`,
+ *     never from a surface, a feature, lib or the daemon cell. Test files
+ *     are covered too.
  *
  * Usage:
  *   node scripts/check-import-boundaries.mjs
@@ -56,9 +60,7 @@ function walkTs(dir, out = []) {
     if (entry.isDirectory()) {
       if (SKIP_DIR_NAMES.has(entry.name)) continue
       walkTs(abs, out)
-    } else if (
-      entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))
-    ) {
+    } else if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))) {
       out.push(abs)
     }
   }
@@ -81,12 +83,7 @@ function resolveSpecifier(fromRel, spec) {
   const fromDir = path.posix.dirname(fromRel)
   const joined = path.posix.normalize(path.posix.join(fromDir, spec))
   const cleaned = stripTrailingSlash(joined)
-  const candidates = [
-    cleaned,
-    `${cleaned}.ts`,
-    `${cleaned}.tsx`,
-    `${cleaned}/index.ts`,
-  ]
+  const candidates = [cleaned, `${cleaned}.ts`, `${cleaned}.tsx`, `${cleaned}/index.ts`]
   for (const candidate of candidates) {
     if (fs.existsSync(path.join(ROOT, candidate))) return candidate
   }
@@ -94,8 +91,9 @@ function resolveSpecifier(fromRel, spec) {
 }
 
 function isWordChar(ch) {
-  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-    (ch >= '0' && ch <= '9') || ch === '_'
+  return (
+    (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch === '_'
+  )
 }
 
 function skipSpaceAndOpenParen(text, start) {
@@ -252,6 +250,23 @@ function lintPlatformReachability(failures) {
   }
 }
 
+const INGRESS_DIR = 'src/platform/deno/ingress'
+const INGRESS_IMPORTER_ALLOW = ['src/platform/deno', 'src/deno.ts', 'src/deno-dev.ts']
+
+function lintIngressIsolation(srcFiles, failures) {
+  if (!existsDir(INGRESS_DIR)) return
+  for (const rel of srcFiles) {
+    if (INGRESS_IMPORTER_ALLOW.some((allowed) => under(rel, allowed))) continue
+    for (const spec of importsOf(rel)) {
+      if (!spec.startsWith('.')) continue
+      const target = resolveSpecifier(rel, spec)
+      if (under(target, INGRESS_DIR)) {
+        failures.add(`${rel} imports self-hosted ingress module ${target}`)
+      }
+    }
+  }
+}
+
 function main() {
   const failures = new Set()
   const srcFiles = walkTs(SRC).map(posixRel)
@@ -268,6 +283,7 @@ function main() {
   if (libKernelRuleOn) lintLibKernel(srcFiles, failures)
   if (featuresSurfaceRuleOn) lintFeatureSurfaces(srcFiles, failures)
   lintPlatformReachability(failures)
+  lintIngressIsolation(srcFiles, failures)
 
   if (failures.size > 0) {
     console.error('Import boundary check failed:\n')
@@ -276,7 +292,7 @@ function main() {
     }
     console.error(
       `\n${failures.size} problem(s). Kernel/feature/platform layers must not cross ` +
-        'surfaces or each other. See AGENTS.md (Layout) and scripts/check-import-boundaries.mjs.',
+        'surfaces or each other. See docs/source-layout.md and scripts/check-import-boundaries.mjs.'
     )
     process.exit(1)
   }

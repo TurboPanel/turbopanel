@@ -201,6 +201,18 @@ test('isReservedPrincipalUsername reserves common host logins', () => {
   assertEquals(isReservedPrincipalUsername('appuser'), false)
 })
 
+test('isReservedPrincipalUsername matches exact names and fixed prefixes, never a substring', () => {
+  // Names that merely contain a reserved word are ordinary site owner names.
+  for (const name of ['testuser', 'gitlab-user', 'ftpuser', 'myroot', 'shop-tp', 'roots']) {
+    assertEquals(isReservedPrincipalUsername(name), false, name)
+  }
+  // The `tp` prefix stays reserved: the host's root helper, build runner and
+  // purge script treat every tp* account as TurboPanel's own.
+  for (const name of ['tptestacct', 'tp', 'tpctrl', 'tpbuild', 'root', 'git', 'ftp', 'shop-grp']) {
+    assertEquals(isReservedPrincipalUsername(name), true, name)
+  }
+})
+
 test('isReservedPrincipalUsername reserves the platform slice names', () => {
   // The host gives each site owner's Linux user turbopanel-<name>.slice;
   // turbopanel-containers.slice and turbopanel-tpbuild.slice are the platform's.
@@ -289,6 +301,7 @@ test('bindingPrefixedKeys formats prefixed binding env keys', () => {
     url: 'DATABASE_URL',
     caCert: 'DATABASE_CA_CERT',
     caFile: 'DATABASE_CA_FILE',
+    sslMode: 'DATABASE_SSL_MODE',
     readSplit: 'DATABASE_READ_SPLIT',
     host: 'DATABASE_HOST',
     port: 'DATABASE_PORT',

@@ -37,6 +37,35 @@ Per-feature behavior contracts for the client surface (moved from the root
 `AGENTS.md` **API / WS surfaces** section). Keep current when endpoint behavior
 changes.
 
+- **PHP site commands and workers:** a PHP site's post-deploy commands and
+  background workers are service options (`postDeployCommands`,
+  `postDeployTimeoutSeconds`, `postDeployTiming`, `workers`; read always, not
+  behind `deployHooks`; no migration). The service write route runs
+  `validateSiteLifecycleOptions` on the raw options and answers **400** with its
+  sentence, because the parse drops what it cannot read. Deploy prepare
+  (`environments/deploy-site-lifecycle.ts`) turns them into `sites[].postDeploy`
+  and `sites[].workers`: a site with either and no principal is
+  **422 `site_lifecycle_unowned`**; a server whose daemon lacks
+  `site-php-lifecycle-v1` is **409 `site_lifecycle_unsupported`** naming the
+  server (a site without them deploys as before). Commands on a managed-directory
+  site are not sent (no release); workers are. A retried deploy can run commands
+  again, so say "should be safe to run more than once" wherever they are described.
+  The server services response carries the PHP patch versions (`patches`),
+  `restartError` and per-service `phpVersion` / `phpRestartPending`, never the
+  raw site list. Keep `RESERVED_BUILD_ENV_KEYS` in `features/compose/build-env.ts`
+  in step with the daemon's.
+- **Tunnel provider accounts (client surface):** `GET|POST /organizations/:id/carriers`,
+  `DELETE /organizations/:id/carriers/:carrierId` (409 `carrier_in_use` while a
+  tunnel uses it), `GET|POST .../carriers/:carrierId/badges`,
+  `DELETE .../badges/:badgeId`, `POST .../badges/:badgeId/check`. All
+  `organization:manage`. A token is write-only: checked with the provider,
+  sealed into `secret`, never returned (responses carry a label and the last
+  four characters; audit rows carry neither). `POST .../carriers/connect`
+  takes only the API token, lists the accounts it reaches and connects the
+  chosen one (the only one, else `accountIds`; 409 `account_choice_needed`). Adding one is refused with
+  `badge_rejected`, `badge_wrong_account` or `badge_not_useful` (names the
+  missing permissions); 502 `provider_unavailable` when the provider cannot be
+  reached. See `src/features/tunnels/AGENTS.md`.
 - **Org activity feed (client surface):** `GET /organizations/:id/activity` —
   every deploy / restart / stop command across the org, newest first, whatever
   the outcome (queued, running, succeeded, failed, timed out, cancelled, rolled
@@ -77,9 +106,19 @@ changes.
   `POST /servers/:id/ntp` (`server.ntp.set`) — manage-gated, create-then-poll.
   Org record: `GET`/`PATCH /organizations/:id` — GET is access-gated (same
   visibility as the org list: team membership, owner/manager grant, or platform
-  admin; missing or inaccessible → **404**); PATCH is manage-gated (`{ name }`
-  required, any characters except control characters, ≤255, cannot clear; names
-  are not unique). Returns `{ organization }` / `{ ok, organization }`. Org
+  admin; missing or inaccessible → **404**); PATCH is manage-gated and takes any
+  of `name` (any characters except control characters, ≤255, cannot clear;
+  names are not unique), `icon` and `isEmojiIconAllowed`, at least one (else
+  400). Returns `{ organization }` / `{ ok, organization }`; the record (also in
+  the `GET /organizations` list) carries `icon` (a key, one emoji, or null) and
+  `isEmojiIconAllowed`. Icons for projects and organizations are a key from
+  `ICON_KEYS` or one emoji (`src/lib/icons.ts`, `isEmojiIcon`); while the
+  organization has emoji icons off, an emoji on org PATCH, project create or
+  project PATCH is refused with **422** `{ error: 'emoji_icons_off', message }`
+  (a PATCH that turns the setting on in the same request may pick one). Turning
+  it off never rewrites stored icons; the screens show the default instead.
+  Icon and setting changes are audited (`organization.icon.set`,
+  `organization.emoji_icons.set`, only when the value changed). Org
   defaults: `GET`/`PUT /organizations/:id/default-timezone`. Picker source:
   `GET /timezones` (`listTimezones()` / `isAllowedTimezone()`). Detail rows use
   the `server-detail` cached read model (mirrors `servers-list`).
@@ -102,9 +141,16 @@ changes.
   `options` jsonb) is on unless a layer says off: org `PUT …/host-defaults`
   (`null` clears), server `PATCH options.hideWebServerNames` (`null` inherits);
   list/detail expose the effective value and `hideWebServerNamesSource`. It is
-  read at deploy-prepare (`loadHideWebServerNames`, the server owner's
+  read at deploy-prepare (`loadWebServerSettings`, the server owner's
   organization) and sent as `environment.deploy.hideWebServerNames`, so it takes
-  effect on each environment's next deploy; saving it enqueues nothing. Multi-DC
+  effect on each environment's next deploy; saving it enqueues nothing. It
+  covers `Server`, `X-Powered-By` and version tokens, not Via.
+  `sendViaHeader` (same layers, same routes, `sendViaHeaderSource`) is off
+  unless a layer says on and keeps `Via: 1.1 Caddy` on the public hosting
+  web server; deploy-prepare sends `environment.deploy.sendViaHeader` only to a
+  daemon that lists `hosting-via-header-v1` (`webServerDeployFields`); an
+  older daemon gets no field and keeps tying Via to `hideWebServerNames`.
+  Multi-DC
   membership inherits from the first pin after sort by datacenter id (same as
   timezone).
 - **Server services snapshot (client surface):** `GET /servers/:id/services`
@@ -176,6 +222,37 @@ changes.
   payload hash that includes peers) before enqueueing `environment.deploy`
   (`422 fabric_reconcile_failed` / `409 fabric_reconcile_pending`). PUT disable
   is a teardown (reclaims `network(kind='compose')` + `subnet`).
+  **Trusted LAN wins (one pair rule, `serversShareTrustedLan` in
+  `features/net/private-endpoint.ts`):** two servers that share a trusted
+  datacenter network giving both an IPv4 address, both daemons listing
+  `fabric-lan-routes-v1`, have **no tunnel** (an IPv6-only shared network keeps
+  the tunnel; the managed-database ladder still uses it): they are not WireGuard peers, the ladder never gives them a fabric
+  address, and a cross-server container network between them rides the LAN
+  (`lanRoutes`: each routes the other's `server.container_prefix` via its IPv4
+  LAN address) with TurboFabric on, paused or off
+  (`reconcileServerNetworking`; outside a running mesh the payload is
+  `tunnel: false`). A pair with an older daemon keeps its tunnel over the LAN.
+  While TurboFabric is not running for a pair (off, paused, a server switched
+  off), a change that would end a LAN pair holding a cross-server network is
+  refused (`409 lan_pair_in_use`: marking the datacenter untrusted, removing a
+  member) and the deploy re-checks the rule before delivering (`422
+turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
+  or losing the feature stamps `ip.repin_pending_fanout_at` so the repin sweep
+  re-plans. Remove completely keeps networks whose servers are all LAN pairs
+  and resends their payload with no tunnel. The WireGuard port opens only when
+  the payload has a tunnel (`serverPayloadNeedsTunnel`).
+  Traffic between datacenters rides TurboFabric; a pair that shares only an
+  untrusted network runs its tunnel over that LAN (`direct_lan` marked
+  untrusted, GET `pairs[].path` `fabric_over_untrusted_lan`; a tunnel pair also carries
+  `pairs[].tunnel.readings`, each end's own latest peer report about the other, which the
+  page judges instead of the stored path summary), while plain
+  traffic never crosses an untrusted LAN. Failover replication and Raft never
+  use fabric. The planner refuses a span only for pairs outside a shared
+  trusted LAN (TurboFabric off, a switched-off server in such a pair, or no
+  direct tunnel in a network that mixes LAN and remote servers). The fabric
+  rung also needs both relays keyed, the other daemon connected and a fresh
+  handshake in the live reading (`pairTunnelHealth` `healthy`); otherwise the
+  ladder falls to public, then a network that is down.
   Whole-environment `environment.server_id` pins never require it. User-facing
   copy is **TurboFabric**; backend identifiers stay `fabric` / `tp0` / `relay` /
   `subnet`. Never ask which WireGuard network a container should join. NAT
@@ -183,7 +260,15 @@ changes.
   handshake (observer-mapped endpoints stay in candidate exchange). Path-state
   strike counters are process-local across reconcile rounds. `allowRelay` is
   reserved for a future relay slot and does not loosen gateway datacenter
-  locality.
+  locality. **Dial-in peers:** a server nothing can dial (behind NAT, no pin)
+  is never dropped as unreachable when it can dial us (we have a public path
+  for it, `peerCanDialIn`): its peer has no `endpoint`, WireGuard learns it from
+  the server's own keepalive handshake. Peers pinned to one shared endpoint
+  (servers behind one NAT) lose it the same way. GET `relays[].reconcile`
+  (`features/fabric/reconcile-outcome.ts`, `relay.metadata.reconcile`) says how
+  the last reconcile sent to the server ended: `pending` from enqueue until it
+  answers, then `done` with the daemon's `warnings` or `failed` with its error;
+  a pause counts as down only once its server is `done`.
 - **Compiled runtime compose:** users author project + optional environment
   ComposeDocuments. Deploy compiles **one** `compose.yaml` (`role: 'runtime'`)
   per participating server plus a project `.env` for non-secrets. Secret
@@ -191,7 +276,8 @@ changes.
   under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (YAML
   holds paths only). Preview **Prepared** shows that snapshot (plus `servers[]`
   only when scheduled across more than one host), redacted `.env`, and
-  `secretPlan[]`. Runtime YAML includes `x-turbopanel.placement.server_id` as
+  `secretPlan[]` and `configFiles[]` (generated config files; secret slots shown
+  as `{$KEY}`, never a value or a size). Runtime YAML includes `x-turbopanel.placement.server_id` as
   compile-time audit metadata. Preview **Merged** stays the user-authored merge
   (including `{$…}`) plus the live pin for review.
   `POST /api/daemon/v1/deployments/secrets/rehydrate` reseals current registry
@@ -286,6 +372,12 @@ changes.
   literal "production" catalog environments is unchanged. The name is also the
   scope folder on every server, so the PUT only takes a valid environment name
   (`isValidEnvironmentName`) and a saved value that is not one is ignored.
+- **New-project form switches:** `organization.options.openEnvironmentSectionByDefault`
+  and `openWorkspaceSectionByDefault` (unset = off).
+  `GET`/`PUT /organizations/:id/project-settings` (manage-gated) read and write
+  them; a PUT takes one switch or both. The client uses them only to decide
+  whether the new-project form opens its Environment and Workspace sections;
+  nothing on the server branches on them.
 - **Folder names (`folder` table):** one row per service or volume directory per
   server (`features/folders/records.ts`). While a row exists (any state but
   `missing`) the environment's name (`environments/rename-lock.ts`) and server
@@ -313,8 +405,8 @@ changes.
     a stop result's `folders[]`; see `features/folders/removal.ts` and
     `reports.ts`). The delete sends `server.folders.remove` once it commits; a
     server that is offline keeps the rows `removing` ("being removed, waiting
-    for server X to come back" in the blocking list) and a sweep asks again once
-    it is connected. An explicit environment stop sends no `siteReleases`, so
+    for X to come back" in the blocking list, X being the server's name) and a
+    sweep asks again once it is connected. An explicit environment stop sends no `siteReleases`, so
     every folder stays; delete teardown and a server leaving the environment
     still do. A service that leaves the compose file keeps its folder (the deploy
     result's `keptFolders` marks it an `orphan`); only an explicit delete removes
@@ -395,8 +487,10 @@ deploy_options_invalid` on environments; the reason string on projects) and a
   follows `deploy.update_config` (default parallelism 1, halt on failure).
 - **Environment lifecycle:** `POST /environments/:id/lifecycle` (`start` /
   `stop` / `restart`) is non-destructive (`environment.lifecycle`);
-  `POST /environments/:id/stop` tears down compose including volumes
-  (`environment.stop`). Canonical detail: `src/features/commands/AGENTS.md`.
+  `POST /environments/:id/stop` tears down compose (`environment.stop`):
+  `--volumes` removes only volumes Compose made itself, so every registered
+  volume stays unless the body asks to delete data (see **Deploy hash and
+  Destroy**). Canonical detail: `src/features/commands/AGENTS.md`.
 - **Containers list filters:** `GET /api/client/v1/containers` joins `service`,
   so every serialized row carries **`environmentId`** (denormalized
   `service.environmentId`). `?environmentId=` narrows already-visible rows to
@@ -595,12 +689,31 @@ sourceServerId? }`
   deterministic. The datacenter rung walks **only the trusted list**, for
   every purpose; an untrusted datacenter can neither win nor raise
   `private_family_mismatch`. `read-replication` / `client-backend` then fall
-  through to fabric → public as before. `failover-replication` never leaves
-  the LAN: an untrusted-only pair is **422**
-  `failover_requires_trusted_datacenter` (replica create, member class patch,
-  managed apply prepare — never collapsed into
-  `failover_replica_requires_datacenter_transport`), no shared datacenter at
-  all stays `private_path_unavailable`. TurboFabric path planning
+  through to fabric → public as before. Every purpose on a pair that shares an
+  untrusted datacenter rides TurboFabric over the LAN when the tunnel is
+  healthy. `failover-replication` never uses the public address: on an
+  untrusted-only pair with a keyed tunnel that is not healthy it keeps the
+  fabric address marked `tunnelDown: true` (a lost host must not break a
+  running cluster), and with no keyed tunnel (fabric off, opted out) it is
+  **422** `untrusted_network_needs_fabric`. The other purposes that fall to
+  public on such a pair carry `untrustedPublic: true`. New placements refuse
+  `untrustedPublic` and `tunnelDown` with the same 422:
+  a replica create checks both directions of the pair (the primary-to-replica
+  direction turns `tunnelDown` when the replica's daemon is offline, so an
+  offline replica on an untrusted-only pair reads as this refusal before the
+  offline check runs), and a class change to failover
+  checks only the replica-to-primary direction. A new binding whose app host
+  would dial the database over that public address is refused too
+  (`binding_endpoint_unavailable` with the TurboFabric message and
+  `reason: "untrusted_network_needs_fabric"`; the console tells it apart by the
+  words "marked untrusted" in the server sentence). The same refusal holds when
+  the database has no published listener and no public address: a
+  `client-backend` pair that shares only untrusted datacenters and has nothing
+  to ride resolves to `untrusted_network_needs_fabric`, not
+  `private_path_unavailable`.
+  Running traffic keeps its path and `GET` server traffic map reports both
+  flags on `planned` (the console does not render the traffic map yet).
+  No shared datacenter at all stays `private_path_unavailable`. TurboFabric path planning
   (`lanPathCandidate` in `src/features/fabric/fabric-records.ts`) consumes the same
   partition through `EndpointAddressCaches.policyByDatacenter`, so a
   `direct_lan` WireGuard endpoint is never emitted on a segment the managed
@@ -696,8 +809,9 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
 - **Webhook origins (client surface):** `GET /forges/webhook-origins`
   (`organization:manage`, like the rest of `/forges`) answers
   `{ origins, platformManaged }` — the set the manifest flow accepts as
-  `webhookOrigin`. Hosted, the platform's `TURBOPANEL_BASE_URL` leads it;
-  self-hosted, it is the operator list. Detail: `../webhook/AGENTS.md` →
+  `webhookOrigin`. Hosted, it is the platform's `TURBOPANEL_BASE_URL` /
+  `TURBOPANEL_PUBLIC_URLS` only (stored rows ignored); self-hosted, it is the
+  operator list only. Detail: `../webhook/AGENTS.md` →
   Reachability.
 - **Forge addresses and the GitHub install callback (client surface):** a
   forge's `baseUrl` / `apiUrl` / `webhookOrigin` is validated on every write
@@ -748,3 +862,4 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
 
 - `desiredHash` (see `environments/deploy-inputs-digest.ts`) covers the compose document, every source's commit and build inputs, variables (including linked-database logins, which are materialized into variables before the deploy is prepared), hostnames, sites, apps and storage. The organization CA is not part of a deploy payload (it travels in its own trust command), so it neither changes the hash nor needs to. The digest input includes plaintext secret variable values, but only the SHA-256 leaves the panel and is stored; no input is kept. Inputs that cannot be compared between sends (daemon-sealed values, a source known only by branch name) make the hash unique, so those deploys always run. The host additionally verifies that what the last deploy put in place is still running before it skips.
 - `POST /environments/:id/stop` is Destroy (the UI's Destroy button and the project delete wizard). The lifecycle bar's Stop uses `POST /environments/:id/lifecycle` with `stop`, which never sends `releaseCleanup`. Only the Destroy route sends `releaseCleanup`, which clears releases and keeps each service folder and its uploads.
+- Destroy that deletes data (owner decision 2026-11-09, "ask each time"): `POST /environments/:id/stop` with `{ deleteVolumes: true, confirmName, volumeIds }` also removes the environment's registered Docker volumes. Off by default; an empty body is a plain Destroy, byte for byte. `environments/data-volumes.ts` decides the list (`kind = 'volume'` storage rows of the environment or its services with a Docker copy, named by their storage id, not external, not common, no `share` row and no mount from another environment's service); `GET /environments/:id/data-volumes` returns it for the dialog with `kept` reasons, `staysOn` and `outdatedServers`, and the stop recomputes it and never takes names from the request. `environments/destroy-data.ts` checks, before anything is stopped: the typed name (400 `confirm_name_required`), that `volumeIds` is the list just computed (409 `data_volumes_changed` with the new list), and that every server the stop goes to lists `environment-stop-remove-volumes-v1` (409 `delete_volumes_needs_daemon_update`). The right is the manage gate every Destroy has (the right an environment delete needs); the step-up is `environment.data.delete`. The payload carries `removeVolumes: [{ storageId }]` to every target server (a registered volume is created on each server the environment deploys to; a server without it reports `absent`). A Docker copy recorded on a server the stop does not go to stays, and the dialog and audit say so (`staysOn`). The daemon keeps a volume any container still uses. An `environment.data.delete` audit row names each volume with `removedOn` and `staysOn`, the kept ones and the commands. Storage rows stay, so a later deploy creates the volumes again, empty. Volume folders (`retention`) are not touched by any of this.

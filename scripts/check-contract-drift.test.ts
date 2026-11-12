@@ -5,7 +5,19 @@
  */
 import { assertEquals, assertStringIncludes, assertThrows } from '@std/assert'
 import { dirname, fromFileUrl, join } from '@std/path'
-import { extractFieldSpecs, fieldPinDrift, snapshotDataDrift } from './check-contract-drift.mjs'
+import {
+  constantDrift,
+  copyChanged,
+  extractFieldSpecs,
+  fieldPinDrift,
+  mapDriftFromDaemon,
+  markedWidening,
+  mirrorDrift,
+  missingFromDaemon,
+  objectLiteralEntries,
+  snapshotDataDrift,
+  snapshotSubsetDrift,
+} from './check-contract-drift.mjs'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -98,9 +110,20 @@ test("the committed snapshot matches both checkouts' normalized field types", as
   ) as Record<string, { instance: string; daemon: string; fields: FieldPin[] }>
   for (const [typeName, pin] of Object.entries(snapshot)) {
     const instanceSrc = await Deno.readTextFile(join(repoRoot, pin.instance))
-    const daemonSrc = await Deno.readTextFile(join(sibling, pin.daemon))
     assertEquals(extractFieldSpecs(instanceSrc, typeName), pin.fields)
-    assertEquals(extractFieldSpecs(daemonSrc, typeName), pin.fields)
+    // Daemon first: the daemon's own snapshot may pin more (optional) fields.
+    const daemonSnapshot = JSON.parse(
+      await Deno.readTextFile(join(sibling, 'scripts/contract-field-snapshot.json'))
+    ) as Record<string, { daemon: string; fields: FieldPin[] }>
+    const daemonSrc = await Deno.readTextFile(join(sibling, daemonSnapshot[typeName].daemon))
+    assertEquals(
+      fieldPinDrift(
+        extractFieldSpecs(daemonSrc, typeName),
+        daemonSnapshot[typeName].fields,
+        'daemon'
+      ),
+      null
+    )
   }
 })
 
@@ -134,4 +157,119 @@ test('snapshotDataDrift reports a shorter array and a malformed file', () => {
     'contract-field-snapshot.json on the instance is not valid JSON'
   )
   assertThrows(() => snapshotDataDrift(`{}`, `nope`), Error, 'on the daemon is not valid JSON')
+})
+
+// Daemon first: the daemon may be ahead of the control plane, never behind.
+test('a daemon with more wire features passes; a control plane with one daemon lacks names it', () => {
+  assertEquals(missingFromDaemon(['a-v1'], ['a-v1', 'b-v1']), [])
+  assertEquals(missingFromDaemon(['a-v1', 'c-v1'], ['a-v1']), ['c-v1'])
+})
+
+test('feature floors: every control plane key must be on the daemon with the same value', () => {
+  assertEquals(objectLiteralEntries('{ a: 0.1.1, b: 0.2.0, }'), [
+    ['a', '0.1.1'],
+    ['b', '0.2.0'],
+  ])
+  assertEquals(objectLiteralEntries('{}'), [])
+  assertEquals(objectLiteralEntries('{ nope }'), null)
+  assertEquals(mapDriftFromDaemon('{ a: 0.1.1 }', '{ a: 0.1.1, b: 0.2.0 }'), null)
+  assertEquals(mapDriftFromDaemon('{}', '{ b: 0.2.0 }'), null)
+  assertStringIncludes(
+    mapDriftFromDaemon('{ c: 0.3.0 }', '{ a: 0.1.1 }') ?? '',
+    'c is not in daemon trunk'
+  )
+  assertStringIncludes(
+    mapDriftFromDaemon('{ a: 0.1.2 }', '{ a: 0.1.1 }') ?? '',
+    'a is 0.1.2 here but 0.1.1 on daemon trunk'
+  )
+  assertStringIncludes(mapDriftFromDaemon(null, '{}') ?? '', 'missing')
+})
+
+test('snapshot: the daemon may pin more types and optional fields, never fewer or different', () => {
+  const pin = (fields: FieldPin[]) =>
+    JSON.stringify({ T: { instance: 'i.ts', daemon: 'd.ts', fields } })
+  const a: FieldPin = { name: 'a', required: true, type: 'string' }
+  const b: FieldPin = { name: 'b', required: false, type: 'number' }
+  assertEquals(snapshotSubsetDrift(pin([a]), pin([a, b])), null)
+  assertEquals(
+    snapshotSubsetDrift(
+      pin([a]),
+      JSON.stringify({ ...JSON.parse(pin([a])), U: { instance: 'x', daemon: 'y', fields: [] } })
+    ),
+    null
+  )
+  assertStringIncludes(snapshotSubsetDrift(pin([a, b]), pin([a])) ?? '', 'T.b is pinned here')
+  assertStringIncludes(snapshotSubsetDrift(pin([a]), '{}') ?? '', 'T is pinned here')
+  assertStringIncludes(
+    snapshotSubsetDrift(pin([a]), pin([a, { ...b, required: true }])) ?? '',
+    'must be optional'
+  )
+  assertStringIncludes(
+    snapshotSubsetDrift(pin([a]), pin([{ ...a, type: 'number' }])) ?? '',
+    '$.T.fields.a.type differs'
+  )
+  assertStringIncludes(
+    snapshotSubsetDrift(
+      pin([a]),
+      JSON.stringify({ T: { instance: 'i.ts', daemon: 'other.ts', fields: [a] } })
+    ) ?? '',
+    '$.T.daemon differs'
+  )
+})
+
+test('a byte mirror that differs is a notice, and red only when this pull request changes its copy', async () => {
+  assertEquals(mirrorDrift('X drifted', 'src/x.ts', false), false)
+  assertThrows(
+    () => mirrorDrift('X drifted', 'src/x.ts', true),
+    Error,
+    'this pull request changes src/x.ts'
+  )
+  const base = await Deno.makeTempDir()
+  const head = await Deno.makeTempDir()
+  try {
+    await Deno.writeTextFile(join(base, 'same.json'), '{}')
+    await Deno.writeTextFile(join(head, 'same.json'), '{}')
+    await Deno.writeTextFile(join(base, 'edited.json'), '{}')
+    await Deno.writeTextFile(join(head, 'edited.json'), '{"a":1}')
+    await Deno.writeTextFile(join(head, 'new.json'), '{}')
+    assertEquals(copyChanged('same.json', base, head), false)
+    assertEquals(copyChanged('edited.json', base, head), true)
+    assertEquals(copyChanged('new.json', base, head), true)
+    assertEquals(copyChanged('edited.json', '', head), false)
+  } finally {
+    await Deno.remove(base, { recursive: true })
+    await Deno.remove(head, { recursive: true })
+  }
+})
+
+test('named constants: the control plane value must equal daemon trunk, which must have it', () => {
+  assertEquals(constantDrift('tp-hello-v1', 'tp-hello-v1', 'HELLO_PREFIX'), null)
+  assertStringIncludes(
+    constantDrift('tp-hello-v1', 'tp-hello-v2', 'HELLO_PREFIX') ?? '',
+    'must hold the same value'
+  )
+  assertStringIncludes(
+    constantDrift('tp-new-v1', null, 'HELLO_PREFIX') ?? '',
+    'merge the daemon change first'
+  )
+  assertStringIncludes(
+    constantDrift(null, 'x', 'HELLO_PREFIX') ?? '',
+    'missing on the control plane'
+  )
+})
+
+test('snapshot: a daemon pin that widens on purpose still covers the control plane pin', () => {
+  const pin = { name: 'v', required: true, type: '4 | 6' }
+  const wide = { ...pin, type: '4 | 6 | 8', expansion: true }
+  assertEquals(markedWidening(pin, wide), true)
+  assertEquals(markedWidening(pin, { ...wide, expansion: undefined }), false)
+  assertEquals(markedWidening(pin, { ...wide, required: false }), false)
+  assertEquals(markedWidening(pin, { ...wide, type: '4' }), false)
+  const snap = (field: object) =>
+    JSON.stringify({ T: { instance: 'i.ts', daemon: 'd.ts', fields: [field] } })
+  assertEquals(snapshotSubsetDrift(snap(pin), snap(wide)), null)
+  assertStringIncludes(
+    snapshotSubsetDrift(snap(pin), snap({ ...pin, type: '4 | 6 | 8' })) ?? '',
+    'differs'
+  )
 })

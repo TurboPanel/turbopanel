@@ -1,7 +1,7 @@
 /**
  * Instance-scoped notification channels — the operator's own receivers,
- * which hear every event on the instance (an organization event reaches
- * every instance channel a rule routes it to). Mounted under
+ * which hear install events, and an organization's events only when the
+ * channel's `allOrganizations` switch is on. Mounted under
  * `/api/admin/v1`, so the admin middleware has already required an
  * administrator; the same shapes as the client channel routes, with one
  * difference: an instance email channel may name any administrator's account
@@ -25,11 +25,17 @@ import {
   listRecentDeliveriesForChannel,
   listRulesForChannel,
   type NotificationChannelRecord,
+  OPERATOR_WEBHOOK_LABEL,
   replaceRulesForChannel,
   resolveChannelAddress,
+  setChannelAllOrganizations,
   setChannelDisabled,
   updateChannelLabel,
 } from '../features/notifications/records.ts'
+import {
+  parseAllOrganizationsField,
+  refuseOperatorWebhookOff,
+} from '../features/notifications/all-organizations.ts'
 import { applyHoldFields, presentChannelHold } from '../features/notifications/hold-settings.ts'
 import {
   parseChannelCreateBody,
@@ -56,6 +62,7 @@ async function presentInstanceChannel(c: NotificationAdminCtx, channel: Notifica
     kind: channel.kind,
     label: channel.label,
     address: describeChannelAddress(channel.kind, await resolveChannelAddress(secrets, channel)),
+    allOrganizations: channel.allOrganizations,
     signed: channel.signingSecret !== null,
     verifiedAt: channel.verifiedAt,
     disabledAt: channel.disabledAt,
@@ -83,12 +90,37 @@ async function instanceChannel(
   return channel
 }
 
+/**
+ * An instance email channel must name an administrator's account email, and is
+ * then verified at once; other kinds have no verification time. Returns the
+ * refusal when the address is not an administrator's.
+ */
+async function verifiedAtOrRefusal(
+  c: NotificationAdminCtx,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  value: { kind: string; address: string }
+): Promise<string | null | Response> {
+  if (value.kind !== 'email') return null
+  const known = await instanceAdminEmails(db)
+  if (!known.has(value.address.toLowerCase())) {
+    return c.json(
+      {
+        error: 'address_not_a_member',
+        reason: "the address must be an administrator's account email",
+      },
+      422
+    )
+  }
+  return new Date().toISOString()
+}
+
 export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
   admin.get('/notification-channels', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
     // The legacy setting, if it still exists, becomes a channel here so the
     // operator sees one list.
+    // This may write: it switches an older operator webhook on (see adoptLegacyAlertWebhook).
     await adoptLegacyAlertWebhook(db, c.get('dataEncryptionSecrets'))
     const channels = await listInstanceChannels(db)
     return c.json({
@@ -115,6 +147,10 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
         parsed.status
       )
     }
+    const allOrganizations = parseAllOrganizationsField(body)
+    if (!allOrganizations.ok) {
+      return c.json({ error: allOrganizations.error }, allOrganizations.status)
+    }
     // An instance channel has no owner profile: it reads its windows in UTC.
     if (parsed.value.hold.timeZone !== undefined) {
       return c.json({ error: 'time_zone_user_channels_only' }, 422)
@@ -128,20 +164,8 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
         503
       )
     }
-    let verifiedAt: string | null = null
-    if (parsed.value.kind === 'email') {
-      const known = await instanceAdminEmails(db)
-      if (!known.has(parsed.value.address.toLowerCase())) {
-        return c.json(
-          {
-            error: 'address_not_a_member',
-            reason: "the address must be an administrator's account email",
-          },
-          422
-        )
-      }
-      verifiedAt = new Date().toISOString()
-    }
+    const verifiedAt = await verifiedAtOrRefusal(c, db, parsed.value)
+    if (verifiedAt instanceof Response) return verifiedAt
     const channel = await createNotificationChannel(db, secrets, {
       scope: 'instance',
       kind: parsed.value.kind,
@@ -150,6 +174,7 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
       signingSecret: parsed.value.signingSecret,
       createdByUserId: session.userId,
       verifiedAt,
+      isAllOrganizationsNotified: allOrganizations.value ?? false,
     })
     await replaceRulesForChannel(db, channel.id, parsed.value.rules)
     await applyHoldFields(db, channel, parsed.value.hold)
@@ -180,11 +205,23 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
         refusal?.status ?? 422
       )
     }
+    const allOrganizations = parseAllOrganizationsField(body)
+    if (!allOrganizations.ok) {
+      return c.json({ error: allOrganizations.error }, allOrganizations.status)
+    }
+    const operatorOff = refuseOperatorWebhookOff(
+      owned.kind === 'webhook' && owned.label === OPERATOR_WEBHOOK_LABEL,
+      allOrganizations.value
+    )
+    if (operatorOff) return c.json(operatorOff, 400)
     if (parsed.value.label !== undefined) {
       await updateChannelLabel(db, owned.id, parsed.value.label)
     }
     if (parsed.value.disabled !== undefined) {
       await setChannelDisabled(db, owned.id, parsed.value.disabled)
+    }
+    if (allOrganizations.value !== undefined) {
+      await setChannelAllOrganizations(db, owned.id, allOrganizations.value)
     }
     if (parsed.value.rules !== undefined) {
       await replaceRulesForChannel(db, owned.id, parsed.value.rules)

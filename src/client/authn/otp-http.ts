@@ -11,6 +11,7 @@ import {
 } from './install-state.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
 import { verifyEmailOwnershipAndRevokeUntrusted } from './email-ownership.ts'
+import { clearSuppressionAfterProof } from '../../features/notifications/fanout-records.ts'
 import { createSession, deleteSessionsByUserId, getSession } from './session-store.ts'
 import { issueTwoFactorChallenge } from './two-factor.ts'
 import {
@@ -83,7 +84,10 @@ function enqueueEmailOtp(
     compatLogWarn('email', `OTP email not sent for ${to}: email queue unavailable`)
     return
   }
-  void queue
+  // Not awaited (response time must not reveal whether the account exists),
+  // but on Workers kept alive past the response with `waitUntil`, the same as
+  // the password-reset email; without it the send could be cut off.
+  const sending = queue
     .enqueue({
       type: 'email-otp',
       to,
@@ -94,6 +98,11 @@ function enqueueEmailOtp(
     .catch((err) => {
       compatLogWarn('email', `OTP email enqueue failed: ${err}`)
     })
+  try {
+    c.executionCtx.waitUntil(sending)
+  } catch {
+    // No execution context (Deno, tests): the promise simply runs on.
+  }
 }
 
 async function resolveOtpSignInUserId(
@@ -123,6 +132,9 @@ async function resolveOtpSignInUserId(
     // The email code just proved the mailbox: an unverified account's sign-up
     // password came from someone who never did, so it goes (and its sessions).
     await verifyEmailOwnershipAndRevokeUntrusted(db, existingUser.id)
+    // The code arrived, so the mailbox takes mail: notification email to it
+    // is no longer held back by an earlier refusal.
+    await clearSuppressionAfterProof(db, trimmedEmail)
     return { userId: existingUser.id, is2FaEnabled: existingUser.is2FaEnabled === true }
   }
 
@@ -588,6 +600,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
     }
 
     await verifyEmailOwnershipAndRevokeUntrusted(db, sessionData.userId, sessionData.sessionId)
+    await clearSuppressionAfterProof(db, sessionEmail)
 
     return c.json({ ok: true }, 200)
   })

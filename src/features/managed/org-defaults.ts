@@ -30,6 +30,11 @@ export type ManagedOrganizationDefaults = {
    * family, never per service. Omitted keys inherit the platform defaults.
    */
   ports?: ManagedIngressPortsConfig
+  /**
+   * Whether logins in this organization may use All Databases. Omitted means
+   * allowed (on); a cluster must also opt in (`all-databases.ts`).
+   */
+  allowAllDatabasesLogins?: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -43,15 +48,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * bodies are validated by the PUT route instead
  * ({@link parseManagedSslModeInput}).
  */
-export function parseManagedOrganizationDefaults(
-  value: unknown,
-): ManagedOrganizationDefaults {
+export function parseManagedOrganizationDefaults(value: unknown): ManagedOrganizationDefaults {
   if (!isRecord(value)) return {}
   const defaults: ManagedOrganizationDefaults = {}
   const sslMode = parseManagedSslMode(value.sslMode)
   if (sslMode) defaults.sslMode = sslMode
   const ports = parseStoredIngressPorts(value.ports)
   if (ports) defaults.ports = ports
+  if (typeof value.allowAllDatabasesLogins === 'boolean') {
+    defaults.allowAllDatabasesLogins = value.allowAllDatabasesLogins
+  }
   return defaults
 }
 
@@ -60,9 +66,7 @@ export function parseManagedOrganizationDefaults(
  * dropped by {@link resolveManagedIngressPorts} at resolve time rather than
  * here, so the stored operator intent survives a read.
  */
-function parseStoredIngressPorts(
-  value: unknown,
-): ManagedIngressPortsConfig | null {
+function parseStoredIngressPorts(value: unknown): ManagedIngressPortsConfig | null {
   if (!isRecord(value)) return null
   const ports: ManagedIngressPortsConfig = {}
   if (rejectManagedIngressPort(value.postgres) === null) {
@@ -80,7 +84,7 @@ function parseStoredIngressPorts(
  * cannot silently downgrade every inheriting service to plaintext.
  */
 export function parseManagedSslModeInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: ManagedSslMode | null } | { ok: false } {
   if (value === null) return { ok: true, value: null }
   const parsed = parseManagedSslMode(value)
@@ -100,15 +104,13 @@ export type ManagedIngressPortsPatch = {
  * port is rejected rather than dropped — silently ignoring it would report
  * success while leaving clients on the old listener.
  */
-export function parseManagedIngressPortsInput(
-  value: unknown,
-):
+export function parseManagedIngressPortsInput(value: unknown):
   | { ok: true; value: ManagedIngressPortsPatch | null }
   | {
-    ok: false
-    field?: keyof ManagedIngressPortsPatch
-    reason?: ManagedIngressPortRejection
-  } {
+      ok: false
+      field?: keyof ManagedIngressPortsPatch
+      reason?: ManagedIngressPortRejection
+    } {
   if (value === null) return { ok: true, value: null }
   if (!isRecord(value)) return { ok: false }
   const patch: ManagedIngressPortsPatch = {}
@@ -133,15 +135,11 @@ export function parseManagedIngressPortsInput(
  * still-inherited platform default.
  */
 export function validateManagedOrganizationDefaults(
-  defaults: ManagedOrganizationDefaults,
-):
-  | { ok: true }
-  | { ok: false; field: string; reason: ManagedIngressPortRejection } {
+  defaults: ManagedOrganizationDefaults
+): { ok: true } | { ok: false; field: string; reason: ManagedIngressPortRejection } {
   const check = validateManagedIngressPorts({
-    postgres: defaults.ports?.postgres ??
-      DEFAULT_MANAGED_INGRESS_PORTS.postgres,
-    mysqlFamily: defaults.ports?.mysqlFamily ??
-      DEFAULT_MANAGED_INGRESS_PORTS.mysqlFamily,
+    postgres: defaults.ports?.postgres ?? DEFAULT_MANAGED_INGRESS_PORTS.postgres,
+    mysqlFamily: defaults.ports?.mysqlFamily ?? DEFAULT_MANAGED_INGRESS_PORTS.mysqlFamily,
   })
   if (check.ok) return { ok: true }
   return { ok: false, field: `ports.${check.field}`, reason: check.reason }

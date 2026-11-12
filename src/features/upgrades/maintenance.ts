@@ -3,6 +3,8 @@
  * (`UPGRADE_CHECK` row, `schedule.ts`), it resolves the channel manifests
  * (cached) and maybe starts an automatic run; every pass it advances the
  * active run. Hello handlers do not enqueue; this is the path that does.
+ * A development install never runs the check: it updates only by the manual
+ * Build and Push Daemon action.
  */
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
@@ -26,9 +28,12 @@ export async function runUpgradeMaintenance(input: {
   /** Full label of the installed package (`0.1.19-canary.3`), when known. */
   buildLabel?: string | null
   colocatedServerId: string | null
+  /** Defaults to `isExplicitDevelopmentMode()`; tests pass it. */
+  development?: boolean
 }): Promise<void> {
   const env = input.env ?? (typeof Deno === 'undefined' ? {} : Deno.env.toObject())
   const channel = resolveInstanceUpdateChannel(env)
+  const development = input.development ?? isExplicitDevelopmentMode()
   const store = createDrizzleUpgradeStore(
     input.db,
     input.registry,
@@ -44,7 +49,7 @@ export async function runUpgradeMaintenance(input: {
     },
     runtime: input.runtime,
     channel,
-    development: isExplicitDevelopmentMode(),
+    development,
     now: () => new Date().toISOString(),
     colocatedServerId: input.colocatedServerId,
     instanceInstalled: input.instanceInstalled,
@@ -52,14 +57,27 @@ export async function runUpgradeMaintenance(input: {
     verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
     trace: traceUpgradeTick,
   })
-  const check =
-    input.resolveManifests &&
-    (await claimUpgradeCheck(
-      store,
-      new Date(),
-      parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV])
-    ))
+  const check = await claimScheduledUpgradeCheck(store, {
+    now: new Date(),
+    intervalMinutes: parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV]),
+    resolveManifests: input.resolveManifests,
+    development,
+  })
   await coordinator.tick({ resolveManifests: check })
+}
+
+/**
+ * Whether this pass runs the update check. A development install never does
+ * (no manifest fetch, no saved target, no automatic run, nothing recorded):
+ * its control plane and web interface run from checkouts and its daemon
+ * updates only by the manual Build and Push Daemon action.
+ */
+export async function claimScheduledUpgradeCheck(
+  store: UpgradeStore,
+  input: { now: Date; intervalMinutes: number; resolveManifests: boolean; development: boolean }
+): Promise<boolean> {
+  if (!input.resolveManifests || input.development) return false
+  return await claimUpgradeCheck(store, input.now, input.intervalMinutes)
 }
 
 /**

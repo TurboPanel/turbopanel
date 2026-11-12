@@ -47,7 +47,7 @@ import {
   mapBindingUniqueViolation,
   parseBindingKeyPrefix,
   parseBindingsListFilter,
-  parseEmitEngineDefaults,
+  resolveCreatePreset,
   resolveBindingEngine,
   resolveBindingManagedId,
   resolvePatchBindingFields,
@@ -55,6 +55,7 @@ import {
   bindingDatabaseTargetHttpStatus,
   type BindingRow,
 } from './routes-helpers.ts'
+import { type BindingPreset, effectivePreset } from '../../features/bindings/presets.ts'
 
 const BINDING_SELECT = {
   id: binding.id,
@@ -63,6 +64,7 @@ const BINDING_SELECT = {
   databaseName: managedDatabase.name,
   keyPrefix: binding.keyPrefix,
   emitEngineDefaults: binding.isEmitEngineDefaults,
+  preset: binding.preset,
   createdAt: binding.createdAt,
   updatedAt: binding.updatedAt,
 }
@@ -228,7 +230,8 @@ type CreateBindingInput = {
   serviceId: string
   databaseName: string
   keyPrefix: string
-  emitEngineDefaults: boolean
+  /** The request body, kept for the preset (it needs the engine, known later). */
+  body: Readonly<Record<string, unknown>>
 }
 
 async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindingInput | Response> {
@@ -250,15 +253,13 @@ async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindin
 
   const prefixParsed = parseBindingKeyPrefix(body.keyPrefix)
   if (!prefixParsed.ok) return c.json({ error: prefixParsed.error }, 400)
-  const emitParsed = parseEmitEngineDefaults(body.emitEngineDefaults)
-  if (!emitParsed.ok) return c.json({ error: emitParsed.error }, 400)
 
   return {
     login: loginRef,
     serviceId,
     databaseName,
     keyPrefix: prefixParsed.prefix,
-    emitEngineDefaults: emitParsed.value,
+    body,
   }
 }
 
@@ -360,7 +361,7 @@ async function assertBindingCreateConflicts(
   params: Readonly<{
     serviceId: string
     keyPrefix: string
-    emitEngineDefaults: boolean
+    preset: BindingPreset | null
     engineCode: string
   }>,
   c: Context<AppEnv>
@@ -382,7 +383,7 @@ async function insertAndMaterializeBinding(
     serviceId: string
     databaseName: string
     keyPrefix: string
-    emitEngineDefaults: boolean
+    preset: BindingPreset | null
     managedId: string
     actorId: string
     organizationId: string
@@ -408,7 +409,8 @@ async function insertAndMaterializeBinding(
           serviceId: params.serviceId,
           databaseId: databaseRow.id,
           keyPrefix: params.keyPrefix,
-          isEmitEngineDefaults: params.emitEngineDefaults,
+          isEmitEngineDefaults: params.preset !== null,
+          preset: params.preset,
         })
         .returning({ id: binding.id })
       return inserted.id
@@ -436,7 +438,8 @@ async function insertAndMaterializeBinding(
       managedId: params.managedId,
       databaseName: params.databaseName,
       keyPrefix: params.keyPrefix,
-      emitEngineDefaults: params.emitEngineDefaults,
+      emitEngineDefaults: params.preset !== null,
+      preset: params.preset,
     })
 
     return c.json({
@@ -456,14 +459,12 @@ async function insertAndMaterializeBinding(
 function parsePatchBindingFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-  row: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean }>
-): { keyPrefix: string; emitEngineDefaults: boolean } | Response {
-  const parsed = resolvePatchBindingFields(body, row)
+  row: Readonly<{ keyPrefix: string; preset: BindingPreset | null }>,
+  engineCode: string
+): { keyPrefix: string; preset: BindingPreset | null } | Response {
+  const parsed = resolvePatchBindingFields(body, row, engineCode)
   if (!parsed.ok) return c.json({ error: parsed.error }, 400)
-  return {
-    keyPrefix: parsed.keyPrefix,
-    emitEngineDefaults: parsed.emitEngineDefaults,
-  }
+  return { keyPrefix: parsed.keyPrefix, preset: parsed.preset }
 }
 
 async function assertBindingUpdateConflicts(
@@ -472,9 +473,9 @@ async function assertBindingUpdateConflicts(
     id: string
     serviceId: string
     previousKeyPrefix: string
-    previousEmitEngineDefaults: boolean
+    previousPreset: BindingPreset | null
     nextKeyPrefix: string
-    nextEmitEngineDefaults: boolean
+    nextPreset: BindingPreset | null
     engineCode: string
   }>,
   c: Context<AppEnv>
@@ -613,12 +614,15 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json(reachDenied, 422)
     }
 
+    const presetParsed = resolveCreatePreset(input.body, engineCode)
+    if (!presetParsed.ok) return c.json({ error: presetParsed.error }, 400)
+
     const conflictDenied = await assertBindingCreateConflicts(
       db,
       {
         serviceId: input.serviceId,
         keyPrefix: input.keyPrefix,
-        emitEngineDefaults: input.emitEngineDefaults,
+        preset: presetParsed.preset,
         engineCode,
       },
       c
@@ -635,7 +639,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       serviceId: input.serviceId,
       databaseName: input.databaseName,
       keyPrefix: input.keyPrefix,
-      emitEngineDefaults: input.emitEngineDefaults,
+      preset: presetParsed.preset,
       managedId: managedResult.id,
       actorId: session.userId,
       organizationId,
@@ -664,11 +668,20 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    const fieldsResult = parsePatchBindingFields(c, body, row)
-    if (fieldsResult instanceof Response) return fieldsResult
-    const { keyPrefix: nextPrefix, emitEngineDefaults: nextEmit } = fieldsResult
-
     const { managedId, engineCode } = await resolveBindingEngine(db, row)
+    const previousPreset = effectivePreset(
+      { preset: row.preset, isEmitEngineDefaults: row.emitEngineDefaults },
+      engineCode
+    )
+
+    const fieldsResult = parsePatchBindingFields(
+      c,
+      body,
+      { keyPrefix: row.keyPrefix, preset: previousPreset },
+      engineCode
+    )
+    if (fieldsResult instanceof Response) return fieldsResult
+    const { keyPrefix: nextPrefix, preset: nextPreset } = fieldsResult
 
     const conflictDenied = await assertBindingUpdateConflicts(
       db,
@@ -676,9 +689,9 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         id,
         serviceId: row.serviceId,
         previousKeyPrefix: row.keyPrefix,
-        previousEmitEngineDefaults: row.emitEngineDefaults,
+        previousPreset,
         nextKeyPrefix: nextPrefix,
-        nextEmitEngineDefaults: nextEmit,
+        nextPreset,
         engineCode,
       },
       c
@@ -694,7 +707,8 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .update(binding)
       .set({
         keyPrefix: nextPrefix,
-        isEmitEngineDefaults: nextEmit,
+        isEmitEngineDefaults: nextPreset !== null,
+        preset: nextPreset,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(binding.id, id))
@@ -720,7 +734,8 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       serviceId: row.serviceId,
       loginId: row.loginId,
       keyPrefix: { from: row.keyPrefix, to: nextPrefix },
-      emitEngineDefaults: { from: row.emitEngineDefaults, to: nextEmit },
+      emitEngineDefaults: { from: previousPreset !== null, to: nextPreset !== null },
+      preset: { from: previousPreset, to: nextPreset },
     })
 
     return c.json({

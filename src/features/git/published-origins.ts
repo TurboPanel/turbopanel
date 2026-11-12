@@ -11,25 +11,21 @@
  *   produce a URL that looks right and never receives anything. A
  *   `TURBOPANEL_BASE_URL` in the process env is not consulted either — the
  *   operator list is the one place a self-hosted address is published.
- * - **Hosted (Workers):** the platform's own address, `TURBOPANEL_BASE_URL`,
- *   first, then anything in the stored list. Nothing fills that list on the
- *   hosted runtime (its hostnames are platform-managed, see
- *   `admin/instance-hostname-routes.ts`), so without the base URL the hosted
- *   control plane would publish nothing and every GitHub App wizard would be
+ * - **Hosted (Workers):** the platform's own addresses only,
+ *   `TURBOPANEL_BASE_URL` then `TURBOPANEL_PUBLIC_URLS`. Stored hostname rows
+ *   are ignored on this runtime (its hostnames are platform-managed, see
+ *   `features/install/control-plane-origins.ts`), so without the base URL the
+ *   hosted control plane publishes nothing and every GitHub App wizard is
  *   refused with `public_url_not_configured`.
  *
- * The base URL goes through {@link publicHttpsOrigin}, not the self-hosted
- * {@link publicUrlEntryToInstallOrigin}: the hosted origin keeps its own port
- * (usually the implicit 443), where the self-hosted one always dials `:8443`.
- * A blank, `http:` or otherwise unusable value publishes nothing.
+ * The hosted origin is always port-free (the control plane answers on 443
+ * there), where the self-hosted one dials `:8443`. A blank, `http:` or
+ * otherwise unusable value publishes nothing.
  */
 
 import type { Db } from '../../db/connection.ts'
-import {
-  getPublicUrls,
-  publicHttpsOrigin,
-  publicUrlEntryToInstallOrigin,
-} from '../install/public-urls.ts'
+import { controlPlaneOrigins } from '../install/control-plane-origins.ts'
+import { publicHttpsOrigin, publicUrlEntryToInstallOrigin } from '../install/public-urls.ts'
 
 export type PublishedOrigins = {
   /** Normalized origins, no trailing slash, the preferred one first. */
@@ -46,31 +42,20 @@ export type PublishedOriginsRuntime = {
   platformEnv?: Record<string, string | undefined>
 }
 
-/** The hosted runtime's own address, or `null` off Workers or when unusable. */
-export function platformManagedOrigin(input: PublishedOriginsRuntime): string | null {
-  if (input.runtime !== 'workers') return null
-  const baseUrl = input.platformEnv?.TURBOPANEL_BASE_URL?.trim()
-  if (!baseUrl) return null
-  return publicHttpsOrigin(baseUrl)
-}
-
 function stripTrailingSlash(origin: string): string {
   return origin.endsWith('/') ? origin.slice(0, -1) : origin
 }
 
 /**
- * Every published origin: the platform address (when given) ahead of the
- * stored operator list, normalized and de-duplicated.
+ * Every published origin for this runtime, normalized and de-duplicated: the
+ * platform addresses on Workers, the stored list on Deno.
  */
 export async function listPublishedOrigins(
   db: Db,
-  platformOrigin: string | null = null
+  input: PublishedOriginsRuntime = {}
 ): Promise<string[]> {
-  const stored = (await getPublicUrls(db))
-    .map((entry) => publicUrlEntryToInstallOrigin(entry))
-    .filter((origin): origin is string => origin !== null)
-  const all = platformOrigin ? [platformOrigin, ...stored] : stored
-  return [...new Set(all.map(stripTrailingSlash))]
+  const origins = await controlPlaneOrigins(db, input)
+  return [...new Set(origins.map(stripTrailingSlash))]
 }
 
 export async function resolvePublishedOrigins(
@@ -78,7 +63,7 @@ export async function resolvePublishedOrigins(
   input: PublishedOriginsRuntime
 ): Promise<PublishedOrigins> {
   return {
-    origins: await listPublishedOrigins(db, platformManagedOrigin(input)),
+    origins: await listPublishedOrigins(db, input),
     platformManaged: input.runtime === 'workers',
   }
 }
@@ -94,12 +79,17 @@ export function preferredPublishedOrigin(origins: readonly string[]): string | n
  *
  * Both normalizations are tried because the two sources normalize
  * differently: a stored self-hosted entry is known by its `:8443` dial, the
- * hosted address by its own port. Only origins already in `origins` can
+ * hosted address by its own port. An old `:8443` spelling also matches the
+ * same host published without a port. Only origins already in `origins` can
  * match, so trying both never admits an address this instance does not
  * publish.
  */
 export function matchPublishedOrigin(origins: readonly string[], chosen: string): string | null {
-  const candidates = [publicUrlEntryToInstallOrigin(chosen), publicHttpsOrigin(chosen)]
+  const dialed = publicUrlEntryToInstallOrigin(chosen)
+  // A webhook registered while the name was published on :8443 still names the
+  // same host once its public port moves to 443.
+  const portless = dialed?.endsWith(':8443') ? dialed.slice(0, -':8443'.length) : null
+  const candidates = [dialed, publicHttpsOrigin(chosen), portless]
   for (const candidate of candidates) {
     if (candidate && origins.includes(stripTrailingSlash(candidate))) {
       return stripTrailingSlash(candidate)

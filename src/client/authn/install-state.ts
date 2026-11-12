@@ -22,6 +22,10 @@ import {
 } from '../../features/licenses/license.ts'
 import { syncSelfHostedGrant } from '../../features/tiers/self-hosted-grant-records.ts'
 import { clearServerDaemonState } from '../../features/servers/server-identity-db.ts'
+import {
+  assertColocatedCredentialsDirWritable,
+  resolveColocatedLicenseCredentialsDir,
+} from './colocated-credentials-dir.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
 import { SUPERADMIN_ROLE } from './session-store.ts'
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
@@ -45,7 +49,6 @@ import {
   normalizeDisplayName,
 } from '../../lib/display-name-format.ts'
 import { resolveDefaultSignupOrganizationName } from './default-signup-organization-name.ts'
-import { NEW_ORGANIZATION_OPTIONS } from '../../features/organizations/organization-options.ts'
 
 export { MY_ORGANIZATION_NAME } from './default-signup-organization-name.ts'
 
@@ -271,25 +274,6 @@ export async function insertDefaultWorkspace(db: Db, organizationId: string): Pr
   return workspaceId
 }
 
-/** Production FHS state dir for persistent daemon identity (dev and managed). */
-const DEFAULT_DAEMON_STATE_DIR = '/var/lib/turbopanel'
-
-function stripTrailingSlash(path: string): string {
-  let end = path.length
-  while (end > 0 && (path.codePointAt(end - 1) ?? 0) === 47) {
-    end--
-  }
-  return end === 0 ? '/' : path.slice(0, end)
-}
-
-/**
- * Resolve the directory that holds co-located daemon enrollment credentials
- * (`license.id` / `license.token`).
- *
- * Mirrors the daemon's `resolveServerIdentityDir` precedence: honor
- * `TURBOPANEL_DAEMON_STATE_DIR` (injected by `instance-launch`), then
- * `TURBOPANEL_STATE_DIR`, else the FHS default (`/var/lib/turbopanel`).
- */
 const COLOCATED_DAEMON_IDENTITY_FILES = ['server.id', 'server-key.json', 'server-key-id'] as const
 
 /** Drop stale on-disk daemon identity so a fresh install always re-enrolls. */
@@ -297,6 +281,7 @@ export async function clearColocatedDaemonIdentityFiles(): Promise<void> {
   if (typeof Deno === 'undefined') return
 
   const stateDir = resolveColocatedLicenseCredentialsDir()
+  assertColocatedCredentialsDirWritable(stateDir)
   await Promise.all(
     COLOCATED_DAEMON_IDENTITY_FILES.map(async (file) => {
       try {
@@ -306,17 +291,6 @@ export async function clearColocatedDaemonIdentityFiles(): Promise<void> {
       }
     })
   )
-}
-
-function resolveColocatedLicenseCredentialsDir(): string {
-  if (typeof Deno !== 'undefined') {
-    const daemonStateOverride = Deno.env.get('TURBOPANEL_DAEMON_STATE_DIR')?.trim()
-    if (daemonStateOverride) return stripTrailingSlash(daemonStateOverride)
-
-    const stateOverride = Deno.env.get('TURBOPANEL_STATE_DIR')?.trim()
-    if (stateOverride) return stripTrailingSlash(stateOverride)
-  }
-  return DEFAULT_DAEMON_STATE_DIR
 }
 
 /** True once an org has a name and at least one superadmin account exists. */
@@ -970,8 +944,11 @@ export async function persistColocatedLicenseCredentials(
 ): Promise<boolean> {
   if (typeof Deno === 'undefined') return false
 
+  const stateDir = resolveColocatedLicenseCredentialsDir()
+  // Outside the try: a test run aimed at a real state dir must fail, not
+  // quietly return false.
+  assertColocatedCredentialsDirWritable(stateDir)
   try {
-    const stateDir = resolveColocatedLicenseCredentialsDir()
     await Deno.mkdir(stateDir, { recursive: true })
     // Write server.id before license credentials so a racing enroll always sees
     // the pre-provisioned seat (fresh license + missing serverId would be
@@ -1129,7 +1106,7 @@ export async function rotateColocatedLicenseCredentials(
 }
 
 /** Active colocated license already latched to a server, if any. */
-async function findActiveBoundColocatedLicense(
+export async function findActiveBoundColocatedLicense(
   db: Db,
   organizationId: string
 ): Promise<{ id: string; serverId: string } | null> {
@@ -1169,8 +1146,8 @@ async function findColocatedBoundServerId(db: Db, organizationId: string): Promi
   return rows[0]?.serverId ?? null
 }
 
-/** Mint a new plaintext token on an existing active license row. */
-async function rotateLicenseTokenInPlace(
+/** Mint a new plaintext token on an existing active license row (same id, same seat). */
+export async function rotateLicenseTokenInPlace(
   db: Db,
   licenseId: string
 ): Promise<{ licenseId: string; licenseToken: string }> {
@@ -1229,7 +1206,6 @@ export async function createOrganizationForUserInTx(
     .insert(organization)
     .values({
       name: displayName,
-      options: { ...NEW_ORGANIZATION_OPTIONS },
     })
     .returning({ id: organization.id })
 
@@ -1348,7 +1324,6 @@ export async function completeInstanceInstall(
       .insert(organization)
       .values({
         name: trimmedOrgName,
-        options: { ...NEW_ORGANIZATION_OPTIONS },
       })
       .returning({ id: organization.id })
 

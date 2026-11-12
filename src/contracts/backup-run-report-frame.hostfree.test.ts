@@ -81,7 +81,7 @@ test('malformed fields are rejected at the frame', () => {
     [{ runId: 'r'.repeat(65) }, 'invalid runId'],
     [{ startedAt: 'yesterday' }, 'invalid startedAt'],
     [{ finishedAt: 42 }, 'invalid finishedAt'],
-    [{ status: 'partial' }, 'invalid status'],
+    [{ status: 7 }, 'invalid status'],
     [{ nextRunAt: 'soon' }, 'invalid nextRunAt'],
     [{ error: 'x'.repeat(MAX_DAEMON_WS_ERROR_CHARS + 1) }, 'error exceeds max length'],
     [{ backupId: 'bk 1' }, 'invalid backupId'],
@@ -103,6 +103,15 @@ test('malformed fields are rejected at the frame', () => {
   ]
   for (const [overrides, expected] of cases) {
     assertEquals(reason(report(overrides)), expected, JSON.stringify(overrides).slice(0, 80))
+  }
+})
+
+test('a status this control plane does not know is ignored, not refused', () => {
+  const result = validateDaemonInboundFrame(JSON.stringify(report({ status: 'partial' })))
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.ignored, true)
+    assertEquals(result.reason, 'unknown value: status')
   }
 })
 

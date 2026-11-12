@@ -148,9 +148,7 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
         tags: [tag],
         summary: `Get ${config.singular}`,
         security,
-        parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           '200': {
             description: `${config.singular} details`,
@@ -165,9 +163,7 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
         tags: [tag],
         summary: `Update ${config.singular}`,
         security,
-        parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         requestBody: {
           required: true,
           content: {
@@ -194,9 +190,7 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
         tags: [tag],
         summary: `Delete ${config.singular}`,
         security,
-        parameters: [
-          { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-        ],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
         responses: {
           '200': {
             description: `${config.singular} deleted`,
@@ -211,4 +205,60 @@ export function buildResourceCrudPaths(config: ResourceCrudConfig): Record<strin
       },
     },
   }
+}
+
+/**
+ * Adds the required `confirmName` query parameter, and the 400
+ * `confirm_name_required` it can cause, to a delete operation. `noun` is how
+ * the message names the thing ("server", "Hosting Account"); `nameIs` says
+ * which value counts as its name.
+ */
+export function withConfirmName<
+  T extends { parameters?: unknown[]; responses: Record<string | number, unknown> },
+>(operation: T, noun: string, nameIs: string): T {
+  const existing = operation.responses['400'] as { description?: string } | undefined
+  const refusal = `\`confirm_name_required\` (message "Type the ${noun} name to delete this ${noun}.") when \`confirmName\` is missing or is not exactly the ${noun}'s name; nothing changed.`
+  return {
+    ...operation,
+    parameters: [
+      ...(operation.parameters ?? []),
+      {
+        name: 'confirmName',
+        in: 'query',
+        required: true,
+        schema: { type: 'string' },
+        description: `The ${noun}'s exact name (${nameIs}). Case and spaces count.`,
+      },
+    ],
+    responses: {
+      ...operation.responses,
+      '400': {
+        description: existing?.description ? `${existing.description}; or ${refusal}` : refusal,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['error'],
+              properties: {
+                error: { type: 'string' },
+                message: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+  }
+}
+
+/** `paths` with the `delete` operation at `key` wrapped by {@link withConfirmName}. */
+export function withConfirmNameOnDelete(
+  paths: Record<string, unknown>,
+  key: string,
+  noun: string,
+  nameIs: string
+): Record<string, unknown> {
+  type Operation = { parameters?: unknown[]; responses: Record<string, unknown> }
+  const item = paths[key] as { delete: Operation } & Record<string, unknown>
+  return { ...paths, [key]: { ...item, delete: withConfirmName(item.delete, noun, nameIs) } }
 }

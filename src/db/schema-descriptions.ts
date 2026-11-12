@@ -1,20 +1,19 @@
 /**
  * Human descriptions for every physical table and every non-obvious column
- * in the control-plane schema — the single source the Postgres `COMMENT ON`
- * migrations are generated from (`scripts/schema-comments.mjs`).
+ * in the control-plane schema, and the source of the schema documentation
+ * (`scripts/schema-docs.mjs` prints it as Markdown). The database itself
+ * carries no comments.
  *
  * Keyed by **physical** names (`seat`, `copy`, `totp`, …), exactly as they
  * appear in the latest `migrations/meta/NNNN_snapshot.json` — never by the
  * drizzle export name. `schema-descriptions.test.ts` holds this file to the
  * shipped schema: every table needs a `group` and a `summary`; every column
  * that is not obvious (see {@link isObviousColumn}) needs a description; a
- * description for a table or column that does not exist fails; and every
- * description here must already be carried by a migration (the test runs
- * the pending-comment delta and fails if it is non-empty).
+ * description for a table or column that does not exist fails.
  *
  * Writing rules (enforced): one sentence, at most {@link MAX_DESCRIPTION_LENGTH}
  * characters, no line breaks, none of the characters `| { } < > "` (they
- * break GFM table cells, MDX expressions and SQL string quoting). Use
+ * break GFM table cells and MDX expressions). Use
  * backticks for identifiers and literal values; single quotes are fine.
  * Say what the value is, who writes it, and the allowed members / units /
  * derived-vs-stored fact when there is one. The daemon is the "daemon",
@@ -25,7 +24,7 @@
 
 export const MAX_DESCRIPTION_LENGTH = 160
 
-/** Characters a description may never contain (table cells, MDX, SQL quoting). */
+/** Characters a description may never contain (table cells, MDX). */
 export const FORBIDDEN_DESCRIPTION_CHARS = /[|{}<>"\n\r\t]/
 
 /** Columns every table carries with the same meaning; never described per table. */
@@ -148,6 +147,50 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Argon2id PHC-format hash (`$argon2id$v=19$m=N,t=N,p=N$salt$digest`) on `credential` rows, set at sign-up, install and password reset; null on OAuth rows.',
     },
   },
+  custodian: {
+    group: 'identity',
+    summary:
+      'A sign-in passkey a superadmin marked to approve control plane key changes, with the frozen key servers pin; kept as history once unmarked.',
+    columns: {
+      passkey_id:
+        'The marked sign-in passkey; ON DELETE RESTRICT so it cannot be deleted while marked, and cleared when the passkey is unmarked.',
+      pkid: 'Rotation passkey id servers pin: base64url SHA-256 of the raw credential id; unique among marked rows.',
+      alg: 'Signature algorithm of the pinned key, `ES256` or `EdDSA`.',
+      public_key_raw:
+        'Base64url raw public key servers verify approvals with: a 65-byte P-256 point or a 32-byte Ed25519 key, copied when marked.',
+      rp_id:
+        'WebAuthn relying party id the passkey belongs to: the primary hostname when the first passkey was marked.',
+      label: 'Passkey name and owner when marked, for mail and the audit trail.',
+      marked_keyset: 'Key set number of the statement that marked it.',
+      unmarked_keyset: 'Key set number of the statement that unmarked it; NULL while marked.',
+      unmarked_at: 'When it was unmarked; NULL while it still approves key changes.',
+    },
+  },
+  rotation: {
+    group: 'identity',
+    summary:
+      'One approved key-set statement of the control plane: the chain every server follows to a new key or passkey set, kept forever in `keyset` order.',
+    columns: {
+      keyset:
+        'Key set number the statement moves servers to; unique and one above the previous statement.',
+      kind: 'What it changes: `rotate` or `revoke` the key, or `passkeys` (mark or unmark rotation passkeys).',
+      state:
+        '`live` when served to servers; `awaiting_key` while a High Availability secret does not hold the new key yet.',
+      prev_kid:
+        'Fingerprint of the key the statement replaces or keeps; servers apply it only when this is their pinned key.',
+      current_kid: 'Fingerprint of the key servers pin after the statement.',
+      body: 'Exact statement bytes as base64url; the passkey challenge is SHA-256 of these bytes, so they are never rebuilt.',
+      approvals:
+        'JSON array of the WebAuthn assertions that approved the statement, served to servers as written.',
+      prev_key:
+        'Base64url raw public key of `prev_kid`, served with the signature; NULL for a revoke.',
+      prev_key_signature:
+        'Base64url Ed25519 signature by the replaced key over `tp-keyset`, a newline and the statement bytes; NULL for a revoke, which two passkeys approve.',
+      approved_by_user_id:
+        'Superadmin who approved it; ON DELETE SET NULL so the chain outlives the account.',
+      live_at: 'When the statement started being served; NULL while `awaiting_key`.',
+    },
+  },
   passkey: {
     group: 'identity',
     summary:
@@ -157,7 +200,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Authenticator model AAGUID decoded from the attestation as a dashed lowercase UUID string; identifies the make, not the individual key.',
       name: 'User-chosen label given at registration (the device or authenticator it lives on); shown in the Security screen, never used for matching.',
       public_key:
-        "Credential public key as a JSON-serialised JWK (ES256 or RS256) converted from the attestation's COSE key; verifies sign-in assertions.",
+        "Credential public key as a JSON-serialised JWK (ES256, EdDSA or RS256) converted from the attestation's COSE key; verifies sign-in assertions.",
       credential_id:
         'Base64url credential id from the attestation; unique across the instance and the lookup key for passkey sign-in.',
       counter:
@@ -202,6 +245,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       is_disabled:
         'Sign-in gate read by every authn path (password, OTP, passkey, OAuth) and refused with `account_disabled`; no control-plane route writes it today.',
       role: 'Instance role `user`, `admin` or `superadmin`; sign-ups get `user`, the install wizard mints the one `superadmin`, and admins bypass org grants.',
+      is_all_organizations_notified:
+        'An administrator chose to hear every organization, not only those they belong to; their own preferences still decide what arrives.',
     },
   },
   verification: {
@@ -261,7 +306,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       grants:
         'Optional grant specs (`entityType`, `entityId`, `permissionKey`) an owner attached; null means none; materialized on accept.',
       token_hash:
-        'SHA-256 verifier of the secret emailed only in the accept link, used to look the invitation up; rotated on re-send, null on older invitations.',
+        'SHA-256 verifier of the secret emailed only in the accept link, used to look the invitation up; rotated on re-send.',
     },
   },
   leaf: {
@@ -305,10 +350,21 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Next uid/gid for a Hosting Account on servers this organization owns; starts at 30001, rises by one per new account, never reused.',
       deploy_timeout_minutes:
         'The longest a deploy may run, in whole minutes from 5 to 240, counted only while the server reports; null means the default of 30.',
+      is_acme_enabled:
+        "Let's Encrypt allowed for this organization's certificates; off until the organization opts in. Turning it off erases stored keys but revokes nothing.",
       options:
-        'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
+        'Org-wide settings merged key-by-key by the organization routes (`maxServers`, `phpModes` and more).',
+      acme_contact_email:
+        "Contact address on the organization's Let's Encrypt account, needed to turn it on; null means none.",
+      acme_terms_url:
+        "The exact Let's Encrypt agreement accepted at `acme_terms_accepted_at`; a newer one must be accepted again to turn it on.",
+      acme_terms_accepted_at:
+        "When the organization last accepted the Let's Encrypt terms, needed to turn it on; the audit log says who.",
       backup_destination_id:
         'Destination finished backups are copied to unless a cluster chooses otherwise; null means no default copy. Set null if the destination is deleted.',
+      icon: 'Icon key from the same fixed list as `project.icon`, or one emoji; NULL means the default icon.',
+      is_emoji_icon_allowed:
+        'Emoji icons allowed for the organization and its projects; off refuses new emoji icons and shows the default for stored ones, which are kept.',
       name: "Display name; sign-up uses `you@example.com's organization` from email, else `My Organization` if missing, blank, or label invalid; install Root Organization.",
     },
   },
@@ -348,9 +404,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       status:
         'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `automatic` (web server issues it); `expired` is derived from `not_after`, others stored.',
       not_after:
-        'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `managed` rows; indexed for expiry checks.',
+        'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `automatic` rows; indexed for expiry checks.',
       fingerprint_sha256:
-        'SHA-256 fingerprint of the leaf DER, unique per organization when set; null on `managed` rows that have no certificate yet.',
+        'SHA-256 fingerprint of the leaf DER, unique per organization when set; null on `automatic` rows that have no certificate yet.',
       ca_state:
         'Organization CA lifecycle `active` (one per org), `retired` (still in the trust bundle) or `revoked`; null on non-CA rows.',
       ca_generation:
@@ -382,13 +438,13 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Server that consumed this key, set once on first successful enroll (partial unique index: one license per server); null while unconsumed, SET NULL on delete.',
       name: 'Optional operator display name; `this server` is reserved for the colocated control-plane license minted at install and refused by `POST /licenses`.',
       token:
-        'Argon2id PHC hash of the registration key (same format as `account.password`); the plaintext is returned once at mint and cannot be recovered from this row.',
+        'Argon2id PHC hash of the registration key; NULL once the key binds to a server and for a key minted behind a ticket, and a NULL token verifies nothing.',
       revoked_at:
         'Soft-delete timestamp set by a revoke or by an ended subscription revoking every license; non-null means inactive, and the row keeps `server_id` for audit.',
       tier_id:
         'Tier a manager chose in Add Server (hosted); holds a seat there until a server enrolls with this key and takes it. NULL when no tier was chosen.',
       expires_at:
-        'Set at mint to 7 days later: past it an unused key cannot enroll and holds no license; ignored once bound. NULL (older keys, the colocated key) never expires.',
+        'Set at mint to 7 days later: past it an unused key cannot enroll and holds no license; ignored once bound. NULL (the colocated key) never expires.',
     },
   },
   payer: {
@@ -444,6 +500,25 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a later lapse is measured afresh.',
     },
   },
+  ticket: {
+    group: 'billing',
+    summary:
+      'One-hour, single-use enrolment ticket: a join ticket (license_id set) stands in for a key at install, a re-enroll ticket (server_id set) re-keys one server.',
+    columns: {
+      license_id:
+        'Registration key a join ticket binds when its server enrolls; null for a re-enroll ticket, CASCADE on delete.',
+      server_id:
+        'The one server a re-enroll ticket is bound to; null for a join ticket. Presented for any other server it is refused.',
+      server_name: 'Display name chosen in Add Server for a join ticket; informational.',
+      token:
+        'Argon2id PHC hash of the ticket secret; the plaintext is returned once at mint and cannot be recovered from this row.',
+      expires_at: 'Mint time plus one hour; past it the ticket is refused.',
+      used_at:
+        'Set atomically when the ticket is spent (or when an owner revokes it); a non-null value means it can never be used again.',
+      used_by_server_id: 'Server the spent ticket produced or re-keyed, SET NULL on delete.',
+      created_by_user_id: 'User who issued the ticket, SET NULL on delete.',
+    },
+  },
   tier: {
     group: 'billing',
     summary:
@@ -453,7 +528,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Ladder label `S1` to `S7` or `SX`, the unique key into the in-code ladder (`src/features/tiers/ladder.ts`) that holds everything the tier entitles.',
       rank: 'Ladder position copied from the in-code ladder on insert, never from a request; unique, orders tiers and decides upgrade versus downgrade and greedy assignment.',
       provider:
-        'Payment provider the row bills through; only `stripe` is allowed today (CHECK `tier_provider_check`), matching `payer.provider`.',
+        'Payment provider the row bills through: `stripe` (CHECK `tier_provider_check`), or NULL when `provider_product_id` is NULL, as on the `SX` row.',
       provider_product_id:
         'Provider Product id (Stripe `prod_...`) chosen from the provider catalogue and verified before write; null on the custom `SX` row, which is never purchasable.',
       price_cents:
@@ -543,6 +618,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       dns_names:
         'JSON array of DNS names and IP addresses parsed from the leaf, used to test which hostnames the pair covers.',
       not_after: 'Leaf expiry copied from the parsed certificate when the pair is stored.',
+      kind: '`uploaded` for an operator upload, `acme-dns-01` for a pair the control plane issued itself over DNS-01; issued pairs are never listed as uploads.',
     },
   },
   origin: {
@@ -551,15 +627,47 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       "One control-plane public name operators publish, with its certificate source and any Let's Encrypt attempt state.",
     columns: {
       host: 'Normalized public URL entry (origin, host, or host:port) in the form public URL parsing already stores.',
-      source: 'Certificate source for this name: `platform-ca`, `uploaded`, or `lets-encrypt`.',
+      source:
+        "Certificate source for this name: `platform-ca`, `uploaded`, `acme-http-01` (Let's Encrypt over HTTP-01) or `acme-dns-01` (Let's Encrypt over DNS-01).",
       uploaded_cert_id:
-        'Uploaded pair (`certificate.id`) this name serves; required when `source` is `uploaded`, otherwise NULL.',
+        'Pair (`certificate.id`) this name serves: the upload when `source` is `uploaded` (required), or the issued pair when `source` is `acme-dns-01`; otherwise NULL.',
       acme_last_attempt_at:
         "When this instance last tried Let's Encrypt for this name; NULL until an attempt runs.",
       acme_last_error:
         "Last Let's Encrypt error for this name; NULL when the last attempt succeeded or none has run.",
       not_after:
         "Leaf expiry for this name when known; NULL for `platform-ca` and for Let's Encrypt before a leaf exists.",
+      mode: 'How visitors reach this name: `direct`, `lan-only`, `cloudflare-tunnel`, `cloudflare-proxy`, `bunny-proxy`, `private-overlay` or `passthrough`.',
+      public_port:
+        'Port visitors use for this name (1 to 65535); the control plane itself always listens on 8443.',
+      is_primary:
+        'True for the one name used for links, sign-in callbacks and the default install URL; a partial unique index allows at most one row.',
+      is_daemon_dial:
+        'Whether install commands and the daemon URL list may name this hostname; false keeps it for people only.',
+      ingress_state:
+        'Provider state for this name, such as tunnel id, DNS record id and last status; the shape depends on `mode` and the provider writes it.',
+      acme_state:
+        'DNS-01 order and renewal progress for an `acme-dns-01` name (stage, attempts, retry and renewal times, alerts sent); holds no key or token, NULL otherwise.',
+    },
+  },
+  ingress: {
+    group: 'platform',
+    summary:
+      "One install-level provider account for the control plane's own names, used by edge modes for tunnels, DNS and certificates.",
+    columns: {
+      provider: 'Provider of this account: `cloudflare` or `bunny`.',
+      label: 'Operator-chosen name shown in the admin screens.',
+      account_id:
+        'Provider account id (for example the Cloudflare account); NULL when the provider has none.',
+      zone_ids:
+        'JSON array of provider zone ids this account may change, written by the superadmin who adds it.',
+      token_envelope:
+        'Provider API token sealed as a `tpsecret` envelope; held inline because `secret` requires an organization, and never returned by the admin API.',
+      scopes:
+        'Last preflight result written by the panel: whether the token can manage tunnels and DNS, and when it was checked.',
+      last_verified_at: 'When the panel last confirmed the token works; NULL until a check runs.',
+      last_error: 'Last provider error for this account; NULL when the last check succeeded.',
+      created_by_user_id: 'Superadmin who added this account; NULL after that user is deleted.',
     },
   },
   // ── networking ────────────────────────────────────────────────────────
@@ -586,13 +694,15 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   fabric: {
     group: 'networking',
     summary:
-      'Org TurboFabric WireGuard mesh (host interface `tp0`), at most one row per organization; absence means TurboFabric is off and private keys are never stored.',
+      'Org TurboFabric WireGuard mesh (`tp0`), at most one row per organization; absent means off, `is_enabled = false` means paused; never holds private keys.',
     columns: {
       metadata: 'Free-form jsonb; no control-plane code path writes or reads it today.',
       options:
         'Mesh policy jsonb: `containerPool` (relay prefix pool, default `10.192.0.0/12`), `listenPort` (default 51821), `mtu` (1280..9000, default 1420), `allowRelay`.',
       cidr: 'Host `tp0` address range that relay `address` values are carved from, auto-picked at enable to avoid every occupied org range (default `10.250.0.0/16`).',
       name: 'Optional display name (1..255 chars of letters, digits, space, dot, underscore, dash); no control-plane code path writes it today.',
+      is_enabled:
+        'False while the mesh is paused: every tunnel is down but relays, keys and container networks are kept so turning it back on is instant.',
     },
   },
   address: {
@@ -695,6 +805,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Operator-configured LAN CIDRs a `gateway` relay advertises to remote peers (native cidr[], host bits cleared); must be empty when `role = 'member'`.",
       preshared_key:
         'Sealed `tpsecret` envelope of the operator-set WireGuard preshared key; write-only, never returned by the API, resealed for the daemon at reconcile.',
+      kind: "Peer kind, `server` (an org server, the only kind built) or `external` (reserved for a person's device; nothing writes it yet).",
     },
   },
   subnet: {
@@ -781,7 +892,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       key_prefix:
         'Environment variable prefix for the emitted credential keys (default `DATABASE`), unique per service; identifier charset, 1-64 chars.',
       is_emit_engine_defaults:
-        'When true, also emit the unprefixed conventional engine keys (PG*, MYSQL_*); at most one such binding per service (API field `emitEngineDefaults`).',
+        'True when the binding also emits unprefixed names (its preset, or the plain PG*/MYSQL_* names when preset is NULL); at most one such binding per service.',
+      preset:
+        'App naming preset whose unprefixed names this binding also emits; NULL means the plain engine names when is_emit_engine_defaults is true.',
     },
   },
   container: {
@@ -941,6 +1054,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One system principal on one server, the per-server form of a `principal` row; written by deploy fan-out, teardown and server removal.',
     columns: {
+      sync_device_id:
+        'Device id of the account file sync instance on this server, as the daemon reports it; NULL while sync is off.',
+      sync_port:
+        'Listen port the control plane gave the account file sync instance on this server, 1024 to 65535; unique per server.',
       state:
         '`pending` when a deploy that creates the account is queued, `present` once it succeeded, `retiring` once a stop that retires it is queued, `absent` after.',
       uid: 'Linux uid the host assigned, reported by the daemon; NULL until then, unique per server when set.',
@@ -961,7 +1078,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Client jsonb: the catalog `code` of a template or managed engine project, plus free caller keys; the project type lives in `kind`.',
       kind: 'What the project is: `compose` (a template too), `managed` or platform-only `system`; NULL while a draft that has not chosen yet.',
-      icon: 'Icon key from the fixed list the project screens offer; NULL means the default, and a managed project ignores it.',
+      icon: 'Icon key from the fixed list, or one emoji; NULL means the default. A managed project ignores it, the screens an emoji while emoji icons are off.',
       template_code:
         'Catalog code of the template the project was created from; NULL when not from a template. The four template columns are set together or all NULL.',
       template_track:
@@ -988,6 +1105,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One deployable unit (a compose service) within an environment; rows are derived from the compose document by reconcile, managed allocation or daemon reports.',
     columns: {
+      is_host_access_allowed:
+        'Whether the service may use host-level Compose fields such as devices and host networking; needs the organization switch on too; default false.',
       slug: 'Folder name under the site owner tree, unique per environment; set at creation, locked once a `folder` row exists, NULL until set.',
       is_common:
         'True when the folder is in the `common` scope shared by every environment; chosen at creation and never changed.',
@@ -1075,6 +1194,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       "One completed managed-engine backup artifact recorded from the daemon's `managed.backup` result; unique per (managed_id, backup_id), cascades with the cluster.",
     columns: {
+      origin:
+        '`backup` when a backup run made the file, `import` when it was brought in to be restored; existing rows are `backup`.',
       backup_id:
         'Daemon-minted `bk_` plus hex token that is also the artifact filename on the host; unique per managed engine, not globally.',
       size_bytes:
@@ -1089,7 +1210,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
       server_id:
-        'Host that holds the on-disk artifact (the primary when the backup ran); null on older rows or after that server is deleted.',
+        'Host that holds the on-disk artifact (the primary when the backup ran); null after that server is deleted.',
     },
   },
   destination: {
@@ -1252,6 +1373,33 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "This cluster's own copy choice: null follows the organization default, `none` turns copying off, otherwise a destination id.",
     },
   },
+  cache: {
+    group: 'managed',
+    summary:
+      'One native Valkey process per row, owned by one Hosting Account in one project environment on one server; the daemon runs it as that account.',
+    columns: {
+      metadata:
+        'Last apply result from the daemon: `runtimeVersion`, `lastError` and `appliedAt`; written by the cache result handler only.',
+      principal_id:
+        'The Hosting Account the process runs as; only that account may reach it, and only its sites and apps get the variables.',
+      name: 'Short name unique in the environment, lower case letters, digits and dashes; shown in the web interface.',
+      engine:
+        'Engine binary: `valkey` today; `redis` is reserved for a later choice and refused by the API until it is offered.',
+      status:
+        'Last known state: `pending`, `applying`, `ready`, `stopped` or `failed`; written from apply results.',
+      version:
+        'Engine series such as `8.1`; the daemon maps it to the pinned patch release it vendors.',
+      access:
+        '`socket` is a private unix socket only the account can open; `port` is a loopback port the host firewall opens to that account only.',
+      port: 'Loopback port from the server listen-port ledger, set only when `access` is `port`; unique per server.',
+      max_memory_mb:
+        'Data memory limit in MiB written as `maxmemory`; the unit memory ceiling is twice this plus 32 MiB.',
+      key_prefix:
+        'Prefix of the variable names delivered to the account sites and apps, for example `REDIS_HOST`; unique per account and environment.',
+      password:
+        'Sealed `tpsecret` envelope of the login password; only its SHA-256 is sent to the daemon, the plain value travels as a sealed variable.',
+    },
+  },
   recovery: {
     group: 'managed',
     summary:
@@ -1346,10 +1494,91 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       principal_id:
         'Optional association with a principal (SET NULL on delete so a principal delete never fails on an org secret); no current writer sets it.',
       provider:
-        '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved storage providers) or `git_deploy_key` (the only one written today).',
+        '`s3`, `s3_compatible`, `nfs`, `cifs`, `sftp`, `ftp`, `webdav` (reserved), `git_deploy_key`, `carrier_badge` or `tunnel_run` (tunnel tokens).',
       name: 'Operator label for the secret; not an identifier and not unique.',
       secret_envelope:
         '`tpsecret` envelope of provider-specific JSON; for `git_deploy_key` the sealed plaintext is the OpenSSH private key verbatim, resealed unopened for the daemon.',
+    },
+  },
+  badge: {
+    group: 'networking',
+    summary:
+      'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.',
+    columns: {
+      secret_id:
+        'The sealed token in `secret`, one badge per secret; a secret under a badge cannot be deleted alone, so a badge is removed with it.',
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Written by each check: `kind` (`account` or `user`, who owns the token), `tokenId` (the provider own token id, to catch the same token added twice) and extras.',
+      expires_at: 'When the provider says the token stops working; NULL when it reports none.',
+      label: 'Operator label for the token, shown beside its last four characters.',
+      capabilities:
+        'Last check result written by the panel: `tunnels` (boolean, account-wide) and `dns` and `certificates` (lists of zone id and name the token reaches).',
+      last_four:
+        'Last 4 characters of the token, the only part of it ever shown; never enough to use the token.',
+      last_checked_at: 'When the panel last checked the token with the provider; NULL until then.',
+      status:
+        '`active` while the last check succeeded, `attention` once a check was refused or failed.',
+    },
+  },
+  carrier: {
+    group: 'networking',
+    summary:
+      'A provider account an organization connected for tunnels; its API tokens are `badge` rows and nothing secret is stored here.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Provider-specific non-secret details from the provider (for example the account name); no keys are read by the platform today.',
+      provider: 'Tunnel provider, `cloudflare` for now; widened by a forward migration.',
+      name: 'Operator label for the account; unique only together with the provider and account id.',
+      external_account_id:
+        'The provider own account id; NULL for a provider with no account concept (rows with NULL never collide).',
+      status: '`active` while a token on it works, `attention` when none does.',
+    },
+  },
+  doorway: {
+    group: 'networking',
+    summary:
+      'One hostname a tunnel carries to a site, with the provider route and DNS record ids; unique per routing organization, like `hostname`.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options: 'Provider-specific route details; no keys are read by the platform today.',
+      routing_organization_id:
+        'Organization whose servers answer for this name, named as on `hostname`; half of the unique key with the name.',
+      hostname:
+        'Lower-case DNS name (1 to 253 characters) the tunnel carries; unique per routing organization.',
+      kind: 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.',
+      hosting_id:
+        'The site this name serves; SET NULL when the site is deleted, leaving the doorway unattached.',
+      external_dns_record_id:
+        'The provider id of the DNS record the panel created for this name; NULL until created.',
+      is_local_only:
+        'True (the default) when the web server answers this name only for the local connector and datacenter peers.',
+      status:
+        '`pending` until route and DNS name exist, `live`, `attention` after a provider error, `removing` while being taken down.',
+    },
+  },
+  portal: {
+    group: 'networking',
+    summary:
+      'A server part in a tunnel: it runs a connector (`run`) or is left out (`skip`), with the connector state the server last reported.',
+    columns: {
+      wanted:
+        '`run` when the server carries a connector, `skip` when an `all` tunnel leaves it out; `chosen` is the `run` rows.',
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options:
+        'Per-server details such as a local endpoint; no keys are read by the platform today.',
+      reported:
+        'What the server last reported: `unknown` (default), `connected`, `down` or `error`.',
+      last_seen_at: 'When the server last reported on the connector; NULL until the first report.',
+      last_error: 'Plain-words error from the last failed report; NULL when none.',
+      connector_version:
+        'Version of the connector program the daemon reports running here; NULL until the first report.',
+      version_checked_at: 'When the daemon last reported the connector version; NULL until then.',
     },
   },
   storage: {
@@ -1393,6 +1622,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'One completed storage-copy backup artifact recorded from a daemon report; unique per (copy_id, backup_id), cascades with the copy.',
     columns: {
+      origin:
+        '`backup` when a backup run made the file, `import` when it was brought in to be restored; existing rows are `backup`.',
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
       backup_id:
@@ -1545,13 +1776,104 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Highest physical core count read in the hour; NULL when none was read, never negative.',
     },
   },
+  peripheral: {
+    group: 'runtime',
+    summary:
+      'A device node on a server that can be passed to one service (USB drive, serial adapter, printer, capture card), keyed by its stable path.',
+    columns: {
+      service_id:
+        'The service the device is passed to; NULL when no service has it, and cleared when that service is deleted.',
+      name: 'Label an operator gave the device; NULL when none.',
+      kind: 'What the device is: `usb`, `serial`, `printer`, `video`, `audio` or `other`.',
+      status: '`present` while the host reports the device, `missing` once it no longer does.',
+      path: 'Stable device path under `/dev` (a by-id or by-path link) as the host reports it; unique per server.',
+      vendor_id:
+        'USB vendor id as four lower-case hex digits; NULL for a device that is not on USB.',
+      product_id:
+        'USB product id as four lower-case hex digits; NULL for a device that is not on USB.',
+      observed_at: 'When the host last reported the device.',
+    },
+  },
+  visitor: {
+    group: 'resources',
+    summary:
+      'One sign-in for a password-protected site: a name and a bcrypt hash the site web server checks, per site service; never returned by a route.',
+    columns: {
+      name: 'User name a visitor types; letters, digits and `._@-`, 1 to 64 characters, unique per site.',
+      password_hash:
+        'bcrypt hash of the password (`$2a$`, `$2b$` or `$2y$`, cost 10 to 12) written by the control plane; the password itself is never stored.',
+    },
+  },
+  record: {
+    group: 'networking',
+    summary:
+      'A DNS record TurboPanel created or adopted at a connected provider, so it never changes a record it does not own.',
+    columns: {
+      organization_id:
+        'Organization whose name it is; NULL for the control plane own names, which use an `ingress` account.',
+      carrier_id:
+        'Organization provider account that serves it; a carrier that still has tunnels cannot be deleted.',
+      ingress_id:
+        'Install-level provider account for the control plane own names; set exactly when `carrier_id` is not.',
+      name: 'Fully qualified record name in lower case.',
+      kind: 'Record type: `A`, `AAAA` or `CNAME`.',
+      status:
+        '`pending`, `synced`, `drifted`, `removing` or `failed`, as the drift check last found it.',
+      provider: 'Provider that holds the record; `cloudflare` only for now.',
+      zone_id: 'Provider zone id the record lives in.',
+      external_id:
+        'Provider record id; NULL until the provider created it, unique per provider zone.',
+      content:
+        'Record value, 1 to 253 characters: an address for `A` and `AAAA`, a host name for `CNAME`.',
+      ttl: 'Time to live in seconds, 1 to 86400; NULL leaves the provider automatic value.',
+      checked_at: 'When the drift check last compared the record with the provider.',
+      error: 'Last provider error in plain words; NULL after a success.',
+      is_proxied: 'Whether the provider proxy fronts the record, as for a tunnel `CNAME`.',
+      is_adopted: 'True when the record already existed at the provider and an owner adopted it.',
+    },
+  },
   server: {
     group: 'runtime',
     summary:
       'One enrolled host per row (uuidv7 id); daemon enroll and heartbeats project host facts onto it, operators set the name, options and pins via PATCH.',
     columns: {
+      role: 'What the server is for: `server` runs workloads, `witness` only votes in database failover and holds no data; written by an administrator.',
       preferred_datacenter_id:
         'The datacenter whose network this server prefers when it belongs to several; NULL means no preference; set null when the datacenter is deleted.',
+      is_fabric_enabled:
+        'TurboFabric membership switch, default true; false keeps the server out of the mesh (no relay, no `tp0`, no peer entry, no fabric address).',
+      sealing_key_kid:
+        'Fingerprint of the daemon X25519 sealing key, set when it registers; decrypt answers are sealed to that key for daemons listing `daemon-sealed-secrets-v1`.',
+      sealing_key_pub:
+        'Base64url raw public half of the daemon sealing key, stored only after its signature verified against the daemon key; NULL until registered.',
+      sealing_key_reported_at:
+        'When the daemon last registered its sealing key; NULL until it does.',
+      plaintext_secrets_at:
+        'Last time the secrets decrypt route answered this server in plaintext, written at most hourly; the edge go-live gate reads it.',
+      fabric_role:
+        'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
+      trust_pinned_by:
+        'How the daemon pinned the panel key: `install`, `upgrade` or `unsafe` (installed with the skip flag); NULL until the daemon reports it.',
+      trust_level:
+        'Highest daemon session trust this server has used: 0 unsigned, 1 signed frames, 2 signed with a daemon attach proof; raised only, never lowered.',
+      trust_pin_fingerprint:
+        "Control plane key fingerprint the server's pin file holds, from its last signed pin report; empty when nothing is pinned, NULL until a report verifies.",
+      trust_pin_keyset: 'Key set number of that pin, from the same signed report.',
+      trust_pin_reported_at: 'When the last signed pin report verified.',
+      trust_silence_stage:
+        'Pin silence alarm raised for the current offline episode: 1 pin silent, 2 pin missing; NULL when none, cleared on reconnect or a signed pin report.',
+      trust_silence_since:
+        'The offline episode that alarm belongs to, as the status change time it started at.',
+      trust_silence_alive_at:
+        'Since when TurboFabric peers have reported a healthy tunnel to this offline server without a break; NULL while none does.',
+      trust_reports_signed_at:
+        'When a signed daemon report from this server first verified; set once, and from then on its unsigned reports on a signed session are refused.',
+      is_trust_pin_matching:
+        "Whether the reported pin named this control plane's current or next key; false raises the pin mismatch alarm.",
+      trust_pin_passkeys:
+        'Base64url SHA-256 of the rotation passkeys line in the server pin, from its signed pin report; empty with none pinned, NULL when not reported.',
+      container_prefix:
+        'Container range of this server (a /16 from the org container pool), set when first needed; cross-server network subnets come from it, NULL until then.',
       metadata:
         'Daemon-projected host facts jsonb: `resources`, `geo`, `docker`, `runtimes`, `cell` plus the operator `hardwareProfile`; hostname, OS and NTP have own columns.',
       options:
@@ -1687,6 +2009,16 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'When the Stripe projection settled (success, skip or permanent error); NULL means pending retry and exempt from pruning, git rows stay NULL.',
     },
   },
+  nonce: {
+    group: 'identity',
+    summary:
+      'Daemon challenge ids and request nonces already used, kept until `expires_at` so a replay inside the window is refused; pruned by the sweep.',
+    columns: {
+      value: 'The used value: the nonce of a sign-in challenge or of a signed daemon request.',
+      kind: 'What the value protected: `challenge` (enroll or session sign-in) or `request` (a signed daemon request).',
+      expires_at: 'When the challenge or request stops being valid; the row is deleted after this.',
+    },
+  },
   forge: {
     group: 'git',
     summary:
@@ -1710,7 +2042,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       redirect_uri:
         'OAuth redirect URI registered with the provider for the GitLab authorize flow; NULL for GitHub Apps.',
       webhook_origin:
-        'Public origin the provider was told to deliver webhooks to at registration; NULL on apps registered before that choice existed.',
+        'Public origin the provider was told to deliver webhooks to at registration; NULL when none was recorded.',
       is_public:
         'Whether the provider was told the app is publicly installable; set at creation (true for instance-wide apps) and refreshed from GitHub on sync.',
       custom_git_user:
@@ -1797,7 +2129,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'Delivery-attempt ledger: one row per event per routed channel, inserted before the send so a crash leaves a pending row; retried by the maintenance tick.',
     columns: {
       organization_id: 'Organization the event belongs to; NULL for an instance-scoped event.',
-      event: 'Catalogue code (`NOTIFICATION_EVENTS`), same vocabulary as `notification.event`.',
       severity: "`info`, `warning` or `critical`, copied from the event's catalogue definition.",
       payload:
         'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `destinationId`, `context`, `at`.',
@@ -1810,6 +2141,17 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       sent_at: 'When a send succeeded; NULL until then.',
       last_error:
         'Short failure code from the last attempt (`http_503`, `timeout`, `network`, `address_scheme_not_https`), never a body or the address.',
+      event_id:
+        'The `event` row this copy carries; deleting the event at the end of its 30-day retention deletes its copies.',
+      user_id:
+        'The person a personal copy is for, checked again for access before it is sent; NULL for an organization or instance channel.',
+      device_id:
+        'The device a push copy goes to; NULL for every other kind (push is not sent yet).',
+      topic_code: 'The catalogue topic of the event.',
+      reason:
+        'Why the copy was held or not sent: `quiet_hours`, `digest`, `no_access`, `scope_deleted`, `read_in_app`, `unverified`, `bounced` and others; NULL when sent.',
+      provider_id:
+        'Id the mail queue or push service gave the send, when it gives one; NULL otherwise.',
     },
   },
   channel: {
@@ -1817,6 +2159,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'An address notifications can be delivered to, owned by the instance, one organization or one user per `scope`; addresses of secret kinds are sealed.',
     columns: {
+      is_all_organizations_notified:
+        'Instance channels only: also hear every organization event, including organizations created later; otherwise only install events.',
       scope:
         'Owner kind: `instance`, `organization` or `user`; the owner columns must agree with it (CHECK).',
       organization_id:
@@ -1841,6 +2185,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Quiet hours start as minutes after local midnight (0-1439), set together with `quiet_end_minute`; NULL means no quiet hours.',
       quiet_end_minute:
         'Quiet hours end as minutes after local midnight (0-1439); the window may wrap midnight, and held events go out as one summary when it ends.',
+      failures:
+        'Consecutive failed sends, reset by a success; reserved for pausing a failing shared channel.',
+      paused_reason:
+        'Why sending stopped: `manual`, `failing` or `bounced`; NULL while the channel sends.',
+      is_primary:
+        "True for a person's built-in account email channel, which follows their sign-in address and cannot be deleted; one per person.",
     },
   },
   notification: {
@@ -1852,8 +2202,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Recipient of the inbox row; one row per person the event reached, chosen by the event's audience (members or managers).",
       organization_id:
         'Organization the event belongs to; NULL for an instance-scoped event such as `fleet.mass_disconnect`.',
-      event:
-        'Catalogue code (`NOTIFICATION_EVENTS`), such as `server.offline`, `access.grant_*`, `certificate.renewal_failed` or `folder.orphans_found`.',
       severity: "`info`, `warning` or `critical`, copied from the event's catalogue definition.",
       title:
         "One-line sentence rendered from the catalogue's title template at emit time; also the email subject.",
@@ -1868,16 +2216,223 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'When the recipient marked it read (Mark all read); NULL while unread and counted in the badge.',
       dismissed_at:
         'When the recipient dismissed the row from the bell; NULL while it is still shown.',
+      event_id:
+        'The `event` row this copy came from, a plain id with no foreign key so the 90-day inbox outlives the 30-day event retention.',
+      topic_code: 'The catalogue topic of the event this row is about.',
+      project_id:
+        'Project the event was about, a plain id with no foreign key so the row outlives the project; used for links and filters.',
+      environment_id:
+        'Environment the event was about, a plain id with no foreign key so the row outlives the environment.',
+      service_id:
+        'Service the event was about, a plain id with no foreign key so the row outlives the service.',
+      server_id:
+        'Server the event was about, a plain id with no foreign key so the row outlives the server.',
+      destination_id:
+        'Backup target the event was about, a plain id with no foreign key so the row outlives the target.',
     },
   },
   rule: {
     group: 'notifications',
     summary:
-      'Subscription row saying which event (or `*`) reaches a channel at or above a severity floor; a channel with no rule receives nothing.',
+      'Subscription row saying which category or topic (or every topic) reaches a channel at or above a severity floor; a channel with no rule receives nothing.',
     columns: {
-      event: 'One catalogue event code, or `*` for every event; unique per channel.',
       min_severity:
         "Severity floor `info` (default), `warning` or `critical`; delivered only when the event's severity ranks at or above it.",
+      organization_id:
+        'Organization a shared route belongs to, set with the scope columns that narrow it; NULL means the route covers the whole install.',
+      project_id: 'Project the route is limited to; deleting the project deletes the route.',
+      environment_id:
+        'Environment the route is limited to; deleting the environment deletes the route.',
+      service_id: 'Service the route is limited to; deleting the service deletes the route.',
+      server_id: 'Server the route is limited to; deleting the server deletes the route.',
+      destination_id:
+        'Backup target the route is limited to; deleting the target deletes the route.',
+      category_code:
+        'Catalogue category the route is limited to; NULL with `topic_code` NULL means every topic.',
+      topic_code:
+        'One catalogue topic the route is limited to; NULL means the category decides, or every topic when the category is NULL too.',
+      ends_at: 'A muted route sends nothing until this time; NULL means not muted.',
+      is_enabled: 'False keeps the route and sends nothing through it.',
+    },
+  },
+  category: {
+    group: 'notifications',
+    summary:
+      'A group of notification topics for the settings screens, written from the code catalogue by the catalog sync in migrate and never deleted.',
+    columns: {
+      code: 'Permanent key such as `servers` or `security`; a code is never reused with a new meaning.',
+      name: 'Group name shown on the settings screens, in book title case.',
+      position: 'Sort order on the settings screens, smallest first.',
+    },
+  },
+  topic: {
+    group: 'notifications',
+    summary:
+      'One row per notification event type, upserted from `events.ts` by the catalog sync in migrate; a code that leaves the code base gets `deprecated_at`.',
+    columns: {
+      code: 'Permanent event code such as `server.offline`; preferences, events and history name it, so it is never reused.',
+      category_code: 'The `category` the topic is listed under.',
+      resolves_code:
+        'The topic this one resolves, such as a recovery naming the failure it ends; NULL for most topics.',
+      name: 'What a person picks the topic by on the settings screens.',
+      kind: '`organization` (raised in an organization), `platform` (vendor notices), `instance` (for administrators) or `account` (one sign-in).',
+      severity:
+        '`info`, `warning` or `critical`; a preference level is a floor compared against it.',
+      scope:
+        'For an organization topic, the most specific resource it names: `organization`, `project`, `environment`, `service`, `server` or `destination`.',
+      audience:
+        'Who may hear it, checked again at send time: `members` of the organization, its `managers` (own or manage grants), or `admins` of the install.',
+      channels:
+        'Channel kinds the topic may use, a subset of `inbox`, `email`, `push`, `chat` and `webhook`.',
+      level:
+        'Level used when no preference applies; `none` for every topic, so nothing arrives until a person turns it on.',
+      cooldown:
+        'How long a repeat of an open event with the same dedupe key is folded into it rather than sent again; zero means never.',
+      version: 'Version of the payload shape in `event.data`.',
+      deprecated_at:
+        'When the code left the code base; old rows keep naming it and no new events use it.',
+      is_urgent:
+        'True when quiet hours and digests never hold it; this is timing only, a person can still turn it off.',
+      is_actor_notified: 'False means the person who caused the event is never told about it.',
+    },
+  },
+  event: {
+    group: 'notifications',
+    summary:
+      'One row per thing that happened, the outbox every inbox row and delivery hangs from; scope ids are plain uuids so deletes never touch history.',
+    columns: {
+      organization_id:
+        'Organization the event was raised in; NULL for an instance or platform event.',
+      topic_code: 'The catalogue topic.',
+      project_id:
+        'Project the event is about, a plain id with no foreign key; a pending copy is dropped once the project is gone.',
+      environment_id:
+        'Environment the event is about, a plain id with no foreign key; a pending copy is dropped once it is gone.',
+      service_id:
+        'Service the event is about, a plain id with no foreign key; a pending copy is dropped once it is gone.',
+      server_id:
+        'Server the event is about, a plain id with no foreign key; a pending copy is dropped once it is gone.',
+      destination_id:
+        'Backup target the event is about, a plain id with no foreign key; a pending copy is dropped once it is gone.',
+      actor_user_id:
+        'Who caused the event, a plain id like `audit.actor_user_id`; that person is not told unless the topic says so.',
+      severity: '`info`, `warning` or `critical`, copied from the topic when the event was raised.',
+      dedupe:
+        'Key that folds repeats of an open event inside the topic cooldown into one row; NULL means every occurrence is its own event.',
+      version: 'Payload version, the topic version when the event was raised.',
+      repeats: 'How many repeats were folded into this event inside the cooldown.',
+      last_seen_at: 'When the event, or its latest folded repeat, happened.',
+      fanned_out_at:
+        'When its inbox rows and deliveries were written; NULL while that is still to do.',
+      status: '`open`, `resolved` (its recovery event arrived) or `closed`.',
+      data: 'Small non-secret context the sentences render from, with resource names snapshotted so a deleted resource still reads in words.',
+    },
+  },
+  preference: {
+    group: 'notifications',
+    summary:
+      "One person's notification level for one scope, channel and subject; sparse, most specific row wins, and no row at all means nothing is sent.",
+    columns: {
+      organization_id:
+        'Organization the choice is for; NULL means every organization the person belongs to and the install events.',
+      project_id:
+        'Project the choice is for; a composite key with `organization_id` proves the project is in that organization, and deleting it deletes the row.',
+      environment_id:
+        'Environment the choice is for; a composite key with `project_id` proves it is in that project, and deleting it deletes the row.',
+      service_id: 'Service the choice is for; deleting the service deletes the row.',
+      server_id: 'Server the choice is for; deleting the server deletes the row.',
+      destination_id: 'Backup target the choice is for; deleting the target deletes the row.',
+      channel_id:
+        'One personal channel the choice is for; NULL with `kind` NULL means every channel.',
+      category_code:
+        'Catalogue category the choice is for; NULL with `topic_code` NULL means every topic.',
+      topic_code: 'One catalogue topic the choice is for.',
+      ends_at:
+        'A temporary mute or watch: the row stops applying at this time; NULL means it lasts.',
+      kind: 'Channel kind the choice is for: `inbox`, `email`, `push`, `chat` (Slack, Discord, Telegram) or `webhook`; NULL means every kind.',
+      level: '`all`, `warning` (warnings and critical), `critical` or `none`.',
+    },
+  },
+  policy: {
+    group: 'notifications',
+    summary:
+      "An organization's default notification level for its members or one team, optionally locked; the data model is in place, the screens come later.",
+    columns: {
+      team_id: 'Team the default is for; NULL means every member.',
+      project_id:
+        'Project the default is for; a composite key with `organization_id` proves the project is in that organization, and deleting it deletes the row.',
+      environment_id:
+        'Environment the default is for; a composite key with `project_id` proves it is in that project, and deleting it deletes the row.',
+      category_code:
+        'Catalogue category the default is for; NULL with `topic_code` NULL means every topic.',
+      topic_code: 'One catalogue topic the default is for.',
+      created_by_user_id: 'Who set the default; NULL once that account is deleted.',
+      kind: 'Channel kind the default is for: `inbox`, `email`, `push`, `chat` or `webhook`; NULL means every kind.',
+      level: '`all`, `warning`, `critical` or `none`.',
+      is_forced: 'True means members cannot override the default.',
+    },
+  },
+  device: {
+    group: 'notifications',
+    summary:
+      'A phone or tablet that can receive push notifications for one person; the table is in place before the push transport, and nothing writes it yet.',
+    columns: {
+      name: 'What the person calls the device.',
+      kind: '`ios` or `android`.',
+      status:
+        '`active` (default), `paused` by the person, or `invalid` once the push service refused the token.',
+      provider: 'Push service the token belongs to; `expo` only for now.',
+      token: 'Sealed `tpsecret` push token.',
+      token_hash:
+        'SHA-256 of the plain token, unique per provider, so one token belongs to one row although the sealed value varies.',
+      app_version: 'App version the device last registered with.',
+      locale: 'Language tag the device last registered with.',
+      invalid_reason:
+        'Short error code the push service gave when it refused the token; NULL while the token works.',
+      last_seen_at: 'When the app last registered the device; old tokens are retired by a sweep.',
+    },
+  },
+  suppression: {
+    group: 'notifications',
+    summary:
+      'An email address no notification is sent to because it bounced or was refused, keyed by a hash so the address is never stored here.',
+    columns: {
+      address_hash: 'SHA-256 hex of the trimmed, lower-cased address; one active row per address.',
+      reason:
+        '`bounced`, `complained` or `rejected` (the provider refused the recipient for good).',
+      source: 'Mail path that reported it: `smtp`, `mailgun`, `mailpit` or `manual`.',
+      cleared_at: 'When the address was confirmed again; NULL while it is suppressed.',
+    },
+  },
+  watermark: {
+    group: 'notifications',
+    summary:
+      'Mark-all-read without rewriting rows: one per person and organization, and inbox rows created at or before `read_through` read as read.',
+    columns: {
+      organization_id:
+        'Organization the mark covers; NULL means every organization and the install events.',
+      read_through: 'Inbox rows created at or before this time read as read.',
+    },
+  },
+  tunnel: {
+    group: 'networking',
+    summary:
+      'A tunnel an organization created: a named path from a provider edge to connectors on its servers; the sealed run token is a `secret` row.',
+    columns: {
+      metadata:
+        'Non-secret descriptors written by the panel; no keys are read by the platform today.',
+      options: 'Provider-specific tunnel settings; no keys are read by the platform today.',
+      routing_organization_id:
+        'Organization whose servers and sites the tunnel carries; equal to `organization_id` for now, enforced in code only.',
+      provider: 'Tunnel provider, `cloudflare` for now; widened by a forward migration.',
+      name: 'Operator name, unique per organization.',
+      external_id: 'The provider own tunnel id; NULL until the provider created it.',
+      placement:
+        '`one` (exactly one `run` portal), `chosen` (the `run` portals) or `all` (every server of the datacenter except the `skip` portals; needs `datacenter_id`).',
+      secret_id:
+        'The sealed run token in `secret`; SET NULL if that row goes, NULL for a provider that needs none.',
+      status:
+        '`pending` until created, `active`, `attention` after a provider error, `removing` while being taken down.',
     },
   },
   upgrade: {
@@ -1936,8 +2491,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       error_message: 'Human-readable failure text set alongside `error_code`.',
       detail:
         'Small stage facts such as bytes fetched or an exit code; the orchestrator writes it, never a transcript.',
-      started_at:
-        'When the step was first dispatched to its server; NULL until then, and on rows written before this column existed.',
+      started_at: 'When the step was first dispatched to its server; NULL until then.',
       finished_at:
         'When the step reached a terminal status (`done`, `skipped`, `failed`, `needs_attention`); cleared when a retry reopens it.',
     },

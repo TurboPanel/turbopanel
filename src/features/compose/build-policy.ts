@@ -19,7 +19,7 @@
  * - `context`, `dockerfile` and `additional_contexts` that leave the service's
  *   directory (absolute, `~`, `..`, interpolated), or a remote context whose
  *   host is internal (a non-public IP literal, `localhost`, a single-label or
- *   reserved name).
+ *   reserved name, or a local network ending such as `.lan`).
  *
  * Lexical, like `./host-access.ts`: the daemon repeats these rules on the
  * resolved model and resolves every build path on the host, which is what
@@ -30,10 +30,11 @@
  * Pure and org-blind, like the rest of `src/features/compose/`.
  */
 
-import { ipAddressScope, ipToBigInt, normalizeIpAddress } from '../../lib/ip-address.ts'
-import { hostIsReserved, stripTrailingDots, unbracket } from '../../lib/http/outbound-url.ts'
+import { internalAddressReason, internalHostReason } from '../../lib/internal-host.ts'
 import { outsideReason } from './host-access.ts'
 import { resolveComposeTags } from './tags.ts'
+
+export { internalAddressReason }
 
 /** One machine-readable code per rule, so a caller never keys off the prose. */
 export type BuildRefusalCode =
@@ -85,19 +86,6 @@ const REMOTE_OPT_IN =
 /** Build networks BuildKit offers that reach nothing on the host. */
 const ALLOWED_BUILD_NETWORKS = new Set(['default', 'none'])
 
-/**
- * Cloud metadata endpoints that sit in ranges `ipAddressScope` calls private:
- * AWS's IPv6 endpoint (`fd00:ec2::254`) and Alibaba's (`100.100.100.200`).
- * Kept as numbers: link-local metadata (`169.254.169.254`) is caught by scope.
- */
-const METADATA_ADDRESSES: ReadonlySet<bigint> = new Set([
-  0xfd000ec2000000000000000000000254n,
-  0x646464c8n,
-])
-
-/** A host label spelled the way `inet_aton` reads a number (`0x7f`, `017`, `2130706433`). */
-const NUMERIC_LABEL_RE = /^(?:0x[0-9a-f]*|\d+)$/i
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -143,40 +131,6 @@ class Refusals {
     const reason = outsideReason(value)
     if (reason) this.add(code, segments, `${what} \`${value}\``, reason)
   }
-}
-
-/** Why an address is one a build must not be pointed at, or `null`. */
-export function internalAddressReason(value: string): string | null {
-  const address = normalizeIpAddress(value)
-  if (address === null) {
-    return 'is not an IP address, so where it points cannot be checked'
-  }
-  const numeric = ipToBigInt(address)
-  if (numeric !== null && METADATA_ADDRESSES.has(numeric)) {
-    return 'is a cloud metadata endpoint'
-  }
-  const scope = ipAddressScope(address)
-  if (scope === 'loopback') return 'is a loopback address on the build host'
-  if (scope === 'link-local') {
-    return 'is link-local, where cloud metadata endpoints live'
-  }
-  if (scope === null) return 'is not a unicast host address'
-  return null
-}
-
-/** Why a remote host is internal, or `null` when it may be fetched from. */
-function internalHostReason(rawHost: string): string | null {
-  const host = stripTrailingDots(unbracket(rawHost.toLowerCase()))
-  if (host === '') return 'names no host'
-  if (normalizeIpAddress(host) !== null) {
-    const reason = internalAddressReason(host)
-    if (reason) return reason
-    return ipAddressScope(host) === 'public' ? null : 'is a private address'
-  }
-  if (host.split('.').every((label) => NUMERIC_LABEL_RE.test(label))) {
-    return 'is a numeric host that resolves to an address this check cannot see'
-  }
-  return hostIsReserved(host) ? 'names an internal host' : null
 }
 
 /** The host a URL-shaped context fetches from, or `undefined` when it cannot be parsed. */

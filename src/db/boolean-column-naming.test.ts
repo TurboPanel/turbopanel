@@ -2,7 +2,7 @@
  * Guard: physical boolean columns must use an `is_` prefix.
  *
  * Asserts the latest Drizzle snapshot (and `schema.ts` `boolean('…')`
- * declarations) so a later squash of `0000_base.sql` cannot hide a bypass.
+ * declarations) so a later squash of `0000_init.sql` cannot hide a bypass.
  */
 
 import { assertEquals } from '@std/assert'
@@ -157,17 +157,17 @@ test('latest drizzle snapshot boolean columns start with is_', async () => {
   }
 })
 
-test('migrations/0000_base.sql boolean columns use is_ names', async () => {
+test('migrations/0000_init.sql boolean columns use is_ names', async () => {
   const here = dirname(fromFileUrl(import.meta.url))
-  const sql = await Deno.readTextFile(join(here, '../../migrations/0000_base.sql'))
+  const sql = await Deno.readTextFile(join(here, '../../migrations/0000_init.sql'))
   for (const required of REQUIRED_IS_PREFIX_COLUMNS) {
     if (!sql.includes(`"${required}"`)) {
-      throw new TypeError(`expected quoted column "${required}" in 0000_base.sql`)
+      throw new TypeError(`expected quoted column "${required}" in 0000_init.sql`)
     }
   }
   for (const retired of RETIRED_BOOLEAN_NAMES) {
     if (sql.includes(`"${retired}"`)) {
-      throw new TypeError(`retired quoted column "${retired}" must not appear in 0000_base.sql`)
+      throw new TypeError(`retired quoted column "${retired}" must not appear in 0000_init.sql`)
     }
   }
 })

@@ -18,11 +18,22 @@ import {
   storeUploadedCertificate,
 } from '../features/install/instance-certificates.ts'
 import {
+  type InstanceHostnameRecord,
+  isAcmeHostnameSource,
   listInstanceHostnames,
   replaceInstanceHostnames,
   validateHostnameSource,
 } from '../features/install/instance-hostnames.ts'
-import { publicHttpsOrigin } from '../features/install/public-urls.ts'
+import {
+  describePrimaryChange,
+  type PrimaryChange,
+  primaryHostname,
+  publicOriginForHostname,
+} from '../features/install/public-origins.ts'
+import { recordAudit } from '../features/audit/audit-records.ts'
+import { markedRpId } from '../lib/panel-identity/keyset-store.ts'
+import { hostFromPublicUrlEntry } from '../features/install/public-urls.ts'
+import { platformControlPlaneOrigin } from '../features/install/control-plane-origins.ts'
 import {
   parseCertificateHostnamesBody,
   parseCertificateUploadBody,
@@ -44,7 +55,7 @@ const ENCRYPTION_UNAVAILABLE = {
  * alone (`certificateSourceForInstallOrigin`) with no relation to what's
  * actually serving TLS, and could silently change
  * `installOriginNeedsInsecureTls`'s verdict for generated install commands
- * (an "uploaded" or "lets-encrypt" source with no real certificate behind it
+ * (an "uploaded" or "acme-http-01" source with no real certificate behind it
  * reads as untrusted, adding `-k`). Refusing writes here keeps the
  * `instanceHostname` / `instanceUploadedCertificate` tables and the ACME
  * settings empty on Workers, which is the state every other reader already
@@ -58,8 +69,77 @@ function failureStatus(error: string): 404 | 422 {
   return 422
 }
 
+function primaryOrigin(rows: readonly InstanceHostnameRecord[]): string | null {
+  const primary = primaryHostname(rows)
+  return primary ? publicOriginForHostname(primary) : null
+}
+
+export const ROTATION_RP_ID_HOSTNAME_ERROR = 'rotation_rp_id_hostname'
+
+/**
+ * While rotation passkeys are marked, servers verify key changes against the
+ * primary hostname they were created on (`rp_id`). Removing it, or making
+ * another hostname primary, would leave no place those passkeys can sign.
+ */
+async function refuseMovingRotationRpId(
+  c: Context<AppEnv>,
+  db: Db,
+  hostnames: readonly { host: string; isPrimary?: boolean }[]
+): Promise<Response | null> {
+  const rpId = await markedRpId(db)
+  if (!rpId) return null
+  const primary = primaryHostname(hostnames)
+  const host = primary ? hostFromPublicUrlEntry(primary.host) : null
+  if (host === rpId) return null
+  return c.json(
+    {
+      ok: false,
+      error: ROTATION_RP_ID_HOSTNAME_ERROR,
+      message: `${rpId} approves control plane key changes and must stay the primary hostname while rotation passkeys are marked.`,
+    },
+    409
+  )
+}
+
+/**
+ * Links, OAuth callbacks and Git webhook URLs follow the primary hostname, so a
+ * change of its public address means addresses registered elsewhere (an OAuth
+ * app, a Git provider webhook) must be updated. Passkeys are bound to the
+ * primary host (the WebAuthn RP ID), so a different host also stops every
+ * registered passkey. Empty when unchanged.
+ */
+function primaryChangeWarning(change: PrimaryChange | null) {
+  if (!change) return {}
+  return {
+    warnings: [change.code],
+    previousPrimaryOrigin: change.previousPrimaryOrigin,
+    primaryOrigin: change.primaryOrigin,
+  }
+}
+
+/** A moved primary goes to the activity log (instance-wide: no organization). */
+async function auditPrimaryChange(
+  c: Context<AppEnv>,
+  db: Db,
+  change: PrimaryChange
+): Promise<void> {
+  const session = c.get('session')
+  await recordAudit(db, {
+    organizationId: null,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    action: 'instance.primary_hostname_changed',
+    targetType: 'instance_hostnames',
+    context: {
+      code: change.code,
+      previousPrimaryOrigin: change.previousPrimaryOrigin,
+      primaryOrigin: change.primaryOrigin,
+    },
+  })
+}
+
 /** The shared 422 for every write these routes refuse on Workers, or `null` to proceed. */
-function refuseWorkersWrite(c: Context<AppEnv>, opts: { runtime: 'deno' | 'workers' }) {
+export function refuseWorkersWrite(c: Context<AppEnv>, opts: { runtime: 'deno' | 'workers' }) {
   if (opts.runtime !== 'workers') return null
   return c.json({ ok: false, error: PLATFORM_MANAGED_TLS_ERROR }, 422)
 }
@@ -93,10 +173,7 @@ export function registerInstanceHostnameAdminRoutes(
 
   admin.get('/instance/hostnames', async (c) => {
     if (opts.runtime === 'workers') {
-      const env = resolvePlatformEnv(c, opts)
-      const platformManagedOrigin = env.TURBOPANEL_BASE_URL
-        ? publicHttpsOrigin(env.TURBOPANEL_BASE_URL)
-        : null
+      const platformManagedOrigin = platformControlPlaneOrigin(resolvePlatformEnv(c, opts))
       return c.json({
         ok: true,
         hostnames: [],
@@ -132,10 +209,11 @@ export function registerInstanceHostnameAdminRoutes(
       const checked = validateHostnameSource(entry.host, entry.source)
       if (!checked.ok) return c.json(checked, 422)
     }
-    // A Let's Encrypt row stored without accepted terms would make every
-    // later apply fail, including unrelated hostname edits — refuse the save.
+    // A Let's Encrypt row (HTTP-01 or DNS-01) stored without accepted terms
+    // could never be issued, and an HTTP-01 one would make every later apply
+    // fail, including unrelated hostname edits — refuse the save.
     if (
-      parsed.hostnames.some((entry) => entry.source === 'lets-encrypt') &&
+      parsed.hostnames.some((entry) => isAcmeHostnameSource(entry.source)) &&
       !(await tosAccepted(c, db))
     ) {
       return c.json(
@@ -147,9 +225,14 @@ export function registerInstanceHostnameAdminRoutes(
         422
       )
     }
+    const keepsRpId = await refuseMovingRotationRpId(c, db, parsed.hostnames)
+    if (keepsRpId) return keepsRpId
+    const previousPrimary = primaryOrigin(await listInstanceHostnames(db))
     const replaced = await replaceInstanceHostnames(db, parsed.hostnames)
     if (!replaced.ok) return c.json(replaced, 422)
-    return c.json({ ok: true, hostnames: replaced.hostnames })
+    const change = describePrimaryChange(previousPrimary, primaryOrigin(replaced.hostnames))
+    if (change) await auditPrimaryChange(c, db, change)
+    return c.json({ ok: true, hostnames: replaced.hostnames, ...primaryChangeWarning(change) })
   })
 
   admin.get('/instance/certificates', async (c) => {

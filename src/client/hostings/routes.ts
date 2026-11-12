@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
@@ -90,11 +91,20 @@ async function commitHostingPatch(
   id: string,
   organizationId: string,
   patchFields: HostingPatchFields,
-  hostnamesPatch: string[] | null
+  hostnamesPatch: string[] | null,
+  actor: { userId: string; email: string | null }
 ): Promise<Response | null> {
   try {
     await db.transaction(async (tx) => {
+      // Changing the pin can leave a managed Let's Encrypt entry unused. Lock in
+      // the order a deploy does (environment, then the organization lock).
+      const previousCertificates =
+        patchFields.tlsId === undefined ? [] : await lockPinnedCertificates(tx, id)
       await tx.update(hosting).set(patchFields).where(eq(hosting.id, id))
+      await removeUnusedSiteCertificates(tx, previousCertificates, {
+        reason: 'its site now uses another certificate',
+        actor,
+      })
       if (hostnamesPatch !== null) {
         // `organizationId` was already checked equal to this hosting's
         // resolved workspace-ancestry organization above.
@@ -276,6 +286,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     try {
       const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks)
+      nudgeTunnelRoutesAfterResponse(c, organizationId)
       return c.json({ ok: true as const, id })
     } catch (err) {
       if (isHostnameUniqueViolation(err)) {
@@ -288,7 +299,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   router.patch('/hostings/:id', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, organizationId } = sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const id = c.req.param('id')
     const refused = await refuseHostingChange(c, db, id, organizationId)
@@ -316,10 +327,12 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       id,
       organizationId,
       patchFields,
-      hostnamesPatchFromFields(patchFields)
+      hostnamesPatchFromFields(patchFields),
+      { userId: session.userId, email: session.email ?? null }
     )
     if (conflict) return conflict
 
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })
 
@@ -347,8 +360,14 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return hierarchyDeleteHasChildrenResponse(c)
     }
 
+    nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })
+}
+
+async function lockPinnedCertificates(tx: Db, hostingId: string): Promise<string[]> {
+  await lockHostingEnvironment(tx, hostingId)
+  return await lockCertificatesPinnedBy(tx, [hostingId])
 }
 
 /** Lock the environment row a hosting belongs to (a deploy holds it while it changes sites). */

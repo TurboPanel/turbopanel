@@ -3,7 +3,7 @@
  * reads and writes. The in-memory store backs host-free tests. The drizzle
  * store is what Deno and Workers call.
  */
-import { and, asc, desc, eq, inArray, notInArray, sql } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, ne, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { server, setting, upgrade, stage, user } from '../../db/schema.ts'
 import { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
@@ -206,9 +206,14 @@ export type UpgradeStore = {
   /**
    * A connected daemon not on `commit` and not built after `builtAt` (when
    * both build times are known) — a host already ahead of the target never
-   * reopens a run.
+   * reopens a run. `excludeServerId` leaves one server out: a development
+   * install's co-located daemon runs from source and never matches a build.
    */
-  anyDaemonBehind(commit: string | null, builtAt?: string | null): Promise<boolean>
+  anyDaemonBehind(
+    commit: string | null,
+    builtAt?: string | null,
+    excludeServerId?: string | null
+  ): Promise<boolean>
   /** Facts for an already-bounded id list. Does not read the rest of the fleet. */
   factsFor(ids: readonly string[], colocatedServerId: string | null): Promise<FleetServerFact[]>
   /**
@@ -507,11 +512,15 @@ export function createMemoryUpgradeStore(input?: {
       tickCursor = cursor ? { runId, cursor: structuredClone(cursor) } : null
       return Promise.resolve()
     },
-    anyDaemonBehind: (commit, builtAt) => {
+    anyDaemonBehind: (commit, builtAt, excludeServerId) => {
       if (!commit) return Promise.resolve(false)
       return Promise.resolve(
         facts.some(
-          (fact) => fact.connected && fact.commit !== commit && !builtAfter(fact.builtAt, builtAt)
+          (fact) =>
+            fact.connected &&
+            fact.serverId !== excludeServerId &&
+            fact.commit !== commit &&
+            !builtAfter(fact.builtAt, builtAt)
         )
       )
     },
@@ -666,7 +675,8 @@ export function createDrizzleUpgradeStore(
     countSteps: (upgradeId) => countUpgradeSteps(db, upgradeId),
     readTickCursor: (runId) => readTickCursor(db, runId),
     writeTickCursor: (runId, cursor) => writeTickCursor(db, runId, cursor),
-    anyDaemonBehind: (commit, builtAt) => anyDaemonBehind(db, commit, builtAt),
+    anyDaemonBehind: (commit, builtAt, excludeServerId) =>
+      anyDaemonBehind(db, commit, builtAt, excludeServerId),
     factsFor: (ids, colocatedServerId) => loadFactsFor(db, ids, colocatedServerId),
     saveStep: async (step, expectedStatus) => {
       const rows = await db
@@ -1327,7 +1337,8 @@ async function writeTickCursor(
 async function anyDaemonBehind(
   db: Db,
   commit: string | null,
-  builtAt?: string | null
+  builtAt?: string | null,
+  excludeServerId?: string | null
 ): Promise<boolean> {
   if (!commit) return false
   const target = normalizedBuiltAt(builtAt)
@@ -1344,7 +1355,8 @@ async function anyDaemonBehind(
       and(
         eq(server.isConnected, true),
         sql`${server.daemonCommit} is distinct from ${commit}`,
-        notAhead
+        notAhead,
+        excludeServerId ? ne(server.id, excludeServerId) : undefined
       )
     )
     .limit(1)

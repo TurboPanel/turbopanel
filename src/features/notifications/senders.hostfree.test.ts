@@ -23,6 +23,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 const payload: DeliveryPayload = {
+  eventId: '00000000-0000-4000-8000-0000000000e1',
   event: 'server.offline',
   severity: 'critical',
   title: 'Server db-1 went offline',

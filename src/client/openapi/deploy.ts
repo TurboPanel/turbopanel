@@ -147,6 +147,7 @@ export const deploySchemas = {
           'site_principal_ambiguous',
           'site_managed_directory_unowned',
           'site_cron_unowned',
+          'site_lifecycle_unowned',
           'php_mode_not_allowed',
           'node_version_unresolved',
         ],
@@ -356,6 +357,22 @@ export const deploySchemas = {
           },
         },
       },
+      configFiles: {
+        type: 'array',
+        description:
+          'Generated config files (Compose configs with content). Secret slots show as {$KEY}; no secret value or byte count is ever shown. Absent when the deploy has none.',
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'source', 'hasSecretValues', 'template'],
+          properties: {
+            serverId: { type: 'string' },
+            composeServiceName: { type: 'string' },
+            source: { type: 'string' },
+            hasSecretValues: { type: 'boolean' },
+            template: { type: 'string' },
+          },
+        },
+      },
       nativeAppVariables: {
         type: 'array',
         description:
@@ -515,6 +532,12 @@ export const deploySchemas = {
         enum: ['inplace', 'sequential', null],
         description:
           'The deploy engine this attempt ran. Null for attempts queued before it was recorded.',
+      },
+      action: {
+        type: ['string', 'null'],
+        enum: ['hostings', null],
+        description:
+          "`hostings` when this attempt only rewrote the web server config and certificates on a server already running the environment (no build, no restart), as after a hosting gets a Let's Encrypt certificate. Null for a full deploy.",
       },
       strategyOutcome: {
         type: ['string', 'null'],
@@ -712,7 +735,7 @@ export const deployPaths = {
         },
         409: {
           description:
-            'Health-check, resource-limit, no eligible server (`server_placement_required`), or TurboFabric still converging (`fabric_reconcile_pending`)',
+            'Health-check, resource-limit, no eligible server (`server_placement_required`), TurboFabric still converging (`fabric_reconcile_pending`), or TurboFabric turned off while the deploy waited for it (`fabric_turned_off`, with a plain `message`)',
           content: {
             'application/json': {
               schema: {
@@ -854,7 +877,36 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Stop an environment and remove what it runs',
       description:
-        'Queues one `environment.stop` command per server the environment runs on: the compose project is taken down (containers, networks and volumes are removed), the environment\'s sites\' release trees are reclaimed and the host\'s ingress is reconciled. The environment record and its settings stay, so a later deploy starts it again. This is the teardown to use when cleaning up a test environment. A rollout still waiting for its next batch is cancelled. Needs manage on the environment, and a recent step-up when the organization requires one (403 `reauth_required`). Poll each command with `GET /servers/{serverId}/commands/{commandId}`. For a stop that keeps volumes use `POST /environments/{id}/lifecycle` with `{"action": "stop"}`.',
+        'Queues one `environment.stop` command per server the environment runs on: the compose project is taken down (containers and networks are removed, and so are anonymous volumes such as one from an image `VOLUME` line or a bare `- /path` mount; Docker named volumes stay, except a top-level volume authored with `name:` and no `external:`, which needs host approval and is removed; every volume the control plane registered is kept unless the body sets `deleteVolumes`), each service\'s published releases are cleared and the host\'s ingress is reconciled. Service and volume folders stay, and so do files a service wrote through a relative bind such as `./data` in the environment\'s compose folder; only deleting the environment or its project removes them. The environment record and its settings stay, so a later deploy starts it again. This is the teardown to use when cleaning up a test environment. A rollout still waiting for its next batch is cancelled. Needs manage on the environment, and a recent step-up when the organization requires one (403 `reauth_required`). Poll each command with `GET /servers/{serverId}/commands/{commandId}`. For a stop that removes nothing use `POST /environments/{id}/lifecycle` with `{"action": "stop"}`. With `{"deleteVolumes": true, "confirmName": "<environment name>", "volumeIds": [...]}` (`volumeIds` being the storage ids `GET /environments/{id}/data-volumes` listed) each server the stop goes to also removes those registered Docker volumes (never a shared, external or another environment\'s volume, and never one a container still uses); a copy recorded on a server the stop does not go to stays. The command result reports each as `removed`, `absent`, `kept` or `failed`. Deleting data asks for the `environment.data.delete` step-up when the organization requires one and writes an `environment.data.delete` audit row with the volume names. Every refusal comes before anything is stopped.',
+      requestBody: {
+        required: false,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                deleteVolumes: {
+                  type: 'boolean',
+                  description:
+                    'Also delete the data volumes. Off by default; a plain Destroy keeps them.',
+                },
+                confirmName: {
+                  type: 'string',
+                  description:
+                    'The environment name, typed exactly. Required when `deleteVolumes` is true.',
+                },
+                volumeIds: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description:
+                    'The storage ids of the volumes the person was shown. Required when `deleteVolumes` is true; a list that changed since answers 409 `data_volumes_changed`.',
+                },
+              },
+            },
+          },
+        },
+      },
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         200: {
@@ -865,12 +917,98 @@ export const deployPaths = {
             },
           },
         },
+        400: {
+          description:
+            'Invalid body (including `deleteVolumes` without `volumeIds`), or `confirm_name_required`: `deleteVolumes` without the exact environment name',
+        },
         401: { description: 'No session' },
-        403: { description: 'Caller cannot manage this environment, or `reauth_required`' },
+        403: {
+          description: 'Caller cannot manage this environment, or `reauth_required`',
+        },
         404: { description: 'No such environment' },
+        409: {
+          description:
+            '`data_volumes_changed`: the volume list changed since it was shown (the body carries the new list), or `delete_volumes_needs_daemon_update`: a server the stop goes to runs a daemon that cannot delete data volumes yet (`servers` names them). Nothing was stopped.',
+        },
         503: {
           description: 'The control plane has no link to the command queue or database',
         },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/data-volumes': {
+    get: {
+      tags: ['Environments'],
+      summary: 'List the data volumes a Destroy could delete',
+      description:
+        'What "Also Delete the Data Volumes" on a Destroy would remove: the Docker volumes registered for this environment or its services that the control plane created and nothing else uses (`volumes`), the ones it keeps and why (`kept`: `common`, `shared`, `external` or `renamed`), where a copy stays because the stop does not go to its server (`staysOn`), and the servers whose daemon must be updated first (`outdatedServers`). `name` is the name people know the volume by (its compose key or the name it was given). Needs read on the environment.',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        200: {
+          description: 'The volumes',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['volumes', 'kept', 'outdatedServers'],
+                properties: {
+                  volumes: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['storageId', 'name', 'staysOn'],
+                      properties: {
+                        storageId: { type: 'string' },
+                        name: { type: 'string' },
+                        staysOn: {
+                          type: 'array',
+                          description:
+                            'Servers with a recorded copy that the stop does not go to; that copy stays.',
+                          items: {
+                            type: 'object',
+                            required: ['serverId', 'name'],
+                            properties: {
+                              serverId: { type: 'string' },
+                              name: { type: 'string' },
+                            },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  kept: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['storageId', 'name', 'reason', 'message'],
+                      properties: {
+                        storageId: { type: 'string' },
+                        name: { type: 'string' },
+                        reason: {
+                          type: 'string',
+                          enum: ['common', 'shared', 'external', 'renamed'],
+                        },
+                        message: { type: 'string' },
+                      },
+                    },
+                  },
+                  outdatedServers: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['serverId', 'name'],
+                      properties: { serverId: { type: 'string' }, name: { type: 'string' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        401: { description: 'No session' },
+        403: { description: 'Caller cannot read this environment' },
+        404: { description: 'No such environment' },
+        503: { description: 'Database unavailable' },
       },
     },
   },

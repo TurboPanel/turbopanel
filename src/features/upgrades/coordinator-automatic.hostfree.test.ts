@@ -73,6 +73,7 @@ function fleet(
     runtime?: UpgradeRuntime
     batch?: UpgradeSettings['batch']
     colocated?: FleetServerFact
+    development?: boolean
   } = {}
 ) {
   let nowMs = T0
@@ -92,7 +93,7 @@ function fleet(
     },
     runtime: options.runtime ?? 'workers',
     channel: 'release',
-    development: false,
+    development: options.development ?? false,
     now: () => new Date(nowMs).toISOString(),
     colocatedServerId: options.colocated?.serverId ?? null,
     instanceInstalled: { version: '0.1.21', commit: 'new-instance' },
@@ -141,6 +142,19 @@ test('a check starts an automatic run on its own; nobody presses anything', asyn
   const run = await f.coordinator.activeRun()
   assertEquals(run?.source, 'auto')
   assertEquals(f.sentTo().sort(), ['a', 'b'])
+})
+
+test('a development box never starts an automatic run, even with every server behind', async () => {
+  const f = fleet(['a', 'b'], {
+    runtime: 'deno',
+    development: true,
+    colocated: host(COLOCATED, { colocated: true }),
+  })
+  await f.coordinator.tick()
+  f.advance(HOUR)
+  await f.coordinator.tick()
+  assertEquals(await f.coordinator.activeRun(), null)
+  assertEquals(f.enqueued.length, 0)
 })
 
 test('the default batch updates every server in one wave', async () => {

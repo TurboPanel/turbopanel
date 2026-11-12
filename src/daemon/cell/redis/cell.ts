@@ -1,4 +1,5 @@
 import type {
+  CellEnqueueOptions,
   ClearUpdateStatusOptions,
   CellDiagnostics,
   DaemonCell,
@@ -20,8 +21,12 @@ import {
   TERMINAL_REQUEST_RETENTION_MS,
   validateDaemonInboundEnvelope,
 } from '../../../contracts/cell-protocol.ts'
-import { deriveInboundOutcome } from '../inbound-outcome.ts'
-import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from '../../../lib/logger.ts'
+import {
+  answerKindMismatchWarning,
+  deriveInboundOutcome,
+  inboundAnswersRequest,
+} from '../inbound-outcome.ts'
+import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo, logWarn } from '../../../lib/logger.ts'
 import { onDaemonUpdateExpired } from '../control-plane-monitor.ts'
 import type { Db } from '../../../db/connection.ts'
 import { forEachSequential } from '../../../lib/sequential.ts'
@@ -44,6 +49,21 @@ import {
 import { COMPARE_AND_DELETE, COMPARE_AND_RENEW, RECONCILE_STALE_SOCKET_PRESENCE } from './lua.ts'
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>(['done', 'failed', 'expired'])
+
+/**
+ * Where a newly created outbox group starts reading. An acknowledged entry is
+ * deleted from the stream and an expired request takes its entries with it, so
+ * whatever the stream holds is still owed to the server: the group starts at
+ * the beginning and never at `$`, which would skip everything queued while no
+ * group existed.
+ */
+const OUTBOX_GROUP_START_ID = '0'
+
+/** Redis answers `NOGROUP` when the stream key or its consumer group is gone. */
+export function isNoGroupError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err)
+  return message.includes('NOGROUP')
+}
 
 function createInitialCellDiagnostics(): CellDiagnostics {
   return {
@@ -85,6 +105,7 @@ const REDIS_WRITE_METHODS = new Set([
   'srem',
   'xadd',
   'xautoclaim',
+  'xclaim',
   'xack',
   'xgroupCreate',
   'expire',
@@ -293,6 +314,12 @@ function isInboundStale(
   return now - Date.parse(lastInboundAt) >= DAEMON_STALE_MS
 }
 
+/**
+ * Thrown to a pump whose socket was replaced. The wording matches
+ * `isClosedConnectionError` (`deno-ws.ts`), which ends the pump quietly.
+ */
+export const OUTBOX_CONSUMER_SUPERSEDED = 'daemon connection is closed: replaced by a newer socket'
+
 export class RedisDaemonCell implements DaemonCell {
   readonly #rawClient: RedisCellClient
   readonly #serverId: string
@@ -305,6 +332,10 @@ export class RedisDaemonCell implements DaemonCell {
   readonly #wrappedClients = new Map<string, RedisCellClient>()
   #lastInboundMs = 0
   #connectedHint = false
+  /** The socket that holds the lease in this process; an older socket's pump must stop reading. */
+  #activeConnectionId: string | undefined
+  /** Set by `purge()`: a purged cell does not bring its outbox back until the next attach. */
+  #outboxPurged = false
 
   constructor(client: RedisCellClient, serverId: string, db?: Db) {
     this.#rawClient = client
@@ -379,6 +410,35 @@ export class RedisDaemonCell implements DaemonCell {
         this.#deliveryToStreamId.set(deliveryId, entry.id)
       }
     }
+  }
+
+  /** True once another socket holds the lease in this process. */
+  #isSuperseded(consumer: string): boolean {
+    return this.#activeConnectionId !== undefined && consumer !== `ws:${this.#activeConnectionId}`
+  }
+
+  /** Move entries a replaced socket just read to the live socket's consumer, to be served on its next read. */
+  async #handOverToActiveConsumer(envelopes: DaemonOutboundEnvelope[]): Promise<void> {
+    const active = this.#activeConnectionId
+    if (active === undefined) return
+    const ids = envelopes
+      .map((envelope) => this.#deliveryToStreamId.get(envelope.deliveryId))
+      .filter((id): id is string => id !== undefined)
+    if (ids.length === 0) return
+    const consumer = `ws:${active}`
+    const claimed = await this.#redis('readOutboxBatch').xclaim(
+      outboxKey(this.#serverId),
+      OUTBOX_GROUP,
+      consumer,
+      0,
+      ...ids
+    )
+    if (claimed.length === 0) return
+    this.#reclaimedByConsumer.set(consumer, [
+      ...(this.#reclaimedByConsumer.get(consumer) ?? []),
+      ...claimed,
+    ])
+    this.#rememberOutboxEntries(claimed)
   }
 
   #entriesToEnvelopes(entries: StreamEntry[]): DaemonOutboundEnvelope[] {
@@ -523,10 +583,16 @@ export class RedisDaemonCell implements DaemonCell {
     })
 
     const outbox = outboxKey(this.#serverId)
-    await redis.xgroupCreate(outbox, OUTBOX_GROUP, '$', true)
+    this.#outboxPurged = false
+    await this.#ensureOutboxGroup('attachDaemonSocket')
 
+    this.#activeConnectionId = connectionId
     const consumer = `ws:${connectionId}`
-    const reclaimed = await redis.xautoclaim(outbox, OUTBOX_GROUP, consumer, 60_000, '0-0', 100)
+    // Every entry still pending belongs to a socket this attach has replaced
+    // (the lease is ours alone), so none of it is in use: claim it all now.
+    // An idle floor here left an entry read by the old socket a moment before
+    // the reconnect pending on a consumer nobody reads, until the next attach.
+    const reclaimed = await redis.xautoclaim(outbox, OUTBOX_GROUP, consumer, 0, '0-0', 100)
     if (reclaimed.length > 0) {
       this.#reclaimedByConsumer.set(consumer, reclaimed)
       this.#rememberOutboxEntries(reclaimed)
@@ -609,6 +675,7 @@ export class RedisDaemonCell implements DaemonCell {
     await redis.expire(connKey(this.#serverId, params.connectionId), 86_400)
 
     this.#reclaimedByConsumer.delete(`ws:${params.connectionId}`)
+    if (this.#activeConnectionId === params.connectionId) this.#activeConnectionId = undefined
 
     this.#connectedHint = false
 
@@ -762,7 +829,7 @@ export class RedisDaemonCell implements DaemonCell {
 
   async enqueue(
     outbound: DaemonOutboundEnvelope,
-    opts?: { ttlSeconds?: number }
+    opts?: CellEnqueueOptions
   ): Promise<PendingRequestRecord> {
     this.#bumpMethodRoute('enqueue')
     const redis = this.#redis('enqueue')
@@ -827,6 +894,9 @@ export class RedisDaemonCell implements DaemonCell {
     }
     if (outbound.kind === 'command-dispatch') {
       recordFields.command = outbound.commandType
+    }
+    if (opts?.ackedTtlSeconds !== undefined && opts.ackedTtlSeconds > 0) {
+      recordFields.ackedTtlSeconds = String(Math.ceil(opts.ackedTtlSeconds))
     }
 
     await redis.hset(reqKey, recordFields)
@@ -916,7 +986,19 @@ export class RedisDaemonCell implements DaemonCell {
       ackAt: inbound.at,
       daemonReceivedAt: inbound.daemonReceivedAt,
     }
+    // A command that may run longer than its delivery window keeps its record
+    // (and so its result) for the whole run once the daemon has it. Never
+    // shortens a longer lifetime the request was enqueued with.
+    const ackedTtlSeconds = Number(fields.ackedTtlSeconds)
+    const extendedUntilMs = Date.now() + ackedTtlSeconds * 1000
+    const currentUntilMs = Date.parse(fields.expiresAt ?? '')
+    const extend =
+      Number.isFinite(ackedTtlSeconds) &&
+      ackedTtlSeconds > 0 &&
+      (Number.isNaN(currentUntilMs) || currentUntilMs < extendedUntilMs)
+    if (extend) updates.expiresAt = nowIso(extendedUntilMs)
     await redis.hset(reqKey, updates)
+    if (extend) await redis.expire(reqKey, ackedTtlSeconds)
     await redis.hset(metaKey(this.#serverId), {
       lastInboundAt: inbound.at,
     })
@@ -1019,6 +1101,19 @@ export class RedisDaemonCell implements DaemonCell {
     }
 
     const existing = parseRequestRecord(this.#serverId, inbound.requestId, fields)
+    if (!inboundAnswersRequest(existing.requestKind, inbound.kind)) {
+      // Refused, not failed: the request stays pending for its real answer.
+      logWarn(
+        'daemon-cell',
+        answerKindMismatchWarning({
+          serverId: this.#serverId,
+          requestId: inbound.requestId,
+          requestKind: existing.requestKind,
+          inboundKind: inbound.kind,
+        })
+      )
+      return null
+    }
     if (isTerminalStatus(existing.status)) {
       return (
         (await this.#applyLateTerminalAck(inbound, existing, fields, reqKey, 'handleInbound')) ??
@@ -1041,6 +1136,33 @@ export class RedisDaemonCell implements DaemonCell {
       completion,
       'handleInbound'
     )
+  }
+
+  async redeliverSent(outbound: DaemonOutboundEnvelope): Promise<boolean> {
+    this.#bumpMethodRoute('redeliverSent')
+    const redis = this.#redis('redeliverSent')
+    const reqKey = requestKey(this.#serverId, outbound.requestId)
+    const fields = await redis.hgetall(reqKey)
+    // Never insert: an expired request is purged, so its hash is gone.
+    if (fields?.status !== 'sent' || fields.ackAt) return false
+    const deliveries = parseDeliveryMap(fields.deliveries)
+    if (deliveries[outbound.deliveryId]) return true
+    const streamId = await redis.xadd(outboxKey(this.#serverId), '*', {
+      deliveryId: outbound.deliveryId,
+      requestId: outbound.requestId,
+      kind: outbound.kind,
+      payload: JSON.stringify(outbound),
+      enqueuedAt: outbound.at,
+    })
+    deliveries[outbound.deliveryId] = streamId
+    await redis.hset(reqKey, { deliveries: JSON.stringify(deliveries) })
+    this.#deliveryToStreamId.set(outbound.deliveryId, streamId)
+    cellTrace('redeliver-sent', {
+      serverId: this.#serverId,
+      requestId: outbound.requestId,
+      deliveryId: outbound.deliveryId,
+    })
+    return true
   }
 
   async getRequest(requestId: string): Promise<PendingRequestRecord | null> {
@@ -1189,13 +1311,56 @@ export class RedisDaemonCell implements DaemonCell {
     })
   }
 
+  /** Create the outbox group if it is missing; an existing group is left as it is. */
+  async #ensureOutboxGroup(callSite: string): Promise<void> {
+    await this.#redis(callSite).xgroupCreate(
+      outboxKey(this.#serverId),
+      OUTBOX_GROUP,
+      OUTBOX_GROUP_START_ID,
+      true
+    )
+  }
+
+  /**
+   * Read from the outbox group. The group is created at attach, so a Redis
+   * that lost its keys under an open socket (a restart without persistence)
+   * answers `NOGROUP` from then on: the group is created again and the read
+   * repeated once, which also delivers everything queued in the meantime. A
+   * purged cell is left alone, so a deleted server gets no outbox back.
+   */
+  async #readOutboxGroup(
+    consumer: string,
+    count: number,
+    blockMs: number | undefined,
+    streamId: '>' | '0'
+  ): Promise<StreamEntry[]> {
+    const redis = this.#redis('readOutboxBatch')
+    const read = () =>
+      redis.xreadgroup(OUTBOX_GROUP, consumer, outboxKey(this.#serverId), count, blockMs, streamId)
+    try {
+      return await read()
+    } catch (err) {
+      if (this.#outboxPurged || !isNoGroupError(err)) throw err
+      await this.#ensureOutboxGroup('readOutboxBatch')
+      logWarn(
+        'daemon-cell',
+        `outbox group was missing for ${this.#serverId}; created it again and resumed delivery`
+      )
+      cellTrace('outbox-group-recreated', { serverId: this.#serverId, consumer })
+      return await read()
+    }
+  }
+
   async readOutboxBatch(params: {
     consumer: string
     count: number
     blockMs?: number
   }): Promise<DaemonOutboundEnvelope[]> {
     this.#bumpMethodRoute('readOutboxBatch')
-    const redis = this.#redis('readOutboxBatch')
+    // A socket replaced by a newer one (a stale takeover leaves the old socket
+    // open until its TCP connection times out) must not take outbox entries:
+    // it would send them to a dead connection and the server never sees them.
+    if (this.#isSuperseded(params.consumer)) throw new Error(OUTBOX_CONSUMER_SUPERSEDED)
     const envelopes: DaemonOutboundEnvelope[] = []
     let remaining = params.count
 
@@ -1208,30 +1373,28 @@ export class RedisDaemonCell implements DaemonCell {
     }
 
     if (remaining > 0) {
-      const pending = await redis.xreadgroup(
-        OUTBOX_GROUP,
-        params.consumer,
-        outboxKey(this.#serverId),
-        remaining,
-        undefined,
-        '0'
-      )
+      const pending = await this.#readOutboxGroup(params.consumer, remaining, undefined, '0')
       if (pending.length > 0) {
-        envelopes.push(...this.#entriesToEnvelopes(pending))
+        // An entry claimed at attach is pending on this consumer too.
+        const taken = new Set(envelopes.map((envelope) => envelope.deliveryId))
+        envelopes.push(
+          ...this.#entriesToEnvelopes(pending).filter((envelope) => !taken.has(envelope.deliveryId))
+        )
         remaining = params.count - envelopes.length
       }
     }
 
     if (remaining > 0) {
-      const fresh = await redis.xreadgroup(
-        OUTBOX_GROUP,
-        params.consumer,
-        outboxKey(this.#serverId),
-        remaining,
-        params.blockMs,
-        '>'
-      )
+      const fresh = await this.#readOutboxGroup(params.consumer, remaining, params.blockMs, '>')
       envelopes.push(...this.#entriesToEnvelopes(fresh))
+    }
+
+    // The takeover can land while this read was parked (an idle pump spends
+    // nearly all its time blocked): the broker may have handed it an entry for
+    // the socket that was just replaced. Give those to the live socket and stop.
+    if (this.#isSuperseded(params.consumer)) {
+      await this.#handOverToActiveConsumer(envelopes)
+      throw new Error(OUTBOX_CONSUMER_SUPERSEDED)
     }
 
     cellTrace('outbox-read', {
@@ -1364,6 +1527,7 @@ export class RedisDaemonCell implements DaemonCell {
   async purge(): Promise<void> {
     this.#bumpMethodRoute('purge')
     const redis = this.#redis('purge')
+    this.#outboxPurged = true
     await redis.deleteByPattern(cellKeyPattern(this.#serverId))
     await redis.srem(onlineSetKey(), this.#serverId)
 

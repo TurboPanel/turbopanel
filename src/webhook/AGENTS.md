@@ -197,7 +197,7 @@ The three things around the gate that used to be git-shaped were widened
 when Stripe landed, so a fourth kind inherits them:
 
 - `delivery.provider` is `CHECK (provider IN ('github','gitlab','stripe'))`
-  (`src/db/schema.ts`, `migrations/0000_base.sql`). The
+  (`src/db/schema.ts`, `migrations/0000_init.sql`). The
   claim in step 5 writes it, so a new kind still needs one forward migration
   to add its value.
 - `WebhookDeliveryProvider` is its own literal union
@@ -566,8 +566,8 @@ GitLab OAuth redirect all read it. Self-hosted, it is the operator's public URL
 list only — never the request origin (behind Caddy → Unix socket that is not
 an address a provider can dial) and never `TURBOPANEL_BASE_URL` from the
 process env. Hosted (`runtime === 'workers'`), it is `TURBOPANEL_BASE_URL`
-(https only, own port kept via `publicHttpsOrigin`, a blank or `http:` value
-ignored) ahead of the stored list, which nothing fills there. Without it the
+then `TURBOPANEL_PUBLIC_URLS` (https only, always port-free, a blank or
+`http:` value ignored); stored hostname rows are ignored there. Without it the
 hosted wizard answered `503 public_url_not_configured`. The console reads the
 same set from `GET /forges/webhook-origins` (client: `organization:manage`;
 admin: admin role) as `{ origins, platformManaged }`, so it never offers an
@@ -588,3 +588,10 @@ the route answers `501 source_ref_unsupported` to any request that sets `ref`.
 Building the declared branch while reporting `queued` for "deploy release/1.4" is
 the one outcome the caller cannot detect, so it refuses instead. Flipping that
 constant is what turns ref-directed deploys on.
+
+- `src/webhook/` — inbound webhook surface (`/webhook/*`). Its own top-level
+  directory for the same reason it has its own URL prefix: the caller is a
+  provider, not a session or an enrolled daemon. `gate.ts` holds the ordered
+  six-step gate every kind runs; `git/` holds the GitHub and GitLab adapters.
+  Registered from the entrypoints via `registerWebhookRoutes`, never inside
+  `registerClientRoutes`

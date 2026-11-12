@@ -62,6 +62,7 @@ test('handleCellManagedHaEvent hands the Workers queue to the failover path', as
   const calls: Call[] = []
   await handleCellManagedHaEvent(db, frame, {
     reporterServerId: SERVER_A,
+    signature: 'verified',
     commandQueue,
     autoFailover: 'on',
     handle: recordingHandle(calls),
@@ -76,6 +77,7 @@ test('handleCellManagedHaEvent hands the Workers queue to the failover path', as
     at: AT,
   })
   assertEquals(deps.reporterServerId, SERVER_A)
+  assertEquals(deps.signature, 'verified')
   assertEquals(deps.autoFailover, 'on')
   const queue = deps.commandQueue
   if (!queue) throw new TypeError('expected the Workers command queue to be passed')
@@ -91,6 +93,7 @@ test('handleCellManagedHaEvent passes no queue when the binding is absent', asyn
     { type: 'managed-ha-event', managedId: 'mgd-1', at: AT },
     {
       reporterServerId: SERVER_A,
+      signature: 'verified',
       commandQueue: cellCommandQueue({}),
       autoFailover: 'on',
       handle: recordingHandle(calls),
@@ -115,6 +118,7 @@ test('handleCellManagedHaEvent passes auto failover off to the failover path', a
   const calls: Call[] = []
   await handleCellManagedHaEvent(db, frame, {
     reporterServerId: SERVER_A,
+    signature: 'verified',
     commandQueue: cellCommandQueue({}),
     autoFailover: cellAutoFailover({
       TURBOPANEL_AUTO_FAILOVER: 'off',

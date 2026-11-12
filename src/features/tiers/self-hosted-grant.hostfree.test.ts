@@ -37,7 +37,7 @@ function tierRow(id: string, label: string, rank: number) {
     id,
     label,
     rank,
-    provider: 'stripe',
+    provider: label === CUSTOM_TIER_LABEL ? null : 'stripe',
     providerProductId: label === CUSTOM_TIER_LABEL ? null : `prod_${label}`,
     priceCents: null,
     currency: null,
@@ -61,43 +61,53 @@ function licenseRow(id: string, revoked = false) {
   }
 }
 
-function grantDb(opts: {
-  tiers?: ReturnType<typeof tierRow>[]
-  licenses?: ReturnType<typeof licenseRow>[]
-  grants?: { tierId: string; quantity: number }[]
-  /** Provider seats, which the grant target is net of. */
-  seats?: { tierId: string; quantity: number }[]
-} = {}): MemoryDb {
+function grantDb(
+  opts: {
+    tiers?: ReturnType<typeof tierRow>[]
+    licenses?: ReturnType<typeof licenseRow>[]
+    grants?: { tierId: string; quantity: number }[]
+    /** Provider seats, which the grant target is net of. */
+    seats?: { tierId: string; quantity: number }[]
+  } = {}
+): MemoryDb {
   const seats = opts.seats ?? []
   return createMemoryDb([
     [tier, opts.tiers ?? [tierRow(TIER_SX, CUSTOM_TIER_LABEL, selfHostedGrantRank())]],
     [
       payer,
-      seats.length === 0 ? [] : [{
-        id: PAYER,
-        organizationId: ORG,
-        userId: null,
-        provider: 'stripe',
-        providerCustomerId: 'cus_1',
-        taxId: null,
-        createdAt: NOW,
-        updatedAt: NOW,
-      }],
+      seats.length === 0
+        ? []
+        : [
+            {
+              id: PAYER,
+              organizationId: ORG,
+              userId: null,
+              provider: 'stripe',
+              providerCustomerId: 'cus_1',
+              taxId: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
     ],
     [
       subscription,
-      seats.length === 0 ? [] : [{
-        id: SUB,
-        payerId: PAYER,
-        providerSubscriptionId: 'sub_1',
-        status: 'active',
-        currentPeriodEnd: null,
-        scheduleId: null,
-        graceExpiresAt: null,
-        pastDueSince: null,
-        createdAt: NOW,
-        updatedAt: NOW,
-      }],
+      seats.length === 0
+        ? []
+        : [
+            {
+              id: SUB,
+              payerId: PAYER,
+              providerSubscriptionId: 'sub_1',
+              status: 'active',
+              currentPeriodEnd: null,
+              scheduleId: null,
+              graceExpiresAt: null,
+              pastDueSince: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
     ],
     [
       subscriptionItem,
@@ -113,13 +123,16 @@ function grantDb(opts: {
       })),
     ],
     [license, opts.licenses ?? []],
-    [allowance, (opts.grants ?? []).map((row) => ({
-      organizationId: ORG,
-      tierId: row.tierId,
-      quantity: row.quantity,
-      createdAt: NOW,
-      updatedAt: NOW,
-    }))],
+    [
+      allowance,
+      (opts.grants ?? []).map((row) => ({
+        organizationId: ORG,
+        tierId: row.tierId,
+        quantity: row.quantity,
+        createdAt: NOW,
+        updatedAt: NOW,
+      })),
+    ],
   ])
 }
 
@@ -138,11 +151,24 @@ test('ensureCustomTierRow returns the existing SX row and creates one when the c
   const empty = grantDb({ tiers: [] })
   const created = await ensureCustomTierRow(empty)
   assertNotEquals(created, '')
-  const rows = empty.rows<{ label: string; rank: number; providerProductId: string | null; isCustom: boolean }>(tier)
+  const rows = empty.rows<{
+    label: string
+    rank: number
+    provider: string | null
+    providerProductId: string | null
+    isCustom: boolean
+  }>(tier)
   assertEquals(rows.length, 1)
+  // No product, so no provider: SX bills nowhere.
   assertEquals(
-    [rows[0]?.label, rows[0]?.rank, rows[0]?.providerProductId, rows[0]?.isCustom],
-    [CUSTOM_TIER_LABEL, selfHostedGrantRank(), null, true],
+    [
+      rows[0]?.label,
+      rows[0]?.rank,
+      rows[0]?.provider,
+      rows[0]?.providerProductId,
+      rows[0]?.isCustom,
+    ],
+    [CUSTOM_TIER_LABEL, selfHostedGrantRank(), null, null, true]
   )
 })
 
@@ -190,7 +216,10 @@ test('a grant whose licenses are all gone is deleted rather than left at zero', 
 test('syncing an unchanged grant writes nothing', async () => {
   const db = grantDb({ licenses: [licenseRow('l1')], grants: [storedGrant(1)] })
   assertEquals((await syncSelfHostedGrant(db, ORG, { allowGrow: true }))?.quantity, 1)
-  assertEquals(db.ops.filter((op) => !op.startsWith('select:')), [])
+  assertEquals(
+    db.ops.filter((op) => !op.startsWith('select:')),
+    []
+  )
 })
 
 test('the grant reaches the assignment as an SX quantity that no subscription status can end', async () => {

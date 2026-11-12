@@ -16,6 +16,7 @@ import {
   audit,
   grant,
   hosting,
+  hostname,
   organization,
   project,
   repository,
@@ -38,6 +39,7 @@ import { makeComposeTag } from '../../features/compose/index.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerEnvironmentRoutes } from './routes.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -484,16 +486,17 @@ async function createEnvironmentWith(
   return ((await created.json()) as { id: string }).id
 }
 
-function deleteEnvironmentRequest(
+async function deleteEnvironmentRequest(
   ctx: EnvironmentTestContext,
   cookie: string,
   id: string
 ): Promise<Response> {
-  return Promise.resolve(
-    ctx.app.request(`/environments/${id}`, {
+  return await ctx.app.request(
+    await confirmedPath(ctx.db, 'environment', id, `/environments/${id}`),
+    {
       method: 'DELETE',
       headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
-    })
+    }
   )
 }
 
@@ -593,6 +596,79 @@ function addContainer(ctx: EnvironmentTestContext, serviceId: string, status: st
     composeServiceName: 'web',
   })
 }
+
+test('an environment that serves a public hostname is still deleted only with its exact name', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'shop')
+    const [existing] = await ctx.db
+      .select({ id: hosting.id })
+      .from(hosting)
+      .where(eq(hosting.serviceId, serviceId))
+    const hostingId =
+      existing?.id ??
+      (await ctx.db.insert(hosting).values({ serviceId }).returning({ id: hosting.id }))[0]!.id
+    await ctx.db.insert(hostname).values({
+      hostingId,
+      routingOrganizationId: ctx.organizationId,
+      hostname: `shop-${crypto.randomUUID()}.example.test`,
+    })
+    const send = (query: string) =>
+      Promise.resolve(
+        ctx.app.request(`/environments/${id}${query}`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
+        })
+      )
+
+    for (const query of ['', '?confirmName=', '?confirmName=Shop', '?confirmName=other']) {
+      const refused = await send(query)
+      assertEquals(refused.status, 400, query)
+      const body = (await refused.json()) as { error: string; message: string }
+      assertEquals(body.error, 'confirm_name_required')
+      assertEquals(body.message, 'Type the environment name to delete this environment.')
+      assertEquals((await environmentRow(ctx, id))?.name, 'shop')
+    }
+
+    const removed = await send('?confirmName=shop')
+    assertEquals(removed.status, 200)
+    assertEquals(await environmentRow(ctx, id), undefined)
+  })
+})
+
+test('an environment without a public hostname is also deleted only with its exact name', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEnvironmentWith(ctx, cookie, { name: 'quiet-copy' })
+    const send = (query: string) =>
+      Promise.resolve(
+        ctx.app.request(`/environments/${id}${query}`, {
+          method: 'DELETE',
+          headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
+        })
+      )
+
+    for (const query of [
+      '',
+      '?confirmName=',
+      '?confirmName=Quiet-Copy',
+      '?confirmName=quiet-copy%20',
+      '?confirmName=other',
+    ]) {
+      const refused = await send(query)
+      assertEquals(refused.status, 400, query)
+      assertEquals(await refused.json(), {
+        error: 'confirm_name_required',
+        message: 'Type the environment name to delete this environment.',
+      })
+      assertEquals((await environmentRow(ctx, id))?.name, 'quiet-copy')
+    }
+
+    const removed = await send('?confirmName=quiet-copy')
+    assertEquals(removed.status, 200)
+    assertEquals(await environmentRow(ctx, id), undefined)
+  })
+})
 
 test('a running environment whose stop cannot be sent is refused with environment_running and nothing is removed', async () => {
   await withEnvironmentFixtures(async (ctx) => {
@@ -1187,17 +1263,32 @@ test('the primary environment cannot be deleted while others exist', async () =>
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
     const first = await createNamedEnvironment(ctx, cookie, { name: 'live' })
     const second = await createNamedEnvironment(ctx, cookie, { name: 'staging' })
-    const refused = await sendEnvironmentJson(ctx, cookie, 'DELETE', `/environments/${first.id}`)
+    const refused = await sendEnvironmentJson(
+      ctx,
+      cookie,
+      'DELETE',
+      await confirmedPath(ctx.db, 'environment', first.id, `/environments/${first.id}`)
+    )
     assertEquals(refused.status, 409)
     assertEquals(
       ((await refused.json()) as { error: string }).error,
       'primary_environment_cannot_be_deleted'
     )
     await sendEnvironmentJson(ctx, cookie, 'POST', `/environments/${second.id}/primary`)
-    const removed = await sendEnvironmentJson(ctx, cookie, 'DELETE', `/environments/${first.id}`)
+    const removed = await sendEnvironmentJson(
+      ctx,
+      cookie,
+      'DELETE',
+      await confirmedPath(ctx.db, 'environment', first.id, `/environments/${first.id}`)
+    )
     assertEquals(removed.status, 200)
     // The last one may go.
-    const last = await sendEnvironmentJson(ctx, cookie, 'DELETE', `/environments/${second.id}`)
+    const last = await sendEnvironmentJson(
+      ctx,
+      cookie,
+      'DELETE',
+      await confirmedPath(ctx.db, 'environment', second.id, `/environments/${second.id}`)
+    )
     assertEquals(last.status, 200)
   })
 })
@@ -1434,7 +1525,12 @@ test('concurrent creates, swaps and deletes keep exactly one primary', async () 
     const current = flags.find((row) => row.isPrimary)!
     const other = flags.find((row) => !row.isPrimary)!
     const [del, swap] = await Promise.all([
-      sendEnvironmentJson(ctx, cookie, 'DELETE', `/environments/${current.id}`),
+      sendEnvironmentJson(
+        ctx,
+        cookie,
+        'DELETE',
+        await confirmedPath(ctx.db, 'environment', current.id, `/environments/${current.id}`)
+      ),
       sendEnvironmentJson(ctx, cookie, 'POST', `/environments/${other.id}/primary`),
     ])
     assertEquals(swap.status, 200)

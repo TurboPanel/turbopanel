@@ -33,9 +33,9 @@ const test = Deno.test.bind(Deno)
 const NOW = '2026-09-24T12:00:00.000Z'
 const COLOCATED = 'colocated-0'
 const SKIP_OFFLINE_MESSAGE =
-  'It stayed offline for 15 minutes during the update. It updates on its own when it reconnects.'
+  'Skipped: offline for 15 minutes during the update. It updates at the next automatic check after it reconnects (within the hour), unless updates are paused.'
 const OFFLINE_AT_START_MESSAGE =
-  'It was offline when the update started. It updates on its own when it reconnects.'
+  'Skipped: offline when the update started. It updates at the next automatic check after it reconnects (within the hour), unless updates are paused.'
 
 const unit = (name: string, version: string, commit: string) => ({
   version,
