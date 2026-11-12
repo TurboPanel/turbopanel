@@ -137,7 +137,7 @@ export type ComposeGatedFieldError = {
  *   Unreachable through today's routes, which already require
  *   `organization:manage` to deploy; it exists so a future lower deploy grant
  *   cannot inherit host-level access by accident.
- * - `requires_approval` — an automated deploy (a Git webhook) of host-level
+ * - `requires_approval` — an automated deploy (a git push, for one) of host-level
  *   content that no manager or owner has deployed in this exact form. The
  *   approval is recorded when one does (`environment.metadata.
  *   composeHostAccessApproval`), keyed on `hostAccessFingerprint`, so any

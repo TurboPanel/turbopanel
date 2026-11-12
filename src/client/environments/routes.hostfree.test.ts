@@ -727,7 +727,7 @@ test('DELETE /environments/:id returns 409 when a managed engine is present', as
     manageAllowed: true,
     withManagedRow: true,
   })
-  const res = await app.request(`/environments/${environmentId}`, {
+  const res = await app.request(`/environments/${environmentId}?confirmName=${environmentId}`, {
     method: 'DELETE',
     headers: sessionHeaders(cookie),
   })
@@ -911,7 +911,7 @@ test('DELETE /environments/:id returns 403 when the environment is system-owned'
 
 test('DELETE /environments/:id returns 200 when teardown has nothing to reclaim', async () => {
   const { app, cookie } = await buildSessionApp({ manageAllowed: true })
-  const res = await app.request(`/environments/${environmentId}`, {
+  const res = await app.request(`/environments/${environmentId}?confirmName=${environmentId}`, {
     method: 'DELETE',
     headers: sessionHeaders(cookie),
   })
@@ -924,7 +924,7 @@ test('DELETE /environments/:id returns 409 when child resources still exist', as
     manageAllowed: true,
     hierarchyDeleteHasChildren: true,
   })
-  const res = await app.request(`/environments/${environmentId}`, {
+  const res = await app.request(`/environments/${environmentId}?confirmName=${environmentId}`, {
     method: 'DELETE',
     headers: sessionHeaders(cookie),
   })

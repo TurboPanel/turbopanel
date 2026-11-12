@@ -59,7 +59,36 @@ import {
   isValidWireguardPublicKey,
 } from '../../features/fabric/wg.ts'
 import { ENVELOPE_PREFIX_DAEMON } from '../../lib/secrets/data-encryption.ts'
+import {
+  type EnvironmentDeployHostingTunnel,
+  parseDeployHostingTunnel,
+  parseTunnelRoutesPayload,
+  parseTunnelRoutesResult,
+  type TunnelRoutesCommandPayload,
+  type TunnelRoutesCommandResult,
+} from './tunnel-routes.ts'
+import {
+  parseTunnelConnectorsPayload,
+  parseTunnelConnectorsResult,
+  type TunnelConnectorsCommandPayload,
+  type TunnelConnectorsCommandResult,
+} from './tunnel-connectors.ts'
+import {
+  parseTunnelStatusPayload,
+  parseTunnelStatusResult,
+  type TunnelStatusCommandPayload,
+  type TunnelStatusCommandResult,
+} from './tunnel-status.ts'
 import type { CommandType } from '../../features/commands/types.ts'
+import {
+  CACHE_PORT_MAX,
+  CACHE_PORT_MIN,
+  CACHE_SERIES,
+  MAX_CACHE_MEMORY_MB,
+  MAX_CACHES_PER_ENVIRONMENT,
+  MAX_HELPER_REACH_PER_DEPLOY,
+  MIN_CACHE_MEMORY_MB,
+} from '../../features/caches/vocabulary.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -352,8 +381,8 @@ export type FirewallCommandPolicy = {
  *
  * `rules` is the **complete** desired set for one server, the way
  * `server.principals.reconcile` carries every account. `controlPlane.tcpPorts`
- * names the co-located control plane's entrypoint (8443, or 80 + 443 under
- * `lets_encrypt`); the daemon treats those as invariants and refuses a
+ * names the co-located control plane's entrypoint (always 8443; 80 and 443
+ * belong to hosting); the daemon treats those as invariants and refuses a
  * default-drop apply on a co-located host that names none. `sshPorts` is the
  * panel's belief; the daemon unions it with `sshd -T`.
  */
@@ -1476,22 +1505,44 @@ export type FabricReconcileNetworkMaterial = {
 }
 
 /**
+ * Must stay in sync with the daemon `server.fabric.reconcile` shape. A
+ * container range of a server on a shared trusted LAN, routed via that
+ * server's LAN address (`fabric-lan-routes-v1`). The daemon installs IPv4
+ * routes only and picks the NIC whose connected subnet holds `via`.
+ */
+export type FabricReconcileLanRoute = {
+  cidr: string
+  via: string
+}
+
+/**
  * Must stay in sync with the daemon `server.fabric.reconcile` shape.
  * `{ enabled: false }` is a **tear down** (`tp0`, routed bridges, `TP-FORWARD`,
- * keys, state) — not a no-op.
+ * LAN routes, keys, state) — not a no-op. `{ enabled: false, retainKeys: true }`
+ * is a pause: `tp0` goes down, the key, bridges, LAN routes and forwarding
+ * rules stay, so the next enable is instant. It is sent only to a daemon that
+ * lists `fabric-retain-keys-v1`.
+ *
+ * `tunnel: false` (absent means true) and `lanRoutes` are sent only to a
+ * daemon that lists `fabric-lan-routes-v1`. With no tunnel there is no `tp0`
+ * (an existing key is kept), `address` may be absent and `peers` must be
+ * empty; `networks`, `lanRoutes` and forwarding are still applied.
  */
 export type FabricReconcileCommandPayload =
-  | { enabled: false }
+  | { enabled: false; retainKeys?: boolean }
   | {
       enabled: true
       fabricId?: string
       listenPort?: number
       mtu?: number
-      address: string
+      /** Absent only when `tunnel` is false. */
+      address?: string
       prefix: string
       peers: FabricReconcilePeerMaterial[]
       networks?: FabricReconcileNetworkMaterial[]
       gateway?: boolean
+      tunnel?: boolean
+      lanRoutes?: FabricReconcileLanRoute[]
     }
 
 export type FabricPeerHealth = 'healthy' | 'stale' | 'never'
@@ -1522,6 +1573,13 @@ export type FabricReconcileCommandResult = {
   publicKey?: string
   skipped?: boolean
   peers?: FabricReconcileObservedPeer[]
+  /**
+   * Plain sentences about what an apply that worked had to leave out (a LAN
+   * or `tp0` route another interface already holds, container bridges that
+   * wait for Docker). Absent when nothing was left out. Older daemons never
+   * send it.
+   */
+  warnings?: string[]
 }
 
 /** Linux interface name: at most 15 bytes, no slash or whitespace (daemon twin). */
@@ -1651,13 +1709,46 @@ function parseFabricNetworkEntry(value: unknown): FabricReconcileNetworkMaterial
   return network
 }
 
+function parseFabricLanRouteEntry(value: unknown): FabricReconcileLanRoute {
+  if (!isRecord(value)) {
+    throw new TypeError('Invalid fabric lanRoutes entry')
+  }
+  const { cidr, via } = value
+  if (!isString(cidr) || !isValidWireguardAllowedIp(cidr.trim())) {
+    throw new TypeError('Invalid fabric lanRoutes cidr')
+  }
+  if (!isString(via) || !isValidIpAddress(via.trim())) {
+    throw new TypeError('Invalid fabric lanRoutes via')
+  }
+  return { cidr: cidr.trim(), via: via.trim() }
+}
+
+function parseFabricTunnelFlag(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') throw new TypeError('Invalid fabric tunnel')
+  return value
+}
+
+/** `address` is required unless the payload asks for no tunnel. */
+function parseFabricAddress(value: unknown, tunnel: boolean | undefined): string | undefined {
+  if (value === undefined && tunnel === false) return undefined
+  if (!isString(value) || !isValidWireguardAllowedIp(value)) {
+    throw new TypeError('Invalid fabric address')
+  }
+  return value.trim()
+}
+
+function parseFabricLanRoutes(value: unknown): FabricReconcileLanRoute[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new TypeError('Invalid fabric lanRoutes')
+  return value.map(parseFabricLanRouteEntry)
+}
+
 function parseEnabledFabricPayload(
   value: Record<string, unknown>
 ): Extract<FabricReconcileCommandPayload, { enabled: true }> {
-  const address = value.address
-  if (!isString(address) || !isValidWireguardAllowedIp(address)) {
-    throw new TypeError('Invalid fabric address')
-  }
+  const tunnel = parseFabricTunnelFlag(value.tunnel)
+  const address = parseFabricAddress(value.address, tunnel)
   const prefix = value.prefix
   if (!isString(prefix) || !isValidWireguardAllowedIp(prefix)) {
     throw new TypeError('Invalid fabric prefix')
@@ -1665,15 +1756,30 @@ function parseEnabledFabricPayload(
   if (!Array.isArray(value.peers)) {
     throw new TypeError('Invalid fabric peers')
   }
+  if (tunnel === false && value.peers.length > 0) {
+    throw new TypeError('Invalid fabric peers: a payload with no tunnel')
+  }
   const payload: Extract<FabricReconcileCommandPayload, { enabled: true }> = {
     enabled: true,
-    address: address.trim(),
+    ...(address === undefined ? {} : { address }),
     prefix: prefix.trim(),
     peers: value.peers.map(parseFabricPeerEntry),
   }
+  if (tunnel !== undefined) payload.tunnel = tunnel
+  const lanRoutes = parseFabricLanRoutes(value.lanRoutes)
+  if (lanRoutes) payload.lanRoutes = lanRoutes
   if (value.fabricId !== undefined) {
     payload.fabricId = parseFabricUuid(value.fabricId, 'fabricId')
   }
+  applyOptionalFabricFields(payload, value)
+  return payload
+}
+
+/** The optional tunnel settings of an enabled payload, each checked when present. */
+function applyOptionalFabricFields(
+  payload: Extract<FabricReconcileCommandPayload, { enabled: true }>,
+  value: Record<string, unknown>
+): void {
   if (value.listenPort !== undefined) {
     if (!isValidWireguardListenPort(value.listenPort)) {
       throw new TypeError('Invalid fabric listenPort')
@@ -1695,7 +1801,6 @@ function parseEnabledFabricPayload(
     }
     payload.gateway = value.gateway
   }
-  return payload
 }
 
 export function parseFabricReconcilePayload(value: unknown): FabricReconcileCommandPayload {
@@ -1706,7 +1811,10 @@ export function parseFabricReconcilePayload(value: unknown): FabricReconcileComm
     throw new TypeError('Invalid fabric enabled')
   }
   if (!value.enabled) {
-    return { enabled: false }
+    if (value.retainKeys !== undefined && typeof value.retainKeys !== 'boolean') {
+      throw new TypeError('Invalid fabric retainKeys')
+    }
+    return value.retainKeys === true ? { enabled: false, retainKeys: true } : { enabled: false }
   }
   return parseEnabledFabricPayload(value)
 }
@@ -1738,7 +1846,25 @@ export function parseFabricReconcileResult(value: unknown): FabricReconcileComma
     }
     result.peers = value.peers.map(parseFabricObservedPeer)
   }
+  if (value.warnings !== undefined) {
+    result.warnings = parseFabricResultWarnings(value.warnings)
+  }
   return result
+}
+
+const FABRIC_RESULT_WARNINGS_MAX = 64
+const FABRIC_RESULT_WARNING_MAX_LENGTH = 500
+
+function parseFabricResultWarnings(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > FABRIC_RESULT_WARNINGS_MAX) {
+    throw new TypeError('Invalid fabric reconcile result warnings')
+  }
+  return value.map((entry) => {
+    if (!isString(entry) || entry.length === 0 || entry.length > FABRIC_RESULT_WARNING_MAX_LENGTH) {
+      throw new TypeError('Invalid fabric reconcile result warning')
+    }
+    return entry
+  })
 }
 
 function parseNonNegativeInteger(value: unknown, field: string): number {
@@ -1912,6 +2038,14 @@ export type EnvironmentDeployPrincipalMaterial = {
    * `lib/sha512-crypt.ts`.
    */
   passwordHash?: string
+  /**
+   * The same hash as a `tpdaemon` envelope, sent instead of `passwordHash`
+   * (environment deploys and `server.principals.reconcile`) whenever the server
+   * has a sealing key on file, never keyed on the unsigned hello `features`
+   * list. The daemon opens it through `/secrets/decrypt`, which answers sealed
+   * to its own key. Never both fields.
+   */
+  passwordHashEnvelope?: string
 }
 
 /**
@@ -1977,6 +2111,12 @@ export type EnvironmentDeployHostingPhp = {
 export type EnvironmentDeploySiteDbCa = {
   variables: string[]
   pem: string
+  /**
+   * Names holding a Postgres URL: in `verify-ca` / `verify-full` the daemon adds
+   * `sslrootcert=<the CA file>` to each one that has none. Sent only when there is at least one name, and only
+   * to a daemon that lists `site-db-url-ca-v1`.
+   */
+  urlVariables?: string[]
 }
 
 export type EnvironmentDeploySitePrincipal = {
@@ -2033,6 +2173,42 @@ export type EnvironmentDeployCronJob = {
   concurrencyPolicy?: 'forbid'
 }
 
+/** When a site's post-deploy commands run; omitted means `before-traffic`. */
+export type EnvironmentDeploySitePostDeployTiming = 'before-traffic' | 'after-switch'
+
+/**
+ * Commands run as the site's account in the new release with the site's
+ * variables: before the release takes traffic (the default; a failure leaves
+ * the release that was serving in place) or right after the switch. A deploy
+ * may be retried, so they can run more than once and should be safe to.
+ * Sent only to a daemon that lists `site-php-lifecycle-v1`.
+ */
+export type EnvironmentDeploySitePostDeploy = {
+  /** 1 to 10 argv lists; `command[0]` is an absolute path. */
+  commands: string[][]
+  /** 30 to 1800; omitted means 900. */
+  timeoutSeconds?: number
+  timing?: EnvironmentDeploySitePostDeployTiming
+}
+
+/**
+ * One long-running command (a queue worker) kept running as a managed unit
+ * under the site's account. Restarted gracefully after every deploy. Sent only
+ * to a daemon that lists `site-php-lifecycle-v1`.
+ */
+export type EnvironmentDeploySiteWorker = {
+  /** Unit-name segment, unique within the site. */
+  name: string
+  /** argv; `command[0]` is an absolute path. */
+  command: string[]
+  /** 1 to 8; omitted means 1. */
+  processes?: number
+  /** `TimeoutStopSec=`, 10 to 3600; omitted means 90. */
+  stopTimeoutSeconds?: number
+  /** `MemoryMax=` in bytes, 64 MiB to 64 GiB. */
+  memoryMaxBytes?: number
+}
+
 export type EnvironmentDeploySite = {
   composeServiceName: string
   /**
@@ -2063,6 +2239,13 @@ export type EnvironmentDeploySite = {
    * Requires `principal`: a timer with no `User=` would run as root.
    */
   cron?: EnvironmentDeployCronJob[]
+  /**
+   * Commands to run in each newly built release, as the site's principal.
+   * Requires `principal` and a release-backed site.
+   */
+  postDeploy?: EnvironmentDeploySitePostDeploy
+  /** Background workers, run as the site's principal. Requires `principal`. */
+  workers?: EnvironmentDeploySiteWorker[]
   /** Merged hosting web env (non-secret variables + options.web.env). */
   webEnv?: Record<string, string>
   /**
@@ -2094,6 +2277,14 @@ export type EnvironmentDeploySite = {
 }
 
 /**
+ * The build kind the panel puts on the wire for an image-built source. A
+ * released daemon only accepts this value, so the new `image` value stays
+ * inside the panel until wipe day, when every server is reinstalled and the
+ * send flips in one step.
+ */
+export const IMAGE_BUILD_WIRE_KIND = 'railpack' as const
+
+/**
  * How the daemon turns a Git checkout into a runnable release.
  *
  * `env` is a **non-secret** build-time map only — build secrets keep riding
@@ -2101,19 +2292,24 @@ export type EnvironmentDeploySite = {
  * never land in a release manifest.
  *
  * `kind: 'native'` is the checkout → build → promote directory release.
- * `kind: 'railpack'` swaps the build step for Railpack + BuildKit, which emits
- * an OCI image the daemon tags and feeds back into runtime compose as
- * `services.<name>.image` — there is no promoted tree and no `current` symlink
- * for it, so `outputDirectory` is meaningless and is **ignored** (never
- * rejected: a stale value left behind by a mode switch must not fail parsing).
- * `installCommand` / `buildCommand` / `env` stay optional hints Railpack's
- * zero-config detection may or may not honor.
+ * `kind: 'image'` swaps the build step for an auto-detected container image
+ * build, which emits an OCI image the daemon tags and feeds back into runtime
+ * compose as `services.<name>.image` — there is no promoted tree and no
+ * `current` symlink for it, so `outputDirectory` is meaningless and is
+ * **ignored** (never rejected: a stale value left behind by a mode switch must
+ * not fail parsing). `installCommand` / `buildCommand` / `env` stay optional
+ * hints the zero-config detection may or may not honor.
  *
- * `kind: 'static'` is reserved for the site release phase; only
- * `native` and `railpack` are produced today.
+ * `kind: 'static'` is reserved for the site release phase; only `native` and
+ * the image kind are produced today.
+ *
+ * The panel accepts both the new `image` value and the old value everywhere it
+ * reads one, but keeps SENDING the old value on the wire (`IMAGE_BUILD_WIRE_KIND`)
+ * because a released daemon rejects `image` at its set check. The send flips
+ * on wipe day, when every server is reinstalled.
  */
 export type EnvironmentDeploySourceBuild = {
-  kind: 'native' | 'static' | 'railpack'
+  kind: 'native' | 'static' | 'image' | 'railpack'
   /**
    * Package manager for a `kind: 'native'` node-app install. Omitted means
    * the daemon auto-detects from the lockfile at build time. An explicit
@@ -2433,6 +2629,22 @@ export type EnvironmentDeploySecretPlanEntry = {
   forRuntime: boolean
 }
 
+/** One piece of a generated config file: literal text or a secret's key name. */
+export type EnvironmentDeployConfigFilePart = { text: string } | { secretKey: string }
+
+/**
+ * A generated config file the daemon puts together on the `/run` tmpfs. Parts
+ * hold text and secret key names, never a value: each `secretKey` is read from
+ * the `variableMaterial[]` entry for the same `composeServiceName`. Only sent
+ * to a daemon that lists `deploy-config-files-v1`.
+ */
+export type EnvironmentDeployConfigFile = {
+  composeServiceName: string
+  source: string
+  relativePath: string
+  parts: EnvironmentDeployConfigFilePart[]
+}
+
 const DEPLOY_COMPOSE_FILE_ROLES = new Set<EnvironmentDeployComposeFileRole>([
   'project',
   'environment',
@@ -2611,6 +2823,13 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    */
   hideWebServerNames?: boolean
   /**
+   * Send the hosting web server's `Via` response header. False strips it.
+   * Absent follows `hideWebServerNames` (stripped when names are hidden), so
+   * an older control plane changes nothing. Sent only to a daemon that lists
+   * `hosting-via-header-v1`, always as a boolean.
+   */
+  sendViaHeader?: boolean
+  /**
    * `sequential`: the daemon stops the previous version, runs migrations,
    * starts the new one, gates on health and rolls back. Omitted for `inplace`
    * (and for a daemon that predates the field, which deploys in place).
@@ -2629,6 +2848,8 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
   envFile?: string
   /** File-only secret mounts (paths/names, no plaintext). */
   secretPlan?: EnvironmentDeploySecretPlanEntry[]
+  /** Generated config files (parts only); see {@link EnvironmentDeployConfigFile}. */
+  configFiles?: EnvironmentDeployConfigFile[]
   storageMaterial?: EnvironmentDeployStorageMaterial[]
   /**
    * The folder of every service this deploy runs on the host (a site, a native
@@ -2663,6 +2884,19 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    * `13306` for tenant raw tcp/udp ingress.
    */
   listenerPorts?: ManagedIngressPorts
+  /**
+   * The complete set of project caches this environment has on this host
+   * (feature `project-cache-v1`). Absent: the host leaves every cache alone.
+   * Present, even empty: a cache on the host that is not listed loses its
+   * unit and config, and its data stays.
+   */
+  caches?: EnvironmentDeployCache[]
+  /**
+   * Helper container ports to open to one Hosting Account each (feature
+   * `project-cache-v1`). Absent leaves the environment's list alone; empty
+   * removes it.
+   */
+  helperReach?: EnvironmentDeployHelperReach[]
 }
 
 export type EnvironmentDeployHostingPort = {
@@ -2710,6 +2944,12 @@ export type EnvironmentDeployHosting = {
    */
   bindAddress?: string
   /**
+   * Tunnel names of this hosting and who may reach them. When present the
+   * server answers those names only to local connectors and the listed peer
+   * addresses, and also listens on `extraBind`. Absent = no tunnel names.
+   */
+  tunnel?: EnvironmentDeployHostingTunnel
+  /**
    * `http` (default/omitted) routes `hostnames` through Traefik + hosting Caddy.
    * `tcp` / `udp` publish `ports[]` straight through Traefik — no hostname/TLS
    * routing.
@@ -2749,10 +2989,12 @@ export type EnvironmentDeployContainer = {
  * result.
  *
  * Lets the release-history / rollback surface name a release without a second
- * round trip to the host. A **Railpack** release has no promoted directory and
+ * round trip to the host. An image-built release has no promoted directory and
  * no commit-backed tree to point at, so its identity there is the image tag
- * plus the pinned tools that produced it (`railpackFrontendVersion` /
- * `railpackPlanVersion`); a native release omits all three.
+ * plus the pinned tools that produced it (`builderFrontendVersion` /
+ * `builderPlanVersion`); a native release omits all three. The parser also
+ * accepts the older field names from a daemon that has not moved yet and
+ * reports them under the new names.
  */
 export type EnvironmentDeployResultRelease = {
   composeServiceName: string
@@ -2760,8 +3002,8 @@ export type EnvironmentDeployResultRelease = {
   releaseId: string
   commitSha: string
   imageTag?: string
-  railpackFrontendVersion?: string
-  railpackPlanVersion?: string
+  builderFrontendVersion?: string
+  builderPlanVersion?: string
 }
 
 /**
@@ -2809,6 +3051,8 @@ export type EnvironmentDeployCommandResult = {
    * Absent otherwise and from older daemons.
    */
   unchanged?: boolean
+  /** One entry per cache the deploy was sent (feature `project-cache-v1`); absent when none. */
+  caches?: CacheApplyResult[]
 }
 
 /** A service folder a deploy left in place, by its components. */
@@ -2994,6 +3238,18 @@ function applyOptionalDeployHostingFields(
   if (proxy) hosting.proxy = proxy
   const bindAddress = parseDeployHostingBindAddress(entry.bindAddress)
   if (bindAddress) hosting.bindAddress = bindAddress
+  const tunnel = parseDeployHostingTunnel(entry.tunnel, hosting.hostnames)
+  if (tunnel) hosting.tunnel = tunnel
+  if (
+    tunnel &&
+    hosting.tlsMode === 'acme' &&
+    tunnel.hostnames.some((name) => !tunnel.openHostnames?.includes(name))
+  ) {
+    // A name that only arrives through a tunnel must never ask for a public certificate.
+    throw new TypeError(
+      'Invalid environment.deploy tunnel: tlsMode acme needs every tunnel name open'
+    )
+  }
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
@@ -3122,6 +3378,98 @@ export function parseDeploySecretPlan(
     throw new TypeError('secretPlan must be an array')
   }
   return value.map(parseDeploySecretPlanEntry)
+}
+
+const CONFIG_TEXT_ENCODER = new TextEncoder()
+const MAX_CONFIG_FILE_TEXT_BYTES = 65_536
+const MAX_CONFIG_FILES_PER_SERVICE = 16
+const MAX_CONFIG_FILES_TEXT_BYTES_PER_DEPLOY = 262_144
+
+function parseDeployConfigFilePart(value: unknown): EnvironmentDeployConfigFilePart {
+  if (!isRecord(value) || Object.keys(value).length !== 1) {
+    throw new TypeError('Invalid environment.deploy configFiles part')
+  }
+  if (typeof value.text === 'string') {
+    if (value.text.includes('\u0000')) {
+      throw new TypeError('configFiles text must not contain NUL')
+    }
+    if (CONFIG_TEXT_ENCODER.encode(value.text).length > MAX_CONFIG_FILE_TEXT_BYTES) {
+      throw new TypeError('configFiles text exceeds maximum size')
+    }
+    return { text: value.text }
+  }
+  if (typeof value.secretKey === 'string' && value.secretKey.length > 0) {
+    return { secretKey: value.secretKey }
+  }
+  throw new TypeError('Invalid environment.deploy configFiles part')
+}
+
+function configFileTextBytes(file: EnvironmentDeployConfigFile): number {
+  let total = 0
+  for (const part of file.parts) {
+    if ('text' in part) total += CONFIG_TEXT_ENCODER.encode(part.text).length
+  }
+  return total
+}
+
+function parseDeployConfigFileEntry(entry: unknown): EnvironmentDeployConfigFile {
+  if (
+    !isRecord(entry) ||
+    !isString(entry.composeServiceName) ||
+    entry.composeServiceName.length === 0 ||
+    !isString(entry.source) ||
+    !isString(entry.relativePath) ||
+    !Array.isArray(entry.parts)
+  ) {
+    throw new TypeError('Invalid environment.deploy configFiles entry')
+  }
+  if (
+    entry.relativePath.includes('..') ||
+    !SECRET_PLAN_NAME_RE.test(entry.relativePath) ||
+    !SECRET_PLAN_NAME_RE.test(entry.source) ||
+    entry.relativePath.endsWith('.tmp') ||
+    entry.source.endsWith('.tmp')
+  ) {
+    throw new TypeError('Invalid environment.deploy configFiles name')
+  }
+  const file: EnvironmentDeployConfigFile = {
+    composeServiceName: entry.composeServiceName,
+    source: entry.source,
+    relativePath: entry.relativePath,
+    parts: entry.parts.map(parseDeployConfigFilePart),
+  }
+  if (configFileTextBytes(file) > MAX_CONFIG_FILE_TEXT_BYTES) {
+    throw new TypeError('configFiles file exceeds maximum size')
+  }
+  return file
+}
+
+/** Entry checks plus the limits that span entries; same limits as the daemon's parser. */
+export function parseDeployConfigFiles(value: unknown): EnvironmentDeployConfigFile[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new TypeError('configFiles must be an array')
+  const files = value.map(parseDeployConfigFileEntry)
+  const sources = new Set<string>()
+  const paths = new Set<string>()
+  const perService = new Map<string, number>()
+  let total = 0
+  for (const file of files) {
+    if (sources.has(file.source) || paths.has(file.relativePath)) {
+      throw new TypeError('configFiles names must be unique')
+    }
+    sources.add(file.source)
+    paths.add(file.relativePath)
+    const count = (perService.get(file.composeServiceName) ?? 0) + 1
+    if (count > MAX_CONFIG_FILES_PER_SERVICE) {
+      throw new TypeError('too many configFiles for one service')
+    }
+    perService.set(file.composeServiceName, count)
+    total += configFileTextBytes(file)
+  }
+  if (total > MAX_CONFIG_FILES_TEXT_BYTES_PER_DEPLOY) {
+    throw new TypeError('configFiles exceed the maximum total size')
+  }
+  return files
 }
 
 function parseDeployEnvFile(value: unknown): string | undefined {
@@ -3320,6 +3668,16 @@ function parseDeployPrincipalMaterialEntry(entry: unknown): EnvironmentDeployPri
     }
     material.passwordHash = entry.passwordHash
   }
+  if (entry.passwordHashEnvelope !== undefined) {
+    if (
+      entry.passwordHash !== undefined ||
+      !isString(entry.passwordHashEnvelope) ||
+      !entry.passwordHashEnvelope.startsWith(ENVELOPE_PREFIX_DAEMON)
+    ) {
+      throw new Error('Invalid environment.deploy payload')
+    }
+    material.passwordHashEnvelope = entry.passwordHashEnvelope
+  }
   return material
 }
 
@@ -3489,6 +3847,137 @@ function parseDeployCronJobs(value: unknown): EnvironmentDeployCronJob[] | undef
   })
 }
 
+/** An argv as the cron rule: non-empty, bounded, no control characters, absolute first word. */
+function isCommandArgv(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.every(
+      (arg) => isString(arg) && arg.length > 0 && arg.length <= 512 && !/[\0\n\r]/.test(arg)
+    ) &&
+    (value[0] as string).startsWith('/')
+  )
+}
+
+function integerInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+}
+
+const MAX_POST_DEPLOY_COMMANDS = 10
+const MIN_POST_DEPLOY_TIMEOUT_SECONDS = 30
+const MAX_POST_DEPLOY_TIMEOUT_SECONDS = 1800
+
+function parseDeploySitePostDeploy(value: unknown): EnvironmentDeploySitePostDeploy | undefined {
+  if (value === undefined) return undefined
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.commands) ||
+    value.commands.length < 1 ||
+    value.commands.length > MAX_POST_DEPLOY_COMMANDS ||
+    !value.commands.every(isCommandArgv)
+  ) {
+    throw new Error('Invalid sites postDeploy')
+  }
+  const out: EnvironmentDeploySitePostDeploy = {
+    commands: value.commands.map((argv: string[]) => [...argv]),
+  }
+  if (value.timeoutSeconds !== undefined) {
+    if (
+      !integerInRange(
+        value.timeoutSeconds,
+        MIN_POST_DEPLOY_TIMEOUT_SECONDS,
+        MAX_POST_DEPLOY_TIMEOUT_SECONDS
+      )
+    ) {
+      throw new Error('Invalid sites postDeploy timeoutSeconds')
+    }
+    out.timeoutSeconds = value.timeoutSeconds
+  }
+  if (value.timing !== undefined) {
+    if (value.timing !== 'before-traffic' && value.timing !== 'after-switch') {
+      throw new Error('Invalid sites postDeploy timing')
+    }
+    out.timing = value.timing
+  }
+  return out
+}
+
+const MAX_SITE_WORKERS = 10
+const MIN_WORKER_MEMORY_BYTES = 64 * 1024 * 1024
+const MAX_WORKER_MEMORY_BYTES = 64 * 1024 * 1024 * 1024
+const WORKER_NUMBER_LIMITS: ReadonlyArray<
+  readonly ['processes' | 'stopTimeoutSeconds' | 'memoryMaxBytes', number, number]
+> = [
+  ['processes', 1, 8],
+  ['stopTimeoutSeconds', 10, 3600],
+  ['memoryMaxBytes', MIN_WORKER_MEMORY_BYTES, MAX_WORKER_MEMORY_BYTES],
+]
+
+function parseDeploySiteWorker(raw: unknown): EnvironmentDeploySiteWorker {
+  if (
+    !isRecord(raw) ||
+    !isString(raw.name) ||
+    !CRON_JOB_NAME_RE.test(raw.name) ||
+    !isCommandArgv(raw.command)
+  ) {
+    throw new Error('Invalid sites workers entry')
+  }
+  const worker: EnvironmentDeploySiteWorker = { name: raw.name, command: [...raw.command] }
+  for (const [key, min, max] of WORKER_NUMBER_LIMITS) {
+    const limit = raw[key]
+    if (limit === undefined) continue
+    if (!integerInRange(limit, min, max)) throw new Error('Invalid sites workers entry')
+    worker[key] = limit
+  }
+  return worker
+}
+
+function parseDeploySiteWorkers(value: unknown): EnvironmentDeploySiteWorker[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_SITE_WORKERS) {
+    throw new Error('Invalid sites workers')
+  }
+  const seen = new Set<string>()
+  return value.map((raw) => {
+    const worker = parseDeploySiteWorker(raw)
+    if (seen.has(worker.name)) throw new Error(`Duplicate sites worker: ${worker.name}`)
+    seen.add(worker.name)
+    return worker
+  })
+}
+
+/** Commands and workers run as the site's account, never as root, and commands need a release. */
+function assertSiteLifecycleOwnership(site: EnvironmentDeploySite): void {
+  const name = site.composeServiceName
+  if (site.postDeploy && !site.principal) {
+    throw new Error(
+      `Invalid sites entry: ${name} has post-deploy commands but no principal to run them as`
+    )
+  }
+  if (site.workers && site.workers.length > 0 && !site.principal) {
+    throw new Error(`Invalid sites entry: ${name} has workers but no principal to run them as`)
+  }
+  if (site.postDeploy && site.sourceKind === 'managed-directory') {
+    throw new Error(
+      `Invalid sites entry: ${name} is a managed directory with no release to run post-deploy commands in`
+    )
+  }
+}
+
+/** The scheduled jobs, post-deploy commands and workers a site entry carries. */
+function parseDeploySiteJobs(
+  entry: Record<string, unknown>
+): Pick<EnvironmentDeploySite, 'cron' | 'postDeploy' | 'workers'> {
+  const out: Pick<EnvironmentDeploySite, 'cron' | 'postDeploy' | 'workers'> = {}
+  const cron = parseDeployCronJobs(entry.cron)
+  if (cron) out.cron = cron
+  const postDeploy = parseDeploySitePostDeploy(entry.postDeploy)
+  if (postDeploy) out.postDeploy = postDeploy
+  const workers = parseDeploySiteWorkers(entry.workers)
+  if (workers) out.workers = workers
+  return out
+}
+
 function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
   if (!isRecord(entry)) {
     throw new Error('Invalid sites entry')
@@ -3522,8 +4011,7 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
     }
     site.sourceKind = entry.sourceKind as EnvironmentDeploySite['sourceKind']
   }
-  const cron = parseDeployCronJobs(entry.cron)
-  if (cron) site.cron = cron
+  Object.assign(site, parseDeploySiteJobs(entry))
   const webEnv = parseEnvRecord(entry.webEnv)
   if (webEnv) site.webEnv = webEnv
   const webSecretEnv = parseEnvRecord(entry.webSecretEnv)
@@ -3548,11 +4036,12 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
       `Invalid sites entry: ${site.composeServiceName} is a managed directory with no principal`
     )
   }
+  assertSiteLifecycleOwnership(site)
   return site
 }
 
 const MAX_SITE_DB_CA_BYTES = 65_536
-const MAX_SITE_DB_CA_VARIABLES = 8
+const MAX_SITE_DB_CA_VARIABLES = 16
 const MAX_SITE_REQUIRED_ENV = 64
 const ENV_VARIABLE_NAME_RE = /^[A-Za-z_]\w*$/
 
@@ -3604,7 +4093,8 @@ function parseDeploySiteDbCa(value: unknown): EnvironmentDeploySiteDbCa | undefi
   }
   const variables = parseDeploySiteEnvNames(value.variables, MAX_SITE_DB_CA_VARIABLES)
   if (!variables) throw new Error('Invalid sites entry')
-  return { variables, pem: value.pem }
+  const urlVariables = parseDeploySiteEnvNames(value.urlVariables, MAX_SITE_DB_CA_VARIABLES)
+  return { variables, pem: value.pem, ...(urlVariables ? { urlVariables } : {}) }
 }
 
 /** Apache's port behind nginx: a loopback high port other than `listenPort`. */
@@ -3665,6 +4155,7 @@ const SOURCE_PROVIDERS = new Set<EnvironmentDeploySource['provider']>(['github',
 const SOURCE_BUILD_KINDS = new Set<EnvironmentDeploySourceBuild['kind']>([
   'native',
   'static',
+  'image',
   'railpack',
 ])
 
@@ -4639,6 +5130,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       noCache: parseOptionalDeployBoolean(value.noCache),
       hostingsOnly: parseOptionalDeployBoolean(value.hostingsOnly),
       hideWebServerNames: parseOptionalDeployBoolean(value.hideWebServerNames),
+      sendViaHeader: parseOptionalDeployBoolean(value.sendViaHeader),
       deployStrategy: parseDeployStrategyField(value.deployStrategy),
       migrations: parseDeployMigrationsField(value.migrations),
       healthTimeoutSeconds: parseHealthTimeoutField(value.healthTimeoutSeconds),
@@ -4649,6 +5141,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       variableMaterial: parseDeployVariableMaterial(value.variableMaterial),
       envFile: parseDeployEnvFile(value.envFile),
       secretPlan: parseDeploySecretPlan(value.secretPlan),
+      configFiles: parseDeployConfigFiles(value.configFiles),
       storageMaterial: parseDeployStorageMaterial(value.storageMaterial),
       serviceFolders: parseDeployServiceFolders(value.serviceFolders),
       removedSites: parseDeployRemovedSites(value.removedSites),
@@ -4659,6 +5152,8 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
         value.listenerPorts === undefined
           ? undefined
           : parseManagedIngressListenerPorts(value.listenerPorts),
+      caches: parseDeployCaches(value.caches, 'caches'),
+      helperReach: parseHelperReach(value.helperReach),
       generation: parseOptionalGeneration(value.generation),
       desiredHash: parseOptionalDesiredHash(value.desiredHash),
       serverId: parseOptionalDeployServerId(value.serverId),
@@ -4691,6 +5186,8 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   const keptFolders = parseKeptFolders(value.keptFolders)
   if (keptFolders !== undefined) result.keptFolders = keptFolders
   if (value.unchanged === true) result.unchanged = true
+  const caches = parseCacheResults(value.caches)
+  if (caches !== undefined) result.caches = caches
   return result
 }
 
@@ -4740,6 +5237,11 @@ function parseDeployResultSites(value: unknown): EnvironmentDeployResultSite[] |
   return out.length > 0 ? out : undefined
 }
 
+/** First argument that is a string (the new field name wins over the old one). */
+function firstString(...values: unknown[]): string | undefined {
+  return values.find(isString)
+}
+
 /** Cap mirrors {@link MAX_ENVIRONMENT_DEPLOY_CONTAINERS} — same blast radius. */
 const MAX_ENVIRONMENT_DEPLOY_RESULT_RELEASES = 100
 
@@ -4761,18 +5263,19 @@ function parseDeployResultReleases(value: unknown): EnvironmentDeployResultRelea
     ) {
       continue
     }
+    const builderFrontendVersion = firstString(
+      entry.builderFrontendVersion,
+      entry.railpackFrontendVersion
+    )
+    const builderPlanVersion = firstString(entry.builderPlanVersion, entry.railpackPlanVersion)
     out.push({
       composeServiceName: entry.composeServiceName,
       serviceId: entry.serviceId,
       releaseId: entry.releaseId,
       commitSha: entry.commitSha,
       ...(isString(entry.imageTag) ? { imageTag: entry.imageTag } : {}),
-      ...(isString(entry.railpackFrontendVersion)
-        ? { railpackFrontendVersion: entry.railpackFrontendVersion }
-        : {}),
-      ...(isString(entry.railpackPlanVersion)
-        ? { railpackPlanVersion: entry.railpackPlanVersion }
-        : {}),
+      ...(builderFrontendVersion === undefined ? {} : { builderFrontendVersion }),
+      ...(builderPlanVersion === undefined ? {} : { builderPlanVersion }),
     })
   }
   return out.length > 0 ? out : undefined
@@ -4817,6 +5320,35 @@ export type EnvironmentStopCommandPayload = {
    * Only a delete teardown sets it, on the last stop it sends to a server.
    */
   retirePrincipals?: Array<{ username: string }>
+  /**
+   * Remove the environment's compose folder
+   * (`<stateDir>/deployments/<projectId>/<environmentId>`), including anything a
+   * relative bind such as `./data` wrote there. Only an environment or project
+   * delete sets it. Without it the daemon removes only its own compose files and
+   * keeps everything a service wrote, so a Destroy or a server leaving the
+   * environment never loses that data.
+   */
+  removeDeploymentDir?: true
+  /**
+   * Registered Docker volumes to remove after the stack is down, by storage id
+   * (the volume's exact Docker name). Only a Destroy with "Also Delete the Data
+   * Volumes" sets it, and only to a daemon that lists
+   * `environment-stop-remove-volumes-v1`. The daemon keeps a volume any
+   * container still uses.
+   */
+  removeVolumes?: StopVolumeRemoval[]
+}
+
+/** One registered Docker volume a stop removes, by its storage id (its exact Docker name). */
+export type StopVolumeRemoval = { storageId: string }
+
+/** What the host did with one volume a stop was asked to remove. */
+export type EnvironmentStopVolumeState = {
+  storageId: string
+  /** `removed`, `absent` (not on that server), `kept` (still in use, or no Docker) or `failed`. */
+  state: 'removed' | 'absent' | 'kept' | 'failed'
+  /** Why the volume stayed, in plain words. Present only for `kept` and `failed`. */
+  reason?: string
 }
 
 export type EnvironmentStopCommandResult = {
@@ -4829,6 +5361,8 @@ export type EnvironmentStopCommandResult = {
    * Only present when the payload carried `siteReleases` with a `folder`.
    */
   folders?: EnvironmentStopFolderState[]
+  /** One entry per volume in `removeVolumes`; only present when the payload named volumes. */
+  volumes?: EnvironmentStopVolumeState[]
 }
 
 /** One reclaimed (or not) service folder, by its components. */
@@ -4869,6 +5403,61 @@ function parseStopFolderStates(value: unknown): EnvironmentStopFolderState[] | u
     }
   }
   return states
+}
+
+const STOP_VOLUME_STATES: ReadonlySet<string> = new Set(['removed', 'absent', 'kept', 'failed'])
+
+function parseStopVolumeStates(value: unknown): EnvironmentStopVolumeState[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const states: EnvironmentStopVolumeState[] = []
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      !isString(entry.storageId) ||
+      !STOP_VOLUME_STORAGE_ID_RE.test(entry.storageId) ||
+      !isString(entry.state) ||
+      !STOP_VOLUME_STATES.has(entry.state)
+    ) {
+      // A result is a report; one malformed entry is left out.
+      continue
+    }
+    const state = entry.state as EnvironmentStopVolumeState['state']
+    const kept = state === 'kept' || state === 'failed'
+    states.push({
+      storageId: entry.storageId,
+      state,
+      ...(kept && isString(entry.reason) ? { reason: clipReason(entry.reason) } : {}),
+    })
+  }
+  return states
+}
+
+/** A storage id as the daemon accepts it: the exact name of the volume registered for it. */
+const STOP_VOLUME_STORAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+
+/** The most volumes one stop may name; twin of the daemon parser's limit. */
+export const MAX_STOP_REMOVE_VOLUMES = 200
+
+function parseStopVolumeRemovals(value: unknown): StopVolumeRemoval[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_STOP_REMOVE_VOLUMES) {
+    throw new TypeError('Invalid environment.stop removeVolumes')
+  }
+  const seen = new Set<string>()
+  const out: StopVolumeRemoval[] = []
+  for (const entry of value) {
+    if (
+      !isRecord(entry) ||
+      !isString(entry.storageId) ||
+      !STOP_VOLUME_STORAGE_ID_RE.test(entry.storageId)
+    ) {
+      throw new Error('Invalid environment.stop removeVolumes entry')
+    }
+    if (seen.has(entry.storageId)) continue
+    seen.add(entry.storageId)
+    out.push({ storageId: entry.storageId })
+  }
+  return out
 }
 
 function parseStopIngressServices(value: unknown): Array<{ serviceId: string }> | undefined {
@@ -4984,6 +5573,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
   const siteReleases = parseStopSiteReleases(value.siteReleases)
   const releaseCleanup = parseStopSiteReleases(value.releaseCleanup, 'releaseCleanup')
   const retirePrincipals = parseRetirePrincipals(value.retirePrincipals)
+  const removeVolumes = parseStopVolumeRemovals(value.removeVolumes)
   return {
     environmentId,
     projectId,
@@ -4993,6 +5583,8 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
     ...(siteReleases !== undefined ? { siteReleases } : {}),
     ...(releaseCleanup !== undefined ? { releaseCleanup } : {}),
     ...(retirePrincipals !== undefined ? { retirePrincipals } : {}),
+    ...(value.removeDeploymentDir === true ? { removeDeploymentDir: true as const } : {}),
+    ...(removeVolumes !== undefined ? { removeVolumes } : {}),
   }
 }
 
@@ -5008,6 +5600,8 @@ export function parseEnvironmentStopResult(value: unknown): EnvironmentStopComma
   if (containers !== undefined) result.containers = containers
   const folders = parseStopFolderStates(value.folders)
   if (folders !== undefined) result.folders = folders
+  const volumes = parseStopVolumeStates(value.volumes)
+  if (volumes !== undefined) result.volumes = volumes
   return result
 }
 
@@ -5401,6 +5995,14 @@ export type ManagedApplyCredential = {
    * behaviour); only sent for `recipe` or `self`.
    */
   grantMode?: 'preset' | 'recipe' | 'self'
+  /**
+   * `backup`: the cluster's backup login. `role` stays `user` so an older
+   * daemon still reads the entry (it drops this field and makes a login with
+   * no rights); a daemon with `managed-backup-login-v1` gives it the read-only
+   * rights a full dump needs on every listed database. Absent for every other
+   * login.
+   */
+  kind?: 'backup'
   /** Daemon-recipient sealed password (`tpdaemon.…`). */
   password: string
 }
@@ -6601,6 +7203,12 @@ function parseManagedApplyCredentialEntry(entry: unknown): ManagedApplyCredentia
       throw new Error('Invalid managed.apply credentials grantMode')
     }
     credential.grantMode = entry.grantMode
+  }
+  if (entry.kind !== undefined) {
+    if (entry.kind !== 'backup') {
+      throw new Error('Invalid managed.apply credentials kind')
+    }
+    credential.kind = entry.kind
   }
   return credential
 }
@@ -8846,6 +9454,292 @@ export function parseManagedHaFailoverResult(value: unknown): ManagedHaFailoverC
   }
 }
 
+// ---- Project caches (feature `project-cache-v1`) -----------------------------
+// Must stay in sync with the daemon `cache.apply` / `environment.deploy` shapes
+// (`turbopaneld/src/contracts/commands-contracts.ts`).
+
+const CACHE_SERIES_SET: ReadonlySet<string> = new Set(CACHE_SERIES)
+const CACHE_NAME_RE = /^[a-z][a-z0-9-]{0,62}$/
+const CACHE_SHA256_HEX_RE = /^[0-9a-f]{64}$/
+const CACHE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const CACHE_SERVICE_NAME_RE = /^[A-Za-z0-9._-]+$/
+
+/**
+ * One project cache the host runs for an environment: a native Valkey process
+ * run as the Hosting Account `username`. The host knows the login password only
+ * as `passwordSha256`; the plain value reaches sites as a sealed variable.
+ */
+export type EnvironmentDeployCache = {
+  /** Lower-case UUID; it forms the unit name and every path on the host. */
+  id: string
+  name: string
+  /** The Hosting Account the process runs as (its applied Linux name). */
+  username: string
+  engine: 'valkey'
+  /** The engine series, such as `8.1`. */
+  version: string
+  access: 'socket' | 'port'
+  /** Loopback port from the listen band; present if and only if `access` is `port`. */
+  port?: number
+  /** `maxmemory` in MiB. */
+  maxMemoryMb: number
+  /** Lower-case hex SHA-256 of the login password. */
+  passwordSha256: string
+  /** The account's ceiling, written to its slice when sent. */
+  accountLimits?: { cpus?: number; memoryBytes?: number; tasksMax?: number }
+}
+
+/** A helper container's published port, opened to one Hosting Account only. */
+export type EnvironmentDeployHelperReach = {
+  composeServiceName: string
+  containerPort: number
+  hostPort: number
+  username: string
+}
+
+/** How one cache fared on a host. `pending`: its account is not there yet, so it starts with the next deploy. */
+export type CacheApplyResult = {
+  id: string
+  state: 'ready' | 'failed' | 'pending'
+  error?: string
+  runtimeVersion?: string
+}
+
+/** One cache to remove from a host; its data stays unless `deleteData`. */
+export type CacheApplyRemoval = { id: string; username: string; deleteData: boolean }
+
+/** `cache.apply`: the complete set one environment has on one host, plus what to remove. */
+export type CacheApplyCommandPayload = {
+  environmentId: string
+  caches: EnvironmentDeployCache[]
+  removed?: CacheApplyRemoval[]
+}
+
+export type CacheApplyCommandResult = { caches: CacheApplyResult[] }
+
+function parseCacheInt(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new TypeError(`${field} must be an integer`)
+  }
+  return value
+}
+
+function parseCachePort(value: unknown, field: string): number {
+  const port = parseCacheInt(value, field)
+  if (port < CACHE_PORT_MIN || port > CACHE_PORT_MAX) {
+    throw new TypeError(`${field} must be in ${CACHE_PORT_MIN}-${CACHE_PORT_MAX}`)
+  }
+  return port
+}
+
+function parseCacheIdentity(
+  value: Record<string, unknown>
+): Pick<EnvironmentDeployCache, 'id' | 'name' | 'username'> {
+  if (typeof value.id !== 'string' || !CACHE_ID_RE.test(value.id)) {
+    throw new TypeError('caches id must be a lower-case UUID')
+  }
+  if (typeof value.name !== 'string' || !CACHE_NAME_RE.test(value.name)) {
+    throw new TypeError('caches name is not a short lower-case name')
+  }
+  if (!isValidPrincipalUsername(value.username)) {
+    throw new TypeError('caches username is not a Hosting Account name')
+  }
+  return { id: value.id, name: value.name, username: value.username }
+}
+
+function parseCacheEngine(
+  value: Record<string, unknown>
+): Pick<EnvironmentDeployCache, 'engine' | 'version'> {
+  if (value.engine !== 'valkey') throw new TypeError('caches engine must be valkey')
+  if (typeof value.version !== 'string' || !CACHE_SERIES_SET.has(value.version)) {
+    throw new TypeError('caches version is not one the host vendors')
+  }
+  return { engine: 'valkey', version: value.version }
+}
+
+function parseCacheAccess(
+  value: Record<string, unknown>
+): Pick<EnvironmentDeployCache, 'access' | 'port'> {
+  if (value.access !== 'socket' && value.access !== 'port') {
+    throw new TypeError('caches access must be socket or port')
+  }
+  if ((value.access === 'port') !== (value.port !== undefined)) {
+    throw new TypeError('caches port is set if and only if access is port')
+  }
+  return {
+    access: value.access,
+    ...(value.port === undefined ? {} : { port: parseCachePort(value.port, 'caches port') }),
+  }
+}
+
+function parseCacheEntry(value: unknown): EnvironmentDeployCache {
+  if (!isRecord(value)) throw new TypeError('Invalid caches entry')
+  const identity = parseCacheIdentity(value)
+  const engine = parseCacheEngine(value)
+  const access = parseCacheAccess(value)
+  const maxMemoryMb = parseCacheInt(value.maxMemoryMb, 'caches maxMemoryMb')
+  if (maxMemoryMb < MIN_CACHE_MEMORY_MB || maxMemoryMb > MAX_CACHE_MEMORY_MB) {
+    throw new TypeError(`caches maxMemoryMb must be ${MIN_CACHE_MEMORY_MB}-${MAX_CACHE_MEMORY_MB}`)
+  }
+  if (typeof value.passwordSha256 !== 'string' || !CACHE_SHA256_HEX_RE.test(value.passwordSha256)) {
+    throw new TypeError('caches passwordSha256 must be 64 lower-case hex')
+  }
+  const accountLimits = parseNativeAppAccountLimits(value.accountLimits)
+  return {
+    ...identity,
+    ...engine,
+    ...access,
+    maxMemoryMb,
+    passwordSha256: value.passwordSha256,
+    ...(accountLimits === undefined ? {} : { accountLimits }),
+  }
+}
+
+/** Absent stays absent; ids, names and ports are each unique. */
+function parseDeployCaches(value: unknown, field: string): EnvironmentDeployCache[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_CACHES_PER_ENVIRONMENT) {
+    throw new TypeError(
+      `${field} must be an array of at most ${MAX_CACHES_PER_ENVIRONMENT} entries`
+    )
+  }
+  const caches = value.map(parseCacheEntry)
+  for (const key of ['id', 'name', 'port'] as const) {
+    const seen = new Set<unknown>()
+    for (const cache of caches) {
+      const item = cache[key]
+      if (item === undefined) continue
+      if (seen.has(item)) throw new TypeError(`${field} names a cache ${key} twice`)
+      seen.add(item)
+    }
+  }
+  return caches
+}
+
+function parseHelperReachEntry(value: unknown): EnvironmentDeployHelperReach {
+  if (
+    !isRecord(value) ||
+    typeof value.composeServiceName !== 'string' ||
+    value.composeServiceName === '.' ||
+    value.composeServiceName === '..' ||
+    !CACHE_SERVICE_NAME_RE.test(value.composeServiceName) ||
+    !isValidPrincipalUsername(value.username)
+  ) {
+    throw new TypeError('Invalid helperReach entry')
+  }
+  const containerPort = parseCacheInt(value.containerPort, 'helperReach containerPort')
+  if (containerPort < 1 || containerPort > 65535) {
+    throw new TypeError('helperReach containerPort must be 1-65535')
+  }
+  return {
+    composeServiceName: value.composeServiceName,
+    containerPort,
+    hostPort: parseCachePort(value.hostPort, 'helperReach hostPort'),
+    username: value.username,
+  }
+}
+
+/** Absent stays absent (leave the list); empty stays empty (remove it). */
+function parseHelperReach(value: unknown): EnvironmentDeployHelperReach[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_HELPER_REACH_PER_DEPLOY) {
+    throw new TypeError(
+      `helperReach must be an array of at most ${MAX_HELPER_REACH_PER_DEPLOY} entries`
+    )
+  }
+  const reach = value.map(parseHelperReachEntry)
+  const names = new Set<string>()
+  const ports = new Set<number>()
+  for (const entry of reach) {
+    if (names.has(entry.composeServiceName) || ports.has(entry.hostPort)) {
+      throw new TypeError('helperReach names a container or port twice')
+    }
+    names.add(entry.composeServiceName)
+    ports.add(entry.hostPort)
+  }
+  return reach
+}
+
+function parseCacheRemovals(value: unknown): CacheApplyRemoval[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > MAX_CACHES_PER_ENVIRONMENT) {
+    throw new TypeError('removed must be an array of cache removals')
+  }
+  const seen = new Set<string>()
+  return value.map((entry) => {
+    if (
+      !isRecord(entry) ||
+      typeof entry.id !== 'string' ||
+      !CACHE_ID_RE.test(entry.id) ||
+      !isValidPrincipalUsername(entry.username) ||
+      typeof entry.deleteData !== 'boolean'
+    ) {
+      throw new TypeError('Invalid removed cache entry')
+    }
+    if (seen.has(entry.id)) throw new TypeError('removed names a cache twice')
+    seen.add(entry.id)
+    return { id: entry.id, username: entry.username, deleteData: entry.deleteData }
+  })
+}
+
+/** `cache.apply`. The `caches` set may be empty (the environment has none left); it is never absent. */
+export function parseCacheApplyPayload(value: unknown): CacheApplyCommandPayload {
+  if (!isRecord(value)) throw new TypeError('Invalid cache.apply payload')
+  const caches = parseDeployCaches(value.caches, 'caches')
+  if (caches === undefined) throw new TypeError('cache.apply caches must be an array')
+  if (typeof value.environmentId !== 'string' || value.environmentId.length === 0) {
+    throw new TypeError('Invalid cache.apply payload')
+  }
+  const removed = parseCacheRemovals(value.removed)
+  const listed = new Set(caches.map((cache) => cache.id))
+  if (removed?.some((entry) => listed.has(entry.id))) {
+    throw new TypeError('cache.apply removes a cache it also lists')
+  }
+  return {
+    environmentId: value.environmentId,
+    caches,
+    ...(removed === undefined ? {} : { removed }),
+  }
+}
+
+function parseCacheResultEntry(entry: unknown): CacheApplyResult | undefined {
+  if (
+    !isRecord(entry) ||
+    typeof entry.id !== 'string' ||
+    !CACHE_ID_RE.test(entry.id) ||
+    (entry.state !== 'ready' && entry.state !== 'failed' && entry.state !== 'pending')
+  ) {
+    return undefined
+  }
+  return {
+    id: entry.id,
+    state: entry.state,
+    ...(typeof entry.error === 'string' ? { error: entry.error.slice(0, 500) } : {}),
+    ...(typeof entry.runtimeVersion === 'string'
+      ? { runtimeVersion: entry.runtimeVersion.slice(0, 32) }
+      : {}),
+  }
+}
+
+/** Lenient, like the rest of the deploy result: a malformed entry is dropped. */
+function parseCacheResults(value: unknown): CacheApplyResult[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: CacheApplyResult[] = []
+  for (const entry of value.slice(0, MAX_CACHES_PER_ENVIRONMENT)) {
+    const parsed = parseCacheResultEntry(entry)
+    if (parsed) out.push(parsed)
+  }
+  return out.length > 0 ? out : undefined
+}
+
+/** The result of `cache.apply`, as the control plane reads it. */
+export function parseCacheApplyResult(value: unknown): CacheApplyCommandResult {
+  if (!isRecord(value) || !Array.isArray(value.caches)) {
+    throw new TypeError('Invalid cache.apply result')
+  }
+  return { caches: parseCacheResults(value.caches) ?? [] }
+}
+
 export function parseCommandPayload(
   type: CommandType,
   value: unknown
@@ -8863,6 +9757,9 @@ export function parseCommandPayload(
   | BackupsReconcileCommandPayload
   | BackupTargetTestCommandPayload
   | FoldersRemoveCommandPayload
+  | TunnelRoutesCommandPayload
+  | TunnelConnectorsCommandPayload
+  | TunnelStatusCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -8877,7 +9774,11 @@ export function parseCommandPayload(
   | ManagedHaFailoverCommandPayload
   | StorageBackupCommandPayload
   | StorageRestoreCommandPayload
-  | SystemReconcileCommandPayload {
+  | SystemReconcileCommandPayload
+  | CacheApplyCommandPayload {
+  // Held outside the switch, which is at its size limit.
+  if (type === 'server.tunnel.status') return parseTunnelStatusPayload(value)
+  if (type === 'cache.apply') return parseCacheApplyPayload(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingPayload(value)
@@ -8905,6 +9806,10 @@ export function parseCommandPayload(
       return parseBackupTargetTestPayload(value)
     case 'server.folders.remove':
       return parseFoldersRemovePayload(value)
+    case 'server.tunnel.routes':
+      return parseTunnelRoutesPayload(value)
+    case 'server.tunnel.connectors':
+      return parseTunnelConnectorsPayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -8955,6 +9860,9 @@ export function parseCommandResult(
   | BackupsReconcileCommandResult
   | BackupTargetTestCommandResult
   | FoldersRemoveCommandResult
+  | TunnelRoutesCommandResult
+  | TunnelConnectorsCommandResult
+  | TunnelStatusCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -8969,7 +9877,10 @@ export function parseCommandResult(
   | ManagedHaFailoverCommandResult
   | StorageBackupCommandResult
   | StorageRestoreCommandResult
-  | SystemReconcileCommandResult {
+  | SystemReconcileCommandResult
+  | CacheApplyCommandResult {
+  if (type === 'server.tunnel.status') return parseTunnelStatusResult(value)
+  if (type === 'cache.apply') return parseCacheApplyResult(value)
   switch (type) {
     case 'daemon.ping':
       return parsePingResult(value)
@@ -8997,6 +9908,10 @@ export function parseCommandResult(
       return parseBackupTargetTestResult(value)
     case 'server.folders.remove':
       return parseFoldersRemoveResult(value)
+    case 'server.tunnel.routes':
+      return parseTunnelRoutesResult(value)
+    case 'server.tunnel.connectors':
+      return parseTunnelConnectorsResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':

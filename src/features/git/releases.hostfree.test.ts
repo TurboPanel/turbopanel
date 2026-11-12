@@ -3,9 +3,10 @@ import { describe, it } from '@std/testing/bdd'
 import {
   aggregateReleaseStatus,
   applyResolvedCommitSha,
+  deployBuiltNothing,
   isReleaseMaterializedEverywhere,
   markLiveReleases,
-  railpackIdentitiesFromResult,
+  imageIdentitiesFromResult,
   resolvedCommitShasFromResult,
   releaseServerIds,
   type ServiceReleaseAttempt,
@@ -13,19 +14,38 @@ import {
 } from './releases.ts'
 
 /**
- * Railpack identity is read off the daemon's deploy result rather than the
+ * Image identity is read off the daemon's deploy result rather than the
  * enqueue-time `context.releases[]`, because at enqueue time no image exists.
  * These cover the extraction rules that keep a bad result from costing a
  * rollback target.
  */
-describe('railpackIdentitiesFromResult', () => {
-  it('keys a Railpack release by service and release id', () => {
-    const identities = railpackIdentitiesFromResult({
+describe('imageIdentitiesFromResult', () => {
+  it('keys an image-built release by service and release id', () => {
+    const identities = imageIdentitiesFromResult({
       releases: [
         {
           composeServiceName: 'web',
           releaseId: 'rel-42',
           commitSha: 'abc',
+          imageTag: 'turbopanel-app/web:rel-42',
+          builderFrontendVersion: '0.9.0',
+          builderPlanVersion: '1',
+        },
+      ],
+    })
+    assertEquals(identities.get('web rel-42'), {
+      imageTag: 'turbopanel-app/web:rel-42',
+      builderFrontendVersion: '0.9.0',
+      builderPlanVersion: '1',
+    })
+  })
+
+  it('reads the old passthrough field names from a daemon that has not moved yet', () => {
+    const identities = imageIdentitiesFromResult({
+      releases: [
+        {
+          composeServiceName: 'web',
+          releaseId: 'rel-42',
           imageTag: 'turbopanel-app/web:rel-42',
           railpackFrontendVersion: '0.9.0',
           railpackPlanVersion: '1',
@@ -34,13 +54,27 @@ describe('railpackIdentitiesFromResult', () => {
     })
     assertEquals(identities.get('web rel-42'), {
       imageTag: 'turbopanel-app/web:rel-42',
-      railpackFrontendVersion: '0.9.0',
-      railpackPlanVersion: '1',
+      builderFrontendVersion: '0.9.0',
+      builderPlanVersion: '1',
     })
   })
 
+  it('prefers the new field name when both spellings are present', () => {
+    const identities = imageIdentitiesFromResult({
+      releases: [
+        {
+          composeServiceName: 'web',
+          releaseId: 'rel-1',
+          builderFrontendVersion: 'new',
+          railpackFrontendVersion: 'old',
+        },
+      ],
+    })
+    assertEquals(identities.get('web rel-1'), { builderFrontendVersion: 'new' })
+  })
+
   it('omits a native release, which has no image identity at all', () => {
-    const identities = railpackIdentitiesFromResult({
+    const identities = imageIdentitiesFromResult({
       releases: [{ composeServiceName: 'web', releaseId: 'rel-42', commitSha: 'abc' }],
     })
     assertEquals(identities.size, 0)
@@ -49,7 +83,7 @@ describe('railpackIdentitiesFromResult', () => {
   it('skips a malformed entry without dropping its well-formed peers', () => {
     // Unlike `normalizeContextReleases`, a bad entry here costs a caption, not
     // a rollback target — so the rest of the map must survive it.
-    const identities = railpackIdentitiesFromResult({
+    const identities = imageIdentitiesFromResult({
       releases: [
         null,
         { composeServiceName: 'web', imageTag: 'turbopanel-app/web:rel-1' },
@@ -64,22 +98,22 @@ describe('railpackIdentitiesFromResult', () => {
   })
 
   it('reads an empty map from a result that carries no releases', () => {
-    assertEquals(railpackIdentitiesFromResult(null).size, 0)
-    assertEquals(railpackIdentitiesFromResult({ releases: 'nope' }).size, 0)
-    assertEquals(railpackIdentitiesFromResult({}).size, 0)
+    assertEquals(imageIdentitiesFromResult(null).size, 0)
+    assertEquals(imageIdentitiesFromResult({ releases: 'nope' }).size, 0)
+    assertEquals(imageIdentitiesFromResult({}).size, 0)
   })
 
-  it('keeps a release that only reported one Railpack field', () => {
-    const identities = railpackIdentitiesFromResult({
+  it('keeps a release that only reported one image field', () => {
+    const identities = imageIdentitiesFromResult({
       releases: [
         { composeServiceName: 'web', releaseId: 'rel-1', imageTag: 'web:1' },
-        { composeServiceName: 'api', releaseId: 'rel-2', railpackFrontendVersion: '0.9.0' },
-        { composeServiceName: 'worker', releaseId: 'rel-3', railpackPlanVersion: '2' },
+        { composeServiceName: 'api', releaseId: 'rel-2', builderFrontendVersion: '0.9.0' },
+        { composeServiceName: 'worker', releaseId: 'rel-3', builderPlanVersion: '2' },
       ],
     })
     assertEquals(identities.get('web rel-1'), { imageTag: 'web:1' })
-    assertEquals(identities.get('api rel-2'), { railpackFrontendVersion: '0.9.0' })
-    assertEquals(identities.get('worker rel-3'), { railpackPlanVersion: '2' })
+    assertEquals(identities.get('api rel-2'), { builderFrontendVersion: '0.9.0' })
+    assertEquals(identities.get('worker rel-3'), { builderPlanVersion: '2' })
   })
 })
 
@@ -211,5 +245,14 @@ describe('applyResolvedCommitSha', () => {
     const release = record('main')
     applyResolvedCommitSha(release, undefined)
     assertEquals(release.commitSha, 'main')
+  })
+})
+
+describe('deployBuiltNothing', () => {
+  it('is true only when the host said it found nothing to change', () => {
+    assertEquals(deployBuiltNothing({ projectName: 'p', unchanged: true }), true)
+    assertEquals(deployBuiltNothing({ projectName: 'p', unchanged: 'yes' }), false)
+    assertEquals(deployBuiltNothing({ projectName: 'p', releases: [] }), false)
+    assertEquals(deployBuiltNothing(null), false)
   })
 })

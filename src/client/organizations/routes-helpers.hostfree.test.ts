@@ -5,6 +5,8 @@
 import { assertEquals } from '@std/assert'
 import {
   applyManagedDefaultsPatch,
+  applyTlsSettingsPatch,
+  type TlsSettingsState,
   composeGatedFieldsGetResponse,
   composeGatedFieldsPutResponse,
   defaultEnvironmentGetResponse,
@@ -22,9 +24,14 @@ import {
   parseHostDefaultsPatch,
   parseManagedDefaultsPatch,
   parseOrganizationCreateDisplayName,
+  organizationPatchAudits,
+  parseOrganizationPatch,
   parseOrganizationPatchDisplayName,
+  parseProjectSettingsPatch,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
+  projectSettingsGetResponse,
+  projectSettingsPutResponse,
   temperatureUnitGetResponse,
   temperatureUnitPutResponse,
   toOrganizationRecord,
@@ -115,12 +122,14 @@ test('managed defaults responses separate configured from effective', () => {
     effectiveSslMode: 'require',
     ports: { postgres: null, mysqlFamily: null },
     effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
+    allowAllDatabasesLogins: true,
   })
   assertEquals(managedDefaultsGetResponse({ sslMode: 'prefer' }), {
     sslMode: 'prefer',
     effectiveSslMode: 'prefer',
     ports: { postgres: null, mysqlFamily: null },
     effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
+    allowAllDatabasesLogins: true,
   })
   // One overridden family must not drag the other off its platform listener.
   assertEquals(managedDefaultsGetResponse({ ports: { postgres: 18432 } }), {
@@ -128,6 +137,7 @@ test('managed defaults responses separate configured from effective', () => {
     effectiveSslMode: 'require',
     ports: { postgres: 18432, mysqlFamily: null },
     effectivePorts: { postgres: 18432, mysqlFamily: 13306 },
+    allowAllDatabasesLogins: true,
   })
   assertEquals(managedDefaultsPutResponse({ sslMode: 'disable' }), {
     ok: true,
@@ -135,6 +145,7 @@ test('managed defaults responses separate configured from effective', () => {
     effectiveSslMode: 'disable',
     ports: { postgres: null, mysqlFamily: null },
     effectivePorts: { postgres: 15432, mysqlFamily: 13306 },
+    allowAllDatabasesLogins: true,
   })
 })
 
@@ -268,6 +279,7 @@ test('hostDefaultsGetResponse and PutResponse expose configured org values', () 
     sshPort: null,
     ntp: null,
     hideWebServerNames: true,
+    sendViaHeader: false,
     defaultFabricEnabled: false,
   })
   assertEquals(
@@ -281,10 +293,12 @@ test('hostDefaultsGetResponse and PutResponse expose configured org values', () 
       sshPort: 2222,
       ntp: { enabled: true },
       hideWebServerNames: true,
+      sendViaHeader: false,
       defaultFabricEnabled: true,
     }
   )
   assertEquals(hostDefaultsGetResponse({ hideWebServerNames: false }).hideWebServerNames, false)
+  assertEquals(hostDefaultsGetResponse({ sendViaHeader: true }).sendViaHeader, true)
 })
 
 test('parseHostDefaultsPatch takes hideWebServerNames as a boolean or null', () => {
@@ -299,6 +313,23 @@ test('parseHostDefaultsPatch takes hideWebServerNames as a boolean or null', () 
   const cleared = parseHostDefaultsPatch({ hideWebServerNames: null })
   if (!cleared.ok) throw new TypeError('expected hideWebServerNames clear')
   assertEquals(cleared.patch.hideWebServerNames, null)
+})
+
+test('parseHostDefaultsPatch takes sendViaHeader as a boolean or null', () => {
+  assertEquals(parseHostDefaultsPatch({ sendViaHeader: 'yes' }), {
+    ok: false,
+    error: 'Invalid sendViaHeader',
+    status: 400,
+  })
+  const on = parseHostDefaultsPatch({ sendViaHeader: true })
+  if (!on.ok) throw new TypeError('expected sendViaHeader patch')
+  assertEquals(on.patch, { sendViaHeader: true })
+  const off = parseHostDefaultsPatch({ sendViaHeader: false })
+  if (!off.ok) throw new TypeError('expected sendViaHeader patch')
+  assertEquals(off.patch.sendViaHeader, false)
+  const cleared = parseHostDefaultsPatch({ sendViaHeader: null })
+  if (!cleared.ok) throw new TypeError('expected sendViaHeader clear')
+  assertEquals(cleared.patch.sendViaHeader, null)
 })
 
 test('parseDefaultTimezonePatch rejects empty and invalid patches', () => {
@@ -343,6 +374,42 @@ test('parseTemperatureUnitPatch requires the field and validates the value', () 
   assertEquals(parseTemperatureUnitPatch({ temperatureUnit: 'fahrenheit' }), {
     ok: true,
     patch: { temperatureUnit: 'fahrenheit' },
+  })
+})
+
+test('project settings patch takes one switch or both, each a boolean', () => {
+  assertEquals(parseProjectSettingsPatch({ openWorkspaceSectionByDefault: true }), {
+    ok: true,
+    patch: { openWorkspaceSectionByDefault: true },
+  })
+  assertEquals(
+    parseProjectSettingsPatch({
+      openEnvironmentSectionByDefault: false,
+      openWorkspaceSectionByDefault: true,
+      other: 1,
+    }),
+    {
+      ok: true,
+      patch: { openEnvironmentSectionByDefault: false, openWorkspaceSectionByDefault: true },
+    }
+  )
+  assertEquals(parseProjectSettingsPatch({ openWorkspaceSectionByDefault: null }), {
+    ok: false,
+    error: 'Invalid openWorkspaceSectionByDefault',
+    status: 400,
+  })
+  assertEquals(parseProjectSettingsPatch({}).ok, false)
+})
+
+test('project settings response shapers default both switches to off', () => {
+  assertEquals(projectSettingsGetResponse({}), {
+    openEnvironmentSectionByDefault: false,
+    openWorkspaceSectionByDefault: false,
+  })
+  assertEquals(projectSettingsPutResponse({ openEnvironmentSectionByDefault: true }), {
+    ok: true,
+    openEnvironmentSectionByDefault: true,
+    openWorkspaceSectionByDefault: false,
   })
 })
 
@@ -455,18 +522,71 @@ test('parseOrganizationPatchDisplayName requires a valid display name', () => {
   assertEquals(folded.name, "McDonald's")
 })
 
-test('toOrganizationRecord maps DB name to name', () => {
+test('toOrganizationRecord maps DB name, icon and the emoji setting', () => {
   assertEquals(
     toOrganizationRecord({
       id: '11111111-1111-1111-1111-111111111111',
       name: 'Acme',
       createdAt: '2026-01-01T00:00:00.000Z',
+      icon: '🚀',
+      isEmojiIconAllowed: false,
     }),
     {
       id: '11111111-1111-1111-1111-111111111111',
       name: 'Acme',
       createdAt: '2026-01-01T00:00:00.000Z',
+      icon: '🚀',
+      isEmojiIconAllowed: false,
     }
+  )
+})
+
+test('parseOrganizationPatch takes a name, an icon and the emoji setting, at least one', () => {
+  assertEquals(parseOrganizationPatch({}).ok, false)
+  assertEquals(parseOrganizationPatch({ name: '' }).ok, false)
+  assertEquals(parseOrganizationPatch({ name: 'Acme' }), {
+    ok: true,
+    patch: { name: 'Acme', iconIsEmoji: false },
+  })
+  assertEquals(parseOrganizationPatch({ icon: 'rocket' }), {
+    ok: true,
+    patch: { icon: 'rocket', iconIsEmoji: false },
+  })
+  assertEquals(parseOrganizationPatch({ icon: '👩‍💻' }), {
+    ok: true,
+    patch: { icon: '👩‍💻', iconIsEmoji: true },
+  })
+  assertEquals(parseOrganizationPatch({ icon: null }), {
+    ok: true,
+    patch: { icon: null, iconIsEmoji: false },
+  })
+  assertEquals(parseOrganizationPatch({ isEmojiIconAllowed: false }), {
+    ok: true,
+    patch: { isEmojiIconAllowed: false, iconIsEmoji: false },
+  })
+  assertEquals(parseOrganizationPatch({ icon: 'unicorn' }).ok, false)
+  assertEquals(parseOrganizationPatch({ icon: '🚀🚀' }).ok, false)
+  assertEquals(parseOrganizationPatch({ icon: '1️⃣' }).ok, false)
+  assertEquals(parseOrganizationPatch({ isEmojiIconAllowed: 'no' }).ok, false)
+  assertEquals(parseOrganizationPatch({ name: 'Acme', icon: 7 }).ok, false)
+})
+
+test('organizationPatchAudits records only the icon and emoji settings that changed', () => {
+  const before = { icon: 'rocket', isEmojiIconAllowed: true }
+  assertEquals(organizationPatchAudits({ name: 'Acme', iconIsEmoji: false }, before), [])
+  assertEquals(
+    organizationPatchAudits(
+      { icon: 'rocket', isEmojiIconAllowed: true, iconIsEmoji: false },
+      before
+    ),
+    []
+  )
+  assertEquals(
+    organizationPatchAudits({ icon: '🚀', isEmojiIconAllowed: false, iconIsEmoji: true }, before),
+    [
+      { action: 'organization.icon.set', context: { icon: '🚀', previousIcon: 'rocket' } },
+      { action: 'organization.emoji_icons.set', context: { isEmojiIconAllowed: false } },
+    ]
   )
 })
 
@@ -538,4 +658,94 @@ test('parseComposeDefaultResourceLimitsPatch takes positive figures, or null to 
   ]) {
     assertEquals(parseComposeDefaultResourceLimitsPatch(bad).ok, false, JSON.stringify(bad))
   }
+})
+
+test("applyTlsSettingsPatch needs a contact and the current agreement for Let's Encrypt to be on", () => {
+  const now = '2026-11-03T18:00:00.000Z'
+  const terms = 'https://letsencrypt.org/documents/LE-SA-v1.5.pdf'
+  const newer = 'https://letsencrypt.org/documents/LE-SA-v1.6.pdf'
+  const off: TlsSettingsState = {
+    acmeEnabled: false,
+    acmeContactEmail: null,
+    acmeTermsAcceptedAt: null,
+    acmeTermsUrl: null,
+  }
+  const code = (
+    patch: Parameters<typeof applyTlsSettingsPatch>[1],
+    before: TlsSettingsState = off,
+    current: string | null = terms
+  ) => {
+    const result = applyTlsSettingsPatch(before, patch, now, current)
+    return result.ok ? null : `${result.refusal.status} ${result.refusal.code}`
+  }
+  const accept = { acmeTermsAccepted: true as const, acmeTermsUrl: terms }
+
+  assertEquals(code({ acmeEnabled: true, ...accept }), '400 acme_contact_email_required')
+  assertEquals(
+    code({ acmeEnabled: true, acmeContactEmail: 'ops@example.com' }),
+    '400 acme_terms_not_accepted'
+  )
+  // The agreement shown must be the current one, and readable.
+  assertEquals(code({ ...accept, acmeTermsUrl: newer }), '409 acme_terms_changed')
+  assertEquals(code(accept, off, null), '503 acme_terms_unavailable')
+  assertEquals(
+    applyTlsSettingsPatch(
+      off,
+      { acmeEnabled: true, acmeContactEmail: 'ops@example.com', ...accept },
+      now,
+      terms
+    ),
+    {
+      ok: true,
+      next: {
+        acmeEnabled: true,
+        acmeContactEmail: 'ops@example.com',
+        acmeTermsAcceptedAt: now,
+        acmeTermsUrl: terms,
+      },
+    }
+  )
+
+  const on: TlsSettingsState = {
+    acmeEnabled: true,
+    acmeContactEmail: 'ops@example.com',
+    acmeTermsAcceptedAt: '2026-11-01T00:00:00.000Z',
+    acmeTermsUrl: terms,
+  }
+  // Removing the contact while on is refused; turning off keeps the rest.
+  assertEquals(code({ acmeContactEmail: null }, on), '400 acme_contact_email_required')
+  assertEquals(applyTlsSettingsPatch(on, { acmeEnabled: false }, now, terms), {
+    ok: true,
+    next: { ...on, acmeEnabled: false },
+  })
+  // Newer terms: turning back on asks again; accepting the new ones records them.
+  const offOld = { ...on, acmeEnabled: false }
+  assertEquals(code({ acmeEnabled: true }, offOld, newer), '400 acme_terms_not_accepted')
+  assertEquals(code({ acmeEnabled: true }, offOld, null), '503 acme_terms_unavailable')
+  assertEquals(
+    applyTlsSettingsPatch(
+      offOld,
+      { acmeEnabled: true, acmeTermsAccepted: true, acmeTermsUrl: newer },
+      now,
+      newer
+    ),
+    { ok: true, next: { ...on, acmeTermsAcceptedAt: now, acmeTermsUrl: newer } }
+  )
+  // Staying on with older terms is allowed (the screen asks again).
+  assertEquals(code({ acmeContactEmail: 'new@example.com' }, on, newer), null)
+
+  // An organization already on before this step, with neither, can save a contact.
+  const legacy: TlsSettingsState = { ...off, acmeEnabled: true }
+  assertEquals(code({ acmeContactEmail: 'ops@example.com' }, legacy), null)
+  assertEquals(code({ acmeEnabled: true }, legacy), null)
+  // Turning on while clearing an existing contact is refused.
+  assertEquals(
+    code(
+      { acmeEnabled: true, acmeContactEmail: null, ...accept },
+      { ...off, acmeContactEmail: 'a@example.com' }
+    ),
+    '400 acme_contact_email_required'
+  )
+  // Off with nothing stored is always allowed, even when the terms cannot be read.
+  assertEquals(code({ acmeContactEmail: null }, off, null), null)
 })

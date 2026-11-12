@@ -9,6 +9,7 @@ import {
 } from '../../features/deploy/deploy-engine.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
@@ -41,6 +42,9 @@ import type {
   EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployServiceHook,
+  EnvironmentDeployCache,
+  EnvironmentDeployConfigFile,
+  EnvironmentDeployHelperReach,
   EnvironmentDeploySecretPlanEntry,
   EnvironmentDeploySource,
   EnvironmentDeployServiceFolder,
@@ -49,12 +53,14 @@ import type {
   EnvironmentDeploySite,
   EnvironmentDeployVariableMaterial,
   EnvironmentLifecycleAction,
+  StopVolumeRemoval,
 } from '../../contracts/commands/schemas.ts'
 import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
   buildNativeAppServicesForDeploy,
   previewCommitSha,
+  previewConfigFiles,
   previewNativeAppVariables,
   buildSitesForDeploy,
   composeProjectName,
@@ -121,7 +127,9 @@ import {
 import {
   composeNetworkNamesByServer,
   type FabricSegmentMaterial,
+  FabricServerSwitchedOffError,
   getOrganizationFabric,
+  isFabricPaused,
   listEnvironmentComposeNetworks,
   listSubnetsForServers,
   materializeSpanningNetworks,
@@ -142,6 +150,11 @@ import {
   type PlannedDeploy,
 } from '../../features/schedule/index.ts'
 import { servicesMapping } from '../../features/schedule/plan-deploy.ts'
+import {
+  hostAccessAuditEntry,
+  hostAccessUseTrigger,
+} from '../../features/schedule/host-access-audit.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import { serverHasHostRunBinding } from '../../features/managed/ingress-bound-consumers.ts'
 import {
@@ -153,9 +166,12 @@ import type { ManagedIngressPorts } from '../../features/managed/ingress-ports.t
 import { ensureManagedIngressHierarchy } from '../../features/system/hierarchy.ts'
 import {
   composeServiceNetworkKeys,
+  participatingServerIdsForNetwork,
   type PlatformAttachment,
 } from '../../features/fabric/spanning.ts'
+import { findDeployLanPairRefusal } from '../../features/fabric/lan-pair-guard.ts'
 import { environment, project, server } from '../../db/schema.ts'
+import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import { principalHomeDir } from '../../lib/naming.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -170,6 +186,12 @@ import {
   parseJsonBody,
 } from '../shared.ts'
 import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
+import {
+  type DestroyDataPlan,
+  parseDestroyRequest,
+  planDestroyData,
+  registerEnvironmentDataVolumeRoutes,
+} from './destroy-data.ts'
 
 type DeployHostingPayload = EnvironmentDeployHosting
 
@@ -233,11 +255,22 @@ async function loadSpanningNetworks(
     attachments: [],
     consumers: [],
   }
-  if (!planned.plan.ok || !planned.fabricEnabled) {
-    return empty
-  }
+  if (!planned.plan.ok) return empty
   const fabricRow = await getOrganizationFabric(db, organizationId)
-  if (!fabricRow) return empty
+  if (!planned.fabricEnabled || !fabricRow || isFabricPaused(fabricRow)) {
+    // TurboFabric off or paused: only authored networks whose servers all
+    // share a trusted LAN can span (the planner refused the rest); managed
+    // database attachments keep their non-spanning path.
+    const spanning = await materializeSpanningNetworks(db, {
+      organizationId,
+      environmentId,
+      fabric: null,
+      document: planned.merged,
+      slots: planned.plan.slots,
+      serviceRows: planned.serviceRows,
+    })
+    return { ...empty, spanning }
+  }
   const { attachments, consumers } = await loadManagedIngressPlatformAttachments(db, {
     environmentId,
     document: planned.merged,
@@ -548,6 +581,8 @@ type DeployCommandCreateParams = DeployActor & {
   hostingIngressNetwork?: string
   /** Effective web server name hiding for the server; sent to the daemon as is. */
   hideWebServerNames?: boolean
+  /** Effective Via header for the server; set only for a daemon that takes it. */
+  sendViaHeader?: boolean
   tlsMaterial: EnvironmentDeployTlsMaterial[]
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
@@ -562,6 +597,8 @@ type DeployCommandCreateParams = DeployActor & {
   envFile?: string
   /** File-only secret mounts the daemon materializes from `variableMaterial`. */
   secretPlan?: EnvironmentDeploySecretPlanEntry[]
+  /** Generated config files (parts only) the daemon puts together from `variableMaterial`. */
+  configFiles?: EnvironmentDeployConfigFile[]
   serviceHooks: EnvironmentDeployServiceHook[]
   dockerExternalNetworks: string[]
   dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
@@ -581,6 +618,10 @@ type DeployCommandCreateParams = DeployActor & {
   desiredHash: string
   replicaCounts: Record<string, number>
   listenerPorts: ManagedIngressPorts
+  /** Project caches for this server (absent leaves the host alone; empty clears it). */
+  caches?: EnvironmentDeployCache[]
+  /** Helper container ports to open (absent leaves the host alone; empty clears it). */
+  helperReach?: EnvironmentDeployHelperReach[]
   selection: DeploySourceSelection
   /** Folder rows this deploy planned on the server, flipped to present when it succeeds. */
   folderIds?: readonly string[]
@@ -751,6 +792,7 @@ async function createDeployCommand(
         hostingIngress: params.hostingIngress,
         hostingIngressNetwork: params.hostingIngressNetwork,
         hideWebServerNames: params.hideWebServerNames,
+        sendViaHeader: params.sendViaHeader,
         tlsMaterial: params.tlsMaterial,
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
@@ -759,6 +801,7 @@ async function createDeployCommand(
         principalMaterial: params.principalMaterial,
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,
+        configFiles: params.configFiles,
         serviceHooks: params.serviceHooks,
         dockerExternalNetworks: params.dockerExternalNetworks,
         dockerNetworkAddressing: params.dockerNetworkAddressing,
@@ -772,6 +815,9 @@ async function createDeployCommand(
         ...params.engine.payload,
       }),
       listenerPorts: params.listenerPorts,
+      // Outside `presentFields`: an empty list is a real answer (the host clears its set).
+      ...(params.caches === undefined ? {} : { caches: params.caches }),
+      ...(params.helperReach === undefined ? {} : { helperReach: params.helperReach }),
     },
     // Durable, non-secret read model for deploy history *and* for the release
     // list. `dispatch.payload` is deleted once the command reaches a terminal
@@ -883,7 +929,11 @@ function createParamsForPreparedServer(
   // and native `node` apps are both reverse-proxied on 127.0.0.1, so allocating
   // them separately could hand the same port to a site and an app. It starts
   // from the ports other environments hold on this server.
-  const usedListenPorts = new Set<number>(params.reservedListenPorts)
+  const usedListenPorts = new Set<number>([
+    ...(params.reservedListenPorts ?? []),
+    // Helper ports were picked in prepare; sites and apps must not take them.
+    ...(row.prepared.helperReach ?? []).map((entry) => entry.hostPort),
+  ])
   const serviceFolders = serviceFoldersFor(params.plannedFolders)
   return {
     serverId: row.serverId,
@@ -918,6 +968,9 @@ function createParamsForPreparedServer(
     ...(row.prepared.hideWebServerNames === undefined
       ? {}
       : { hideWebServerNames: row.prepared.hideWebServerNames }),
+    ...(row.prepared.sendViaHeader === undefined
+      ? {}
+      : { sendViaHeader: row.prepared.sendViaHeader }),
     tlsMaterial: row.prepared.tlsMaterial,
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: withVolumeFolders(row.prepared.storageMaterial, params.plannedFolders),
@@ -931,6 +984,7 @@ function createParamsForPreparedServer(
     principalMaterial: row.prepared.principalMaterial,
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,
+    configFiles: row.prepared.configFiles,
     serviceHooks: row.prepared.hooks,
     dockerExternalNetworks: row.prepared.dockerExternalNetworks,
     dockerNetworkAddressing: row.prepared.dockerNetworkAddressing,
@@ -948,6 +1002,13 @@ function createParamsForPreparedServer(
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
     listenerPorts: row.prepared.listenerPorts,
+    // A hostings-only run leaves the host's caches and helper ports alone.
+    ...(params.hostingsOnly || row.prepared.caches === undefined
+      ? {}
+      : { caches: row.prepared.caches }),
+    ...(params.hostingsOnly || row.prepared.helperReach === undefined
+      ? {}
+      : { helperReach: row.prepared.helperReach }),
     // A hostings-only run creates no folders, so it marks none present.
     ...(params.plannedFolders.folderIds.length > 0 && !params.hostingsOnly
       ? { folderIds: params.plannedFolders.folderIds }
@@ -970,6 +1031,7 @@ function deployListenPorts(params: DeployCommandCreateParams): number[] {
   return [
     ...(params.sites ?? []).map((site) => site.listenPort),
     ...(params.nativeAppServices ?? []).map((app) => app.listenPort),
+    ...(params.helperReach ?? []).map((entry) => entry.hostPort),
   ]
 }
 
@@ -1010,10 +1072,18 @@ function deploymentTargetsForFanOut(params: {
         lastCommandId: commandByServer.get(serverId) ?? null,
         options: {
           secretPlan: prepared?.secretPlan ?? [],
+          // Secrets the generated config files read, so a reboot can ask for
+          // their values (no values here, only key names).
+          ...(prepared?.configSecretRefs === undefined
+            ? {}
+            : { configSecretRefs: prepared.configSecretRefs }),
           siteReleases: params.siteReleases,
           // The PHP mode each site was given, so the next deploy keeps it.
           phpModes: recordSitePhpModes(prepared?.sites),
           listenPorts: params.listenPortsByServer.get(serverId) ?? [],
+          // Helper ports and each service's caches, so a redeploy keeps the port and a reboot can rehydrate secrets.
+          ...(prepared?.helperPorts ? { helperPorts: prepared.helperPorts } : {}),
+          ...(prepared?.cacheConsumers ? { cacheConsumers: prepared.cacheConsumers } : {}),
           // What this server was last sent, so a later deploy of another environment
           // can tell a name this one served and no longer holds.
           servedHostnames: prepared ? servedNamesOf(httpHostingNames(prepared)) : [],
@@ -1581,6 +1651,9 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       ],
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
+      ...presentFields({
+        configFiles: preparedByServer.flatMap((row) => previewConfigFiles(row.prepared)),
+      }),
       nativeAppVariables: preparedByServer.flatMap((row) =>
         previewNativeAppVariables(row.prepared, reservedPorts.get(row.serverId), environmentId)
       ),
@@ -1650,14 +1723,16 @@ type DeploySpanningContext = {
  * the grant model, rather than inferred from the route: every session route
  * that reaches a deploy already requires `organization:manage`, and this check
  * is what keeps a future, lower deploy grant from inheriting host-level access
- * with it. The webhook has no person behind it and is judged on a recorded
- * approval instead (see `HostAccessActor`).
+ * with it. An automated deploy (a push, or one the control plane starts) has no
+ * person behind it and is judged on a recorded approval instead (see
+ * `HostAccessActor`).
  */
 async function resolveHostAccessActor(
   db: Db,
   actor: DeployActor,
   organizationId: string,
-  recordApproval: boolean
+  recordApproval: boolean,
+  email: string | null = null
 ): Promise<HostAccessActor> {
   if (actor.actorType === 'system') return { kind: 'automated' }
   const isManager = await can(
@@ -1668,8 +1743,41 @@ async function resolveHostAccessActor(
     organizationId
   )
   return isManager
-    ? { kind: 'manager', userId: actor.actorId, recordApproval }
+    ? { kind: 'manager', userId: actor.actorId, email, recordApproval }
     : { kind: 'not_manager' }
+}
+
+/**
+ * The history row for an automated deploy that runs host-level content under a
+ * recorded approval (`PlannedDeploy.hostAccessUse`). Called once the deploy's
+ * rows are persisted; the approval it names is the one the planner matched, and
+ * the row says what started the deploy (a push, or the control plane itself).
+ *
+ * A hostings-only run writes nothing: the host rewrites the web server config
+ * and certificates and never brings Compose up, so no host-level field is
+ * applied under the approval and there is no use to record.
+ */
+export async function recordHostAccessUse(
+  db: Db,
+  planned: Pick<PlannedDeploy, 'hostAccessUse' | 'projectId'>,
+  auth: Pick<DeployRequestAuth, 'organizationId' | 'actorId' | 'selection' | 'hostingsOnly'>,
+  environmentId: string,
+  record: typeof recordAudit = recordAudit
+): Promise<void> {
+  if (!planned.hostAccessUse || auth.hostingsOnly === true) return
+  await record(
+    db,
+    hostAccessAuditEntry(
+      planned.hostAccessUse,
+      { organizationId: auth.organizationId, environmentId, projectId: planned.projectId },
+      {
+        userId: null,
+        email: null,
+        automatedActorId: auth.actorId,
+        trigger: hostAccessUseTrigger(auth.selection),
+      }
+    )
+  )
 }
 
 async function resolveSuccessfulPlan(
@@ -1732,6 +1840,77 @@ export function deployParticipation(params: {
   return { attachmentServers, participating, drainedIds }
 }
 
+async function serversSwitchedOn(db: Db, serverIds: readonly string[]): Promise<string[]> {
+  if (serverIds.length === 0) return []
+  const rows = await db
+    .select({ id: server.id, isFabricEnabled: server.isFabricEnabled })
+    .from(server)
+    .where(inArray(server.id, [...serverIds]))
+  const off = new Set(rows.filter((row) => row.isFabricEnabled === false).map((row) => row.id))
+  return serverIds.filter((id) => !off.has(id))
+}
+
+/**
+ * Give LAN routes to the servers a running mesh does not reach: every server
+ * on a cross-server network when TurboFabric is off or paused, or the ones
+ * switched out of it. No wait: the deploy creates the bridges itself
+ * (`fabricNetworks` on `environment.deploy`); the routes follow on their own.
+ */
+async function deliverOutsideMeshNetworking(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    spanning: ReadonlyMap<string, string>
+    auth: DeployRequestAuth
+    dataEncryptionSecrets: DerivedSecretsConfig
+  }
+): Promise<void> {
+  if (params.spanning.size === 0) return
+  const secretsConfig = c.get('secretsConfig')
+  await reconcileServerNetworking({
+    db,
+    commandQueue,
+    actor: { type: params.auth.actorType, id: params.auth.actorId },
+    organizationId: params.auth.organizationId,
+    secrets: {
+      ...(secretsConfig ? { secretsConfig } : {}),
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    },
+    meshAlreadyConverging: true,
+  })
+}
+
+/**
+ * Re-check the pair rule after planning and materializing, before anything is
+ * delivered: a pair that stopped being a trusted LAN pair since planning is
+ * refused (422 `turbofabric_required`) unless TurboFabric carries it.
+ */
+async function recheckLanPairsBeforeDelivery(
+  c: Context<AppEnv>,
+  db: Db,
+  planned: SuccessfulPlannedDeploy,
+  spanningCtx: DeploySpanningContext,
+  auth: DeployRequestAuth
+): Promise<Response | null> {
+  if (spanningCtx.spanning.size === 0) return null
+  const refusal = await findDeployLanPairRefusal(db, {
+    organizationId: auth.organizationId,
+    networks: [...spanningCtx.spanning.keys()].map((key) => ({
+      key,
+      serverIds: participatingServerIdsForNetwork(
+        planned.merged,
+        planned.plan.slots,
+        planned.serviceRows,
+        key,
+        spanningCtx.attachments
+      ),
+    })),
+  })
+  if (!refusal) return null
+  return c.json({ error: 'turbofabric_required', message: refusal.message }, 422)
+}
+
 async function awaitDeployFabricGate(
   c: Context<AppEnv>,
   db: Db,
@@ -1750,7 +1929,12 @@ async function awaitDeployFabricGate(
     return null
   }
   const fabricRow = await getOrganizationFabric(db, params.auth.organizationId)
-  if (!fabricRow) return null
+  if (!fabricRow || isFabricPaused(fabricRow)) return null
+  // A server switched out of the mesh has no relay to converge; the planner
+  // only lets it join networks it reaches over a shared trusted LAN, and
+  // deliverOutsideMeshNetworking sends it its payload with no tunnel.
+  const meshServerIds = await serversSwitchedOn(db, fabricServerIds)
+  if (meshServerIds.length <= 1) return null
 
   const secretsConfig = c.get('secretsConfig')
   const fabricGate = await awaitParticipatingFabricConvergence({
@@ -1759,7 +1943,7 @@ async function awaitDeployFabricGate(
     actorType: params.auth.actorType,
     actorId: params.auth.actorId,
     fabric: fabricRow,
-    serverIds: fabricServerIds,
+    serverIds: meshServerIds,
     ...(secretsConfig ? { secretsConfig } : {}),
     dataEncryptionSecrets: params.dataEncryptionSecrets,
   })
@@ -2086,6 +2270,21 @@ async function loadDeploySpanningContext(
   return { spanning, attachments, consumers, enriched, listenerNames }
 }
 
+/** The spanning context, or a plain 422 when a needed server is switched out of TurboFabric. */
+async function loadDeploySpanningContextOrRefuse(
+  c: Context<AppEnv>,
+  ...args: Parameters<typeof loadDeploySpanningContext>
+): Promise<DeploySpanningContext | Response> {
+  try {
+    return await loadDeploySpanningContext(...args)
+  } catch (err) {
+    if (err instanceof FabricServerSwitchedOffError) {
+      return c.json({ error: 'turbofabric_required', message: err.message }, 422)
+    }
+    throw err
+  }
+}
+
 async function runEnvironmentDeploy(
   c: Context<AppEnv>,
   db: Db,
@@ -2099,19 +2298,29 @@ async function runEnvironmentDeploy(
     environmentId,
     auth.organizationId,
     // Applying hosting settings is not someone approving host-level Compose.
-    await resolveHostAccessActor(db, auth, auth.organizationId, auth.hostingsOnly !== true)
+    await resolveHostAccessActor(
+      db,
+      auth,
+      auth.organizationId,
+      auth.hostingsOnly !== true,
+      c.get('session')?.email ?? null
+    )
   )
   if (planned instanceof Response) return planned
 
   const priorNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   let spanningCommitted = false
   try {
-    const spanningCtx = await loadDeploySpanningContext(
+    const spanningCtx = await loadDeploySpanningContextOrRefuse(
+      c,
       db,
       planned,
       auth.organizationId,
       environmentId
     )
+    if (spanningCtx instanceof Response) return spanningCtx
+    const lanRefusal = await recheckLanPairsBeforeDelivery(c, db, planned, spanningCtx, auth)
+    if (lanRefusal) return lanRefusal
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
       return c.json({ error: 'Encryption unavailable' }, 503)
@@ -2124,6 +2333,11 @@ async function runEnvironmentDeploy(
       dataEncryptionSecrets,
     })
     if (fabricGateError) return fabricGateError
+    await deliverOutsideMeshNetworking(c, db, commandQueue, {
+      spanning: spanningCtx.spanning,
+      auth,
+      dataEncryptionSecrets,
+    })
 
     const preparedByServer = await prepareAllServerDeploys(c, db, {
       planned,
@@ -2176,6 +2390,7 @@ async function runEnvironmentDeploy(
     if (persisted instanceof Response) return persisted
     const created = persisted
     spanningCommitted = true
+    await recordHostAccessUse(db, planned, auth, environmentId)
     const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
       created,
       environmentId,
@@ -2202,6 +2417,7 @@ async function runEnvironmentDeploy(
       releasedListeners,
       ...spanningCtx,
     })
+    nudgeTunnelRoutesAfterResponse(c, auth.organizationId)
 
     return Response.json(
       queuedCommandsResponseBody(
@@ -2373,6 +2589,8 @@ async function enqueueStopCommand(
     siteReleases: EnvironmentSiteRelease[]
     /** Services whose releases are cleared while their folder stays. */
     releaseCleanup?: EnvironmentSiteRelease[]
+    /** Registered Docker volumes to remove (a Destroy that deletes data); absent otherwise. */
+    removeVolumes?: StopVolumeRemoval[]
   }
 ): Promise<QueuedCommandRef | Response> {
   const expiresAt = new Date(Date.now() + 120_000).toISOString()
@@ -2390,6 +2608,9 @@ async function enqueueStopCommand(
       ...(params.siteReleases.length > 0 ? { siteReleases: params.siteReleases } : {}),
       ...(params.releaseCleanup && params.releaseCleanup.length > 0
         ? { releaseCleanup: params.releaseCleanup }
+        : {}),
+      ...(params.removeVolumes && params.removeVolumes.length > 0
+        ? { removeVolumes: params.removeVolumes }
         : {}),
     },
     expiresAt,
@@ -2425,8 +2646,49 @@ async function enqueueStopCommand(
   }
 }
 
+/** The servers a Destroy of the environment goes to; empty when it has none. */
+async function environmentStopServerIds(db: Db, environmentId: string): Promise<string[]> {
+  const loaded = await loadLifecycleTargets(db, environmentId)
+  return loaded instanceof Response ? [] : loaded.serverIds
+}
+
+/** Record a Destroy that deletes data, with the names people know the volumes by. */
+async function recordDestroyDataAudit(
+  c: Context<AppEnv>,
+  db: Db,
+  params: {
+    organizationId: string
+    userId: string
+    environmentId: string
+    plan: DestroyDataPlan
+    queued: readonly QueuedCommandRef[]
+  }
+): Promise<void> {
+  const session = c.get('session')
+  await recordAudit(db, {
+    organizationId: params.organizationId,
+    actorUserId: params.userId,
+    actorEmail: session?.email ?? null,
+    action: 'environment.data.delete',
+    targetType: 'environment',
+    targetId: params.environmentId,
+    context: {
+      // Removed on the servers the commands went to; a copy on a server in `staysOn` stays.
+      volumes: params.plan.volumes.map(({ storageId, name, staysOn }) => ({
+        storageId,
+        name,
+        removedOn: params.queued.map(({ serverId }) => serverId),
+        staysOn: staysOn.map(({ serverId }) => serverId),
+      })),
+      kept: params.plan.kept.map(({ storageId, name, reason }) => ({ storageId, name, reason })),
+      commands: params.queued.map(({ commandId, serverId }) => ({ commandId, serverId })),
+    },
+  })
+}
+
 /**
- * Register `POST /environments/:id/stop` — compose down (+ volumes) teardown.
+ * Register `POST /environments/:id/stop` — compose down (+ volumes) teardown,
+ * and `GET /environments/:id/data-volumes` for the Destroy dialog.
  * Status is polled via existing `GET /servers/:serverId/commands/:commandId`.
  */
 export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -2434,6 +2696,7 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     throw new TypeError('session secrets are required for environment stop routes')
   }
   router.use('/environments/:id/stop', createSessionMiddleware(opts.secrets))
+  registerEnvironmentDataVolumeRoutes(router, opts, environmentStopServerIds)
 
   router.post('/environments/:id/stop', async (c) => {
     const db = getDb(c)
@@ -2443,7 +2706,15 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     const auth = await authorizeEnvironmentManage(c, db, environmentId)
     if (auth instanceof Response) return auth
 
-    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'environment.stop')
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const request = parseDestroyRequest(body)
+    if (request === 'invalid') return c.json({ error: 'Invalid request' }, 400)
+
+    // The step-up names what is asked: deleting data says so.
+    const stepUp = request.deleteVolumes
+      ? await requireStepUpIfConfigured(c, auth.organizationId, 'environment.data.delete')
+      : await requireStepUpIfConfigured(c, auth.organizationId, 'environment.stop')
     if (stepUp) return stepUp
 
     const commandQueue = assertDispatchInfrastructure(c)
@@ -2451,6 +2722,12 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
 
     const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded
+    // Every refusal of a Destroy that deletes data comes before anything stops.
+    const dataPlan = request.deleteVolumes
+      ? await planDestroyData(c, db, { environmentId, serverIds: loaded.serverIds, request })
+      : null
+    if (dataPlan instanceof Response) return dataPlan
+    const removeVolumes = dataPlan?.volumes.map(({ storageId }) => ({ storageId })) ?? []
     await cancelWaitingRollout(db, environmentId, 'the environment was stopped')
 
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
@@ -2462,6 +2739,16 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     // So the trees go out as `releaseCleanup`, never as `siteReleases`.
     const releaseCleanup = await resolveEnvironmentSiteReleases(db, environmentId)
     const queued: QueuedCommandRef[] = []
+    const auditDeletedData = async () => {
+      if (dataPlan === null || removeVolumes.length === 0 || queued.length === 0) return
+      await recordDestroyDataAudit(c, db, {
+        organizationId: auth.organizationId,
+        userId: auth.userId,
+        environmentId,
+        plan: dataPlan,
+        queued,
+      })
+    }
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueStopCommand(db, commandQueue, {
         serverId,
@@ -2476,10 +2763,16 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
         fabricNetworks: namesByServer.get(serverId) ?? [],
         siteReleases: [],
         releaseCleanup,
+        removeVolumes,
       })
-      if (enqueued instanceof Response) return enqueued
+      if (enqueued instanceof Response) {
+        // A server already asked to delete data is recorded even when a later one fails.
+        await auditDeletedData()
+        return enqueued
+      }
       queued.push(enqueued)
     }
+    await auditDeletedData()
     await purgeEnvironmentComposeNetworks(db, environmentId)
     const secretsConfig = c.get('secretsConfig')
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')

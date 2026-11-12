@@ -61,7 +61,7 @@ Both backends are thin wrappers — they do not decide what SQL runs or what get
 | Module | Role | Code change for split? |
 | --- | --- | --- |
 | `hyperdrive-query-cache.ts` | Calls `load(cachedDb)` for approved read models; Hyperdrive caches SQL at the connection level | **No** — only the list-rows `SELECT` reaches `cachedDb` because `runApprovedCachedReadModel` passes a narrow `load` closure from the read model |
-| `redis-query-cache.ts` | Generic Redis read-through: `JSON.parse` / `JSON.stringify` around whatever `load(db)` returns; falls back to `load(db)` on Redis get/set/parse errors | **No** — caching only list rows happens automatically once the read model passes a list-rows-only `load` to `runApprovedCachedReadModel` |
+| `redis-query-cache.ts` | Generic Redis read-through: `JSON.parse` / `JSON.stringify` around whatever `load(db)` returns; falls back to `load(db)` on Redis get/set/parse errors and when a get or set takes longer than 150 ms | **No** — caching only list rows happens automatically once the read model passes a list-rows-only `load` to `runApprovedCachedReadModel` |
 
 ## Adding a new cached read model
 
@@ -105,7 +105,7 @@ Caching the list-rows `SELECT` reduces **primary Hyperdrive/Postgres** read load
 
 ## Redis / Hyperdrive parity
 
-Redis (`createRedisQueryCache` in `redis-query-cache.ts`, wired unconditionally from `src/deno.ts` so it is active in production `static` mode) must mirror Hyperdrive semantics for the same read models: same allowlist, same key shape (`queryCacheKey(readModel, …)`), same cached payload type per read model, per-key TTL clamped to `MAX_QUERY_CACHE_TTL_SECONDS`, and fallback to `load(db)` on Redis read/write/parse errors.
+Redis (`createRedisQueryCache` in `redis-query-cache.ts`, wired unconditionally from `src/deno.ts` so it is active in production `static` mode) must mirror Hyperdrive semantics for the same read models: same allowlist, same key shape (`queryCacheKey(readModel, …)`), same cached payload type per read model, per-key TTL clamped to `MAX_QUERY_CACHE_TTL_SECONDS`, and fallback to `load(db)` on Redis read/write/parse errors. Each `get` and `set` has a 150 ms deadline (`REDIS_QUERY_CACHE_DEADLINE_MS`); a timeout falls back the same way, so a slow or stopped Redis costs at most that wait instead of hanging the read. The deadline is per call, not a setting on the connection, because the connection is shared with the cell registry.
 
 Because the split lives in the runtime-agnostic read-model code (`read-models/servers-list.ts`), both backends cache **the same payload** (`ServersListRow[]` for `servers-list`). Presence and colocated resolution always run on the primary `db` per request on **both** runtimes — neither backend ever sees those queries.
 

@@ -84,6 +84,63 @@ next result while nothing is pending. The control plane runs no test or outside
 probe and sends no confirm; 60s consumer timeout kept for a manual confirm.
 Nothing enqueues it.
 
+`server.tunnel.routes` (**whole-server**, 120 s, offline fail-fast) carries every tunnel name a server carries, so a server whose
+connector receives a visitor for a site that runs elsewhere can pass the
+request on. Payload `{ hash, routes[], peerAddresses[], listenAddresses?[],
+peerMaterial? }`. A route is `{ hostname, local, lock, upstreams[] }`;
+`local: true` means the site runs on this server (the daemon leaves the name
+out of the forwarding file and reports it as dropped, so a moving site can
+never cause a duplicate site), `lock: false` means the name is also public on
+this server (visitors that are not peers are passed on too), and an upstream is
+`{ serverId, addresses[], port? }` with the exact datacenter addresses of one
+server that runs a copy (preferred family first; port defaults to 443; a remote
+route needs at least one). `peerAddresses` are the exact addresses of the
+servers allowed to forward TO this one (inbound standing: the daemon refuses
+re-forwarding for them, lets them reach the peer certificate site and trusts
+their visitor-address headers; it is never a firewall rule). A server that only
+carries tunnels and hosts nothing sends an empty list: do not pad it with the
+servers it forwards to. With no peers the daemon writes no peer certificate
+site; `listenAddresses` are this server's
+own addresses the peer-facing site listens on. `peerMaterial` is
+`{ certificatePem, privateKeyEnvelope, caCertPem, notAfter? }`: a leaf of the
+organization's certificate authority for the fixed name `tp-peer.internal`
+(shape of `ManagedApplyOrgTlsMaterial`), the key sealed for this daemon
+(`tpdaemon.` envelope), `caCertPem` the trust bundle used only for the hop
+between servers. It is required whenever `routes` or `peerAddresses` is not
+empty; an empty set removes the forwarding file. `hash` is the lower-case
+sha256 of the desired state: the daemon skips the rewrite when the hash is
+unchanged and the file is in place. Result `{ hash, applied, routeCount,
+dropped[], warnings[] }`. Parsers live in
+`src/contracts/commands/tunnel-routes.ts` and follow the same rules as the
+daemon's (the control plane's IP check may be stricter about IPv6 forms with an
+embedded IPv4 part; a form the control plane sends is always accepted). Limits:
+256 names, 64 addresses, 8 addresses and 16 upstreams per route, 2000 routes,
+and 64 KB for each of `certificatePem`, `caCertPem` and `privateKeyEnvelope`
+(which needs a body after `tpdaemon.`); a certificate field that contains
+`PRIVATE KEY` is refused, and `notAfter` must be an ISO-8601 timestamp with a
+time zone.
+
+`server.tunnel.connectors` (300 s, offline fail-fast, feature `tunnel-connector-v1`) is `{ install: [{ tunnelId, tokenEnvelope }], remove: [tunnelId] }`: install or remove the connector service of organization tunnels. `tunnelId` is the provider's tunnel id (lower-case UUID; `instance` and `default` are refused), `tokenEnvelope` is the run token sealed for that server's daemon (`tpdaemon.`, at most 8 KB). Each tunnel is named once, at most 64 per list, at least one. An install whose connector already runs changes nothing; a remove of a connector that is gone is a no-op. Result `{ installed, unchanged, removed }`.
+
+**For whoever builds the sender.** An older daemon ignores `hostings[].tunnel`
+(tunnel-only names would then be served unlocked) and rejects the unknown
+command type, so send neither until the server's daemon version carries them
+(gate on the daemon version). Like the other whole-server commands, a command
+for a server that is not connected fails at once (`Daemon not connected`); it
+is not queued or resent on reconnect by the consumer. Convergence after an
+offline period needs a reconnect sweep that sends the table again (the hash
+makes an unchanged table a no-op on the daemon). The table sender is
+`src/features/tunnels/sync.ts`; `hostings[].tunnel` is built at deploy time by
+`src/features/tunnels/name-lock.ts` (a lone carrier sends `127.0.0.1` as its one
+peer because the contract refuses an empty list).
+
+`generation` (feature `tunnel-table-generation-v1`): an optional non-negative
+safe integer at the top level of `server.tunnel.routes` and in
+`hostings[].tunnel`, one counter for the organization's whole table. The daemon
+keeps the highest it applied and ignores a table or deploy below it. It is sent
+only to a daemon that lists the feature (`src/features/tunnels/table-generation.ts`).
+It is not part of the table `hash`.
+
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on
 one server, the same full-set contract as `server.principals.reconcile`:
@@ -225,12 +282,25 @@ plaintext). `filename` must match `COMPOSE_FILE_NAME_RE`
 (`/^[A-Za-z0-9._-]+\.ya?ml$/`, basename-only). Secret values never enter durable
 YAML: `secretPlan[]` + `variableMaterial[]` (`tpdaemon` envelopes;
 `sealVariableMaterialForDaemon` always reseals plaintext) materialize files
-under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (mode
-`0600`). Build secrets use Compose `build.secrets`, not `build.args`. The
-last-applied plan is also stored on `deployment.options.secretPlan` for boot
-rehydrate (`POST /api/daemon/v1/deployments/secrets/rehydrate`). Optional
+under `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets/` (files
+mode `0444` in a daemon-only `0700` folder: any user inside the one container a
+file is bound into can read it, host accounts are stopped by the folder).
+Optional `configFiles[]` (daemon feature `deploy-config-files-v1`) are generated
+config files as ordered `parts` (`{ text }` or `{ secretKey }`, no value) under
+`.../configs/` with the same modes; each `secretKey` is read from the sealed
+`variableMaterial[]` entry for the same `composeServiceName`, and a secret used
+only by a config file has material but no `secretPlan` entry. Limits: names
+match `^[A-Za-z0-9][A-Za-z0-9._-]*$` and do not end in `.tmp`, 64 KiB of text
+per file, 16 files per service, 256 KiB of text per deploy. Build secrets use Compose `build.secrets`, not `build.args`. The
+last-applied plan is also stored on `deployment.options.secretPlan` (plus
+`options.configSecretRefs`, the secrets only generated files read, as
+`{ composeServiceName, key }` with no values) for boot rehydrate (`POST /api/daemon/v1/deployments/secrets/rehydrate`). Optional
 payload fields `generation`, `desiredHash`, `replicaCounts`, and `serverId`
-identify the per-host snapshot.
+identify the per-host snapshot. The rehydrate response also carries `gone[]`
+(`{ projectId, environmentId }`): requested deployments whose environment row no
+longer exists (a deleted project or environment). It is expand-only; a daemon
+that ignores it behaves as before. A missing deployment row or a generation
+mismatch is never reported as gone.
 
 **`command.context.releases[]`:** the Git-backed releases one
 `environment.deploy` attempt published, written onto the permanent row at
@@ -255,7 +325,10 @@ the per-server prepare fan-out, and the same allocator is threaded through every
 `prepareDeployCompose()` call in that deploy. So a service scheduled onto three
 servers writes three `command` rows carrying the _same_ release id, and
 `listServiceReleases` folds them back into one environment-scoped record whose
-status is the aggregate over all of them. Minting the id inside the per-host
+status is the aggregate over all of them. A row whose result says
+`unchanged: true` (the host found nothing to change and built nothing) is left
+out: its release id was never put on that host, so offering it would only lead
+to a rollback the daemon refuses. Minting the id inside the per-host
 prepare instead would make each host's release id different, and a rollback
 naming one of them would fail the daemon's `promoteExistingRelease()`
 missing-release check on every other host.
@@ -313,6 +386,22 @@ validation fails with typed `DeployPrepareError`
 `{ kind: 'datacenter_ip_required', serverId }` (**422**
 `datacenter_ip_required`) before command dispatch — the daemon stays DB-free.
 
+**`EnvironmentDeployHosting.tunnel`:** optional, additive; an older daemon
+ignores it. `{ hostnames[], openHostnames?[], peers[], extraBind?[] }` for a
+hosting whose names are also reached through a tunnel connector.
+`hostnames` are the tunnel names (each also in the hosting's own `hostnames`);
+for these the server answers only the local connector (loopback) and the exact
+`peers` addresses (the other servers of the datacenter that carry the tunnel,
+never the whole subnet) and drops everyone else without a reply.
+`openHostnames` is the subset that is also a public name on this server: the
+local-only lock is off for them so the public side answers everyone, and the
+site block stays one block per address. `extraBind` lists addresses the web
+server must also listen on so peers can reach it (a loopback-only or pinned
+bind otherwise hides the name from them). Addresses are bare IP literals,
+never ranges. `tlsMode: 'acme'` is refused on a hosting whose tunnel names
+are not all in `openHostnames`: a name that only arrives through a tunnel never
+asks for a public certificate (it uses `tls internal` or a pinned pair).
+
 **`EnvironmentDeployPayload.listenerPorts`:** optional server-owner org
 effective ProxySQL client listener ports echoed on every `environment.deploy`.
 The daemon reserves the platform defaults (`15432` / `13306`) **and** these
@@ -365,6 +454,14 @@ snippet, reclaims listed `siteReleases[]` trees, deletes the deployment dir, and
 `rm -rf`s the matching
 `/run/turbopanel/deployments/<projectId>/<environmentId>/secrets` tree
 (`turbopaneld/src/commands/stop-environment.ts`).
+
+**`removeVolumes[]` (`{ storageId }[]`) deletes data, only when asked.** A
+Destroy with "Also Delete the Data Volumes" names the environment's registered
+Docker volumes by storage id (their exact Docker name). The daemon removes each
+after the stack is down, keeps any a container still uses, and reports
+`volumes[]` (`removed`, `absent`, `kept` or `failed`, with `reason`). Sent only
+to daemons that list `environment-stop-remove-volumes-v1`. See
+`src/client/AGENTS.md` (Deploy hash and Destroy).
 
 **`siteReleases[]` (`{ serviceId, username, folder? }[]`) is generic host reclaim, not a
 site detail.** It names `<principalHome>/sites/<serviceId>` — the tree the Git
@@ -477,6 +574,9 @@ The control plane **never sends an empty `principals` set on its own**
 (`enqueuePrincipalsReconcile` skips such a server unless it has an account to
 retire there) and the daemon prunes no key file on an empty set without the
 explicit `allowEmpty: true`, which nothing sets today.
+A password hash on that command rides as `passwordHashEnvelope` whenever the
+server has a sealing key on file, whatever the hello lists; a server with no
+key keeps getting `passwordHash`.
 
 **Account ids are allocated centrally and reported back.** A principal that has
 no uid/gid on any server yet takes one number from the counter of the organization that owns the server (`organization.next_linux_id`, from 30001, never reused) when it is
@@ -567,7 +667,7 @@ sweep-driven rows — `command.actor_id` is a uuid with no FK). Install
 colocated daemon is already connected. Never enqueue from `onDaemonConnected` /
 Durable Object handlers. See `../../client/system/hierarchy.ts` (provisioning)
 and `../../client/system/reconcile.ts` (payload/sweep); production inventory
-rationale lives in `../../../AGENTS.md` → "Self-host system inventory".
+rationale lives in `../../client/system/AGENTS.md`.
 
 **Managed engine commands** (compose + config + credentials are generated by the
 platform — never conflate with `environment.deploy` hosting ingress). Like
@@ -631,7 +731,7 @@ CA ensure-or-create **`GET /tls/ca`** (`{ tls, trustBundlePem }`), rotate
 **`POST /tls/ca/rotate`** (lease-guarded journal + fan-out of existing
 **`managed.apply`** / **`managed.ingress.reconcile`** plus binding rematerialize
 — no new command type, no `environment.deploy`; see `../tls/AGENTS.md`), status
-**`GET /tls/ca/rotation`**, retire-gate **`POST /tls/ca/retire`** (revokes
+**`GET /tls/ca/rotation`** (JSON `null` when no rotation ever ran), retire-gate **`POST /tls/ca/retire`** (revokes
 retired generations only after every tracked command `succeeded` and binding
 rematerialize rows are not failed; `PATCH /tls/:id` `revoke:true` cannot revoke
 an Organization CA), PEM-only download **`GET /tls/ca/download`** (concatenated
@@ -724,3 +824,15 @@ DB helpers: `src/features/commands/command-records.ts` — `createCommandRecord`
 flat `CommandRecord` (mapped from real columns; no payload). Dispatch-payload
 helpers live beside them: `getCommandDispatchPayload`, `deleteCommandDispatch`,
 `retainCommandDispatch`, `sweepExpiredCommandDispatch`.
+
+`cache.apply` (feature `project-cache-v1`, appended last in `COMMAND_TYPES`)
+carries `{ environmentId, caches[], removed?: [{ id, username, deleteData }] }`:
+the complete set one environment has on one host. `caches[]` entries are `{ id,
+name, username, engine: "valkey", version, access: socket | port, port? (18080-18999,
+only with `port`), maxMemoryMb 16-65536, passwordSha256, accountLimits? }`; at most
+16 per command, unique ids, names and ports. It never prunes a cache that is only
+unlisted. Result: `{ caches: [{ id, state: ready | failed | pending, error?,
+runtimeVersion? }] }`. `environment.deploy` carries the same `caches` (absent
+leaves the host alone, empty clears it) and `helperReach[]` (`{ composeServiceName,
+containerPort, hostPort, username }`, at most 32), and its result may carry
+`caches`. Built by `src/features/caches/`; 600s consumer timeout.

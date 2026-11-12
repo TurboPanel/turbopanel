@@ -1,6 +1,7 @@
 /**
- * "This happened" → inbox rows for everyone concerned, and one delivery per
- * channel a rule routes it to.
+ * "This happened" → one `event` row, inbox rows and personal copies for the
+ * people whose preferences ask for it, and one copy per shared channel a rule
+ * routes it to.
  *
  * The one rule above all others, inherited from `alert-sender.ts`: **emitting
  * never fails the emitter.** The offline sweep's job is to demote stale
@@ -9,20 +10,32 @@
  * must still finish. So every phase here is bounded and caught, and the only
  * promise to a caller is that awaiting `emitNotification` terminates.
  *
- * Fan-out (decided 2026-09-18):
- * - inbox rows go to every member of the organization the event belongs to
- *   (through team membership), or to every instance admin for an
- *   instance-scoped event — no subscription needed for the bell;
- * - external channels receive an event only through a rule row, within
- *   scope: the organization's channels and its members' own, plus every
- *   instance channel (an operator's firehose sees every organization).
+ * Fan-out (redesigned 2026-11-06):
+ * - recipients are the people the topic's audience names **now**: members of
+ *   the organization, its managers, or the install's administrators for an
+ *   install event; an administrator hears an organization only when they
+ *   belong to it or switched on hearing every organization. The person who
+ *   caused the event is left out.
+ * - each recipient's preference rows decide the bell and every personal
+ *   channel (`resolve.ts`); with no rows nothing arrives, the bell included.
+ *   The built-in account email channel is created on first use and always
+ *   sends to the current sign-in address.
+ * - shared channels (organization and instance) are routed by rules as
+ *   before; an organization email channel only reaches an address that still
+ *   belongs to a member.
  *
  * Delivery runs inline, once, bounded; a failure leaves a `failed` ledger row
  * with a retry time that the maintenance tick (`retryDueDeliveries`) picks
- * up, up to the attempt cap. Email and push channels are not sent from here:
- * their rows stay `pending` for the transports that own them.
+ * up, up to the attempt cap. Push rows are never written (no transport yet).
+ *
+ * The fan-out is a run of bounded statements, not one transaction. An emit
+ * that dies after the event row leaves `fanned_out_at` null, and the same
+ * tick finishes it (`finishInterruptedFanOuts`); the unique keys on the inbox
+ * and the ledger make that second run write nothing twice.
  */
+import { and, eq, inArray, isNull, ne } from 'drizzle-orm'
 import { type Db, runWithDbTimeout } from '../../db/connection.ts'
+import { notificationChannel } from '../../db/schema.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -30,33 +43,67 @@ import { validateOutboundUrl } from '../../lib/http/outbound-url.ts'
 import {
   describeEvent,
   eventAudience,
+  eventCategory,
   eventIsUrgent,
+  eventResource,
   eventScope,
   eventSeverity,
+  NOTIFICATION_EVENTS,
   type NotificationContext,
   type NotificationEvent,
+  type NotificationSeverity,
 } from './events.ts'
 import {
+  asChannel,
   channelsForEvent,
   channelTimeZones,
   type DeliveryPayload,
   getChannel,
+  insertDeliveries,
   insertNotifications,
-  insertPendingDeliveries,
-  instanceAdminIds,
   claimDueDeliveries,
+  type LedgerCopy,
   type NotificationChannelRecord,
   type NotificationDeliveryRecord,
-  organizationManagerIds,
-  organizationMemberIds,
+  organizationMemberEmails,
   organizationName,
   recordDeliveryAttempt,
   resolveChannelAddress,
   resolveChannelSigningSecret,
 } from './records.ts'
+import {
+  accountEmails,
+  audienceRecipientIds,
+  completeScope,
+  ensureNotificationCatalog,
+  ensurePrimaryEmailChannels,
+  type EventScopeIds,
+  insertEvent,
+  listUnfannedEvents,
+  markEventFannedOut,
+  preferenceRowsFor,
+  suppressedAddresses,
+  type UnfannedEvent,
+} from './fanout-records.ts'
+import {
+  type EventScope,
+  levelAllows,
+  preferenceKindForChannel,
+  resolveLevel,
+  rowsByUser,
+  type PreferenceRow,
+} from './resolve.ts'
+import { dropUndeliverableCopies } from './cleanup.ts'
 import { renderDetails, send, type SendOutcome } from './senders.ts'
+import {
+  sealUnsubscribeToken,
+  unsubscribeClaims,
+  unsubscribePageUrl,
+  unsubscribeUrl,
+} from './unsubscribe.ts'
 import { shouldHoldNow } from './windows.ts'
-import type { EmailJob, EmailQueue } from '../email/types.ts'
+import type { EmailJob, EmailQueue, NotificationMailHeaders } from '../email/types.ts'
+import type { NotificationAttemptReason } from './vocabulary.ts'
 
 export type EmitInput = {
   event: NotificationEvent
@@ -65,6 +112,12 @@ export type EmitInput = {
   context?: NotificationContext
   targetType?: string | null
   targetId?: string | null
+  /** Resource ids the event is about, beyond what the target says; parents are filled in. */
+  scope?: Partial<EventScopeIds>
+  /** Who caused it; that person is not told. */
+  actorUserId?: string | null
+  /** Folds repeats of an open event inside the topic's cooldown into one. */
+  dedupe?: string | null
 }
 
 export type EmitEmail = {
@@ -102,6 +155,15 @@ const EMPTY: EmitResult = { inbox: 0, deliveries: 0, sent: 0, failed: 0, held: 0
 /** How long the whole delivery phase of one emit may take. */
 export const EMIT_DELIVERY_BUDGET_MS = 5_000
 
+/** The resource ids an event's target names, for the topic's resource kind. */
+function targetScope(input: EmitInput): Partial<EventScopeIds> {
+  const fromTarget: Partial<EventScopeIds> = {}
+  if (eventResource(input.event) === 'server' && input.targetType === 'server') {
+    fromTarget.serverId = input.targetId ?? null
+  }
+  return { ...fromTarget, ...input.scope }
+}
+
 export async function emitNotification(
   db: Db,
   secrets: DerivedSecretsConfig | undefined,
@@ -119,68 +181,35 @@ export async function emitNotification(
       })
       return EMPTY
     }
+    await runWithDbTimeout(db, (tx) => ensureNotificationCatalog(tx))
     const context = input.context ?? {}
     const severity = eventSeverity(input.event)
     const { title, body } = describeEvent(input.event, context)
-    const payload: DeliveryPayload = {
-      event: input.event,
-      severity,
-      title,
-      body,
-      organizationId,
-      organizationName: organizationId
-        ? await runWithDbTimeout(db, (tx) => organizationName(tx, organizationId))
-        : null,
-      targetType: input.targetType ?? null,
-      targetId: input.targetId ?? null,
-      context,
-      at: new Date(deps.now?.() ?? Date.now()).toISOString(),
+    const nowMs = deps.now?.() ?? Date.now()
+
+    const written = await runWithDbTimeout(db, (tx) =>
+      writeFanOut(tx, {
+        input,
+        organizationId,
+        context,
+        severity,
+        title,
+        body,
+        nowMs,
+      })
+    )
+    if (written === null) {
+      trace('notification-folded', { event: input.event })
+      return EMPTY
     }
 
-    // Phase one, bounded: the inbox rows and the pending ledger rows for
-    // every routed channel. Not one transaction — a ledger row that lands
-    // without its inbox rows (or the reverse) is still a true record — so
-    // the writes are ordered inbox first, ledger second.
-    const written = await runWithDbTimeout(db, async (tx) => {
-      const recipients = await inboxRecipients(tx, input.event, organizationId)
-      const inbox = await insertNotifications(
-        tx,
-        recipients.map((userId) => ({
-          userId,
-          organizationId,
-          event: payload.event,
-          severity,
-          title,
-          body,
-          targetType: payload.targetType,
-          targetId: payload.targetId,
-          context,
-        }))
-      )
-      const channels = await channelsForEvent(
-        tx,
-        payload.event,
-        severity,
-        organizationId,
-        recipients
-      )
-      const held = await heldChannelIds(tx, channels, payload.event, deps.now?.() ?? Date.now())
-      const deliveries = await insertPendingDeliveries(
-        tx,
-        channels.map((c) => c.id),
-        payload,
-        held
-      )
-      return { inbox, channels, deliveries }
-    })
-
-    // Phase two: attempt each routed channel once, inside a budget.
+    // Phase two: attempt each copy once, inside a budget.
     const byId = new Map(written.channels.map((c) => [c.id, c]))
     const outcome = await attemptDeliveries(
       db,
       secrets,
       written.deliveries
-        .filter((d) => d.status !== 'held')
+        .filter((d) => d.status === 'pending')
         .map((d) => ({
           delivery: d,
           channel: byId.get(d.channelId) ?? null,
@@ -205,57 +234,385 @@ export async function emitNotification(
   }
 }
 
-/** Email, chat and webhook channels can wait for a window (push is the store apps'; an unverified address gets nothing). */
-function canHoldFor(channel: NotificationChannelRecord): boolean {
-  if (channel.kind === 'push') return false
-  return channel.kind !== 'email' || channel.verifiedAt !== null
+type FanOutInput = {
+  input: EmitInput
+  organizationId: string | null
+  context: NotificationContext
+  severity: NotificationSeverity
+  title: string
+  body: string | null
+  nowMs: number
+}
+
+type FanOutResult = {
+  inbox: number
+  channels: NotificationChannelRecord[]
+  deliveries: NotificationDeliveryRecord[]
+}
+
+/** Personal channels of these people that can carry a copy (not paused, not push). */
+async function personalChannels(
+  db: Db,
+  userIds: readonly string[]
+): Promise<NotificationChannelRecord[]> {
+  if (userIds.length === 0) return []
+  const rows = await db
+    .select()
+    .from(notificationChannel)
+    .where(
+      and(
+        eq(notificationChannel.scope, 'user'),
+        inArray(notificationChannel.userId, [...userIds]),
+        isNull(notificationChannel.disabledAt),
+        ne(notificationChannel.kind, 'push')
+      )
+    )
+  return rows.map(asChannel)
+}
+
+/** An event row as the fan-out needs it: just written, or read back by the sweep. */
+export type StoredEvent = {
+  id: string
+  event: NotificationEvent
+  organizationId: string | null
+  scopeIds: EventScopeIds
+  actorUserId: string | null
+  severity: NotificationSeverity
+  title: string
+  body: string | null
+  context: NotificationContext
+  targetType: string | null
+  targetId: string | null
+  /** ISO time the event happened. */
+  at: string
 }
 
 /**
- * The channels that should wait rather than send now: a verified email, chat or
- * webhook channel with a digest cadence, or one inside its quiet hours, for an event that is
- * not urgent. An urgent event (outage, anything security-related) is never held
- * and the bell is never touched — only the external send waits.
+ * Phase one, in one bounded unit: the event row, the inbox rows, and a ledger
+ * row for every copy (sent, held, or recorded as not sent with a reason).
+ * Returns null when the event was folded into an open one.
  */
-async function heldChannelIds(
+async function writeFanOut(tx: Db, f: FanOutInput): Promise<FanOutResult | null> {
+  const { input, organizationId, context, severity, title, body } = f
+  const scopeIds = await completeScope(tx, organizationId, targetScope(input))
+  const targetType = input.targetType ?? null
+  const targetId = input.targetId ?? null
+  const actorUserId = input.actorUserId ?? null
+  const eventId = await insertEvent(tx, {
+    organizationId,
+    topicCode: input.event,
+    scope: scopeIds,
+    actorUserId,
+    severity,
+    dedupe: input.dedupe ?? null,
+    data: { ...context, title, body, targetType, targetId },
+  })
+  if (eventId === null) return null
+  return await fanOutEvent(
+    tx,
+    {
+      id: eventId,
+      event: input.event,
+      organizationId,
+      scopeIds,
+      actorUserId,
+      severity,
+      title,
+      body,
+      context,
+      targetType,
+      targetId,
+      at: new Date(f.nowMs).toISOString(),
+    },
+    f.nowMs
+  )
+}
+
+/**
+ * Everything after the event row: who hears it now, their inbox rows and one
+ * ledger row per copy, then `fanned_out_at`. Safe to run again for the same
+ * event (`uniq_notification_event_user`, `uniq_attempt_copy`): only what is
+ * missing is written, and only those rows are returned.
+ */
+async function fanOutEvent(tx: Db, e: StoredEvent, nowMs: number): Promise<FanOutResult> {
+  const { organizationId, severity, title, body, context, scopeIds } = e
+  const categoryCode = eventCategory(e.event)
+  const payload: DeliveryPayload = {
+    event: e.event,
+    severity,
+    title,
+    body,
+    organizationId,
+    organizationName: organizationId ? await organizationName(tx, organizationId) : null,
+    targetType: e.targetType,
+    targetId: e.targetId,
+    context,
+    at: e.at,
+    eventId: e.id,
+    categoryCode,
+    ...scopeIds,
+  }
+  const eventScopeForRules: EventScope = {
+    organizationId,
+    ...scopeIds,
+    topicCode: e.event,
+    categoryCode,
+  }
+
+  const recipients = (
+    await audienceRecipientIds(tx, eventAudience(e.event), organizationId)
+  ).filter((id) => id !== e.actorUserId)
+  const preferences = rowsByUser(await preferenceRowsFor(tx, recipients, organizationId))
+  // Nobody with no rows hears anything; only people with rows need channels.
+  const listening = recipients.filter((id) => preferences.has(id))
+  await ensurePrimaryEmailChannels(tx, listening)
+
+  const decide = (
+    userId: string,
+    kind: 'inbox' | 'email' | 'chat' | 'webhook',
+    channelId: string | null
+  ) =>
+    levelAllows(
+      resolveLevel(
+        preferences.get(userId) ?? ([] as PreferenceRow[]),
+        eventScopeForRules,
+        { kind, channelId },
+        nowMs
+      ).level,
+      severity
+    )
+
+  const inboxFor = listening.filter((userId) => decide(userId, 'inbox', null))
+  const inbox = await insertNotifications(
+    tx,
+    inboxFor.map((userId) => ({
+      userId,
+      organizationId,
+      event: e.event,
+      severity,
+      title,
+      body,
+      targetType: payload.targetType,
+      targetId: payload.targetId,
+      context,
+      eventId: e.id,
+      ...scopeIds,
+    }))
+  )
+
+  const personal = (await personalChannels(tx, listening)).filter((channel) =>
+    decide(
+      channel.userId!,
+      preferenceKindForChannel(channel.kind) as 'email' | 'chat' | 'webhook',
+      channel.id
+    )
+  )
+  const shared = await channelsForEvent(tx, e.event, severity, organizationId, categoryCode)
+  const channels = [...personal, ...shared]
+  const copies = await planCopies(tx, channels, organizationId, e.event, nowMs)
+  const deliveries = await insertDeliveries(tx, copies, payload)
+  await markEventFannedOut(tx, e.id)
+  return { inbox, channels, deliveries }
+}
+
+/** How long an event may sit without `fanned_out_at` before the sweep takes it: well past any emit still running. */
+export const FAN_OUT_SWEEP_GRACE_MS = 5 * 60_000
+
+/** An event whose fan-out still throws after this long is marked done and logged. */
+export const FAN_OUT_GIVE_UP_MS = 6 * 60 * 60_000
+
+/** Past this age an unfinished event is left alone: day-old news is not sent. */
+export const FAN_OUT_SWEEP_MAX_AGE_MS = 24 * 60 * 60_000
+
+function textOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null
+}
+
+/** The event as it was raised, rebuilt from its row; null when this build no longer has the code. */
+export function storedEventFromRow(row: UnfannedEvent): StoredEvent | null {
+  if (!(NOTIFICATION_EVENTS as readonly string[]).includes(row.topicCode)) return null
+  const event = row.topicCode as NotificationEvent
+  const { title, body, targetType, targetId, ...context } = row.data
+  const described = describeEvent(event, context as NotificationContext)
+  return {
+    id: row.id,
+    event,
+    organizationId: row.organizationId,
+    scopeIds: row.scope,
+    actorUserId: row.actorUserId,
+    severity: row.severity,
+    title: textOrNull(title) ?? described.title,
+    body: typeof title === 'string' ? textOrNull(body) : described.body,
+    context: context as NotificationContext,
+    targetType: textOrNull(targetType),
+    targetId: textOrNull(targetId),
+    at: new Date(row.createdAt).toISOString(),
+  }
+}
+
+/**
+ * Finish the fan-out of events an emit left half-written (the process died,
+ * or a statement timed out, after the event row): a bounded batch, half the
+ * oldest and half the newest, so events that keep failing cannot hold back
+ * newer ones. An event still failing after `FAN_OUT_GIVE_UP_MS` is marked
+ * done and logged. The copies it writes are `pending` with a retry time a
+ * couple of minutes ahead, so they go out on a later tick. Same never-throws
+ * contract as every phase here.
+ */
+export async function finishInterruptedFanOuts(
+  db: Db,
+  deps: Pick<EmitDeps, 'now'> = {},
+  limit = 20
+): Promise<{ events: number; copies: number }> {
+  const done = { events: 0, copies: 0 }
+  try {
+    const window = { graceMs: FAN_OUT_SWEEP_GRACE_MS, maxAgeMs: FAN_OUT_SWEEP_MAX_AGE_MS }
+    const half = Math.max(1, Math.ceil(limit / 2))
+    const [oldest, newest] = await runWithDbTimeout(db, async (tx) => [
+      await listUnfannedEvents(tx, half, window, 'oldest'),
+      await listUnfannedEvents(tx, half, window, 'newest'),
+    ])
+    const seen = new Set<string>()
+    const stuck = [...oldest, ...newest].filter((row) => !seen.has(row.id) && seen.add(row.id))
+    await forEachSequential(stuck, async (row) => {
+      try {
+        const stored = storedEventFromRow(row)
+        if (stored === null) {
+          await runWithDbTimeout(db, (tx) => markEventFannedOut(tx, row.id))
+          return
+        }
+        const nowMs = deps.now?.() ?? Date.now()
+        const written = await runWithDbTimeout(db, (tx) => fanOutEvent(tx, stored, nowMs))
+        done.events += 1
+        done.copies += written.inbox + written.deliveries.length
+      } catch (error) {
+        const gaveUp = (deps.now?.() ?? Date.now()) - Date.parse(row.createdAt) > FAN_OUT_GIVE_UP_MS
+        compatLogWarn(
+          'notifications',
+          `could not finish the fan-out of event ${row.id}${gaveUp ? ' (giving up)' : ''}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+        if (gaveUp) {
+          await runWithDbTimeout(db, (tx) => markEventFannedOut(tx, row.id)).catch(() => undefined)
+        }
+      }
+    })
+  } catch (error) {
+    compatLogWarn(
+      'notifications',
+      `fan-out sweep failed: ${error instanceof Error ? error.message : String(error)}`
+    )
+  }
+  return done
+}
+
+/**
+ * One ledger copy per channel, with what happens to it: sent now, held for a
+ * window, or recorded and never sent (an unverified or suppressed address, an
+ * organization email channel naming someone who left).
+ */
+async function planCopies(
+  tx: Db,
+  channels: readonly NotificationChannelRecord[],
+  organizationId: string | null,
+  event: NotificationEvent,
+  nowMs: number
+): Promise<LedgerCopy[]> {
+  const personalIds = channels.flatMap((c) => (c.scope === 'user' && c.userId ? [c.userId] : []))
+  const accounts = await accountEmails(tx, personalIds)
+  const memberEmails =
+    organizationId && channels.some((c) => c.scope === 'organization' && c.kind === 'email')
+      ? await organizationMemberEmails(tx, organizationId)
+      : new Set<string>()
+  const emailOf = (c: NotificationChannelRecord): string | null => {
+    if (c.kind !== 'email') return null
+    if (c.isPrimary) return accounts.get(c.userId ?? '')?.email ?? null
+    return c.address
+  }
+  const suppressed = await suppressedAddresses(
+    tx,
+    channels.flatMap((c) => {
+      const address = emailOf(c)
+      return address ? [address] : []
+    })
+  )
+  const held = await heldReasons(tx, channels, event, nowMs)
+  const emailCheck = { accounts, memberEmails, suppressed }
+  return channels.map((channel): LedgerCopy => {
+    const base = { channelId: channel.id, userId: channel.scope === 'user' ? channel.userId : null }
+    const dropped = emailDrop(channel, emailOf(channel), emailCheck)
+    if (dropped) return { ...base, ...dropped }
+    const reason = held.get(channel.id)
+    return reason ? { ...base, status: 'held', reason } : { ...base, status: 'pending' }
+  })
+}
+
+/**
+ * Why an email copy must not be sent, or null: an unverified address, an
+ * organization channel naming someone who is no longer a member, or an
+ * address on the suppression list.
+ */
+function emailDrop(
+  channel: NotificationChannelRecord,
+  address: string | null,
+  check: {
+    accounts: Map<string, { email: string; verified: boolean }>
+    memberEmails: Set<string>
+    suppressed: Set<string>
+  }
+): Pick<LedgerCopy, 'status' | 'reason'> | null {
+  if (channel.kind !== 'email') return null
+  const verified = channel.isPrimary
+    ? check.accounts.get(channel.userId ?? '')?.verified === true
+    : channel.verifiedAt !== null
+  if (!verified || address === null) return { status: 'abandoned', reason: 'unverified' }
+  const normalized = address.trim().toLowerCase()
+  if (channel.scope === 'organization' && !check.memberEmails.has(normalized)) {
+    return { status: 'abandoned', reason: 'no_access' }
+  }
+  if (check.suppressed.has(normalized)) return { status: 'suppressed', reason: 'bounced' }
+  return null
+}
+
+/** Email, chat and webhook channels can wait for a window (push is the store apps'; an unverified address gets nothing). */
+function canHoldFor(channel: NotificationChannelRecord): boolean {
+  if (channel.kind === 'push') return false
+  return channel.kind !== 'email' || channel.verifiedAt !== null || channel.isPrimary
+}
+
+/**
+ * The channels that should wait rather than send now, with why: a digest
+ * cadence, or quiet hours running, for an event that is not urgent. An urgent
+ * event (outage, anything security-related) is never held and the bell is
+ * never touched — only the external send waits.
+ */
+async function heldReasons(
   db: Db,
   channels: readonly NotificationChannelRecord[],
   event: NotificationEvent,
   nowMs: number
-): Promise<Set<string>> {
-  if (eventIsUrgent(event)) return new Set()
+): Promise<Map<string, NotificationAttemptReason>> {
+  if (eventIsUrgent(event)) return new Map()
   const candidates = channels.filter(
     (c) => canHoldFor(c) && (c.digestCadence !== null || c.quiet !== null)
   )
-  if (candidates.length === 0) return new Set()
+  if (candidates.length === 0) return new Map()
   const zones = await channelTimeZones(db, candidates)
-  return new Set(
-    candidates
-      .filter((c) =>
-        shouldHoldNow(nowMs, zones.get(c.id) ?? 'UTC', {
-          digestCadence: c.digestCadence,
-          quiet: c.quiet,
-        })
-      )
-      .map((c) => c.id)
-  )
-}
-
-async function inboxRecipients(
-  tx: Db,
-  event: NotificationEvent,
-  organizationId: string | null
-): Promise<string[]> {
-  if (!organizationId) return instanceAdminIds(tx)
-  if (eventAudience(event) === 'managers') {
-    return organizationManagerIds(tx, organizationId)
+  const out = new Map<string, NotificationAttemptReason>()
+  for (const c of candidates) {
+    const hold = shouldHoldNow(nowMs, zones.get(c.id) ?? 'UTC', {
+      digestCadence: c.digestCadence,
+      quiet: c.quiet,
+    })
+    if (hold) out.set(c.id, c.digestCadence !== null ? 'digest' : 'quiet_hours')
   }
-  return organizationMemberIds(tx, organizationId)
+  return out
 }
 
 /**
- * Sent from the ledger: never push (the Expo transport owns it), email only
- * when this tick has a queue to hand it to, never a disabled channel.
+ * Sent from the ledger: never push (no transport yet), email only when this
+ * tick has a queue to hand it to, never a disabled channel.
  */
 function deliverableHere(
   channel: NotificationChannelRecord | null,
@@ -264,11 +621,9 @@ function deliverableHere(
   if (channel?.disabledAt !== null) return false
   if (channel.kind === 'push') return false
   // An email address is delivered to only once it is known to be the
-  // recipient's (decided 2026-09-18): the route sets `verified_at` when the
-  // address is the caller's own or a member's account email; anything else
-  // waits for a verification flow that does not exist yet.
+  // recipient's (decided 2026-09-18); the account email channel always is.
   if (channel.kind === 'email') {
-    return deps.email !== undefined && channel.verifiedAt !== null
+    return deps.email !== undefined && (channel.verifiedAt !== null || channel.isPrimary)
   }
   return true
 }
@@ -280,8 +635,10 @@ export function consoleUrlFor(
 ): string | null {
   if (!base) return null
   const root = base.endsWith('/') ? base.slice(0, -1) : base
-  if (payload.organizationId && payload.targetType === 'server' && payload.targetId) {
-    return `${root}/${payload.organizationId}/servers/${payload.targetId}`
+  const serverId =
+    payload.serverId ?? (payload.targetType === 'server' ? payload.targetId : null) ?? null
+  if (payload.organizationId && serverId) {
+    return `${root}/${payload.organizationId}/servers/${serverId}`
   }
   if (payload.organizationId) {
     return `${root}/${payload.organizationId}/overview`
@@ -289,8 +646,66 @@ export function consoleUrlFor(
   return root
 }
 
+/** The settings screen a "manage all settings" link opens. */
+export function settingsUrlFor(base: string, organizationId: string | null): string {
+  const root = base.endsWith('/') ? base.slice(0, -1) : base
+  return organizationId
+    ? `${root}/${organizationId}/manage?tab=notifications`
+    : `${root}/account/notifications`
+}
+
+/**
+ * RFC 8058 unsubscribe and the filtering headers for one email copy. A
+ * personal copy's link names where the event happened, its topic and its
+ * category, so the unsubscribe can find the row that sent it (`unsubscribe.ts`);
+ * a digest's link stops all notification email to that channel. A shared
+ * channel's copy carries no unsubscribe link (the organization's settings own
+ * it) but still says why it came.
+ */
+export async function mailHeadersFor(
+  secrets: DerivedSecretsConfig | undefined,
+  base: string | null | undefined,
+  channel: NotificationChannelRecord,
+  payload: DeliveryPayload,
+  opts: { digest?: boolean } = {}
+): Promise<NotificationMailHeaders> {
+  const headers: NotificationMailHeaders = {
+    organizationId: payload.organizationId,
+    projectId: payload.projectId ?? null,
+    event: payload.event,
+    reason: channel.scope === 'user' ? 'preference' : `${channel.scope}-channel`,
+  }
+  if (!base) return headers
+  headers.settingsUrl = settingsUrlFor(base, payload.organizationId)
+  if (channel.scope !== 'user' || !channel.userId || !secrets) return headers
+  const channelId = channel.isPrimary ? null : channel.id
+  const inOrganization = payload.organizationId !== null
+  const token = await sealUnsubscribeToken(
+    secrets,
+    opts.digest
+      ? unsubscribeClaims({ userId: channel.userId, channelId, everything: true })
+      : unsubscribeClaims({
+          userId: channel.userId,
+          organizationId: payload.organizationId,
+          projectId: inOrganization ? (payload.projectId ?? null) : null,
+          environmentId: inOrganization ? (payload.environmentId ?? null) : null,
+          serviceId: inOrganization ? (payload.serviceId ?? null) : null,
+          serverId: inOrganization ? (payload.serverId ?? null) : null,
+          destinationId: inOrganization ? (payload.destinationId ?? null) : null,
+          topicCode: payload.event,
+          categoryCode: payload.categoryCode ?? null,
+          channelId,
+        })
+  )
+  headers.unsubscribeUrl = unsubscribeUrl(base, token)
+  headers.unsubscribePageUrl = unsubscribePageUrl(base, token)
+  return headers
+}
+
 async function enqueueEmail(
   email: EmitEmail,
+  secrets: DerivedSecretsConfig | undefined,
+  channel: NotificationChannelRecord,
   to: string,
   payload: DeliveryPayload
 ): Promise<SendOutcome> {
@@ -306,6 +721,7 @@ async function enqueueEmail(
     organizationName: payload.organizationName,
     consoleUrl: consoleUrlFor(email.consoleBaseUrl, payload),
     at: payload.at,
+    mail: await mailHeadersFor(secrets, email.consoleBaseUrl, channel, payload),
   }
   try {
     await email.queue.enqueue(job)
@@ -318,17 +734,69 @@ async function enqueueEmail(
   }
 }
 
+type AttemptOutcome = SendOutcome | { ok: false; error: string; drop: NotificationAttemptReason }
+
+type AddressNow = { address: string } | { address: null; drop?: NotificationAttemptReason }
+
+/**
+ * The address a copy goes to now: the account's current sign-in address for
+ * the built-in email channel, else the channel's own (unsealed). For an
+ * organization email channel, null with `no_access` when the address no
+ * longer belongs to a member (a person who left must stop getting mail). An
+ * email address that was suppressed since the copy was written (a retried or
+ * held copy) is null with `bounced`.
+ */
+export async function deliveryAddress(
+  db: Db,
+  secrets: DerivedSecretsConfig | undefined,
+  channel: NotificationChannelRecord
+): Promise<AddressNow> {
+  const resolved = await addressOnRecord(db, secrets, channel)
+  if (resolved.address === null || channel.kind !== 'email') return resolved
+  const address = resolved.address
+  const suppressed = await runWithDbTimeout(db, (tx) => suppressedAddresses(tx, [address]))
+  return suppressed.size > 0 ? { address: null, drop: 'bounced' } : resolved
+}
+
+async function addressOnRecord(
+  db: Db,
+  secrets: DerivedSecretsConfig | undefined,
+  channel: NotificationChannelRecord
+): Promise<AddressNow> {
+  if (channel.kind === 'email' && channel.isPrimary) {
+    const accounts = await runWithDbTimeout(db, (tx) => accountEmails(tx, [channel.userId ?? '']))
+    const account = accounts.get(channel.userId ?? '')
+    if (!account?.verified) return { address: null, drop: 'unverified' }
+    return { address: account.email }
+  }
+  const address = await resolveChannelAddress(secrets, channel)
+  if (address === null) return { address: null }
+  if (channel.kind === 'email' && channel.scope === 'organization' && channel.organizationId) {
+    const members = await runWithDbTimeout(db, (tx) =>
+      organizationMemberEmails(tx, channel.organizationId!)
+    )
+    if (!members.has(address.trim().toLowerCase())) return { address: null, drop: 'no_access' }
+  }
+  return { address }
+}
+
 async function attemptOne(
+  db: Db,
   secrets: DerivedSecretsConfig | undefined,
   channel: NotificationChannelRecord,
   delivery: NotificationDeliveryRecord,
   deps: EmitDeps
-): Promise<SendOutcome> {
-  const address = await resolveChannelAddress(secrets, channel)
-  if (address === null) return { ok: false, error: 'address_unreadable' }
+): Promise<AttemptOutcome> {
+  const resolved = await deliveryAddress(db, secrets, channel)
+  if (resolved.address === null) {
+    return resolved.drop
+      ? { ok: false, error: resolved.drop, drop: resolved.drop }
+      : { ok: false, error: 'address_unreadable' }
+  }
+  const address = resolved.address
   if (channel.kind === 'email') {
     return deps.email
-      ? await enqueueEmail(deps.email, address, delivery.payload)
+      ? await enqueueEmail(deps.email, secrets, channel, address, delivery.payload)
       : { ok: false, error: 'no_email_queue' }
   }
   // Re-validated at send, not only at write: a stored address may predate a
@@ -370,7 +838,7 @@ async function attemptDeliveries(
       budgetSpent = true
       return
     }
-    const outcome = await attemptOne(secrets, channel, delivery, deps)
+    const outcome = await attemptOne(db, secrets, channel, delivery, deps)
     if (outcome.ok) sent += 1
     else failed += 1
     try {
@@ -388,8 +856,11 @@ async function attemptDeliveries(
 }
 
 /**
- * The maintenance tick's phase: retry failed deliveries whose time has come,
- * a bounded batch per tick. Same never-throws contract.
+ * The maintenance tick's phase, on both runtimes: finish any fan-out an emit
+ * left half-written, drop copies that must not go out any more (their scope
+ * was deleted, the person left or lost the role), then retry failed
+ * deliveries whose time has come, a bounded batch per tick. Same never-throws
+ * contract.
  */
 export async function retryDueDeliveries(
   db: Db,
@@ -397,7 +868,9 @@ export async function retryDueDeliveries(
   deps: EmitDeps = {},
   limit = 50
 ): Promise<{ attempted: number; sent: number; failed: number }> {
+  await finishInterruptedFanOuts(db, deps)
   try {
+    await runWithDbTimeout(db, (tx) => dropUndeliverableCopies(tx))
     const due = await runWithDbTimeout(db, (tx) =>
       claimDueDeliveries(tx, limit, { includeEmail: deps.email !== undefined })
     )

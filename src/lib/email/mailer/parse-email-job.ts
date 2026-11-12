@@ -1,4 +1,9 @@
-import type { EmailJob, NotificationDigestGroup, OtpType } from '../../../features/email/types.ts'
+import type {
+  EmailJob,
+  NotificationDigestGroup,
+  NotificationMailHeaders,
+  OtpType,
+} from '../../../features/email/types.ts'
 
 const VALID_OTP_TYPES = new Set<OtpType>(['sign-in', 'email-verification', 'forget-password'])
 
@@ -137,6 +142,8 @@ function parseNotificationDigest(
   if (!Array.isArray(job.groups) || !job.groups.every(isDigestGroup)) return null
   if (job.consoleUrl !== null && typeof job.consoleUrl !== 'string') return null
   if (typeof job.at !== 'string') return null
+  const mail = parseMailHeaders(job.mail)
+  if (mail === null) return null
   return {
     type: 'notification-digest',
     to,
@@ -147,7 +154,36 @@ function parseNotificationDigest(
     moreGroups: job.moreGroups,
     consoleUrl: job.consoleUrl,
     at: job.at,
+    ...(mail ? { mail } : {}),
   }
+}
+
+const MAIL_HEADER_KEYS = [
+  'unsubscribeUrl',
+  'unsubscribePageUrl',
+  'settingsUrl',
+  'organizationId',
+  'projectId',
+  'event',
+  'reason',
+] as const
+
+/**
+ * The optional unsubscribe and filtering fields: absent (an older job) is
+ * fine and yields undefined; a present value of the wrong shape refuses the
+ * job (null).
+ */
+function parseMailHeaders(raw: unknown): NotificationMailHeaders | undefined | null {
+  if (raw === undefined) return undefined
+  if (!isRecord(raw)) return null
+  const out: NotificationMailHeaders = {}
+  for (const key of MAIL_HEADER_KEYS) {
+    const value = raw[key]
+    if (value === undefined) continue
+    if (value !== null && typeof value !== 'string') return null
+    out[key] = value
+  }
+  return out
 }
 
 function parseInvitation(job: Record<string, unknown>, to: string, from: string): EmailJob | null {
@@ -180,6 +216,8 @@ function parseNotification(
   if (job.organizationName !== null && typeof job.organizationName !== 'string') return null
   if (job.consoleUrl !== null && typeof job.consoleUrl !== 'string') return null
   if (typeof job.at !== 'string') return null
+  const mail = parseMailHeaders(job.mail)
+  if (mail === null) return null
   return {
     type: 'notification',
     to,
@@ -192,6 +230,7 @@ function parseNotification(
     organizationName: job.organizationName,
     consoleUrl: job.consoleUrl,
     at: job.at,
+    ...(mail ? { mail } : {}),
   }
 }
 

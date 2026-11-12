@@ -6,7 +6,7 @@
  * Doctrine: refuse at the API boundary with a 400 naming the field, never
  * sanitize. The daemon runs the same rules again in its renderers
  * (`turbopaneld/src/contracts/config-values.ts`); the sink table lives in
- * `AGENTS.md` ("Tenant values in root-loaded configs").
+ * `AGENTS.md` in this directory ("Tenant values in root-loaded configs").
  */
 
 import {

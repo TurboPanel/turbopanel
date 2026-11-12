@@ -1,6 +1,11 @@
-import { PROJECT_ICONS } from '../../features/projects/vocabulary.ts'
-import { buildResourceCrudPaths } from './shared.ts'
+import { ICON_KEYS } from '../../lib/icons.ts'
+import { buildResourceCrudPaths, withConfirmName } from './shared.ts'
 import { deleteOperation, deletePreviewPath, withDeleteOperation } from './delete-plan.ts'
+
+const PROJECT_ICON_DESCRIPTION = `A key from the fixed icon list (${ICON_KEYS.join(', ')}) or one emoji.`
+
+const PROJECT_EMOJI_REFUSAL =
+  'An emoji while the organization has emoji icons off is refused with 422 and `{ "error": "emoji_icons_off", "message": "…" }`; anything else invalid with 400.'
 
 export const projectSchemas = {
   ProjectRow: {
@@ -25,9 +30,7 @@ export const projectSchemas = {
       icon: {
         type: 'string',
         nullable: true,
-        enum: PROJECT_ICONS,
-        description:
-          'Icon key from the fixed list the project screens offer; null means the default. A managed project ignores it and always shows the managed icon.',
+        description: `${PROJECT_ICON_DESCRIPTION} null means the default. A managed project ignores it and always shows the managed icon; while the organization has emoji icons off, the screens show the default instead of an emoji.`,
       },
       metadata: {
         type: 'object',
@@ -91,8 +94,7 @@ export const projectSchemas = {
       icon: {
         type: 'string',
         nullable: true,
-        enum: PROJECT_ICONS,
-        description: 'Optional icon key; ignored for managed projects.',
+        description: `Optional. ${PROJECT_ICON_DESCRIPTION} Ignored for managed projects. ${PROJECT_EMOJI_REFUSAL}`,
       },
       options: {
         type: 'object',
@@ -139,9 +141,7 @@ export const projectSchemas = {
       icon: {
         type: 'string',
         nullable: true,
-        enum: PROJECT_ICONS,
-        description:
-          'Icon key from the fixed list, or null for the default. Ignored for managed projects.',
+        description: `${PROJECT_ICON_DESCRIPTION} null sets the default. Ignored for managed projects. ${PROJECT_EMOJI_REFUSAL}`,
       },
       workspaceId: {
         type: 'string',
@@ -206,10 +206,14 @@ export const projectPaths = {
   '/api/client/v1/projects/{id}': withDeleteOperation(
     projectCrudPaths,
     '/api/client/v1/projects/{id}',
-    deleteOperation(
-      'Projects',
+    withConfirmName(
+      deleteOperation(
+        'Projects',
+        'project',
+        "Stops every environment's services on their servers, then removes the project's rows in one step: environments, services, hostings (compose-declared ones too), volumes set to be deleted with it. Each folder on a server becomes `removing` and the server is asked to remove it (asked again until it confirms); a volume set to keep its data keeps its folder. The project's Hosting Accounts that nothing else uses are removed (Linux user and home) once their folders are gone and each server has confirmed the account removed; the others are kept and listed. Refused, with nothing changed, while a managed database remains, a deploy is running, a shared service or volume is used by another project, or a server the delete has to reach is offline. Refused with 400 `confirm_name_required` unless `confirmName` is exactly its name."
+      ),
       'project',
-      "Stops every environment's services on their servers, then removes the project's rows in one step: environments, services, hostings (compose-declared ones too), volumes set to be deleted with it. Each folder on a server becomes `removing` and the server is asked to remove it (asked again until it confirms); a volume set to keep its data keeps its folder. The project's Hosting Accounts that nothing else uses are removed (Linux user and home) once their folders are gone and each server has confirmed the account removed; the others are kept and listed. Refused, with nothing changed, while a managed database remains, a deploy is running, a shared service or volume is used by another project, or a server the delete has to reach is offline."
+      'its name, else its id'
     )
   ),
   '/api/client/v1/projects/{id}/delete-preview': deletePreviewPath(

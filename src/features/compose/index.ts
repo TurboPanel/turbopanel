@@ -194,6 +194,7 @@ export {
   type ComposeSiteServiceExtension,
   type ComposeSourceBuildKind,
   isHostNativeServiceKind,
+  isImageBuildKind,
   isNodeComposeService,
   isSafeRoot,
   isSiteComposeService,
@@ -246,6 +247,11 @@ export {
 } from './apply-variables.ts'
 export { type DeploySecretPlanEntry } from './secret-files.ts'
 export {
+  DB_REF_FIELDS,
+  type DbRefField,
+  type DbVariableRef,
+  formatVariableRef,
+  isDbRef,
   type ParsedVariableRef,
   parseExactVariableRef,
   type VariableRefScope,

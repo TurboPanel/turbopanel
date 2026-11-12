@@ -19,10 +19,13 @@ import { REENCRYPT_COVERED_PLACES } from './reencrypt-secrets.ts'
 const test = Deno.test.bind(Deno)
 
 const NOT_SEALED: Readonly<Record<string, string>> = {
+  'server.sealing_key_kid': 'public key fingerprint, not secret material',
+  'server.sealing_key_pub': 'public key, not secret material',
   'account.password': 'Argon2id hash, not reversible',
   'forge.webhook_token_hash': 'hash',
   'invitation.token_hash': 'hash',
   [['license', 'token'].join('.')]: 'one-way hash of the license value',
+  'ticket.token': 'one-way Argon2id hash of the ticket secret',
   'session.token': 'opaque session id, not a sealed envelope',
   'network.compose_key': 'compose network name, not a credential',
   'storage.compose_volume_key': 'compose volume name, not a credential',
@@ -33,6 +36,11 @@ const NOT_SEALED: Readonly<Record<string, string>> = {
   'label.key': 'label name',
   'setting.key': 'setting name',
   'variable.key': 'variable name',
+  'device.token_hash': 'SHA-256 hash of the push token',
+  'visitor.password_hash': 'bcrypt hash a web server checks, not a sealed envelope',
+  // Nothing writes `device` yet: the push transport that seals tokens adds its
+  // re-encrypt stage in the same change and removes this entry.
+  'device.token': 'no writer yet; the push transport adds the sweep stage',
 }
 
 const NAME_PATTERN = /envelope|secret|preshared|private_key|key_pem|password|token/i

@@ -6,9 +6,15 @@ import {
   generateDeliveryId,
   generateRequestId,
   type InstanceAcmeWireSettings,
+  type InstanceEdgeTrustWire,
   type InstanceHostnameWireEntry,
 } from '../contracts/cell-protocol.ts'
 import { cellTrace } from '../lib/logger.ts'
+import {
+  isAllowedPublicPort,
+  isPublicPort,
+  SELF_HOSTED_PUBLIC_PORT_ERROR,
+} from '../features/install/ingress-modes.ts'
 import { PublicUrlsApplyPayloadError } from './public-urls-apply-payload.ts'
 import { InstanceSecretSealingError } from '../features/install/instance-secret-sealing.ts'
 import {
@@ -36,6 +42,7 @@ export type PublicUrlsApplyPayload = {
   urls: string[]
   hostnames?: InstanceHostnameWireEntry[]
   instanceAcme?: InstanceAcmeWireSettings
+  edgeTrust?: InstanceEdgeTrustWire
 }
 
 function normalizePublicUrlsApply(
@@ -59,6 +66,7 @@ function tracePublicUrlsPayload(payload: PublicUrlsApplyPayload): Record<string,
         }
       : {}),
     ...(payload.instanceAcme ? { instanceAcme: payload.instanceAcme } : {}),
+    ...(payload.edgeTrust ? { edgeTrust: { hash: payload.edgeTrust.hash } } : {}),
   }
 }
 
@@ -248,6 +256,8 @@ export type ParsedInstanceHostname = {
   host: string
   source: InstanceHostnameSource
   uploadedCertId: string | null
+  publicPort?: number
+  isPrimary?: boolean
 }
 
 export function parseInstanceHostnamesBody(body: unknown):
@@ -294,14 +304,37 @@ function parseHostnameEntry(entry: unknown):
   ) {
     return { ok: false, error: 'uploadedCertId must be a string or null' }
   }
+  const ingress = parseIngressChoices(entry as { publicPort?: unknown; isPrimary?: unknown })
+  if (!ingress.ok) return ingress
   return {
     ok: true,
     hostname: {
       host,
       source: source as InstanceHostnameSource,
       uploadedCertId: typeof uploadedCertId === 'string' ? uploadedCertId : null,
+      ...ingress.fields,
     },
   }
+}
+
+/** The optional public port and primary flag of one hostname entry. */
+function parseIngressChoices(entry: {
+  publicPort?: unknown
+  isPrimary?: unknown
+}):
+  | { ok: true; fields: { publicPort?: number; isPrimary?: boolean } }
+  | { ok: false; error: string } {
+  const { publicPort, isPrimary } = entry
+  if (publicPort !== undefined && !isPublicPort(publicPort)) {
+    return { ok: false, error: 'publicPort must be a whole number from 1 to 65535' }
+  }
+  if (publicPort !== undefined && !isAllowedPublicPort(publicPort)) {
+    return { ok: false, error: SELF_HOSTED_PUBLIC_PORT_ERROR }
+  }
+  if (isPrimary !== undefined && typeof isPrimary !== 'boolean') {
+    return { ok: false, error: 'isPrimary must be true or false' }
+  }
+  return { ok: true, fields: { publicPort, isPrimary } }
 }
 
 export function parseCertificateUploadBody(body: unknown):
@@ -463,6 +496,7 @@ export async function waitForPublicUrlsApply(
     urls: payload.urls,
     ...(payload.hostnames ? { hostnames: payload.hostnames } : {}),
     ...(payload.instanceAcme ? { instanceAcme: payload.instanceAcme } : {}),
+    ...(payload.edgeTrust ? { edgeTrust: payload.edgeTrust } : {}),
   }
   cellTrace('request-enqueued', {
     requestId,

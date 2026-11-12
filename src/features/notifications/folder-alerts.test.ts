@@ -16,9 +16,12 @@ import {
   folder,
   grant,
   notification,
+  notificationPreference,
   organization,
   principal,
   server,
+  team,
+  teammate,
   user,
 } from '../../db/schema.ts'
 import { alertNewOrphanFolders } from './folder-alerts.ts'
@@ -74,6 +77,16 @@ async function withWorld(fn: (world: World) => Promise<void>): Promise<void> {
     actorId: manager!.id,
     permission: 'organization:manage',
   })
+  // A manager is a member who holds the grant, and hears only what they turned
+  // on (owner decision 2026-11-06): the bell, here.
+  const [managers] = await db
+    .insert(team)
+    .values({ name: 'Orphan Alert Managers', organizationId: org!.id })
+    .returning({ id: team.id })
+  await db.insert(teammate).values({ teamId: managers!.id, userId: manager!.id })
+  await db
+    .insert(notificationPreference)
+    .values({ userId: manager!.id, kind: 'inbox', level: 'all' })
   const now = new Date().toISOString()
   const servers = await db
     .insert(server)
@@ -367,7 +380,7 @@ test('a manager really receives the bell row with the plain sentence', async () 
       .where(
         and(
           eq(notification.organizationId, world.organizationId),
-          eq(notification.event, 'folder.orphans_found')
+          eq(notification.topicCode, 'folder.orphans_found')
         )
       )
     assertEquals(rows.length, 1)

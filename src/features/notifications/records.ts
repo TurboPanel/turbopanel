@@ -31,12 +31,16 @@ import {
 } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
+  backupTarget,
   grant,
   notification,
   notificationChannel,
   notificationDelivery,
   notificationRule,
+  notificationWatermark,
   organization,
+  project,
+  server,
   team,
   teammate,
   user,
@@ -47,22 +51,47 @@ import {
   type QuietHours,
   usableTimeZone,
 } from './windows.ts'
+import { ensureNotificationCatalog } from './fanout-records.ts'
 import {
-  NOTIFICATION_RULE_ANY_EVENT,
   type NotificationContext,
   type NotificationEvent,
   type NotificationSeverity,
+  ruleEventOf,
+  ruleTopicOf,
   severityAtLeast,
 } from './events.ts'
+import type { NotificationAttemptReason } from './vocabulary.ts'
 
-function channelOwnerFilter(organizationId: string | null, memberIds: readonly string[]) {
-  if (!organizationId) return eq(notificationChannel.scope, 'instance')
-  const memberClause =
-    memberIds.length > 0 ? inArray(notificationChannel.userId, memberIds) : sql`false`
+/**
+ * Shared channels only: personal channels are decided by preferences
+ * (`emit.ts`). An install event (no organization) reaches control plane
+ * channels whose rule names no organization. An organization's event reaches
+ * that organization's own channels, and control plane channels only when the
+ * channel is switched to hear every organization or a rule names that
+ * organization.
+ */
+function sharedRouteFilter(organizationId: string | null) {
+  if (!organizationId) {
+    return and(eq(notificationChannel.scope, 'instance'), isNull(notificationRule.organizationId))
+  }
   return or(
-    eq(notificationChannel.scope, 'instance'),
-    eq(notificationChannel.organizationId, organizationId),
-    memberClause
+    and(
+      eq(notificationChannel.organizationId, organizationId),
+      or(
+        isNull(notificationRule.organizationId),
+        eq(notificationRule.organizationId, organizationId)
+      )
+    ),
+    and(
+      eq(notificationChannel.scope, 'instance'),
+      or(
+        eq(notificationRule.organizationId, organizationId),
+        and(
+          isNull(notificationRule.organizationId),
+          eq(notificationChannel.isAllOrganizationsNotified, true)
+        )
+      )
+    )
   )
 }
 
@@ -85,6 +114,7 @@ export const NOTIFICATION_DELIVERY_STATUSES = [
   'failed',
   'abandoned',
   'held',
+  'suppressed',
 ] as const
 export type NotificationDeliveryStatus = (typeof NOTIFICATION_DELIVERY_STATUSES)[number]
 
@@ -118,6 +148,10 @@ export type NotificationChannelRecord = {
   digestCadence: NotificationDigestCadence | null
   /** null = no quiet hours. */
   quiet: QuietHours | null
+  /** The built-in account email channel: follows the sign-in address, cannot be deleted. */
+  isPrimary: boolean
+  /** Control plane channels only: also hears every organization's events, not just install events. */
+  allOrganizations: boolean
 }
 
 export type NotificationRuleRecord = {
@@ -127,7 +161,7 @@ export type NotificationRuleRecord = {
   minSeverity: NotificationSeverity
 }
 
-function asChannel(row: typeof notificationChannel.$inferSelect): NotificationChannelRecord {
+export function asChannel(row: typeof notificationChannel.$inferSelect): NotificationChannelRecord {
   return {
     id: row.id,
     scope: row.scope as NotificationChannelScope,
@@ -145,6 +179,8 @@ function asChannel(row: typeof notificationChannel.$inferSelect): NotificationCh
       row.quietStartMinute !== null && row.quietEndMinute !== null
         ? { startMinute: row.quietStartMinute, endMinute: row.quietEndMinute }
         : null,
+    isPrimary: row.isPrimary,
+    allOrganizations: row.isAllOrganizationsNotified,
   }
 }
 
@@ -160,6 +196,8 @@ export type CreateChannelInput = {
   signingSecret?: string | null
   createdByUserId?: string | null
   verifiedAt?: string | null
+  /** Control plane channels only (the database refuses it elsewhere): also hear every organization's events. */
+  isAllOrganizationsNotified?: boolean
 }
 
 export async function createNotificationChannel(
@@ -189,6 +227,7 @@ export async function createNotificationChannel(
       signingSecret,
       createdByUserId: input.createdByUserId ?? null,
       verifiedAt: input.verifiedAt ?? null,
+      isAllOrganizationsNotified: input.isAllOrganizationsNotified ?? false,
     })
     .returning()
   if (!row) throw new Error('notification channel insert returned no row')
@@ -304,6 +343,18 @@ export async function setChannelDisabled(db: Db, id: string, disabled: boolean):
     .where(eq(notificationChannel.id, id))
 }
 
+/** Switch whether a control plane channel also hears every organization's events. */
+export async function setChannelAllOrganizations(
+  db: Db,
+  id: string,
+  value: boolean
+): Promise<void> {
+  await db
+    .update(notificationChannel)
+    .set({ isAllOrganizationsNotified: value })
+    .where(eq(notificationChannel.id, id))
+}
+
 /** Digest cadence and quiet hours for one channel; `null` clears either. Replaces both together. */
 export async function setChannelHoldSettings(
   db: Db,
@@ -404,24 +455,29 @@ export async function listRulesForChannel(
   return rows.map((r) => ({
     id: r.id,
     channelId: r.channelId,
-    event: r.event,
+    event: ruleEventOf(r.topicCode),
     minSeverity: r.minSeverity as NotificationSeverity,
   }))
 }
 
-/** Replace a channel's rules wholesale — the preferences screen saves the matrix, not a diff. */
+/**
+ * Replace a channel's rules wholesale — the preferences screen saves the matrix, not a diff.
+ * A rule names one topic, or none for every event (`*`); the topic has a foreign
+ * key to the catalog, so the catalog is made sure of before the rows are written.
+ */
 export async function replaceRulesForChannel(
   db: Db,
   channelId: string,
   rules: ReadonlyArray<{ event: string; minSeverity: NotificationSeverity }>
 ): Promise<void> {
+  if (rules.length > 0) await ensureNotificationCatalog(db)
   await db.transaction(async (tx) => {
     await tx.delete(notificationRule).where(eq(notificationRule.channelId, channelId))
     if (rules.length > 0) {
       await tx.insert(notificationRule).values(
         rules.map((r) => ({
           channelId,
-          event: r.event,
+          topicCode: ruleTopicOf(r.event),
           minSeverity: r.minSeverity,
         }))
       )
@@ -430,23 +486,20 @@ export async function replaceRulesForChannel(
 }
 
 /**
- * Every enabled channel a rule routes this event to, within the scope the
- * event belongs to: the organization's own channels and the user channels of
- * the people the event is for, plus instance channels for everything.
- *
- * `recipientIds` is the event's audience — the same people who get the inbox
- * row. A personal channel is a person's own copy of their inbox, so it may
- * only carry what that person may see: a managers-only event never reaches a
- * plain member's user channel.
+ * Every enabled shared channel a rule routes this event to: the
+ * organization's own channels, plus control plane channels for install
+ * events (and for an organization's events only when switched to all
+ * organizations or named by the rule). Personal channels are not routed by rules any more; preferences
+ * decide them (`emit.ts`). A rule names no topic and no category (every event),
+ * one topic, or one category; a disabled or muted route sends nothing.
  */
 export async function channelsForEvent(
   db: Db,
   event: NotificationEvent,
   severity: NotificationSeverity,
   organizationId: string | null,
-  recipientIds: readonly string[]
+  categoryCode: string | null = null
 ): Promise<NotificationChannelRecord[]> {
-  const ownerFilter = channelOwnerFilter(organizationId, recipientIds)
   const rows = await db
     .select({ channel: notificationChannel, rule: notificationRule })
     .from(notificationRule)
@@ -454,10 +507,14 @@ export async function channelsForEvent(
     .where(
       and(
         isNull(notificationChannel.disabledAt),
-        ownerFilter,
+        ne(notificationChannel.scope, 'user'),
+        sharedRouteFilter(organizationId),
+        eq(notificationRule.isEnabled, true),
+        or(isNull(notificationRule.endsAt), sql`${notificationRule.endsAt} <= now()`),
         or(
-          eq(notificationRule.event, NOTIFICATION_RULE_ANY_EVENT),
-          eq(notificationRule.event, event)
+          and(isNull(notificationRule.topicCode), isNull(notificationRule.categoryCode)),
+          eq(notificationRule.topicCode, event),
+          categoryCode ? eq(notificationRule.categoryCode, categoryCode) : undefined
         )
       )
     )
@@ -517,8 +574,8 @@ export async function organizationManagerIds(db: Db, organizationId: string): Pr
       .where(inArray(teammate.teamId, teamIds))
     for (const m of members) ids.add(m.userId)
   }
-  // Instance administrators see every organization; they hear about it too.
-  for (const admin of await instanceAdminIds(db)) ids.add(admin)
+  // No administrator bypass (owner decision 2026-11-06): an administrator hears
+  // an organization they belong to, or every one once they switch that on.
   return [...ids]
 }
 
@@ -565,8 +622,15 @@ export type NotificationInsert = {
   targetType?: string | null
   targetId?: string | null
   context?: NotificationContext | null
+  eventId: string
+  projectId?: string | null
+  environmentId?: string | null
+  serviceId?: string | null
+  serverId?: string | null
+  destinationId?: string | null
 }
 
+/** One inbox row per event and person; a re-run fan-out writes nothing twice. */
 export async function insertNotifications(db: Db, rows: NotificationInsert[]): Promise<number> {
   if (rows.length === 0) return 0
   const inserted = await db
@@ -575,15 +639,22 @@ export async function insertNotifications(db: Db, rows: NotificationInsert[]): P
       rows.map((r) => ({
         userId: r.userId,
         organizationId: r.organizationId,
-        event: r.event,
+        topicCode: r.event,
         severity: r.severity,
         title: r.title,
         body: r.body,
         targetType: r.targetType ?? null,
         targetId: r.targetId ?? null,
         context: r.context ?? null,
+        eventId: r.eventId,
+        projectId: r.projectId ?? null,
+        environmentId: r.environmentId ?? null,
+        serviceId: r.serviceId ?? null,
+        serverId: r.serverId ?? null,
+        destinationId: r.destinationId ?? null,
       }))
     )
+    .onConflictDoNothing()
     .returning({ id: notification.id })
   return inserted.length
 }
@@ -598,8 +669,48 @@ export type NotificationRecord = {
   body: string | null
   targetType: string | null
   targetId: string | null
+  projectId: string | null
+  environmentId: string | null
+  serviceId: string | null
+  serverId: string | null
+  destinationId: string | null
   readAt: string | null
+  /** The thing the row is about is gone; the row reads on, its link does not. */
+  targetDeleted: boolean
 }
+
+/**
+ * Inbox rows a person may still see: install events, and organization events
+ * only while they belong to that organization (or, as an administrator, have
+ * chosen to hear every organization). A former member's old rows stay hidden
+ * until retention removes them.
+ */
+function visibleToUser(userId: string) {
+  return sql`(${notification.organizationId} IS NULL
+    OR EXISTS (
+      SELECT 1 FROM ${teammate} tm JOIN ${team} t ON t.id = tm.team_id
+      WHERE tm.user_id = ${userId}::uuid AND t.organization_id = ${notification.organizationId}
+    )
+    OR EXISTS (
+      SELECT 1 FROM ${user} u WHERE u.id = ${userId}::uuid
+        AND u.role IN ('admin', 'superadmin') AND u.is_all_organizations_notified
+    ))`
+}
+
+/** The person's mark-all-read time, or the epoch. */
+function readThrough(userId: string) {
+  return sql`coalesce((SELECT w.read_through FROM ${notificationWatermark} w
+    WHERE w.user_id = ${userId}::uuid AND w.organization_id IS NULL), '-infinity'::timestamptz)`
+}
+
+/** True when the row's target (server or backup target) no longer exists. */
+const targetDeletedSql = sql<boolean>`(
+  (${notification.serverId} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${server} s WHERE s.id = ${notification.serverId}))
+  OR (${notification.destinationId} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${backupTarget} d WHERE d.id = ${notification.destinationId}))
+  OR (${notification.projectId} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${project} p WHERE p.id = ${notification.projectId}))
+  OR (${notification.serverId} IS NULL AND ${notification.targetType} = 'server' AND ${notification.targetId} IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM ${server} s WHERE s.id = ${notification.targetId}))
+)`
 
 export async function listNotificationsForUser(
   db: Db,
@@ -608,51 +719,121 @@ export async function listNotificationsForUser(
 ): Promise<NotificationRecord[]> {
   const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100)
   const rows = await db
-    .select()
+    .select({
+      row: notification,
+      watermark: sql<string | null>`nullif(${readThrough(userId)}, '-infinity'::timestamptz)`,
+      targetDeleted: targetDeletedSql,
+    })
     .from(notification)
     .where(
       and(
         eq(notification.userId, userId),
         isNull(notification.dismissedAt),
+        visibleToUser(userId),
         opts.before ? lt(notification.createdAt, opts.before) : undefined
       )
     )
     .orderBy(desc(notification.createdAt))
     .limit(limit)
-  return rows.map((r) => ({
+  return rows.map(({ row: r, watermark, targetDeleted }) => ({
     id: r.id,
     createdAt: r.createdAt,
     organizationId: r.organizationId,
-    event: r.event,
+    event: r.topicCode,
     severity: r.severity as NotificationSeverity,
     title: r.title,
     body: r.body,
     targetType: r.targetType,
     targetId: r.targetId,
-    readAt: r.readAt,
+    projectId: r.projectId,
+    environmentId: r.environmentId,
+    serviceId: r.serviceId,
+    serverId: r.serverId,
+    destinationId: r.destinationId,
+    readAt:
+      r.readAt ??
+      (watermark !== null && Date.parse(r.createdAt) <= Date.parse(watermark) ? watermark : null),
+    targetDeleted: targetDeleted === true,
   }))
 }
 
+/** Unread rows the badge counts, capped: the bell shows 99+ past that. */
+export const UNREAD_COUNT_CAP = 100
+
 export async function countUnreadForUser(db: Db, userId: string): Promise<number> {
-  const [row] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(notification)
-    .where(
-      and(
-        eq(notification.userId, userId),
-        isNull(notification.readAt),
-        isNull(notification.dismissedAt)
-      )
-    )
-  return row?.count ?? 0
+  const rows = await db.execute(sql`
+    SELECT count(*)::int AS count FROM (
+      SELECT 1 FROM ${notification}
+      WHERE ${notification.userId} = ${userId}::uuid
+        AND ${notification.readAt} IS NULL
+        AND ${notification.dismissedAt} IS NULL
+        AND ${notification.createdAt} > ${readThrough(userId)}
+        AND ${visibleToUser(userId)}
+      LIMIT ${UNREAD_COUNT_CAP}
+    ) capped
+  `)
+  const first = (rows as unknown as Array<{ count: number }>)[0]
+  return first?.count ?? 0
 }
 
-/** Mark the given rows (or every unread row when `ids` is empty) read for this user. */
+/**
+ * Cancel the held (quiet hours or digest) email copies of what the person has
+ * now read in the bell (owner decision 2026-11-06). Only their own copies (a
+ * shared channel's copy is the team's and stays), only email (a held chat or
+ * webhook copy still goes out), and only for events that have a bell row for
+ * them: with `'all'`, every event in their bell, never a held copy of an
+ * event the bell did not show (the bell off and an email digest on is a legal
+ * setup).
+ */
+async function cancelHeldCopies(db: Db, userId: string, eventIds: readonly string[] | 'all') {
+  if (eventIds !== 'all' && eventIds.length === 0) return
+  const inBell = db
+    .select({ eventId: notification.eventId })
+    .from(notification)
+    .where(eq(notification.userId, userId))
+  const emailChannels = db
+    .select({ id: notificationChannel.id })
+    .from(notificationChannel)
+    .where(and(eq(notificationChannel.userId, userId), eq(notificationChannel.kind, 'email')))
+  await db
+    .update(notificationDelivery)
+    .set({ status: 'abandoned', reason: 'read_in_app', nextAttemptAt: null })
+    .where(
+      and(
+        eq(notificationDelivery.userId, userId),
+        eq(notificationDelivery.status, 'held'),
+        inArray(notificationDelivery.channelId, emailChannels),
+        eventIds === 'all'
+          ? inArray(notificationDelivery.eventId, inBell)
+          : inArray(notificationDelivery.eventId, [...eventIds])
+      )
+    )
+}
+
+/** Most ids one mark-read request may name. */
+export const MARK_READ_MAX_IDS = 200
+
+/**
+ * Mark the given rows read for this person, or, with no ids, everything up to
+ * now: one watermark row instead of rewriting every unread row. Either way,
+ * held email copies of what was read are cancelled.
+ */
 export async function markNotificationsRead(
   db: Db,
   userId: string,
   ids: readonly string[]
 ): Promise<number> {
+  if (ids.length === 0) {
+    await db
+      .insert(notificationWatermark)
+      .values({ userId, organizationId: null, readThrough: sql`now()` })
+      .onConflictDoUpdate({
+        target: [notificationWatermark.userId, notificationWatermark.organizationId],
+        set: { readThrough: sql`now()`, updatedAt: sql`now()` },
+      })
+    await cancelHeldCopies(db, userId, 'all')
+    return 0
+  }
   const rows = await db
     .update(notification)
     .set({ readAt: sql`now()` })
@@ -660,10 +841,15 @@ export async function markNotificationsRead(
       and(
         eq(notification.userId, userId),
         isNull(notification.readAt),
-        ids.length > 0 ? inArray(notification.id, [...ids]) : undefined
+        inArray(notification.id, ids.slice(0, MARK_READ_MAX_IDS))
       )
     )
-    .returning({ id: notification.id })
+    .returning({ id: notification.id, eventId: notification.eventId })
+  await cancelHeldCopies(
+    db,
+    userId,
+    rows.map((r) => r.eventId)
+  )
   return rows.length
 }
 
@@ -672,7 +858,12 @@ export async function dismissNotification(db: Db, userId: string, id: string): P
     .update(notification)
     .set({ dismissedAt: sql`now()`, readAt: sql`coalesce(read_at, now())` })
     .where(and(eq(notification.userId, userId), eq(notification.id, id)))
-    .returning({ id: notification.id })
+    .returning({ id: notification.id, eventId: notification.eventId })
+  await cancelHeldCopies(
+    db,
+    userId,
+    rows.map((r) => r.eventId)
+  )
   return rows.length > 0
 }
 
@@ -689,6 +880,15 @@ export type DeliveryPayload = {
   context: NotificationContext
   /** ISO time the event happened. */
   at: string
+  /** The `event` row this delivery is a copy of. */
+  eventId: string
+  /** The catalogue category, for unsubscribe links and filtering headers. */
+  categoryCode?: string | null
+  projectId?: string | null
+  environmentId?: string | null
+  serviceId?: string | null
+  serverId?: string | null
+  destinationId?: string | null
 }
 
 export type NotificationDeliveryRecord = {
@@ -700,6 +900,9 @@ export type NotificationDeliveryRecord = {
   payload: DeliveryPayload
   status: NotificationDeliveryStatus
   attempts: number
+  /** The person a personal copy is for; null for a shared channel. */
+  userId: string | null
+  eventId: string
 }
 
 /**
@@ -712,16 +915,29 @@ export type NotificationDeliveryRecord = {
  */
 export const INLINE_ATTEMPT_GRACE_MS = 2 * 60_000
 
-function ledgerRow(channelId: string, payload: DeliveryPayload, held: boolean) {
+/** One copy to write: the channel, who it is for, and whether it waits or is not sent at all. */
+export type LedgerCopy = {
+  channelId: string
+  userId?: string | null
+  /** `held` waits for a window; `suppressed` / `abandoned` are recorded and never sent. */
+  status?: 'pending' | 'held' | 'suppressed' | 'abandoned'
+  reason?: NotificationAttemptReason | null
+}
+
+function ledgerRow(copy: LedgerCopy, payload: DeliveryPayload) {
   const base = {
-    channelId,
+    channelId: copy.channelId,
+    userId: copy.userId ?? null,
+    eventId: payload.eventId,
+    topicCode: payload.event,
     organizationId: payload.organizationId,
-    event: payload.event,
     severity: payload.severity,
     payload,
     attempts: 0,
+    reason: copy.reason ?? null,
   }
-  if (held) {
+  const status = copy.status ?? 'pending'
+  if (status === 'held') {
     // Nothing retries a held row (no retry time); it is dated by the event, so
     // the window that closes after the event is the one that carries it.
     return {
@@ -731,6 +947,9 @@ function ledgerRow(channelId: string, payload: DeliveryPayload, held: boolean) {
       createdAt: payload.at,
     }
   }
+  if (status !== 'pending') {
+    return { ...base, status, nextAttemptAt: null }
+  }
   return {
     ...base,
     status: 'pending',
@@ -739,22 +958,22 @@ function ledgerRow(channelId: string, payload: DeliveryPayload, held: boolean) {
 }
 
 /**
- * Write the ledger row first — a crash between here and the send leaves a pending row, not silence.
- * A channel in `heldChannelIds` gets a `held` row instead: nothing retries it, the digest sweep
- * sends it when its window ends.
+ * Write the ledger rows first — a crash between here and the send leaves a
+ * pending row, not silence. A held row waits for the digest sweep; a
+ * suppressed or abandoned row records why the copy was not sent. One copy per
+ * event, person and channel (`uniq_attempt_copy`): a re-run fan-out writes
+ * nothing twice.
  */
-export async function insertPendingDeliveries(
+export async function insertDeliveries(
   db: Db,
-  channelIds: readonly string[],
-  payload: DeliveryPayload,
-  heldChannelIds: ReadonlySet<string> = new Set()
+  copies: readonly LedgerCopy[],
+  payload: DeliveryPayload
 ): Promise<NotificationDeliveryRecord[]> {
-  if (channelIds.length === 0) return []
+  if (copies.length === 0) return []
   const rows = await db
     .insert(notificationDelivery)
-    .values(
-      channelIds.map((channelId) => ledgerRow(channelId, payload, heldChannelIds.has(channelId)))
-    )
+    .values(copies.map((copy) => ledgerRow(copy, payload)))
+    .onConflictDoNothing()
     .returning()
   return rows.map(asDelivery)
 }
@@ -764,12 +983,19 @@ function asDelivery(row: typeof notificationDelivery.$inferSelect): Notification
     id: row.id,
     channelId: row.channelId,
     organizationId: row.organizationId,
-    event: row.event as NotificationEvent,
+    event: row.topicCode as NotificationEvent,
     severity: row.severity as NotificationSeverity,
     payload: row.payload as DeliveryPayload,
     status: row.status as NotificationDeliveryStatus,
     attempts: row.attempts,
+    userId: row.userId,
+    eventId: row.eventId,
   }
+}
+
+/** A copy dropped because its address is suppressed reads `suppressed`; any other drop is `abandoned`. */
+function droppedStatus(reason: NotificationAttemptReason): 'suppressed' | 'abandoned' {
+  return reason === 'bounced' ? 'suppressed' : 'abandoned'
 }
 
 /**
@@ -780,8 +1006,22 @@ function asDelivery(row: typeof notificationDelivery.$inferSelect): Notification
 export async function recordDeliveryAttempt(
   db: Db,
   id: string,
-  outcome: { ok: true } | { ok: false; error: string }
+  outcome: { ok: true } | { ok: false; error: string; drop?: NotificationAttemptReason }
 ): Promise<void> {
+  if (!outcome.ok && outcome.drop) {
+    // Not a failure to retry: the copy must not go out (no access any more,
+    // its scope is gone, the address is suppressed).
+    await db
+      .update(notificationDelivery)
+      .set({
+        status: droppedStatus(outcome.drop),
+        reason: outcome.drop,
+        nextAttemptAt: null,
+        lastError: outcome.error.slice(0, 200),
+      })
+      .where(eq(notificationDelivery.id, id))
+    return
+  }
   if (outcome.ok) {
     await db
       .update(notificationDelivery)
@@ -842,7 +1082,7 @@ export async function claimDueDeliveries(
   const now = new Date().toISOString()
   const kindFilter = opts.includeEmail
     ? or(
-        and(eq(notificationChannel.kind, 'email'), isNotNull(notificationChannel.verifiedAt)),
+        and(eq(notificationChannel.kind, 'email'), emailChannelIsSendable()),
         notInArray(notificationChannel.kind, ['email', 'push'])
       )
     : notInArray(notificationChannel.kind, ['email', 'push'])
@@ -867,6 +1107,15 @@ export async function claimDueDeliveries(
 }
 
 /**
+ * An email channel the sweeps may pick: a confirmed address, or the built-in
+ * account email channel, whose address and verification are the account's and
+ * are checked at send (`deliveryAddress`).
+ */
+function emailChannelIsSendable() {
+  return or(isNotNull(notificationChannel.verifiedAt), eq(notificationChannel.isPrimary, true))
+}
+
+/**
  * Enabled channels that have at least one held delivery — the digest sweep's batch.
  * Chat and webhook channels keep their addresses sealed, so a tick without the
  * data-encryption secrets leaves them out (`includeChat: false`): their rows
@@ -885,7 +1134,7 @@ export async function listChannelsWithHeldDeliveries(
         // Chat and webhook channels need nothing but the sweep; an email
         // channel also needs a verified address and a tick with a mail queue.
         opts.includeEmail
-          ? or(ne(notificationChannel.kind, 'email'), isNotNull(notificationChannel.verifiedAt))
+          ? or(ne(notificationChannel.kind, 'email'), emailChannelIsSendable())
           : ne(notificationChannel.kind, 'email'),
         ne(notificationChannel.kind, 'push'),
         opts.includeChat === false ? eq(notificationChannel.kind, 'email') : undefined,
@@ -949,13 +1198,20 @@ export async function claimHeldDeliveries(
 export async function finishDigestDeliveries(
   db: Db,
   ids: readonly string[],
-  outcome: { ok: true } | { ok: false; error: string }
+  outcome: { ok: true } | { ok: false; error: string; drop?: NotificationAttemptReason }
 ): Promise<void> {
   if (ids.length === 0) return
   const where = and(
     inArray(notificationDelivery.id, [...ids]),
     eq(notificationDelivery.status, 'pending')
   )
+  if (!outcome.ok && outcome.drop) {
+    await db
+      .update(notificationDelivery)
+      .set({ status: droppedStatus(outcome.drop), reason: outcome.drop, nextAttemptAt: null })
+      .where(where)
+    return
+  }
   if (outcome.ok) {
     await db
       .update(notificationDelivery)

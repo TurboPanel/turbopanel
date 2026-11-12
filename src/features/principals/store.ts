@@ -18,6 +18,7 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import {
   binding,
   environment,
+  cache,
   folder,
   login,
   managed,
@@ -148,7 +149,8 @@ export async function countPrincipalReferences(
   principalId: string
 ): Promise<PrincipalReferences> {
   const count = async (
-    table: typeof tenancy | typeof storage | typeof secret | typeof login | typeof folder
+    table:
+      typeof tenancy | typeof storage | typeof secret | typeof login | typeof folder | typeof cache
   ) => {
     const [row] = await db
       .select({ total: sql<number>`count(*)::int` })
@@ -168,6 +170,7 @@ export async function countPrincipalReferences(
     secrets: await count(secret),
     logins: await count(login),
     folders: await count(folder),
+    caches: await count(cache),
   }
 }
 

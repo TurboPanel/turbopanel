@@ -13,6 +13,7 @@ import { createNoopCommandQueue } from '../../features/commands/noop-command-que
 import { environment } from '../../db/schema.ts'
 import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 import type { PreparedDeployCompose } from './deploy-prepare.ts'
+import type { AuditEntry } from '../../features/audit/audit-records.ts'
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -33,6 +34,7 @@ import {
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
   registerEnvironmentLifecycleRoutes,
+  recordHostAccessUse,
   registerEnvironmentStopRoutes,
   runEnvironmentDeployForActor,
   tcpUdpIngressServiceRefs,
@@ -581,4 +583,86 @@ test('runEnvironmentDeployForActor returns 404 when the environment is missing',
   )
   assertEquals(result.status, 404)
   assertEquals(await result.json(), { error: 'Not found' })
+})
+
+const HOST_ACCESS_USE = {
+  action: 'compose.host_access.use',
+  fingerprint: 'a'.repeat(64),
+  issues: [{ path: 'services.web.volumes[0]' }],
+  approvedBy: 'user-1',
+  approvedAt: '2026-11-05T00:00:00.000Z',
+} as const
+
+const PUSH_SELECTION = { ref: 'refs/heads/main', commitSha: 'abc123', sourceId: 'repo-7' }
+const NO_SELECTION = { ref: null, commitSha: null, sourceId: null }
+
+function auditCollector(): {
+  audits: AuditEntry[]
+  record: (db: Db | undefined, entry: AuditEntry) => Promise<void>
+} {
+  const audits: AuditEntry[] = []
+  return {
+    audits,
+    record: (_db, entry) => {
+      audits.push(entry)
+      return Promise.resolve()
+    },
+  }
+}
+
+test('recordHostAccessUse writes one use row for a push under an approval and names the push', async () => {
+  const { audits, record } = auditCollector()
+  const db = {} as Db
+  const auth = { organizationId: 'org-1', actorId: 'repo-7', selection: PUSH_SELECTION }
+  await recordHostAccessUse(db, { projectId: 'proj-1' }, auth, 'env-1', record)
+  assertEquals(audits, [])
+
+  await recordHostAccessUse(
+    db,
+    { projectId: 'proj-1', hostAccessUse: HOST_ACCESS_USE },
+    auth,
+    'env-1',
+    record
+  )
+  assertEquals(audits.length, 1)
+  assertEquals(audits[0]?.action, 'compose.host_access.use')
+  assertEquals(audits[0]?.actorUserId, null)
+  assertEquals(audits[0]?.targetId, 'env-1')
+  assertEquals(audits[0]?.context?.automatedActorId, 'repo-7')
+  assertEquals(audits[0]?.context?.approvedBy, 'user-1')
+  assertEquals(audits[0]?.context?.trigger, 'push')
+  assertEquals(audits[0]?.context?.sourceId, 'repo-7')
+  assertEquals(audits[0]?.context?.branch, 'main')
+  assertEquals(audits[0]?.context?.commitSha, 'abc123')
+})
+
+test('recordHostAccessUse marks a run with no push behind it as started by the control plane', async () => {
+  const { audits, record } = auditCollector()
+  await recordHostAccessUse(
+    {} as Db,
+    { projectId: 'proj-1', hostAccessUse: HOST_ACCESS_USE },
+    { organizationId: 'org-1', actorId: 'actor-9', selection: NO_SELECTION },
+    'env-1',
+    record
+  )
+  assertEquals(audits.length, 1)
+  assertEquals(audits[0]?.context?.trigger, 'system')
+  assertEquals('commitSha' in (audits[0]?.context ?? {}), false)
+})
+
+test('recordHostAccessUse writes nothing for a hostings-only run: Compose is not brought up', async () => {
+  const { audits, record } = auditCollector()
+  await recordHostAccessUse(
+    {} as Db,
+    { projectId: 'proj-1', hostAccessUse: HOST_ACCESS_USE },
+    {
+      organizationId: 'org-1',
+      actorId: 'hosting-3',
+      selection: NO_SELECTION,
+      hostingsOnly: true,
+    },
+    'env-1',
+    record
+  )
+  assertEquals(audits, [])
 })

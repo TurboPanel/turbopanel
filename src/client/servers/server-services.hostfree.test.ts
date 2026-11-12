@@ -1,5 +1,9 @@
 import { assertEquals } from '@std/assert'
 import {
+  parseServerRuntimeMetadata,
+  publicServerRuntimeMetadata,
+} from '../../features/servers/server-metadata.ts'
+import {
   capServerServicesList,
   SERVER_SERVICES_LIST_CAP,
   serverServicesRemovalMessage,
@@ -252,4 +256,39 @@ test('serverServicesRuntimesFromMetadata maps stored facts including lsphp', () 
       { kind: 'lsphp', versions: ['8.4'] },
     ]
   )
+})
+
+test('php runtime keeps patch versions and the restart error, and never returns the site list', () => {
+  const environmentId = '11111111-1111-4111-8111-111111111111'
+  const runtimes = serverServicesRuntimesFromMetadata({
+    runtimes: {
+      php: {
+        series: ['8.4'],
+        versions: { '8.4': '8.4.27', '8.3': 'junk', 'x y': '1.2.3' },
+        sites: [{ environmentId, composeServiceName: 'web', series: '8.4', outdated: true }],
+        restartError: { series: '8.4', message: 'x'.repeat(900), at: '2026-11-11T00:00:00Z' },
+      },
+    },
+  })
+  assertEquals(runtimes.length, 1)
+  assertEquals(runtimes[0]?.patches, { '8.4': '8.4.27' })
+  assertEquals(runtimes[0]?.restartError?.message.length, 500)
+  assertEquals('sites' in (runtimes[0] ?? {}), false)
+})
+
+test('the client runtimes block never carries the per-site list', () => {
+  const environmentId = '11111111-1111-4111-8111-111111111111'
+  const parsed = parseServerRuntimeMetadata({
+    php: {
+      series: ['8.4'],
+      versions: { '8.4': '8.4.27' },
+      sites: [{ environmentId, composeServiceName: 'web', series: '8.4' }],
+    },
+  })
+  assertEquals(parsed?.php?.sites?.length, 1)
+  assertEquals(publicServerRuntimeMetadata(parsed)?.php, {
+    series: ['8.4'],
+    versions: { '8.4': '8.4.27' },
+  })
+  assertEquals(publicServerRuntimeMetadata(undefined), null)
 })

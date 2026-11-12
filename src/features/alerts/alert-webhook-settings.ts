@@ -57,6 +57,7 @@ import {
   OPERATOR_WEBHOOK_LABEL,
   replaceRulesForChannel,
   resolveChannelAddress,
+  setChannelAllOrganizations,
   updateChannelAddress,
 } from '../notifications/records.ts'
 
@@ -93,7 +94,7 @@ export class AlertWebhookUrlError extends Error {
  */
 export async function assertAlertWebhookUrlAllowed(
   raw: string,
-  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
+  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY
 ): Promise<string> {
   const url = raw.trim()
   const gate = { allowPrivate: policy.allowPrivateTargets }
@@ -102,6 +103,20 @@ export async function assertAlertWebhookUrlAllowed(
   const resolved = await resolveOutboundHostScope(url, gate)
   if (resolved) throw new AlertWebhookUrlError(resolved)
   return url
+}
+
+/**
+ * The operator webhook channel, switched on to hear every organization's
+ * events if it was made before that switch existed (it must keep paging when
+ * a server goes dark). Only this channel is touched; the update is guarded on
+ * the switch being off, so it is a no-op once on.
+ */
+async function switchedOnOperatorWebhook(db: Db): Promise<NotificationChannelRecord | null> {
+  const channel = await getOperatorWebhookChannel(db)
+  if (!channel || channel.allOrganizations) return channel
+  await setChannelAllOrganizations(db, channel.id, true)
+  console.info('operator alert webhook switched on to hear every organization')
+  return { ...channel, allOrganizations: true }
 }
 
 /**
@@ -117,9 +132,9 @@ export async function assertAlertWebhookUrlAllowed(
  */
 export async function adoptLegacyAlertWebhook(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<NotificationChannelRecord | null> {
-  const existing = await getOperatorWebhookChannel(db)
+  const existing = await switchedOnOperatorWebhook(db)
   const legacy = await getAlertWebhookUrl(db, dataEncryptionSecrets)
   if (!legacy) return existing
   if (existing) {
@@ -133,6 +148,8 @@ export async function adoptLegacyAlertWebhook(
     kind: 'webhook',
     label: OPERATOR_WEBHOOK_LABEL,
     address: legacy,
+    // The operator webhook pages on organization events such as a server going dark.
+    isAllOrganizationsNotified: true,
   })
   await replaceRulesForChannel(db, channel.id, [{ event: '*', minSeverity: 'info' }])
   await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
@@ -142,7 +159,7 @@ export async function adoptLegacyAlertWebhook(
 /** The operator webhook's plain URL — the channel first, the legacy setting adopted on the way. */
 export async function resolveOperatorWebhookUrl(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<string | null> {
   const channel = await adoptLegacyAlertWebhook(db, dataEncryptionSecrets)
   if (!channel) return null
@@ -159,7 +176,7 @@ export async function setOperatorWebhookUrl(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   url: string | null,
-  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
+  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY
 ): Promise<void> {
   const existing = await adoptLegacyAlertWebhook(db, dataEncryptionSecrets)
   if (url === null) {
@@ -168,9 +185,7 @@ export async function setOperatorWebhookUrl(
   }
   const allowed = await assertAlertWebhookUrlAllowed(url, policy)
   if (!dataEncryptionSecrets) {
-    throw new Error(
-      'data encryption secrets required to store the alert webhook URL',
-    )
+    throw new Error('data encryption secrets required to store the alert webhook URL')
   }
   if (existing) {
     await updateChannelAddress(db, dataEncryptionSecrets, existing.id, 'webhook', allowed)
@@ -181,6 +196,8 @@ export async function setOperatorWebhookUrl(
     kind: 'webhook',
     label: OPERATOR_WEBHOOK_LABEL,
     address: allowed,
+    // The operator webhook pages on organization events such as a server going dark.
+    isAllOrganizationsNotified: true,
   })
   await replaceRulesForChannel(db, channel.id, [{ event: '*', minSeverity: 'info' }])
 }
@@ -191,9 +208,10 @@ export async function setOperatorWebhookUrl(
  * naming, so returning the whole URL to a client would make every admin who
  * can open the page a holder of the credential.
  */
-export function describeAlertWebhook(
-  url: string | null,
-): { configured: boolean; origin: string | null } {
+export function describeAlertWebhook(url: string | null): {
+  configured: boolean
+  origin: string | null
+} {
   if (!url) return { configured: false, origin: null }
   try {
     return { configured: true, origin: new URL(url).origin }
@@ -210,7 +228,7 @@ export function describeAlertWebhook(
  */
 export async function getAlertWebhookUrl(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<string | null> {
   const rows = await db
     .select({ value: setting.value })
@@ -233,7 +251,7 @@ export async function setAlertWebhookUrl(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   url: string | null,
-  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
+  policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY
 ): Promise<void> {
   if (url === null) {
     await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
@@ -241,16 +259,11 @@ export async function setAlertWebhookUrl(
   }
   const allowed = await assertAlertWebhookUrlAllowed(url, policy)
   if (!dataEncryptionSecrets) {
-    throw new Error(
-      'data encryption secrets required to store the alert webhook URL',
-    )
+    throw new Error('data encryption secrets required to store the alert webhook URL')
   }
   const value = await encryptSecret(dataEncryptionSecrets, allowed)
-  await db
-    .insert(setting)
-    .values({ key: ALERT_WEBHOOK_URL_KEY, value })
-    .onConflictDoUpdate({
-      target: setting.key,
-      set: { value },
-    })
+  await db.insert(setting).values({ key: ALERT_WEBHOOK_URL_KEY, value }).onConflictDoUpdate({
+    target: setting.key,
+    set: { value },
+  })
 }

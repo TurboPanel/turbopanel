@@ -30,12 +30,35 @@ export type NotificationScope = (typeof NOTIFICATION_SCOPES)[number]
 export type NotificationContext = Record<string, string | number | boolean | null | undefined>
 
 /**
- * Who gets the inbox row for an organization event: every member, or only
- * those who could read the audit trail it mirrors (owners and managers).
- * Instance events always go to instance administrators.
+ * Who may hear an event: every member of the organization, only those who
+ * could read the audit trail it mirrors (owners and managers), or the
+ * install's administrators for an instance event. Checked again at send time.
  */
-export const NOTIFICATION_AUDIENCES = ['members', 'managers'] as const
-export type NotificationAudience = (typeof NOTIFICATION_AUDIENCES)[number]
+export type NotificationAudience = 'members' | 'managers' | 'admins'
+
+/**
+ * The groups the settings screens list topics under, in order. Codes are
+ * permanent: a code is never reused with a new meaning.
+ */
+export const NOTIFICATION_CATEGORIES = [
+  { code: 'servers', name: 'Servers' },
+  { code: 'security', name: 'Security' },
+  { code: 'access', name: 'Access' },
+  { code: 'certificates', name: 'Certificates' },
+  { code: 'backups', name: 'Backups' },
+  { code: 'billing', name: 'Billing' },
+  { code: 'platform', name: 'Control Plane' },
+] as const
+export type NotificationCategory = (typeof NOTIFICATION_CATEGORIES)[number]['code']
+
+/**
+ * The most specific resource an organization event names, which decides the
+ * preference scopes that apply to it: `server` events take the server id from
+ * the event's target; `organization` events name no resource (events about a
+ * deletion are scoped to the organization so they still reach people after
+ * the resource is gone).
+ */
+export type NotificationResource = 'organization' | 'server'
 
 type EventDefinition = {
   /** The plain name a person picks it by in the rules screen; no code, no context. */
@@ -43,6 +66,9 @@ type EventDefinition = {
   readonly severity: NotificationSeverity
   readonly scope: NotificationScope
   readonly audience: NotificationAudience
+  readonly category: NotificationCategory
+  /** Organization events only: the resource the event's target names. */
+  readonly resource?: NotificationResource
   /**
    * Urgent events (an outage, anything security-related) always go out at
    * once: quiet hours never hold them and a digest never batches them. Every
@@ -57,7 +83,24 @@ type EventDefinition = {
 
 function name(ctx: NotificationContext, key: string, fallback: string): string {
   const value = ctx[key]
+  // A number (a key set, a count) reads as its digits, not as the fallback.
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value)
   return typeof value === 'string' && value.length > 0 ? value : fallback
+}
+
+function has(ctx: NotificationContext, key: string): boolean {
+  const value = ctx[key]
+  return typeof value === 'string' && value.length > 0
+}
+
+const CHECK_IDENTITY = 'If you did not expect this, check Control Plane Identity in Admin.'
+
+/** What a passkey statement did, in words: marked some, unmarked some, or both. */
+function approverChange(ctx: NotificationContext): string {
+  const marked = `marked ${name(ctx, 'marked', 'a passkey')}`
+  const unmarked = `unmarked ${name(ctx, 'unmarked', 'a passkey')}`
+  if (has(ctx, 'marked') && has(ctx, 'unmarked')) return `${marked} and ${unmarked}`
+  return has(ctx, 'unmarked') ? unmarked : marked
 }
 
 /**
@@ -75,6 +118,29 @@ function databaseSentence(ctx: NotificationContext): string {
   )
 }
 
+/** One "was → now" phrase per moved setting of a backup target; never a key value. */
+function targetChanges(ctx: NotificationContext): string {
+  const parts: string[] = []
+  const pair = (key: string, label: string) => {
+    const before = ctx[`${key}Before`]
+    const after = ctx[`${key}After`]
+    if (typeof before !== 'string' || typeof after !== 'string') return
+    parts.push(
+      `${label} ${before === '' ? '(none)' : before} to ${after === '' ? '(none)' : after}`
+    )
+  }
+  pair('endpoint', 'endpoint')
+  pair('bucket', 'bucket')
+  pair('region', 'region')
+  pair('prefix', 'folder')
+  if (typeof ctx.pathStyle === 'boolean') {
+    parts.push(`path-style addressing turned ${ctx.pathStyle ? 'on' : 'off'}`)
+  }
+  if (ctx.accessKeyChanged === true) parts.push('a different access key id')
+  if (ctx.secretReplaced === true) parts.push('a new secret access key')
+  return parts.length > 0 ? parts.join(', ') : 'its settings changed'
+}
+
 /**
  * The catalogue. Keys are the codes; the object is `as const` so the code
  * union and the CHECK pin in `enum-checks.test.ts` derive from one place.
@@ -85,6 +151,8 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'critical',
     scope: 'organization',
     audience: 'members',
+    category: 'servers',
+    resource: 'server',
     urgent: true,
     title: (ctx) => `Server ${name(ctx, 'serverName', 'unknown')} went offline`,
     body: (ctx) =>
@@ -100,7 +168,8 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     label: 'Many servers went offline at once',
     severity: 'critical',
     scope: 'instance',
-    audience: 'managers',
+    audience: 'admins',
+    category: 'platform',
     urgent: true,
     title: (ctx) =>
       `${typeof ctx.count === 'number' ? ctx.count : 'Many'} servers went offline in one sweep`,
@@ -113,6 +182,8 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'info',
     scope: 'organization',
     audience: 'managers',
+    category: 'servers',
+    resource: 'organization',
     urgent: false,
     title: (ctx) => `Server ${name(ctx, 'serverName', 'unknown')} was deleted`,
     body: (ctx) => `${name(ctx, 'actorEmail', 'An operator')} deleted the server.`,
@@ -122,6 +193,8 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'warning',
     scope: 'organization',
     audience: 'managers',
+    category: 'security',
+    resource: 'server',
     urgent: true,
     title: (ctx) => `Daemon key revoked on ${name(ctx, 'serverName', 'a server')}`,
     body: (ctx) =>
@@ -136,6 +209,8 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'info',
     scope: 'organization',
     audience: 'managers',
+    category: 'access',
+    resource: 'organization',
     urgent: true,
     title: (ctx) => `Access granted: ${name(ctx, 'permissionKey', 'a permission')}`,
     body: (ctx) =>
@@ -150,6 +225,8 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'warning',
     scope: 'organization',
     audience: 'managers',
+    category: 'access',
+    resource: 'organization',
     urgent: true,
     title: (ctx) => `Access revoked: ${name(ctx, 'permissionKey', 'a permission')}`,
     body: (ctx) =>
@@ -160,25 +237,44 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       )} from ${name(ctx, 'subjectKind', 'a subject')} ${name(ctx, 'subjectId', '')}`.trimEnd() +
       '.',
   },
+  // One stored code for three alerts; `ctx.kind` (`issuance`, `renewal`,
+  // `request_dropped`) picks the words. Rows from before `kind` read as renewal.
   'certificate.renewal_failed': {
-    label: 'A certificate failed to renew',
+    label: 'A certificate could not be issued or renewed',
     severity: 'warning',
     scope: 'organization',
     audience: 'members',
+    category: 'certificates',
+    resource: 'organization',
     urgent: true,
-    title: (ctx) => `Certificate renewal failed for ${name(ctx, 'hostname', 'a domain')}`,
-    body: (ctx) =>
-      `${name(
+    title: (ctx) => {
+      const domain = name(ctx, 'hostname', 'a domain')
+      if (ctx.kind === 'issuance') return `Couldn't get a certificate for ${domain}`
+      if (ctx.kind === 'request_dropped') return `Stopped waiting for DNS for ${domain}`
+      return `Certificate renewal failed for ${domain}`
+    },
+    body: (ctx) => {
+      if (ctx.kind === 'request_dropped') {
+        return `${name(
+          ctx,
+          'reason',
+          'The certificate request waited too long for DNS and was dropped.'
+        )} Point the domain at the server, then press Use Let's Encrypt again.`
+      }
+      return `${name(
         ctx,
         'reason',
         "Let's Encrypt could not issue or renew the certificate."
-      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`,
+      )} Visitors may see a browser warning until it is fixed; check the domain's DNS, then try again.`
+    },
   },
   'folder.orphans_found': {
     label: 'A folder was left behind on a server',
     severity: 'warning',
     scope: 'organization',
     audience: 'managers',
+    category: 'servers',
+    resource: 'server',
     urgent: false,
     title: (ctx) => {
       const count = typeof ctx.count === 'number' && ctx.count > 1 ? ctx.count : 1
@@ -195,6 +291,300 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
       'Open Folders that need attention in the organization settings to remove it, ' +
       'or put the service back to use it again.',
   },
+  'server.repo_key_changed': {
+    label: "A software source's signing key changed",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'security',
+    resource: 'server',
+    // A signing key is what vouches for the software installed on a server.
+    urgent: true,
+    title: (ctx) =>
+      `The ${name(ctx, 'keyName', 'software source')} signing key changed on ${name(
+        ctx,
+        'serverName',
+        'a server'
+      )}`,
+    body: (ctx) =>
+      `The ${name(ctx, 'keyName', 'software source')} package source now publishes a different signing key than TurboPanel expects (expected ${name(
+        ctx,
+        'expected',
+        'unknown'
+      )}, got ${name(ctx, 'got', 'unknown')}). ` +
+      'The server went on using it, and every package is still checked against that key. ' +
+      'This is usually the publisher rotating its key; if you did not expect that, check the source before the next install.',
+  },
+  'server.enrolled': {
+    label: 'A new server joined',
+    severity: 'info',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'servers',
+    resource: 'server',
+    urgent: false,
+    title: (ctx) => `${name(ctx, 'serverName', 'A new server')} joined the organization`,
+    body: (ctx) =>
+      `A server enrolled with a one-time install key (daemon key ${name(
+        ctx,
+        'daemonKey',
+        'unknown'
+      )}). ` +
+      'Servers are accepted automatically; if you did not install one, remove it from the server list.',
+  },
+  'server.key_replaced': {
+    label: "A server's daemon key was replaced",
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'security',
+    resource: 'server',
+    urgent: true,
+    title: (ctx) => `The daemon key on ${name(ctx, 'serverName', 'a server')} was replaced`,
+    body: (ctx) =>
+      `A re-enroll token issued for ${name(ctx, 'serverName', 'this server')} was used. ` +
+      `The old key ${name(ctx, 'oldKey', 'unknown')} was replaced by ${name(
+        ctx,
+        'newKey',
+        'unknown'
+      )}. ` +
+      'If you did not issue that token, revoke the server key and check the host.',
+  },
+  'panel.identity_next_changed': {
+    label: "The control plane's next key changed",
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'admins',
+    category: 'security',
+    // The next key is what servers accept after a rotation: always urgent.
+    urgent: true,
+    title: (ctx) =>
+      ctx.cleared === true
+        ? 'The control plane next key was cleared'
+        : 'The control plane next key was changed',
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} ${
+        ctx.cleared === true ? 'cleared' : 'set'
+      } the next key${
+        typeof ctx.fingerprint === 'string' ? ` (${ctx.fingerprint})` : ''
+      }. Servers accept the next key after a rotation; if you did not expect this, check Control Plane Identity in Admin.`,
+  },
+  // `ctx.reportedPasskeys` is set when the key matches but the rotation passkeys do not.
+  'panel.pin_mismatch': {
+    label: 'A server reported a different control plane key',
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'security',
+    resource: 'server',
+    urgent: true,
+    title: (ctx) =>
+      has(ctx, 'reportedPasskeys')
+        ? `Server ${name(ctx, 'serverName', 'unknown')} reported different rotation passkeys`
+        : `Server ${name(ctx, 'serverName', 'unknown')} reported a different control plane key`,
+    body: (ctx) => {
+      const advice =
+        'Either the server was pointed at another control plane or something is impersonating this one; reinstall the server with a fresh command if you did not expect this.'
+      if (has(ctx, 'reportedPasskeys')) {
+        return `The server holds the control plane key ${name(ctx, 'reported', 'unknown')}, but its rotation passkeys (${name(
+          ctx,
+          'reportedPasskeys',
+          'unknown'
+        )}) are not the ones marked on this control plane (${name(ctx, 'expectedPasskeys', 'none')}). ${advice}`
+      }
+      return `The server holds ${name(ctx, 'reported', 'a key')} but this control plane signs with ${name(
+        ctx,
+        'expected',
+        'another key'
+      )}. ${advice}`
+    },
+  },
+  'certificate.expiring': {
+    label: 'A control plane certificate could not be renewed',
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'admins',
+    category: 'certificates',
+    // An expiring control plane certificate can cut every server off: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      const host = name(ctx, 'hostname', 'a control plane address')
+      if (ctx.kind === 'countdown' && typeof ctx.daysLeft === 'number') {
+        return `Control plane certificate for ${host} expires in ${ctx.daysLeft} ${ctx.daysLeft === 1 ? 'day' : 'days'}`
+      }
+      return `Control plane certificate for ${host} could not be renewed`
+    },
+    body: (ctx) =>
+      `${name(ctx, 'detail', 'The certificate authority did not issue a new certificate.')} ` +
+      'The current certificate keeps serving until it expires; after that, servers fall back to the Platform CA certificate. ' +
+      'See Certificates under Access in Admin.',
+  },
+  'server.pin_silent': {
+    label: 'A server is running but not connecting to this control plane',
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'servers',
+    resource: 'server',
+    urgent: false,
+    title: (ctx) =>
+      `${name(ctx, 'serverName', 'A server')} is running but not connected to this control plane`,
+    body: (ctx) =>
+      `It has been offline here for ${name(ctx, 'offlineMinutes', 'some')} minutes, and for the last half hour its TurboFabric peers have reached it. ` +
+      'Its daemon may have stopped or may not be able to sign in, it may have lost its route to this control plane, or it may no longer trust it. Check the server; if this lasts it is reported again as missing.',
+  },
+  'server.pin_missing': {
+    label: 'A server has been running for hours without connecting to this control plane',
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'servers',
+    resource: 'server',
+    urgent: true,
+    title: (ctx) =>
+      `${name(ctx, 'serverName', 'A server')} has been running for hours without connecting to this control plane`,
+    body: (ctx) =>
+      `It has been offline here for ${name(ctx, 'offlineMinutes', 'many')} minutes while its TurboFabric peers have reached it for six hours. ` +
+      'Check that its daemon is running and can sign in. If it is and you cannot explain the silence, it may be talking to something impersonating this control plane: reinstall it with a fresh command.',
+  },
+  // A person left or was removed: its own event, so the words say so instead
+  // of reading as a revoked permission.
+  'member.removed': {
+    label: 'A member left or was removed',
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'access',
+    resource: 'organization',
+    urgent: true,
+    title: (ctx) =>
+      ctx.left === true
+        ? `${name(ctx, 'memberEmail', 'A member')} left the organization`
+        : `${name(ctx, 'memberEmail', 'A member')} was removed from the organization`,
+    body: (ctx) =>
+      ctx.left === true
+        ? `${name(ctx, 'memberEmail', 'The member')} left; their teams and access in this organization are gone.`
+        : `${name(ctx, 'actorEmail', 'An owner or manager')} removed ${name(
+            ctx,
+            'memberEmail',
+            'the member'
+          )}; their teams and access in this organization are gone.`,
+  },
+  'server.license_tier_changed': {
+    label: "A server's license tier changed",
+    severity: 'info',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'billing',
+    resource: 'server',
+    urgent: false,
+    title: (ctx) =>
+      `${name(ctx, 'serverName', 'A server')} now uses the ${name(
+        ctx,
+        'assignedTierLabel',
+        'another'
+      )} license tier`,
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An owner or manager')} picked the ${name(
+        ctx,
+        'preferredTierLabel',
+        'a'
+      )} tier for this server; it is now licensed at ${name(ctx, 'assignedTierLabel', 'that tier')}.`,
+  },
+  // One stored code for two changes; `ctx.kind` picks the words: `update`
+  // (a target now points at another endpoint, bucket or keys) or `assign`
+  // (the organization default or a cluster now uses another target).
+  'backup.target_changed': {
+    label: 'Where backups are copied to changed',
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    category: 'backups',
+    resource: 'organization',
+    // Sending copies somewhere else is a security change: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      if (ctx.kind === 'assign') {
+        const owner =
+          ctx.scope === 'cluster'
+            ? name(ctx, 'clusterName', 'a database cluster')
+            : 'the organization'
+        return ctx.afterNone === true
+          ? `Backups for ${owner} are no longer copied to a backup target`
+          : `Backups for ${owner} now go to ${name(ctx, 'after', 'another backup target')}`
+      }
+      return `Backup target ${name(ctx, 'targetName', 'unknown')} now points somewhere else`
+    },
+    body: (ctx) => {
+      const actor = name(ctx, 'actorEmail', 'An owner or manager')
+      const check = "If you did not expect this, check the organization's backup targets."
+      if (ctx.kind === 'assign') {
+        return `${actor} changed where backups are copied from ${name(
+          ctx,
+          'before',
+          'the previous setting'
+        )} to ${name(ctx, 'after', 'another backup target')}. ${check}`
+      }
+      return `${actor} changed the backup target ${name(ctx, 'targetName', 'unknown')}: ${targetChanges(
+        ctx
+      )}. Every backup copied from now on goes there. ${check}`
+    },
+  },
+  // A rotation or an emergency revoke: `ctx.kind` is `rotate` or `revoke`.
+  // `ctx.state` is `awaiting_key` on High Availability until the new key is stored.
+  'panel.key_changed': {
+    label: "The control plane's key changed",
+    severity: 'critical',
+    scope: 'instance',
+    audience: 'admins',
+    category: 'security',
+    // Every server follows the new key: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      if (ctx.state === 'awaiting_key') return 'A control plane key change was approved'
+      return ctx.kind === 'revoke'
+        ? 'The control plane key was revoked and replaced'
+        : 'The control plane key was rotated'
+    },
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} approved key set ${name(
+        ctx,
+        'keyset',
+        'a new key set'
+      )} with the passkey ${name(ctx, 'passkey', 'unknown')}: the key ${name(
+        ctx,
+        'oldFingerprint',
+        'unknown'
+      )} ${ctx.state === 'awaiting_key' ? 'will be' : 'was'} replaced by ${name(ctx, 'newFingerprint', 'unknown')}. ` +
+      (ctx.state === 'awaiting_key'
+        ? 'The change takes effect when the rotation command stores the new key; every server then moves to it. '
+        : 'Every server moves to the new key as it sees this change. ') +
+      CHECK_IDENTITY,
+  },
+  // `ctx.marked` and `ctx.unmarked` name the passkeys; one statement can do both.
+  'panel.approvers_changed': {
+    label: 'The passkeys that approve key changes changed',
+    severity: 'warning',
+    scope: 'instance',
+    audience: 'admins',
+    category: 'security',
+    // These passkeys can move every server to a new key: always urgent.
+    urgent: true,
+    title: (ctx) => {
+      if (has(ctx, 'marked') && has(ctx, 'unmarked')) {
+        return 'The passkeys that approve control plane key changes changed'
+      }
+      return has(ctx, 'unmarked')
+        ? 'A passkey no longer approves control plane key changes'
+        : 'A passkey now approves control plane key changes'
+    },
+    body: (ctx) =>
+      `${name(ctx, 'actorEmail', 'An administrator')} ${approverChange(ctx)} (key set ${name(
+        ctx,
+        'keyset',
+        'unknown'
+      )}). Marked passkeys approve a change of the control plane key on every server. ${CHECK_IDENTITY}`,
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS
@@ -210,6 +600,16 @@ export const NOTIFICATION_RULE_EVENTS = [
   NOTIFICATION_RULE_ANY_EVENT,
   ...NOTIFICATION_EVENTS,
 ] as const
+
+/** The topic a rule stores for a rule `event`: none for `*`, which stores neither topic nor category. */
+export function ruleTopicOf(event: string): string | null {
+  return event === NOTIFICATION_RULE_ANY_EVENT ? null : event
+}
+
+/** The rule `event` the API shows for a stored topic: `*` when the rule names no topic. */
+export function ruleEventOf(topicCode: string | null): string {
+  return topicCode ?? NOTIFICATION_RULE_ANY_EVENT
+}
 
 export function isNotificationEvent(value: string): value is NotificationEvent {
   return Object.hasOwn(NOTIFICATION_EVENT_DEFINITIONS, value)
@@ -263,4 +663,59 @@ export function severityAtLeast(
   floor: NotificationSeverity
 ): boolean {
   return SEVERITY_RANK[severity] >= SEVERITY_RANK[floor]
+}
+
+export function eventCategory(event: NotificationEvent): NotificationCategory {
+  return NOTIFICATION_EVENT_DEFINITIONS[event].category
+}
+
+/** The resource an organization event names; null for an instance event. */
+export function eventResource(event: NotificationEvent): NotificationResource | null {
+  const definition: EventDefinition = NOTIFICATION_EVENT_DEFINITIONS[event]
+  if (definition.scope !== 'organization') return null
+  return definition.resource ?? 'organization'
+}
+
+/** One `category` row as the catalog sync writes it. */
+export type CategoryRow = { code: string; name: string; position: number }
+
+/** One `topic` row as the catalog sync writes it. */
+export type TopicRow = {
+  code: string
+  category_code: string
+  name: string
+  kind: 'organization' | 'instance'
+  severity: NotificationSeverity
+  scope: NotificationResource | null
+  audience: NotificationAudience
+  channels: string[]
+  is_urgent: boolean
+}
+
+/** The channel kinds every current topic may use (push waits for the phone apps). */
+const TOPIC_CHANNELS = ['inbox', 'email', 'chat', 'webhook']
+
+/** The catalog as rows: what `category` and `topic` must hold for this build. */
+export function notificationCatalogRows(): { categories: CategoryRow[]; topics: TopicRow[] } {
+  return {
+    categories: NOTIFICATION_CATEGORIES.map((c, i) => ({
+      code: c.code,
+      name: c.name,
+      position: i,
+    })),
+    topics: NOTIFICATION_EVENTS.map((event) => {
+      const definition: EventDefinition = NOTIFICATION_EVENT_DEFINITIONS[event]
+      return {
+        code: event,
+        category_code: definition.category,
+        name: definition.label,
+        kind: definition.scope,
+        severity: definition.severity,
+        scope: eventResource(event),
+        audience: definition.audience,
+        channels: TOPIC_CHANNELS,
+        is_urgent: eventIsUrgent(event),
+      }
+    }),
+  }
 }

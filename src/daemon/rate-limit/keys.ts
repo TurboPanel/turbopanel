@@ -19,10 +19,12 @@ export type DaemonRestRateLimitRoute =
   | 'commands-lease'
   | 'secrets-decrypt'
   | 'tls-issued'
+  | 'sealing-key'
   | 'secrets-rehydrate'
   | 'host-docker-networking'
   | 'ping'
   | 'commands-log'
+  | 'identity-statements'
 
 /** Sentinel id for anonymous enrollment-challenge REST limiting (no serverId). */
 export const DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID = 'enroll-challenge'

@@ -17,17 +17,23 @@ import {
   notification,
   notificationChannel,
   notificationDelivery,
+  notificationPreference,
+  notificationRule,
   organization,
   team,
   teammate,
   user,
 } from '../../db/schema.ts'
 import { emitNotification, retryDueDeliveries } from './emit.ts'
+import { insertLedgerKeys } from './ledger-fixtures.test.support.ts'
 import {
   claimDueDeliveries,
   countUnreadForUser,
+  channelsForEvent,
   createNotificationChannel,
+  deleteChannel,
   listNotificationsForUser,
+  listRulesForChannel,
   markNotificationsRead,
   replaceRulesForChannel,
   resolveChannelAddress,
@@ -50,11 +56,27 @@ async function secrets() {
   )
 }
 
+/**
+ * Nothing arrives until a person turns something on (owner decision
+ * 2026-11-06): give someone every event at every level on the given kinds,
+ * across every organization.
+ */
+async function listen(
+  db: ReturnType<typeof createDenoDb>,
+  userId: string,
+  kinds: ReadonlyArray<'inbox' | 'email' | 'chat' | 'webhook'>
+): Promise<void> {
+  await db
+    .insert(notificationPreference)
+    .values(kinds.map((kind) => ({ userId, kind, level: 'all' })))
+}
+
 async function withFixture(
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
     organizationId: string
     memberId: string
+    memberEmail: string
     outsiderId: string
   }) => Promise<void>
 ): Promise<void> {
@@ -68,10 +90,11 @@ async function withFixture(
     .values({ name: 'Notify Org' })
     .returning({ id: organization.id })
   const organizationId = org!.id
+  const memberEmail = `notify-member-${crypto.randomUUID()}@example.com`
   const [member] = await db
     .insert(user)
     .values({
-      email: `notify-member-${crypto.randomUUID()}@example.com`,
+      email: memberEmail,
       isEmailVerified: true,
       role: 'user',
     })
@@ -97,6 +120,7 @@ async function withFixture(
       db,
       organizationId,
       memberId: member!.id,
+      memberEmail,
       outsiderId: outsider!.id,
     })
   } finally {
@@ -136,6 +160,10 @@ test('an organization event lands in every member inbox and reaches a routed cha
       await resolveChannelAddress(enc, channel),
       'https://hooks.slack.com/services/T0/B0/SECRET'
     )
+    // The member turned the bell on; the outsider turned on everything but
+    // belongs to no team here, so hears nothing.
+    await listen(db, memberId, ['inbox'])
+    await listen(db, outsiderId, ['inbox', 'email'])
     await replaceRulesForChannel(db, channel.id, [
       {
         event: '*',
@@ -169,8 +197,10 @@ test('an organization event lands in every member inbox and reaches a routed cha
     assertEquals(inbox[0]!.severity, 'critical')
     assertEquals(await countUnreadForUser(db, memberId), 1)
     assertEquals(await listNotificationsForUser(db, outsiderId), [])
-    assertEquals(await markNotificationsRead(db, memberId, []), 1)
+    // Mark-all-read is one watermark row, not a rewrite of every row.
+    assertEquals(await markNotificationsRead(db, memberId, []), 0)
     assertEquals(await countUnreadForUser(db, memberId), 0)
+    assertEquals((await listNotificationsForUser(db, memberId))[0]!.readAt !== null, true)
 
     // The ledger says sent.
     const [delivery] = await db
@@ -224,21 +254,16 @@ test('an organization event lands in every member inbox and reaches a routed cha
 test("a managers-only event never reaches a plain member's personal channel", async () => {
   await withFixture(async ({ db, organizationId, memberId }) => {
     const enc = await secrets()
-    // The member's own channel, subscribed to everything from info up: the
-    // severity floor lets every event through, so only the audience decides.
-    const personal = await createNotificationChannel(db, enc, {
+    // The member's own channel, and a preference that lets every event
+    // through on webhooks: only the audience decides.
+    await createNotificationChannel(db, enc, {
       scope: 'user',
       userId: memberId,
       kind: 'webhook',
       label: 'Mine',
       address: 'https://member.example.com/hook',
     })
-    await replaceRulesForChannel(db, personal.id, [
-      {
-        event: '*',
-        minSeverity: 'info',
-      },
-    ])
+    await listen(db, memberId, ['webhook'])
 
     const captured: Captured[] = []
     const hidden = await emitNotification(
@@ -328,11 +353,12 @@ test('rows for a paused channel never fill the retry batch and starve a live one
     // A full batch of older due rows for the paused channel, then one for the live one.
     const older = new Date(Date.now() - 60 * 60_000).toISOString()
     const newer = new Date(Date.now() - 60_000).toISOString()
+    const keys5 = await insertLedgerKeys(db, organizationId, 5)
     await db.insert(notificationDelivery).values(
-      Array.from({ length: 5 }, () => ({
+      keys5.map((keys) => ({
         channelId: paused.id,
         organizationId,
-        event: 'server.offline',
+        ...keys,
         severity: 'critical',
         payload,
         status: 'failed',
@@ -340,10 +366,11 @@ test('rows for a paused channel never fill the retry batch and starve a live one
         nextAttemptAt: older,
       }))
     )
+    const [liveKeys] = await insertLedgerKeys(db, organizationId)
     await db.insert(notificationDelivery).values({
       channelId: live.id,
       organizationId,
-      event: 'server.offline',
+      ...liveKeys!,
       severity: 'critical',
       payload,
       status: 'failed',
@@ -402,11 +429,12 @@ test('the retry sweep stops starting deliveries once its time budget is spent', 
       at: new Date().toISOString(),
     }
     const due = new Date(Date.now() - 60_000).toISOString()
+    const keys3 = await insertLedgerKeys(db, organizationId, 3)
     await db.insert(notificationDelivery).values(
-      Array.from({ length: 3 }, () => ({
+      keys3.map((keys) => ({
         channelId: channel.id,
         organizationId,
-        event: 'server.offline',
+        ...keys,
         severity: 'critical',
         payload,
         status: 'failed',
@@ -503,14 +531,16 @@ test('a failed delivery is a failed ledger row with a retry time, then the sweep
 })
 
 test('email rows stay pending for the mailer; a disabled channel gets nothing; a LAN target obeys the policy', async () => {
-  await withFixture(async ({ db, organizationId }) => {
+  await withFixture(async ({ db, organizationId, memberEmail }) => {
     const enc = await secrets()
+    // An organization email channel reaches only an address that still
+    // belongs to a member, checked again at every send.
     const email = await createNotificationChannel(db, enc, {
       scope: 'organization',
       organizationId,
       kind: 'email',
       label: 'Ops mail',
-      address: 'ops@example.com',
+      address: memberEmail,
       verifiedAt: new Date().toISOString(),
     })
     await replaceRulesForChannel(db, email.id, [
@@ -519,7 +549,7 @@ test('email rows stay pending for the mailer; a disabled channel gets nothing; a
         minSeverity: 'info',
       },
     ])
-    // An unverified address is never delivered to: its row stays pending.
+    // An unverified address is never delivered to: its copy is recorded and dropped.
     const stranger = await createNotificationChannel(db, enc, {
       scope: 'organization',
       organizationId,
@@ -592,7 +622,7 @@ test('email rows stay pending for the mailer; a disabled channel gets nothing; a
       .where(eq(notificationDelivery.organizationId, organizationId))
     const byChannel = new Map(rows.map((r) => [r.channelId, r]))
     assertEquals(byChannel.get(email.id)?.status, 'pending')
-    assertEquals(byChannel.get(stranger.id)?.status, 'pending')
+    assertEquals(byChannel.get(stranger.id)?.status, 'abandoned')
     assertEquals(byChannel.get(lan.id)?.status, 'failed')
     assertEquals(byChannel.get(lan.id)?.lastError, 'address_address_not_public')
     assertEquals(byChannel.has(off.id), false)
@@ -625,13 +655,13 @@ test('email rows stay pending for the mailer; a disabled channel gets nothing; a
         },
       }
     )
-    // The LAN receiver and the verified email; the stranger's stays pending.
+    // The LAN receiver and the verified email; the stranger's is dropped.
     assertEquals(selfHosted.sent, 2)
     assertEquals(captured[0]!.url, 'https://10.0.0.5/alerts')
     assertEquals(jobs.length, 1)
     const job = jobs[0] as Record<string, unknown>
     assertEquals(job.type, 'notification')
-    assertEquals(job.to, 'ops@example.com')
+    assertEquals(job.to, memberEmail)
     assertEquals(job.title, 'Server db-2 went offline')
     assertEquals(job.organizationName, 'Notify Org')
     assertEquals(
@@ -685,11 +715,12 @@ test('two sweeps running together send each due delivery once', async () => {
       at: new Date().toISOString(),
     }
     const due = new Date(Date.now() - 60_000).toISOString()
+    const keys6 = await insertLedgerKeys(db, organizationId, 6)
     await db.insert(notificationDelivery).values(
-      Array.from({ length: 6 }, () => ({
+      keys6.map((keys) => ({
         channelId: channel.id,
         organizationId,
-        event: 'server.offline',
+        ...keys,
         severity: 'critical',
         payload,
         status: 'failed',
@@ -745,10 +776,11 @@ test('a claimed delivery is not picked again until its lease ends', async () => 
       context: { serverName: 'db-1' },
       at: new Date().toISOString(),
     }
+    const [claimKeys] = await insertLedgerKeys(db, organizationId)
     await db.insert(notificationDelivery).values({
       channelId: channel.id,
       organizationId,
-      event: 'server.offline',
+      ...claimKeys!,
       severity: 'critical',
       payload,
       status: 'failed',
@@ -759,5 +791,206 @@ test('a claimed delivery is not picked again until its lease ends', async () => 
     assertEquals(first.length, 1)
     // The row is leased: a second sweep right after finds nothing due.
     assertEquals((await claimDueDeliveries(db, 10)).length, 0)
+  })
+})
+
+test('a control plane channel hears install events, and organization events only when switched on', async () => {
+  await withFixture(async ({ db, organizationId }) => {
+    const enc = await secrets()
+    const make = async (isAllOrganizationsNotified: boolean) => {
+      const channel = await createNotificationChannel(db, enc, {
+        scope: 'instance',
+        kind: 'webhook',
+        label: `Routing ${crypto.randomUUID()}`,
+        address: 'https://hooks.example.com/routing',
+        isAllOrganizationsNotified,
+      })
+      await replaceRulesForChannel(db, channel.id, [{ event: '*', minSeverity: 'info' }])
+      return channel
+    }
+    const quiet = await make(false)
+    const loud = await make(true)
+    // A control plane channel with the switch off whose rule names this organization.
+    const named = await make(false)
+    await db.delete(notificationRule).where(eq(notificationRule.channelId, named.id))
+    await db.insert(notificationRule).values({
+      channelId: named.id,
+      topicCode: null,
+      minSeverity: 'info',
+      organizationId,
+    })
+    const orgOwn = await createNotificationChannel(db, enc, {
+      scope: 'organization',
+      organizationId,
+      kind: 'webhook',
+      label: 'Routing own',
+      address: 'https://hooks.example.com/own',
+    })
+    await replaceRulesForChannel(db, orgOwn.id, [{ event: '*', minSeverity: 'info' }])
+    try {
+      const ids = async (event: 'server.offline' | 'fleet.mass_disconnect', org: string | null) =>
+        new Set((await channelsForEvent(db, event, 'warning', org)).map((ch) => ch.id))
+      const install = await ids('fleet.mass_disconnect', null)
+      assertEquals(install.has(quiet.id), true)
+      assertEquals(install.has(loud.id), true)
+      assertEquals(install.has(orgOwn.id), false)
+      const organizationEvent = await ids('server.offline', organizationId)
+      assertEquals(organizationEvent.has(quiet.id), false)
+      assertEquals(organizationEvent.has(loud.id), true)
+      assertEquals(organizationEvent.has(orgOwn.id), true)
+      assertEquals(organizationEvent.has(named.id), true)
+      const otherOrganizationEvent = await ids('server.offline', crypto.randomUUID())
+      assertEquals(otherOrganizationEvent.has(named.id), false)
+      assertEquals(install.has(named.id), false)
+    } finally {
+      await deleteChannel(db, quiet.id)
+      await deleteChannel(db, loud.id)
+      await deleteChannel(db, named.id)
+      await deleteChannel(db, orgOwn.id)
+    }
+  })
+})
+
+test('every copy an emit writes names its event and its topic, and rules are stored by topic', async () => {
+  await withFixture(async ({ db, organizationId, memberId }) => {
+    const enc = await secrets()
+    const channel = await createNotificationChannel(db, enc, {
+      scope: 'organization',
+      organizationId,
+      kind: 'webhook',
+      label: 'Ledger keys',
+      address: 'https://hooks.example.com/keys',
+      createdByUserId: memberId,
+    })
+    await listen(db, memberId, ['inbox'])
+    await replaceRulesForChannel(db, channel.id, [
+      { event: 'server.offline', minSeverity: 'info' },
+      { event: 'server.deleted', minSeverity: 'warning' },
+    ])
+    // The API keeps `{ event, minSeverity }`; the table keeps the topic.
+    const stored = await db
+      .select({
+        topicCode: notificationRule.topicCode,
+        categoryCode: notificationRule.categoryCode,
+      })
+      .from(notificationRule)
+      .where(eq(notificationRule.channelId, channel.id))
+    assertEquals(stored.map((r) => r.topicCode).sort(), ['server.deleted', 'server.offline'])
+    assertEquals(
+      stored.every((r) => r.categoryCode === null),
+      true
+    )
+    assertEquals((await listRulesForChannel(db, channel.id)).map((r) => r.event).sort(), [
+      'server.deleted',
+      'server.offline',
+    ])
+
+    await replaceRulesForChannel(db, channel.id, [{ event: '*', minSeverity: 'info' }])
+    const [any] = await db
+      .select({
+        topicCode: notificationRule.topicCode,
+        categoryCode: notificationRule.categoryCode,
+      })
+      .from(notificationRule)
+      .where(eq(notificationRule.channelId, channel.id))
+    assertEquals(any, { topicCode: null, categoryCode: null })
+    assertEquals(
+      (await listRulesForChannel(db, channel.id)).map((r) => r.event),
+      ['*']
+    )
+
+    const captured: Captured[] = []
+    const result = await emitNotification(
+      db,
+      enc,
+      {
+        event: 'server.offline',
+        organizationId,
+        context: { serverName: 'db-2', serverId: 'y' },
+        targetType: 'server',
+      },
+      { fetchImpl: fakeFetch(200, captured) }
+    )
+    assertEquals(result.inbox, 1)
+    assertEquals(result.deliveries, 1)
+    const [inboxRow] = await db
+      .select({ eventId: notification.eventId, topicCode: notification.topicCode })
+      .from(notification)
+      .where(eq(notification.organizationId, organizationId))
+    assertEquals(inboxRow!.topicCode, 'server.offline')
+    assertEquals(typeof inboxRow!.eventId, 'string')
+    const [copy] = await db
+      .select({ eventId: notificationDelivery.eventId, topicCode: notificationDelivery.topicCode })
+      .from(notificationDelivery)
+      .where(eq(notificationDelivery.channelId, channel.id))
+    assertEquals(copy!.topicCode, 'server.offline')
+    assertEquals(copy!.eventId, inboxRow!.eventId)
+  })
+})
+
+test('a rule for one event does not route another event, and a category rule matches only its category', async () => {
+  await withFixture(async ({ db, organizationId, memberId }) => {
+    const enc = await secrets()
+    const make = (label: string) =>
+      createNotificationChannel(db, enc, {
+        scope: 'organization',
+        organizationId,
+        kind: 'webhook',
+        label,
+        address: `https://hooks.example.com/${label}`,
+        createdByUserId: memberId,
+      })
+    const topicOnly = await make('topic-only')
+    await replaceRulesForChannel(db, topicOnly.id, [
+      { event: 'server.deleted', minSeverity: 'info' },
+    ])
+
+    // An emit of another event reaches nothing through that rule.
+    const captured: Captured[] = []
+    const result = await emitNotification(
+      db,
+      enc,
+      {
+        event: 'server.offline',
+        organizationId,
+        context: { serverName: 'db-3', serverId: 'z' },
+        targetType: 'server',
+      },
+      { fetchImpl: fakeFetch(200, captured) }
+    )
+    assertEquals(result.deliveries, 0)
+    assertEquals(captured.length, 0)
+    const rows = await db
+      .select({ id: notificationDelivery.id })
+      .from(notificationDelivery)
+      .where(eq(notificationDelivery.channelId, topicOnly.id))
+    assertEquals(rows, [])
+    const ids = (channels: { id: string }[]) => channels.map((c) => c.id)
+    assertEquals(
+      ids(await channelsForEvent(db, 'server.deleted', 'critical', organizationId, 'servers')),
+      [topicOnly.id]
+    )
+    assertEquals(
+      await channelsForEvent(db, 'server.offline', 'critical', organizationId, 'servers'),
+      []
+    )
+
+    // A category rule: its category matches, another category does not.
+    const byCategory = await make('by-category')
+    await db.delete(notificationRule).where(eq(notificationRule.channelId, byCategory.id))
+    await db.insert(notificationRule).values({
+      channelId: byCategory.id,
+      topicCode: null,
+      categoryCode: 'servers',
+      minSeverity: 'info',
+    })
+    assertEquals(
+      ids(await channelsForEvent(db, 'server.offline', 'critical', organizationId, 'servers')),
+      [byCategory.id]
+    )
+    assertEquals(
+      await channelsForEvent(db, 'access.grant_created', 'info', organizationId, 'access'),
+      []
+    )
   })
 })

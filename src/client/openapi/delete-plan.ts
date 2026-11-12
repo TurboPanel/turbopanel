@@ -16,6 +16,7 @@ const usedBy = {
     storages: { type: 'integer' },
     secrets: { type: 'integer' },
     logins: { type: 'integer' },
+    caches: { type: 'integer' },
     folders: { type: 'integer' },
   },
 }
@@ -76,6 +77,10 @@ export const deletePlanSchemas = {
           properties: {
             id: { type: 'string' },
             name: { type: ['string', 'null'] },
+            hostname: {
+              type: ['string', 'null'],
+              description: 'The hostname the server reported, for naming it when it has no name.',
+            },
             connected: { type: 'boolean' },
           },
         },

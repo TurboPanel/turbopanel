@@ -11,6 +11,7 @@ import {
 import {
   parseCommandPayload,
   parseCommandResult,
+  parseDeployConfigFiles,
   parseDeploySecretPlan,
   parseManagedHaFailoverPayload,
   parseManagedHaFailoverResult,
@@ -1232,4 +1233,61 @@ test('parseManagedReplicationHealth keeps a primary slotRetention and drops a ma
         : undefined
     )
   }
+})
+
+test('parseDeployConfigFiles accepts valid files and refuses bad ones like the daemon does', () => {
+  const file = (over: Record<string, unknown> = {}) => ({
+    composeServiceName: 'web',
+    source: 'web_conf',
+    relativePath: 'web--conf',
+    parts: [{ text: 'a=' }, { secretKey: 'KEY' }],
+    ...over,
+  })
+  assertEquals(parseDeployConfigFiles(undefined), undefined)
+  assertEquals(parseDeployConfigFiles([file()]), [file()])
+  assertThrows(() => parseDeployConfigFiles('x'), TypeError, 'must be an array')
+  assertThrows(() => parseDeployConfigFiles([1]), TypeError, 'configFiles entry')
+  assertThrows(
+    () => parseDeployConfigFiles([file({ relativePath: 'a/b' })]),
+    TypeError,
+    'configFiles name'
+  )
+  assertThrows(
+    () => parseDeployConfigFiles([file({ relativePath: 'web--conf.tmp' })]),
+    TypeError,
+    'configFiles name'
+  )
+  assertThrows(
+    () => parseDeployConfigFiles([file({ parts: [{ text: 'a', secretKey: 'K' }] })]),
+    TypeError,
+    'configFiles part'
+  )
+  assertThrows(
+    () => parseDeployConfigFiles([file({ parts: [{ text: 'a\u0000b' }] })]),
+    TypeError,
+    'NUL'
+  )
+  assertThrows(
+    () => parseDeployConfigFiles([file({ parts: [{ text: 'x'.repeat(65_537) }] })]),
+    TypeError,
+    'maximum size'
+  )
+  assertThrows(
+    () => parseDeployConfigFiles([file(), file({ source: 'other' })]),
+    TypeError,
+    'unique'
+  )
+  const many = Array.from({ length: 17 }, (_, i) =>
+    file({ source: `s${i}`, relativePath: `web--s${i}` })
+  )
+  assertThrows(() => parseDeployConfigFiles(many), TypeError, 'too many')
+  const big = Array.from({ length: 5 }, (_, i) =>
+    file({
+      composeServiceName: `svc${i}`,
+      source: `b${i}`,
+      relativePath: `svc${i}--b`,
+      parts: [{ text: 'x'.repeat(60_000) }],
+    })
+  )
+  assertThrows(() => parseDeployConfigFiles(big), TypeError, 'total size')
 })

@@ -5,7 +5,10 @@ import {
   COMMAND_AMQP_EXCHANGE,
   COMMAND_AMQP_QUEUE,
   COMMAND_AMQP_ROUTING_KEY,
+  COMMAND_AMQP_DELAY_TIERS_SECONDS,
   assertCommandAmqpTopology,
+  commandDelayQueueName,
+  commandDelayTierSeconds,
 } from './command-amqp-topology.ts'
 
 /**
@@ -37,5 +40,33 @@ test('assertCommandAmqpTopology wires DLX then primary dispatch topology', async
     `exchange:${COMMAND_AMQP_EXCHANGE}:topic:true`,
     `queue:${COMMAND_AMQP_QUEUE}:true:${COMMAND_AMQP_DLX}`,
     `bind:${COMMAND_AMQP_QUEUE}:${COMMAND_AMQP_EXCHANGE}:${COMMAND_AMQP_ROUTING_KEY}`,
+    ...COMMAND_AMQP_DELAY_TIERS_SECONDS.map(
+      (seconds) => `queue:${commandDelayQueueName(seconds)}:true:${COMMAND_AMQP_EXCHANGE}`
+    ),
   ])
+})
+
+test('delay queues expire back into the dispatch queue after their own wait', async () => {
+  const declared: Array<{ queue: string; args: Record<string, string | number> | undefined }> = []
+  await assertCommandAmqpTopology({
+    assertExchange: async () => undefined,
+    assertQueue: async (queue, options) => {
+      declared.push({ queue, args: options?.arguments })
+    },
+    bindQueue: async () => undefined,
+  })
+  const tenSeconds = declared.find((entry) => entry.queue === 'turbopanel.commands.delay.10s')
+  assertEquals(tenSeconds?.args, {
+    'x-message-ttl': 10_000,
+    'x-dead-letter-exchange': COMMAND_AMQP_EXCHANGE,
+    'x-dead-letter-routing-key': COMMAND_AMQP_ROUTING_KEY,
+  })
+})
+
+test('commandDelayTierSeconds rounds up to the next tier and caps at the longest', () => {
+  assertEquals(commandDelayTierSeconds(1), 5)
+  assertEquals(commandDelayTierSeconds(5), 5)
+  assertEquals(commandDelayTierSeconds(6), 10)
+  assertEquals(commandDelayTierSeconds(120), 120)
+  assertEquals(commandDelayTierSeconds(3_600), 600)
 })

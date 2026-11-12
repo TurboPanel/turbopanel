@@ -5,7 +5,7 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
-import { deployment } from '../../db/schema.ts'
+import { cache, deployment } from '../../db/schema.ts'
 import {
   listEnvironmentDeploymentTargets,
   listReservedListenPorts,
@@ -277,11 +277,20 @@ test('listReservedListenPorts reads other environments ports on the given server
         row(otherEnv, serverA, { listenPorts: 'bad' }),
       ],
     ],
+    // Caches keep their port in their own row, whichever environment owns them.
+    [
+      cache,
+      [
+        { serverId: serverA, port: 18_200 },
+        { serverId: serverA, port: null },
+        { serverId: serverB, port: 18_201 },
+      ],
+    ],
   ])
   const reserved = await listReservedListenPorts(db as unknown as Db, {
     environmentId: envId,
     serverIds: [serverA],
   })
-  assertEquals([...(reserved.get(serverA) ?? [])].sort(), [18_081, 18_082])
+  assertEquals([...(reserved.get(serverA) ?? [])].sort(), [18_081, 18_082, 18_200])
   assertEquals(reserved.has(serverB), false)
 })

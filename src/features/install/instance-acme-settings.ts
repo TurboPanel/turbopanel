@@ -25,10 +25,13 @@ export const INSTANCE_ACME_SETTINGS = 'INSTANCE_ACME_SETTINGS'
 
 export const INSTANCE_ACME_SETTINGS_PREFIX = 'TURBOPANEL_INSTANCE_ACME'
 
-export const LETS_ENCRYPT_DIRECTORY_URL = 'https://acme-v02.api.letsencrypt.org/directory'
-
-export const LETS_ENCRYPT_STAGING_DIRECTORY_URL =
-  'https://acme-staging-v02.api.letsencrypt.org/directory'
+/**
+ * `setting` key of the control plane's own ACME account for DNS-01 orders
+ * (self-hosted): `{ v: 1, directory, kid, sealed }`, the account key PEM
+ * sealed as a `tpsecret` in `sealed`. One directory at a time; a change of
+ * directory makes a new account. Swept by the re-encrypt stage `identity`.
+ */
+export const INSTANCE_ACME_ACCOUNT_SETTING_KEY = 'INSTANCE_ACME_ACCOUNT'
 
 /** Human refusal when `TOS_ACCEPTED` is not true. The daemon repeats the sentence. */
 export const INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE = "Let's Encrypt terms have not been accepted"
@@ -54,7 +57,9 @@ export const INSTANCE_ACME_SETTINGS_SCHEMA: Record<
 > = {
   CONTACT_EMAIL: '',
   TOS_ACCEPTED: 'false',
-  DIRECTORY_URL: LETS_ENCRYPT_DIRECTORY_URL,
+  // Empty means the production Let's Encrypt directory. The address itself
+  // lives only in self-hosted code and the daemon, never in the Workers build.
+  DIRECTORY_URL: '',
   USE_STAGING: 'false',
 }
 
@@ -178,7 +183,7 @@ function resolvedFromResolver(resolver: SettingsResolver): ResolvedInstanceAcmeS
   return {
     contactEmail: keys.CONTACT_EMAIL.value.trim(),
     tosAccepted: parseFlag(keys.TOS_ACCEPTED.value),
-    directoryUrl: keys.DIRECTORY_URL.value.trim() || LETS_ENCRYPT_DIRECTORY_URL,
+    directoryUrl: keys.DIRECTORY_URL.value.trim(),
     useStaging: parseFlag(keys.USE_STAGING.value),
     keys,
   }

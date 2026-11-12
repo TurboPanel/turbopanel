@@ -153,6 +153,40 @@ async function fillColocatedServerIds(
   }
 }
 
+/** Error code for a tunnel token push to a server that is not co-located. */
+export const TUNNEL_TOKEN_COLOCATED_ONLY = 'tunnel_token_colocated_only'
+
+export type InstanceTunnelGuard =
+  { ok: true } | { ok: false; status: 403; code: typeof TUNNEL_TOKEN_COLOCATED_ONLY; error: string }
+
+/**
+ * The control plane's own tunnel token goes only to the daemon on its host.
+ * Every `tunnel-token` sender calls this before enqueueing the request.
+ *
+ * `orgScoped` skips the canonical lookup on purpose: its last fallbacks (the
+ * hostname, "the single unassigned server") can name a remote server, and
+ * that is the same resolver the sender used to pick `serverId`. What remains
+ * is the direct Unix socket attach, this host's machine key and the
+ * self-host environment pin, which a remote server never carries.
+ */
+export async function assertColocatedForInstanceTunnel(
+  db: Db,
+  registry: DaemonCellRegistry | undefined,
+  serverId: string
+): Promise<InstanceTunnelGuard> {
+  const colocated = await resolveColocatedServerIdSet(db, registry, [serverId], {
+    orgScoped: true,
+    includeSelfHostPin: true,
+  })
+  if (colocated.has(serverId)) return { ok: true }
+  return {
+    ok: false,
+    status: 403,
+    code: TUNNEL_TOKEN_COLOCATED_ONLY,
+    error: 'The control plane tunnel runs only on the control plane host',
+  }
+}
+
 export function isColocatedWithInstance(serverId: string, colocatedIds: Set<string>): boolean {
   return colocatedIds.has(serverId)
 }

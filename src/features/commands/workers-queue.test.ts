@@ -31,3 +31,27 @@ test('createWorkersCommandQueue forwards envelopes to the Workers Queue binding'
   await commandQueue.enqueue(envelope)
   assertEquals(sent, [envelope])
 })
+
+test('createWorkersCommandQueue asks the binding to hold a delayed envelope', async () => {
+  const sent: Array<{ body: unknown; options: unknown }> = []
+  const queue: CommandQueueBinding = {
+    send: (body, options) => {
+      sent.push({ body, options })
+      return Promise.resolve()
+    },
+  }
+  const envelope = {
+    commandId: 'cmd-2',
+    serverId: 'srv-1',
+    type: 'daemon.ping' as CommandType,
+    attempt: 2,
+    queuedAt: '2020-01-01T00:00:00.000Z',
+  }
+  const commandQueue = createWorkersCommandQueue(queue)
+  await commandQueue.enqueue(envelope, { delaySeconds: 29.5 })
+  await commandQueue.enqueue(envelope, { delaySeconds: 0 })
+  assertEquals(sent, [
+    { body: envelope, options: { delaySeconds: 30 } },
+    { body: envelope, options: undefined },
+  ])
+})

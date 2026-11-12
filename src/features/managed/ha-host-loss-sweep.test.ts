@@ -31,6 +31,7 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { createCommandRecord, getCommandDispatchPayload } from '../commands/command-records.ts'
 import { onPromoteSucceeded } from './ha-recovery.ts'
+import { findLatestActedRecovery } from './recovery-records.ts'
 import { haPrimaryNamesOnServer } from '../alerts/resolve-alert-sender.ts'
 import {
   DEFAULT_HOST_LOSS_LOADERS,
@@ -734,5 +735,46 @@ test('with the switch off the loss is an alert row and nothing else', async () =
     assertEquals(stillPrimary?.role, 'primary')
     // Untouched: not flagged, not demoted (the status stays at its default).
     assertEquals(stillPrimary?.status, 'provisioning')
+  })
+})
+
+test('many alternating refused reports filed after a failover that needs an operator never release the held primary', async () => {
+  await withPair(async (c) => {
+    const base = Date.parse('2026-01-01T00:00:00.000Z')
+    await c.db.insert(recovery).values({
+      managedId: c.managedId,
+      kind: 'automatic-failover',
+      sourcePrimaryMemberId: c.primaryMemberId,
+      state: 'failed',
+      startedAt: new Date(base).toISOString(),
+      completedAt: new Date(base).toISOString(),
+      metadata: { needsOperator: true, failedReason: 'promote unconfirmed' },
+    })
+    // Two servers whose refusals alternate: more rows than any fixed read-ahead.
+    const refused = Array.from({ length: 25 }, (_, i) => ({
+      managedId: c.managedId,
+      kind: 'automatic-failover',
+      sourcePrimaryMemberId: c.primaryMemberId,
+      state: 'blocked',
+      startedAt: new Date(base + (i + 1) * 1_000).toISOString(),
+      completedAt: new Date(base + (i + 1) * 1_000).toISOString(),
+      metadata: {
+        blockedReason: 'refused',
+        reportRefused: 'session-unsigned',
+        reporterServerId: i % 2 === 0 ? c.primaryServerId : c.replicaServerId,
+        ...(i % 2 === 0 ? { detector: 'boot-hold' } : {}),
+      },
+    }))
+    await c.db.insert(recovery).values(refused)
+    const latest = await findLatestActedRecovery(c.db, c.managedId)
+    assertEquals(latest?.state, 'failed')
+    const answer = await handleBootHoldReport(c.db, {
+      managedId: c.managedId,
+      engine: 'postgres',
+      sourceMemberId: c.primaryMemberId,
+      reporterServerId: c.primaryServerId,
+      commandQueue: collectingQueue(),
+    })
+    assertEquals(answer, 'kept')
   })
 })

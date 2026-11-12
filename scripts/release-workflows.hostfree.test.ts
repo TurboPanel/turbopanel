@@ -145,13 +145,16 @@ test('publish-rc hands gh-promote the canary found by commit, not a run number',
 })
 
 /**
- * The jobs that call gh-promote-ok.yml. The Promote OK check pins its own dev
- * commit, so its fixes can ship without moving the rest of the promotion chain.
+ * The jobs that call gh-promote-ok.yml or gh-promote-ok-recheck.yml. The
+ * Promote OK check and its recheck pin their own dev commit, so their fixes
+ * ship together without moving the rest of the promotion chain.
  */
-const PROMOTE_OK_JOBS: Record<string, string> = {
-  'promote-ok.yml': 'evaluate',
-  'promote-ok-recheck.yml': 'dry-run',
-}
+const PROMOTE_OK_JOBS: [file: string, job: string][] = [
+  ['promote-ok.yml', 'evaluate'],
+  ['promote-ok-recheck.yml', 'dry-run'],
+  ['promote-ok-recheck.yml', 'recheck'],
+]
+const PROMOTE_OK_CALL = /gh-promote-ok(?:-recheck)?\.yml@/
 
 test('the promotion workflows pin one TurboPanel/dev commit', () => {
   const pins = new Set<string>()
@@ -165,8 +168,10 @@ test('the promotion workflows pin one TurboPanel/dev commit', () => {
     // publish-release's start-next job and the Promote OK jobs pin their own
     // dev commits (below).
     let text = withoutJob(read(file), 'start-next')
-    if (PROMOTE_OK_JOBS[file]) text = withoutJob(text, PROMOTE_OK_JOBS[file])
-    assert(!text.includes('gh-promote-ok.yml@'), `${file} calls gh-promote-ok.yml outside its job`)
+    for (const [okFile, name] of PROMOTE_OK_JOBS) {
+      if (okFile === file) text = withoutJob(text, name)
+    }
+    assert(!PROMOTE_OK_CALL.test(text), `${file} calls a Promote OK workflow outside its jobs`)
     for (const m of text.matchAll(
       /TurboPanel\/dev\/\.github\/(?:workflows\/[\w.-]+|actions\/version)@([0-9a-f]{40})/g
     )) {
@@ -181,16 +186,57 @@ test('the promotion workflows pin one TurboPanel/dev commit', () => {
 
 test('the Promote OK jobs pin one TurboPanel/dev commit, and hand it on as dev-ref', () => {
   const pins = new Set<string>()
-  for (const [file, name] of Object.entries(PROMOTE_OK_JOBS)) {
+  for (const [file, name] of PROMOTE_OK_JOBS) {
     const job = jobText(read(file), name)
-    const uses = [...job.matchAll(/gh-promote-ok\.yml@([0-9a-f]{40}) # dev#\d+$/gm)]
+    const uses = [...job.matchAll(/gh-promote-ok(?:-recheck)?\.yml@([0-9a-f]{40}) # dev#\d+$/gm)]
     const refs = [...job.matchAll(/^ +dev-ref: ([0-9a-f]{40})(?: #.*)?$/gm)]
-    assertEquals(uses.length, 1, `${file} ${name}: one gh-promote-ok.yml call`)
+    assertEquals(uses.length, 1, `${file} ${name}: one Promote OK workflow call`)
     assertEquals(refs.length, 1, `${file} ${name}: one dev-ref`)
     pins.add(uses[0][1])
     pins.add(refs[0][1])
   }
   assertEquals(pins.size, 1, `Promote OK pins: ${[...pins].join(', ')}`)
+})
+
+test('Promote OK has no job named promote-ok, and every call grants checks: write', () => {
+  // promote-ok is the check run the evaluation writes; a job with that name
+  // could end skipped, which passes a required check.
+  for (const file of ['promote-ok.yml', 'promote-ok-recheck.yml']) {
+    const text = read(file)
+    assert(!/^ {2}promote-ok:$/m.test(text), `${file} has a promote-ok job`)
+    assert(!/^ {4}name: promote-ok$/m.test(text), `${file} names a job promote-ok`)
+  }
+  for (const [file, name] of PROMOTE_OK_JOBS) {
+    assertStringIncludes(jobText(read(file), name), '      checks: write\n', `${file} ${name}`)
+  }
+})
+
+test('Promote OK runs one evaluation per PR head and one queued recheck at a time', () => {
+  assertStringIncludes(
+    read('promote-ok.yml'),
+    [
+      'concurrency:',
+      '  group: promote-ok-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}',
+      '  cancel-in-progress: true',
+      '',
+    ].join('\n')
+  )
+  assertStringIncludes(
+    read('promote-ok-recheck.yml'),
+    [
+      'concurrency:',
+      '  group: promote-ok-recheck',
+      '  cancel-in-progress: false',
+      '  queue: max',
+      '',
+    ].join('\n')
+  )
+  // The canary's own head is the trunk tip when it was queued; its title
+  // names the commit it builds, which the recheck re-checks.
+  assertMatch(
+    read('canary.yml'),
+    /^run-name: Canary \$\{\{ github\.event\.workflow_run\.head_sha \}\}$/m
+  )
 })
 
 test('publish-release opens the start PR for the next patch after finalize', () => {

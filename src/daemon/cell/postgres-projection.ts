@@ -390,8 +390,8 @@ function applyOnlineTrigger(
     writeProjection = true
   }
   // A reconnect ends the mark, so its reason goes with it.
-  if (isOfflineToOnline && nextProjection?.offlineReason) {
-    const { offlineReason: _ended, ...rest } = nextProjection
+  if (isOfflineToOnline && (nextProjection?.offlineReason || nextProjection?.offlineNoticeAt)) {
+    const { offlineReason: _ended, offlineNoticeAt: _noticed, ...rest } = nextProjection
     nextProjection = rest
     writeProjection = true
   }
@@ -429,10 +429,13 @@ function applyOfflineTrigger(
   const { currentProjection, existingStatus, now } = ctx
   // A late socket close (including the half-open reaper) must not downgrade an earlier
   // stale-sweep mark or restart its clock: host-loss failover trusts only the sweep mark.
+  // The same holds for a plain disconnect repeated on an offline row: it must
+  // not restart the clock that the offline notice's grace counts from.
   const keepSweepMark =
     trigger.reason !== 'sweep_stale' &&
     existingStatus.connected === false &&
-    currentProjection?.offlineReason === 'sweep_stale'
+    (currentProjection?.offlineReason === 'sweep_stale' ||
+      currentProjection?.offlineReason === 'disconnect')
   const nextStatus: ServerDaemonStatus = keepSweepMark
     ? { ...existingStatus }
     : { ...existingStatus, connected: false, statusChangedAt: now }
@@ -928,6 +931,56 @@ export async function listRecentlyOfflineServersForSweep(
     })
   }
   return candidates
+}
+
+/**
+ * Claim the servers whose outage is due a `server.offline` notice, in one
+ * statement: still offline from a plain disconnect (a stale-sweep mark was
+ * already announced by the sweep that wrote it), disconnected for at least
+ * `graceMs` (a reconnect, a daemon restart or an update inside it never
+ * notifies) and at most `windowMs` (so the first run after a release does not
+ * announce long-dead hosts), and not yet claimed. Setting the claim marker in
+ * the same statement is what makes two ticks or two isolates raise one notice.
+ * Served by `idx_server_offline`.
+ */
+export async function claimDisconnectNotices(
+  db: Db,
+  opts: { nowMs: number; graceMs: number; windowMs: number }
+): Promise<string[]> {
+  const dueBefore = new Date(opts.nowMs - opts.graceMs).toISOString()
+  const notBefore = new Date(opts.nowMs - opts.windowMs).toISOString()
+  const claimedAt = new Date(opts.nowMs).toISOString()
+  const rows = await db
+    .update(server)
+    .set({
+      daemon: sql`jsonb_set(
+        COALESCE(${server.daemon}, '{}'::jsonb) || jsonb_build_object(
+          'projection',
+          COALESCE(${server.daemon}->'projection', '{}'::jsonb)
+        ),
+        '{projection,offlineNoticeAt}',
+        to_jsonb(${claimedAt}::text),
+        true
+      )`,
+    })
+    .where(
+      sql`${server.isConnected} = false
+        AND ${server.offlineReason} = 'disconnect'
+        AND ${server.statusChangedAt} <= ${dueBefore}
+        AND ${server.statusChangedAt} >= ${notBefore}
+        AND ${server.daemon} #>> '{projection,offlineNoticeAt}' IS NULL`
+    )
+    .returning({ id: server.id })
+  return rows.map((row) => row.id)
+}
+
+/** Count of servers Postgres believes are connected (the mass-disconnect denominator). */
+export async function countConnectedServers(db: Db): Promise<number> {
+  const rows = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(server)
+    .where(eq(server.isConnected, true))
+  return rows[0]?.n ?? 0
 }
 
 /**

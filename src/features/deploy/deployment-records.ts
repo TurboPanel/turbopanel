@@ -1,3 +1,4 @@
+import { listServerCachePorts } from '../caches/store.ts'
 import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { nowIso } from '../commands/ids.ts'
@@ -195,6 +196,12 @@ export async function listReservedListenPorts(
     const ports = byServer.get(row.serverId) ?? new Set<number>()
     for (const port of readRecordedListenPorts(row.options)) ports.add(port)
     byServer.set(row.serverId, ports)
+  }
+  // Caches keep their port in their own row, whichever environment owns them.
+  for (const [serverId, cachePorts] of await listServerCachePorts(db, params.serverIds)) {
+    const ports = byServer.get(serverId) ?? new Set<number>()
+    for (const port of cachePorts) ports.add(port)
+    byServer.set(serverId, ports)
   }
   return byServer
 }

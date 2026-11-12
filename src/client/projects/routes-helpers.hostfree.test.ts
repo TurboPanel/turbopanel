@@ -242,11 +242,14 @@ Deno.test('scaffoldEnvironmentNames never gives two environments the same name',
   assertEquals(scaffoldEnvironmentNames(envs, 'Edge'), ['Edge', 'Staging'])
 })
 
-test('parseProjectIconField accepts a listed key, null or nothing, and refuses the rest', () => {
+test('parseProjectIconField accepts a listed key, one emoji, null or nothing, and refuses the rest', () => {
   assertEquals(parseProjectIconField({}), { ok: true, icon: undefined })
   assertEquals(parseProjectIconField({ icon: null }), { ok: true, icon: null })
   assertEquals(parseProjectIconField({ icon: 'rocket' }), { ok: true, icon: 'rocket' })
+  assertEquals(parseProjectIconField({ icon: '🇺🇸' }), { ok: true, icon: '🇺🇸' })
   assertEquals(parseProjectIconField({ icon: 'unicorn' }).ok, false)
+  assertEquals(parseProjectIconField({ icon: 'a🚀' }).ok, false)
+  assertEquals(parseProjectIconField({ icon: '1️⃣' }).ok, false)
   assertEquals(parseProjectIconField({ icon: '' }).ok, false)
   assertEquals(parseProjectIconField({ icon: 7 }).ok, false)
 })

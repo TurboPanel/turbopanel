@@ -1,4 +1,4 @@
-import { buildResourceCrudPaths } from './shared.ts'
+import { buildResourceCrudPaths, withConfirmName } from './shared.ts'
 import { deleteOperation, deletePreviewPath, withDeleteOperation } from './delete-plan.ts'
 
 export const environmentSchemas = {
@@ -339,10 +339,14 @@ export const environmentPaths = {
   '/api/client/v1/environments/{id}': withDeleteOperation(
     environmentCrudPaths,
     '/api/client/v1/environments/{id}',
-    deleteOperation(
-      'Environments',
+    withConfirmName(
+      deleteOperation(
+        'Environments',
+        'environment',
+        'Stops the environment if it is running, then removes its rows; its folders on the servers become `removing` and are removed by the servers (a volume set to keep its data keeps its folder). The project and its Hosting Accounts stay. Refused, with nothing changed, for the primary environment, while a deploy is running, while a managed database remains, while another environment uses a shared service or volume that would go, or while a server the delete has to reach is offline. Refused with 400 `confirm_name_required` unless `confirmName` is exactly its name.'
+      ),
       'environment',
-      'Stops the environment if it is running, then removes its rows; its folders on the servers become `removing` and are removed by the servers (a volume set to keep its data keeps its folder). The project and its Hosting Accounts stay. Refused, with nothing changed, for the primary environment, while a deploy is running, while a managed database remains, while another environment uses a shared service or volume that would go, or while a server the delete has to reach is offline.'
+      'its name, else its id'
     )
   ),
   '/api/client/v1/environments/{id}/delete-preview': deletePreviewPath(
@@ -390,7 +394,7 @@ export const environmentPaths = {
                           type: 'string',
                           nullable: true,
                           description:
-                            "Plain words for a removing or orphan folder, such as 'being removed, waiting for server Beta to come back'; null for any other state.",
+                            "Plain words for a removing or orphan folder, such as 'being removed, waiting for Beta to come back'; null for any other state.",
                         },
                       },
                     },

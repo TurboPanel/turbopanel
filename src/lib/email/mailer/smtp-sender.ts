@@ -97,6 +97,42 @@ function buildTransport(
   })
 }
 
+/**
+ * Enhanced status codes (RFC 3463) that say the recipient address itself is
+ * dead: unknown mailbox (5.1.1), unknown domain (5.1.2), bad mailbox syntax
+ * (5.1.3), mailbox moved (5.1.6), domain takes no mail (5.1.10). The other
+ * 5.1.x codes are about the sender address or are not specific.
+ */
+const DEAD_RECIPIENT_STATUS = new Set(['5.1.1', '5.1.2', '5.1.3', '5.1.6', '5.1.10'])
+
+/** The enhanced status code at the start of each line of an SMTP reply ("550 5.1.1 …", "550-5.1.1 …"). */
+function enhancedStatusCodes(response: string): string[] {
+  const codes: string[] = []
+  for (const line of response.split('\n')) {
+    const match = /^\d{3}[ -](\d\.\d{1,3}\.\d{1,3})(?:\s|$)/.exec(line.trim())
+    if (match?.[1]) codes.push(match[1])
+  }
+  return codes
+}
+
+/**
+ * True when the receiving server refused the recipient because the address is
+ * dead: `RCPT TO` answered 550, 551 or 553 with an enhanced status code that
+ * says so. A policy or relay refusal (5.7.x, "relaying denied") arrives with
+ * the same 550 and says nothing about the address, and neither does a bare
+ * 550 with no enhanced code: a misconfigured relay must never put every
+ * recipient on the suppression list.
+ */
+export function isRecipientRejected(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const e = error as { responseCode?: unknown; command?: unknown; response?: unknown }
+  if (e.command !== 'RCPT TO') return false
+  if (e.responseCode !== 550 && e.responseCode !== 551 && e.responseCode !== 553) return false
+  if (typeof e.response !== 'string') return false
+  const codes = enhancedStatusCodes(e.response)
+  return codes.length > 0 && codes.every((code) => DEAD_RECIPIENT_STATUS.has(code))
+}
+
 function isPermanentSmtpError(error: unknown): boolean {
   if (error instanceof PermanentSendError) return true
   if (!error || typeof error !== 'object') return false
@@ -222,12 +258,18 @@ export class MailerSmtpSender {
         subject: template.subject,
         html: template.html,
         text: template.text ?? this.stripHtml(template.html),
+        ...(template.headers ? { headers: template.headers } : {}),
       })
       return { success: true }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e)
       logError('mailer', `send failed: ${errMsg}`)
-      return { success: false, error: errMsg, permanent: isPermanentSmtpError(e) }
+      return {
+        success: false,
+        error: errMsg,
+        permanent: isPermanentSmtpError(e),
+        recipientRejected: isRecipientRejected(e),
+      }
     }
   }
 }

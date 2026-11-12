@@ -18,7 +18,9 @@ import { validateOutboundUrl } from '../../lib/http/outbound-url.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import type { EmailJob, NotificationDigestGroup, NotificationDigestItem } from '../email/types.ts'
-import { consoleUrlFor, type EmitEmail } from './emit.ts'
+import { consoleUrlFor, deliveryAddress, type EmitEmail, mailHeadersFor } from './emit.ts'
+import { dropUndeliverableCopies } from './cleanup.ts'
+import type { NotificationAttemptReason } from './vocabulary.ts'
 import { NOTIFICATION_SEVERITIES, type NotificationSeverity } from './events.ts'
 import {
   channelTimeZones,
@@ -27,7 +29,6 @@ import {
   listChannelsWithHeldDeliveries,
   type NotificationChannelRecord,
   type NotificationDeliveryRecord,
-  resolveChannelAddress,
   resolveChannelSigningSecret,
 } from './records.ts'
 import { type DigestMessage, sendDigest } from './senders.ts'
@@ -161,18 +162,24 @@ async function enqueueDigest(
   }
 }
 
-type SendOutcome = { ok: true } | { ok: false; error: string }
+type SendOutcome = { ok: true } | { ok: false; error: string; drop?: NotificationAttemptReason }
 
 /** Hand one digest to the channel's transport: the mail queue, or a POST to the chat or webhook URL. */
 async function sendDigestTo(
+  db: Db,
   channel: NotificationChannelRecord,
   deps: DigestDeps,
   claimed: readonly NotificationDeliveryRecord[],
   nowMs: number
 ): Promise<SendOutcome> {
   const summary = channel.digestCadence ?? 'quiet'
-  const address = await resolveChannelAddress(deps.secrets, channel)
-  if (address === null) return { ok: false, error: 'address_unreadable' }
+  const resolved = await deliveryAddress(db, deps.secrets, channel)
+  if (resolved.address === null) {
+    return resolved.drop
+      ? { ok: false, error: resolved.drop, drop: resolved.drop }
+      : { ok: false, error: 'address_unreadable' }
+  }
+  const address = resolved.address
   if (channel.kind === 'email') {
     if (!deps.email) return { ok: false, error: 'no_email_queue' }
     const job = buildDigestJob({
@@ -182,6 +189,22 @@ async function sendDigestTo(
       deliveries: claimed,
       nowMs,
     })
+    // A digest spans categories and, for a personal channel, organizations.
+    // Its link carries no scope of its own: the unsubscribe turns off every
+    // row of the person that sends email to this channel, wherever it sits
+    // (a single `none` row for every organization would lose to the
+    // organization, project or server rows that turned the mail on).
+    const first = claimed[0]?.payload
+    if (first) {
+      job.mail = await mailHeadersFor(
+        deps.secrets,
+        deps.email.consoleBaseUrl,
+        channel,
+        { ...first, organizationId: channel.organizationId, projectId: null },
+        { digest: true }
+      )
+      delete job.mail.event
+    }
     return await enqueueDigest(deps.email, job)
   }
   // Re-validated at send, like every notification: the stored address may
@@ -222,7 +245,7 @@ async function digestOne(
     claimHeldDeliveries(tx, channel.id, new Date(cutoff).toISOString(), DIGEST_CLAIM_LIMIT)
   )
   if (claimed.length === 0) return { digests: 0, events: 0 }
-  const outcome = await sendDigestTo(channel, deps, claimed, nowMs)
+  const outcome = await sendDigestTo(db, channel, deps, claimed, nowMs)
   await runWithDbTimeout(db, (tx) =>
     finishDigestDeliveries(
       tx,
@@ -258,6 +281,8 @@ async function digestOneSafely(
 export async function sendDueDigests(db: Db, deps: DigestDeps = {}): Promise<DigestResult> {
   try {
     const nowMs = deps.now?.() ?? Date.now()
+    // Copies whose scope was deleted or whose person left never go out.
+    await runWithDbTimeout(db, (tx) => dropUndeliverableCopies(tx))
     const channels = await runWithDbTimeout(db, (tx) =>
       listChannelsWithHeldDeliveries(tx, 50, {
         includeEmail: deps.email !== undefined,

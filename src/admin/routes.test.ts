@@ -27,7 +27,16 @@ import {
   upgrade,
   user,
 } from '../db/schema.ts'
-import { OPERATOR_WEBHOOK_LABEL } from '../features/notifications/records.ts'
+import {
+  createNotificationChannel,
+  OPERATOR_WEBHOOK_LABEL,
+} from '../features/notifications/records.ts'
+import { setUpdateManifestProvider } from '../features/update/manifest.ts'
+import { LATEST_BUILD_SETTINGS_KEY } from '../features/upgrades/target-resolve.ts'
+import {
+  UPDATE_NOW_ERRORS,
+  UPDATE_NOW_UNREACHABLE_MESSAGE,
+} from '../features/upgrades/update-now.ts'
 import { encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
@@ -564,7 +573,7 @@ test('POST /api/admin/v1/secrets/reencrypt returns 409 when a sweep is already r
   })
 })
 
-test('Pause all updates holds updates until Resume, shows who paused, and is in the activity log', async () => {
+test('Pause all updates holds updates until Pause All Updates is turned off, shows who paused, and is in the activity log', async () => {
   await withRoleUser('admin', async ({ app, cookie }) => {
     const db = createDenoDb()
     const headers = { Cookie: cookie, 'content-type': 'application/json' }
@@ -643,10 +652,21 @@ test('Check Now refreshes what is waiting, never starts a run, and runs at most 
   await withRoleUser('admin', async ({ app, cookie }) => {
     const db = createDenoDb()
     const headers = { Cookie: cookie, 'content-type': 'application/json' }
-    await db.delete(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+    const checkKeys = ['UPGRADE_CHECK', LATEST_BUILD_SETTINGS_KEY]
+    await db.delete(setting).where(inArray(setting.key, checkKeys))
     const originalFetch = globalThis.fetch
     globalThis.fetch = (() =>
       Promise.resolve(new Response('missing', { status: 404 }))) as typeof fetch
+    // A fixed daemon build answers the read, so the release server counts as reached.
+    setUpdateManifestProvider(() =>
+      Promise.resolve({
+        commit: 'check-now-daemon',
+        buildId: 'check-now-build',
+        builtAt: '2026-01-01T00:00:00.000Z',
+        channel: 'release',
+        manifestUrl: 'https://example.com/daemon/manifest.json',
+      })
+    )
     try {
       const first = await app.request(`${ADMIN_API_PREFIX}/instance/updates/check`, {
         method: 'POST',
@@ -688,9 +708,32 @@ test('Check Now refreshes what is waiting, never starts a run, and runs at most 
       const stored = row?.value as { lastCheckAt: string | null; lastManualCheckAt: string }
       assertEquals(stored.lastCheckAt, null)
       assertEquals(stored.lastManualCheckAt, body.lastCheckAt)
+
+      // The release server down (every manifest 404): 503 `release_unreachable`,
+      // the same answer as Update Now, and the saved build stays.
+      setUpdateManifestProvider(null)
+      await db.delete(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+      const down = await app.request(`${ADMIN_API_PREFIX}/instance/updates/check`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(down.status, 503)
+      assertEquals(await jsonBody<{ ok: boolean; error: string; message: string }>(down), {
+        ok: false,
+        error: UPDATE_NOW_ERRORS.releaseUnreachable,
+        message: UPDATE_NOW_UNREACHABLE_MESSAGE,
+      })
+      const [latest] = await db
+        .select()
+        .from(setting)
+        .where(eq(setting.key, LATEST_BUILD_SETTINGS_KEY))
+      const saved = latest?.value as { daemon?: { commit?: string } | null } | undefined
+      assertEquals(saved?.daemon?.commit, 'check-now-daemon')
     } finally {
       globalThis.fetch = originalFetch
-      await db.delete(setting).where(eq(setting.key, 'UPGRADE_CHECK'))
+      setUpdateManifestProvider(null)
+      await db.delete(setting).where(inArray(setting.key, checkKeys))
     }
   })
 })
@@ -994,6 +1037,36 @@ test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
       assertEquals(listedBody.hostnames[0]?.source, 'platform-ca')
       assertEquals(listedBody.hostnames[0]?.status, 'ready')
 
+      const moved = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+        method: 'PUT',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          hostnames: [
+            { host: 'https://names.example.com', source: 'platform-ca' },
+            {
+              host: 'https://primary.example.com',
+              source: 'platform-ca',
+              publicPort: 443,
+              isPrimary: true,
+            },
+          ],
+        }),
+      })
+      assertEquals(moved.status, 200)
+      const movedBody = (await moved.json()) as {
+        warnings?: string[]
+        previousPrimaryOrigin?: string
+        primaryOrigin?: string
+      }
+      assertEquals(movedBody.warnings, ['primary-host-changed'])
+      assertEquals(movedBody.previousPrimaryOrigin, 'https://names.example.com:8443')
+      assertEquals(movedBody.primaryOrigin, 'https://primary.example.com')
+      const primaryLogged = await db
+        .select({ context: audit.context })
+        .from(audit)
+        .where(eq(audit.action, 'instance.primary_hostname_changed'))
+      assertEquals(primaryLogged.length >= 1, true)
+
       const rejectedAcme = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
         method: 'PUT',
         headers: {
@@ -1001,7 +1074,7 @@ test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
           'content-type': 'application/json',
         },
         body: JSON.stringify({
-          hostnames: [{ host: '10.1.2.3', source: 'lets-encrypt' }],
+          hostnames: [{ host: '10.1.2.3', source: 'acme-http-01' }],
         }),
       })
       assertEquals(rejectedAcme.status, 422)
@@ -1613,12 +1686,14 @@ test('a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
           label: string
           kind: string
           address: string
+          allOrganizations: boolean
           rules: Array<{ event: string; minSeverity: string }>
         }>
       }>(listed)
       const operator = channels.find((ch) => ch.label === OPERATOR_WEBHOOK_LABEL)
       assertEquals(operator?.kind, 'webhook')
       assertEquals(operator?.address, 'https://hooks.slack.com')
+      assertEquals(operator?.allOrganizations, true)
       assertEquals(operator?.rules, [{ event: '*', minSeverity: 'info' }])
       const legacyRows = await db
         .select({ value: setting.value })
@@ -1636,6 +1711,111 @@ test('a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
       })
     } finally {
       await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+    }
+  })
+})
+
+test('a control plane channel carries the all organizations switch through create and update', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const send = (method: string, path: string, body: unknown) =>
+      app.request(`${ADMIN_API_PREFIX}/notification-channels${path}`, {
+        method,
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    const created = await send('POST', '', {
+      kind: 'webhook',
+      label: 'Switch Test',
+      address: 'https://hooks.slack.com/services/T0/B0/SWITCH',
+      rules: [{ event: '*', minSeverity: 'info' }],
+    })
+    assertEquals(created.status, 201)
+    const { channel } = await jsonBody<{ channel: { id: string; allOrganizations: boolean } }>(
+      created
+    )
+    try {
+      assertEquals(channel.allOrganizations, false)
+      const on = await send('PATCH', `/${channel.id}`, { allOrganizations: true })
+      assertEquals(on.status, 200)
+      assertEquals(
+        (await jsonBody<{ channel: { allOrganizations: boolean } }>(on)).channel.allOrganizations,
+        true
+      )
+      const bad = await send('PATCH', `/${channel.id}`, { allOrganizations: 'yes' })
+      assertEquals(bad.status, 400)
+      assertEquals((await jsonBody<{ error: string }>(bad)).error, 'all_organizations_invalid')
+    } finally {
+      await send('DELETE', `/${channel.id}`, {})
+    }
+  })
+})
+
+test('an operator webhook made before the switch existed is switched on when touched', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    try {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const enc = await deriveEncryptionSecretsConfig(
+        parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
+        'data-encryption'
+      )
+      const old = await createNotificationChannel(db, enc, {
+        scope: 'instance',
+        kind: 'webhook',
+        label: OPERATOR_WEBHOOK_LABEL,
+        address: 'https://hooks.slack.com/services/OLD/PATH',
+        isAllOrganizationsNotified: false,
+      })
+      const listed = await app.request(`${ADMIN_API_PREFIX}/notification-channels`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(listed.status, 200)
+      const [row] = await db
+        .select({ on: notificationChannel.isAllOrganizationsNotified })
+        .from(notificationChannel)
+        .where(eq(notificationChannel.id, old.id))
+      assertEquals(row?.on, true)
+    } finally {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+    }
+  })
+})
+
+test('the operator webhook cannot be switched off from hearing every organization', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    try {
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const put = await app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
+        method: 'PUT',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://hooks.slack.com/services/OP/PATH' }),
+      })
+      assertEquals(put.status, 200)
+      const [row] = await db
+        .select({ id: notificationChannel.id })
+        .from(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
+      const patched = await app.request(`${ADMIN_API_PREFIX}/notification-channels/${row!.id}`, {
+        method: 'PATCH',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ allOrganizations: false }),
+      })
+      assertEquals(patched.status, 400)
+      assertEquals(
+        (await jsonBody<{ error: string }>(patched)).error,
+        'operator_webhook_hears_all_organizations'
+      )
+    } finally {
       await db
         .delete(notificationChannel)
         .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
@@ -1749,7 +1929,7 @@ async function withLetsEncryptColocated(
     const seeded = await replaceInstanceHostnames(db, [
       {
         host: 'https://acme-env.example.com',
-        source: 'lets-encrypt',
+        source: 'acme-http-01',
         uploadedCertId: null,
       },
     ])
@@ -1824,7 +2004,7 @@ test("PUT /instance/hostnames refuses to store a Let's Encrypt row while the ter
       headers: { Cookie: cookie, 'content-type': 'application/json' },
       body: JSON.stringify({
         hostnames: [
-          { host: 'https://acme-env.example.com', source: 'lets-encrypt' },
+          { host: 'https://acme-env.example.com', source: 'acme-http-01' },
           { host: 'https://other.example.com', source: 'platform-ca' },
         ],
       }),

@@ -21,7 +21,8 @@ const PRIVATE_BLOCKS: readonly string[] = [
   .concat(['fc00', '7'].join('::/'))
 
 type OraclePayload = {
-  address: string
+  /** Absent on a payload with no tunnel. */
+  address?: string
   prefix: string
   peers: readonly { allowedIPs: readonly string[] }[]
 }
@@ -63,9 +64,9 @@ function peerRangeRefusal(
 
 /** `null` when the daemon would accept the payload, else why it would refuse it. */
 export function daemonAllowedIpsRefusal(payload: OraclePayload): string | null {
-  const own = [payload.address, payload.prefix].map((value) =>
-    value.includes('/') ? value : `${value}/32`
-  )
+  const own = [payload.address, payload.prefix]
+    .filter((value): value is string => value !== undefined)
+    .map((value) => (value.includes('/') ? value : `${value}/32`))
   for (const [index, peer] of payload.peers.entries()) {
     for (const cidr of peer.allowedIPs) {
       const refusal = peerRangeRefusal(cidr, index, payload, own)

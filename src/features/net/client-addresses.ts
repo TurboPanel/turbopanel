@@ -22,6 +22,7 @@ import {
   parseClientAddressOptions,
   resolveClientAddresses,
   type ServerClientAddresses,
+  servingPublicAddresses,
 } from './client-addresses-pure.ts'
 
 /** Saved operator entries for a server. */
@@ -107,7 +108,9 @@ export async function loadClientAddressDatacenterPins(
   }
   return [...byDatacenter].map(([datacenterId, pins]) => ({
     datacenterId,
-    datacenterName: pins[0]!.name ?? 'Datacenter',
+    // An unnamed datacenter has no name to show: the web interface then says
+    // just "Datacenter Network" instead of repeating the word after it.
+    datacenterName: pins[0]!.name?.trim() || '',
     addressPreference: pins[0]!.addressPreference === 'ipv4' ? 'ipv4' : 'ipv6',
     priority: pins[0]!.priority,
     // A pin whose network link is down is not where clients arrive, the same
@@ -211,4 +214,25 @@ export async function pruneClientAddressesWithoutPin(
         sql`NOT EXISTS (SELECT 1 FROM ${ip} WHERE ${ip.serverId} = ${clientAddress.serverId} AND ${ip.datacenterId} = ${clientAddress.datacenterId} AND ${ip.scope} = 'datacenter')`
       )
     )
+}
+
+/**
+ * The public addresses one serving server is known by: managed `ip` rows, its
+ * public-side address overrides and the public addresses its daemon reports.
+ * A server without managed addresses is still checked against what it reports.
+ */
+export async function loadServerPublicAddresses(db: Db, serverId: string): Promise<string[]> {
+  const [ipRows, serverRows, saved] = await Promise.all([
+    db
+      .select({ address: ip.address })
+      .from(ip)
+      .where(and(eq(ip.serverId, serverId), eq(ip.scope, 'public'))),
+    db.select({ metadata: server.metadata }).from(server).where(eq(server.id, serverId)).limit(1),
+    loadClientAddressEntries(db, serverId),
+  ])
+  return servingPublicAddresses({
+    publicIps: ipRows.flatMap((row) => inetAddressToString(row.address) ?? []),
+    saved,
+    reportedIps: reportedIpsFromServerMetadata(serverRows[0]?.metadata) ?? [],
+  })
 }

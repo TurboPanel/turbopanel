@@ -14,7 +14,17 @@ import {
   secretHostPath,
 } from './secret-files.ts'
 import {
+  applyServiceConfigFiles,
+  type ConfigFileWarning,
+  finishConfigFiles,
+  newConfigFilesContext,
+} from './apply-config-files.ts'
+import type { DeployConfigFileEntry, DeployConfigSecretRef } from './config-files.ts'
+import {
   collectComposeInterpolationKeys,
+  type DbVariableRef,
+  formatVariableRef,
+  isDbRef,
   type ParsedVariableRef,
   parseExactVariableRef,
   type VariableRefScope,
@@ -87,7 +97,14 @@ export type VariableScopeEntryMap = Partial<
 >
 
 export type ApplyVariablesError = {
-  kind: 'variable_unresolved' | 'variable_ref_invalid' | 'variable_secret_interpolation'
+  kind:
+    | 'variable_unresolved'
+    | 'variable_ref_invalid'
+    | 'variable_secret_interpolation'
+    | 'config_interpolation'
+    | 'config_file_invalid'
+    | 'config_file_shared'
+    | 'config_files_need_daemon_update'
   message: string
   ref?: string
   composeServiceName?: string
@@ -115,6 +132,15 @@ export type ApplyVariablesResult = {
    * `params.nativeServiceNames`.
    */
   unreferencedSecrets: Map<string, UnreferencedSecret[]>
+  /**
+   * Generated config files (`configs.<name>.content`) as parts. The secrets
+   * they read ride in `secretMaterial` with no `secretPlan` entry, so they get
+   * no `/run/secrets` mount.
+   */
+  configFiles: DeployConfigFileEntry[]
+  /** Secrets the generated files read, kept so a reboot can ask for their values. */
+  configSecretRefs: DeployConfigSecretRef[]
+  configWarnings: ConfigFileWarning[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -207,11 +233,16 @@ function entriesToMap(entries: readonly DeployVariableEntry[]): Map<string, Depl
   return map
 }
 
-function lookupVariable(
+/** Reads one `{$db.<binding>.<field>}` of this service from its binding's own rows. */
+export type DbRefLookup = (ref: DbVariableRef) => DeployVariableEntry | undefined
+
+export function lookupVariable(
   ref: ParsedVariableRef,
   inherited: Map<string, DeployVariableEntry>,
-  scopes: VariableScopeEntryMap | undefined
+  scopes: VariableScopeEntryMap | undefined,
+  dbLookup?: DbRefLookup
 ): DeployVariableEntry | undefined {
+  if (isDbRef(ref)) return dbLookup?.(ref)
   if (ref.scope) return scopes?.[ref.scope]?.get(ref.key)
   return inherited.get(ref.key)
 }
@@ -259,12 +290,14 @@ function ensureTopLevelSecret(
 }
 
 // No `uid` / `gid` / `mode`: Docker Compose only supports them in Swarm mode and
-// logs a warning on every deploy otherwise. The file's own host permissions apply.
+// logs a warning on every deploy otherwise. The file's own host permissions
+// apply: the daemon writes secret files 0444 in a private 0700 folder, so any
+// user inside this one container can read it.
 function appendServiceSecret(service: Record<string, unknown>, plan: DeploySecretPlanEntry): void {
   const next = Array.isArray(service.secrets) ? [...service.secrets] : []
   const already = next.some((item) => {
-    if (typeof item === 'string') return item === plan.source
-    return isRecord(item) && item.source === plan.source
+    if (typeof item === 'string') return item === plan.source && item === plan.target
+    return isRecord(item) && item.source === plan.source && item.target === plan.target
   })
   if (already) return
   next.push({
@@ -278,8 +311,8 @@ function appendBuildSecret(service: Record<string, unknown>, plan: DeploySecretP
   const build = isRecord(service.build) ? { ...service.build } : {}
   const next = Array.isArray(build.secrets) ? [...build.secrets] : []
   const already = next.some((item) => {
-    if (typeof item === 'string') return item === plan.source
-    return isRecord(item) && item.source === plan.source
+    if (typeof item === 'string') return item === plan.source && item === plan.target
+    return isRecord(item) && item.source === plan.source && item.target === plan.target
   })
   if (!already) {
     next.push({ source: plan.source, target: plan.target })
@@ -311,6 +344,7 @@ type ApplyServiceState = {
   composeServiceName: string
   inherited: Map<string, DeployVariableEntry>
   scopes: VariableScopeEntryMap | undefined
+  dbLookup: DbRefLookup | undefined
   secretKeys: Set<string>
   plannedKeys: Set<string>
   secretMaterial: DeployVariableMaterial[]
@@ -386,6 +420,25 @@ function findPlannedSecret(
   )
 }
 
+/**
+ * A binding's `<PREFIX>_CA_CERT` secret mapped to another name
+ * (`FOO: "{$DATABASE_CA_CERT}"`) still has to exist at
+ * `/run/secrets/<PREFIX>_CA_CERT`: that path is what `<PREFIX>_CA_FILE` and a
+ * Postgres URL's `sslrootcert` name. Mount the same source a second time under
+ * its own name (a second `secrets:` item, no second plan entry).
+ */
+function mountBindingCaAtOwnName(
+  service: Record<string, unknown>,
+  plan: DeploySecretPlanEntry,
+  entry: DeployVariableEntry,
+  runtimeEnv: Record<string, string> | undefined
+): void {
+  if (!entry.bindingId || !entry.key.endsWith('_CA_CERT')) return
+  if (plan.target === entry.key || !plan.forRuntime) return
+  appendServiceSecret(service, { ...plan, target: entry.key })
+  if (runtimeEnv) runtimeEnv[secretFileEnvKey(entry.key)] = secretContainerPath(entry.key)
+}
+
 function applySecretAssignment(
   state: ApplyServiceState,
   entry: DeployVariableEntry,
@@ -427,6 +480,7 @@ function applySecretAssignment(
     state.runDir
   )
   applySecretMounts(state.service, state.data, plan, hostPath, runtimeEnv)
+  mountBindingCaAtOwnName(state.service, plan, entry, runtimeEnv)
   state.secretPlan.push(plan)
   state.secretMaterial.push(secretMaterialFrom(entry, state.composeServiceName))
 }
@@ -436,7 +490,7 @@ function unresolvedError(
   ref: ParsedVariableRef,
   envKey: string
 ): ApplyVariablesError {
-  const labeled = ref.scope ? `{$${ref.scope}.${ref.key}}` : `{$${ref.key}}`
+  const labeled = formatVariableRef(ref)
   return {
     kind: 'variable_unresolved',
     message: `Unresolved variable ${labeled} on ${state.composeServiceName}.${envKey}`,
@@ -522,7 +576,7 @@ function applyRefValue(
     }
   }
 
-  const entry = lookupVariable(parsed.ref, state.inherited, state.scopes)
+  const entry = lookupVariable(parsed.ref, state.inherited, state.scopes, state.dbLookup)
   if (!entry) return unresolvedError(state, parsed.ref, envKey)
 
   if (entry.isSecret) {
@@ -633,11 +687,19 @@ export function applyVariablesToComposeDocument(
     globalEntries: DeployVariableEntry[]
     perServiceEntries: Map<string, DeployVariableEntry[]>
     perServiceScopes?: Map<string, VariableScopeEntryMap>
+    /** Per compose service: how a `{$db.<binding>.<field>}` reference reads its binding. */
+    perServiceDbRefs?: Map<string, DbRefLookup>
     /** Compose services that are native (`serviceKind: node`) apps. */
     nativeServiceNames?: ReadonlySet<string>
     projectId?: string
     environmentId?: string
     runDir?: string
+    /**
+     * Whether the target daemon lists `deploy-config-files-v1`. Absent reads
+     * false: a content config with a `{$…}` value is then refused, and one
+     * without stays as authored.
+     */
+    configFilesEnabled?: boolean
   }
 ): ApplyVariablesResult | ApplyVariablesError {
   const data = { ...document.data }
@@ -651,6 +713,13 @@ export function applyVariablesToComposeDocument(
   const runDir = params.runDir ?? DEFAULT_DEPLOY_RUN_DIR
   const projectId = params.projectId ?? 'preview'
   const environmentId = params.environmentId ?? 'preview'
+  const configCtx = newConfigFilesContext({
+    enabled: params.configFilesEnabled === true,
+    projectId,
+    environmentId,
+    runDir,
+    secretMaterial,
+  })
 
   for (const composeServiceName of listComposeServiceNames(document)) {
     const rawService = services[composeServiceName]
@@ -666,6 +735,7 @@ export function applyVariablesToComposeDocument(
       composeServiceName,
       inherited,
       scopes: params.perServiceScopes?.get(composeServiceName),
+      dbLookup: params.perServiceDbRefs?.get(composeServiceName),
       secretKeys: collectSecretKeys(inherited, params.perServiceScopes?.get(composeServiceName)),
       plannedKeys: new Set(),
       secretMaterial,
@@ -681,6 +751,14 @@ export function applyVariablesToComposeDocument(
     }
     const error = applyEntriesToService(state)
     if (error) return error
+    const configError = applyServiceConfigFiles(
+      configCtx,
+      state.service,
+      data,
+      composeServiceName,
+      (ref) => lookupVariable(ref, state.inherited, state.scopes, state.dbLookup)
+    )
+    if (configError) return configError
     services[composeServiceName] = state.service
     runtimeAssignments.set(composeServiceName, state.runtimeAssignments)
     buildAssignments.set(composeServiceName, state.buildAssignments)
@@ -688,6 +766,8 @@ export function applyVariablesToComposeDocument(
   }
 
   data.services = services
+  const finishError = finishConfigFiles(configCtx, data)
+  if (finishError) return finishError
 
   return {
     document: {
@@ -701,6 +781,9 @@ export function applyVariablesToComposeDocument(
     runtimeAssignments,
     buildAssignments,
     unreferencedSecrets,
+    configFiles: configCtx.files,
+    configSecretRefs: configCtx.secretRefs,
+    configWarnings: configCtx.warnings,
   }
 }
 

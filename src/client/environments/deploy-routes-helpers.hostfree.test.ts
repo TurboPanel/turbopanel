@@ -3,7 +3,7 @@
  */
 
 import { assertEquals, assertNotEquals } from '@std/assert'
-import type { DeployPrepareError } from './deploy-prepare.ts'
+import type { DeployPrepareError, PreparedDeployCompose } from './deploy-prepare.ts'
 import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
@@ -25,6 +25,7 @@ import {
   resolveDeployReleaseServiceId,
   preferredListenPortsFromHostings,
   previewCommitSha,
+  previewConfigFiles,
   previewNativeAppVariables,
   queuedCommandsResponseBody,
   readHostingPorts,
@@ -58,6 +59,16 @@ test('tlsPinErrorCode maps pin errors', () => {
   assertEquals(tlsPinErrorCode('pin_not_found'), 'tls_pin_not_found')
   assertEquals(tlsPinErrorCode('pin_mismatch'), 'tls_pin_mismatch')
   assertEquals(tlsPinErrorCode('pin_not_ready'), 'tls_pin_not_ready')
+})
+
+test('fabricGateErrorResponse answers 409 with the plain message when TurboFabric was turned off', () => {
+  assertEquals(
+    fabricGateErrorResponse({ kind: 'turned_off', message: 'TurboFabric was turned off.' }),
+    {
+      status: 409,
+      body: { error: 'fabric_turned_off', message: 'TurboFabric was turned off.' },
+    }
+  )
 })
 
 test('fabricGateErrorResponse maps failed and pending fabric gates', () => {
@@ -991,4 +1002,54 @@ test('mapPrepareErrorResponse explains a non-public or unsupported automatic rou
   assertEquals(wildcard.status, 400)
   assertEquals(wildcard.body.error, 'letsencrypt_hostname_unsupported')
   assertEquals(String(wildcard.body.message).includes('*.example.com cannot get one'), true)
+})
+
+test('config file prepare errors map to 422 and the daemon gate to 409 naming servers', () => {
+  const invalid = mapPrepareErrorResponse({
+    kind: 'config_file_invalid',
+    message: 'too big',
+    composeServiceName: 'web',
+    envKey: 'c',
+  })
+  assertEquals(invalid.status, 422)
+  assertEquals(invalid.body.error, 'config_file_invalid')
+  assertEquals(invalid.body.composeServiceName, 'web')
+  assertEquals(
+    mapPrepareErrorResponse({ kind: 'config_interpolation', message: 'x' }).body.error,
+    'config_interpolation'
+  )
+  assertEquals(mapPrepareErrorResponse({ kind: 'config_file_shared', message: 'x' }).status, 422)
+  const gate = mapPrepareErrorResponse({
+    kind: 'config_files_need_daemon_update',
+    message: 'update the daemon',
+    servers: [{ serverId: 'srv-1', name: 'old-box' }],
+  })
+  assertEquals(gate.status, 409)
+  assertEquals(gate.body.error, 'config_files_need_daemon_update')
+  assertEquals(gate.body.servers, [{ serverId: 'srv-1', name: 'old-box' }])
+})
+
+test('the preview shows secret slots by name and never a value or a size', () => {
+  const rows = previewConfigFiles({
+    serverId: 'srv-1',
+    configFiles: [
+      {
+        composeServiceName: 'pgadmin',
+        source: 'pgadmin_pgpass',
+        relativePath: 'pgadmin--pgpass',
+        parts: [{ text: 'db:5432:*:app:' }, { secretKey: 'DB_PASSWORD' }, { text: '\n' }],
+      },
+      {
+        composeServiceName: 'pgadmin',
+        source: 'pgadmin_servers',
+        relativePath: 'pgadmin--servers',
+        parts: [{ text: '{}' }],
+      },
+    ],
+  } as unknown as PreparedDeployCompose)
+  assertEquals(rows[0]?.template, 'db:5432:*:app:{$DB_PASSWORD}\n')
+  assertEquals(rows[0]?.hasSecretValues, true)
+  assertEquals(rows[1]?.hasSecretValues, false)
+  assertEquals(Object.keys(rows[0] ?? {}).includes('bytes'), false)
+  assertEquals(previewConfigFiles({} as PreparedDeployCompose), [])
 })

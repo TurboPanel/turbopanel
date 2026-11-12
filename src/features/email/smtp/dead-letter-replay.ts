@@ -54,6 +54,8 @@ export type DeadLetterReplayAll = {
 
 /** The broker side, so the routes and their tests never see AMQP. */
 export type MailDeadLetterStore = {
+  /** Messages waiting in the dead-letter queue, read without taking any off it. */
+  count(): Promise<number>
   list(limit: number): Promise<DeadLetterList>
   /** `false` when no message has that id. */
   replayOne(id: string): Promise<{ replayed: boolean }>

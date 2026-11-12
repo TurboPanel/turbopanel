@@ -21,7 +21,10 @@ export const variableSchemas = {
       isSecret: { type: 'boolean' },
       isLiteral: { type: 'boolean', description: 'Skip compose $ interpolation when true' },
       forBuild: { type: 'boolean', description: 'Inject into build.args when true' },
-      forRuntime: { type: 'boolean', description: 'Inject into environment when true (default true)' },
+      forRuntime: {
+        type: 'boolean',
+        description: 'Inject into environment when true (default true)',
+      },
       value: {
         type: ['string', 'null'],
         description: 'Plaintext value for non-secret variables; always null for secrets',
@@ -55,7 +58,11 @@ export const variableSchemas = {
       hostingId: { type: 'string' },
       serverId: { type: 'string' },
       key: { type: 'string' },
-      value: { type: 'string' },
+      value: {
+        type: 'string',
+        description:
+          'A plain value may hold {$db.<binding>.<field>} references to a database binding of the service (fields: host, port, name, user, password, url, ca_file, ca_text, ssl_mode, driver, read_split). A secret field (password, url, ca_text) must be the whole value and makes the variable secret; a reference is refused in a secret or build variable. {$$db. writes a literal {$db.',
+      },
       isSecret: { type: 'boolean' },
       isLiteral: { type: 'boolean' },
       forBuild: { type: 'boolean' },
@@ -157,10 +164,14 @@ export const variablePaths = {
       parameters: parentQueryParameters,
     },
     post: {
-      ...((basePaths[variablesBasePath] as Record<string, unknown>).post as Record<string, unknown>),
+      ...((basePaths[variablesBasePath] as Record<string, unknown>).post as Record<
+        string,
+        unknown
+      >),
       responses: {
-        ...(((basePaths[variablesBasePath] as Record<string, unknown>).post as Record<string, unknown>)
-          .responses as Record<string, unknown>),
+        ...((
+          (basePaths[variablesBasePath] as Record<string, unknown>).post as Record<string, unknown>
+        ).responses as Record<string, unknown>),
         ...conflictResponse,
         '503': {
           description: 'Encryption unavailable',
@@ -182,8 +193,9 @@ export const variablePaths = {
         },
       },
       responses: {
-        ...(((basePaths[variableIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
-          .responses as Record<string, unknown>),
+        ...((
+          (basePaths[variableIdPath] as Record<string, unknown>).patch as Record<string, unknown>
+        ).responses as Record<string, unknown>),
         ...conflictResponse,
         '503': {
           description: 'Encryption unavailable',

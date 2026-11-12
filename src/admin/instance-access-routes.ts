@@ -7,7 +7,6 @@ import { getCommandQueue } from '../features/commands/queue.ts'
 import { DEFAULT_TRUSTED_PROXY_CIDRS, parseTrustedProxyCidrs } from '../lib/peer-address.ts'
 import { parseCertificatePem } from '../lib/tls/parse.ts'
 import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
-import { dispatchInstanceTunnelToken, parseTunnelTokenBody } from '../developer/tunnel-token.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
 import { enqueuePlatformCaTrustReconcile } from './tls-trust-reconcile.ts'
@@ -107,30 +106,6 @@ export function registerInstanceAccessAdminRoutes(
     const raw = resolvePlatformEnv(c, opts).TURBOPANEL_TRUSTED_PROXY_CIDRS
     const cidrs = parseTrustedProxyCidrs(raw)
     return c.json({ cidrs, isDefault: trustedProxiesAreDefault(cidrs) })
-  })
-
-  admin.post('/instance/tunnel-token', createRootOnlyMiddleware(opts.secrets), async (c) => {
-    const body = await c.req.json().catch(() => null)
-    const parsed = parseTunnelTokenBody(body)
-    if (!parsed.ok) {
-      return c.json({ ok: false, error: 'expected { token: string }' }, 400)
-    }
-    const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) {
-      return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)
-    }
-    const result = await dispatchInstanceTunnelToken({
-      db,
-      registry,
-      token: parsed.token,
-      secretsConfig: c.get('secretsConfig'),
-    })
-    if (!result.ok) {
-      return c.json({ ok: false, error: result.error }, result.status)
-    }
-    return c.json({ ok: true })
   })
 }
 

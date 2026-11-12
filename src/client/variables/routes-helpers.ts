@@ -2,6 +2,11 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { ResolvedVariableMap } from '../../features/variables/resolve-inherited.ts'
 import { uniqueViolationMessage } from '../../db/unique-violation.ts'
+import {
+  type DbRefField,
+  isDbRef,
+  splitEmbeddedRefs,
+} from '../../features/compose/variable-refs.ts'
 
 export { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 
@@ -137,6 +142,44 @@ export const VARIABLE_LONE_CARRIAGE_RETURN_ERROR =
 
 export function variableValueProblem(normalizedValue: string): string | null {
   return normalizedValue.includes('\r') ? VARIABLE_LONE_CARRIAGE_RETURN_ERROR : null
+}
+
+const SECRET_DB_FIELDS: ReadonlySet<DbRefField> = new Set(['password', 'url', 'ca_text'])
+
+/**
+ * Why a value that holds a `{$db.<binding>.<field>}` reference cannot be saved
+ * as it is, as one plain sentence, or `null`. Run on the value as it will be
+ * stored, with the flags it will have after the save. Whether the binding
+ * exists is checked at deploy, not here. `{$$db.` is the escape for a literal
+ * `{$db.` and is not a reference.
+ */
+export function variableReferenceProblem(
+  value: string,
+  isSecret: boolean,
+  forBuild: boolean
+): string | null {
+  const parts = splitEmbeddedRefs(value)
+  const refs = parts.flatMap((part) => (part.kind === 'ref' && isDbRef(part.ref) ? [part.ref] : []))
+  const malformed = parts.some(
+    (part) =>
+      (part.kind === 'invalid' && part.raw.startsWith('{$db.')) ||
+      (part.kind === 'text' && part.text.includes('{$db.'))
+  )
+  if (malformed) {
+    return 'This value has a malformed database reference; write {$db.<binding>.<field>} with a field of host, port, name, user, password, url, ca_file, ca_text, ssl_mode, driver or read_split'
+  }
+  if (refs.length === 0) return null
+  if (isSecret) {
+    return 'A database reference cannot be saved in a secret variable. Save it as a plain variable; a reference to a secret field stays secret'
+  }
+  if (forBuild)
+    return 'Database settings reach the running app only, so this variable cannot be used for builds'
+  const embeddedSecret =
+    parts.length > 1 ? refs.find((ref) => SECRET_DB_FIELDS.has(ref.field)) : undefined
+  if (embeddedSecret) {
+    return `${embeddedSecret.raw} is secret, so it must be the whole value of the variable`
+  }
+  return null
 }
 
 export function serializeResolvedVariables(map: ResolvedVariableMap) {

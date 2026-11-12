@@ -885,10 +885,11 @@ test('resolveVerificationBaseUrlAsync ignores a forged forwarded host when a bas
       'https://console.example.com'
     )
     Deno.env.set('TURBOPANEL_PUBLIC_URLS', 'https://stored.example.com')
-    // A stored public URL wins over the configured base URL.
+    // Self-hosted, the process env is never a hostname source: it does not
+    // displace the configured base URL.
     assertEquals(
       await resolveWith({ baseUrl: 'https://console.example.com' }),
-      'https://stored.example.com'
+      'https://console.example.com'
     )
     // Plaintext http is never a verification origin.
     Deno.env.delete('TURBOPANEL_PUBLIC_URLS')

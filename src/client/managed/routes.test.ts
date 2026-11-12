@@ -47,6 +47,7 @@ import {
   principal,
   project,
   retention,
+  scope,
   server,
   service,
   snapshot,
@@ -77,7 +78,12 @@ import {
 } from '../../features/backups/run-report.ts'
 import type { BackupRunReportMessage } from '../../contracts/cell-protocol.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
+import { confirmedPath } from '../../test-fixtures/confirm-name.test.support.ts'
+import { createManagedLogin, removeLoginsDroppedByApply } from '../../features/managed/logins.ts'
+import {
+  insertToolProjectFixture,
+  removeToolProjectFixture,
+} from '../../features/managed/admin-tools/projects.test.support.ts'
 import {
   releaseManagedLifecycleLease,
   tryTakeManagedLifecycleLease,
@@ -1413,10 +1419,13 @@ test('a start, stop or destroy is refused while another lifecycle command for th
     // Bad input is answered as such, busy or not.
     const bad = await lifecycle('explode')
     assertEquals(bad.status, 400)
-    const destroy = await app.request(`/environments/${environmentId}/managed`, {
-      method: 'DELETE',
-      headers,
-    })
+    const destroy = await app.request(
+      await confirmedPath(db, 'managed', environmentId, `/environments/${environmentId}/managed`),
+      {
+        method: 'DELETE',
+        headers,
+      }
+    )
     assertEquals(destroy.status, 409)
     assertEquals(await destroy.json(), LIFECYCLE_BUSY_BODY)
     assertEquals(commandQueue.envelopes.length, queued)
@@ -1447,10 +1456,18 @@ test('two lifecycle requests that arrive together queue one command, and a force
     assertEquals(commandQueue.envelopes.length, before + 1)
 
     // The escape hatch for a database stuck behind a command: not refused.
-    const forced = await app.request(`/environments/${environmentId}/managed?force=true`, {
-      method: 'DELETE',
-      headers,
-    })
+    const forced = await app.request(
+      await confirmedPath(
+        ctx.db,
+        'managed',
+        environmentId,
+        `/environments/${environmentId}/managed?force=true`
+      ),
+      {
+        method: 'DELETE',
+        headers,
+      }
+    )
     assertEquals(forced.status === 409, false)
   })
 })
@@ -2181,10 +2198,18 @@ test('DELETE /environments/:id/managed targets managed.server_id when environmen
 
       await withDriftedPlacement(db, environmentId, organizationId, serverId, async () => {
         const beforeCount = commandQueue.envelopes.length
-        const destroy = await app.request(`/environments/${environmentId}/managed`, {
-          method: 'DELETE',
-          headers,
-        })
+        const destroy = await app.request(
+          await confirmedPath(
+            db,
+            'managed',
+            environmentId,
+            `/environments/${environmentId}/managed`
+          ),
+          {
+            method: 'DELETE',
+            headers,
+          }
+        )
         assertEquals(destroy.status, 200)
         const destroyBody = (await destroy.json()) as {
           deleted: boolean
@@ -2223,10 +2248,13 @@ test('DELETE /environments/:id/managed marks the enqueued destroy payload delete
       // consumer deletes the row only after the daemon reports success.
       await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
 
-      const destroy = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'DELETE',
-        headers,
-      })
+      const destroy = await app.request(
+        await confirmedPath(db, 'managed', environmentId, `/environments/${environmentId}/managed`),
+        {
+          method: 'DELETE',
+          headers,
+        }
+      )
       assertEquals(destroy.status, 200)
       const destroyBody = (await destroy.json()) as { deleted: boolean }
       // Deletion is not immediate — it happens after the daemon confirms
@@ -2453,7 +2481,7 @@ test('POST root-password includes redeployRequired when bindings exist; DELETE u
           isEmitEngineDefaults: false,
         })
         const deleteDb = await app.request(
-          `/environments/${environmentId}/managed/databases/app_extra`,
+          `/environments/${environmentId}/managed/databases/app_extra?confirmName=app_extra`,
           { method: 'DELETE', headers }
         )
         assertEquals(deleteDb.status, 409)
@@ -2699,7 +2727,7 @@ test('managed database create/delete target managed.server_id when environment p
         await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
 
         const deleteDb = await app.request(
-          `/environments/${environmentId}/managed/databases/${encodeURIComponent('drift_db')}`,
+          `/environments/${environmentId}/managed/databases/${encodeURIComponent('drift_db')}?confirmName=drift_db`,
           { method: 'DELETE', headers }
         )
         assertEquals(deleteDb.status, 200)
@@ -2850,10 +2878,13 @@ test('DELETE hard-deletes unplaced managed without enqueueing destroy', async ()
         .where(eq(managed.id, created.managed.id))
 
       const beforeCount = commandQueue.envelopes.length
-      const destroy = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'DELETE',
-        headers,
-      })
+      const destroy = await app.request(
+        await confirmedPath(db, 'managed', environmentId, `/environments/${environmentId}/managed`),
+        {
+          method: 'DELETE',
+          headers,
+        }
+      )
       assertEquals(destroy.status, 200)
       assertEquals(await destroy.json(), { ok: true, deleted: true })
       assertEquals(commandQueue.envelopes.length, beforeCount)
@@ -2863,6 +2894,68 @@ test('DELETE hard-deletes unplaced managed without enqueueing destroy', async ()
         .from(managed)
         .where(eq(managed.environmentId, environmentId))
       assertEquals(rows.length, 0)
+    }
+  )
+})
+
+test('DELETE of a managed database needs the exact name of its project, not the environment name', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db
+        .update(managed)
+        .set({ serverId: null, status: 'ready' })
+        .where(eq(managed.id, created.managed.id))
+      const [env] = await db
+        .select({ name: environment.name, projectId: environment.projectId })
+        .from(environment)
+        .where(eq(environment.id, environmentId))
+      await db.update(project).set({ name: 'Orders Db' }).where(eq(project.id, env!.projectId))
+      const remaining = async () =>
+        (
+          await db
+            .select({ id: managed.id })
+            .from(managed)
+            .where(eq(managed.id, created.managed.id))
+        ).length
+      const send = (query: string) =>
+        app.request(`/environments/${environmentId}/managed${query}`, {
+          method: 'DELETE',
+          headers,
+        })
+
+      for (const query of [
+        '',
+        '?confirmName=',
+        '?confirmName=orders%20db',
+        `?confirmName=${encodeURIComponent(env!.name ?? '')}`,
+        '?force=true',
+      ]) {
+        const refused = await send(query)
+        assertEquals(refused.status, 400, query)
+        assertEquals(await refused.json(), {
+          error: 'confirm_name_required',
+          message: 'Type the managed database name to delete this managed database.',
+        })
+        assertEquals(await remaining(), 1)
+      }
+
+      const removed = await send('?confirmName=Orders%20Db')
+      assertEquals(removed.status, 200)
+      assertEquals(await remaining(), 0)
     }
   )
 })
@@ -2888,10 +2981,13 @@ test('DELETE stopped placed managed enqueues destroy instead of hard-delete', as
       await db.update(managed).set({ status: 'stopped' }).where(eq(managed.id, created.managed.id))
 
       const beforeCount = commandQueue.envelopes.length
-      const destroy = await app.request(`/environments/${environmentId}/managed`, {
-        method: 'DELETE',
-        headers,
-      })
+      const destroy = await app.request(
+        await confirmedPath(db, 'managed', environmentId, `/environments/${environmentId}/managed`),
+        {
+          method: 'DELETE',
+          headers,
+        }
+      )
       assertEquals(destroy.status, 200)
       const destroyBody = (await destroy.json()) as { deleted: boolean }
       assertEquals(destroyBody.deleted, false)
@@ -3516,7 +3612,7 @@ test('POST user rejects invalid username and DELETE database protects initial da
       assertEquals((await badUser.json()).error, 'reserved_username')
 
       const dropInitial = await app.request(
-        `/environments/${environmentId}/managed/databases/${encodeURIComponent('defaultdb')}`,
+        `/environments/${environmentId}/managed/databases/${encodeURIComponent('defaultdb')}?confirmName=defaultdb`,
         { method: 'DELETE', headers }
       )
       assertEquals(dropInitial.status, 409)
@@ -5303,6 +5399,323 @@ test('the pending sweep re-pushes a server that never confirmed, even when the e
           commandQueue.envelopes.slice(before).map((envelope) => envelope.type),
           ['managed.ingress.reconcile']
         )
+      }
+    }
+  )
+})
+
+test('backup login: a member without manage gets 403 on list, create and delete', async () => {
+  await withManagedFixtures(
+    { withManageGrant: false },
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const path = `/environments/${environmentId}/managed/backup-login`
+      for (const init of [
+        { method: 'GET' },
+        { method: 'POST', body: JSON.stringify({ allowedSources: ['internal'] }) },
+        { method: 'DELETE' },
+      ]) {
+        const res = await app.request(path, { ...init, headers })
+        assertEquals(res.status, 403, init.method)
+      }
+      assertEquals(await listAuditForOrganization(db, { organizationId }), [])
+    }
+  )
+})
+
+test('backup login: create, one per cluster, list, delete, and both audited', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const managedId = ((await create.json()) as { managed: { id: string } }).managed.id
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+      await ready()
+
+      const [current] = await db
+        .select({ daemon: server.daemon })
+        .from(server)
+        .where(eq(server.id, serverId))
+      const daemon = (current?.daemon ?? {}) as { projection?: { features?: string[] } }
+      await db
+        .update(server)
+        .set({
+          daemon: {
+            ...daemon,
+            projection: {
+              ...daemon.projection,
+              features: [
+                ...(daemon.projection?.features ?? []),
+                'managed-backup-login-v1',
+                'managed-login-limits-v1',
+              ],
+            },
+          },
+        })
+        .where(eq(server.id, serverId))
+
+      const path = `/environments/${environmentId}/managed/backup-login`
+      const before = commandQueue.envelopes.length
+      const made = await app.request(path, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ allowedSources: ['internal'] }),
+      })
+      assertEquals(made.status, 200)
+      const madeBody = (await made.json()) as {
+        login: { id: string; username: string; appliedUsername: string; tool: boolean }
+        password: string
+      }
+      // The typed name; the applied one follows the organization's name scheme.
+      assertEquals(madeBody.login.username, 'backup')
+      assertEquals(madeBody.login.tool, true)
+      assertEquals(madeBody.password.length > 0, true)
+      assertEquals(commandQueue.envelopes.length > before, true)
+
+      await ready()
+      const second = await app.request(path, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ allowedSources: ['internal'], username: 'nightly' }),
+      })
+      assertEquals(second.status, 409)
+      assertEquals(
+        ((await second.json()) as { error: string }).error,
+        'managed_backup_login_exists'
+      )
+
+      const listed = (await (await app.request(path, { headers })).json()) as {
+        login: { id: string } | null
+      }
+      assertEquals(listed.login?.id, madeBody.login.id)
+
+      await ready()
+      const removed = await app.request(path, { method: 'DELETE', headers })
+      assertEquals(removed.status, 200)
+
+      const actions = (await listAuditForOrganization(db, { organizationId }))
+        .filter((row) => row.action.startsWith('managed.backup_login.'))
+        .map((row) => [row.action, row.targetId])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      assertEquals(actions, [
+        ['managed.backup_login.create', managedId],
+        ['managed.backup_login.delete', managedId],
+      ])
+    }
+  )
+})
+
+const DATA_ENCRYPTION_TEST_SECRETS = () =>
+  deriveEncryptionSecretsConfig(parseTestSecretsConfig('deno'), 'data-encryption')
+
+test('an admin tool login does not block a database drop and the drop apply leaves that database out of its list', async () => {
+  await withManagedFixtures(
+    {},
+    async ({
+      db,
+      app,
+      secrets,
+      commandQueue,
+      userId,
+      organizationId,
+      workspaceId,
+      environmentId,
+      serverId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const managedId = created.managed.id
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+      const addDb = await app.request(`/environments/${environmentId}/managed/databases`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ name: 'tooldb' }),
+      })
+      assertEquals(addDb.status, 200)
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+
+      const tool = await createManagedLogin(db, await DATA_ENCRYPTION_TEST_SECRETS(), {
+        managedId,
+        username: 'tool_drop',
+        databases: ['defaultdb', 'tooldb'],
+        tool: true,
+      })
+      const made = await insertToolProjectFixture(db, {
+        organizationId,
+        workspaceId,
+        serverId,
+        metadataManagedId: managedId,
+        metadataLoginId: tool.loginId,
+        boundLoginId: tool.loginId,
+        boundDatabaseId: await databaseIdByName(db, managedId, 'defaultdb'),
+        name: 'Drop Test Tool',
+      })
+      try {
+        const before = commandQueue.envelopes.length
+        const drop = await app.request(
+          `/environments/${environmentId}/managed/databases/tooldb?confirmName=tooldb`,
+          { method: 'DELETE', headers }
+        )
+        assertEquals(drop.status, 200)
+
+        const applies = commandQueue.envelopes
+          .slice(before)
+          .filter((envelope) => envelope.type === 'managed.apply')
+        assertEquals(applies.length > 0, true)
+        const [row] = await db
+          .select({ payload: dispatch.payload })
+          .from(dispatch)
+          .where(eq(dispatch.commandId, applies.at(-1)!.commandId))
+          .limit(1)
+        const credentials = (
+          row?.payload as { credentials: Array<{ username: string; databases: string[] }> }
+        ).credentials
+        const toolCredential = credentials.find((entry) => entry.username === 'tool_drop')
+        assertEquals(toolCredential?.databases, ['defaultdb'])
+
+        const listed = await db
+          .select({ name: managedDatabase.name })
+          .from(scope)
+          .innerJoin(managedDatabase, eq(managedDatabase.id, scope.databaseId))
+          .where(eq(scope.loginId, tool.loginId))
+        assertEquals(
+          listed.map((entry) => entry.name),
+          ['defaultdb']
+        )
+      } finally {
+        await removeToolProjectFixture(db, made)
+      }
+    }
+  )
+})
+
+test('a project with copied tool metadata bound to another cluster login is 404 on reset, update and remove and changes nothing', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, workspaceId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const managedId = ((await create.json()) as { managed: { id: string } }).managed.id
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+
+      // Another cluster of the same organization, with a login of its own.
+      const [otherProject] = await db
+        .insert(project)
+        .values({
+          name: 'Other Cluster',
+          workspaceId,
+          organizationId,
+          kind: 'managed',
+          metadata: { code: 'postgres' },
+        })
+        .returning({ id: project.id })
+      const [otherEnv] = await db
+        .insert(environment)
+        .values({ name: 'production', projectId: otherProject!.id, serverId })
+        .returning({ id: environment.id })
+      const [otherManaged] = await db
+        .insert(managed)
+        .values({
+          environmentId: otherEnv!.id,
+          serverId,
+          name: 'Other Postgres',
+          engine: 'postgres',
+          status: 'ready',
+          options: { settings: getManagedEngineSpec('postgres')!.defaultSettings },
+        })
+        .returning({ id: managed.id })
+      const [otherDatabase] = await db
+        .insert(managedDatabase)
+        .values({ managedId: otherManaged!.id, name: 'shop' })
+        .returning({ id: managedDatabase.id })
+      const foreign = await createManagedLogin(db, await DATA_ENCRYPTION_TEST_SECRETS(), {
+        managedId: otherManaged!.id,
+        username: 'foreign_tool',
+        databases: ['shop'],
+        tool: true,
+      })
+      const fake = await insertToolProjectFixture(db, {
+        organizationId,
+        workspaceId,
+        serverId,
+        metadataManagedId: managedId,
+        metadataLoginId: foreign.loginId,
+        boundLoginId: foreign.loginId,
+        boundDatabaseId: otherDatabase!.id,
+        name: 'Copied Tool',
+      })
+      const passwordOf = async () =>
+        (
+          await db
+            .select({ password: login.password })
+            .from(login)
+            .where(eq(login.id, foreign.loginId))
+        )[0]?.password
+      try {
+        const passwordBefore = await passwordOf()
+        const base = `/environments/${environmentId}/managed/admin-tools/${fake.projectId}`
+        const answers = await Promise.all([
+          app.request(`${base}/password`, { method: 'POST', headers }),
+          app.request(`${base}/update`, { method: 'POST', headers }),
+          app.request(`${base}?confirmName=Copied%20Tool`, { method: 'DELETE', headers }),
+        ])
+        assertEquals(
+          answers.map((res) => res.status),
+          [404, 404, 404]
+        )
+        assertEquals(await passwordOf(), passwordBefore)
+        const stillThere = await db
+          .select({ id: project.id })
+          .from(project)
+          .where(eq(project.id, fake.projectId))
+        assertEquals(stillThere.length, 1)
+        const list = await app.request(`/environments/${environmentId}/managed/admin-tools`, {
+          headers,
+        })
+        assertEquals(((await list.json()) as { tools: unknown[] }).tools, [])
+      } finally {
+        await removeToolProjectFixture(db, fake)
+        await db.delete(managed).where(eq(managed.id, otherManaged!.id))
+        await db.delete(environment).where(eq(environment.id, otherEnv!.id))
+        await db.delete(project).where(eq(project.id, otherProject!.id))
       }
     }
   )

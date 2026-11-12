@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -71,6 +71,63 @@ export async function findLatestRecovery(
   return row ? serializeRow(row) : null
 }
 
+/** No `metadata.reportRefused`: a row that was acted on (or an older row without it). */
+const NOT_REFUSED_REPORT = sql`(${recovery.metadata} ->> 'reportRefused') IS NULL`
+
+/**
+ * {@link findLatestRecovery}, but never a row for a refused HA report
+ * (`metadata.reportRefused`), filtered in SQL so any number of refused rows
+ * cannot push the row that matters out of reach. Those rows only say a report
+ * was not acted on; a reader that decides from the newest recovery (the
+ * boot-hold hold, the re-seed guard, the abort-restart guard) must look past
+ * them, or an unsigned report written after a failed failover would hide the
+ * row that keeps a member stopped.
+ */
+export async function findLatestActedRecovery(
+  db: Db,
+  managedId: string
+): Promise<RecoveryRecord | null> {
+  const inflight = await findInFlightRecovery(db, managedId)
+  if (inflight) return inflight
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(and(eq(recovery.managedId, managedId), NOT_REFUSED_REPORT))
+    .orderBy(desc(recovery.startedAt))
+    .limit(1)
+  const row = rows[0]
+  return row ? serializeRow(row) : null
+}
+
+/**
+ * The refused-report row already filed for this cluster, reporting server
+ * and member, newest first; null when there is none. The fold for refused
+ * reports reads this, not only the newest row, so two servers whose refusals
+ * alternate still leave one row each.
+ */
+export async function findRefusedReportRow(
+  db: Db,
+  params: { managedId: string; sourcePrimaryMemberId: string; reporterServerId: string }
+): Promise<RecoveryRecord | null> {
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(
+      and(
+        eq(recovery.managedId, params.managedId),
+        eq(recovery.kind, 'automatic-failover'),
+        eq(recovery.state, 'blocked'),
+        eq(recovery.sourcePrimaryMemberId, params.sourcePrimaryMemberId),
+        sql`(${recovery.metadata} ->> 'reportRefused') IS NOT NULL`,
+        sql`(${recovery.metadata} ->> 'reporterServerId') = ${params.reporterServerId}`
+      )
+    )
+    .orderBy(desc(recovery.startedAt))
+    .limit(1)
+  const row = rows[0]
+  return row ? serializeRow(row) : null
+}
+
 /**
  * Newest automatic failover that was accepted (a target was chosen), in any
  * state. Backs the persisted per-cluster cooldown: it survives restarts
@@ -94,6 +151,47 @@ export async function findLatestAcceptedAutomaticFailover(
     .limit(1)
   const row = rows[0]
   return row ? serializeRow(row) : null
+}
+
+/** Most journal rows {@link firstIncidentReportAt} reads. */
+const INCIDENT_ROWS_MAX = 50
+
+/**
+ * When the control plane first recorded a dead-primary report for the current
+ * incident of this primary: the oldest automatic-failover row for it since
+ * `sinceIso` and after the last accepted failover of the cluster (an earlier
+ * incident). Rows for refused or stale reports and whole-host-loss alerts do
+ * not count. A refusal repeated later folds into its first row, so this stays
+ * put while the daemon re-sends. `null` when there is none yet.
+ */
+export async function firstIncidentReportAt(
+  db: Db,
+  params: { managedId: string; sourcePrimaryMemberId: string; sinceIso: string }
+): Promise<string | null> {
+  const lastAccepted = await findLatestAcceptedAutomaticFailover(db, params.managedId)
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(
+      and(
+        eq(recovery.managedId, params.managedId),
+        eq(recovery.kind, 'automatic-failover'),
+        eq(recovery.sourcePrimaryMemberId, params.sourcePrimaryMemberId),
+        gte(recovery.startedAt, params.sinceIso)
+      )
+    )
+    .orderBy(asc(recovery.startedAt))
+    .limit(INCIDENT_ROWS_MAX)
+  for (const row of rows) {
+    const record = serializeRow(row)
+    if (record?.targetMemberId !== null) continue
+    // An earlier incident: at or before the last accepted failover.
+    if (record.startedAt <= (lastAccepted?.startedAt ?? '')) continue
+    const metadata = record.metadata
+    if (metadata.reportRefused || metadata.stale || metadata.detector === 'host-loss') continue
+    return record.startedAt
+  }
+  return null
 }
 
 type InsertRecoveryParams = {

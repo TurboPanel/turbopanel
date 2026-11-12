@@ -505,14 +505,43 @@ test('GET/PUT /instance/public-urls handle missing db and validation', async () 
   assertEquals(saved.status, 200)
 })
 
+test('Workers: /instance/public-urls is platform-managed, the PUT is refused', async () => {
+  const { app, cookie } = await buildApp({
+    runtime: 'workers',
+    getEnv: () => ({ TURBOPANEL_BASE_URL: 'https://panel.example.com:443' }),
+  })
+  const get = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(get.status, 200)
+  assertEquals(await get.json(), {
+    ok: true,
+    urls: ['https://panel.example.com'],
+    platformManaged: true,
+  })
+
+  const put = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ urls: ['https://admin.example.com'] }),
+  })
+  assertEquals(put.status, 422)
+  assertEquals(await put.json(), {
+    ok: false,
+    error: 'certificates and hostnames are platform-managed on this runtime',
+  })
+})
+
 test('GET/PUT /settings/email cover db/validation/encryption branches', async () => {
   const { app, cookie } = await buildApp()
   const get = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
     headers: { Cookie: cookie },
   })
   assertEquals(get.status, 200)
-  const getBody = await jsonBody<{ settings: unknown }>(get)
+  const getBody = await jsonBody<{ settings: unknown; delivery: unknown }>(get)
   assertExists(getBody.settings)
+  // The test app has no provider set up and no dead-letter store.
+  assertEquals(getBody.delivery, { state: 'not_configured', deadLetters: null })
 
   const bad = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
     method: 'PUT',
@@ -928,7 +957,7 @@ test('instance hostname, certificate, and ACME routes cover validation branches'
     method: 'PUT',
     headers,
     body: JSON.stringify({
-      hostnames: [{ host: '10.1.2.3', source: 'lets-encrypt' }],
+      hostnames: [{ host: '10.1.2.3', source: 'acme-http-01' }],
     }),
   })
   assertEquals(privateAcme.status, 422)
@@ -940,10 +969,36 @@ test('instance hostname, certificate, and ACME routes cover validation branches'
     method: 'PUT',
     headers,
     body: JSON.stringify({
-      hostnames: [{ host: '*.example.com', source: 'lets-encrypt' }],
+      hostnames: [{ host: '*.example.com', source: 'acme-http-01' }],
     }),
   })
   assertEquals(wildcard.status, 422)
+
+  // Both Let's Encrypt sources need accepted terms before they are stored.
+  for (const source of ['acme-http-01', 'acme-dns-01']) {
+    const unaccepted = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        hostnames: [{ host: 'https://acme.example.com', source }],
+      }),
+    })
+    assertEquals(unaccepted.status, 422)
+    const unacceptedBody = await jsonBody<{ code?: string }>(unaccepted)
+    assertEquals(unacceptedBody.code, 'acme_terms_not_accepted')
+  }
+
+  // The old stored names are not accepted by the API.
+  for (const source of ['lets-encrypt', 'dns-01']) {
+    const legacy = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        hostnames: [{ host: 'https://acme.example.com', source }],
+      }),
+    })
+    assertEquals(legacy.status, 400)
+  }
 
   const saved = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
     method: 'PUT',
@@ -1070,13 +1125,6 @@ test('instance access reads are runtime-scoped and capability-shaped', async () 
   assertEquals(unknownBody.capabilities['instance-cert-sources-per-hostname'], false)
 
   const { app, cookie } = await buildApp()
-  const tunnel = await app.request(`${ADMIN_API_PREFIX}/instance/tunnel-token`, {
-    method: 'POST',
-    headers: { Cookie: cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ token: '' }),
-  })
-  assertEquals(tunnel.status, 503)
-
   const missingCa = await app.request(`${ADMIN_API_PREFIX}/instance/platform-ca`, {
     headers: { Cookie: cookie },
   })
@@ -1391,7 +1439,6 @@ const SUPERADMIN_ONLY_SETTINGS_ROUTES: ReadonlyArray<
   { method: 'PUT', path: '/settings/email', body: { FROM: 'ops@example.com' } },
   { method: 'PUT', path: '/instance/public-urls', body: { urls: ['https://panel.example.com'] } },
   { method: 'POST', path: '/instance/public-urls/apply', body: {} },
-  { method: 'POST', path: '/instance/tunnel-token', body: { token: 'x' } },
   { method: 'PUT', path: '/instance/hostnames', body: { hostnames: [] } },
   { method: 'PUT', path: '/instance/acme', body: {} },
   { method: 'POST', path: '/instance/certificates', body: {} },
@@ -1450,12 +1497,6 @@ test('installation-wide settings writes are allowed for superadmin', async () =>
     body: JSON.stringify({ urls: ['https://panel.example.com'] }),
   })
   assertEquals(urls.status, 200)
-  const tunnel = await app.request(`${ADMIN_API_PREFIX}/instance/tunnel-token`, {
-    method: 'POST',
-    headers: { Cookie: cookie, 'content-type': 'application/json' },
-    body: JSON.stringify({ token: '' }),
-  })
-  assertEquals(tunnel.status, 503)
 })
 
 test('other org-admin routes stay open to admin role', async () => {

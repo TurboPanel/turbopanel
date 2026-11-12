@@ -31,6 +31,7 @@ import type { Db } from '../../db/connection.ts'
 import { hosting, tls } from '../../db/schema.ts'
 import { type AuditEntry, recordAudit } from '../audit/audit-records.ts'
 import { logWarn } from '../../lib/logger.ts'
+import { readHttpIssuanceState } from './http-issuance/state.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 /** `tls.metadata.acme.createdFor` on the entries a site's "Use Let's Encrypt" made. */
@@ -77,7 +78,9 @@ export function sweptLetsEncryptCondition() {
     or(
       sql`${createdForColumn} is null`,
       sql`${createdForColumn} = ${LETS_ENCRYPT_CREATED_FOR_SITES}`
-    )
+    ),
+    // Never a row with a server-placed order under way.
+    sql`not (${tls.metadata} -> 'httpCert' is not null and ${tls.metadata} -> 'httpCert' ->> 'endedAt' is null)`
   )
 }
 
@@ -244,7 +247,8 @@ async function loadCandidates(
     .where(inArray(tls.id, [...ids]))
   const rows = lock ? await query.for('update') : await query
   const accept = scope === 'swept' ? isSweptLetsEncrypt : isSiteLetsEncrypt
-  return rows.filter(accept)
+  // A row with a server-placed order under way is never removed, even when no site pins it for a moment.
+  return rows.filter((row) => accept(row) && readHttpIssuanceState(row.metadata)?.endedAt !== null)
 }
 
 /**

@@ -2,6 +2,7 @@ import type { Hono } from 'hono'
 import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import { deriveDaemonJwtKeyring } from '../../daemon/authn/daemon-jwt-keyring.ts'
+import { sweepPinSilence } from '../../daemon/pin-silence.ts'
 import {
   type DerivedSecretsConfig,
   deriveEncryptionSecretsConfig,
@@ -21,18 +22,23 @@ import {
   assertValidUpdateChannelEnv,
   resolveInstanceUpdateChannel,
 } from '../../contracts/update-channel.ts'
+import { applyStoredPublicUrls } from '../../admin/public-urls-apply-run.ts'
+import { refreshEdgeRanges, runEdgeTrustTick } from './ingress/edge-ranges.ts'
 import { createRedisDaemonCellRegistry } from '../../daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
+import { noticeDisconnectedServers } from '../../daemon/cell/disconnect-notice.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
 import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
-import { retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { resolveSelfHostedConsoleBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
+import { pruneNotificationHistory } from '../../features/notifications/cleanup.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
-import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
+import { DAEMON_CELL_MAINTAIN_MS, DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
@@ -56,6 +62,10 @@ import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-des
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runNetworkProbeSweep } from '../../client/datacenters/network-probe-sweep.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+import {
+  createColocatedRepairStore,
+  createColocatedSelfRepair,
+} from '../../client/authn/colocated-self-repair.ts'
 import { runHostLossTick } from '../../daemon/cell/host-loss-tick.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFolderReconcileSweep } from '../../daemon/cell/folder-reconcile-sweep.ts'
@@ -68,19 +78,45 @@ import {
   runLeafRenewalSweepTick,
 } from '../../client/tls/leaf-renewal-sweep.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
+import { buildDnsCertContext } from '../../client/tls/dns-certificate-context.ts'
+import { runHttpIssuanceSweepTick } from '../../client/tls/http-issuance-sweep.ts'
+import { runDnsCertificateCleanupTick } from '../../features/tls/dns-certificates/cleanup.ts'
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
 } from '../../lib/secrets/password.ts'
 import { registerAdminRoutes } from '../../admin/routes.ts'
+import { registerIngressAdminRoutes } from './ingress/admin-routes.ts'
+import {
+  type PlatformAdminRoutesRegistrar,
+  withDevelopmentAdminRoutes,
+} from './development-admin-routes.ts'
+import { startIngressTimer } from './ingress/tick.ts'
+import { runSelfHostedTunnelSweeps } from './tunnel-sweeps.ts'
+import { peerLeafDelivery } from '../../features/tunnels/sync.ts'
+import { hostnameModes } from './ingress/planner.ts'
 import { registerInstallRoutes } from '../../install/routes.ts'
 import { registerDaemonApiRoutes } from '../../daemon/api-routes.ts'
 import {
   hostnamePresentsPlatformCaLeaf,
   resolvePublicInstanceTls,
 } from '../../features/install/install-tls.ts'
-import { listInstanceHostnames } from '../../features/install/instance-hostnames.ts'
-import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+import {
+  effectiveCertificateSource,
+  listInstanceHostnames,
+} from '../../features/install/instance-hostnames.ts'
+import {
+  ensurePanelIdentityDetailed,
+  resolvePanelIdentityFromDb,
+} from '../../lib/panel-identity/identity.ts'
+import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
+import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
+import { setPublicTlsProbe } from '../../features/install/install-trust.ts'
+import { createPublicTlsProbe } from './public-tls-probe.ts'
+import { serverDialOrigins } from '../../lib/panel-identity/urls.ts'
+import { type DevHostStatusSink, registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
   parseMetricsRetentionDays,
   parsePositiveIntEnv,
@@ -172,6 +208,9 @@ import {
   sweepStalledFencing,
 } from '../../features/managed/ha-recovery.ts'
 
+/** How often the advised heartbeat is re-read from the hostname rows. */
+const HEARTBEAT_REFRESH_MS = 5 * 60 * 1000
+
 export type DenoDeveloperSurfaceContext = {
   routes: Hono<AppEnv>
   sessionSecrets: DerivedSecretsConfig
@@ -185,6 +224,18 @@ export type StartDenoServerOptions = {
    * entrypoint passes a registrar that imports those modules.
    */
   registerDeveloperSurface?: (ctx: DenoDeveloperSurfaceContext) => void
+  /**
+   * Optional development-only admin routes (Build and Push Daemon). Called
+   * with the admin router, behind the admin session middleware, only while
+   * the developer surface is on; production `src/deno.ts` omits it.
+   */
+  registerDevelopmentAdminRoutes?: PlatformAdminRoutesRegistrar
+  /**
+   * Optional sink for the co-located daemon's `dev-host-status` (feature
+   * `dev-host-v1`). Used only while the developer surface is on; production
+   * `src/deno.ts` omits it.
+   */
+  onDevHostStatus?: DevHostStatusSink
 }
 
 async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
@@ -258,9 +309,10 @@ async function startOptionalCommandConsumer(opts: {
 
 /**
  * The in-process email consumer (what used to be the turbopanel-mailer
- * process). Same guard shape as the command consumer: no broker means no
- * consumer and a warning, never a failed boot — the instance still serves,
- * it just cannot deliver mail until the broker is back and the unit restarts.
+ * process). Same guard shape as the command consumer: never a failed boot.
+ * A broker that is down at start is retried in the background, and mail
+ * flows once it answers; only an explicitly empty broker URL (or none
+ * reachable on the default address in development) means no consumer.
  */
 async function startOptionalMailerConsumer(opts: {
   db: Db
@@ -337,6 +389,8 @@ function resolveCommandAmqpUrl(): string | null {
 /** Isolate one cleanup phase so a failure cannot abort the rest of the tick. */
 const COMMAND_PRUNE_INTERVAL_MS = 15 * 60_000
 let lastCommandPruneMs = 0
+let lastEdgeTrustTickMs = 0
+const EDGE_TRUST_TICK_INTERVAL_MS = 5 * 60_000
 
 async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promise<void> {
   try {
@@ -367,6 +421,8 @@ async function sweepStaleCommandsPhase(db: Db, commandQueue?: CommandQueue): Pro
 }
 
 export async function startDenoServer(options: StartDenoServerOptions = {}): Promise<void> {
+  // Self-hosted: the control plane's address is always :8443.
+  setSelfHostedAddress(true)
   setHostIpv4Discovery(
     () => preferredIpv4FromIps(collectServerIps(readDefaultRouteInterfaces())) ?? null
   )
@@ -444,8 +500,34 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secretsConfig,
     'data-encryption'
   )
+  // The panel identity key: random, stored sealed under the data-encryption key,
+  // never derived from TURBOPANEL_SECRET. Generated once on the first start.
+  const ensured = await ensurePanelIdentityDetailed(db, dataEncryptionSecrets)
+  // Replaced when an administrator sets or clears the next key, so the served
+  // document follows without a restart.
+  let panelIdentity = ensured.identity
+  if (ensured.created) {
+    await recordAudit(db, {
+      organizationId: null,
+      action: 'panel.identity.generated',
+      targetType: 'instance',
+      context: { fingerprint: panelIdentity.current.kid, keyset: panelIdentity.keyset },
+    })
+  }
+  logInfo(
+    'identity',
+    `Control plane identity ${panelIdentity.current.kid} (keyset ${panelIdentity.keyset})`
+  )
   // Derived after data-encryption secrets so DB-backed email secrets can be decrypted.
   const emailSettings = await resolveEmailSettings(db, runtimeEnv, dataEncryptionSecrets)
+  // Mail sent outside a request links to the primary hostname saved under
+  // Admin › Access › Hostnames (else the discovered address), resolved at
+  // send time so a hostname change needs no restart. Never the process env.
+  const consoleEmail = async (): Promise<EmitEmail> => ({
+    queue: emailQueue,
+    from: emailSettings.from,
+    consoleBaseUrl: await resolveSelfHostedConsoleBaseUrl(db).catch(() => null),
+  })
   const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
   const queryCache = createRedisQueryCache({
     client: daemonCellRegistry.client,
@@ -489,26 +571,32 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   const githubWebhookRate = resolveGithubWebhookRateLimit()
   const gitlabWebhookRate = resolveGitlabWebhookRateLimit()
   const inboundLimits = resolveDaemonWsInboundLimits()
+  // Daemon limiters fall back to a process-local bucket when Redis errors:
+  // fail-open made enroll, session and connect unlimited during an outage,
+  // and fail-closed would lock enrolled daemons out over a broker blip.
   const daemonConnectLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: connectRate.limit,
     periodSeconds: connectRate.periodSeconds,
+    onError: 'local',
   })
   const daemonRestLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: restRate.limit,
     periodSeconds: restRate.periodSeconds,
+    onError: 'local',
   })
   const daemonMetricsLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: metricsRate.limit,
     periodSeconds: metricsRate.periodSeconds,
+    onError: 'local',
   })
   // Inbound GitHub webhooks: keyed per peer address, not per server, because the
   // caller has no identity until its HMAC has been checked (see
   // `githubWebhookRateLimitKey`). Redis eval failures fall through to a
   // process-local token bucket so a broker hiccup still throttles per peer
-  // instead of making ingress unlimited (daemon connect/REST stay fail-open).
+  // instead of making ingress unlimited (the daemon limiters above do the same).
   const githubWebhookLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: githubWebhookRate.limit,
@@ -573,6 +661,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     dataEncryptionSecrets,
   })
 
+  // One reader for the CA route and the install command, so the fingerprints
+  // in a command always describe the document the installer downloads.
+  const readPlatformCaPem = () => Deno.readTextFile(resolveInstanceTlsCaServePath())
+  // Uploaded-certificate trust is a TLS handshake against this listener: no
+  // certificate file and no openssl process (the instance writes nothing for it).
+  setPublicTlsProbe(createPublicTlsProbe())
   const app = createApp({
     db,
     emailQueue,
@@ -586,7 +680,6 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
     signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
     emailFrom: emailSettings.from,
-    baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
     daemonCellRegistry,
     // Self-hosted has no Cloudflare: the same gate rules over an in-process map.
     metricsGate: createInMemoryMetricsGate(),
@@ -602,6 +695,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Must be registered inside createApp() *before* GET /api/health, or the
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),
+    readPlatformCaPem,
+    panelIdentity: () => Promise.resolve(panelIdentity),
   })
   // Daemon + developer registrars are generic over the env, so the app's own
   // `AppEnv` typing carries through — no cast.
@@ -615,7 +710,14 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   if (developerSurface) {
     options.registerDeveloperSurface?.({ routes, sessionSecrets, db })
   }
+  // Co-located daemon credential self-repair: after an enroll or session
+  // refusal that came straight in on the Unix socket, at most once per
+  // interval (`colocated-self-repair.ts`).
+  const colocatedSelfRepair = createColocatedSelfRepair({
+    store: createColocatedRepairStore(db),
+  })
   registerDaemonApiRoutes(routes, {
+    onCredentialRefusal: () => void colocatedSelfRepair.run('refusal'),
     secrets: daemonJwtKeyring,
     challengeSigningSecrets,
     secretsConfig,
@@ -624,8 +726,17 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     runtime: 'deno',
     tlsPublic: resolvePublicInstanceTls(Deno.env.toObject()),
     platformCaLeafPresented: async (hostname: string) =>
-      hostnamePresentsPlatformCaLeaf(hostname, await listInstanceHostnames(db)),
-    readPlatformCaPem: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
+      hostnamePresentsPlatformCaLeaf(
+        hostname,
+        (await listInstanceHostnames(db)).map((row) => ({
+          host: row.host,
+          source: effectiveCertificateSource(row),
+        }))
+      ),
+    readPlatformCaPem,
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityChain: true,
+    identityUrls: serverDialOrigins,
   })
   // Unversioned, session-free surface: mounted on the top-level app next to the
   // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.
@@ -635,8 +746,26 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     github: githubWebhookLimiter,
     gitlab: gitlabWebhookLimiter,
   })
+  // Behind-edge hostnames advertise 25 s, all others 60 s. The modes are read
+  // from the hostname rows once now and again every five minutes (hostnames
+  // change rarely, and a stale value only delays the shorter ping); the attach
+  // path only reads the cached value. A fresh client per read, like the other
+  // Deno timers.
+  const loadHostnameModes = async (): Promise<string[]> => {
+    const tickDb = createDenoDb()
+    try {
+      return hostnameModes(await listInstanceHostnames(tickDb))
+    } finally {
+      await endDbConnection(tickDb)
+    }
+  }
+  const heartbeatReader = createHeartbeatReader(loadHostnameModes, (err) =>
+    logWarn('daemon-cell', `advised heartbeat refresh error: ${String(err)}`)
+  )
+  void heartbeatReader.refresh()
   registerDaemonWebSocket(routes, {
     developerSurface,
+    heartbeatSeconds: heartbeatReader.read,
     db,
     secrets: daemonJwtKeyring,
     sessionSecrets,
@@ -646,6 +775,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     inboundMessageLimit: inboundLimits.limit,
     inboundMessageWindowMs: inboundLimits.windowMs,
     commandQueue,
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityUrls: serverDialOrigins,
+    ...(developerSurface && options.onDevHostStatus
+      ? { onDevHostStatus: options.onDevHostStatus }
+      : {}),
   })
   registerAdminRoutes(app, {
     secrets: sessionSecrets,
@@ -654,6 +788,24 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
+    registerPlatformAdminRoutes: withDevelopmentAdminRoutes(
+      (admin, deps) =>
+        registerIngressAdminRoutes(admin, {
+          ...deps,
+          selfKid: () => panelIdentity.current.kid,
+          getEnv: () => Deno.env.toObject(),
+        }),
+      developerSurface,
+      options.registerDevelopmentAdminRoutes
+    ),
+    panelIdentity: () => Promise.resolve(panelIdentity),
+    identityUrls: serverDialOrigins,
+    identityDataEncryption: dataEncryptionSecrets,
+    onIdentityChanged: async () => {
+      const reloaded = await resolvePanelIdentityFromDb(db, dataEncryptionSecrets)
+      if (reloaded) panelIdentity = reloaded
+    },
+    refreshEdgeRanges: (routeDb) => refreshEdgeRanges(routeDb),
     ...resolveMailDeadLetters(emailQueue),
   })
   const socketPath = resolveInstanceSocket()
@@ -720,11 +872,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     })
     // Hosting Accounts of deleted projects, removed once their folders are gone
     // and every server they are on is connected.
-    void runPrincipalRemovalSweep(db, commandQueue).catch((err) => {
+    void runPrincipalRemovalSweep(db, commandQueue, secretsConfig).catch((err) => {
       logWarn('daemon-cell', `principal removal sweep error: ${String(err)}`)
     })
     // A fresh folder listing from servers that have folders, every few hours.
-    void runFolderReconcileSweep(db, commandQueue).catch((err) => {
+    void runFolderReconcileSweep(db, commandQueue, secretsConfig).catch((err) => {
       logWarn('daemon-cell', `folder reconcile sweep error: ${String(err)}`)
     })
     // Firewall previews once after each reconnect. Applies only for a server
@@ -752,19 +904,31 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       } catch (err) {
         logWarn('daemon-cell', `maintenance error: ${String(err)}`)
       }
+      const resolveSender = () =>
+        resolveAlertSender(db, dataEncryptionSecrets, undefined, ALERT_WEBHOOK_POLICY, consoleEmail)
       try {
-        await sweepStalePresence(db, daemonCellRegistry, () =>
-          resolveAlertSender(db, dataEncryptionSecrets, undefined, ALERT_WEBHOOK_POLICY, {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          })
-        )
+        await sweepStalePresence(db, daemonCellRegistry, resolveSender)
       } catch (err) {
         logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
       }
+      try {
+        // An ordinary disconnect that outlasts the same grace the sweep uses.
+        await noticeDisconnectedServers(db, {
+          graceMs: DAEMON_OFFLINE_SWEEP_MS,
+          awaitDelivery: false,
+          resolveSender,
+        })
+      } catch (err) {
+        logWarn(
+          'daemon-cell',
+          `disconnect notice error: ${err instanceof Error ? err.message : 'unknown error'}`
+        )
+      }
     },
     async runCleanup() {
+      // One console link per tick, read the first time a mail sweep needs it.
+      let tickEmail: Promise<EmitEmail> | null = null
+      const email = () => (tickEmail ??= consoleEmail())
       // Workers parity (offline-sweep cron): bounded cleanup of expired
       // `dispatch` failure-retention payloads on the process-long db.
       await runCleanupPhase('command dispatch sweep', () =>
@@ -785,40 +949,36 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
         })
       )
+      // Workers parity (offline-sweep cron): drop used sign-in challenges past
+      // their window. Open sockets are re-checked per frame here, not swept.
+      await runCleanupPhase('daemon nonce sweep', () => pruneExpiredNonces(db))
+      // Workers parity (offline-sweep cron): staged pin silence alarms for
+      // pinned servers a TurboFabric peer still reaches (daemon/pin-silence.ts).
+      await runCleanupPhase('pin silence sweep', async () =>
+        sweepPinSilence(db, dataEncryptionSecrets, { email: await email() })
+      )
       // Workers parity (offline-sweep cron): tell each organization about the
       // folders that became orphans since the last tick, once per orphan.
-      await runCleanupPhase('orphan folder alert sweep', () =>
+      await runCleanupPhase('orphan folder alert sweep', async () =>
         alertNewOrphanFolders(db, dataEncryptionSecrets, {
-          email: {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          },
+          email: await email(),
         })
       )
       // Workers parity (offline-sweep cron): resend notification deliveries
       // whose backoff has elapsed. Self-hosted may dial a LAN receiver.
-      await runCleanupPhase('notification retry sweep', () =>
+      await runCleanupPhase('notification retry sweep', async () =>
         retryDueDeliveries(db, dataEncryptionSecrets, {
           allowPrivateTargets: true,
-          email: {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          },
+          email: await email(),
         })
       )
       // Workers parity (offline-sweep cron): one summary email per channel
       // for the events held by a digest cadence or quiet hours.
-      await runCleanupPhase('notification digest sweep', () =>
+      await runCleanupPhase('notification digest sweep', async () =>
         sendDueDigests(db, {
           secrets: dataEncryptionSecrets,
           allowPrivateTargets: true,
-          email: {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          },
+          email: await email(),
         })
       )
       // Workers parity (offline-sweep cron): bounded removal of command
@@ -843,6 +1003,26 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         await runCleanupPhase('audit history prune', async () =>
           pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
         )
+        // Workers parity (offline-sweep cron): inbox after 90 days, events and
+        // the ledger after 30, and settings of people who left an organization.
+        await runCleanupPhase('notification history prune', () => pruneNotificationHistory(db))
+      }
+      // Edge address ranges for proxy modes: the fetch itself runs at most once
+      // a day inside the tick. The daemon hears only about a changed body
+      // (new ranges, or a field a newer build sends, like the public port).
+      if (Date.now() - lastEdgeTrustTickMs >= EDGE_TRUST_TICK_INTERVAL_MS) {
+        lastEdgeTrustTickMs = Date.now()
+        await runCleanupPhase('edge trust refresh', () =>
+          runEdgeTrustTick(db, () =>
+            applyStoredPublicUrls({
+              db,
+              registry: daemonCellRegistry,
+              secretsConfig,
+              dataEncryptionSecrets,
+              env: Deno.env.toObject(),
+            })
+          )
+        )
       }
       await runCleanupPhase('upgrade tick', async () => {
         const env = Deno.env.toObject()
@@ -863,14 +1043,50 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         })
       })
       runSystemReconcileSweepTick()
+      // Retries a failed co-located credential repair while a socket refusal is recent.
+      void colocatedSelfRepair.tick()
     },
   })
   const maintenanceTimer = setInterval(() => maintenance.tick(), DAEMON_CELL_MAINTAIN_MS)
+  const heartbeatTimer = setInterval(() => void heartbeatReader.refresh(), HEARTBEAT_REFRESH_MS)
 
   // First Deno-side scheduled surface besides cell maintain: Organization CA
-  // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in
-  // finally — do not reuse the process-long `db` (same discipline as Workers
-  // Hyperdrive). Overlap-guarded; cadence is minutes, not the 60s cell tick.
+  // leaf renewal, the other certificate sweeps and the tunnel sweeps. Fresh
+  // createDenoDb() per tick, always endDbConnection in finally — do not reuse
+  // the process-long `db` (same discipline as Workers Hyperdrive).
+  // Overlap-guarded; one minute, like the hosted cron.
+  const runCertificateSweeps = async (tickDb: Db): Promise<void> => {
+    try {
+      // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
+      // bounded batch; reset when the sweep completes or the cursor is
+      // invalid). A due peer leaf goes out with its tunnel table, as on the
+      // hosted cron.
+      await runLeafRenewalSweepTick(tickDb, commandQueue, {
+        secretsConfig,
+        dataEncryptionSecrets,
+        deliverPeerLeaf: peerLeafDelivery(commandQueue, { secretsConfig, dataEncryptionSecrets }),
+      })
+      // Waiting Let's Encrypt requests (DNS not ready yet): same cadence.
+      // The secrets let a newly pinned certificate go out at once.
+      await runHostingLetsEncryptSweepTick(tickDb, {
+        apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
+      })
+      // DNS-validated certificates: no order and no renewal from the control plane;
+      // only challenge records it made are removed, through the DNS provider.
+      await runDnsCertificateCleanupTick(
+        buildDnsCertContext(tickDb, { secrets: dataEncryptionSecrets })
+      )
+      // Certificates a serving server orders at the panel's request.
+      await runHttpIssuanceSweepTick(tickDb, {
+        registry: daemonCellRegistry,
+        push: { commandQueue, secretsConfig },
+        secrets: dataEncryptionSecrets,
+        env: runtimeEnv,
+      })
+    } catch (err) {
+      logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
+    }
+  }
   let leafRenewalInFlight = false
   const leafRenewalTimer = setInterval(() => {
     if (leafRenewalInFlight) return
@@ -879,20 +1095,14 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     void (async () => {
       const tickDb = createDenoDb()
       try {
-        // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced
-        // per bounded batch; reset when the sweep completes or the cursor
-        // is invalid).
-        await runLeafRenewalSweepTick(tickDb, commandQueue, {
+        await runCertificateSweeps(tickDb)
+        // Tunnel tables, connectors, removals, token recheck and connector
+        // status: the hosted cron's list, each sweep on its own (never throws).
+        await runSelfHostedTunnelSweeps(tickDb, {
+          commandQueue,
           secretsConfig,
           dataEncryptionSecrets,
         })
-        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence.
-        // The secrets let a newly pinned certificate go out at once.
-        await runHostingLetsEncryptSweepTick(tickDb, {
-          apply: { commandQueue, secretsConfig, dataEncryptionSecrets },
-        })
-      } catch (err) {
-        logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
       } finally {
         await endDbConnection(tickDb).catch(() => {})
         leafRenewalInFlight = false
@@ -900,8 +1110,23 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     })()
   }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
 
+  // Self-hosted ingress: DNS-01 orders for the control plane's own names,
+  // edge tunnel health and the daily provider token recheck.
+  const ingressTimer = startIngressTimer(
+    {
+      dataEncryption: dataEncryptionSecrets,
+      secretsConfig,
+      registry: daemonCellRegistry,
+      env: runtimeEnv,
+      selfKid: () => panelIdentity.current.kid,
+      commandQueue,
+      email: consoleEmail,
+    },
+    { open: createDenoDb, close: endDbConnection }
+  )
+
   const shutdown = createInstanceShutdown({
-    timers: [maintenanceTimer, leafRenewalTimer],
+    timers: [maintenanceTimer, leafRenewalTimer, heartbeatTimer, ingressTimer],
     closers: [
       { label: 'email queue', close: () => emailQueue.close?.() },
       { label: 'command queue', close: () => commandQueue.close?.() },

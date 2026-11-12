@@ -27,6 +27,7 @@ import { registerEnvironmentRoutes } from './environments/routes.ts'
 import { registerVariableRoutes } from './variables/routes.ts'
 import { registerTagRoutes } from './tags/routes.ts'
 import { registerTaskRoutes } from './tasks/routes.ts'
+import { registerCacheRoutes } from './caches/routes.ts'
 import { registerBindingRoutes } from './bindings/routes.ts'
 import { registerContainerRoutes } from './containers/routes.ts'
 import { registerDockerRunRoutes } from './docker-run/routes.ts'
@@ -70,6 +71,10 @@ import { registerComposeRemoteBuildSourcesRoutes } from './organizations/compose
 import { registerReauthSettingsRoutes } from './organizations/reauth-settings-routes.ts'
 import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
 import { registerOrganizationBackupTargetRoutes } from './organizations/backup-target-routes.ts'
+import { registerOrganizationCarrierRoutes } from './organizations/carrier-routes.ts'
+import { registerOrganizationDnsCertificateRoutes } from './organizations/dns-certificate-routes.ts'
+import { registerOrganizationOriginCertificateRoutes } from './organizations/origin-certificate-routes.ts'
+import { registerOrganizationTunnelRoutes } from './organizations/tunnel-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
 import { type ClientOpenApiOptions, getClientOpenApiSpec } from './openapi/index.ts'
 import { buildClientScalarHtml } from '../app/scalar-html.ts'
@@ -159,6 +164,10 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationFirewallRoutes(client, opts)
   registerOrganizationBackupTargetRoutes(client, opts)
+  registerOrganizationCarrierRoutes(client, opts)
+  registerOrganizationOriginCertificateRoutes(client, opts)
+  registerOrganizationTunnelRoutes(client, opts)
+  registerOrganizationDnsCertificateRoutes(client, opts)
   registerAccessRoutes(client, opts)
   // Before the catch-all session middleware the next call installs: the verify link has no session.
   registerNotificationVerifyRoutes(client, opts)
@@ -167,6 +176,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerEnvironmentRoutes(client, opts)
   registerEnvironmentFolderRoutes(client, opts)
   registerEnvironmentShareRoutes(client, opts)
+  registerCacheRoutes(client, opts)
   registerEnvironmentDeployPreviewRoutes(client, opts)
   registerEnvironmentConfigViewRoutes(client, opts)
   registerEnvironmentDeployRoutes(client, opts)

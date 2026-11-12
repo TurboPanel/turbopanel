@@ -1,5 +1,7 @@
 /** Validated `service.options` shape for per-service settings. */
 
+import { readSiteLifecycleOptions } from './site-lifecycle-options.ts'
+
 export type HealthCheckPolicy = 'disabled' | 'warn' | 'required'
 
 export type ServiceOptions = {
@@ -12,6 +14,26 @@ export type ServiceOptions = {
    */
   preDeployCommand?: string
   postDeployCommand?: string
+  /**
+   * PHP site commands, one command line each, run as the site's account in
+   * each new release. Read always, not behind `deployHooks`. A retried deploy
+   * can run them again, so they should be safe to run more than once.
+   */
+  postDeployCommands?: string[]
+  /** Seconds, 30 to 1800; absent means 900. */
+  postDeployTimeoutSeconds?: number
+  /** Absent means `before-traffic`. */
+  postDeployTiming?: 'before-traffic' | 'after-switch'
+  /** PHP site background workers, kept running as units under the site's account. */
+  workers?: Array<{
+    name: string
+    command: string
+    processes?: number
+    stopTimeoutSeconds?: number
+    memoryMb?: number
+    /** Absent means enabled. */
+    enabled?: boolean
+  }>
   /** Desired instance count for this service (1 = single container). */
   instances?: number
   build?: {
@@ -132,6 +154,8 @@ export function parseServiceOptions(
     const postDeployCommand = readOptionalString(value.postDeployCommand)
     if (postDeployCommand) options.postDeployCommand = postDeployCommand
   }
+
+  Object.assign(options, readSiteLifecycleOptions(value))
 
   const instances = readOptionalPositiveInt(value.instances)
   if (instances !== undefined && instances <= MAX_SERVICE_INSTANCES) {

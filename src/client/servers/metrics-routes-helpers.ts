@@ -866,7 +866,7 @@ const EMPTY_TOPOLOGY_CONTEXT: TopologyContext = {
  * whose recorded snapshot predates `computeSlotMapping`'s required arrays.
  */
 export function buildTopologyContext(
-  record: { generation: number; snapshot: unknown } | undefined,
+  record: { generation?: number; snapshot: unknown } | undefined,
   hardwareProfile: ServerHardwareProfile | undefined
 ): TopologyContext {
   if (!isSlotMappableTopologySnapshot(record?.snapshot)) {

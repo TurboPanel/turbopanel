@@ -291,6 +291,14 @@ test('buildMetricsSample accepts a zero sequence/topologyGeneration/bootGenerati
   assertEquals(sample.metadata.bootGeneration, 0)
 })
 
+test('buildMetricsSample accepts metadata without the deprecated topologyGeneration', () => {
+  const input = fixtureInput()
+  delete input.metadata.topologyGeneration
+  const sample = buildMetricsSample(input)
+  assertEquals(sample.metadata.topologyGeneration, undefined)
+  assertEquals(sample.metadata.bootGeneration, 1)
+})
+
 test('buildMetricsSample rejects an unknown event kind', () => {
   const input = fixtureInput()
   input.events = [
@@ -393,9 +401,10 @@ test('buildMetricsSample sanitizes both diagnostics halves, never coercing missi
 // the mirrored surface area directly: schema version, event-kind catalog,
 // export set, and the file body itself. When the sibling repo isn't checked
 // out next to this one, the checks are skipped rather than failed — this repo's own
-// suite still runs. The dual-checkout `contract-twin` job in this repo's
-// `build.yml` runs this file so the twin compare is gated in CI whenever
-// both checkouts are present.
+// suite still runs. CI gates the twin with scripts/check-contract-drift.mjs
+// in the `contract-twin` job (daemon first: a mismatch is a notice there
+// unless this repo's pull request changes its own copy); this file is the
+// local, side-by-side compare.
 // ---------------------------------------------------------------------------
 
 const SIBLING_CONTRACT_URL = new URL(

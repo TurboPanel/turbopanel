@@ -42,3 +42,22 @@ test('result summary is null when the report does not fit its command type', () 
 test('result summary is null for an unknown command type', () => {
   assertEquals(resultSummaryForPersist('server.mystery', { a: 1 }), null)
 })
+
+test('result summary drops NUL characters Postgres refuses in a deploy warning', () => {
+  const stored = resultSummaryForPersist('environment.deploy', {
+    projectName: 'shop',
+    warnings: ['build printed \u0000', '\u0000\u0000'],
+  })
+  assertEquals(stored, { projectName: 'shop', warnings: ['build printed ', ''] })
+})
+
+test('result summary replaces lone surrogates in a deploy warning and keeps whole pairs', () => {
+  const stored = resultSummaryForPersist('environment.deploy', {
+    projectName: 'shop',
+    warnings: ['high \uD800 alone', 'low \uDC00 alone', 'pair \uD83D\uDE80 kept'],
+  })
+  assertEquals(stored, {
+    projectName: 'shop',
+    warnings: ['high \uFFFD alone', 'low \uFFFD alone', 'pair \uD83D\uDE80 kept'],
+  })
+})

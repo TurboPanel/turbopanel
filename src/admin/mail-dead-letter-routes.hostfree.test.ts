@@ -25,6 +25,7 @@ type Calls = { list: number[]; one: string[]; all: number[] }
 function fakeStore(overrides: Partial<MailDeadLetterStore> = {}) {
   const calls: Calls = { list: [], one: [], all: [] }
   const store: MailDeadLetterStore = {
+    count: () => Promise.resolve(1),
     list: (limit) => {
       calls.list.push(limit)
       return Promise.resolve({

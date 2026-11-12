@@ -19,7 +19,8 @@
  *
  * Slot assignment is identity-addressed when a `SlotMapping` is available
  * (`client/servers/topology-slot-mapping.ts`, resolved by the ingest route
- * from the sample's own `metadata.topologyGeneration`):
+ * from the stored topology the sample matches, see
+ * `features/servers/topology-identity.ts`):
  *
  *  - `host.network` embeds the first two `slotMapping.normalNicSlots` entries
  *    (looked up by `deviceId`), so the common 1-NIC/2-NIC host never writes a
@@ -33,7 +34,7 @@
  *    page's double values.
  *
  * `slotMapping` is optional: without one every family falls back to positional
- * packing in arrival order, so an unresolved generation degrades gracefully.
+ * packing in arrival order, so an unmatched topology degrades gracefully.
  *
  * A sample stamped v6 (a daemon that has not moved to wire version 8 yet) is written as a
  * v12 row like any other: blob3 is always the storage constant, and every slot

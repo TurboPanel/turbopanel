@@ -99,6 +99,9 @@ jobs:
       - name: Check vocabulary (no daemon-as-agent phrasing)
         run: pnpm run check:vocabulary
 
+      - name: Check contributor guide references
+        run: pnpm run check:guide-references
+
       # Shipped migrations are immutable once the freeze manifest is frozen:
       # the working tree must match migrations/meta/manifest.json (the Deno
       # suite proves that) and, against the base ref, migrations/ may only
@@ -130,6 +133,9 @@ jobs:
 
       - name: Check instance ACME boundary (instance ACME must not touch organization ACME)
         run: pnpm run check:instance-acme-boundary
+
+      - name: Check Workers ACME boundary (no Let's Encrypt client or directory host in the Workers build)
+        run: pnpm run check:workers-acme-boundary
 
       - name: Check import boundaries
         run: pnpm run check:import-boundaries
@@ -206,8 +212,20 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
+      - name: Seed the daemon state sentinel
+        # The default co-located daemon state dir, writable by the runner and
+        # filled with fixed stand-in files, so a test that wrote it would
+        # land and the check after the tests would fail.
+        run: |
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/turbopanel
+          node scripts/daemon-state-sentinel.mjs seed /var/lib/turbopanel
+
       - name: Test with coverage
         run: pnpm test:coverage
+
+      - name: Check no test wrote the daemon state dir
+        if: ${{ !cancelled() }}
+        run: node scripts/daemon-state-sentinel.mjs verify /var/lib/turbopanel
 
       - name: Upload Deno LCOV
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -260,11 +278,21 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
+      - name: Seed the daemon state sentinel
+        # Same sentinel as deno hostfree (scripts/daemon-state-sentinel.mjs).
+        run: |
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/turbopanel
+          node scripts/daemon-state-sentinel.mjs seed /var/lib/turbopanel
+
       - name: Apply database migrations
         run: pnpm migrate
 
       - name: Test with coverage
         run: pnpm test:coverage
+
+      - name: Check no test wrote the daemon state dir
+        if: ${{ !cancelled() }}
+        run: node scripts/daemon-state-sentinel.mjs verify /var/lib/turbopanel
 
       - name: Upload Deno LCOV
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -300,6 +328,12 @@ jobs:
 
       - uses: ./.github/actions/setup-toolchain
 
+      - name: Seed the daemon state sentinel
+        # Same sentinel as deno hostfree (scripts/daemon-state-sentinel.mjs).
+        run: |
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/turbopanel
+          node scripts/daemon-state-sentinel.mjs seed /var/lib/turbopanel
+
       - name: Start Redis on a unix socket
         run: |
           mkdir -p /tmp/tp-redis
@@ -316,6 +350,10 @@ jobs:
 
       - name: Test the Redis daemon-cell suites
         run: deno test -A --no-check src/daemon/redis-cell.test.ts src/daemon/ws-handlers.test.ts
+
+      - name: Check no test wrote the daemon state dir
+        if: ${{ !cancelled() }}
+        run: node scripts/daemon-state-sentinel.mjs verify /var/lib/turbopanel
 
   # Test shards run with --no-check for speed, so this job is what type-checks
   # the Deno surface (entry points and every Deno test file).
@@ -409,12 +447,22 @@ jobs:
           && github.event_name == 'pull_request'
           && github.base_ref != 'staging'
           && github.base_ref != 'live'
-        uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9 # v8.3.0
+        uses: SonarSource/sonarqube-scan-action@e805d875275f728fac1885b413934be6d7c63f65 # v8.4.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: >
             -Dsonar.qualitygate.wait=true
+
+      # A pull request from a fork (or from Dependabot) gets no repository
+      # secrets, so the code scan above is skipped. Say so in the run rather
+      # than staying silent; every other check in this run still gates ci-ok.
+      - name: Note a skipped code scan
+        if: github.event_name == 'pull_request' && env.SONAR_TOKEN == ''
+        run: |
+          msg="The code scanner did not run: pull requests from forks get no repository secrets, so the scan is skipped. Formatting, the vocabulary check, the secret scan and the tests run as usual. If a scan is needed, a maintainer will push this branch to the TurboPanel repository, where the scan runs."
+          echo "::notice title=Code scan skipped::${msg}"
+          printf '### Code scan skipped\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
 
       # The Sonar way gate fails only on ratings, so one new code smell passes
       # it; this fails the PR on any new issue (owner rule, 2026-09-30). Runs
@@ -423,12 +471,19 @@ jobs:
         if: github.event_name == 'pull_request' && steps.sonar.outcome == 'success'
         uses: TurboPanel/dev/.github/actions/sonar-new-issues@2db1bbfa3cff89a52fac3ee4a53bd495dc1c79b1 # dev#47
 
-  # Contract twin: byte-compares the metrics contract and the other mirrored
-  # contracts against TurboPanel/turbopaneld, so this repo is checked out next
-  # to a sibling turbopaneld checkout (a same-named branch, else trunk).
+  # Contract twin: checks this control plane against TurboPanel/turbopaneld
+  # trunk, always trunk (never another pull request's branch). Wire changes
+  # ship daemon first, then control plane, so the rule is one-way: the control
+  # plane may rely only on what daemon trunk already has (features, feature
+  # floors, channels, snapshot fields); the daemon may be ahead. Byte mirrors
+  # are red only on a pull request into trunk that changes this repo's copy to
+  # something other than daemon trunk's, and a notice otherwise
+  # (scripts/check-contract-drift.mjs).
   contract-twin:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     concurrency:
       group: instance-contract-twin-${{ github.event_name }}-${{ (github.head_ref == 'trunk' || github.head_ref == 'staging') && github.run_id || github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'trunk' && github.head_ref != 'staging' }}
@@ -438,71 +493,67 @@ jobs:
         with:
           path: turbopanel
 
-      - name: Resolve turbopaneld checkout ref
-        id: daemon-ref
+      # Which daemon trunk commit to compare with. A pull request into
+      # trunk is compared with the current trunk. A trunk push, a manual run
+      # and the Release Candidate PR test a commit that may have waited in the
+      # queue while both trunks moved on, so they are compared with TurboPanel/turbopaneld
+      # trunk as it was when this commit landed (the newest trunk commit no
+      # later than it); comparing an older commit with a newer trunk would be
+      # red for features its successors already have. If that cannot be read,
+      # the current trunk is used.
+      - name: Pick the daemon trunk commit to compare with
+        id: sibling
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.head_ref || github.ref_name }}
-          BASE_REF: ${{ github.base_ref }}
+          SIBLING_REPO: TurboPanel/turbopaneld
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          AS_OF: ${{ (github.event_name != 'pull_request' && github.ref == 'refs/heads/trunk') || (github.head_ref == 'trunk' && github.base_ref == 'staging' && github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
-          # A same-named feature branch, else the sibling's trunk. Never the
-          # sibling's staging or live: promotion PRs (base staging/live) and
-          # PRs from those branches carry commits that passed against trunk.
-          REF="$HEAD_REF"
-          case "$REF:$BASE_REF" in
-            staging:* | live:* | *:staging | *:live) REF=trunk ;;
-            *) ;;
-          esac
-          if gh api "repos/TurboPanel/turbopaneld/branches/${REF}" --silent; then
-            echo "ref=${REF}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=trunk" >> "$GITHUB_OUTPUT"
+          ref=trunk
+          if [ "$AS_OF" = "true" ]; then
+            if at="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}" --jq .commit.committer.date)" &&
+              pick="$(gh api "repos/${SIBLING_REPO}/commits?sha=trunk&until=${at}&per_page=1" --jq '.[0].sha // empty')" &&
+              [ -n "$pick" ]; then
+              ref="$pick"
+              echo "Comparing with ${SIBLING_REPO} trunk as of ${at}: ${pick}"
+            else
+              echo "::warning::could not find ${SIBLING_REPO} trunk as of this commit; comparing with the current trunk"
+            fi
           fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
-      - name: Check out turbopaneld (contract twin sibling)
+      - name: Check out turbopaneld trunk (contract twin sibling)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: TurboPanel/turbopaneld
           path: turbopaneld
-          ref: ${{ steps.daemon-ref.outputs.ref }}
+          ref: ${{ steps.sibling.outputs.ref }}
+          persist-credentials: false
 
-      - name: Read Deno pin
-        id: deno-pin
-        run: echo "version=$(sh turbopanel/scripts/ci-runtime-pins.sh turbopaneld deno)" >> "$GITHUB_OUTPUT"
+      # A pull request into trunk is red for a byte mirror only when it
+      # changes its copy: the check compares each copy with the same file at
+      # the pull request's base. A manual run on any branch but trunk is held
+      # to the same rule against current trunk, so it can never put a more
+      # lenient ci-ok on a pull request's head. A trunk push compares with
+      # nothing and only gives a notice.
+      - name: Check out the byte mirrors at the pull request's base
+        if: (github.event_name == 'pull_request' && github.base_ref == 'trunk') || (github.event_name != 'pull_request' && github.ref != 'refs/heads/trunk')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || 'trunk' }}
+          path: turbopanel-base
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            src/contracts/metrics-contract.ts
+            src/contracts/layout-vectors.json
+            src/contracts/topology-slot-mapping.ts
 
-      # Three attempts, 15 s then 45 s apart: setup-deno has no retry input and
-      # a transient GitHub 5xx on the download must not turn the run red.
-      - name: Install Deno
-        id: deno-try-1
-        continue-on-error: true
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: ${{ steps.deno-pin.outputs.version }}
-      - name: Wait before retrying the Deno download
-        if: steps.deno-try-1.outcome == 'failure'
-        run: sleep 15
-      - name: Install Deno (retry 1 of 2)
-        id: deno-try-2
-        if: steps.deno-try-1.outcome == 'failure'
-        continue-on-error: true
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: ${{ steps.deno-pin.outputs.version }}
-      - name: Wait before retrying the Deno download again
-        if: steps.deno-try-2.outcome == 'failure'
-        run: sleep 45
-      - name: Install Deno (retry 2 of 2)
-        if: steps.deno-try-2.outcome == 'failure'
-        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
-        with:
-          deno-version: ${{ steps.deno-pin.outputs.version }}
-
-      - name: Check metrics contract twin (sibling byte-compare)
+      - name: Check the contract against daemon trunk (daemon first)
         working-directory: turbopanel
-        run: deno test -A --no-check src/contracts/metrics-contract.test.ts
-
-      - name: Check contract drift (metrics, hostname, machine-key, channels)
-        working-directory: turbopanel
+        env:
+          CONTRACT_BASE_DIR: ${{ ((github.event_name == 'pull_request' && github.base_ref == 'trunk') || (github.event_name != 'pull_request' && github.ref != 'refs/heads/trunk')) && format('{0}/turbopanel-base', github.workspace) || '' }}
         run: node scripts/check-contract-drift.mjs
 
   # Single aggregate check for the branch rulesets. It needs every job that

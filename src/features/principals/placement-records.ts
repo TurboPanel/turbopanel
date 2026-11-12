@@ -19,6 +19,7 @@ import type { Db } from '../../db/connection.ts'
 import {
   binding,
   folder,
+  cache,
   login,
   principal,
   principalPlacement,
@@ -317,6 +318,8 @@ export type PrincipalUsage = {
   storages: number
   secrets: number
   logins: number
+  /** Project caches run as the principal. */
+  caches: number
   /** Folder rows on servers other than `excludeServerId`. */
   folders: number
   otherPlacements: number
@@ -328,6 +331,7 @@ export const PRINCIPAL_USAGE_KINDS = [
   'storages',
   'secrets',
   'logins',
+  'caches',
   'folders',
   'otherPlacements',
 ] as const satisfies ReadonlyArray<keyof PrincipalUsage>
@@ -339,6 +343,7 @@ export function emptyPrincipalUsage(): PrincipalUsage {
     storages: 0,
     secrets: 0,
     logins: 0,
+    caches: 0,
     folders: 0,
     otherPlacements: 0,
   }
@@ -412,6 +417,14 @@ export async function loadPrincipalUsage(
       .where(and(isNotNull(login.principalId), inArray(login.principalId, ids))),
     usage,
     'logins'
+  )
+  await countByPrincipal(
+    db
+      .select({ principalId: cache.principalId })
+      .from(cache)
+      .where(inArray(cache.principalId, ids)),
+    usage,
+    'caches'
   )
   await countByPrincipal(
     db

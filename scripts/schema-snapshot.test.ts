@@ -1,6 +1,6 @@
 /**
- * `scripts/schema-snapshot.mjs` — the latest-snapshot reader both schema
- * description generators depend on. Proven against a fixture migrations
+ * `scripts/schema-snapshot.mjs` — the latest-snapshot reader the schema
+ * description check and the docs export depend on. Proven against a fixture migrations
  * directory (`schema-fixture.test-helper.ts`): it picks the newest journal
  * entry, keeps column order, resolves single-column foreign keys with a
  * defaulted on-delete, folds composite primary keys into the per-column

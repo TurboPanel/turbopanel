@@ -4,7 +4,7 @@
  * broker stubbed and the sender injected.
  */
 
-import { assertEquals, assertRejects } from '@std/assert'
+import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import amqplib from 'amqplib'
 import type { MailerSender, MailerSendResult } from '../../../features/email/sender-types.ts'
@@ -493,23 +493,25 @@ test('startMailerConsumer retries AMQP connect then succeeds', async () => {
   }
 })
 
-test('startMailerConsumer rejects when connect succeeds but channel setup fails', async () => {
-  const broker = createStubBroker({
+test('startMailerConsumer keeps retrying in the background when channel setup fails at start', async () => {
+  const broken = createStubBroker({
     topologyError: new Error('no such exchange'),
   })
-  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const broker = createStubBroker()
+  let attempts = 0
+  const connectStub = stub(amqplib, 'connect', () => {
+    attempts += 1
+    return Promise.resolve((attempts === 1 ? broken : broker).connection as never)
+  })
   try {
-    await assertRejects(
-      () =>
-        startMailerConsumer({
-          db: undefined,
-          amqpUrl: 'amqp://test',
-          env: baseEnv(),
-          senderFactory: scriptedSender([]).factory,
-        }),
-      Error,
-      'no such exchange'
-    )
+    const handle = await startMailerConsumer({
+      db: undefined,
+      amqpUrl: 'amqp://test',
+      env: baseEnv(),
+      senderFactory: scriptedSender([]).factory,
+    })
+    await waitFor(() => broker.consumeCount() === 1, 'background start', 4_000)
+    await handle.close()
   } finally {
     connectStub.restore()
   }

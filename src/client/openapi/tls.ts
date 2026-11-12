@@ -20,11 +20,18 @@ export const tlsSchemas = {
     properties: {
       dnsNames: { type: 'array', items: { type: 'string' } },
       hasWildcard: { type: 'boolean' },
-      notBefore: { type: 'string', format: 'date-time' },
+      notBefore: {
+        type: 'string',
+        format: 'date-time',
+        nullable: true,
+        description: 'Null while the certificate has not been issued yet.',
+      },
       notAfter: {
         type: 'string',
         format: 'date-time',
-        description: 'Column value mirrored into metadata for API stability (shape unchanged).',
+        nullable: true,
+        description:
+          'Column value mirrored into metadata. Null while the certificate has not been issued yet (older panels sent a 1970 placeholder).',
       },
       fingerprintSha256: {
         type: 'string',
@@ -73,7 +80,7 @@ export const tlsSchemas = {
       name: { type: ['string', 'null'] },
       source: {
         type: 'string',
-        enum: ['upload', 'lets_encrypt', 'self_signed', 'organization_ca'],
+        enum: ['upload', 'lets_encrypt', 'self_signed', 'organization_ca', 'provider_origin'],
       },
       metadata: { $ref: '#/components/schemas/TlsMetadata' },
       options: { type: ['object', 'null'] },
@@ -359,15 +366,15 @@ export const tlsPaths = {
       security: [{ cookieAuth: [] }],
       responses: {
         200: {
-          description: 'Latest rotation journal (command statuses overlaid when known)',
+          description:
+            'Latest rotation journal (command statuses overlaid when known), or `null` when no rotation has been started for this organization',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/TlsCaRotationStatus' },
+              schema: {
+                oneOf: [{ type: 'null' }, { $ref: '#/components/schemas/TlsCaRotationStatus' }],
+              },
             },
           },
-        },
-        404: {
-          description: 'No rotation has been started for this organization',
         },
       },
     },
@@ -625,6 +632,10 @@ export const tlsPaths = {
               schema: { $ref: '#/components/schemas/UpdateEntityOkResponse' },
             },
           },
+        },
+        409: {
+          description:
+            'tls_organization_ca (the Organization CA cannot be deleted; replace it with POST /tls/ca/rotate), tls_in_use, or the certificate still has dependent rows',
         },
       },
     },

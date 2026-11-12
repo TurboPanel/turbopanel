@@ -16,9 +16,8 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import { type Db, getDb } from '../../db/connection.ts'
-import { managed, server } from '../../db/schema.ts'
+import { managed, organization, server } from '../../db/schema.ts'
 import { isUuid } from '../access/routes-helpers.ts'
-import { recordAudit } from '../../features/audit/audit-records.ts'
 import { enqueueBackupsReconcile } from '../../features/backups/reconcile.ts'
 import {
   copyRecipientFor,
@@ -43,6 +42,14 @@ import { resolveManagedHomeOrganizationId } from '../../features/principals/stor
 import { enqueueTypedCommand } from '../../features/managed/apply-prepare.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { copyDepsOf } from '../backup-copy-deps.ts'
+import type { NotificationContext } from '../../features/notifications/events.ts'
+import {
+  assignmentNotice,
+  describeBackupTargetChange,
+  endpointHost,
+  recordBackupTargetChange,
+  targetPlaceOf,
+} from '../../features/backups/target-change.ts'
 
 const TARGET_PATHS = [
   '/organizations/:id/backup-targets',
@@ -103,18 +110,30 @@ async function auditTarget(
     | 'backup_target.delete'
     | 'backup_target.assign',
   destinationId: string | null,
-  context: Record<string, unknown>
+  context: Record<string, unknown>,
+  notice: NotificationContext | null = null
 ) {
   const session = c.get('session')
-  await recordAudit(scope.db, {
-    organizationId: scope.organizationId,
-    actorUserId: session?.userId ?? null,
-    actorEmail: session?.email ?? null,
-    action,
-    targetType: 'organization',
-    targetId: destinationId ?? scope.organizationId,
-    context,
-  })
+  // Raises `backup.target_changed` only when `notice` says where the copies moved.
+  await recordBackupTargetChange(
+    c,
+    {
+      organizationId: scope.organizationId,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action,
+      targetType: 'organization',
+      targetId: destinationId ?? scope.organizationId,
+      context,
+    },
+    notice
+  )
+}
+
+/** Names of the organization's targets by id, for the words of an assignment notice. */
+async function targetNames(scope: Scope): Promise<Map<string, string>> {
+  const rows = await listTargets(scope.db, scope.organizationId)
+  return new Map(rows.map((row) => [row.id.toLowerCase(), row.name]))
 }
 
 async function listResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
@@ -149,7 +168,10 @@ async function createResponse(c: Context<AppEnv>, scope: Scope): Promise<Respons
     })
     await auditTarget(c, scope, 'backup_target.create', row.id, {
       name: row.name,
+      endpoint: endpointHost(row.endpoint),
       bucket: row.bucket,
+      region: row.region,
+      prefix: row.prefix,
     })
     return c.json({ target: toApiTarget(row) }, 201)
   } catch (err) {
@@ -184,10 +206,21 @@ async function updateResponse(c: Context<AppEnv>, scope: Scope): Promise<Respons
       : await sealSecretKey(secrets!, parsed.value.secretAccessKey)
   try {
     const row = await updateTarget(scope.db, current, parsed.value, sealed)
-    await auditTarget(c, scope, 'backup_target.update', row.id, {
-      name: row.name,
-      secretReplaced: sealed !== null,
-    })
+    const moved = describeBackupTargetChange(targetPlaceOf(current), parsed.value, sealed !== null)
+    await auditTarget(
+      c,
+      scope,
+      'backup_target.update',
+      row.id,
+      {
+        name: row.name,
+        ...(current.name === row.name ? {} : { previousName: current.name }),
+        accessKeyChanged: false,
+        secretReplaced: false,
+        ...moved,
+      },
+      moved ? { kind: 'update', targetName: row.name } : null
+    )
     // Hosts keep their own sealed copy of the target, so every host that uses it gets the set again.
     const usage = await targetUsage(scope.db, row.id)
     const hosts = usage.isDefault
@@ -320,8 +353,27 @@ async function putDefaultResponse(c: Context<AppEnv>, scope: Scope): Promise<Res
     return c.json({ error: 'Not found' }, 404)
   }
   const before = await managedHostsOfOrganization(scope.db, scope.organizationId)
+  const [current] = await scope.db
+    .select({ destinationId: organization.backupDestinationId })
+    .from(organization)
+    .where(eq(organization.id, scope.organizationId))
+    .limit(1)
+  const previous = current?.destinationId ?? null
   await setOrganizationDefault(scope.db, scope.organizationId, destinationId)
-  await auditTarget(c, scope, 'backup_target.assign', destinationId, { scope: 'organization' })
+  const notice = assignmentNotice({
+    scope: 'organization',
+    before: previous,
+    after: destinationId,
+    targetNames: await targetNames(scope),
+  })
+  await auditTarget(
+    c,
+    scope,
+    'backup_target.assign',
+    destinationId,
+    { scope: 'organization', previousDestinationId: previous },
+    notice
+  )
   const pushed = await pushAfterChange(c, scope, before)
   return c.json({
     ok: true,
@@ -344,17 +396,33 @@ async function putClusterResponse(c: Context<AppEnv>, scope: Scope): Promise<Res
   if (isUuid(choice) && !(await findTarget(scope.db, scope.organizationId, choice))) {
     return c.json({ error: 'Not found' }, 404)
   }
-  await setClusterChoice(scope.db, { organizationId: scope.organizationId, managedId, choice })
-  await auditTarget(c, scope, 'backup_target.assign', isUuid(choice) ? choice : null, {
-    scope: 'cluster',
-    managedId,
-    choice: isUuid(choice) ? 'target' : choice,
-  })
   const [row] = await scope.db
-    .select({ serverId: managed.serverId })
+    .select({ serverId: managed.serverId, name: managed.name, previous: managed.backupDestination })
     .from(managed)
     .where(eq(managed.id, managedId))
     .limit(1)
+  await setClusterChoice(scope.db, { organizationId: scope.organizationId, managedId, choice })
+  const previous = row?.previous ?? null
+  const notice = assignmentNotice({
+    scope: 'cluster',
+    before: previous,
+    after: choice === 'inherit' ? null : choice,
+    targetNames: await targetNames(scope),
+    clusterName: row?.name ?? null,
+  })
+  await auditTarget(
+    c,
+    scope,
+    'backup_target.assign',
+    isUuid(choice) ? choice : null,
+    {
+      scope: 'cluster',
+      managedId,
+      choice: isUuid(choice) ? 'target' : choice,
+      previousChoice: previous,
+    },
+    notice
+  )
   const pushed = await pushAfterChange(c, scope, [row?.serverId])
   return c.json({ ok: true, choice, pushedToServers: pushed.queuedServerIds.length })
 }

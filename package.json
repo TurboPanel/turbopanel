@@ -1,6 +1,6 @@
 {
   "name": "turbopanel",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -13,6 +13,8 @@
     "deploy:live": "CLOUDFLARE_ENV=live node scripts/deploy-workers.mjs",
     "deploy:workers": "pnpm run deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "identity:set": "node scripts/set-identity-key.mjs",
+    "identity:rotate": "node scripts/rotate-identity-key.mjs",
     "generate:secret": "node scripts/generate-secret.mjs",
     "generate": "drizzle-kit generate --config drizzle.config.mjs",
     "migrate": "node scripts/check-postgres-compat.mjs && node scripts/migrate-locked.mjs",
@@ -25,29 +27,32 @@
     "check:workers-types": "tsc -p tsconfig.workers.json",
     "fmt:check:changed": "sh scripts/check-format-changed.sh",
     "check:vocabulary": "node scripts/check-vocabulary.mjs",
+    "check:guide-references": "node scripts/check-guide-references.mjs",
     "check:test-inventory": "node scripts/check-test-inventory.mjs",
     "notices:generate": "deno task notices:generate",
     "notices:check": "deno task notices:check",
     "check:ca-boundary": "node scripts/check-ca-boundary.mjs",
     "check:instance-acme-boundary": "node scripts/check-instance-acme-boundary.mjs",
+    "check:workers-acme-boundary": "node scripts/check-workers-acme-boundary.mjs",
     "check:import-boundaries": "node scripts/check-import-boundaries.mjs",
     "check:contract-drift": "node scripts/check-contract-drift.mjs",
     "check:migration-freeze": "node scripts/check-migration-freeze.mjs",
     "check:migration-additions": "node scripts/check-migration-additions.mjs",
     "check:migration-forward-only": "node scripts/check-migration-forward-only.mjs",
     "check:migration-upgrade": "node scripts/check-migration-upgrade.mjs",
-    "schema:comments": "node scripts/schema-comments.mjs",
-    "schema:comments:check": "node scripts/schema-comments.mjs --check",
+    "schema:docs": "node scripts/schema-docs.mjs",
     "docs:errors:check": "node scripts/check-error-appendix.mjs",
     "check:deploy-env": "node scripts/check-deploy-env.mjs",
     "bootstrap:superadmin": "node scripts/bootstrap-superadmin.mjs",
     "check:metrics-boundaries": "node scripts/check-metrics-boundaries.mjs",
     "check:metrics-parity": "deno test --allow-read src/daemon/metrics/field-registry.test.ts",
     "check:query-cache-boundaries": "node scripts/check-query-cache-boundaries.mjs",
-    "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run check:test-inventory && pnpm run notices:check && pnpm run check:ca-boundary && pnpm run check:instance-acme-boundary && pnpm run check:import-boundaries && pnpm run check:metrics-boundaries && pnpm run check:query-cache-boundaries && pnpm run check:contract-drift && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
+    "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run check:guide-references && pnpm run check:test-inventory && pnpm run notices:check && pnpm run check:ca-boundary && pnpm run check:instance-acme-boundary && pnpm run check:workers-acme-boundary && pnpm run check:import-boundaries && pnpm run check:metrics-boundaries && pnpm run check:query-cache-boundaries && pnpm run check:contract-drift && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.5-r.4",
+    "@hpke/chacha20poly1305": "^1.8.0",
+    "@hpke/core": "^1.9.0",
     "@noble/hashes": "1.8.0",
     "amqplib": "^2.0.1",
     "drizzle-orm": "^0.45.2",
@@ -68,5 +73,5 @@
     "vitest": "^4.1.12",
     "wrangler": "^4.151.3"
   },
-  "packageManager": "pnpm@12.14.0+sha512.c18ba6d87993d3d164cb5e8948f32b2c06ee854487e06cd8d86781342fb3e5bb4634367034711e86802baa9c37bea906ce1929ad08d70884c97d801df13389a6"
+  "packageManager": "pnpm@12.16.1+sha512.091d1dee7927575661b25dab3c2ae31cafc1c54d6b71ed6a6600cf0c1cb10434a447eae14015f1b23e2e6bedeed79df94a932e2164d2832280dce3fb32f656d1"
 }

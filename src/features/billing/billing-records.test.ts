@@ -328,11 +328,18 @@ test('T15 · tier uniqueness: one row per label, per rank and per (provider, pro
     })
     await ctx.db.insert(tier).values({
       ...fresh(9, 'SY'),
+      provider: null,
       providerProductId: null,
       priceCents: null,
       currency: null,
       isCustom: true,
     })
+    // A row with a product must name the provider that product lives on.
+    await expectPgRefusal(
+      ctx.db.insert(tier).values({ ...fresh(11, 'S3B'), provider: null }),
+      CHECK_VIOLATION,
+      'tier_provider_bound_check'
+    )
     // `apple` was the reserved second provider until 2026-09-17; both provider
     // CHECKs now admit `stripe` only, so the same product id under another
     // provider is refused by the CHECK before uniqueness is even consulted.

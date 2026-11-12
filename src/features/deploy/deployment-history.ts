@@ -65,7 +65,8 @@ const DEPLOY_COMMAND_COLUMNS = {
   queuedAt: command.queuedAt,
   startedAt: command.startedAt,
   finishedAt: command.finishedAt,
-  serverName: server.name,
+  // A server without a display name goes by its hostname, as it does in the UI.
+  serverName: sql<string | null>`coalesce(nullif(btrim(${server.name}), ''), ${server.hostname})`,
 } as const
 
 type DeployCommandRow = {
@@ -122,6 +123,12 @@ export type DeploymentHistoryEntry = {
    * queued before the strategy was recorded.
    */
   strategy: 'inplace' | 'sequential' | null
+  /**
+   * `hostings` for a run that only rewrote the web server config and
+   * certificates on hosts already running the environment (no build, no
+   * restart), read from `command.context.action`; `null` for a full deploy.
+   */
+  action: 'hostings' | null
   /**
    * `rolled_back` (the previous version is running again) or `needs_attention`
    * (stopped on purpose, e.g. a migration already ran) when a sequential deploy
@@ -294,6 +301,11 @@ function contextStrategy(context: Record<string, unknown>): 'inplace' | 'sequent
   return raw === 'inplace' || raw === 'sequential' ? raw : null
 }
 
+/** The only `command.context.action` a deploy attempt carries today: the certificate-only run. */
+function contextAction(context: Record<string, unknown>): 'hostings' | null {
+  return contextString(context, 'action') === 'hostings' ? 'hostings' : null
+}
+
 function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHistoryEntry {
   const context = contextBag(row.context)
   const strategyOutcome = outcomeFromErrorCode(row.errorCode)
@@ -322,6 +334,7 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
     errorMessage: row.errorMessage ?? null,
     errorLine: lastErrorLine(row.errorMessage),
     strategy: contextStrategy(context),
+    action: contextAction(context),
     strategyOutcome,
     strategyOutcomeReason: deployOutcomeReason(strategyOutcome, row.errorMessage ?? null),
     cancelRequestedAt: contextString(contextBag(row.metadata), CANCEL_REQUESTED_FLAG),

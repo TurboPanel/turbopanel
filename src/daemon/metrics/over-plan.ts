@@ -7,11 +7,12 @@
  *
  * Plans limit box size only, in the units the tiers are sold in: physical CPU
  * cores and RAM (`features/tiers/ladder.ts`, `tier-placement.ts` — the same
- * bands the enrolment floor uses). Both numbers come from one source, the
- * daemon's host report stored on the server record (`server.metadata.resources`:
- * one entry per socket, plus total RAM). The sample's own sizes are not used:
- * they can move with ballooning, and mixing two sources would flip the flag
- * (and write the row) on every sample near a limit.
+ * bands the enrolment floor uses). Ingest judges the highest readings of the
+ * last 7 days (`evaluateOverPlanFromPeak`, fed by `over-plan-flag.ts`), so a
+ * balloon or hot-add counts for the whole window and one low sample never
+ * clears the flag. Physical cores come from the daemon's host report
+ * (`server.metadata.resources`, one entry per socket); the sample's logical CPU
+ * count is never used.
  */
 import type { ServerPeak } from '../../features/servers/peak.ts'
 import type { ServerHostResources } from '../../features/servers/server-metadata.ts'

@@ -91,3 +91,15 @@ test('capPreviewList reports leftover items beyond 50', () => {
   assertEquals(capPreviewList(items), { items: items.slice(0, 50), more: 2 })
   assertEquals(capPreviewList(['a']), { items: ['a'], more: 0 })
 })
+
+test('canForgetServerResources is false while a cache would be left behind', () => {
+  const base = {
+    online: false,
+    colocated: false,
+    blockedDatabaseCount: 0,
+    blockedEnvironmentCount: 0,
+  }
+  assertEquals(canForgetServerResources(base), true)
+  assertEquals(canForgetServerResources({ ...base, blockedCacheCount: 0 }), true)
+  assertEquals(canForgetServerResources({ ...base, blockedCacheCount: 1 }), false)
+})

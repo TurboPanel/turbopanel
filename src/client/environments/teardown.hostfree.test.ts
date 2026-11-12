@@ -285,6 +285,11 @@ test('dispatchEnvironmentTeardown enqueues one stop per server with its own netw
   assertEquals(payloads[0]?.environmentId, ENV_ID)
   assertEquals(payloads[0]?.ingressServices, [{ serviceId: 'svc-1' }])
   assertEquals(payloads[0]?.fabricNetworks, ['tpn_one'])
+  // A delete removes the compose folder on every server it reaches.
+  assertEquals(
+    payloads.map((payload) => payload.removeDeploymentDir),
+    [true, true]
+  )
   // Second server carries no compose bridges — key omitted, not empty.
   assertEquals('fabricNetworks' in (payloads[1] ?? {}), false)
 })

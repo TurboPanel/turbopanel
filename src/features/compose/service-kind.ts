@@ -53,13 +53,28 @@ export const NODE_APP_MODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
  * Build backend for a `x-turbopanel.source` binding.
  *
  * `native` (the default when omitted) is the checkout → build → promote
- * directory release the daemon has always produced. `railpack` swaps that
- * middle step for Railpack + BuildKit, which emits an OCI image instead of a
- * filesystem tree; the daemon then rewrites the service to carry that image tag
- * so it runs as an ordinary compose service. The wire contract carries a third
- * value (`static`) that compose never mints.
+ * directory release the daemon has always produced. `image` ("Container Image
+ * (Auto-Detected)") swaps that middle step for an auto-detected container image
+ * build, which emits an OCI image instead of a filesystem tree; the daemon then
+ * rewrites the service to carry that image tag so it runs as an ordinary
+ * compose service. This is the `x-turbopanel.source.buildKind` key, a different
+ * key from a service's own `image:`, which names an image to pull.
+ *
+ * Expand phase of the rename: documents saved before it spell the same thing
+ * with the old value ({@link LEGACY_IMAGE_BUILD_KIND}). Both are accepted; {@link readSourceBuildKind}
+ * normalizes the old value to `image`, so everything downstream of the parse
+ * sees one spelling. The wire contract carries a third value (`static`) that
+ * compose never mints.
  */
-export type ComposeSourceBuildKind = 'native' | 'railpack'
+export type ComposeSourceBuildKind = 'native' | 'image' | 'railpack'
+
+/** The old spelling of `image`, still accepted until the contract phase. */
+export const LEGACY_IMAGE_BUILD_KIND = 'railpack' as const
+
+/** True for either spelling of the image build kind. */
+export function isImageBuildKind(value: unknown): boolean {
+  return value === 'image' || value === LEGACY_IMAGE_BUILD_KIND
+}
 
 /** Max length for operator-facing service description metadata. */
 export const SERVICE_DESCRIPTION_MAX_LENGTH = 500
@@ -138,7 +153,7 @@ export type ComposeServiceSourceExtension = {
   /**
    * Which build backend produces the release. Omitted means `native`.
    *
-   * `railpack` is only meaningful on a container service — the host-native
+   * `image` is only meaningful on a container service — the host-native
    * kinds have their own build/runtime lanes — which
    * {@link validateSourceConsistency} enforces.
    */
@@ -333,6 +348,42 @@ type ComposeServiceExtensionFields = {
    * reading those rows and never sees this block.
    */
   hosting?: ComposeHostingExtensionEntry[]
+  /**
+   * A helper container's port, opened to one Hosting Account (`serviceKind:
+   * container` only). The container publishes `port` on `127.0.0.1` at a port
+   * the control plane picks; only the account that runs every service named in
+   * `from` (and root) may connect, and those services get
+   * `TURBOPANEL_HELPER_<NAME>_HOST` and `_PORT`.
+   */
+  reach?: ComposeServiceReachExtension
+}
+
+/** `x-turbopanel.reach`: the container port, and the sites or apps that may reach it. */
+export type ComposeServiceReachExtension = { port: number; from: string[] }
+
+/** Most services one reach port names. */
+export const MAX_REACH_FROM = 8
+
+const REACH_FROM_NAME_RE = /^[A-Za-z0-9._-]+$/
+
+/** True for `{ port: 1-65535, from: 1-8 service names }` and nothing else. */
+export function isValidReachValue(value: unknown): boolean {
+  if (!isPlainMapping(value)) return false
+  const { port, from } = value
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) return false
+  if (!Array.isArray(from) || from.length < 1 || from.length > MAX_REACH_FROM) return false
+  const names = new Set<string>()
+  for (const name of from) {
+    if (typeof name !== 'string' || !REACH_FROM_NAME_RE.test(name) || names.has(name)) return false
+    names.add(name)
+  }
+  return true
+}
+
+function parseServiceReach(value: unknown): ComposeServiceReachExtension | undefined {
+  if (!isValidReachValue(value)) return undefined
+  const { port, from } = value as { port: number; from: string[] }
+  return { port, from: [...from] }
 }
 
 /**
@@ -343,6 +394,9 @@ type CommonServiceExtensionFields = Pick<
   ComposeServiceExtensionFields,
   'serviceKind' | 'description' | 'source' | 'hosting'
 >
+
+/** Container-only fields: a helper port opened to one account. */
+type ContainerOnlyExtensionField = 'reach'
 
 /** Site-only fields: how the content is served, and what serves it. */
 type SiteOnlyExtensionField = 'engine' | 'root' | 'sourceKind' | 'php'
@@ -379,13 +433,14 @@ type NotForThisKind<Field extends keyof ComposeServiceExtensionFields> = {
 /** The default kind. Runs from an image; everything host-native is off-limits. */
 export type ComposeContainerServiceExtension = CommonServiceExtensionFields & {
   serviceKind?: 'container'
-} & NotForThisKind<SiteOnlyExtensionField | NodeOnlyExtensionField | HostNativeExtensionField>
+} & Pick<ComposeServiceExtensionFields, ContainerOnlyExtensionField> &
+  NotForThisKind<SiteOnlyExtensionField | NodeOnlyExtensionField | HostNativeExtensionField>
 
 /** Served by a host engine out of a document root. */
 export type ComposeSiteServiceExtension = CommonServiceExtensionFields & {
   serviceKind: 'site'
 } & Pick<ComposeServiceExtensionFields, SiteOnlyExtensionField | HostNativeExtensionField> &
-  NotForThisKind<NodeOnlyExtensionField>
+  NotForThisKind<NodeOnlyExtensionField | ContainerOnlyExtensionField>
 
 /**
  * A supervised host process built from Git. `source` is **required**, not
@@ -399,7 +454,7 @@ export type ComposeNodeServiceExtension = Omit<
     ComposeServiceExtensionFields,
     NodeOnlyExtensionField | HostNativeExtensionField
   > &
-  NotForThisKind<SiteOnlyExtensionField>
+  NotForThisKind<SiteOnlyExtensionField | ContainerOnlyExtensionField>
 
 /**
  * The per-service `x-turbopanel` block, narrowed by `serviceKind`.
@@ -518,7 +573,7 @@ const SITE_ENGINES = new Set<SiteEngine>([
   'openlitespeed',
   'nginx+apache',
 ])
-const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>(['native', 'railpack'])
+const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>(['native', 'image', 'railpack'])
 const NODE_PACKAGE_MANAGERS = new Set<NodePackageManager>(['npm', 'yarn', 'pnpm'])
 
 /** Where a site's content comes from. Omitted means `release`. */
@@ -592,7 +647,7 @@ function readSourceBuildKind(value: unknown): ComposeSourceBuildKind | undefined
   if (!SOURCE_BUILD_KINDS.has(trimmed as ComposeSourceBuildKind)) {
     return undefined
   }
-  return trimmed as ComposeSourceBuildKind
+  return trimmed === LEGACY_IMAGE_BUILD_KIND ? 'image' : (trimmed as ComposeSourceBuildKind)
 }
 
 function readNodeVersion(value: unknown): string | undefined {
@@ -770,6 +825,8 @@ function applyContentExtensionFields(
   if (php) extension.php = php
   const hosting = parseHostingExtensionEntries(value.hosting)
   if (hosting) extension.hosting = hosting
+  const reach = parseServiceReach(value.reach)
+  if (reach) extension.reach = reach
 }
 
 export function parseServiceTurbopanelExtension(
@@ -903,6 +960,7 @@ const SITE_KIND_ONLY: readonly ComposeServiceKind[] = ['site']
 const NODE_KIND_ONLY: readonly ComposeServiceKind[] = ['node']
 /** Both host-native kinds — the set {@link isHostNativeServiceKind} names. */
 const HOST_NATIVE_KINDS: readonly ComposeServiceKind[] = ['site', 'node']
+const CONTAINER_KIND_ONLY: readonly ComposeServiceKind[] = ['container']
 
 const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRule>> = {
   serviceKind: {
@@ -912,7 +970,7 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
   },
   description: { kinds: ALL_SERVICE_KINDS },
   // No kind restriction on *having* a source: a source builds a release for any
-  // kind. `buildKind: railpack` is the one combination that contradicts a
+  // kind. `buildKind: image` is the one combination that contradicts a
   // host-native kind, and `validateSourceConsistency` owns that rule.
   source: { kinds: ALL_SERVICE_KINDS },
   // Legal on every kind: a container behind the edge, a site served by a host
@@ -929,6 +987,12 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
   sourceKind: { kinds: SITE_KIND_ONLY },
   php: { kinds: SITE_KIND_ONLY },
   cron: { kinds: HOST_NATIVE_KINDS },
+  reach: {
+    kinds: CONTAINER_KIND_ONLY,
+    isValid: isValidReachValue,
+    typeMessage:
+      'reach must be { port: 1-65535, from: [1 to 8 site or Node app names] }, with no repeated name',
+  },
   principal: {
     kinds: HOST_NATIVE_KINDS,
     isValid: (value) => isPrincipalAlias(value),
@@ -1053,6 +1117,7 @@ const RAW_FIELD_TYPE_ORDER: readonly string[] = [
   'appMode',
   'enabled',
   'engine',
+  'reach',
   'principal',
 ]
 
@@ -1220,7 +1285,7 @@ function validateRawSourceFieldTypes(
   if ('buildKind' in rawSource && !readSourceBuildKind(rawSource.buildKind)) {
     issues.push({
       path: `${sourcePath}.buildKind`,
-      message: 'source.buildKind must be "native" or "railpack"',
+      message: 'source.buildKind must be "native" or "image"',
     })
   }
 
@@ -1623,7 +1688,7 @@ function validateRootConsistency(
  * yet depends on how the service is served, so an author may wire one anywhere.
  * The linter emits a non-blocking advisory saying exactly that instead.
  *
- * `buildKind: railpack` is the one exception. It produces an OCI image that
+ * `buildKind: image` is the one exception. It produces an OCI image that
  * only a container service can run — `site` and `node` already have
  * their own dedicated build and runtime lanes (host engine document roots,
  * supervised host processes), so asking for an image there is a contradiction
@@ -1648,10 +1713,10 @@ function validateSourceConsistency(
     })
   }
 
-  if (source.buildKind === 'railpack' && isHostNativeServiceKind(fields.serviceKind)) {
+  if (source.buildKind === 'image' && isHostNativeServiceKind(fields.serviceKind)) {
     issues.push({
       path: `${basePath}.source.buildKind`,
-      message: 'source.buildKind railpack is only valid when serviceKind is container',
+      message: 'source.buildKind image is only valid when serviceKind is container',
     })
   }
 
