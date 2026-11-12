@@ -1,20 +1,19 @@
 /**
  * Human descriptions for every physical table and every non-obvious column
- * in the control-plane schema — the single source the Postgres `COMMENT ON`
- * migrations are generated from (`scripts/schema-comments.mjs`).
+ * in the control-plane schema, and the source of the schema documentation
+ * (`scripts/schema-docs.mjs` prints it as Markdown). The database itself
+ * carries no comments.
  *
  * Keyed by **physical** names (`seat`, `copy`, `totp`, …), exactly as they
  * appear in the latest `migrations/meta/NNNN_snapshot.json` — never by the
  * drizzle export name. `schema-descriptions.test.ts` holds this file to the
  * shipped schema: every table needs a `group` and a `summary`; every column
  * that is not obvious (see {@link isObviousColumn}) needs a description; a
- * description for a table or column that does not exist fails; and every
- * description here must already be carried by a migration (the test runs
- * the pending-comment delta and fails if it is non-empty).
+ * description for a table or column that does not exist fails.
  *
  * Writing rules (enforced): one sentence, at most {@link MAX_DESCRIPTION_LENGTH}
  * characters, no line breaks, none of the characters `| { } < > "` (they
- * break GFM table cells, MDX expressions and SQL string quoting). Use
+ * break GFM table cells and MDX expressions). Use
  * backticks for identifiers and literal values; single quotes are fine.
  * Say what the value is, who writes it, and the allowed members / units /
  * derived-vs-stored fact when there is one. The daemon is the "daemon",
@@ -25,7 +24,7 @@
 
 export const MAX_DESCRIPTION_LENGTH = 160
 
-/** Characters a description may never contain (table cells, MDX, SQL quoting). */
+/** Characters a description may never contain (table cells, MDX). */
 export const FORBIDDEN_DESCRIPTION_CHARS = /[|{}<>"\n\r\t]/
 
 /** Columns every table carries with the same meaning; never described per table. */
@@ -407,7 +406,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       not_after:
         'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `automatic` rows; indexed for expiry checks.',
       fingerprint_sha256:
-        'SHA-256 fingerprint of the leaf DER, unique per organization when set; null on `managed` rows that have no certificate yet.',
+        'SHA-256 fingerprint of the leaf DER, unique per organization when set; null on `automatic` rows that have no certificate yet.',
       ca_state:
         'Organization CA lifecycle `active` (one per org), `retired` (still in the trust bundle) or `revoked`; null on non-CA rows.',
       ca_generation:
@@ -1507,7 +1506,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One API token on a carrier; the token itself is sealed in the `secret` row it points to and this row keeps the label, last four characters and what it can do.',
     columns: {
       secret_id:
-        'The sealed token in `secret`, one badge per secret; a secret under a badge cannot be deleted alone (checked at commit), so a badge is removed with it.',
+        'The sealed token in `secret`, one badge per secret; a secret under a badge cannot be deleted alone, so a badge is removed with it.',
       metadata:
         'Non-secret descriptors written by the panel; no keys are read by the platform today.',
       options:
@@ -1813,7 +1812,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       organization_id:
         'Organization whose name it is; NULL for the control plane own names, which use an `ingress` account.',
       carrier_id:
-        'Organization provider account that serves it; checked at commit so an organization delete removes both.',
+        'Organization provider account that serves it; a carrier that still has tunnels cannot be deleted.',
       ingress_id:
         'Install-level provider account for the control plane own names; set exactly when `carrier_id` is not.',
       name: 'Fully qualified record name in lower case.',

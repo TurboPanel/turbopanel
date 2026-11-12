@@ -59,15 +59,15 @@ member there, a widened CHECK (forward migration) and one adapter.
   carriers, tunnels and doorways (cascade, both organization columns on
   `tunnel`); server deleted removes its portals; tunnel deleted removes its
   portals and doorways; hosting deleted sets `doorway.hosting_id` NULL;
-  datacenter deleted sets `tunnel.datacenter_id` NULL. `badge.secret_id` and
-  `tunnel.carrier_id` are NO ACTION and DEFERRABLE INITIALLY DEFERRED (the
-  migration adds the last words, drizzle cannot express them): checked at
-  commit, so an organization delete that removes both sides in one transaction
-  succeeds, while deleting a carrier that has tunnels, or a secret that has a
-  badge, fails at commit. RESTRICT and immediate NO ACTION were rejected because
-  Postgres checks them per cascaded statement and an organization delete
-  removes `secret` and `carrier` before `badge` and `tunnel`. The routes answer
-  409 `carrier_in_use` first. A `secret` row is never removed by the database:
+  datacenter deleted sets `tunnel.datacenter_id` NULL. `badge.secret_id`,
+  `tunnel.carrier_id` and `record.carrier_id` are plain NO ACTION keys, checked
+  at the end of each statement, so deleting a carrier that has tunnels or
+  records, or a secret that has a badge, fails. They are not deferrable
+  (`0000_init.sql` is drizzle's output with no hand-written line), so an
+  organization delete removes records, tunnels and badges before the carriers
+  and secrets in `deleteOrganization`
+  (`src/features/organizations/delete-organization.ts`), one transaction. The
+  routes answer 409 `carrier_in_use` first. A `secret` row is never removed by the database:
   removing a badge or carrier deletes its secrets in the same transaction
   (`deleteBadge`, `deleteCarrier`), removing a tunnel deletes its run-token
   secret (`deleteTunnelRecord`), and `tunnel.secret_id` is SET NULL.

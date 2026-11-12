@@ -1,16 +1,13 @@
 /**
- * Guard: `schema-descriptions.ts` describes exactly the shipped schema, and
- * every description has already been carried into a `COMMENT ON` migration.
+ * Guard: `schema-descriptions.ts` describes exactly the shipped schema.
  *
- * The descriptions file feeds the Postgres comments
- * (`scripts/schema-comments.mjs`). The generator cannot tell a forgotten
- * column from a deliberately silent one, so this suite holds the file to
- * the latest drizzle snapshot: every table has a group and a summary, every
- * non-obvious column has a sentence, nothing describes a table or column
- * that no longer exists, and the sentence obeys the length / character
- * rules the generated comments depend on. The last test runs the pending
- * delta and fails when a description has no migration yet — the loop in
- * src/db/AGENTS.md ("Schema descriptions") is how to clear it.
+ * The descriptions are the documentation of the database (the docs export is
+ * `scripts/schema-docs.mjs`); nothing writes them into the database. The check
+ * cannot tell a forgotten column from a deliberately silent one, so this suite
+ * holds the file to the latest drizzle snapshot: every table has a group and a
+ * summary, every non-obvious column has a sentence, nothing describes a table or
+ * column that no longer exists, and the sentence obeys the length and character
+ * rules the docs pages depend on.
  */
 
 import { assert, assertEquals } from '@std/assert'
@@ -115,7 +112,7 @@ test('nothing describes a table or column that is not in the shipped schema', as
   describeFailures(failures, 'descriptions with no matching table/column:')
 })
 
-test('descriptions are single sentences that survive SQL, GFM tables and MDX', () => {
+test('descriptions are single sentences that survive GFM tables and MDX', () => {
   const failures: string[] = []
   const check = (where: string, text: string) => {
     if (text !== text.trim()) {
@@ -146,16 +143,4 @@ test('descriptions are single sentences that survive SQL, GFM tables and MDX', (
     assert(group.blurb.trim().length > 0, `group ${name}: empty blurb`)
   }
   describeFailures(failures, 'descriptions breaking the writing rules:')
-})
-
-test('every description is already carried by a COMMENT ON migration', async () => {
-  const mod = await import('../../scripts/schema-comments.mjs')
-  const pending = mod.pendingStatements({ migrationsDir }) as string[]
-  assertEquals(
-    pending,
-    [],
-    'descriptions with no migration yet — `pnpm drizzle-kit generate --custom --name <summary>`, ' +
-      'paste `node scripts/schema-comments.mjs` output into it, then ' +
-      '`node scripts/check-migration-freeze.mjs --update`'
-  )
 })

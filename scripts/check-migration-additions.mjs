@@ -32,8 +32,11 @@ const NIL_SHA = '0000000000000000000000000000000000000000'
  * replaces every shipped migration (`0000` to `0035`) with one generated
  * baseline, `0000_init`, because every control plane database is wiped before
  * the release that carries it. It lets exactly one change through: the head
- * manifest must be generation 14, frozen, with a one-entry journal tagged
- * `0000_init`, on top of a base manifest at generation 13. Once the reset is
+ * manifest must be generation 14, frozen, and its first entry must be
+ * `0000_init` with the pinned sha256 below, on top of a base manifest at
+ * generation 13. Entries after the first are additions and are checked like any
+ * other, so a migration that lands on trunk before staging and live carry the
+ * reset does not break their promotion. Once the reset is
  * the base, the generation is 14 and the exception can never match again. The
  * promotion pull requests are still checked against a generation-13 base until
  * staging and live carry the reset, so the constant and its tests are deleted
@@ -44,18 +47,19 @@ export const RESET_EXCEPTION = Object.freeze({
   fromGeneration: 13,
   toGeneration: 14,
   tag: '0000_init',
+  sha256: '3596e6656d0ba7f4360474d113ecd3d33ae80a2b94a84f9700f400db9b44e393',
 })
 
 /** Whether the one-time reset exception covers this base manifest and head manifest and journal. */
 export function resetExceptionApplies(baseManifest, headManifest, headJournal) {
-  const entries = headJournal?.entries
+  const first = headManifest?.entries?.[0]
   return (
     baseManifest?.generation === RESET_EXCEPTION.fromGeneration &&
     headManifest?.generation === RESET_EXCEPTION.toGeneration &&
     headManifest?.frozen === true &&
-    Array.isArray(entries) &&
-    entries.length === 1 &&
-    entries[0]?.tag === RESET_EXCEPTION.tag
+    first?.tag === RESET_EXCEPTION.tag &&
+    first?.sha256 === RESET_EXCEPTION.sha256 &&
+    headJournal?.entries?.[0]?.tag === RESET_EXCEPTION.tag
   )
 }
 

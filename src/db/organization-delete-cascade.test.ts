@@ -1,16 +1,16 @@
 /**
- * Deleting an organization removes everything it owns in one statement. Two
- * `RESTRICT` keys (`network.datacenter_id`, `project.workspace_id`) and the three
- * deferred keys (`badge.secret_id`, `tunnel.carrier_id`, `record.carrier_id`)
- * sit inside that cascade, and the order Postgres runs the cascades in follows
- * the order the keys were created, so the delete is proved against a real
- * database after any change to the baseline. `copy.secret_id` is `RESTRICT` too
- * and is not covered: a copy that names a secret blocks the delete, as it did
- * before the reset.
+ * Deleting an organization removes everything it owns, in one transaction and
+ * in an order the database accepts (`deleteOrganization`). Plain NO ACTION and
+ * RESTRICT keys sit inside the cascade (`badge.secret_id`, `tunnel.carrier_id`,
+ * `record.carrier_id`, `copy.secret_id`, `network.datacenter_id`,
+ * `project.workspace_id`), and none of them is deferrable, so the proof runs
+ * against a real database after any change to the baseline. The same keys must
+ * keep refusing the delete of one secret or carrier that something still names.
  */
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { eq } from 'drizzle-orm'
+import { deleteOrganization } from '../features/organizations/delete-organization.ts'
 import { createDenoDb, endDbConnection, type Db } from './connection.ts'
 import {
   badge,
@@ -21,6 +21,8 @@ import {
   organization,
   project,
   secret,
+  storage,
+  storageCopy,
   tunnel,
   workspace,
 } from './schema.ts'
@@ -28,7 +30,7 @@ import { getDatabaseUrl } from './url.ts'
 
 const test = Deno.test.bind(Deno)
 
-test('an organization delete cascades through restrict and deferred keys', async () => {
+test('an organization delete removes rows on both sides of every plain key', async () => {
   if (!getDatabaseUrl()) {
     skipWithoutDatabase('organization delete cascade tests')
     return
@@ -92,7 +94,30 @@ test('an organization delete cascades through restrict and deferred keys', async
       content: '192.0.2.1',
     })
 
-    await db.delete(organization).where(eq(organization.id, organizationId))
+    const [copySecret] = await db
+      .insert(secret)
+      .values({ organizationId, name: 'copy', provider: 's3', secretEnvelope: 'x' })
+      .returning({ id: secret.id })
+    const [vol] = await db
+      .insert(storage)
+      .values({ organizationId, name: 'vol', kind: 'volume' })
+      .returning({ id: storage.id })
+    await db.insert(storageCopy).values({
+      storageId: vol!.id,
+      provider: 's3',
+      secretId: copySecret!.id,
+    })
+
+    // The same keys refuse a delete of one row that something still names.
+    await assertRejects(() => db.delete(secret).where(eq(secret.id, copySecret!.id)))
+    await assertRejects(() => db.delete(secret).where(eq(secret.id, badgeSecret!.id)))
+    await assertRejects(() => db.delete(carrier).where(eq(carrier.id, car!.id)))
+    assertEquals(
+      (await db.select().from(storageCopy).where(eq(storageCopy.storageId, vol!.id))).length,
+      1
+    )
+
+    await deleteOrganization(db, organizationId)
 
     for (const [name, rows] of [
       [
@@ -103,6 +128,7 @@ test('an organization delete cascades through restrict and deferred keys', async
         'project',
         await db.select().from(project).where(eq(project.organizationId, organizationId)),
       ],
+      ['copy', await db.select().from(storageCopy).where(eq(storageCopy.storageId, vol!.id))],
       ['secret', await db.select().from(secret).where(eq(secret.organizationId, organizationId))],
       [
         'carrier',
@@ -117,7 +143,7 @@ test('an organization delete cascades through restrict and deferred keys', async
       assertEquals(rows.length, 0, `${name} rows survived the organization delete`)
     }
   } finally {
-    await db.delete(organization).where(eq(organization.id, organizationId))
+    await deleteOrganization(db, organizationId)
     await endDbConnection(db)
   }
 })

@@ -8700,11 +8700,10 @@ export const badge = pgTable(
       foreignColumns: [secret.id],
       name: 'badge_secret_id_secret_id_fk',
     })
-      // NO ACTION and DEFERRABLE INITIALLY DEFERRED (the migration adds the last
-      // two words, drizzle cannot express them): checked at commit, so an
-      // organization delete that removes `secret` and `badge` in one transaction
-      // succeeds, while deleting a secret that still has a badge fails at commit.
-      // Removing a badge deletes its secret in code (`deleteBadge`).
+      // NO ACTION, checked at the end of the statement: deleting a secret that
+      // still has a badge fails. Removing a badge deletes its secret in code
+      // (`deleteBadge`), and an organization delete removes badges before
+      // secrets in `deleteOrganization` (`src/features/organizations/delete-organization.ts`).
       .onDelete('no action'),
     check('badge_label_check', sql`char_length(label) BETWEEN 1 AND 64`),
     check('badge_status_check', sql`status IN ('active', 'attention')`),
@@ -8785,10 +8784,10 @@ export const tunnel = pgTable(
       foreignColumns: [carrier.id],
       name: 'tunnel_carrier_id_carrier_id_fk',
     })
-      // NO ACTION and DEFERRABLE INITIALLY DEFERRED (added by the migration, see
-      // `badge_secret_id_secret_id_fk`): a carrier that still has tunnels fails at
-      // commit, an organization delete that removes both succeeds. The route
-      // answers 409 `carrier_in_use` first.
+      // NO ACTION, checked at the end of the statement: a carrier that still has
+      // tunnels cannot be deleted. The route answers 409 `carrier_in_use` first,
+      // and an organization delete removes tunnels before carriers in
+      // `deleteOrganization`.
       .onDelete('no action'),
     foreignKey({
       columns: [table.datacenterId],
@@ -9047,10 +9046,9 @@ export const dnsRecord = pgTable(
       foreignColumns: [carrier.id],
       name: 'record_carrier_id_carrier_id_fk',
     })
-      // NO ACTION and DEFERRABLE INITIALLY DEFERRED (added by the migration, as
-      // `tunnel_carrier_id_carrier_id_fk`): an organization delete that removes
-      // the carrier and its records in one transaction succeeds; deleting a
-      // carrier that still has records fails at commit.
+      // NO ACTION, checked at the end of the statement: a carrier that still has
+      // records cannot be deleted. An organization delete removes records before
+      // carriers in `deleteOrganization`.
       .onDelete('no action'),
     foreignKey({
       columns: [table.ingressId],

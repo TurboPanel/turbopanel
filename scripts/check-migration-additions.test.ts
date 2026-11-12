@@ -178,12 +178,25 @@ test('script: a base whose manifest is not frozen fails instead of skipping', ()
   assertStringIncludes(result.out, 'not frozen')
 })
 
-const RESET_HEAD = { generation: 14, frozen: true }
+const RESET_HEAD = {
+  generation: 14,
+  frozen: true,
+  entries: [{ idx: 0, tag: '0000_init', sha256: RESET_EXCEPTION.sha256 }],
+}
 const RESET_JOURNAL = { entries: [{ idx: 0, tag: '0000_init' }] }
 
-test('the reset exception passes exactly generation 13 to 14 with a one-entry journal', () => {
+test('the reset exception passes generation 13 to 14 with the pinned first entry', () => {
   assertEquals(RESET_EXCEPTION.name, 'reset-2026-11-12-owner-approved')
   assertEquals(resetExceptionApplies({ generation: 13 }, RESET_HEAD, RESET_JOURNAL), true)
+})
+
+test('a later migration beside the reset does not break the exception', () => {
+  const head = {
+    ...RESET_HEAD,
+    entries: [...RESET_HEAD.entries, { idx: 1, tag: '0001_extra', sha256: 'x' }],
+  }
+  const journal = { entries: [...RESET_JOURNAL.entries, { idx: 1, tag: '0001_extra' }] }
+  assertEquals(resetExceptionApplies({ generation: 13 }, head, journal), true)
 })
 
 test('the reset exception refuses every other shape', () => {
@@ -192,25 +205,29 @@ test('the reset exception refuses every other shape', () => {
   assertEquals(resetExceptionApplies({ generation: 12 }, RESET_HEAD, RESET_JOURNAL), false)
   // Head generation not bumped by exactly one, or not frozen.
   assertEquals(
-    resetExceptionApplies({ generation: 13 }, { generation: 13, frozen: true }, RESET_JOURNAL),
+    resetExceptionApplies({ generation: 13 }, { ...RESET_HEAD, generation: 13 }, RESET_JOURNAL),
     false
   )
   assertEquals(
-    resetExceptionApplies({ generation: 13 }, { generation: 14, frozen: false }, RESET_JOURNAL),
+    resetExceptionApplies({ generation: 13 }, { ...RESET_HEAD, frozen: false }, RESET_JOURNAL),
     false
   )
-  // More than one journal entry: a migration slipped in beside the baseline.
+  // A first entry with another hash: the baseline was edited after approval.
   assertEquals(
-    resetExceptionApplies({ generation: 13 }, RESET_HEAD, {
-      entries: [...RESET_JOURNAL.entries, { idx: 1, tag: '0001_extra' }],
-    }),
+    resetExceptionApplies(
+      { generation: 13 },
+      { ...RESET_HEAD, entries: [{ idx: 0, tag: '0000_init', sha256: 'f'.repeat(64) }] },
+      RESET_JOURNAL
+    ),
     false
   )
-  // A different tag.
+  // A different first tag.
   assertEquals(
-    resetExceptionApplies({ generation: 13 }, RESET_HEAD, {
-      entries: [{ idx: 0, tag: '0000_other' }],
-    }),
+    resetExceptionApplies(
+      { generation: 13 },
+      { ...RESET_HEAD, entries: [{ idx: 0, tag: '0000_other', sha256: RESET_EXCEPTION.sha256 }] },
+      { entries: [{ idx: 0, tag: '0000_other' }] }
+    ),
     false
   )
   assertEquals(resetExceptionApplies(undefined, RESET_HEAD, RESET_JOURNAL), false)
