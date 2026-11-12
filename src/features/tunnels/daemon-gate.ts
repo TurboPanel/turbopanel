@@ -80,3 +80,13 @@ export async function serversWithoutLockAdd(
     return daemonLockFollowsTable(features) && !daemonAddsLockFromTable(features)
   })
 }
+
+/** Servers of the list whose daemon adds a lock from the table (`tunnel-lock-add-v1`). */
+export async function serversWithLockAdd(db: Db, serverIds: readonly string[]): Promise<string[]> {
+  const states = await Promise.all(
+    serverIds.map((serverId) => getServerDaemonStateByServerId(db, serverId))
+  )
+  return serverIds.filter((_, index) =>
+    daemonAddsLockFromTable(states[index]?.projection?.features)
+  )
+}

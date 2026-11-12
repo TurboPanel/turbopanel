@@ -33,11 +33,16 @@ import {
 } from '../../features/tunnels/lifecycle.ts'
 import {
   serversWithDeployOnlyLock,
+  serversWithLockAdd,
   serversWithoutLockAdd,
   serversWithoutTunnelSupport,
 } from '../../features/tunnels/daemon-gate.ts'
-import { siteServersOfTunnel } from '../../features/tunnels/route-facts.ts'
-import { hostnameLockWarning, parsePlacementBody } from '../../features/tunnels/placement.ts'
+import { lockAddSkippedServers, siteServersOfTunnel } from '../../features/tunnels/route-facts.ts'
+import {
+  hostnameLockSkippedWarning,
+  hostnameLockWarning,
+  parsePlacementBody,
+} from '../../features/tunnels/placement.ts'
 import { rotationBlock, startRunTokenRotation } from '../../features/tunnels/run-token-rotation.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
 import {
@@ -127,6 +132,12 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   }
   const addWarning = hostnameLockWarning(noLockAdd.length)
   if (addWarning) warnings.push(addWarning)
+  const skipped = await serversWithLockAdd(
+    scope.db,
+    await lockAddSkippedServers(scope.db, scope.organizationId, row.id)
+  )
+  const skippedWarning = hostnameLockSkippedWarning(skipped.length)
+  if (skippedWarning) warnings.push(skippedWarning)
   // Why Rotate Run Token would be refused now, so the screen can say so before it is pressed.
   const blocked = await rotationBlock(scope.db, row)
   const runTokenRotationBlock = blocked

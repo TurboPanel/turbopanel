@@ -496,7 +496,17 @@ provider accounts.
   but cannot add a lock, the tunnel's `warnings` say how many servers that run
   its sites lock a newly added hostname only at the site's next deploy
   (`serversWithoutLockAdd`, `hostnameLockWarning`); until then the site block
-  is an ordinary public site, as it was before the name was added. The deploy-inputs
+  is an ordinary public site, as it was before the name was added. The daemon's lock add also
+  skips a site with an automatic certificate (no `tls` line) and one with
+  `forceHttps` off (no HTTPS block yet), and never locks a block with no
+  `reverse_proxy` (a `www` redirect) or adds a lock from a deploy, only from a
+  table apply. So a daemon that has the feature still leaves a local-only
+  hostname added to such a site open until its next deploy: the tunnel's
+  warnings count those servers too (`lockAddSkippedServers`,
+  `lockAddSkipsSite`, `hostnameLockSkippedWarning`). Nothing else on this side
+  depends on the daemon's deploy path: a deploy still sends the lock in
+  `hostings[].tunnel`, and a name removed from its tunnel simply leaves the next
+  table. The deploy-inputs
   digest already covers the `tunnel` field, so a deploy is never skipped as
   unchanged.
 - Limits: 50 tunnels and 2000 hostnames per organization, 200 hostnames per
