@@ -397,6 +397,15 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     return expired.record
   }
 
+  async redeliverSent(outbound: DaemonOutboundEnvelope): Promise<boolean> {
+    const result = await this.#rpc<{ redelivered: boolean }>('/rpc/redeliver-sent', {
+      serverId: this.#serverId,
+      body: { outbound },
+      idempotent: true,
+    })
+    return result.redelivered
+  }
+
   async dropDaemonConnection(reason: string): Promise<void> {
     await this.#rpc('/rpc/drop-connection', {
       serverId: this.#serverId,

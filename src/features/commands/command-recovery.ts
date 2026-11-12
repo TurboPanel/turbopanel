@@ -5,22 +5,26 @@
  *
  * - {@link noteReportedCommands}: a `commands.running` list on `hello` or
  *   `heartbeat` is a sign of life for those commands.
+ * - {@link redeliverLostCommands}: on `hello`, a command written to the previous
+ *   connection that the daemon never received is sent again.
  * - {@link settleReportedOutcome}: a final `command-outcome` is confirmed to
  *   the daemon (`command-outcome-ack`) only once it is stored. A deploy that
  *   was already given up on (`timed_out`) and whose server now reports that it
  *   succeeded is corrected to `succeeded`, never dropped.
  */
 import { and, eq, sql } from 'drizzle-orm'
-import type { PendingRequestRecord } from '../../contracts/cell.ts'
-import type {
-  CommandOutcomeAckMessage,
-  CommandRecoveryReport,
-  DaemonInboundEnvelope,
+import type { DaemonCell, PendingRequestRecord } from '../../contracts/cell.ts'
+import {
+  type CommandOutcomeAckMessage,
+  type CommandRecoveryReport,
+  type DaemonInboundEnvelope,
+  generateDeliveryId,
 } from '../../contracts/cell-protocol.ts'
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
 import { describeErrorCauses } from '../../lib/describe-error.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { COMMAND_RECOVERY_FEATURE } from '../../lib/version-wire.ts'
 import { markDeploymentApplied } from '../deploy/deployment-records.ts'
 import { readDeployContext } from '../deploy/rollout.ts'
 import { noteCommandAlive, parseStoredCommandProgress } from './command-progress.ts'
@@ -56,6 +60,148 @@ export async function noteReportedCommands(
   await Promise.all(
     report.running.map((commandId) => noteCommandAlive(db, { serverId, commandId }))
   )
+}
+
+/**
+ * The command types that are safe to run twice, the only ones sent again. A
+ * daemon that restarted since it received a frame cannot list it in its first
+ * hello (its journal is read after attach) and has forgotten its seen ids, so
+ * a resend could run the command a second time. Every type here is a
+ * reconcile (state converges to the same result) or a read-only probe. Deploy,
+ * destroy, delete, rollback, rotation, restore and failover stay on their
+ * current paths. Widening this needs a daemon feature that reports journal ids
+ * or a process start id in the hello.
+ */
+export const REDELIVERABLE_COMMAND_TYPES: ReadonlySet<string> = new Set([
+  'daemon.ping',
+  'server.fabric.reconcile',
+  'server.tls.trust.reconcile',
+  'server.principals.reconcile',
+  'server.firewall.reconcile',
+  'server.backups.reconcile',
+  'server.tunnel.status',
+  'managed.ingress.reconcile',
+  'system.reconcile',
+])
+
+/** Most requests {@link redeliverLostCommands} looks at in one hello. */
+const REDELIVER_REQUEST_LIMIT = 50
+
+/** The cell calls {@link redeliverLostCommands} needs. */
+export type RedeliveryCell = Pick<DaemonCell, 'getRequest' | 'listRequests' | 'redeliverSent'>
+
+/** The database reads {@link redeliverLostCommands} makes, replaceable in a test. */
+export type RedeliveryReads = {
+  getCommandRecord: typeof getCommandRecord
+  getCommandDispatchPayload: typeof getCommandDispatchPayload
+}
+
+const DEFAULT_REDELIVERY_READS: RedeliveryReads = { getCommandRecord, getCommandDispatchPayload }
+
+/**
+ * The ids of command requests the cell wrote to a socket that the daemon never
+ * acknowledged and does not report as running or holding a result. A frame
+ * written to a connection that was closing is marked delivered by the outbox
+ * but never reaches the daemon, so nothing else would send it again.
+ */
+export function lostCommandIds(
+  requests: readonly PendingRequestRecord[],
+  report: CommandRecoveryReport | undefined
+): string[] {
+  const carried = new Set([...(report?.running ?? []), ...(report?.unacked ?? [])])
+  return requests
+    .filter(
+      (request) =>
+        request.requestKind === 'command-dispatch' &&
+        request.status === 'sent' &&
+        !request.ackAt &&
+        !carried.has(request.requestId)
+    )
+    .map((request) => request.requestId)
+}
+
+/**
+ * Send again, over the new connection, every command the daemon cannot have
+ * received. Call it on `hello` only. A hello from a daemon without
+ * `command-recovery-v1` leaves its lists out even when it is running work, so
+ * nothing is sent for it.
+ *
+ * The command row stays `sent` and the consumer that is already waiting keeps
+ * waiting on the same request: the cell re-delivers a request enqueued again
+ * with a new delivery id and leaves its status alone, and the daemon drops a
+ * command id it has already seen. A request that is gone or already answered,
+ * or a command that is no longer `sent`, is never sent. The database is opened
+ * (through `withDb`) only when the cell holds such a request, so an ordinary
+ * hello costs one cell read. No timer. Best effort: a failure is logged.
+ * Returns the ids sent again.
+ */
+export async function redeliverLostCommands(
+  cell: RedeliveryCell,
+  withDb: (fn: (db: Db) => Promise<void>) => Promise<void>,
+  input: {
+    serverId: string
+    features: readonly string[] | undefined
+    report: CommandRecoveryReport | undefined
+  },
+  reads: RedeliveryReads = DEFAULT_REDELIVERY_READS
+): Promise<string[]> {
+  const resent: string[] = []
+  if (input.features?.includes(COMMAND_RECOVERY_FEATURE) !== true) return resent
+  try {
+    const requests = await cell.listRequests(REDELIVER_REQUEST_LIMIT, {
+      requestKind: 'command-dispatch',
+    })
+    const lost = lostCommandIds(requests, input.report)
+    if (lost.length === 0) return resent
+    await withDb(async (db) => {
+      const outcomes = await Promise.all(
+        lost.map((commandId) => redeliverOne(db, cell, reads, input.serverId, commandId))
+      )
+      lost.forEach((commandId, i) => {
+        if (outcomes[i]) resent.push(commandId)
+      })
+    })
+  } catch (err) {
+    compatLogWarn(
+      'command-recovery',
+      `could not send lost commands again to server ${input.serverId}: ${unconfirmedErrorText(err)}`
+    )
+  }
+  return resent
+}
+
+async function redeliverOne(
+  db: Db,
+  cell: RedeliveryCell,
+  reads: RedeliveryReads,
+  serverId: string,
+  commandId: string
+): Promise<boolean> {
+  try {
+    const row = await reads.getCommandRecord(db, commandId)
+    if (row?.serverId !== serverId || row.status !== 'sent' || row.ackedAt !== null) return false
+    if (!REDELIVERABLE_COMMAND_TYPES.has(row.type)) return false
+    const payload = await reads.getCommandDispatchPayload(db, commandId)
+    if (payload === null) return false
+    // The database reads are done; the cell checks the request again, in one
+    // step, and only replaces the delivery of a request still `sent` and unacked.
+    if (cell.redeliverSent === undefined) return false
+    return await cell.redeliverSent({
+      kind: 'command-dispatch',
+      requestId: commandId,
+      deliveryId: generateDeliveryId(),
+      at: nowIso(),
+      commandId,
+      commandType: row.type,
+      payload,
+    })
+  } catch (err) {
+    compatLogWarn(
+      'command-recovery',
+      `could not send command ${commandId} again: ${unconfirmedErrorText(err)}`
+    )
+    return false
+  }
 }
 
 /**

@@ -239,6 +239,14 @@ export interface DaemonCell {
    * ack deadline; backends without it keep the plain wait.
    */
   expireRequest?(requestId: string): Promise<PendingRequestRecord>
+  /**
+   * Optional — deliver an existing request again under a new delivery id, only
+   * while it is still `sent` with no `ackAt`. Never creates a request: a missing,
+   * expired, answered or acknowledged one returns false and nothing is queued.
+   * The request's status and waiter are untouched. Used by command recovery on a
+   * daemon's `hello` for a frame lost with a closing connection.
+   */
+  redeliverSent?(outbound: DaemonOutboundEnvelope): Promise<boolean>
 }
 
 export interface DaemonCellRegistry {

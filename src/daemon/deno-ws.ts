@@ -56,6 +56,7 @@ import { recordCommandProgress } from '../features/commands/command-progress.ts'
 import {
   ackForReportedOutcome,
   noteReportedCommands,
+  redeliverLostCommands,
 } from '../features/commands/command-recovery.ts'
 import { getDb } from '../db/connection.ts'
 import type { Db } from '../db/connection.ts'
@@ -514,6 +515,13 @@ async function handleDaemonPresenceInbound(params: {
   }
 
   await noteReportedCommands(db, serverId, message.commands)
+  if (message.type === 'hello') {
+    await redeliverLostCommands(cell, (fn) => fn(db), {
+      serverId,
+      features: message.features,
+      report: message.commands,
+    })
+  }
   await cell.recordInbound({
     connectionId,
     at: message.at,
