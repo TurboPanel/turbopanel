@@ -233,6 +233,13 @@ class RecordingRedis {
     return this.xautoclaimResult
   }
 
+  xclaimResult: unknown = [['2-0', ['k', 'v']]]
+
+  async xclaim(...args: unknown[]): Promise<unknown> {
+    this.#record('xclaim', args)
+    return this.xclaimResult
+  }
+
   async xrange(...args: unknown[]): Promise<unknown> {
     this.#record('xrange', args)
     return this.xrangeResult
@@ -509,6 +516,12 @@ test('RedisCellClient stream helpers cover maxlen, block, and empty id lists', a
     [{ id: '2-0', fields: { k: 'v' } }],
   )
   assertEquals(maintRedis.calls.at(-1)?.method, 'xautoclaim')
+
+  assertEquals(await client.xclaim('stream', 'g', 'c', 0), [])
+  assertEquals(await client.xclaim('stream', 'g', 'c', 0, '2-0'), [
+    { id: '2-0', fields: { k: 'v' } },
+  ])
+  assertEquals(maintRedis.calls.at(-1)?.method, 'xclaim')
 
   assertEquals(
     await client.xrange('stream', '-', '+'),
