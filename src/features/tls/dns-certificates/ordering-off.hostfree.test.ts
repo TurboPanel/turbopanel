@@ -1,11 +1,9 @@
 /**
  * The control plane no longer orders DNS-validated certificates, on either
- * edition. Read from the import graph, with no database and no network: the
- * modules that open, carry on or renew an order (and make the account) are not
- * reachable from the Workers entry or the Deno entry, so no request and no
- * sweep tick can place an order. The sweep's leftover-record cleanup is
- * reachable from both, and nothing it imports talks to the certificate
- * authority.
+ * edition, and the code that did is gone. Read from the import graph and the
+ * file system, with no database and no network: no ordering module exists
+ * any more, and the sweep's leftover-record cleanup, which both editions run,
+ * imports nothing that talks to the certificate authority.
  */
 import { assert, assertEquals } from '@std/assert'
 import { dirname, fromFileUrl, join, normalize, relative } from '@std/path'
@@ -16,10 +14,16 @@ const test = Deno.test.bind(Deno)
 const SRC = normalize(join(dirname(fromFileUrl(import.meta.url)), '../../..'))
 const FEATURE = 'features/tls/dns-certificates'
 
-/** The modules that talk to the certificate authority to order or renew. */
-const ORDERING = ['issuance.ts', 'steps.ts', 'account.ts', 'sweep.ts', 'sweep-select.ts'].map(
-  (file) => `${FEATURE}/${file}`
-)
+/** The modules that used to talk to the certificate authority to order or renew. */
+const REMOVED = [
+  'issuance.ts',
+  'steps.ts',
+  'account.ts',
+  'sweep.ts',
+  'sweep-select.ts',
+  'timing.ts',
+  'messages.ts',
+].map((file) => `${FEATURE}/${file}`)
 
 /** Relative imports that run code: `import type` and `export type` are left out. */
 const IMPORT =
@@ -76,24 +80,36 @@ test('the import reader keeps code imports and leaves type-only ones out', () =>
 })
 
 for (const entry of ['workers.ts', 'deno.ts']) {
-  test(`${entry}: no ordering or renewal code of DNS-validated certificates is reachable`, () => {
+  test(`${entry}: the routes and the cleanup are wired, and no ordering module is reachable`, () => {
     const graph = reachable(entry)
     // Positive controls: the sweep and the routes are wired, so an empty graph cannot pass.
     assert(graph.has('client/organizations/dns-certificate-routes.ts'), entry)
     assert(graph.has(`${FEATURE}/cleanup.ts`), entry)
     assertEquals(
-      ORDERING.filter((file) => graph.has(file)),
+      REMOVED.filter((file) => graph.has(file)),
       [],
       entry
     )
   })
 }
 
+test('the removed ordering modules stay removed', () => {
+  const present = REMOVED.filter((file) => {
+    try {
+      Deno.statSync(join(SRC, file))
+      return true
+    } catch {
+      return false
+    }
+  })
+  assertEquals(present, [])
+})
+
 test('the leftover-record cleanup never reaches the certificate authority client', () => {
   const graph = reachable(`${FEATURE}/cleanup.ts`)
   assert(graph.has(`${FEATURE}/records.ts`))
   assertEquals(
-    [...graph].filter((file) => file.startsWith('lib/acme/') || ORDERING.includes(file)),
+    [...graph].filter((file) => file.startsWith('lib/acme/')),
     []
   )
 })

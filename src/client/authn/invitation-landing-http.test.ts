@@ -58,7 +58,7 @@ type Fixture = {
   inviterId: string
   invite: (
     email: string,
-    opts?: { status?: string; expiresAt?: string; legacy?: boolean }
+    opts?: { status?: string; expiresAt?: string }
   ) => Promise<{ id: string; token: string }>
   track: (userId: string) => void
   jobs: EmailJob[]
@@ -126,8 +126,7 @@ async function withFixture(
         email,
         status: opts.status ?? 'pending',
         expiresAt: opts.expiresAt ?? new Date(Date.now() + 86_400_000).toISOString(),
-        // Invitations created before the link secret existed have no verifier.
-        tokenHash: opts.legacy ? null : minted.tokenHash,
+        tokenHash: minted.tokenHash,
       })
       .returning({ id: invitation.id })
     invitations.push(row!.id)
@@ -318,21 +317,6 @@ test('the invitation id is not a credential: no email by id, and no sign-up by i
     )
     const created = await fx.db.select({ id: user.id }).from(user).where(eq(user.email, email))
     assertEquals(created.length, 0, 'no account was created for the invitee')
-  })
-})
-
-test('invitations from before the link secret: public preview only, sign-up impossible', async () => {
-  await withFixture(async (fx) => {
-    const email = `legacy-${crypto.randomUUID()}@example.com`
-    const { id } = await fx.invite(email, { legacy: true })
-    const body = await (await request(fx.app, 'GET', `/auth/invitations/${id}`)).json()
-    assertEquals(body.status, 'pending')
-    assertEquals(body.email, undefined)
-    const [row] = await fx.db
-      .select({ tokenHash: invitation.tokenHash })
-      .from(invitation)
-      .where(eq(invitation.id, id))
-    assertEquals(row!.tokenHash, null)
   })
 })
 

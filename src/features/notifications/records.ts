@@ -51,11 +51,13 @@ import {
   type QuietHours,
   usableTimeZone,
 } from './windows.ts'
+import { ensureNotificationCatalog } from './fanout-records.ts'
 import {
-  NOTIFICATION_RULE_ANY_EVENT,
   type NotificationContext,
   type NotificationEvent,
   type NotificationSeverity,
+  ruleEventOf,
+  ruleTopicOf,
   severityAtLeast,
 } from './events.ts'
 import type { NotificationAttemptReason } from './vocabulary.ts'
@@ -453,24 +455,31 @@ export async function listRulesForChannel(
   return rows.map((r) => ({
     id: r.id,
     channelId: r.channelId,
-    event: r.event,
+    event: ruleEventOf(r.topicCode),
     minSeverity: r.minSeverity as NotificationSeverity,
   }))
 }
 
-/** Replace a channel's rules wholesale — the preferences screen saves the matrix, not a diff. */
+/**
+ * Replace a channel's rules wholesale — the preferences screen saves the matrix, not a diff.
+ * A rule names one topic, or none for every event (`*`); the topic has a foreign
+ * key to the catalog, so the catalog is made sure of before the rows are written.
+ */
 export async function replaceRulesForChannel(
   db: Db,
   channelId: string,
   rules: ReadonlyArray<{ event: string; minSeverity: NotificationSeverity }>
 ): Promise<void> {
+  if (rules.length > 0) await ensureNotificationCatalog(db)
   await db.transaction(async (tx) => {
     await tx.delete(notificationRule).where(eq(notificationRule.channelId, channelId))
     if (rules.length > 0) {
       await tx.insert(notificationRule).values(
         rules.map((r) => ({
           channelId,
+          // `event` is still NOT NULL and keyed with the channel; the reset removes this line.
           event: r.event,
+          topicCode: ruleTopicOf(r.event),
           minSeverity: r.minSeverity,
         }))
       )
@@ -483,9 +492,8 @@ export async function replaceRulesForChannel(
  * organization's own channels, plus control plane channels for install
  * events (and for an organization's events only when switched to all
  * organizations or named by the rule). Personal channels are not routed by rules any more; preferences
- * decide them (`emit.ts`). A rule names `*`, one code (the older `event`
- * column or `topic_code`), or one category; a disabled or muted route sends
- * nothing.
+ * decide them (`emit.ts`). A rule names no topic and no category (every event),
+ * one topic, or one category; a disabled or muted route sends nothing.
  */
 export async function channelsForEvent(
   db: Db,
@@ -506,8 +514,7 @@ export async function channelsForEvent(
         eq(notificationRule.isEnabled, true),
         or(isNull(notificationRule.endsAt), sql`${notificationRule.endsAt} <= now()`),
         or(
-          eq(notificationRule.event, NOTIFICATION_RULE_ANY_EVENT),
-          eq(notificationRule.event, event),
+          and(isNull(notificationRule.topicCode), isNull(notificationRule.categoryCode)),
           eq(notificationRule.topicCode, event),
           categoryCode ? eq(notificationRule.categoryCode, categoryCode) : undefined
         )
@@ -617,7 +624,7 @@ export type NotificationInsert = {
   targetType?: string | null
   targetId?: string | null
   context?: NotificationContext | null
-  eventId?: string | null
+  eventId: string
   projectId?: string | null
   environmentId?: string | null
   serviceId?: string | null
@@ -634,8 +641,7 @@ export async function insertNotifications(db: Db, rows: NotificationInsert[]): P
       rows.map((r) => ({
         userId: r.userId,
         organizationId: r.organizationId,
-        // The older `event` column keeps being written beside `topic_code`
-        // until the reset drops it.
+        // `event` is still NOT NULL; the reset removes this line.
         event: r.event,
         topicCode: r.event,
         severity: r.severity,
@@ -644,7 +650,7 @@ export async function insertNotifications(db: Db, rows: NotificationInsert[]): P
         targetType: r.targetType ?? null,
         targetId: r.targetId ?? null,
         context: r.context ?? null,
-        eventId: r.eventId ?? null,
+        eventId: r.eventId,
         projectId: r.projectId ?? null,
         environmentId: r.environmentId ?? null,
         serviceId: r.serviceId ?? null,
@@ -737,7 +743,8 @@ export async function listNotificationsForUser(
     id: r.id,
     createdAt: r.createdAt,
     organizationId: r.organizationId,
-    event: r.topicCode ?? r.event,
+    // Every writer sets the topic; the reset makes the column NOT NULL.
+    event: r.topicCode as string,
     severity: r.severity as NotificationSeverity,
     title: r.title,
     body: r.body,
@@ -878,8 +885,8 @@ export type DeliveryPayload = {
   context: NotificationContext
   /** ISO time the event happened. */
   at: string
-  /** The `event` row; absent on rows written before it existed. */
-  eventId?: string | null
+  /** The `event` row this delivery is a copy of. */
+  eventId: string
   /** The catalogue category, for unsubscribe links and filtering headers. */
   categoryCode?: string | null
   projectId?: string | null
@@ -900,7 +907,7 @@ export type NotificationDeliveryRecord = {
   attempts: number
   /** The person a personal copy is for; null for a shared channel. */
   userId: string | null
-  eventId: string | null
+  eventId: string
 }
 
 /**
@@ -926,9 +933,10 @@ function ledgerRow(copy: LedgerCopy, payload: DeliveryPayload) {
   const base = {
     channelId: copy.channelId,
     userId: copy.userId ?? null,
-    eventId: payload.eventId ?? null,
+    eventId: payload.eventId,
     topicCode: payload.event,
     organizationId: payload.organizationId,
+    // `event` is still NOT NULL; the reset removes this line.
     event: payload.event,
     severity: payload.severity,
     payload,
@@ -977,35 +985,19 @@ export async function insertDeliveries(
   return rows.map(asDelivery)
 }
 
-/** Shared-channel copies by id, with `held` for the ids in `heldChannelIds`. */
-export async function insertPendingDeliveries(
-  db: Db,
-  channelIds: readonly string[],
-  payload: DeliveryPayload,
-  heldChannelIds: ReadonlySet<string> = new Set()
-): Promise<NotificationDeliveryRecord[]> {
-  return await insertDeliveries(
-    db,
-    channelIds.map((channelId) => ({
-      channelId,
-      status: heldChannelIds.has(channelId) ? 'held' : 'pending',
-    })),
-    payload
-  )
-}
-
 function asDelivery(row: typeof notificationDelivery.$inferSelect): NotificationDeliveryRecord {
   return {
     id: row.id,
     channelId: row.channelId,
     organizationId: row.organizationId,
-    event: row.event as NotificationEvent,
+    event: row.topicCode as NotificationEvent,
     severity: row.severity as NotificationSeverity,
     payload: row.payload as DeliveryPayload,
     status: row.status as NotificationDeliveryStatus,
     attempts: row.attempts,
     userId: row.userId,
-    eventId: row.eventId,
+    // Every writer sets the event; the reset makes the column NOT NULL.
+    eventId: row.eventId as string,
   }
 }
 

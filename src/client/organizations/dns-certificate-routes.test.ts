@@ -13,7 +13,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { audit, carrier, grant, organization, tls, user } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { startDnsCertificate } from '../../features/tls/dns-certificates/issuance.ts'
+import { withDnsCertState } from '../../features/tls/dns-certificates/order-state.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
@@ -21,7 +21,6 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { toPublicTlsRow } from '../tls/routes-helpers.ts'
-import { buildDnsCertContext } from '../tls/dns-certificate-context.ts'
 import {
   ORDERING_OFF_ERROR,
   ORDERING_OFF_MESSAGE,
@@ -105,14 +104,50 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
         externalAccountId: ACCOUNT,
       })
       .returning({ id: carrier.id })
-    const started = await startDnsCertificate(buildDnsCertContext(db, { secrets }), {
-      organizationId: orgA,
-      carrierId: c!.id,
-      names: ['a.example.com'],
-      zones: [{ id: 'z1', name: 'example.com' }],
-      staging: true,
-    })
-    assertEquals(started.kind, 'created')
+    const [made] = await db
+      .insert(tls)
+      .values({
+        organizationId: orgA,
+        name: 'Test Certificate DNS a.example.com',
+        source: 'upload',
+        certificatePem: null,
+        privateKeyPem: 'sealed-test-value',
+        status: 'pending',
+        notAfter: new Date(0).toISOString(),
+        fingerprintSha256: null,
+        metadata: withDnsCertState(
+          {
+            dnsNames: ['a.example.com'],
+            hasWildcard: false,
+            notBefore: new Date(0).toISOString(),
+            subject: '',
+            issuer: '',
+            acme: {
+              challengeType: 'dns-01',
+              managedBy: 'panel',
+              createdFor: 'library',
+              stage: 'queued',
+              staging: true,
+              attempts: 0,
+            },
+          },
+          {
+            carrierId: c!.id,
+            zones: [{ id: 'z1', name: 'example.com' }],
+            staging: true,
+            attempts: 0,
+            nextAttemptAt: null,
+            claimUntil: null,
+            order: null,
+            records: [],
+            renewAt: null,
+            ariCheckedAt: null,
+            ariNextCheckAt: null,
+          }
+        ),
+        options: { autoRenew: true, requestedHostnames: ['a.example.com'] },
+      })
+      .returning({ id: tls.id })
     const ids = {
       manager: await insertUser(db, orgA, 'organization:manage'),
       member: await insertUser(db, orgA, 'organization:read'),
@@ -132,7 +167,7 @@ async function withFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
       managerCookie: await cookie(ids.manager),
       memberCookie: await cookie(ids.member),
       otherManagerCookie: await cookie(ids.otherManager),
-      certificateId: (started as { id: string }).id,
+      certificateId: made!.id,
     })
   } finally {
     await db.delete(tls).where(inArray(tls.organizationId, [orgA, orgB]))

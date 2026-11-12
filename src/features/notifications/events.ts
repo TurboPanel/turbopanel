@@ -601,6 +601,16 @@ export const NOTIFICATION_RULE_EVENTS = [
   ...NOTIFICATION_EVENTS,
 ] as const
 
+/** The topic a rule stores for a rule `event`: none for `*`, which stores neither topic nor category. */
+export function ruleTopicOf(event: string): string | null {
+  return event === NOTIFICATION_RULE_ANY_EVENT ? null : event
+}
+
+/** The rule `event` the API shows for a stored topic: `*` when the rule names no topic. */
+export function ruleEventOf(topicCode: string | null): string {
+  return topicCode ?? NOTIFICATION_RULE_ANY_EVENT
+}
+
 export function isNotificationEvent(value: string): value is NotificationEvent {
   return Object.hasOwn(NOTIFICATION_EVENT_DEFINITIONS, value)
 }

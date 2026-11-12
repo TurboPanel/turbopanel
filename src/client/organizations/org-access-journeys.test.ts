@@ -34,6 +34,7 @@ import { createAuthRateLimiter } from '../authn/auth-rate-limit.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createOrganizationForUser } from '../authn/install-state.ts'
 import { createSession } from '../authn/session-store.ts'
+import { mintInvitationToken } from '../access/invitation-token.ts'
 import { can } from '../authz/index.ts'
 import { registerBillingRoutes } from '../billing/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -374,6 +375,7 @@ test('the deploy time limit is stored in its own column: default 30, set, read b
 test('an expired invitation is refused with a plain 410 and adds nobody to the team', async () => {
   await withFixture(async (fx) => {
     const invitee = await fx.addPerson('outsider')
+    const { tokenHash } = await mintInvitationToken()
     const [row] = await fx.db
       .insert(invitation)
       .values({
@@ -382,6 +384,7 @@ test('an expired invitation is refused with a plain 410 and adds nobody to the t
         email: invitee.email,
         status: 'pending',
         expiresAt: new Date(Date.now() - 60_000).toISOString(),
+        tokenHash,
       })
       .returning({ id: invitation.id })
 
@@ -651,6 +654,7 @@ test('removal is scoped to one organization: another organization keeps the pers
 test('a removed person can be invited again and accept', async () => {
   await withFixture(async (fx) => {
     const member = await fx.addPerson('manager')
+    const { tokenHash } = await mintInvitationToken()
     const [oldInvite] = await fx.db
       .insert(invitation)
       .values({
@@ -659,6 +663,7 @@ test('a removed person can be invited again and accept', async () => {
         email: member.email,
         status: 'accepted',
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        tokenHash,
       })
       .returning({ id: invitation.id })
     assertEquals(

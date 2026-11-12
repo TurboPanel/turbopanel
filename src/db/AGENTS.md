@@ -100,8 +100,9 @@ project and environment columns use composite keys onto the new
 project is provably in its organization), `policy`, `device`, `suppression` and
 `watermark`, and nullable columns on the four older tables. It dropped the
 three `*_event_check` CHECKs: the `topic_code` foreign keys replace them, and
-`notification.event`, `attempt.event` and `rule.event` are written beside
-`topic_code` until the planned reset removes them. The new fixed-value columns
+`notification.event`, `attempt.event` and `rule.event` are still written (they
+are NOT NULL) but nothing reads them: the readers use `topic_code`, and routing
+uses the rule's scope and topic columns. The planned reset removes them. The new fixed-value columns
 carry CHECKs pinned by `enum-checks.test.ts` to `notifications/vocabulary.ts`.
 
 **The `folder` table** (`0035_folder_table_and_slugs`) holds one row per service

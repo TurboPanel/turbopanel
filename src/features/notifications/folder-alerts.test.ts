@@ -380,7 +380,7 @@ test('a manager really receives the bell row with the plain sentence', async () 
       .where(
         and(
           eq(notification.organizationId, world.organizationId),
-          eq(notification.event, 'folder.orphans_found')
+          eq(notification.topicCode, 'folder.orphans_found')
         )
       )
     assertEquals(rows.length, 1)
