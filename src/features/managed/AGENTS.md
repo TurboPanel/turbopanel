@@ -1571,8 +1571,13 @@ server list and pass file.
   composes `{$DB_HOST}:{$DB_PORT}` in an environment value (config file content may).
 - pgAdmin reads its server list, pass file and web account only on first run;
   `ADMIN_TOOL_REVISION` (bumped by Reset Password and Update Tool) recreates the
-  container. Never put a secret in it. pgAdmin keeps no volume. It must see only
-  `PGADMIN_DEFAULT_PASSWORD_FILE`, never both password names.
+  container. Never put a secret in it. pgAdmin keeps no volume: its image declares
+  an anonymous one at `/var/lib/pgadmin` that would survive a redeploy, so the
+  template mounts a size-capped `tmpfs` there (the phpMyAdmin and Adminer images
+  declare no volume). In server mode pgAdmin resolves file names in a server entry under the user's storage
+  folder, so a start script copies the CA to `<storage>/ca.crt` and
+  `sslrootcert` is `/ca.crt`. It must see only `PGADMIN_DEFAULT_PASSWORD_FILE`,
+  never both password names.
 - Bumping a pin is a one-line change in `templates.ts` plus a canary check;
   "Update Available" shows when a project's stored image differs from the pin.
 - Routes: `GET/POST /managed/admin-tools`, `POST .../:projectId/password`,

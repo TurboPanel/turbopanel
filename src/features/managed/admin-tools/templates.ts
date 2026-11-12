@@ -163,12 +163,45 @@ function adminerData(input: AdminToolComposeInput): ComposeData {
   }
 }
 
+/**
+ * In server mode pgAdmin resolves every file name in a server entry under the
+ * signed-in user's storage folder, so an absolute path such as
+ * `/run/secrets/DB_CA_CERT` is looked up as `<storage>/run/secrets/DB_CA_CERT`.
+ * The start script copies the CA to this name inside that folder.
+ */
+const PGADMIN_CA_STORAGE_PATH = '/ca.crt'
+
+/** pgAdmin's data folder, kept in memory so nothing survives a recreate. */
+const PGADMIN_DATA_DIR = '/var/lib/pgadmin'
+
+/**
+ * A memory-backed mount. It is written as a long-form `volumes` entry so Compose
+ * treats it as the mount for that path and does not carry over an anonymous
+ * volume the image declares there from the previous container. The size is a cap
+ * in bytes.
+ */
+function memoryMount(target: string, sizeMiB: number): ComposeData {
+  return { type: 'tmpfs', target, tmpfs: { size: sizeMiB * 1024 * 1024 } }
+}
+
+/**
+ * Starts pgAdmin after copying the CA into the sign-in user's storage folder
+ * (the folder name is the email with `@` replaced by `_`, as pgAdmin builds it).
+ * The image's own entrypoint then runs as usual.
+ */
+const PGADMIN_START_SCRIPT = [
+  `dir="${PGADMIN_DATA_DIR}/storage/$(printf '%s' "$PGADMIN_DEFAULT_EMAIL" | tr '@' '_')"`,
+  'mkdir -p "$dir"',
+  `cp /run/secrets/DB_CA_CERT "$dir${PGADMIN_CA_STORAGE_PATH}"`,
+  'exec /entrypoint.sh',
+].join(' && ')
+
 const PGADMIN_SERVERS_JSON = [
   '{"Servers": {"1": {"Name": "Database Cluster", "Group": "Servers",',
   ' "Host": "{$DB_HOST}", "Port": {$DB_PORT}, "MaintenanceDB": "{$DB_NAME}",',
   ' "Username": "{$DB_USER}", "SSLMode": "verify-full",',
   ' "ConnectionParameters": {"sslmode": "verify-full",',
-  '  "sslrootcert": "/run/secrets/DB_CA_CERT", "passfile": "/.pgpass"}}}}',
+  `  "sslrootcert": "${PGADMIN_CA_STORAGE_PATH}", "passfile": "/.pgpass"}}}}`,
   '',
 ].join('\n')
 
@@ -193,6 +226,8 @@ function pgadminData(input: AdminToolComposeInput): ComposeData {
           PGPASS_FILE: '/pgadmin4/pgpass',
           ADMIN_TOOL_REVISION: String(input.revision),
         },
+        entrypoint: ['/bin/sh', '-c', escapeLiteralComposeValue(PGADMIN_START_SCRIPT)],
+        volumes: [memoryMount(PGADMIN_DATA_DIR, 256)],
         configs: [
           { source: 'pgadmin_servers', target: '/pgadmin4/servers.json' },
           { source: 'pgadmin_pgpass', target: '/pgadmin4/pgpass' },
