@@ -26,10 +26,7 @@ import {
 const test = Deno.test.bind(Deno)
 
 test('resolveSocketPath prefers explicit opts then env then default', () => {
-  assertEquals(
-    resolveSocketPath({ socketPath: '/tmp/custom.sock' }),
-    '/tmp/custom.sock',
-  )
+  assertEquals(resolveSocketPath({ socketPath: '/tmp/custom.sock' }), '/tmp/custom.sock')
   const previous = Deno.env.get('TURBOPANEL_REDIS_SOCKET')
   try {
     Deno.env.set('TURBOPANEL_REDIS_SOCKET', '/tmp/env.sock')
@@ -63,13 +60,10 @@ test('parseStreamMessage requires an id + fields array', () => {
 
 test('parseMessageList skips malformed entries', () => {
   assertEquals(parseMessageList(null), [])
-  assertEquals(
-    parseMessageList([['1-0', ['a', 'b']], 'bad', ['2-0', ['c', 'd']]]),
-    [
-      { id: '1-0', fields: { a: 'b' } },
-      { id: '2-0', fields: { c: 'd' } },
-    ],
-  )
+  assertEquals(parseMessageList([['1-0', ['a', 'b']], 'bad', ['2-0', ['c', 'd']]]), [
+    { id: '1-0', fields: { a: 'b' } },
+    { id: '2-0', fields: { c: 'd' } },
+  ])
 })
 
 test('parseStreamEntries walks XREADGROUP stream blocks', () => {
@@ -82,17 +76,16 @@ test('parseStreamEntries walks XREADGROUP stream blocks', () => {
       'not-a-block',
       ['other', 'not-messages'],
     ]),
-    [{ id: '1-0', fields: { payload: '{}' } }],
+    [{ id: '1-0', fields: { payload: '{}' } }]
   )
 })
 
 test('parseAutoClaimEntries reads the claimed-message list', () => {
   assertEquals(parseAutoClaimEntries(null), [])
   assertEquals(parseAutoClaimEntries(['0-0']), [])
-  assertEquals(
-    parseAutoClaimEntries(['0-0', [['9-0', ['f', '1']]]]),
-    [{ id: '9-0', fields: { f: '1' } }],
-  )
+  assertEquals(parseAutoClaimEntries(['0-0', [['9-0', ['f', '1']]]]), [
+    { id: '9-0', fields: { f: '1' } },
+  ])
 })
 
 type RecordedCall = { method: string; args: unknown[] }
@@ -361,7 +354,10 @@ test('RedisCellClient hash/string helpers cover empty and PX/NX branches', async
   const redis = cmd(instances)
 
   await client.hset('h', {})
-  assertEquals(redis.calls.some((c) => c.method === 'hset'), false)
+  assertEquals(
+    redis.calls.some((c) => c.method === 'hset'),
+    false
+  )
   await client.hset('h', { a: '1' })
   assertEquals(redis.calls.at(-1), { method: 'hset', args: ['h', { a: '1' }] })
 
@@ -463,58 +459,31 @@ test('RedisCellClient stream helpers cover maxlen, block, and empty id lists', a
 
   assertEquals(await client.xadd('stream', '*', { a: '1' }), '1-0')
   assertEquals(redis.calls.at(-1)?.method, 'xadd')
-  assertEquals(
-    redis.calls.at(-1)?.args,
-    ['stream', '*', 'a', '1'],
-  )
+  assertEquals(redis.calls.at(-1)?.args, ['stream', '*', 'a', '1'])
 
-  assertEquals(
-    await client.xadd('stream', '*', { a: '1' }, 100),
-    '1-0',
-  )
-  assertEquals(
-    redis.calls.at(-1)?.args,
-    ['stream', 'MAXLEN', '~', 100, '*', 'a', '1'],
-  )
+  assertEquals(await client.xadd('stream', '*', { a: '1' }, 100), '1-0')
+  assertEquals(redis.calls.at(-1)?.args, ['stream', 'MAXLEN', '~', 100, '*', 'a', '1'])
   redis.xaddResult = null
   assertEquals(await client.xadd('stream', '*', { a: '1' }), '')
 
-  blockRedis.callResult = [
-    ['stream', [['5-0', ['f', '1']]]],
-  ]
-  assertEquals(
-    await client.xreadgroup('g', 'c', 'stream', 10),
-    [{ id: '5-0', fields: { f: '1' } }],
-  )
+  blockRedis.callResult = [['stream', [['5-0', ['f', '1']]]]]
+  assertEquals(await client.xreadgroup('g', 'c', 'stream', 10), [{ id: '5-0', fields: { f: '1' } }])
   assertEquals(blockRedis.calls.at(-1)?.args[0], 'XREADGROUP')
-  assertEquals(
-    (blockRedis.calls.at(-1)?.args as string[]).includes('BLOCK'),
-    false,
-  )
+  assertEquals((blockRedis.calls.at(-1)?.args as string[]).includes('BLOCK'), false)
 
   blockRedis.callResult = null
-  assertEquals(
-    await client.xreadgroup('g', 'c', 'stream', 10, 25, '0'),
-    [],
-  )
-  assertEquals(
-    (blockRedis.calls.at(-1)?.args as string[]).includes('BLOCK'),
-    true,
-  )
-  assertEquals(
-    await client.xreadgroup('g', 'c', 'stream', 10, 0),
-    [],
-  )
+  assertEquals(await client.xreadgroup('g', 'c', 'stream', 10, 25, '0'), [])
+  assertEquals((blockRedis.calls.at(-1)?.args as string[]).includes('BLOCK'), true)
+  assertEquals(await client.xreadgroup('g', 'c', 'stream', 10, 0), [])
 
   assertEquals(await client.xack('stream', 'g'), 0)
   assertEquals(await client.xack('stream', 'g', '1-0'), 1)
   assertEquals(await client.xdel('stream'), 0)
   assertEquals(await client.xdel('stream', '1-0'), 1)
 
-  assertEquals(
-    await client.xautoclaim('stream', 'g', 'c', 1000, '0-0', 5),
-    [{ id: '2-0', fields: { k: 'v' } }],
-  )
+  assertEquals(await client.xautoclaim('stream', 'g', 'c', 1000, '0-0', 5), [
+    { id: '2-0', fields: { k: 'v' } },
+  ])
   assertEquals(maintRedis.calls.at(-1)?.method, 'xautoclaim')
 
   assertEquals(await client.xclaim('stream', 'g', 'c', 0), [])
@@ -523,27 +492,18 @@ test('RedisCellClient stream helpers cover maxlen, block, and empty id lists', a
   ])
   assertEquals(maintRedis.calls.at(-1)?.method, 'xclaim')
 
-  assertEquals(
-    await client.xrange('stream', '-', '+'),
-    [{ id: '3-0', fields: { x: '1' } }],
-  )
-  assertEquals(
-    await client.xrange('stream', '-', '+', 7),
-    [{ id: '3-0', fields: { x: '1' } }],
-  )
-  assertEquals(
-    redis.calls.filter((c) => c.method === 'xrange').at(-1)?.args,
-    ['stream', '-', '+', 'COUNT', 7],
-  )
+  assertEquals(await client.xrange('stream', '-', '+'), [{ id: '3-0', fields: { x: '1' } }])
+  assertEquals(await client.xrange('stream', '-', '+', 7), [{ id: '3-0', fields: { x: '1' } }])
+  assertEquals(redis.calls.filter((c) => c.method === 'xrange').at(-1)?.args, [
+    'stream',
+    '-',
+    '+',
+    'COUNT',
+    7,
+  ])
 
-  assertEquals(
-    await client.xrevrange('stream', '+', '-'),
-    [{ id: '4-0', fields: { y: '2' } }],
-  )
-  assertEquals(
-    await client.xrevrange('stream', '+', '-', 3),
-    [{ id: '4-0', fields: { y: '2' } }],
-  )
+  assertEquals(await client.xrevrange('stream', '+', '-'), [{ id: '4-0', fields: { y: '2' } }])
+  assertEquals(await client.xrevrange('stream', '+', '-', 3), [{ id: '4-0', fields: { y: '2' } }])
 
   assertEquals(await client.xlen('stream'), 2)
   assertEquals(await client.xtrimMaxLen('stream', 50), 1)
@@ -557,26 +517,16 @@ test('RedisCellClient xgroupCreate swallows BUSYGROUP and rethrows others', asyn
 
   redis.callResult = 'OK'
   await client.xgroupCreate('stream', 'g', '0', true)
-  assertEquals(
-    redis.calls.at(-1)?.args,
-    ['XGROUP', 'CREATE', 'stream', 'g', '0', 'MKSTREAM'],
-  )
+  assertEquals(redis.calls.at(-1)?.args, ['XGROUP', 'CREATE', 'stream', 'g', '0', 'MKSTREAM'])
 
   await client.xgroupCreate('stream', 'g', '0', false)
-  assertEquals(
-    redis.calls.at(-1)?.args,
-    ['XGROUP', 'CREATE', 'stream', 'g', '0'],
-  )
+  assertEquals(redis.calls.at(-1)?.args, ['XGROUP', 'CREATE', 'stream', 'g', '0'])
 
   redis.throwOnCall = new Error('BUSYGROUP Consumer Group name already exists')
   await client.xgroupCreate('stream', 'g', '0')
 
   redis.throwOnCall = new Error('NOGROUP')
-  await assertRejects(
-    () => client.xgroupCreate('stream', 'g', '0'),
-    Error,
-    'NOGROUP',
-  )
+  await assertRejects(() => client.xgroupCreate('stream', 'g', '0'), Error, 'NOGROUP')
 
   redis.throwOnCall = 'stringy-BUSYGROUP' as unknown as Error
   // Non-Error throw still stringifies and matches BUSYGROUP.
