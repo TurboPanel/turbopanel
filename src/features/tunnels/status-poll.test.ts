@@ -22,7 +22,11 @@ import {
 import { TUNNEL_STATUS_FEATURE } from '../../lib/version-wire.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import { pollServerTunnelStatus, runTunnelStatusPollTick } from './status-poll.ts'
+import {
+  pollServerTunnelStatus,
+  runTunnelStatusPollTick,
+  TUNNEL_STATUS_NEW_PORTAL_GAP_MS,
+} from './status-poll.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
 const test = Deno.test.bind(Deno)
@@ -194,6 +198,42 @@ test('a finished answer is recorded once onto the portals, then the next questio
     await ageQuestion(c.db, c.serverId)
     assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'asked')
     assertEquals(c.queued.length, 2)
+  })
+})
+
+test('a new connector nobody has heard from is asked again after the short gap, a heard or old one waits the full gap', async () => {
+  await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
+    await pollServerTunnelStatus(c.db, c.queue, await c.row())
+    await c.db
+      .update(command)
+      .set({ status: 'succeeded', resultSummary: answer(c.externalId) })
+      .where(eq(command.id, c.queued[0]!.commandId))
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'recorded')
+    const soon = Date.now() + TUNNEL_STATUS_NEW_PORTAL_GAP_MS + 5_000
+    // The portal was heard from: the full gap still applies.
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row(), soon), 'waiting')
+    // A portal added since (made now, never answered): the short gap applies.
+    await c.db.update(portal).set({ lastSeenAt: null }).where(eq(portal.serverId, c.serverId))
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row(), soon), 'asked')
+    assertEquals(c.queued.length, 2)
+  })
+})
+
+test('a portal that was never heard from but is old does not speed the questions up', async () => {
+  await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
+    await pollServerTunnelStatus(c.db, c.queue, await c.row())
+    await c.db
+      .update(command)
+      .set({ status: 'succeeded', resultSummary: answer(c.externalId) })
+      .where(eq(command.id, c.queued[0]!.commandId))
+    await pollServerTunnelStatus(c.db, c.queue, await c.row())
+    await c.db
+      .update(portal)
+      .set({ lastSeenAt: null, createdAt: new Date(Date.now() - 3_600_000).toISOString() })
+      .where(eq(portal.serverId, c.serverId))
+    const soon = Date.now() + TUNNEL_STATUS_NEW_PORTAL_GAP_MS + 5_000
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row(), soon), 'waiting')
+    assertEquals(c.queued.length, 1)
   })
 })
 
