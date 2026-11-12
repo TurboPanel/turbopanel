@@ -4,6 +4,7 @@ import {
   type DeployVariableEntry,
   isApplyVariablesError,
 } from '../../compose/index.ts'
+import { collectHostAccessFindings } from '../../compose/host-access.ts'
 import { generatePassword } from '../../../lib/secrets/generate-secret.ts'
 import {
   ADMIN_TOOLS,
@@ -96,7 +97,6 @@ test('images are the pinned constants and the hosting names the tool port', () =
     assertEquals((service['x-turbopanel'] as { hosting: unknown[] }).hosting, [
       { hostname: 'db-admin.example.com', targetPort: ADMIN_TOOLS[tool].port },
     ])
-    assertEquals(service.volumes, undefined)
     assertEquals(service.ports, undefined)
   }
 })
@@ -138,7 +138,67 @@ test('pgAdmin settings: port, re-import, no volume, one pass file', () => {
   assertEquals(env.PGADMIN_REPLACE_SERVERS_ON_STARTUP, 'True')
   assertEquals(env.PGPASS_FILE, '/pgadmin4/pgpass')
   assertEquals(env.ADMIN_TOOL_REVISION, '3')
-  assertEquals(service.volumes, undefined)
+})
+
+test('pgAdmin looks for the CA inside the sign-in folder and the start script puts it there', () => {
+  const { document, result } = compile('pgadmin', 'postgres')
+  const service = toolService(result.document.data)
+  const entrypoint = service.entrypoint as string[]
+  assertEquals(entrypoint.slice(0, 2), ['/bin/sh', '-c'])
+  const script = entrypoint[2].replaceAll('$$', '$')
+  assert(script.includes('/var/lib/pgadmin/storage/'), script)
+  assert(script.includes("tr '@' '_'"), script)
+  assert(script.includes('cp -f /run/secrets/DB_CA_CERT "$dir/ca.crt"'), script)
+  assert(script.endsWith('exec /entrypoint.sh'), script)
+  // Every dollar sign is doubled so Compose leaves it for the shell.
+  assert(!/(^|[^$])\$(?!\$)/u.test(entrypoint[2]), entrypoint[2])
+  const servers = (document.data.configs as Record<string, { content: string }>).pgadmin_servers
+  const entry = JSON.parse(servers.content.replaceAll('{$DB_PORT}', '5432')) as {
+    Servers: Record<string, { ConnectionParameters: Record<string, string> }>
+  }
+  const params = entry.Servers['1'].ConnectionParameters
+  assertEquals(params.sslrootcert, '/ca.crt')
+  assertEquals(params.sslmode, 'verify-full')
+})
+
+test('the start script empties the data folder before the copy and the entrypoint', () => {
+  const { result } = compile('pgadmin', 'postgres')
+  const entrypoint = toolService(result.document.data).entrypoint as string[]
+  const script = entrypoint[2]
+  const clear = script.indexOf('find /var/lib/pgadmin -mindepth 1 -delete')
+  assert(clear === 0, script)
+  assert(clear < script.indexOf('mkdir -p'), script)
+  assert(script.indexOf('mkdir -p') < script.indexOf('exec /entrypoint.sh'), script)
+})
+
+test('pgAdmin mounts its data folder as a size-capped tmpfs and declares no other volume', () => {
+  const { document } = compile('pgadmin', 'postgres')
+  const service = toolService(document.data)
+  assertEquals(service.volumes, [
+    { type: 'tmpfs', target: '/var/lib/pgadmin', tmpfs: { size: 268435456 } },
+  ])
+  assertEquals(service.tmpfs, undefined)
+  assertEquals(document.data.volumes, undefined)
+})
+
+test('no tool needs host access: every mount is memory-backed or absent', () => {
+  for (const { tool, engine } of CASES) {
+    const { document } = compile(tool, engine)
+    assertEquals(collectHostAccessFindings(document.data), [], `${tool} on ${engine}`)
+    const mounts = (toolService(document.data).volumes ?? []) as Array<{ type: string }>
+    assert(
+      mounts.every((mount) => mount.type === 'tmpfs'),
+      `${tool} on ${engine}`
+    )
+  }
+})
+
+test('phpMyAdmin and Adminer declare no mounts of their own', () => {
+  for (const { tool, engine } of CASES.filter((entry) => entry.tool !== 'pgadmin')) {
+    const service = toolService(compile(tool, engine).document.data)
+    assertEquals(service.tmpfs, undefined, `${tool} on ${engine}`)
+    assertEquals(service.volumes, undefined, `${tool} on ${engine}`)
+  }
 })
 
 test('the pass file holds the database password as the only secret part', () => {
@@ -202,6 +262,13 @@ test('special-use email domains are refused', () => {
   assertEquals(isAcceptablePgAdminEmail('me@host.local'), false)
   assertEquals(isAcceptablePgAdminEmail('me@localhost'), false)
   assertEquals(isAcceptablePgAdminEmail('nope'), false)
+})
+
+test('emails pgAdmin would give a different storage folder are refused', () => {
+  assertEquals(isAcceptablePgAdminEmail('1me@example.org'), false)
+  assertEquals(isAcceptablePgAdminEmail('a/b@example.org'), false)
+  assertEquals(isAcceptablePgAdminEmail('a\\b@example.org'), false)
+  assertEquals(isAcceptablePgAdminEmail('me1@example.org'), true)
 })
 
 test('generated passwords stay inside the alphabet the templates rely on', () => {
