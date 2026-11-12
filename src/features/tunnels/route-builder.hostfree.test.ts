@@ -377,3 +377,41 @@ test('the hash of a table without inbound is what it was, and inbound changes it
     (await hashTunnelRoutes(plain, undefined)) !== (await hashTunnelRoutes(withInbound, undefined))
   )
 })
+
+test('lock: true goes out per name, only for local-only names and only when the daemon can add a lock', async () => {
+  const tunnels = [
+    {
+      carrying: [B],
+      doorways: [
+        { hostname: 'locked.example.com', siteServerIds: [A], isLocalOnly: true },
+        { hostname: 'open.example.com', siteServerIds: [A], isLocalOnly: false },
+      ],
+    },
+  ]
+  const options = { withInbound: true, withLockAdd: true }
+  const built = buildTunnelRoutes(A, tunnels, book, options)
+  assertEquals(built.inbound, [
+    { hostname: 'locked.example.com', peers: ['fd00::b'], lock: true },
+    { hostname: 'open.example.com', peers: ['fd00::b'] },
+  ])
+  // A daemon that follows the table but cannot add a lock gets the table it always got.
+  const follow = buildTunnelRoutes(A, tunnels, book, { withInbound: true })
+  assertEquals(follow.inbound, [
+    { hostname: 'locked.example.com', peers: ['fd00::b'] },
+    { hostname: 'open.example.com', peers: ['fd00::b'] },
+  ])
+  // No inbound at all: withLockAdd alone sends nothing.
+  assertEquals(buildTunnelRoutes(A, tunnels, book, { withLockAdd: true }).inbound, undefined)
+  // The lock is part of the hash, and the daemon parser keeps it.
+  assert((await hashTunnelRoutes(built, undefined)) !== (await hashTunnelRoutes(follow, undefined)))
+  assertEquals(
+    parseTunnelRoutesPayload(
+      await toRoutesPayload(built, {
+        certificatePem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+        privateKeyEnvelope: 'tpdaemon.AAAA',
+        caCertPem: '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n',
+      })
+    ).inbound,
+    built.inbound
+  )
+})

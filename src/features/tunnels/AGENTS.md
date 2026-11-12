@@ -485,7 +485,18 @@ provider accounts.
   feature the old rule holds (the lock follows the site's next deploy: a newly
   added carrier's forwards are dropped, a removed one stays allowed), and the
   tunnel's `warnings` say how many servers that run its sites are in that case
-  (`serversWithDeployOnlyLock`, `siteServersOfTunnel`). The deploy-inputs
+  (`serversWithDeployOnlyLock`, `siteServersOfTunnel`). **Adding a hostname to a deployed site** (daemon
+  feature `tunnel-lock-add-v1`): the site block deployed before the name joined
+  the tunnel has no lock, and the daemon only edits locks that exist. For a
+  daemon that lists the feature, each `inbound` entry of a local-only name
+  (`isLocalOnly`) carries `lock: true` (`withLockAdd` in `buildTunnelRoutes`,
+  set from `daemonAddsLockFromTable`), and the daemon makes the block the
+  locked block a deploy renders, so the name is locked within seconds of the
+  nudge. An open name never carries it. For a daemon that follows the table
+  but cannot add a lock, the tunnel's `warnings` say how many servers that run
+  its sites lock a newly added hostname only at the site's next deploy
+  (`serversWithoutLockAdd`, `hostnameLockWarning`); until then the site block
+  is an ordinary public site, as it was before the name was added. The deploy-inputs
   digest already covers the `tunnel` field, so a deploy is never skipped as
   unchanged.
 - Limits: 50 tunnels and 2000 hostnames per organization, 200 hostnames per

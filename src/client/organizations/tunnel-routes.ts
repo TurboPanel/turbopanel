@@ -33,10 +33,11 @@ import {
 } from '../../features/tunnels/lifecycle.ts'
 import {
   serversWithDeployOnlyLock,
+  serversWithoutLockAdd,
   serversWithoutTunnelSupport,
 } from '../../features/tunnels/daemon-gate.ts'
 import { siteServersOfTunnel } from '../../features/tunnels/route-facts.ts'
-import { parsePlacementBody } from '../../features/tunnels/placement.ts'
+import { hostnameLockWarning, parsePlacementBody } from '../../features/tunnels/placement.ts'
 import { rotationBlock, startRunTokenRotation } from '../../features/tunnels/run-token-rotation.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
 import {
@@ -104,10 +105,9 @@ async function loadTunnelParam(c: Context<AppEnv>, scope: Scope): Promise<Tunnel
 async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   const shown = await toApiTunnel(scope.db, row)
   const old = await serversWithoutTunnelSupport(scope.db, shown.carryingServerIds)
-  const deployOnly = await serversWithDeployOnlyLock(
-    scope.db,
-    await siteServersOfTunnel(scope.db, scope.organizationId, row.id)
-  )
+  const siteServers = await siteServersOfTunnel(scope.db, scope.organizationId, row.id)
+  const deployOnly = await serversWithDeployOnlyLock(scope.db, siteServers)
+  const noLockAdd = await serversWithoutLockAdd(scope.db, siteServers)
   const warnings = [...shown.warnings]
   if (old.length > 0) {
     const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
@@ -125,6 +125,8 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
       `${who} a change of where the Tunnel runs only when the site is deployed again. ${fix}, or redeploy those sites after the change.`
     )
   }
+  const addWarning = hostnameLockWarning(noLockAdd.length)
+  if (addWarning) warnings.push(addWarning)
   // Why Rotate Run Token would be refused now, so the screen can say so before it is pressed.
   const blocked = await rotationBlock(scope.db, row)
   const runTokenRotationBlock = blocked

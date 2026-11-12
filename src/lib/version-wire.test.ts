@@ -21,6 +21,7 @@ import {
   DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
   PROJECT_CACHE_FEATURE,
+  TUNNEL_LOCK_ADD_FEATURE,
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
   DEPLOY_CANCEL_FEATURE,
@@ -451,7 +452,13 @@ test('tunnel-status-facts-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
-test('project-cache-v1 is the last daemon wire feature', () => {
+test('project-cache-v1 is advertised', () => {
   assertEquals(PROJECT_CACHE_FEATURE, 'project-cache-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), PROJECT_CACHE_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(PROJECT_CACHE_FEATURE), true)
+})
+
+test('tunnel-lock-add-v1 is the last daemon wire feature and raised no floor', () => {
+  assertEquals(TUNNEL_LOCK_ADD_FEATURE, 'tunnel-lock-add-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), TUNNEL_LOCK_ADD_FEATURE)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })

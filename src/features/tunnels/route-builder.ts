@@ -113,11 +113,12 @@ export function buildTunnelRoutes(
   serverId: string,
   tunnels: readonly TunnelFact[],
   addresses: AddressBook,
-  options: { withInbound?: boolean } = {}
+  options: { withInbound?: boolean; withLockAdd?: boolean } = {}
 ): RouteBuildResult {
   const routes = new Map<string, TunnelRoute>()
   const peers = new Set<string>()
   const inbound = new Map<string, Set<string>>()
+  const locked = new Set<string>()
   const skipped: RouteBuildResult['skipped'] = []
 
   for (const tunnel of tunnels) {
@@ -129,6 +130,7 @@ export function buildTunnelRoutes(
         const own = inbound.get(doorway.hostname) ?? new Set<string>()
         addInboundPeers(own, tunnel, serverId, addresses)
         inbound.set(doorway.hostname, own)
+        if (doorway.isLocalOnly) locked.add(doorway.hostname)
       }
       if (!carriesHere || routes.has(doorway.hostname)) continue
       const built = routeFor(doorway, siteHere, addresses)
@@ -137,7 +139,9 @@ export function buildTunnelRoutes(
     }
   }
   const table = finishTable(serverId, routes, peers, skipped, addresses)
-  return options.withInbound ? { ...table, inbound: finishInbound(inbound, table.warnings) } : table
+  if (!options.withInbound) return table
+  const lockNames = options.withLockAdd ? locked : new Set<string>()
+  return { ...table, inbound: finishInbound(inbound, table.warnings, lockNames) }
 }
 
 /**
@@ -147,10 +151,15 @@ export function buildTunnelRoutes(
  */
 function finishInbound(
   inbound: ReadonlyMap<string, ReadonlySet<string>>,
-  warnings: string[]
+  warnings: string[],
+  lockNames: ReadonlySet<string>
 ): TunnelInbound[] {
   const all = [...inbound.entries()]
-    .map(([hostname, peers]) => ({ hostname, peers: [...peers].toSorted(compareText) }))
+    .map(([hostname, peers]) => ({
+      hostname,
+      peers: [...peers].toSorted(compareText),
+      ...(lockNames.has(hostname) ? { lock: true as const } : {}),
+    }))
     .toSorted(byHostname)
   const kept = all.slice(0, TUNNEL_TABLE_CAPS.routes)
   if (all.length > kept.length) {
