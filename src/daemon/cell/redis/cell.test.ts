@@ -6,7 +6,7 @@ import {
   DAEMON_STALE_MS,
 } from '../../../contracts/cell-protocol.ts'
 import { emptyServerIps } from '../../../contracts/server-addresses.ts'
-import { RedisDaemonCell } from './cell.ts'
+import { OUTBOX_CONSUMER_SUPERSEDED, RedisDaemonCell } from './cell.ts'
 import {
   cellKeyPattern,
   connKey,
@@ -1042,6 +1042,61 @@ test('readOutboxBatch serves xautoclaimed entries on attach', async () => {
       count: 10,
     })
     assert(batch.some((entry) => entry.requestId === requestId))
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
+test('attach claims an entry the old socket read a moment before the reconnect', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const first = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const dispatch = pingDispatch('read-just-before-reconnect')
+    await cell.enqueue(dispatch)
+    // The old socket's pump read it, then the socket went away: the entry is
+    // pending on the old consumer and only a moment idle.
+    await cell.readOutboxBatch({ consumer: `ws:${first.connectionId}`, count: 10 })
+    await cell.detachDaemonSocket({ connectionId: first.connectionId })
+
+    const second = await cell.attachDaemonSocket({ keyId: 'key-2' })
+    const batch = await cell.readOutboxBatch({ consumer: `ws:${second.connectionId}`, count: 10 })
+    assertEquals(
+      batch.map((entry) => entry.requestId),
+      [dispatch.requestId]
+    )
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
+test('a socket replaced by a stale takeover can no longer take outbox entries', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const old = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    // The old socket went quiet (half open); the daemon reconnected.
+    const staleAt = new Date(Date.now() - DAEMON_STALE_MS - 5_000).toISOString()
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+      connectedAt: staleAt,
+    })
+    const fresh = await cell.attachDaemonSocket({ keyId: 'key-2' })
+
+    const dispatch = pingDispatch('after-takeover')
+    await cell.enqueue(dispatch)
+
+    // The old pump is still looping on its dead socket; it must be told to stop
+    // and leave the entry for the live socket.
+    await assertRejects(
+      () => cell.readOutboxBatch({ consumer: `ws:${old.connectionId}`, count: 10 }),
+      Error,
+      OUTBOX_CONSUMER_SUPERSEDED
+    )
+    const batch = await cell.readOutboxBatch({ consumer: `ws:${fresh.connectionId}`, count: 10 })
+    assertEquals(
+      batch.map((entry) => entry.requestId),
+      [dispatch.requestId]
+    )
   } finally {
     await cleanupCell(client, serverId)
   }
