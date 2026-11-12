@@ -26,7 +26,11 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { issuePeerLeaf, type PeerLeafIssue } from '../tls/peer-leaf.ts'
 import { pendingTlsLeafMetadata } from '../tls/leaf-tracking.ts'
-import { daemonCanCarryTunnels, daemonLockFollowsTable } from './daemon-gate.ts'
+import {
+  daemonAddsLockFromTable,
+  daemonCanCarryTunnels,
+  daemonLockFollowsTable,
+} from './daemon-gate.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
   buildTunnelRoutes,
@@ -236,6 +240,7 @@ export async function syncServerTunnelRoutes(
   // The name lock follows the table only on a daemon that says it can.
   const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses, {
     withInbound: daemonLockFollowsTable(ready.features),
+    withLockAdd: daemonAddsLockFromTable(ready.features),
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)

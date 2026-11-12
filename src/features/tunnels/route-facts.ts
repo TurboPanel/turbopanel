@@ -4,9 +4,10 @@
  * every server's datacenter addresses (exact addresses, the datacenter's
  * preferred family first).
  */
-import { and, eq, inArray, isNotNull } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, ne } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { datacenter, deployment, doorway, hosting, ip, service } from '../../db/schema.ts'
+import { datacenter, deployment, doorway, hosting, ip, service, tls } from '../../db/schema.ts'
+import { resolveHostingProxy, type HostingOptions } from '../hostings/hosting-options.ts'
 import { compareText } from './order.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
@@ -147,5 +148,42 @@ export async function siteServersOfTunnel(
     r.hostingId && r.status !== 'removing' ? [r.hostingId] : []
   )
   const sites = await siteServersByHosting(db, hostingIds, organizationId)
+  return [...new Set([...sites.values()].flat())].toSorted(compareText)
+}
+
+/**
+ * Does the daemon's lock add skip this site? It only reshapes a block that has
+ * an HTTPS site with a pinned or internal certificate: a hosting on an
+ * automatic (Let's Encrypt) certificate has no `tls` line, and one with
+ * `forceHttps` off has no HTTPS block until a deploy makes one. Such a site
+ * waits for its next deploy to lock a name added to a tunnel.
+ */
+export function lockAddSkipsSite(options: unknown, tlsStatus: string | null | undefined): boolean {
+  const proxy = resolveHostingProxy((options ?? undefined) as HostingOptions | undefined)
+  return !proxy.forceHttps || tlsStatus === 'automatic'
+}
+
+/** The servers that run a site, for a local-only name of the tunnel, that the daemon's lock add skips. */
+export async function lockAddSkippedServers(
+  db: Db,
+  organizationId: string,
+  tunnelId: string
+): Promise<string[]> {
+  const rows = await db
+    .select({ options: hosting.options, tlsStatus: tls.status, hostingId: hosting.id })
+    .from(doorway)
+    .innerJoin(hosting, eq(hosting.id, doorway.hostingId))
+    .leftJoin(tls, eq(tls.id, hosting.tlsId))
+    .where(
+      and(
+        eq(doorway.tunnelId, tunnelId),
+        eq(doorway.isLocalOnly, true),
+        ne(doorway.status, 'removing')
+      )
+    )
+  const skipped = rows
+    .filter((r) => lockAddSkipsSite(r.options, r.tlsStatus))
+    .map((r) => r.hostingId)
+  const sites = await siteServersByHosting(db, [...new Set(skipped)], organizationId)
   return [...new Set([...sites.values()].flat())].toSorted(compareText)
 }

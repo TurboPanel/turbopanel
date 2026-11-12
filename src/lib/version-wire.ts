@@ -239,6 +239,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tunnel-table-generation-v1',
   'site-db-url-ca-v1',
   'project-cache-v1',
+  'tunnel-lock-add-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -528,6 +529,14 @@ export const SITE_DB_URL_CA_FEATURE: DaemonWireFeature = 'site-db-url-ca-v1'
  * and refuses a deploy or a cache change that needs them with a plain sentence.
  */
 export const PROJECT_CACHE_FEATURE: DaemonWireFeature = 'project-cache-v1'
+
+/**
+ * An `inbound` entry of `server.tunnel.routes` may carry `lock: true` (a
+ * local-only name). The daemon then adds the lock to that name's site block
+ * when the block has none, so a hostname added after the site was deployed is
+ * locked without a deploy. Without it that lock waits for the next deploy.
+ */
+export const TUNNEL_LOCK_ADD_FEATURE: DaemonWireFeature = 'tunnel-lock-add-v1'
 
 /**
  * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`

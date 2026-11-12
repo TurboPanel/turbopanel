@@ -1,6 +1,14 @@
 import { assertEquals } from '@std/assert'
-import { TUNNEL_FORWARDING_FEATURE, TUNNEL_LOCK_FOLLOW_FEATURE } from '../../lib/version-wire.ts'
-import { daemonCanCarryTunnels, daemonLockFollowsTable } from './daemon-gate.ts'
+import {
+  TUNNEL_FORWARDING_FEATURE,
+  TUNNEL_LOCK_ADD_FEATURE,
+  TUNNEL_LOCK_FOLLOW_FEATURE,
+} from '../../lib/version-wire.ts'
+import {
+  daemonAddsLockFromTable,
+  daemonCanCarryTunnels,
+  daemonLockFollowsTable,
+} from './daemon-gate.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -24,4 +32,10 @@ test('only a daemon that advertises it takes the name lock from the forwarding t
     daemonLockFollowsTable([TUNNEL_FORWARDING_FEATURE, TUNNEL_LOCK_FOLLOW_FEATURE]),
     true
   )
+})
+
+test('only a daemon that advertises tunnel-lock-add-v1 adds a lock from the table', () => {
+  assertEquals(daemonAddsLockFromTable(undefined), false)
+  assertEquals(daemonAddsLockFromTable([TUNNEL_LOCK_FOLLOW_FEATURE]), false)
+  assertEquals(daemonAddsLockFromTable([TUNNEL_LOCK_ADD_FEATURE]), true)
 })

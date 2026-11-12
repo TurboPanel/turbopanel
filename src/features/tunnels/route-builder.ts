@@ -109,27 +109,44 @@ function routeFor(
   }
 }
 
+/** What a server that runs a site learns: who may forward each name, and which names are local-only. */
+type InboundFacts = {
+  peers: Map<string, Set<string>>
+  locked: Set<string>
+}
+
+/** Record, for a name whose site runs on `serverId`, its other carriers and whether it is local-only. */
+function noteInbound(
+  facts: InboundFacts,
+  peers: Set<string>,
+  tunnel: TunnelFact,
+  doorway: DoorwayFact,
+  serverId: string,
+  addresses: AddressBook
+): void {
+  addInboundPeers(peers, tunnel, serverId, addresses)
+  const own = facts.peers.get(doorway.hostname) ?? new Set<string>()
+  addInboundPeers(own, tunnel, serverId, addresses)
+  facts.peers.set(doorway.hostname, own)
+  if (doorway.isLocalOnly) facts.locked.add(doorway.hostname)
+}
+
 export function buildTunnelRoutes(
   serverId: string,
   tunnels: readonly TunnelFact[],
   addresses: AddressBook,
-  options: { withInbound?: boolean } = {}
+  options: { withInbound?: boolean; withLockAdd?: boolean } = {}
 ): RouteBuildResult {
   const routes = new Map<string, TunnelRoute>()
   const peers = new Set<string>()
-  const inbound = new Map<string, Set<string>>()
+  const inbound: InboundFacts = { peers: new Map(), locked: new Set() }
   const skipped: RouteBuildResult['skipped'] = []
 
   for (const tunnel of tunnels) {
     const carriesHere = tunnel.carrying.includes(serverId)
     for (const doorway of tunnel.doorways) {
       const siteHere = doorway.siteServerIds.includes(serverId)
-      if (siteHere) {
-        addInboundPeers(peers, tunnel, serverId, addresses)
-        const own = inbound.get(doorway.hostname) ?? new Set<string>()
-        addInboundPeers(own, tunnel, serverId, addresses)
-        inbound.set(doorway.hostname, own)
-      }
+      if (siteHere) noteInbound(inbound, peers, tunnel, doorway, serverId, addresses)
       if (!carriesHere || routes.has(doorway.hostname)) continue
       const built = routeFor(doorway, siteHere, addresses)
       if ('route' in built) routes.set(doorway.hostname, built.route)
@@ -137,7 +154,9 @@ export function buildTunnelRoutes(
     }
   }
   const table = finishTable(serverId, routes, peers, skipped, addresses)
-  return options.withInbound ? { ...table, inbound: finishInbound(inbound, table.warnings) } : table
+  if (!options.withInbound) return table
+  const lockNames = options.withLockAdd ? inbound.locked : new Set<string>()
+  return { ...table, inbound: finishInbound(inbound.peers, table.warnings, lockNames) }
 }
 
 /**
@@ -147,10 +166,15 @@ export function buildTunnelRoutes(
  */
 function finishInbound(
   inbound: ReadonlyMap<string, ReadonlySet<string>>,
-  warnings: string[]
+  warnings: string[],
+  lockNames: ReadonlySet<string>
 ): TunnelInbound[] {
   const all = [...inbound.entries()]
-    .map(([hostname, peers]) => ({ hostname, peers: [...peers].toSorted(compareText) }))
+    .map(([hostname, peers]) => ({
+      hostname,
+      peers: [...peers].toSorted(compareText),
+      ...(lockNames.has(hostname) ? { lock: true as const } : {}),
+    }))
     .toSorted(byHostname)
   const kept = all.slice(0, TUNNEL_TABLE_CAPS.routes)
   if (all.length > kept.length) {

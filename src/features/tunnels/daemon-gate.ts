@@ -7,6 +7,7 @@
 import type { Db } from '../../db/connection.ts'
 import {
   TUNNEL_FORWARDING_FEATURE,
+  TUNNEL_LOCK_ADD_FEATURE,
   TUNNEL_LOCK_FOLLOW_FEATURE,
   TUNNEL_STATUS_FEATURE,
 } from '../../lib/version-wire.ts'
@@ -23,6 +24,15 @@ export function daemonCanCarryTunnels(features: readonly string[] | undefined): 
  */
 export function daemonLockFollowsTable(features: readonly string[] | undefined): boolean {
   return features?.includes(TUNNEL_LOCK_FOLLOW_FEATURE) === true
+}
+
+/**
+ * Only a daemon that advertises `tunnel-lock-add-v1` adds the lock to a site
+ * block that has none when an `inbound` entry says `lock: true`. An older one
+ * leaves such a name unlocked until the site's next deploy.
+ */
+export function daemonAddsLockFromTable(features: readonly string[] | undefined): boolean {
+  return features?.includes(TUNNEL_LOCK_ADD_FEATURE) === true
 }
 
 /** Only a daemon that advertises `tunnel-status-v1` knows `server.tunnel.status`. */
@@ -51,5 +61,32 @@ export async function serversWithDeployOnlyLock(
   )
   return serverIds.filter(
     (_, index) => !daemonLockFollowsTable(states[index]?.projection?.features)
+  )
+}
+
+/**
+ * Servers of the list that follow the table for a lock that already exists but
+ * cannot add one to a site deployed before its hostname joined the Tunnel.
+ */
+export async function serversWithoutLockAdd(
+  db: Db,
+  serverIds: readonly string[]
+): Promise<string[]> {
+  const states = await Promise.all(
+    serverIds.map((serverId) => getServerDaemonStateByServerId(db, serverId))
+  )
+  return serverIds.filter((_, index) => {
+    const features = states[index]?.projection?.features
+    return daemonLockFollowsTable(features) && !daemonAddsLockFromTable(features)
+  })
+}
+
+/** Servers of the list whose daemon adds a lock from the table (`tunnel-lock-add-v1`). */
+export async function serversWithLockAdd(db: Db, serverIds: readonly string[]): Promise<string[]> {
+  const states = await Promise.all(
+    serverIds.map((serverId) => getServerDaemonStateByServerId(db, serverId))
+  )
+  return serverIds.filter((_, index) =>
+    daemonAddsLockFromTable(states[index]?.projection?.features)
   )
 }
