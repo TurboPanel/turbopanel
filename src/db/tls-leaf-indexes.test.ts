@@ -13,9 +13,9 @@ import { dirname, fromFileUrl, join } from '@std/path'
  */
 const test = Deno.test.bind(Deno)
 
-test('migrations/0000_base.sql declares leaf partial unique indexes', async () => {
+test('migrations/0000_init.sql declares leaf partial unique indexes', async () => {
   const here = dirname(fromFileUrl(import.meta.url))
-  const sqlPath = join(here, '../../migrations/0000_base.sql')
+  const sqlPath = join(here, '../../migrations/0000_init.sql')
   const sql = await Deno.readTextFile(sqlPath)
   assertEquals(sql.includes('CREATE UNIQUE INDEX "uniq_leaf_ingress_server"'), true)
   assertEquals(sql.includes('WHERE "leaf"."kind" = \'ingress\''), true)

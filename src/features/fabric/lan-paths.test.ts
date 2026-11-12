@@ -433,34 +433,6 @@ test('the ladder never aims at a fabric address for a LAN pair or over a dead tu
   })
 })
 
-test('the container range migration backfills a server from its relay and keeps a range already set', async () => {
-  await withRig(async (rig) => {
-    await rig.db.update(server).set({ containerPrefix: null }).where(eq(server.id, rig.b))
-    await rig.db
-      .update(server)
-      .set({ containerPrefix: '10.200.0.0/16' })
-      .where(eq(server.id, rig.a))
-    const sql = await Deno.readTextFile(
-      new URL('../../../migrations/0010_server_container_prefix.sql', import.meta.url)
-    )
-    const backfill = sql
-      .split('--> statement-breakpoint')
-      .map((part) => part.trim())
-      .find((part) => part.startsWith('UPDATE'))!
-    await rig.db.execute(backfill)
-    const [row] = await rig.db
-      .select({ prefix: server.containerPrefix })
-      .from(server)
-      .where(eq(server.id, rig.b))
-    assertEquals(row?.prefix, '10.193.0.0/16')
-    const [kept] = await rig.db
-      .select({ prefix: server.containerPrefix })
-      .from(server)
-      .where(eq(server.id, rig.a))
-    assertEquals(kept?.prefix, '10.200.0.0/16')
-  })
-})
-
 /** A cross-server container network with a piece on each listed server. */
 async function addContainerNetwork(rig: Rig, serverIds: readonly string[]): Promise<string> {
   const [net] = await rig.db

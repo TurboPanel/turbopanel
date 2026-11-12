@@ -12,8 +12,6 @@ import type { NotificationEvent, NotificationSeverity } from './events.ts'
 export type LedgerKeys = {
   eventId: string
   topicCode: NotificationEvent
-  /** The older column the table still requires until the reset removes it. */
-  event: NotificationEvent
 }
 
 /** `count` event rows for one organization, and the keys that tie a delivery row to each. */
@@ -35,5 +33,5 @@ export async function insertLedgerKeys(
       }))
     )
     .returning({ id: notificationEvent.id })
-  return rows.map((row) => ({ eventId: row.id, topicCode: topic, event: topic }))
+  return rows.map((row) => ({ eventId: row.id, topicCode: topic }))
 }

@@ -477,8 +477,6 @@ export async function replaceRulesForChannel(
       await tx.insert(notificationRule).values(
         rules.map((r) => ({
           channelId,
-          // `event` is still NOT NULL and keyed with the channel; the reset removes this line.
-          event: r.event,
           topicCode: ruleTopicOf(r.event),
           minSeverity: r.minSeverity,
         }))
@@ -641,8 +639,6 @@ export async function insertNotifications(db: Db, rows: NotificationInsert[]): P
       rows.map((r) => ({
         userId: r.userId,
         organizationId: r.organizationId,
-        // `event` is still NOT NULL; the reset removes this line.
-        event: r.event,
         topicCode: r.event,
         severity: r.severity,
         title: r.title,
@@ -743,8 +739,7 @@ export async function listNotificationsForUser(
     id: r.id,
     createdAt: r.createdAt,
     organizationId: r.organizationId,
-    // Every writer sets the topic; the reset makes the column NOT NULL.
-    event: r.topicCode as string,
+    event: r.topicCode,
     severity: r.severity as NotificationSeverity,
     title: r.title,
     body: r.body,
@@ -795,7 +790,7 @@ async function cancelHeldCopies(db: Db, userId: string, eventIds: readonly strin
   const inBell = db
     .select({ eventId: notification.eventId })
     .from(notification)
-    .where(and(eq(notification.userId, userId), isNotNull(notification.eventId)))
+    .where(eq(notification.userId, userId))
   const emailChannels = db
     .select({ id: notificationChannel.id })
     .from(notificationChannel)
@@ -853,7 +848,7 @@ export async function markNotificationsRead(
   await cancelHeldCopies(
     db,
     userId,
-    rows.flatMap((r) => (r.eventId ? [r.eventId] : []))
+    rows.map((r) => r.eventId)
   )
   return rows.length
 }
@@ -867,7 +862,7 @@ export async function dismissNotification(db: Db, userId: string, id: string): P
   await cancelHeldCopies(
     db,
     userId,
-    rows.flatMap((r) => (r.eventId ? [r.eventId] : []))
+    rows.map((r) => r.eventId)
   )
   return rows.length > 0
 }
@@ -936,8 +931,6 @@ function ledgerRow(copy: LedgerCopy, payload: DeliveryPayload) {
     eventId: payload.eventId,
     topicCode: payload.event,
     organizationId: payload.organizationId,
-    // `event` is still NOT NULL; the reset removes this line.
-    event: payload.event,
     severity: payload.severity,
     payload,
     attempts: 0,
@@ -996,8 +989,7 @@ function asDelivery(row: typeof notificationDelivery.$inferSelect): Notification
     status: row.status as NotificationDeliveryStatus,
     attempts: row.attempts,
     userId: row.userId,
-    // Every writer sets the event; the reset makes the column NOT NULL.
-    eventId: row.eventId as string,
+    eventId: row.eventId,
   }
 }
 

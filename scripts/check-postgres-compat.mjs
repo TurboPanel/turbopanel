@@ -2,7 +2,7 @@
 /**
  * Pre-migration compatibility gate for `pnpm migrate`.
  *
- * The schema baseline (migrations/0000_base.sql) defaults every surrogate
+ * The schema baseline (migrations/0000_init.sql) defaults every surrogate
  * primary key to the built-in `uuidv7()`, which ships with PostgreSQL 18.
  * This script connects to the target server before `drizzle-kit migrate`
  * runs and fails fast with a clear message when `uuidv7()` is unavailable,

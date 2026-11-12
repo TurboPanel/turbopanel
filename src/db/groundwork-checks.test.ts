@@ -1,5 +1,5 @@
 /**
- * The groundwork tables and columns (`0032_groundwork_tables_and_columns`)
+ * The groundwork tables and columns (`0000_init`)
  * against a real database: every CHECK, unique key and foreign key the
  * migration adds refuses what it should and accepts what it should. Nothing
  * writes these tables yet; this keeps the shapes honest until a feature does.
@@ -26,6 +26,7 @@ import {
 } from './schema.ts'
 import { getDatabaseUrl } from './url.ts'
 
+import { deleteOrganization } from '../features/organizations/delete-organization.ts'
 const test = Deno.test.bind(Deno)
 
 /** The text Postgres gave for a refused statement: the constraint name when it has one. */
@@ -205,7 +206,7 @@ test('groundwork tables and columns hold the rules the migration gives them', as
       .returning({ id: notificationChannel.id })
     await db.delete(notificationChannel).where(eq(notificationChannel.id, ch!.id))
 
-    // DNS records and the deferrable carrier key.
+    // DNS records and the carrier key.
     const [car] = await db
       .insert(carrier)
       .values({ organizationId, provider: 'cloudflare', name: 'Main', externalAccountId: 'acct' })
@@ -249,7 +250,7 @@ test('groundwork tables and columns hold the rules the migration gives them', as
     const install = { ...rec, organizationId: null, carrierId: null, ingressId: ing!.id }
     await db.insert(dnsRecord).values(install)
     await refuses('uniq_record_scope_name_kind_content', () => db.insert(dnsRecord).values(install))
-    // A carrier that still has a record cannot go; the key is checked at commit.
+    // A carrier that still has a record cannot go.
     await refuses('record_carrier_id_carrier_id_fk', () =>
       db.delete(carrier).where(eq(carrier.id, car!.id))
     )
@@ -288,7 +289,7 @@ test('groundwork tables and columns hold the rules the migration gives them', as
       await db.delete(ingressAccount).where(eq(ingressAccount.id, ingressId))
     }
     // An organization delete removes the carrier and its records in one commit.
-    await db.delete(organization).where(eq(organization.id, organizationId))
+    await deleteOrganization(db, organizationId)
     await endDbConnection(db)
   }
 })

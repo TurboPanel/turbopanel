@@ -2,11 +2,12 @@
  * Read the latest drizzle snapshot (`migrations/meta/NNNN_snapshot.json`)
  * as a flat, ordered description of the shipped schema.
  *
- * Used by `scripts/schema-comments.mjs` (Postgres `COMMENT ON` delta). It
- * describes the schema as it *shipped* — the snapshot behind the newest
- * journal entry — never `schema.ts` directly, so an edit that has not been
- * through `pnpm drizzle-kit generate --name …` cannot leak into comments
- * ahead of its migration.
+ * Used by `scripts/schema-docs.mjs` (the Markdown export) and by
+ * `src/db/schema-descriptions.test.ts`. It describes the schema as it
+ * *shipped* — the snapshot behind the newest journal entry — never
+ * `schema.ts` directly, so an edit that has not been through
+ * `pnpm drizzle-kit generate --name …` cannot leak into the docs ahead of its
+ * migration.
  */
 import fs from 'node:fs'
 import path from 'node:path'

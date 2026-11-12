@@ -1,8 +1,7 @@
 /**
- * Shared fixture for the schema-description generator suites
- * (`schema-snapshot.test.ts`, `schema-comments.test.ts`): a throwaway `migrations/` directory
- * with a two-entry journal, a drizzle-shaped snapshot for the newest entry,
- * and migration SQL carrying `COMMENT ON` statements to replay.
+ * Shared fixture for the schema snapshot reader suite
+ * (`schema-snapshot.test.ts`): a throwaway `migrations/` directory with a
+ * two-entry journal and a drizzle-shaped snapshot for the newest entry.
  *
  * The snapshot mixes one real table (`server`, described in
  * `schema-descriptions.ts`) with one invented table (`zz_fixture`, described
@@ -140,29 +139,6 @@ export function fixtureSnapshot() {
   }
 }
 
-/**
- * Two migrations: `0000_base` comments a column with an apostrophe and one
- * that `0001_amend` later rewrites, clears, and adds to, so "last statement
- * wins" and `IS NULL` both get exercised.
- */
-export const FIXTURE_SQL_0000 = [
-  `CREATE TABLE "server" ("id" uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL);`,
-  `--> statement-breakpoint`,
-  `COMMENT ON COLUMN "server"."machine_class" IS 'first wording';`,
-  `--> statement-breakpoint`,
-  `COMMENT ON COLUMN "server"."is_connected" IS 'the daemon''s liveness flag';`,
-  `--> statement-breakpoint`,
-  `COMMENT ON TABLE "server" IS 'to be cleared';`,
-  '',
-].join('\n')
-
-export const FIXTURE_SQL_0001 = [
-  `comment on column "public"."server"."machine_class" is 'second wording';`,
-  `--> statement-breakpoint`,
-  `COMMENT ON TABLE "server" IS NULL;`,
-  '',
-].join('\n')
-
 /** Writes the fixture migrations directory and returns its path. */
 export async function writeFixtureMigrations(): Promise<string> {
   const dir = await Deno.makeTempDir({ prefix: 'tp-schema-fixture-' })
@@ -195,7 +171,5 @@ export async function writeFixtureMigrations(): Promise<string> {
     JSON.stringify({ ...fixtureSnapshot(), id: 'stale', tables: {} })
   )
   await Deno.writeTextFile(join(dir, 'meta/0001_snapshot.json'), JSON.stringify(fixtureSnapshot()))
-  await Deno.writeTextFile(join(dir, '0000_base.sql'), FIXTURE_SQL_0000)
-  await Deno.writeTextFile(join(dir, '0001_amend.sql'), FIXTURE_SQL_0001)
   return dir
 }
