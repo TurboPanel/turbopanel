@@ -207,3 +207,38 @@ test('more than 8 names is refused without the url feature, and up to 16 is take
   )
   assertEquals((refused.out as unknown as { kind: string }).kind, 'binding_host_site_unsupported')
 })
+
+const BOTH_FEATURES = [SITE_DB_BINDINGS_FEATURE, SITE_DB_URL_CA_FEATURE]
+
+test('a MariaDB-only binding on a daemon with the url feature sends no urlVariables key', async () => {
+  const { out } = await run(
+    BOTH_FEATURES,
+    [site('wp')],
+    withRefs({ siteCaFileNames: [], siteUrlNames: [] }, [])
+  )
+  const dbCa = out[0]?.dbCa
+  assertEquals(dbCa, { variables: ['DATABASE_CA_FILE'], pem: PEM })
+  assertEquals('urlVariables' in (dbCa ?? {}), false)
+})
+
+test('a PostgreSQL-only binding sends its URL names', async () => {
+  const { out } = await run(
+    BOTH_FEATURES,
+    [site('wp')],
+    withRefs({ siteCaFileNames: [], siteUrlNames: [] }, ['PG_URL'])
+  )
+  assertEquals(out[0]?.dbCa?.urlVariables, ['PG_URL'])
+})
+
+test('a mixed set sends only the PostgreSQL URL names', async () => {
+  const { out } = await run(
+    BOTH_FEATURES,
+    [site('wp')],
+    withRefs({ siteCaFileNames: ['MARIA_CA_FILE'], siteUrlNames: [] }, ['PG_URL'])
+  )
+  assertEquals(out[0]?.dbCa, {
+    variables: ['DATABASE_CA_FILE', 'MARIA_CA_FILE'],
+    pem: PEM,
+    urlVariables: ['PG_URL'],
+  })
+})

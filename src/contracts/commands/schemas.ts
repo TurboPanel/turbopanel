@@ -2113,8 +2113,8 @@ export type EnvironmentDeploySiteDbCa = {
   pem: string
   /**
    * Names holding a Postgres URL: in `verify-ca` / `verify-full` the daemon adds
-   * `sslrootcert=<the CA file>` to each one that has none. Sent only to a daemon
-   * that lists `site-db-url-ca-v1`.
+   * `sslrootcert=<the CA file>` to each one that has none. Sent only when there is at least one name, and only
+   * to a daemon that lists `site-db-url-ca-v1`.
    */
   urlVariables?: string[]
 }
