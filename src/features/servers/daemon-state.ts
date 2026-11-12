@@ -41,6 +41,12 @@ export type ServerDaemonProjection = {
    * the mark, cleared on reconnect. Host-loss failover acts on `sweep_stale` only.
    */
   offlineReason?: 'disconnect' | 'sweep_stale'
+  /**
+   * When the offline notice for the current outage was claimed. Set once by the
+   * disconnect-notice pass after the grace period, cleared with `offlineReason`
+   * on reconnect, so one outage raises one notice.
+   */
+  offlineNoticeAt?: string
 }
 
 /** Fleet liveness — stored on dedicated `server` columns, not `server.daemon`. */
@@ -200,6 +206,9 @@ function parseServerDaemonProjection(raw: unknown): ServerDaemonProjection | nul
     projection.offlineReason === 'disconnect' || projection.offlineReason === 'sweep_stale'
       ? projection.offlineReason
       : undefined
+  const offlineNoticeAt = isNonEmptyString(projection.offlineNoticeAt)
+    ? projection.offlineNoticeAt
+    : undefined
 
   const parsed: ServerDaemonProjection = {
     hostname: isNonEmptyString(projection.hostname) ? projection.hostname : undefined,
@@ -212,6 +221,7 @@ function parseServerDaemonProjection(raw: unknown): ServerDaemonProjection | nul
     ...(parsedUpdate ? { update: parsedUpdate } : {}),
     ...(parsedFeatures !== undefined ? { features: parsedFeatures } : {}),
     ...(offlineReason ? { offlineReason } : {}),
+    ...(offlineNoticeAt ? { offlineNoticeAt } : {}),
   }
 
   if (
@@ -222,7 +232,8 @@ function parseServerDaemonProjection(raw: unknown): ServerDaemonProjection | nul
     parsed.daemonBuild === undefined &&
     parsed.update === undefined &&
     parsed.features === undefined &&
-    parsed.offlineReason === undefined
+    parsed.offlineReason === undefined &&
+    parsed.offlineNoticeAt === undefined
   ) {
     return null
   }

@@ -90,6 +90,7 @@ import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
 } from '../../features/alerts/notify-demotions.ts'
+import { noticeDisconnectedServers } from './disconnect-notice.ts'
 import { isMassDisconnect } from './mass-disconnect.ts'
 import { sweepPinSilence } from '../pin-silence.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -146,6 +147,7 @@ import {
 import {
   type ConnectedServerForSweep,
   listConnectedServersForSweep,
+  claimDisconnectNotices,
   listRecentlyOfflineServersForSweep,
   type RecentlyOfflineServerForSweep,
   rotateSweepBatch,
@@ -1831,27 +1833,41 @@ export async function runOfflineSweep(
 
     try {
       const ranLiveness = await runBoundedPhase(deadlineMs, 'liveness', async () => {
+        const alertSender =
+          opts.sweepOnceDeps?.alertSender ??
+          (await resolveAlertSender(
+            db,
+            tlsRenewal?.dataEncryptionSecrets,
+            sweepTrace,
+            undefined,
+            // Resolved only if an alert is actually sent this tick.
+            () => workersNotificationEmail(env, db, tlsRenewal),
+            // The legacy-webhook adoption is a one-time migration touch: the
+            // 15-minute window is plenty, not every minute.
+            {
+              adoptLegacy:
+                opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
+            }
+          ))
         stats = await sweepOnceSafely(env, db, {
           ...opts.sweepOnceDeps,
-          alertSender:
-            opts.sweepOnceDeps?.alertSender ??
-            (await resolveAlertSender(
-              db,
-              tlsRenewal?.dataEncryptionSecrets,
-              sweepTrace,
-              undefined,
-              // Resolved only if an alert is actually sent this tick.
-              () => workersNotificationEmail(env, db, tlsRenewal),
-              // The legacy-webhook adoption is a one-time migration touch: the
-              // 15-minute window is plenty, not every minute.
-              {
-                adoptLegacy:
-                  opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
-              }
-            )),
+          alertSender,
           nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
           deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
         })
+        // After the demotions and the self-heal, so a server healed this tick
+        // is not announced; an ordinary disconnect past the grace is.
+        await runIsolatedSweep(undefined, 'disconnect-notice-failed', () =>
+          noticeDisconnectedServers(db, {
+            claim: (claimDb, claimOpts) =>
+              runWithDbTimeout(claimDb, (leaseDb) => claimDisconnectNotices(leaseDb, claimOpts)),
+            graceMs: OFFLINE_SWEEP_STALE_MS,
+            nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
+            resolveSender: () => Promise.resolve(alertSender),
+            awaitDelivery: true,
+            budgetMs: Math.min(remainingMs(deadlineMs), ALERT_DELIVERY_BUDGET_MS),
+          })
+        )
       })
       if (!ranLiveness) {
         markSkippedFrom(phasesSkipped, 'command-dispatch', opts.scheduledTime)

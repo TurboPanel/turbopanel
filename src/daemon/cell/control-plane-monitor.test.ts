@@ -1448,3 +1448,43 @@ test('no demotions means no settings read and no alert', async () => {
   assertEquals(resolved, 0)
   resetServerStatusEventSinkForTests()
 })
+
+test('onDaemonConnected ends the outage: the offline reason and the claimed notice both go', async () => {
+  const { db, getDaemon, getStatus } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: 'host-1',
+        offlineReason: 'disconnect',
+        offlineNoticeAt: '2020-01-01T00:05:00.000Z',
+      },
+    },
+    { connected: false, statusChangedAt: '2020-01-01T00:00:00.000Z' }
+  )
+
+  await onDaemonConnected(db, serverId, createMockCell() as never)
+
+  assertEquals(getStatus().connected, true)
+  assertEquals(getDaemon()?.projection?.offlineReason, undefined)
+  assertEquals(getDaemon()?.projection?.offlineNoticeAt, undefined)
+})
+
+test('a second disconnect on an offline row keeps the clock and the claimed notice', async () => {
+  const { db, updateCalls, getStatus, getDaemon } = createTrackingDb(
+    {
+      key: baseKey,
+      projection: {
+        hostname: 'host-1',
+        offlineReason: 'disconnect',
+        offlineNoticeAt: '2020-01-01T00:05:00.000Z',
+      },
+    },
+    { connected: false, statusChangedAt: '2020-01-01T00:00:00.000Z' }
+  )
+
+  await onDaemonDisconnected(db, serverId)
+
+  assertEquals(updateCalls.length, 0)
+  assertEquals(getStatus().statusChangedAt, '2020-01-01T00:00:00.000Z')
+  assertEquals(getDaemon()?.projection?.offlineNoticeAt, '2020-01-01T00:05:00.000Z')
+})

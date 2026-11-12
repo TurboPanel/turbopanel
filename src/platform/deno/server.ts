@@ -26,6 +26,7 @@ import { applyStoredPublicUrls } from '../../admin/public-urls-apply-run.ts'
 import { refreshEdgeRanges, runEdgeTrustTick } from './ingress/edge-ranges.ts'
 import { createRedisDaemonCellRegistry } from '../../daemon/cell/redis/registry.ts'
 import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
+import { noticeDisconnectedServers } from '../../daemon/cell/disconnect-notice.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
@@ -37,7 +38,7 @@ import { resolveSelfHostedConsoleBaseUrl } from '../../features/install/resolve-
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { pruneNotificationHistory } from '../../features/notifications/cleanup.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
-import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
+import { DAEMON_CELL_MAINTAIN_MS, DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
@@ -903,18 +904,25 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       } catch (err) {
         logWarn('daemon-cell', `maintenance error: ${String(err)}`)
       }
+      const resolveSender = () =>
+        resolveAlertSender(db, dataEncryptionSecrets, undefined, ALERT_WEBHOOK_POLICY, consoleEmail)
       try {
-        await sweepStalePresence(db, daemonCellRegistry, () =>
-          resolveAlertSender(
-            db,
-            dataEncryptionSecrets,
-            undefined,
-            ALERT_WEBHOOK_POLICY,
-            consoleEmail
-          )
-        )
+        await sweepStalePresence(db, daemonCellRegistry, resolveSender)
       } catch (err) {
         logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
+      }
+      try {
+        // An ordinary disconnect that outlasts the same grace the sweep uses.
+        await noticeDisconnectedServers(db, {
+          graceMs: DAEMON_OFFLINE_SWEEP_MS,
+          awaitDelivery: false,
+          resolveSender,
+        })
+      } catch (err) {
+        logWarn(
+          'daemon-cell',
+          `disconnect notice error: ${err instanceof Error ? err.message : 'unknown error'}`
+        )
       }
     },
     async runCleanup() {
