@@ -413,6 +413,30 @@ the primary gets no command row and the `managed` row survives for a retry — o
 for `?force=true`, which skips the gate deliberately because a member host may
 be unreachable.
 
+### A command lost with a closing connection is sent again on reconnect
+
+The cell marks an outbox entry delivered the moment it is written to the
+socket, so a command written to a connection that was already closing (the
+daemon's own periodic recycle) never reaches the daemon yet stays `sent` and
+unacknowledged, and holds its server's turn until its consumer times out.
+`redeliverLostCommands` (`command-recovery.ts`) runs on `hello` only, on both
+runtimes, with no timer: it lists the cell's `command-dispatch` requests that
+are `sent` with no `ackAt` and whose id is in neither `commands.running` nor
+`commands.unacked` of that hello, then re-enqueues each with a **new
+`deliveryId` and the same `requestId`**, rebuilt from the `dispatch` payload.
+The cell's existing re-delivery branch leaves the request's status alone, so
+the command row stays `sent` and the consumer already waiting keeps waiting on
+the same request (a second queue message would start a second waiter). The
+daemon drops a command id it has already seen. Rules: only for a hello that
+lists `command-recovery-v1` (without it the lists are unknown, not empty);
+never for a request that is gone, answered or still `queued`, nor for a row
+that is no longer `sent` or already has `acked_at`; the database opens only
+when the cell holds a candidate (the Durable Object reads SQLite first); `dispatching`
+is left alone because a consumer may be about to write it. Every command type
+is sent again, deploys included: the daemon remembers seen ids in memory for an
+hour, so a daemon that restarted between receiving and acknowledging could run
+one twice, a window the lost-frame case outweighs.
+
 ### A deploy survives a lost link or a restart (`command-recovery-v1`)
 
 A daemon that lists `command-recovery-v1` keeps each command's final result on

@@ -66,6 +66,7 @@ import { recordCommandProgress } from '../../features/commands/command-progress.
 import {
   ackForReportedOutcome,
   noteReportedCommands,
+  redeliverLostCommands,
 } from '../../features/commands/command-recovery.ts'
 import {
   persistDaemonReachedTarget,
@@ -2396,6 +2397,31 @@ export class DaemonCellObject {
         noteReportedCommands(db, attachment.serverId, reported)
       )
     }
+    if (parsed.type === 'hello') {
+      await this.#redeliverLostCommands(attachment.serverId, parsed.features, reported)
+    }
+  }
+
+  /**
+   * On a hello, send again a command written to the previous connection that
+   * the daemon never received. The cell is read first (SQLite only); the
+   * database opens only when there is such a request.
+   */
+  async #redeliverLostCommands(
+    serverId: string,
+    features: string[] | undefined,
+    report: CommandRecoveryReport | undefined
+  ): Promise<void> {
+    await redeliverLostCommands(
+      {
+        enqueue: (outbound, opts) => Promise.resolve(this.#enqueue(serverId, outbound, opts)),
+        getRequest: (requestId) => Promise.resolve(this.#getRequest(serverId, requestId)),
+        listRequests: (limit, filter) =>
+          Promise.resolve(this.#listRequests(serverId, limit ?? 50, filter?.requestKind)),
+      },
+      (fn) => this.#withProjectionDb('command-redelivery', serverId, fn),
+      { serverId, features, report }
+    )
   }
 
   /**
