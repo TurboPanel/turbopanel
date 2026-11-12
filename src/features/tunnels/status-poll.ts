@@ -8,7 +8,7 @@
  * is recorded once, and a new question is sent when the last one is old enough.
  * Only a connected server whose daemon advertises `tunnel-status-v1` is asked.
  */
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, gt, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, portal, server } from '../../db/schema.ts'
 import { parseTunnelStatusResult } from '../../contracts/commands/tunnel-status.ts'
@@ -27,6 +27,16 @@ export const TUNNEL_STATUS_POLL_GAP_MS = 10 * 60 * 1000
 
 /** How long an unanswered question is waited for before it is asked again. */
 export const TUNNEL_STATUS_STALE_MS = 2 * 60 * 1000
+
+/**
+ * The shorter gap for a server that has a tunnel connector nobody has heard
+ * from yet (a portal with no answer), so a new tunnel or a just-changed
+ * placement shows its first status within about one sweep tick.
+ */
+export const TUNNEL_STATUS_NEW_PORTAL_GAP_MS = 15 * 1000
+
+/** How long after its creation a portal that was never heard from still speeds the question up. */
+export const TUNNEL_STATUS_NEW_PORTAL_WINDOW_MS = 10 * 60 * 1000
 
 type AskedState = { commandId: string; sentAt: string; recordedAt?: string }
 
@@ -95,6 +105,32 @@ async function ask(db: Db, commandQueue: CommandQueue, serverId: string): Promis
   await saveAsked(db, serverId, { commandId: record.id, sentAt: new Date().toISOString() })
 }
 
+/** The least time before the next question, by what the last one did and whether a connector is still unheard. */
+export function statusGapMs(answered: boolean, unheardPortal: boolean): number {
+  if (!answered) return TUNNEL_STATUS_STALE_MS
+  return unheardPortal ? TUNNEL_STATUS_NEW_PORTAL_GAP_MS : TUNNEL_STATUS_POLL_GAP_MS
+}
+
+/**
+ * Does the server have a portal made recently that no answer has covered yet?
+ * Bounded by the portal's age, so a connector that never reports costs a few
+ * extra questions, not one every tick forever.
+ */
+async function hasUnheardPortal(db: Db, serverId: string, nowMs: number): Promise<boolean> {
+  const [row] = await db
+    .select({ id: portal.id })
+    .from(portal)
+    .where(
+      and(
+        eq(portal.serverId, serverId),
+        isNull(portal.lastSeenAt),
+        gt(portal.createdAt, new Date(nowMs - TUNNEL_STATUS_NEW_PORTAL_WINDOW_MS).toISOString())
+      )
+    )
+    .limit(1)
+  return row !== undefined
+}
+
 /** Record what the last question learned, then ask again when it is time. */
 export async function pollServerTunnelStatus(
   db: Db,
@@ -113,8 +149,12 @@ export async function pollServerTunnelStatus(
   if (asked) {
     const age = nowMs - Date.parse(asked.sentAt)
     const answered = asked.recordedAt !== undefined
-    // An answered question waits out the gap; an unanswered one waits out its own life.
-    if (age < (answered ? TUNNEL_STATUS_POLL_GAP_MS : TUNNEL_STATUS_STALE_MS)) {
+    // An answered question waits out the gap (short while a new connector is unheard);
+    // an unanswered one waits out its own life.
+    const quick =
+      answered && age < TUNNEL_STATUS_POLL_GAP_MS && age >= TUNNEL_STATUS_NEW_PORTAL_GAP_MS
+    const unheard = quick && (await hasUnheardPortal(db, row.id, nowMs))
+    if (age < statusGapMs(answered, unheard)) {
       return recorded ? 'recorded' : 'waiting'
     }
   }
