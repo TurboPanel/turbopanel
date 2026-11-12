@@ -2414,7 +2414,7 @@ export class DaemonCellObject {
   ): Promise<void> {
     await redeliverLostCommands(
       {
-        enqueue: (outbound, opts) => Promise.resolve(this.#enqueue(serverId, outbound, opts)),
+        redeliverSent: (outbound) => Promise.resolve(this.#redeliverSent(serverId, outbound)),
         getRequest: (requestId) => Promise.resolve(this.#getRequest(serverId, requestId)),
         listRequests: (limit, filter) =>
           Promise.resolve(this.#listRequests(serverId, limit ?? 50, filter?.requestKind)),
@@ -3042,6 +3042,14 @@ export class DaemonCellObject {
           ),
         })
 
+      case '/rpc/redeliver-sent':
+        return jsonResponse({
+          redelivered: this.#redeliverSent(
+            this.#requireServerId(request, body),
+            body?.outbound as DaemonOutboundEnvelope
+          ),
+        })
+
       case '/rpc/expire-request':
         return jsonResponse({
           record: await this.#expireRequest(
@@ -3350,6 +3358,47 @@ export class DaemonCellObject {
       createdAt,
       expiresAt,
     }
+  }
+
+  /**
+   * Deliver an existing request again under a new delivery id, in one
+   * synchronous step and only while it is `sent` with no ack. Never inserts: an
+   * expired request is deleted from the table, so nothing is queued for it.
+   */
+  #redeliverSent(serverId: string, outbound: DaemonOutboundEnvelope): boolean {
+    const row = readFirstSqlRow(
+      this.#sql(
+        'redeliver-sent',
+        'SELECT delivery_id, status, ack_at FROM request WHERE request_id = ?',
+        outbound.requestId
+      )
+    )
+    if (!row || sqlString(row.status) !== 'sent' || sqlString(row.ack_at)) return false
+    if (sqlString(row.delivery_id) === outbound.deliveryId) return true
+    this.#sql(
+      'redeliver-sent',
+      `UPDATE request SET
+         delivery_id = ?,
+         payload_json = ?,
+         delivery_status = 'queued',
+         retry_count = 0,
+         retry_at = NULL,
+         sent_at = NULL,
+         updated_at = ?
+       WHERE request_id = ? AND status = 'sent' AND ack_at IS NULL`,
+      outbound.deliveryId,
+      JSON.stringify(outbound),
+      nowIso(),
+      outbound.requestId
+    )
+    this.#runBoundedBackground('pump-outbox', serverId, this.#pumpOutboxToDaemonSockets(serverId))
+    void this.#scheduleOutboxRetryIfNeeded()
+    this.#trace('redeliver-sent', {
+      serverId,
+      requestId: outbound.requestId,
+      deliveryId: outbound.deliveryId,
+    })
+    return true
   }
 
   #markSent(serverId: string, deliveryId: string, _connectionId: string, sentAt?: string): void {

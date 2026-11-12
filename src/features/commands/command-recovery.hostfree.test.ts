@@ -6,6 +6,7 @@ import type {
 } from '../../contracts/cell-protocol.ts'
 import type { Db } from '../../db/connection.ts'
 import {
+  REDELIVERABLE_COMMAND_TYPES,
   redeliverLostCommands,
   type RedeliveryReads,
   unconfirmedErrorText,
@@ -79,9 +80,11 @@ function fixture(): Fixture {
   const cell = {
     listRequests: () => Promise.resolve([...requests.values()]),
     getRequest: (id: string) => Promise.resolve(requests.get(id) ?? null),
-    enqueue: (outbound: DaemonOutboundEnvelope) => {
+    redeliverSent: (outbound: DaemonOutboundEnvelope) => {
+      const live = requests.get(outbound.requestId)
+      if (live?.status !== 'sent' || live.ackAt) return Promise.resolve(false)
       sent.push(outbound)
-      return Promise.resolve(request(outbound.requestId))
+      return Promise.resolve(true)
     },
   }
   const reads = {
@@ -106,10 +109,15 @@ function fixture(): Fixture {
   }
 }
 
-function addCommand(fx: Fixture, id: string, requestPatch: Partial<PendingRequestRecord> = {}) {
+function addCommand(
+  fx: Fixture,
+  id: string,
+  requestPatch: Partial<PendingRequestRecord> = {},
+  type = 'managed.ingress.reconcile'
+) {
   fx.requests.set(id, request(id, requestPatch))
   fx.rows.set(id, {
-    type: 'managed.ingress.reconcile',
+    type,
     status: 'sent',
     ackedAt: null,
     serverId: SERVER_ID,
@@ -190,12 +198,53 @@ test('a cell or database failure is swallowed and the other commands still go', 
   const fx = fixture()
   addCommand(fx, 'a')
   addCommand(fx, 'b')
-  const failing = fx.requests.get('a')!
-  fx.requests.set('a', failing)
   const original = fx.rows.get.bind(fx.rows)
   fx.rows.get = (id: string) => {
     if (id === 'a') throw new Error('database down')
     return original(id)
   }
   assertEquals(await fx.run(RECOVERY_FEATURES, undefined), ['b'])
+})
+
+test('a type that is not safe to repeat is never sent again, even when its frame was lost', async () => {
+  const fx = fixture()
+  for (const type of [
+    'environment.deploy',
+    'managed.destroy',
+    'managed.restore',
+    'managed.ha.failover',
+    'server.reboot',
+    'server.folders.remove',
+  ]) {
+    addCommand(fx, `id-${type}`, {}, type)
+  }
+  addCommand(fx, 'ok', {}, 'system.reconcile')
+  assertEquals(await fx.run(RECOVERY_FEATURES, undefined), ['ok'])
+  assertEquals(
+    fx.sent.map((o) => o.requestId),
+    ['ok']
+  )
+})
+
+test('the allowlist holds only reconcile types and read-only probes', () => {
+  for (const type of REDELIVERABLE_COMMAND_TYPES) {
+    assertEquals(
+      type === 'daemon.ping' || type === 'server.tunnel.status' || type.endsWith('.reconcile'),
+      true,
+      type
+    )
+  }
+})
+
+test('a request that expired between the check and the cell step is not created again', async () => {
+  const fx = fixture()
+  addCommand(fx, 'gone')
+  const reads = fx.rows.get.bind(fx.rows)
+  fx.rows.get = (id: string) => {
+    // The consumer gives up while the database is being read.
+    fx.requests.delete(id)
+    return reads(id)
+  }
+  assertEquals(await fx.run(RECOVERY_FEATURES, undefined), [])
+  assertEquals(fx.sent.length, 0)
 })

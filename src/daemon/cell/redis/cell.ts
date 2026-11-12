@@ -1094,6 +1094,33 @@ export class RedisDaemonCell implements DaemonCell {
     )
   }
 
+  async redeliverSent(outbound: DaemonOutboundEnvelope): Promise<boolean> {
+    this.#bumpMethodRoute('redeliverSent')
+    const redis = this.#redis('redeliverSent')
+    const reqKey = requestKey(this.#serverId, outbound.requestId)
+    const fields = await redis.hgetall(reqKey)
+    // Never insert: an expired request is purged, so its hash is gone.
+    if (fields?.status !== 'sent' || fields.ackAt) return false
+    const deliveries = parseDeliveryMap(fields.deliveries)
+    if (deliveries[outbound.deliveryId]) return true
+    const streamId = await redis.xadd(outboxKey(this.#serverId), '*', {
+      deliveryId: outbound.deliveryId,
+      requestId: outbound.requestId,
+      kind: outbound.kind,
+      payload: JSON.stringify(outbound),
+      enqueuedAt: outbound.at,
+    })
+    deliveries[outbound.deliveryId] = streamId
+    await redis.hset(reqKey, { deliveries: JSON.stringify(deliveries) })
+    this.#deliveryToStreamId.set(outbound.deliveryId, streamId)
+    cellTrace('redeliver-sent', {
+      serverId: this.#serverId,
+      requestId: outbound.requestId,
+      deliveryId: outbound.deliveryId,
+    })
+    return true
+  }
+
   async getRequest(requestId: string): Promise<PendingRequestRecord | null> {
     this.#bumpMethodRoute('getRequest')
     const redis = this.#redis('getRequest')

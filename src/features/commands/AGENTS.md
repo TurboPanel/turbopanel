@@ -422,20 +422,29 @@ unacknowledged, and holds its server's turn until its consumer times out.
 `redeliverLostCommands` (`command-recovery.ts`) runs on `hello` only, on both
 runtimes, with no timer: it lists the cell's `command-dispatch` requests that
 are `sent` with no `ackAt` and whose id is in neither `commands.running` nor
-`commands.unacked` of that hello, then re-enqueues each with a **new
-`deliveryId` and the same `requestId`**, rebuilt from the `dispatch` payload.
-The cell's existing re-delivery branch leaves the request's status alone, so
-the command row stays `sent` and the consumer already waiting keeps waiting on
-the same request (a second queue message would start a second waiter). The
-daemon drops a command id it has already seen. Rules: only for a hello that
-lists `command-recovery-v1` (without it the lists are unknown, not empty);
-never for a request that is gone, answered or still `queued`, nor for a row
-that is no longer `sent` or already has `acked_at`; the database opens only
-when the cell holds a candidate (the Durable Object reads SQLite first); `dispatching`
-is left alone because a consumer may be about to write it. Every command type
-is sent again, deploys included: the daemon remembers seen ids in memory for an
-hour, so a daemon that restarted between receiving and acknowledging could run
-one twice, a window the lost-frame case outweighs.
+`commands.unacked` of that hello. For each it reads the command row and the
+`dispatch` payload first, then calls the cell's `redeliverSent`, one
+conditional step (a single synchronous statement in the Durable Object, a
+status check in the Redis cell) that replaces the delivery under a **new
+`deliveryId` and the same `requestId`** only while the request is still `sent`
+with no `ackAt`, and **never inserts**: an expired request is deleted from the
+Durable Object table and purged from Redis, so a plain `enqueue` would have
+created a request nobody waits on. The request status stays `sent`, so the
+command row stays `sent` and the consumer already waiting keeps waiting on the
+same request (a second queue message would start a second waiter). Rules:
+only for a hello that lists `command-recovery-v1` (without it the lists are
+unknown, not empty); only for `REDELIVERABLE_COMMAND_TYPES`, an explicit
+allowlist of reconcile types and read-only probes; never for a row that is no
+longer `sent` or already has `acked_at`; the database opens only when the cell
+holds a candidate; `dispatching` is left alone because a consumer may be about
+to write it.
+
+Why an allowlist: a daemon that restarted since it received a frame cannot
+list it in its first hello (its journal is read after attach) and has
+forgotten its seen ids, so a resend could run a deploy, destroy, rollback or
+rotation twice. Those types stay on their current paths (the deploy lane grace
+and waiter, the 45 s ack deadline on Workers). Widening the allowlist needs a
+daemon feature that reports journal ids, or a process start id, in the hello.
 
 ### A deploy survives a lost link or a restart (`command-recovery-v1`)
 
