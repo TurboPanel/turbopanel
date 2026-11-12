@@ -5,11 +5,14 @@ import {
   helperVariables,
   injectHelperPublishes,
   planHelperReach,
+  reachDecls,
   readRecordedCacheConsumers,
   readRecordedHelperPorts,
   type ReachServiceInfo,
 } from './reach.ts'
 import { ENV_1, PRINCIPAL_A, PRINCIPAL_B } from './fixtures.test.support.ts'
+
+import { buildApplicationModel } from '../compose/ir.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -66,6 +69,48 @@ test('unknown, container, unowned and replicated services are refused', () => {
     one
   )
   assertEquals(unowned.errors.length, 1)
+})
+
+test('a container scaled by deploy.replicas is refused, naming the service', () => {
+  const plan = (replicas: number | undefined) =>
+    planHelperReach(
+      [{ service: 'search', port: 7700, from: ['web'], replicas }],
+      services,
+      usernameOf,
+      one
+    )
+  assertEquals(plan(2).entries, [])
+  assertEquals(plan(2).errors, ['"search" has a reach port, so it must run as one copy'])
+  assertEquals(plan(1).errors, [])
+  assertEquals(plan(undefined).errors, [])
+})
+
+test('reach declarations count the copies this server runs and an authored scale', () => {
+  const refusalOf = (extra: Record<string, unknown>, local: number | undefined) => {
+    const data = {
+      services: {
+        search: {
+          image: 'search',
+          'x-turbopanel': { reach: { port: 7700, from: ['web'] } },
+          ...extra,
+        },
+      },
+    }
+    const counts = new Map(local === undefined ? [] : [['search', local]])
+    const decls = reachDecls(buildApplicationModel({ data } as never), counts)
+    return planHelperReach(decls, services, usernameOf, one).errors
+  }
+  const refusal = ['"search" has a reach port, so it must run as one copy']
+  assertEquals(refusalOf({}, undefined), [])
+  assertEquals(refusalOf({}, 1), [])
+  // Only the instance count: no deploy block, the scheduler falls back to it.
+  assertEquals(refusalOf({}, 2), refusal)
+  assertEquals(refusalOf({ deploy: { replicas: 2 } }, 2), refusal)
+  // deploy.replicas spread one per server runs one copy here.
+  assertEquals(refusalOf({ deploy: { replicas: 4 } }, 1), [])
+  assertEquals(refusalOf({ scale: 3 }, 1), refusal)
+  assertEquals(refusalOf({ scale: '3' }, 1), refusal)
+  assertEquals(refusalOf({ scale: 1 }, 1), [])
 })
 
 test('more than 32 reach ports is refused', () => {

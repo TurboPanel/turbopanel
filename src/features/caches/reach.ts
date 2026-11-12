@@ -6,10 +6,17 @@
  */
 
 import type { EnvironmentDeployHelperReach } from '../../contracts/commands/schemas.ts'
+import type { Application } from '../compose/ir.ts'
 import { allocateSiteListenPort } from '../compose/site.ts'
 import { CACHE_PORT_MAX, CACHE_PORT_MIN, MAX_HELPER_REACH_PER_DEPLOY } from './vocabulary.ts'
 
-export type ReachDecl = { service: string; port: number; from: readonly string[] }
+export type ReachDecl = {
+  service: string
+  port: number
+  from: readonly string[]
+  /** Copies this server runs, or an authored `scale`; more than one is more than one copy. */
+  replicas?: number
+}
 
 export type ReachServiceInfo = {
   kind: string
@@ -28,6 +35,38 @@ export type HelperPlanEntry = {
 
 export type HelperPlan = { entries: HelperPlanEntry[]; errors: string[] }
 
+/** A top-level `scale:` the scheduler does not read but Compose would still honour. */
+function authoredScale(compose: Readonly<Record<string, unknown>>): number {
+  const raw = compose.scale
+  const value = typeof raw === 'string' ? Number(raw.trim()) : raw
+  return typeof value === 'number' && Number.isInteger(value) ? value : 1
+}
+
+/**
+ * The reach declarations of the container services, with their scale. The copy
+ * count is the one this server will run (the scheduler's local count, which
+ * honours `deploy.replicas` and the instance count), because that is what the
+ * compiled document turns into `scale:`; replicas on other servers are fine.
+ */
+export function reachDecls(
+  application: Application,
+  localReplicaCounts: ReadonlyMap<string, number> = new Map()
+): ReachDecl[] {
+  const decls: ReachDecl[] = []
+  for (const svc of application.services) {
+    const reach = svc.turbopanel?.reach
+    if (svc.kind === 'container' && reach) {
+      decls.push({
+        service: svc.name,
+        port: reach.port,
+        from: reach.from,
+        replicas: Math.max(localReplicaCounts.get(svc.name) ?? 1, authoredScale(svc.compose)),
+      })
+    }
+  }
+  return decls
+}
+
 const REACH_CONSUMER_KINDS: ReadonlySet<string> = new Set(['site', 'node'])
 
 /** The first problem with one declaration, in plain words, or null. */
@@ -37,7 +76,7 @@ function declProblem(
   usernameOf: (principalId: string) => string | undefined,
   clones: readonly string[]
 ): string | null {
-  if (clones.length !== 1) {
+  if (clones.length !== 1 || (decl.replicas ?? 1) > 1) {
     return `"${decl.service}" has a reach port, so it must run as one copy`
   }
   const accounts = new Set<string>()

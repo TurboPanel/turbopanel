@@ -3762,7 +3762,11 @@ async function applyDeployVariables(
     params: { environmentId: string; serverId: string }
     pipeline: Pick<
       DeployExpandPipeline,
-      'expandedDocument' | 'expandedServiceNames' | 'expansion' | 'localServiceNames'
+      | 'expandedDocument'
+      | 'expandedServiceNames'
+      | 'expansion'
+      | 'localServiceNames'
+      | 'localReplicaCounts'
     >
     serviceRows: ServiceRow[]
     projectId: string
@@ -3889,6 +3893,7 @@ async function prepareCachesAndVariables(
       principalResolution,
       localServiceNames: input.pipeline.localServiceNames,
       expansion: input.pipeline.expansion,
+      localReplicaCounts: input.pipeline.localReplicaCounts,
       orgOptions,
       serverOptions,
     },

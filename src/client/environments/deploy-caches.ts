@@ -28,9 +28,9 @@ import {
   allocateHelperPorts,
   helperVariables,
   planHelperReach,
+  reachDecls,
   readRecordedHelperPorts,
   type HelperPlanEntry,
-  type ReachDecl,
   type ReachServiceInfo,
 } from '../../features/caches/reach.ts'
 import { listEnvironmentCaches, type CacheWithAccount } from '../../features/caches/store.ts'
@@ -107,19 +107,10 @@ export type PrepareProjectCachesInput = {
   localServiceNames: ReadonlySet<string> | undefined
   /** Origin service name to its names after multi-instance expansion. */
   expansion?: ReadonlyMap<string, readonly string[]>
+  /** Copies of each service this server runs (what compile writes as `scale`). */
+  localReplicaCounts?: ReadonlyMap<string, number>
   orgOptions: unknown
   serverOptions: unknown
-}
-
-function reachDecls(application: Application): ReachDecl[] {
-  const decls: ReachDecl[] = []
-  for (const svc of application.services) {
-    const reach = svc.turbopanel?.reach
-    if (svc.kind === 'container' && reach) {
-      decls.push({ service: svc.name, port: reach.port, from: reach.from })
-    }
-  }
-  return decls
 }
 
 async function serviceAccounts(
@@ -191,7 +182,7 @@ export async function prepareProjectCaches(
 ): Promise<PreparedProjectCaches | ProjectCacheRefusal> {
   const rows = await listEnvironmentCaches(db, input.environmentId)
   // A reach container is opened on the server that runs it, so others skip it.
-  const decls = reachDecls(input.application).filter(
+  const decls = reachDecls(input.application, input.localReplicaCounts).filter(
     (decl) => input.localServiceNames === undefined || input.localServiceNames.has(decl.service)
   )
   const features = await storedDaemonFeatures(db, input.serverId)
