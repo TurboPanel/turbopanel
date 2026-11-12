@@ -1,5 +1,5 @@
 /**
- * The groundwork tables and columns (`0032_groundwork_tables_and_columns`)
+ * The groundwork tables and columns (`0000_init`)
  * against a real database: every CHECK, unique key and foreign key the
  * migration adds refuses what it should and accepts what it should. Nothing
  * writes these tables yet; this keeps the shapes honest until a feature does.

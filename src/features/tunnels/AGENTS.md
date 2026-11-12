@@ -9,7 +9,7 @@ runs, the hostnames it carries) with the pure route builder for the daemon.
 
 `carrier` (a provider account an organization connected), `badge` (one API
 token on a carrier), `tunnel`, `portal` (one server running one connector) and
-`doorway` (one hostname a tunnel carries). Created in `0005_tunnel_tables`.
+`doorway` (one hostname a tunnel carries).
 Nothing in a table name, column or migration says Cloudflare: the provider is
 a value (`TUNNEL_PROVIDERS` in `vocabulary.ts`, pinned to the CHECK
 constraints by `src/db/enum-checks.test.ts`). Adding a provider is one new

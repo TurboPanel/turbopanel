@@ -815,7 +815,6 @@ test('a control plane channel hears install events, and organization events only
     await db.delete(notificationRule).where(eq(notificationRule.channelId, named.id))
     await db.insert(notificationRule).values({
       channelId: named.id,
-      event: '*',
       topicCode: null,
       minSeverity: 'info',
       organizationId,
@@ -981,7 +980,6 @@ test('a rule for one event does not route another event, and a category rule mat
     await db.delete(notificationRule).where(eq(notificationRule.channelId, byCategory.id))
     await db.insert(notificationRule).values({
       channelId: byCategory.id,
-      event: '*',
       topicCode: null,
       categoryCode: 'servers',
       minSeverity: 'info',

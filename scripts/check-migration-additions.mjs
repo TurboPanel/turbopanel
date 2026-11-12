@@ -27,6 +27,38 @@ import { pathToFileURL } from 'node:url'
 
 const NIL_SHA = '0000000000000000000000000000000000000000'
 
+/**
+ * THE ONE NAMED, OWNER-APPROVED EXCEPTION (decided 2026-11-12): the reset
+ * replaces every shipped migration (`0000` to `0035`) with one generated
+ * baseline, `0000_init`, because every control plane database is wiped before
+ * the release that carries it. It lets exactly one change through: the head
+ * manifest must be generation 14, frozen, with a one-entry journal tagged
+ * `0000_init`, on top of a base manifest at generation 13. Once the reset is
+ * the base, the generation is 14 and the exception can never match again. The
+ * promotion pull requests are still checked against a generation-13 base until
+ * staging and live carry the reset, so the constant and its tests are deleted
+ * only after that. Do not extend it.
+ */
+export const RESET_EXCEPTION = Object.freeze({
+  name: 'reset-2026-11-12-owner-approved',
+  fromGeneration: 13,
+  toGeneration: 14,
+  tag: '0000_init',
+})
+
+/** Whether the one-time reset exception covers this base manifest and head manifest and journal. */
+export function resetExceptionApplies(baseManifest, headManifest, headJournal) {
+  const entries = headJournal?.entries
+  return (
+    baseManifest?.generation === RESET_EXCEPTION.fromGeneration &&
+    headManifest?.generation === RESET_EXCEPTION.toGeneration &&
+    headManifest?.frozen === true &&
+    Array.isArray(entries) &&
+    entries.length === 1 &&
+    entries[0]?.tag === RESET_EXCEPTION.tag
+  )
+}
+
 const IMMUTABLE = /^migrations\/(\d{4}_.+\.sql|meta\/\d{4}_snapshot\.json)$/
 
 /** The base ref from argv: skips the literal `--` pnpm forwards, falls back to origin/trunk. */
@@ -78,6 +110,18 @@ function git(...args) {
   return execFileSync('git', args, { encoding: 'utf8' }).trim()
 }
 
+function headResetExceptionApplies(baseManifest) {
+  try {
+    return resetExceptionApplies(
+      baseManifest,
+      JSON.parse(git('show', 'HEAD:migrations/manifest.json')),
+      JSON.parse(git('show', 'HEAD:migrations/meta/_journal.json'))
+    )
+  } catch {
+    return false
+  }
+}
+
 function fail(message) {
   console.error(`migration-additions: ${message}`)
   process.exit(1)
@@ -103,16 +147,23 @@ function requireFrozenBase(base) {
   if (baseManifest.frozen !== true) {
     fail(`${base} migrations/manifest.json is not frozen, so nothing can be checked`)
   }
+  return baseManifest
 }
 
 function main() {
   const base = resolveBase(process.argv.slice(2))
 
-  requireFrozenBase(base)
+  const baseManifest = requireFrozenBase(base)
 
   const changes = parseChanges(git(...diffArgs(base)))
 
   const violations = findViolations(changes)
+  if (violations.length > 0 && headResetExceptionApplies(baseManifest)) {
+    console.log(
+      `migration-additions: RESET EXCEPTION ${RESET_EXCEPTION.name} used: generation ${RESET_EXCEPTION.fromGeneration} to ${RESET_EXCEPTION.toGeneration}, ${violations.length} shipped file change(s) allowed once`
+    )
+    return
+  }
   if (violations.length > 0) {
     for (const violation of violations) {
       console.error(

@@ -184,7 +184,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       approvals:
         'JSON array of the WebAuthn assertions that approved the statement, served to servers as written.',
       prev_key:
-        'Base64url raw public key of `prev_kid`, served with the signature; NULL for a revoke and for statements stored before key signatures.',
+        'Base64url raw public key of `prev_kid`, served with the signature; NULL for a revoke.',
       prev_key_signature:
         'Base64url Ed25519 signature by the replaced key over `tp-keyset`, a newline and the statement bytes; NULL for a revoke, which two passkeys approve.',
       approved_by_user_id:
@@ -307,7 +307,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       grants:
         'Optional grant specs (`entityType`, `entityId`, `permissionKey`) an owner attached; null means none; materialized on accept.',
       token_hash:
-        'SHA-256 verifier of the secret emailed only in the accept link, used to look the invitation up; rotated on re-send, null on older invitations.',
+        'SHA-256 verifier of the secret emailed only in the accept link, used to look the invitation up; rotated on re-send.',
     },
   },
   leaf: {
@@ -405,7 +405,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       status:
         'Row health `ready`, `pending`, `expired`, `failed`, `revoked` or `automatic` (web server issues it); `expired` is derived from `not_after`, others stored.',
       not_after:
-        'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `managed` rows; indexed for expiry checks.',
+        'Certificate expiry parsed from the PEM at write; epoch-0 placeholder on `automatic` rows; indexed for expiry checks.',
       fingerprint_sha256:
         'SHA-256 fingerprint of the leaf DER, unique per organization when set; null on `managed` rows that have no certificate yet.',
       ca_state:
@@ -445,7 +445,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       tier_id:
         'Tier a manager chose in Add Server (hosted); holds a seat there until a server enrolls with this key and takes it. NULL when no tier was chosen.',
       expires_at:
-        'Set at mint to 7 days later: past it an unused key cannot enroll and holds no license; ignored once bound. NULL (older keys, the colocated key) never expires.',
+        'Set at mint to 7 days later: past it an unused key cannot enroll and holds no license; ignored once bound. NULL (the colocated key) never expires.',
     },
   },
   payer: {
@@ -1211,7 +1211,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
       server_id:
-        'Host that holds the on-disk artifact (the primary when the backup ran); null on older rows or after that server is deleted.',
+        'Host that holds the on-disk artifact (the primary when the backup ran); null after that server is deleted.',
     },
   },
   destination: {
@@ -1554,7 +1554,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       kind: 'Kind of traffic carried, `http` for now; ssh, rdp, vnc and tcp are added by a forward migration.',
       hosting_id:
         'The site this name serves; SET NULL when the site is deleted, leaving the doorway unattached.',
-      external_route_id: 'The provider id of the route for this name; NULL until published.',
       external_dns_record_id:
         'The provider id of the DNS record the panel created for this name; NULL until created.',
       is_local_only:
@@ -2044,7 +2043,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       redirect_uri:
         'OAuth redirect URI registered with the provider for the GitLab authorize flow; NULL for GitHub Apps.',
       webhook_origin:
-        'Public origin the provider was told to deliver webhooks to at registration; NULL on apps registered before that choice existed.',
+        'Public origin the provider was told to deliver webhooks to at registration; NULL when none was recorded.',
       is_public:
         'Whether the provider was told the app is publicly installable; set at creation (true for instance-wide apps) and refreshed from GitHub on sync.',
       custom_git_user:
@@ -2131,7 +2130,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'Delivery-attempt ledger: one row per event per routed channel, inserted before the send so a crash leaves a pending row; retried by the maintenance tick.',
     columns: {
       organization_id: 'Organization the event belongs to; NULL for an instance-scoped event.',
-      event: 'Catalogue code (`NOTIFICATION_EVENTS`), same vocabulary as `notification.event`.',
       severity: "`info`, `warning` or `critical`, copied from the event's catalogue definition.",
       payload:
         'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `destinationId`, `context`, `at`.',
@@ -2145,12 +2143,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       last_error:
         'Short failure code from the last attempt (`http_503`, `timeout`, `network`, `address_scheme_not_https`), never a body or the address.',
       event_id:
-        'The `event` row this copy carries; deleting the event at the end of its 30-day retention deletes its copies. NULL on rows written before it existed.',
+        'The `event` row this copy carries; deleting the event at the end of its 30-day retention deletes its copies.',
       user_id:
         'The person a personal copy is for, checked again for access before it is sent; NULL for an organization or instance channel.',
       device_id:
         'The device a push copy goes to; NULL for every other kind (push is not sent yet).',
-      topic_code: 'The catalogue topic of the event, written beside the older `event` column.',
+      topic_code: 'The catalogue topic of the event.',
       reason:
         'Why the copy was held or not sent: `quiet_hours`, `digest`, `no_access`, `scope_deleted`, `read_in_app`, `unverified`, `bounced` and others; NULL when sent.',
       provider_id:
@@ -2205,8 +2203,6 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Recipient of the inbox row; one row per person the event reached, chosen by the event's audience (members or managers).",
       organization_id:
         'Organization the event belongs to; NULL for an instance-scoped event such as `fleet.mass_disconnect`.',
-      event:
-        'Catalogue code (`NOTIFICATION_EVENTS`), such as `server.offline`, `access.grant_*`, `certificate.renewal_failed` or `folder.orphans_found`.',
       severity: "`info`, `warning` or `critical`, copied from the event's catalogue definition.",
       title:
         "One-line sentence rendered from the catalogue's title template at emit time; also the email subject.",
@@ -2223,7 +2219,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'When the recipient dismissed the row from the bell; NULL while it is still shown.',
       event_id:
         'The `event` row this copy came from, a plain id with no foreign key so the 90-day inbox outlives the 30-day event retention.',
-      topic_code: 'The catalogue topic, written beside the older `event` column.',
+      topic_code: 'The catalogue topic of the event this row is about.',
       project_id:
         'Project the event was about, a plain id with no foreign key so the row outlives the project; used for links and filters.',
       environment_id:
@@ -2239,13 +2235,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   rule: {
     group: 'notifications',
     summary:
-      'Subscription row saying which event (or `*`) reaches a channel at or above a severity floor; a channel with no rule receives nothing.',
+      'Subscription row saying which category or topic (or every topic) reaches a channel at or above a severity floor; a channel with no rule receives nothing.',
     columns: {
-      event: 'One catalogue event code, or `*` for every event; unique per channel.',
       min_severity:
         "Severity floor `info` (default), `warning` or `critical`; delivered only when the event's severity ranks at or above it.",
       organization_id:
-        'Organization a shared route belongs to, set with the scope columns that narrow it; NULL on routes written before scoped routes.',
+        'Organization a shared route belongs to, set with the scope columns that narrow it; NULL means the route covers the whole install.',
       project_id: 'Project the route is limited to; deleting the project deletes the route.',
       environment_id:
         'Environment the route is limited to; deleting the environment deletes the route.',
@@ -2256,7 +2251,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       category_code:
         'Catalogue category the route is limited to; NULL with `topic_code` NULL means every topic.',
       topic_code:
-        'One catalogue topic the route is limited to; NULL means the `event` column or the category decides.',
+        'One catalogue topic the route is limited to; NULL means the category decides, or every topic when the category is NULL too.',
       ends_at: 'A muted route sends nothing until this time; NULL means not muted.',
       is_enabled: 'False keeps the route and sends nothing through it.',
     },
@@ -2497,8 +2492,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       error_message: 'Human-readable failure text set alongside `error_code`.',
       detail:
         'Small stage facts such as bytes fetched or an exit code; the orchestrator writes it, never a transcript.',
-      started_at:
-        'When the step was first dispatched to its server; NULL until then, and on rows written before this column existed.',
+      started_at: 'When the step was first dispatched to its server; NULL until then.',
       finished_at:
         'When the step reached a terminal status (`done`, `skipped`, `failed`, `needs_attention`); cleared when a retry reopens it.',
     },

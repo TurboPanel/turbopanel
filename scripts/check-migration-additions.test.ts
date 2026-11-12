@@ -3,7 +3,13 @@
  * migrations and snapshots fail; journal and manifest may change.
  */
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import { findViolations, parseChanges, resolveBase } from './check-migration-additions.mjs'
+import {
+  RESET_EXCEPTION,
+  findViolations,
+  parseChanges,
+  resetExceptionApplies,
+  resolveBase,
+} from './check-migration-additions.mjs'
 
 /** Alias so Sonar recognizes the suite (see check-deploy-env.test.ts). */
 const test = Deno.test.bind(Deno)
@@ -170,4 +176,42 @@ test('script: a base whose manifest is not frozen fails instead of skipping', ()
   const result = guardAfter(addOne, { manifest: '{"frozen":false}' })
   assertEquals(result.code, 1)
   assertStringIncludes(result.out, 'not frozen')
+})
+
+const RESET_HEAD = { generation: 14, frozen: true }
+const RESET_JOURNAL = { entries: [{ idx: 0, tag: '0000_init' }] }
+
+test('the reset exception passes exactly generation 13 to 14 with a one-entry journal', () => {
+  assertEquals(RESET_EXCEPTION.name, 'reset-2026-11-12-owner-approved')
+  assertEquals(resetExceptionApplies({ generation: 13 }, RESET_HEAD, RESET_JOURNAL), true)
+})
+
+test('the reset exception refuses every other shape', () => {
+  // Wrong base generation (the reset already landed, or an older one).
+  assertEquals(resetExceptionApplies({ generation: 14 }, RESET_HEAD, RESET_JOURNAL), false)
+  assertEquals(resetExceptionApplies({ generation: 12 }, RESET_HEAD, RESET_JOURNAL), false)
+  // Head generation not bumped by exactly one, or not frozen.
+  assertEquals(
+    resetExceptionApplies({ generation: 13 }, { generation: 13, frozen: true }, RESET_JOURNAL),
+    false
+  )
+  assertEquals(
+    resetExceptionApplies({ generation: 13 }, { generation: 14, frozen: false }, RESET_JOURNAL),
+    false
+  )
+  // More than one journal entry: a migration slipped in beside the baseline.
+  assertEquals(
+    resetExceptionApplies({ generation: 13 }, RESET_HEAD, {
+      entries: [...RESET_JOURNAL.entries, { idx: 1, tag: '0001_extra' }],
+    }),
+    false
+  )
+  // A different tag.
+  assertEquals(
+    resetExceptionApplies({ generation: 13 }, RESET_HEAD, {
+      entries: [{ idx: 0, tag: '0000_other' }],
+    }),
+    false
+  )
+  assertEquals(resetExceptionApplies(undefined, RESET_HEAD, RESET_JOURNAL), false)
 })

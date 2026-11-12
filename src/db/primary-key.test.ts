@@ -231,7 +231,7 @@ test('drizzle-orm migrator bookkeeping DDL matches the documented public.migrati
   // `dispatch.command_id`, `nonce.value` (the used value itself, 2026-11), and the
   // notification catalog codes `category.code` and `topic.code`. (`backup.id` was a text natural key from
   // migration 0011 until 0020 re-keyed it; the 2026-09-17 fold regenerated
-  // 0000_base.sql without either file, so the historical entry is gone.)
+  // 0000_init.sql without either file, so the historical entry is gone.)
   assertEquals(NATURAL_KEY_PRIMARY_KEYS.size, 4)
 })
 
