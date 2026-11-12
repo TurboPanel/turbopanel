@@ -325,6 +325,21 @@ test('server.tunnel.routes: inbound names parse with or without peers and bad li
   }
 })
 
+test('server.tunnel.routes: inbound lock is kept when true, dropped when false, refused when not a boolean', () => {
+  const entry = { hostname: 'here.example.com', peers: ['10.0.0.5'] }
+  const withLock = payload({ inbound: [{ ...entry, lock: true }] })
+  assertEquals(parseCommandPayload('server.tunnel.routes', withLock), withLock)
+  assertEquals(
+    parseCommandPayload('server.tunnel.routes', payload({ inbound: [{ ...entry, lock: false }] })),
+    payload({ inbound: [entry] })
+  )
+  for (const lock of ['true', 1, null]) {
+    assertThrows(() =>
+      parseCommandPayload('server.tunnel.routes', payload({ inbound: [{ ...entry, lock }] }))
+    )
+  }
+})
+
 test('a tunnel table and a deploy tunnel block accept a generation and refuse a bad one', () => {
   const tunnel = {
     hostnames: ['a.example.com'],
