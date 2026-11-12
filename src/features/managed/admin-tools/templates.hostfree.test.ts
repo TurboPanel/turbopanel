@@ -148,7 +148,7 @@ test('pgAdmin looks for the CA inside the sign-in folder and the start script pu
   const script = entrypoint[2].replaceAll('$$', '$')
   assert(script.includes('/var/lib/pgadmin/storage/'), script)
   assert(script.includes("tr '@' '_'"), script)
-  assert(script.includes('cp /run/secrets/DB_CA_CERT "$dir/ca.crt"'), script)
+  assert(script.includes('cp -f /run/secrets/DB_CA_CERT "$dir/ca.crt"'), script)
   assert(script.endsWith('exec /entrypoint.sh'), script)
   // Every dollar sign is doubled so Compose leaves it for the shell.
   assert(!/(^|[^$])\$(?!\$)/u.test(entrypoint[2]), entrypoint[2])
@@ -161,7 +161,17 @@ test('pgAdmin looks for the CA inside the sign-in folder and the start script pu
   assertEquals(params.sslmode, 'verify-full')
 })
 
-test('pgAdmin keeps its data folder in memory so no Docker volume survives a redeploy', () => {
+test('the start script empties the data folder before the copy and the entrypoint', () => {
+  const { result } = compile('pgadmin', 'postgres')
+  const entrypoint = toolService(result.document.data).entrypoint as string[]
+  const script = entrypoint[2]
+  const clear = script.indexOf('find /var/lib/pgadmin -mindepth 1 -delete')
+  assert(clear === 0, script)
+  assert(clear < script.indexOf('mkdir -p'), script)
+  assert(script.indexOf('mkdir -p') < script.indexOf('exec /entrypoint.sh'), script)
+})
+
+test('pgAdmin mounts its data folder as a size-capped tmpfs and declares no other volume', () => {
   const { document } = compile('pgadmin', 'postgres')
   const service = toolService(document.data)
   assertEquals(service.volumes, [
@@ -252,6 +262,13 @@ test('special-use email domains are refused', () => {
   assertEquals(isAcceptablePgAdminEmail('me@host.local'), false)
   assertEquals(isAcceptablePgAdminEmail('me@localhost'), false)
   assertEquals(isAcceptablePgAdminEmail('nope'), false)
+})
+
+test('emails pgAdmin would give a different storage folder are refused', () => {
+  assertEquals(isAcceptablePgAdminEmail('1me@example.org'), false)
+  assertEquals(isAcceptablePgAdminEmail('a/b@example.org'), false)
+  assertEquals(isAcceptablePgAdminEmail('a\\b@example.org'), false)
+  assertEquals(isAcceptablePgAdminEmail('me1@example.org'), true)
 })
 
 test('generated passwords stay inside the alphabet the templates rely on', () => {

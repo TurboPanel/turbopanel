@@ -171,28 +171,31 @@ function adminerData(input: AdminToolComposeInput): ComposeData {
  */
 const PGADMIN_CA_STORAGE_PATH = '/ca.crt'
 
-/** pgAdmin's data folder, kept in memory so nothing survives a recreate. */
+/** pgAdmin's data folder. */
 const PGADMIN_DATA_DIR = '/var/lib/pgadmin'
 
 /**
- * A memory-backed mount. It is written as a long-form `volumes` entry so Compose
- * treats it as the mount for that path and does not carry over an anonymous
- * volume the image declares there from the previous container. The size is a cap
- * in bytes.
+ * A memory-backed mount for a new deployment. A tool deployed before this mount
+ * existed keeps the image's anonymous volume at the same path, because Compose
+ * does not replace it on a plain `up -d`, so the start script also empties the
+ * folder (see {@link PGADMIN_START_SCRIPT}). The size is a cap in bytes.
  */
 function memoryMount(target: string, sizeMiB: number): ComposeData {
   return { type: 'tmpfs', target, tmpfs: { size: sizeMiB * 1024 * 1024 } }
 }
 
 /**
- * Starts pgAdmin after copying the CA into the sign-in user's storage folder
- * (the folder name is the email with `@` replaced by `_`, as pgAdmin builds it).
- * The image's own entrypoint then runs as usual.
+ * Starts pgAdmin as a first run every time: it empties the data folder (an old
+ * anonymous volume from an earlier deploy still holds the previous account and
+ * pass file, owned by the same user), then copies the CA into the sign-in user's
+ * storage folder (the folder name is the email with `@` replaced by `_`, as the
+ * image's entrypoint builds it). The image's own entrypoint then runs as usual.
  */
 const PGADMIN_START_SCRIPT = [
+  `find ${PGADMIN_DATA_DIR} -mindepth 1 -delete`,
   `dir="${PGADMIN_DATA_DIR}/storage/$(printf '%s' "$PGADMIN_DEFAULT_EMAIL" | tr '@' '_')"`,
   'mkdir -p "$dir"',
-  `cp /run/secrets/DB_CA_CERT "$dir${PGADMIN_CA_STORAGE_PATH}"`,
+  `cp -f /run/secrets/DB_CA_CERT "$dir${PGADMIN_CA_STORAGE_PATH}"`,
   'exec /entrypoint.sh',
 ].join(' && ')
 
@@ -273,6 +276,8 @@ const SPECIAL_USE_SUFFIXES: readonly string[] = [
 export function isAcceptablePgAdminEmail(email: string): boolean {
   const at = email.lastIndexOf('@')
   if (at < 1 || at === email.length - 1 || /\s/u.test(email)) return false
+  // pgAdmin renames such a folder (`pga_user_` prefix, `slash`), so the CA copy and pass file would miss it.
+  if (/^\d/u.test(email) || /[/\\]/u.test(email.slice(0, at))) return false
   const domain = email.slice(at + 1).toLowerCase()
   if (!domain.includes('.')) return false
   return !SPECIAL_USE_SUFFIXES.some((suffix) => domain.endsWith(suffix) || `.${domain}` === suffix)
