@@ -207,7 +207,12 @@ async function attachDbCa(
   if (tooMany) return tooManyNamesError(site.composeServiceName, urlSupported)
   return {
     ...site,
-    dbCa: { variables, pem: input.pem, ...(urlSupported ? { urlVariables } : {}) },
+    // Older daemons refuse an empty list, so the key is left out when no name is bound.
+    dbCa: {
+      variables,
+      pem: input.pem,
+      ...(urlSupported && urlVariables.length > 0 ? { urlVariables } : {}),
+    },
     requiredEnv: unique(siteNeeds.requiredKeys),
   }
 }
