@@ -42,7 +42,7 @@ hostname-scope variable with the same name is refused (`conflicts.ts`).
 
 `x-turbopanel.reach` on a container (`{ port, from }`, validated in
 `../compose/service-kind.ts`) publishes `127.0.0.1:<hostPort>:<port>`. All
-services in `from` must run as one account; the container must run as one copy.
+services in `from` must run as one account; the container must run as one copy (clones, `deploy.replicas` and a top-level `scale` all count as copies).
 `reach.ts` plans, allocates (the previous port is kept) and injects the publish
 into the compiled document in prepare, and names `TURBOPANEL_HELPER_<NAME>_HOST`
 and `_PORT` for each `from` service. Helper ports are recorded in

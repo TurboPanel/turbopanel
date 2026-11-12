@@ -5,11 +5,14 @@ import {
   helperVariables,
   injectHelperPublishes,
   planHelperReach,
+  reachDecls,
   readRecordedCacheConsumers,
   readRecordedHelperPorts,
   type ReachServiceInfo,
 } from './reach.ts'
 import { ENV_1, PRINCIPAL_A, PRINCIPAL_B } from './fixtures.test.support.ts'
+
+import { buildApplicationModel } from '../compose/ir.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -66,6 +69,43 @@ test('unknown, container, unowned and replicated services are refused', () => {
     one
   )
   assertEquals(unowned.errors.length, 1)
+})
+
+test('a container scaled by deploy.replicas is refused, naming the service', () => {
+  const plan = (replicas: number | undefined) =>
+    planHelperReach(
+      [{ service: 'search', port: 7700, from: ['web'], replicas }],
+      services,
+      usernameOf,
+      one
+    )
+  assertEquals(plan(2).entries, [])
+  assertEquals(plan(2).errors, ['"search" has a reach port, so it must run as one copy'])
+  assertEquals(plan(1).errors, [])
+  assertEquals(plan(undefined).errors, [])
+})
+
+test('reach declarations carry deploy.replicas and scale from the document', () => {
+  const replicasOf = (extra: Record<string, unknown>) => {
+    const data = {
+      services: {
+        search: {
+          image: 'search',
+          'x-turbopanel': { reach: { port: 7700, from: ['web'] } },
+          ...extra,
+        },
+      },
+    }
+    const decls = reachDecls(buildApplicationModel({ data } as never))
+    return planHelperReach(decls, services, usernameOf, one).errors
+  }
+  const refusal = ['"search" has a reach port, so it must run as one copy']
+  assertEquals(replicasOf({}), [])
+  assertEquals(replicasOf({ deploy: { replicas: 1 } }), [])
+  assertEquals(replicasOf({ deploy: { replicas: 2 } }), refusal)
+  assertEquals(replicasOf({ deploy: { replicas: '2' } }), refusal)
+  assertEquals(replicasOf({ scale: 3 }), refusal)
+  assertEquals(replicasOf({ deploy: { mode: 'global', replicas: 4 } }), [])
 })
 
 test('more than 32 reach ports is refused', () => {

@@ -28,9 +28,9 @@ import {
   allocateHelperPorts,
   helperVariables,
   planHelperReach,
+  reachDecls,
   readRecordedHelperPorts,
   type HelperPlanEntry,
-  type ReachDecl,
   type ReachServiceInfo,
 } from '../../features/caches/reach.ts'
 import { listEnvironmentCaches, type CacheWithAccount } from '../../features/caches/store.ts'
@@ -109,17 +109,6 @@ export type PrepareProjectCachesInput = {
   expansion?: ReadonlyMap<string, readonly string[]>
   orgOptions: unknown
   serverOptions: unknown
-}
-
-function reachDecls(application: Application): ReachDecl[] {
-  const decls: ReachDecl[] = []
-  for (const svc of application.services) {
-    const reach = svc.turbopanel?.reach
-    if (svc.kind === 'container' && reach) {
-      decls.push({ service: svc.name, port: reach.port, from: reach.from })
-    }
-  }
-  return decls
 }
 
 async function serviceAccounts(
