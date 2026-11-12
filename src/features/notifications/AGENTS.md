@@ -1,5 +1,13 @@
 # Notifications — AGENTS.md
 
+**Merges only together with the database reset.** Rules, inbox rows and delivery
+rows are now read by `topic_code` and the scope columns, and a rule with neither
+`topic_code` nor `category_code` means every event. Rows written before the
+reset have those columns NULL (the old code wrote only `event`), so on a
+database that was not wiped, every one-event rule would route every event. This
+code is correct only on a freshly created database; do not add a fallback to
+`event`.
+
 "An event happened and someone should hear about it", as one data model for
 self-hosted, High Availability and the store apps (decided 2026-09-18), rebuilt
 around scoped, per-person preferences (2026-11-06).
@@ -33,7 +41,7 @@ tables and columns exist, nothing reads them yet.
 
 Rules:
 
-- **Routing scope.** Personal channels and the bell are decided by the person's `preference` rows only (rules on a personal channel are ignored and `PUT …/rules` answers **422** `personal_channel_uses_preferences`). An organization event reaches the organization's channels, and an instance channel only when `channel.is_all_organizations_notified` is on (API field `allOrganizations` on `/api/admin/v1/notification-channels`) or a rule names that organization in `rule.organization_id`; an install event (no organization) reaches instance channels whose rule names no organization. Routes are `rule` rows (`*`, one code in `event` or `topic_code`, or a `category_code`, with a severity floor; `is_enabled` and a future `ends_at` mute).
+- **Routing scope.** Personal channels and the bell are decided by the person's `preference` rows only (rules on a personal channel are ignored and `PUT …/rules` answers **422** `personal_channel_uses_preferences`). An organization event reaches the organization's channels, and an instance channel only when `channel.is_all_organizations_notified` is on (API field `allOrganizations` on `/api/admin/v1/notification-channels`) or a rule names that organization in `rule.organization_id`; an install event (no organization) reaches instance channels whose rule names no organization. Routes are `rule` rows: no `topic_code` and no `category_code` means every event, otherwise one `topic_code` or one `category_code`, with a severity floor; `is_enabled` and a future `ends_at` mute. The client and admin APIs keep the shape `{ event, minSeverity }`, where `*` is the rule with neither column (`ruleTopicOf` and `ruleEventOf` in `events.ts` map both ways, and `replaceRulesForChannel` writes `topic_code` after making sure the catalog is synced, since the column has a foreign key to `topic`). Routing (`channelsForEvent`), the notification and delivery readers, and the retention SQL read only the topic and scope columns; the `event` column on `rule`, `notification` and `attempt` is still written because it is NOT NULL, and is read by nothing.
 - **Audience** (`events.ts` `audience`): `members` — every teammate of the organization (`server.offline`); `managers` — holders of `organization:own` / `organization:manage` who are still members, for the events that mirror the owner-only audit trail; `admins` — install administrators, for instance events. No administrator bypass for organization events. Checked again at send time by `dropUndeliverableCopies`.
 - **Leaving and deleting.** Settings die with their scope (foreign keys `ON DELETE CASCADE` on `preference`, `policy`, `rule`); history survives (`event`, `notification`, `attempt` carry scope ids as plain uuids and snapshot their text). Member removal runs `forgetMember` for that organization only. A team edit or team delete that ends membership is covered by the send-time check and the prune. The bell hides rows of organizations the person left (`visibleToUser`) and marks rows whose server, project or backup target is gone (`targetDeleted`).
 - **Email.** Each personal copy carries `List-Unsubscribe` (one HTTPS link) and `List-Unsubscribe-Post: List-Unsubscribe=One-Click`, plus `List-Id`, `X-TurboPanel-Organization`, `-Project`, `-Event`, `-Reason` (`templates.ts` `notificationMailHeaders`; every sender adds `TemplateResult.headers`). An organization email channel sends only to an address that still belongs to a member (checked at fan-out and again at send). A recipient the receiving SMTP server refuses for good (`RCPT TO` 550/551/553) is suppressed (`suppression`, hashed) on the self-hosted mail path; a confirmed verification clears it. Provider bounce webhooks are not wired yet.

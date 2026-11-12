@@ -139,6 +139,8 @@ function recordingDb(inserted: Array<Record<string, unknown>>): Db {
   const db = {
     select: () => chain,
     delete: () => chain,
+    // The rules write makes sure the notification catalog is synced first.
+    execute: () => Promise.resolve([]),
     transaction: (fn: (tx: unknown) => Promise<unknown>) => fn(db),
     insert: () => ({
       values: (values: Record<string, unknown> | Array<Record<string, unknown>>) => {

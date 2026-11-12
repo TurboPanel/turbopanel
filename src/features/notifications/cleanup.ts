@@ -129,12 +129,12 @@ export async function dropUndeliverableCopies(
   )
   const installOnly = await drop(sql`a.organization_id IS NULL AND NOT ${isAdministrator(who)}`)
   const adminsOnly = await drop(
-    sql`a.event IN (SELECT jsonb_array_elements_text(${codesFor('admins')}::jsonb))
+    sql`a.topic_code IN (SELECT jsonb_array_elements_text(${codesFor('admins')}::jsonb))
       AND NOT ${isAdministrator(who)}`
   )
   const managersOnly = await drop(
     sql`a.organization_id IS NOT NULL
-      AND a.event IN (SELECT jsonb_array_elements_text(${codesFor('managers')}::jsonb))
+      AND a.topic_code IN (SELECT jsonb_array_elements_text(${codesFor('managers')}::jsonb))
       AND NOT ${stillManages(who, org)}`
   )
   const lostRole = [disabled, installOnly, adminsOnly, managersOnly].reduce(
@@ -216,7 +216,7 @@ async function pruneOnce(
       ORDER BY created_at LIMIT ${batch}
     )
   `)
-  // Ledger rows written before the event table (no event_id), past the same window.
+  // Finished copies past the same window, whichever batch of events they belong to.
   const ledger = await db.execute(sql`
     DELETE FROM ${notificationDelivery} WHERE id IN (
       SELECT id FROM ${notificationDelivery}

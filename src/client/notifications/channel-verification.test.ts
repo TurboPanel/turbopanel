@@ -24,6 +24,7 @@ import {
   mintChannelVerificationToken,
   reserveVerificationMail,
 } from './channel-verification.ts'
+import { insertLedgerKeys } from '../../features/notifications/ledger-fixtures.test.support.ts'
 import { createNotificationChannel } from '../../features/notifications/records.ts'
 
 /**
@@ -37,7 +38,11 @@ const test = Deno.test.bind(Deno)
 const dbUrl = getDatabaseUrl()
 
 async function withChannel(
-  fn: (ctx: { db: ReturnType<typeof createDenoDb>; channelId: string }) => Promise<void>
+  fn: (ctx: {
+    db: ReturnType<typeof createDenoDb>
+    channelId: string
+    organizationId: string
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('channel verification tests')
@@ -56,7 +61,7 @@ async function withChannel(
     address: `pager-${crypto.randomUUID()}@example.com`,
   })
   try {
-    await fn({ db, channelId: channel.id })
+    await fn({ db, channelId: channel.id, organizationId: org!.id })
   } finally {
     await db.delete(verification).where(like(verification.identifier, `notification-channel:%`))
     await db.delete(organization).where(eq(organization.id, org!.id))
@@ -72,14 +77,15 @@ async function verifiedAt(db: ReturnType<typeof createDenoDb>, id: string) {
   return row?.at ?? null
 }
 
-function insertDelivery(
+async function insertDelivery(
   db: ReturnType<typeof createDenoDb>,
-  channelId: string,
+  scope: { channelId: string; organizationId: string },
   status: 'pending' | 'failed' | 'sent'
 ) {
-  return db.insert(notificationDelivery).values({
-    channelId,
-    event: 'server.offline',
+  const [keys] = await insertLedgerKeys(db, scope.organizationId)
+  return await db.insert(notificationDelivery).values({
+    channelId: scope.channelId,
+    ...keys!,
     severity: 'critical',
     payload: {},
     status,
@@ -103,10 +109,11 @@ test('a minted token is 64 hex characters and only its hash is stored', async ()
 })
 
 test('confirming stamps the channel, uses the link up and abandons stale deliveries', async () => {
-  await withChannel(async ({ db, channelId }) => {
-    await insertDelivery(db, channelId, 'pending')
-    await insertDelivery(db, channelId, 'failed')
-    await insertDelivery(db, channelId, 'sent')
+  await withChannel(async ({ db, channelId, organizationId }) => {
+    const scope = { channelId, organizationId }
+    await insertDelivery(db, scope, 'pending')
+    await insertDelivery(db, scope, 'failed')
+    await insertDelivery(db, scope, 'sent')
     const token = await mintChannelVerificationToken(db, channelId)
     assertEquals(await confirmChannelVerification(db, token), channelId)
     assertNotEquals(await verifiedAt(db, channelId), null)

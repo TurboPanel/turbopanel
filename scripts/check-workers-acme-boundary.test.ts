@@ -22,14 +22,7 @@ const test = Deno.test.bind(Deno)
 const repoRoot = join(dirname(fromFileUrl(import.meta.url)), '..')
 
 /** The exclusion list as frozen when the guard landed. It may only shrink. */
-const FROZEN_AT_START = [
-  'src/features/organizations/acme-terms.ts',
-  'src/features/tls/dns-certificates/account.ts',
-  'src/features/tls/dns-certificates/issuance.ts',
-  'src/features/tls/dns-certificates/messages.ts',
-  'src/features/tls/dns-certificates/steps.ts',
-  'src/features/tls/dns-certificates/timing.ts',
-]
+const FROZEN_AT_START = ['src/features/organizations/acme-terms.ts']
 
 /** What the Workers build was still allowed to reach when the guard landed. */
 const TOLERATED_AT_START: Record<string, string[]> = {
@@ -151,18 +144,6 @@ test('an import right after a block comment is read', async () => {
   })
 })
 
-test('a frozen entry other than the tolerated one may not become Workers-reachable', async () => {
-  const files = cleanTree()
-  files['src/client/ok.ts'] =
-    "import { terms } from '../features/tls/dns-certificates/timing.ts'\nexport const ok = terms\n"
-  await withTree(files, (root) => {
-    assertFailsWith(
-      root,
-      'src/workers.ts reaches src/lib/acme/client.ts through src/features/tls/dns-certificates/timing.ts'
-    )
-  })
-})
-
 test("a Let's Encrypt directory host in a Workers-reachable file fails", async () => {
   for (const host of [PRODUCTION_HOST, STAGING_HOST]) {
     const files = cleanTree()
@@ -175,10 +156,10 @@ test("a Let's Encrypt directory host in a Workers-reachable file fails", async (
 
 test('a stale exclusion entry fails until it is taken off the list', async () => {
   const files = cleanTree()
-  files['src/features/tls/dns-certificates/messages.ts'] = 'export const terms = 1\n'
+  files['src/features/organizations/acme-terms.ts'] = 'export const terms = 1\n'
   files['src/workers.ts'] = "import { ok } from './client/ok.ts'\nexport default { ok }\n"
   await withTree(files, (root) => {
-    assertFailsWith(root, 'dns-certificates/messages.ts no longer imports src/lib/acme')
+    assertFailsWith(root, 'organizations/acme-terms.ts no longer imports src/lib/acme')
     assertFailsWith(root, 'acme-terms.ts is no longer reachable from src/workers.ts')
   })
 })

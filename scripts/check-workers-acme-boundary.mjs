@@ -43,14 +43,7 @@ const WORKERS_ENTRY = 'src/workers.ts'
 const SELF_HOSTED_ONLY = ['src/platform/deno', 'src/deno.ts', 'src/deno-dev.ts', ACME_DIR]
 
 /** Shared files that still import the ACME client. Shrink only. */
-export const FROZEN_ACME_IMPORTERS = Object.freeze([
-  'src/features/organizations/acme-terms.ts',
-  'src/features/tls/dns-certificates/account.ts',
-  'src/features/tls/dns-certificates/issuance.ts',
-  'src/features/tls/dns-certificates/messages.ts',
-  'src/features/tls/dns-certificates/steps.ts',
-  'src/features/tls/dns-certificates/timing.ts',
-])
+export const FROZEN_ACME_IMPORTERS = Object.freeze(['src/features/organizations/acme-terms.ts'])
 
 /** The frozen entries the Workers build may still reach. Shrink only. */
 export const WORKERS_REACHABLE = Object.freeze({

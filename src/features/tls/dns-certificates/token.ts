@@ -4,17 +4,7 @@
  * edit DNS for the zone (matched by zone id), so renewal and cleanup never
  * depend on one particular token: the order keeps only the account. A call
  * the provider refuses with one token is tried with the next (`withDnsToken`).
- * To look a zone up before it is known, any token that reaches some DNS zone
- * will do (`withAnyDnsToken`).
  */
-import { firstSequential } from '../../../lib/sequential.ts'
-import {
-  type BadgeRow,
-  listBadges,
-  openBadgeToken,
-  recordBadgeFailure,
-  toApiBadge,
-} from '../../tunnels/records.ts'
 import {
   BadgeRefused,
   BadgeUnavailable,
@@ -69,57 +59,4 @@ export async function withDnsToken<T>(
     }
     throw err
   }
-}
-
-/** Active tokens that reach some DNS zone, the most recently checked first. */
-async function dnsCapableBadges(
-  ctx: Pick<DnsCertContext, 'db'>,
-  carrierId: string
-): Promise<BadgeRow[]> {
-  const rows = (await listBadges(ctx.db, carrierId)).filter(
-    (row) => row.status === 'active' && toApiBadge(row).capabilities.dns.length > 0
-  )
-  return rows.sort((a, b) => (b.lastCheckedAt ?? '').localeCompare(a.lastCheckedAt ?? ''))
-}
-
-function refusedToken(err: unknown): err is TunnelProviderError {
-  return (
-    err instanceof TunnelProviderError && (err.code === 'unauthorized' || err.code === 'forbidden')
-  )
-}
-
-/**
- * Do a zone lookup with any DNS token of the account, the most recently
- * checked first, and try the next when the provider refuses one. A 403 here
- * says nothing about one zone, so that token's stored rights stay; a 401 means
- * the provider no longer accepts the token at all, so it is marked as the
- * shared selector does and not picked again. Any other failure (a provider
- * error or a rate limit) is thrown at once and no other token is tried.
- * Null when the account has no such token; the last refusal is thrown when
- * every one was refused.
- */
-export async function withAnyDnsToken<T>(
-  ctx: Pick<DnsCertContext, 'db' | 'secrets'>,
-  carrierId: string,
-  run: (token: string) => Promise<T>
-): Promise<{ value: T } | null> {
-  const rows = await dnsCapableBadges(ctx, carrierId)
-  let refusal: unknown = null
-  const done = await firstSequential(rows, async (row) => {
-    const token = await openBadgeToken(ctx.db, ctx.secrets, row)
-    if (token === null) return undefined
-    try {
-      return { value: await run(token) }
-    } catch (err) {
-      if (!refusedToken(err)) throw err
-      refusal = err
-      if (err.code === 'unauthorized') {
-        await recordBadgeFailure(ctx.db, row, { capability: 'dns', zone: null, whole: true })
-      }
-      return undefined
-    }
-  })
-  if (done) return done
-  if (refusal !== null) throw refusal
-  return null
 }
