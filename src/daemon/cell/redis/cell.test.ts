@@ -1102,6 +1102,49 @@ test('a socket replaced by a stale takeover can no longer take outbox entries', 
   }
 })
 
+test('an entry handed to the old socket by a read parked across the takeover goes to the live socket', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const old = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const oldConsumer = `ws:${old.connectionId}`
+
+    // The old pump is parked in its blocking read: it passed the entry check,
+    // and the broker answers only after the takeover and an enqueue.
+    const realRead = client.xreadgroup.bind(client)
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    client.xreadgroup = async (group, consumer, streamKey, count, blockMs, streamId) => {
+      if (consumer === oldConsumer && streamId === '>') await gate
+      return realRead(group, consumer, streamKey, count, blockMs, streamId)
+    }
+    const oldRead = cell.readOutboxBatch({ consumer: oldConsumer, count: 10 })
+    // Let it get past the entry check and park.
+    for (let i = 0; i < 20; i += 1) await Promise.resolve()
+
+    const staleAt = new Date(Date.now() - DAEMON_STALE_MS - 5_000).toISOString()
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+      connectedAt: staleAt,
+    })
+    const fresh = await cell.attachDaemonSocket({ keyId: 'key-2' })
+    const dispatch = pingDispatch('read-while-parked')
+    await cell.enqueue(dispatch)
+    release()
+
+    await assertRejects(() => oldRead, Error, OUTBOX_CONSUMER_SUPERSEDED)
+    const batch = await cell.readOutboxBatch({ consumer: `ws:${fresh.connectionId}`, count: 10 })
+    assertEquals(
+      batch.map((entry) => entry.requestId),
+      [dispatch.requestId]
+    )
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
 function pingDispatch(commandId: string) {
   return {
     kind: 'command-dispatch' as const,

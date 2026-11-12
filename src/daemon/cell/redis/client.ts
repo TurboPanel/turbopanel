@@ -245,6 +245,19 @@ export class RedisCellClient {
     return parseAutoClaimEntries(raw)
   }
 
+  /** Move the named pending entries to `consumer` (a minimum idle of 0 takes them at once). */
+  async xclaim(
+    key: string,
+    group: string,
+    consumer: string,
+    minIdleMs: number,
+    ...ids: string[]
+  ): Promise<StreamEntry[]> {
+    if (ids.length === 0) return []
+    const raw = await this.#maint.xclaim(key, group, consumer, minIdleMs, ...ids)
+    return parseMessageList(raw)
+  }
+
   async xrange(key: string, start: string, end: string, count?: number): Promise<StreamEntry[]> {
     const raw =
       count != null

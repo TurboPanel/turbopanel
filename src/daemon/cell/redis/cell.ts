@@ -105,6 +105,7 @@ const REDIS_WRITE_METHODS = new Set([
   'srem',
   'xadd',
   'xautoclaim',
+  'xclaim',
   'xack',
   'xgroupCreate',
   'expire',
@@ -409,6 +410,35 @@ export class RedisDaemonCell implements DaemonCell {
         this.#deliveryToStreamId.set(deliveryId, entry.id)
       }
     }
+  }
+
+  /** True once another socket holds the lease in this process. */
+  #isSuperseded(consumer: string): boolean {
+    return this.#activeConnectionId !== undefined && consumer !== `ws:${this.#activeConnectionId}`
+  }
+
+  /** Move entries a replaced socket just read to the live socket's consumer, to be served on its next read. */
+  async #handOverToActiveConsumer(envelopes: DaemonOutboundEnvelope[]): Promise<void> {
+    const active = this.#activeConnectionId
+    if (active === undefined) return
+    const ids = envelopes
+      .map((envelope) => this.#deliveryToStreamId.get(envelope.deliveryId))
+      .filter((id): id is string => id !== undefined)
+    if (ids.length === 0) return
+    const consumer = `ws:${active}`
+    const claimed = await this.#redis('readOutboxBatch').xclaim(
+      outboxKey(this.#serverId),
+      OUTBOX_GROUP,
+      consumer,
+      0,
+      ...ids
+    )
+    if (claimed.length === 0) return
+    this.#reclaimedByConsumer.set(consumer, [
+      ...(this.#reclaimedByConsumer.get(consumer) ?? []),
+      ...claimed,
+    ])
+    this.#rememberOutboxEntries(claimed)
   }
 
   #entriesToEnvelopes(entries: StreamEntry[]): DaemonOutboundEnvelope[] {
@@ -1303,12 +1333,7 @@ export class RedisDaemonCell implements DaemonCell {
     // A socket replaced by a newer one (a stale takeover leaves the old socket
     // open until its TCP connection times out) must not take outbox entries:
     // it would send them to a dead connection and the server never sees them.
-    if (
-      this.#activeConnectionId !== undefined &&
-      params.consumer !== `ws:${this.#activeConnectionId}`
-    ) {
-      throw new Error(OUTBOX_CONSUMER_SUPERSEDED)
-    }
+    if (this.#isSuperseded(params.consumer)) throw new Error(OUTBOX_CONSUMER_SUPERSEDED)
     const envelopes: DaemonOutboundEnvelope[] = []
     let remaining = params.count
 
@@ -1335,6 +1360,14 @@ export class RedisDaemonCell implements DaemonCell {
     if (remaining > 0) {
       const fresh = await this.#readOutboxGroup(params.consumer, remaining, params.blockMs, '>')
       envelopes.push(...this.#entriesToEnvelopes(fresh))
+    }
+
+    // The takeover can land while this read was parked (an idle pump spends
+    // nearly all its time blocked): the broker may have handed it an entry for
+    // the socket that was just replaced. Give those to the live socket and stop.
+    if (this.#isSuperseded(params.consumer)) {
+      await this.#handOverToActiveConsumer(envelopes)
+      throw new Error(OUTBOX_CONSUMER_SUPERSEDED)
     }
 
     cellTrace('outbox-read', {

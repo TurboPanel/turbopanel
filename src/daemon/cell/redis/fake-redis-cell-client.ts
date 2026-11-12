@@ -350,6 +350,27 @@ export class FakeRedisCellClient {
     return reclaimed
   }
 
+  async xclaim(
+    key: string,
+    group: string,
+    consumer: string,
+    minIdleMs: number,
+    ...ids: string[]
+  ): Promise<StreamEntry[]> {
+    const { state, groupState } = this.#groupOrNoGroup(key, group, 'XCLAIM')
+    const claimed: StreamEntry[] = []
+    const at = nowMs()
+    for (const id of ids) {
+      const pending = groupState.pending.get(id)
+      if (!pending || at - pending.idleSince < minIdleMs) continue
+      const entry = state.entries.find((e) => e.id === id)
+      if (!entry) continue
+      groupState.pending.set(id, { consumer, idleSince: at })
+      claimed.push(entry)
+    }
+    return claimed
+  }
+
   async xrange(key: string, start: string, end: string, count?: number): Promise<StreamEntry[]> {
     const state = this.#streams.get(key)
     if (!state) return []
