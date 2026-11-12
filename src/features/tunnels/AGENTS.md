@@ -735,7 +735,9 @@ removing the tunnel:
   its turn and the new one once moved (or when it started carrying the tunnel
   after the rotation began), so a repair resend or a placement change never
   moves a server early. The one exception: the driver moves a waiting server
-  whose connector last reported `down` or `error` (portal `reported`) out of
+  whose connector reported `down` or `error` (portal `reported`) at or after
+  the rotation's `startedAt` (`last_seen_at`; an older or missing reading is
+  ignored, because the connector may have been restarted since) out of
   `pending` into `unconfirmed` at once, since it holds no connection and the
   old token could not open one; it keeps the new token from then on (state,
   not the latest report, decides) and is checked again at the end.

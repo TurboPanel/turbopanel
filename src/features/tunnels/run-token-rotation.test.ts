@@ -665,10 +665,10 @@ test('a waiting server whose connector is down is moved early and keeps the new 
     const before = await wantedConnectorsByServer(w.db, w.organizationId)
     assertEquals(before.get(second)?.[0]?.secretId, w.oldSecretId)
     // Its connector stopped: the old token could not open a connection again.
-    const report = async (reported: string) => {
+    const report = async (reported: string, lastSeenAt = new Date().toISOString()) => {
       await w.db
         .update(portal)
-        .set({ reported })
+        .set({ reported, lastSeenAt })
         .where(and(eq(portal.tunnelId, w.tunnelId), eq(portal.serverId, second)))
     }
     await report('down')
@@ -683,6 +683,34 @@ test('a waiting server whose connector is down is moved early and keeps the new 
     await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
     const still = await wantedConnectorsByServer(w.db, w.organizationId)
     assertEquals(still.get(second)?.[0]?.secretId, state.newSecretId)
+  })
+})
+
+test('a down reading from before the rotation started does not move a waiting server', async () => {
+  await withWorld({ servers: [ALL_FEATURES, ALL_FEATURES] }, async (w) => {
+    const second = w.servers.toSorted()[1]!
+    await startRunTokenRotation(w.db, w.deps, await tunnelRow(w), { confirmSingleServer: false })
+    const state = readRotation((await tunnelRow(w)).metadata)!
+    const setReading = async (lastSeenAt: string | null) => {
+      await w.db
+        .update(portal)
+        .set({ reported: 'down', lastSeenAt })
+        .where(and(eq(portal.tunnelId, w.tunnelId), eq(portal.serverId, second)))
+    }
+    const hour = 60 * 60 * 1000
+    const startedMs = Date.parse(state.startedAt)
+    // Read an hour before the start, or never read: the connector may be up again.
+    for (const stale of [new Date(startedMs - hour).toISOString(), null]) {
+      await setReading(stale)
+      const kept = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+      assertEquals(kept?.pending.includes(second), true)
+      assertEquals(kept?.unconfirmed?.includes(second) ?? false, false)
+    }
+    // A reading after the start counts.
+    await setReading(new Date(startedMs + hour).toISOString())
+    const moved = await advanceRunTokenRotation(w.db, w.deps, w.tunnelId)
+    assertEquals(moved?.pending.includes(second), false)
+    assertEquals(moved?.unconfirmed?.includes(second), true)
   })
 })
 
