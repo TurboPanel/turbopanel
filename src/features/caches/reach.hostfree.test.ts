@@ -85,8 +85,8 @@ test('a container scaled by deploy.replicas is refused, naming the service', () 
   assertEquals(plan(undefined).errors, [])
 })
 
-test('reach declarations carry deploy.replicas and scale from the document', () => {
-  const replicasOf = (extra: Record<string, unknown>) => {
+test('reach declarations count the copies this server runs and an authored scale', () => {
+  const refusalOf = (extra: Record<string, unknown>, local: number | undefined) => {
     const data = {
       services: {
         search: {
@@ -96,16 +96,21 @@ test('reach declarations carry deploy.replicas and scale from the document', () 
         },
       },
     }
-    const decls = reachDecls(buildApplicationModel({ data } as never))
+    const counts = new Map(local === undefined ? [] : [['search', local]])
+    const decls = reachDecls(buildApplicationModel({ data } as never), counts)
     return planHelperReach(decls, services, usernameOf, one).errors
   }
   const refusal = ['"search" has a reach port, so it must run as one copy']
-  assertEquals(replicasOf({}), [])
-  assertEquals(replicasOf({ deploy: { replicas: 1 } }), [])
-  assertEquals(replicasOf({ deploy: { replicas: 2 } }), refusal)
-  assertEquals(replicasOf({ deploy: { replicas: '2' } }), refusal)
-  assertEquals(replicasOf({ scale: 3 }), refusal)
-  assertEquals(replicasOf({ deploy: { mode: 'global', replicas: 4 } }), [])
+  assertEquals(refusalOf({}, undefined), [])
+  assertEquals(refusalOf({}, 1), [])
+  // Only the instance count: no deploy block, the scheduler falls back to it.
+  assertEquals(refusalOf({}, 2), refusal)
+  assertEquals(refusalOf({ deploy: { replicas: 2 } }, 2), refusal)
+  // deploy.replicas spread one per server runs one copy here.
+  assertEquals(refusalOf({ deploy: { replicas: 4 } }, 1), [])
+  assertEquals(refusalOf({ scale: 3 }, 1), refusal)
+  assertEquals(refusalOf({ scale: '3' }, 1), refusal)
+  assertEquals(refusalOf({ scale: 1 }, 1), [])
 })
 
 test('more than 32 reach ports is refused', () => {

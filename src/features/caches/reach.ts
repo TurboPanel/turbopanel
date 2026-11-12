@@ -14,7 +14,7 @@ export type ReachDecl = {
   service: string
   port: number
   from: readonly string[]
-  /** `deploy.replicas` as the scheduler reads it; more than one is more than one copy. */
+  /** Copies this server runs, or an authored `scale`; more than one is more than one copy. */
   replicas?: number
 }
 
@@ -42,8 +42,16 @@ function authoredScale(compose: Readonly<Record<string, unknown>>): number {
   return typeof value === 'number' && Number.isInteger(value) ? value : 1
 }
 
-/** The reach declarations of the container services, with their scale. */
-export function reachDecls(application: Application): ReachDecl[] {
+/**
+ * The reach declarations of the container services, with their scale. The copy
+ * count is the one this server will run (the scheduler's local count, which
+ * honours `deploy.replicas` and the instance count), because that is what the
+ * compiled document turns into `scale:`; replicas on other servers are fine.
+ */
+export function reachDecls(
+  application: Application,
+  localReplicaCounts: ReadonlyMap<string, number> = new Map()
+): ReachDecl[] {
   const decls: ReachDecl[] = []
   for (const svc of application.services) {
     const reach = svc.turbopanel?.reach
@@ -52,7 +60,7 @@ export function reachDecls(application: Application): ReachDecl[] {
         service: svc.name,
         port: reach.port,
         from: reach.from,
-        replicas: Math.max(svc.deployment.replicas, authoredScale(svc.compose)),
+        replicas: Math.max(localReplicaCounts.get(svc.name) ?? 1, authoredScale(svc.compose)),
       })
     }
   }
