@@ -909,6 +909,8 @@ latter pointing at the daemon-sealed `variableMaterial[]` entry for the same
 service, so no secret is plaintext on the wire — and into the human list the
 deploy preview returns as `nativeAppVariables`. Non-secret runtime variables
 are injected on their own, as on the Compose lane; build-only variables never.
+The preview also returns `serviceVariables` for every service (`service-variables-view.ts`): each variable by the name a person set (never the
+service-prefixed `.env` key), with `forBuild` / `forRuntime` flags, secrets with a `null` value. It is an optional field, expand-only.
 **Secrets** are passed when the app's `environment:` references them with
 `{$KEY}`, when a binding owns them, and — the one difference from containers —
 when they were set on the app itself (service or hostname scope): an owner who

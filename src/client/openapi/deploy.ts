@@ -414,6 +414,37 @@ export const deploySchemas = {
           },
         },
       },
+      serviceVariables: {
+        type: 'array',
+        description:
+          'For each service with variables: the variables by the names a person set (`NODE_OPTIONS`, not the service-prefixed key the compose file reads from the generated `.env`), with whether each is used while building (`forBuild`), while running (`forRuntime`), or both. Secret values are never shown (`value` is null). Optional: absent on an older control plane.',
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'variables'],
+          properties: {
+            composeServiceName: { type: 'string' },
+            variables: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['name', 'source', 'isSecret', 'value', 'forBuild', 'forRuntime'],
+                properties: {
+                  name: { type: 'string' },
+                  source: {
+                    type: 'string',
+                    description:
+                      'Where the value was set: a variable scope, `binding` (a managed database) or `unknown`.',
+                  },
+                  isSecret: { type: 'boolean' },
+                  value: { type: 'string', nullable: true },
+                  forBuild: { type: 'boolean' },
+                  forRuntime: { type: 'boolean' },
+                },
+              },
+            },
+          },
+        },
+      },
       nativeAppNodeVersions: {
         type: 'array',
         description:
