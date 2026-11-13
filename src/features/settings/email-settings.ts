@@ -218,6 +218,11 @@ function isAllowedEmailSettingValue(shortKey: EmailSettingShortKey, trimmed: str
   return true
 }
 
+/** Values with a fixed vocabulary are stored in lower case. */
+function normalizeEmailSettingValue(shortKey: EmailSettingShortKey, trimmed: string): string {
+  return shortKey === 'SMTP_SECURITY' ? trimmed.toLowerCase() : trimmed
+}
+
 function collectEmailSettingMutations(
   resolver: SettingsResolver,
   updates: Record<string, string | null>
@@ -242,7 +247,7 @@ function collectEmailSettingMutations(
 
     mutations.push({
       shortKey,
-      value: shortKey === 'SMTP_SECURITY' ? trimmed.toLowerCase() : trimmed,
+      value: normalizeEmailSettingValue(shortKey, trimmed),
     })
   }
 

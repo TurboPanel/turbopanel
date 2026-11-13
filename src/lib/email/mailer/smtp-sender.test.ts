@@ -384,7 +384,7 @@ test('only a refused recipient with a dead-address status code counts as rejecte
 
 test('transport options follow the encryption mode and port', () => {
   const opts = (security: 'auto' | 'tls' | 'starttls' | 'none', port: number) =>
-    buildSmtpTransportOptions({ host: 'mail.example.com', port, security }, {})
+    buildSmtpTransportOptions({ host: 'mail.example.com', port, security })
   assertEquals(opts('auto', 465).secure, true)
   assertEquals(opts('auto', 587).secure, false)
   assertEquals(opts('auto', 587).requireTLS, true)
@@ -398,12 +398,10 @@ test('transport options follow the encryption mode and port', () => {
 })
 
 test('mailpit transport keeps its plain legacy options', () => {
-  const co = buildSmtpTransportOptions({ host: '127.0.0.1', port: 1025 }, {})
+  const co = buildSmtpTransportOptions({ host: '127.0.0.1', port: 1025 })
   assertEquals(co.secure, false)
   assertEquals(co.requireTLS, undefined)
   assertEquals(co.ignoreTLS, undefined)
-  const fallback = buildSmtpTransportOptions(undefined, {})
-  assertEquals(fallback.tls, { rejectUnauthorized: false })
 })
 
 test('sendJob builds a STARTTLS-required transport by default and a new one when the mode changes', async () => {

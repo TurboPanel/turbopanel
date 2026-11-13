@@ -70,36 +70,24 @@ function validateResolvedSmtpConfig(resolved: ResolvedEmailSettings): SmtpConfig
 }
 
 /**
- * Nodemailer options for a resolved SMTP config. A config with a `security`
+ * Nodemailer options for a configured SMTP server. A config with a `security`
  * mode (the `smtp` provider) gets that mode's TLS options and always verifies
  * certificates (no `tls` override). A config without one (the co-located
  * Mailpit catcher) keeps the plain, opportunistic legacy options.
  */
-export function buildSmtpTransportOptions(
-  cfg: SmtpConfig | undefined,
-  env: Record<string, string | undefined>
-): Record<string, unknown> {
-  if (cfg) {
-    const auth =
-      typeof cfg.user === 'string' &&
-      cfg.user.length > 0 &&
-      typeof cfg.pass === 'string' &&
-      cfg.pass.length > 0
-        ? { user: cfg.user, pass: cfg.pass }
-        : undefined
-    return {
-      host: cfg.host,
-      port: cfg.port,
-      ...(cfg.security ? smtpTransportSecurityOptions(cfg.security, cfg.port) : { secure: false }),
-      ...(auth && { auth }),
-      ...POOL_OPTS,
-    }
-  }
+export function buildSmtpTransportOptions(cfg: SmtpConfig): Record<string, unknown> {
+  const auth =
+    typeof cfg.user === 'string' &&
+    cfg.user.length > 0 &&
+    typeof cfg.pass === 'string' &&
+    cfg.pass.length > 0
+      ? { user: cfg.user, pass: cfg.pass }
+      : undefined
   return {
-    host: 'localhost',
-    port: mailpitPort(env),
-    secure: false,
-    tls: { rejectUnauthorized: false },
+    host: cfg.host,
+    port: cfg.port,
+    ...(cfg.security ? smtpTransportSecurityOptions(cfg.security, cfg.port) : { secure: false }),
+    ...(auth && { auth }),
     ...POOL_OPTS,
   }
 }
@@ -108,7 +96,14 @@ function buildTransport(
   cfg: SmtpConfig | undefined,
   env: Record<string, string | undefined>
 ): Transporter {
-  return nodemailer.createTransport(buildSmtpTransportOptions(cfg, env))
+  if (cfg) return nodemailer.createTransport(buildSmtpTransportOptions(cfg))
+  return nodemailer.createTransport({
+    host: 'localhost',
+    port: mailpitPort(env),
+    secure: false,
+    tls: { rejectUnauthorized: false },
+    ...POOL_OPTS,
+  })
 }
 
 const NO_ENCRYPTION_MESSAGE =
