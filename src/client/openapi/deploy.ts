@@ -417,7 +417,7 @@ export const deploySchemas = {
       serviceVariables: {
         type: 'array',
         description:
-          'For each service with variables: the variables by the names a person set (`NODE_OPTIONS`, not the service-prefixed key the compose file reads from the generated `.env`), with whether each is used while building (`forBuild`), while running (`forRuntime`), or both. Secret values are never shown (`value` is null). Optional: absent on an older control plane.',
+          'For each service with variables: the variables by the names a person set (`NODE_OPTIONS`, not the service-prefixed key the compose file reads from the generated `.env`), with whether each is used while building (`forBuild`), while running (`forRuntime`), or both. Secret values are never shown (`value` is null). A variable whose name the host refuses in a source build (`PATH`, `LD_*`, a name no shell can carry) is listed with `droppedFromBuild: true`. With several servers, a service shows the list of the last server that reports it (server-scoped variables can differ per server). Optional: absent on an older control plane, and when no service has any variable.',
         items: {
           type: 'object',
           required: ['composeServiceName', 'variables'],
@@ -439,6 +439,7 @@ export const deploySchemas = {
                   value: { type: 'string', nullable: true },
                   forBuild: { type: 'boolean' },
                   forRuntime: { type: 'boolean' },
+                  droppedFromBuild: { type: 'boolean', enum: [true] },
                 },
               },
             },

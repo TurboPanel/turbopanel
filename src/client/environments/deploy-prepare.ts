@@ -587,6 +587,7 @@ export type PreparedDeployCompose = ServerDeployment & {
   /**
    * Every service's variables by the names a person set, split into build and
    * runtime use, for people. Secret values are left out. Never sent to a daemon.
+   * With several servers the preview keeps the last server's list per service.
    */
   serviceVariables?: ServiceVariablesView[]
   /**
@@ -4245,7 +4246,14 @@ export async function prepareDeployCompose(
     sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
-    serviceVariables: buildServiceVariablesViews(withVariables),
+    serviceVariables: buildServiceVariablesViews(
+      withVariables,
+      new Set(
+        sourceMaterial
+          .filter((row) => row.rollbackToReleaseId === undefined && row.build.kind !== 'static')
+          .map((row) => row.composeServiceName)
+      )
+    ),
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial,
