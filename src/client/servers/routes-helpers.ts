@@ -3,6 +3,7 @@
  * decision trees that do not need a Hono Context or live DB client.
  */
 
+import { parseBuildLimitSettingsInput } from '../../features/deploy/build-limits.ts'
 import {
   formatServerOsDisplay,
   parseServerOptions,
@@ -220,6 +221,12 @@ function parseServerPatchOptions(
     overlayWebServerSwitch(options, raw, 'hideWebServerNames') ??
     overlayWebServerSwitch(options, raw, 'sendViaHeader')
   if (switchError) return switchError
+  if ('buildLimits' in raw) {
+    // Replaces the stored object; `{}` or `null` clears every part.
+    const buildLimits = parseBuildLimitSettingsInput(raw.buildLimits)
+    if (!buildLimits.ok) return { ok: false, error: buildLimits.error, status: 400 }
+    options.buildLimits = buildLimits.value
+  }
   return { ok: true, options }
 }
 
@@ -464,6 +471,8 @@ export type ServerHostDefaultsFields = {
   /** Effective Via header: this server's setting, else the organization's, else off. */
   sendViaHeader: boolean
   sendViaHeaderSource: string | null
+  /** This server's own build limits (`null` parts are not set); see `features/deploy/build-limits.ts`. */
+  buildLimits: { cores: number | null; memoryBytes: number | null; swap: boolean | null }
 }
 
 export function resolveServerTimezoneFields(
@@ -501,6 +510,11 @@ export function resolveServerHostDefaultsFields(
     hideWebServerNamesSource: hide.source,
     sendViaHeader: via.sendViaHeader,
     sendViaHeaderSource: via.source,
+    buildLimits: {
+      cores: serverOptions?.buildLimits?.cores ?? null,
+      memoryBytes: serverOptions?.buildLimits?.memoryBytes ?? null,
+      swap: serverOptions?.buildLimits?.swap ?? null,
+    },
   }
 }
 

@@ -679,6 +679,16 @@ export const serverSchemas = {
         description:
           'Which configured layer supplied sendViaHeader (null when the default, off, is used).',
       },
+      buildLimits: {
+        type: 'object',
+        description:
+          'The most CPU cores and memory one build on this server may use (server.options.buildLimits); null parts are not set. The smallest of the organization, server and service limits applies.',
+        properties: {
+          cores: { type: ['number', 'null'] },
+          memoryBytes: { type: ['integer', 'null'] },
+          swap: { type: ['boolean', 'null'] },
+        },
+      },
       colocatedWithInstance: {
         type: 'boolean',
         description:

@@ -61,13 +61,13 @@ export const activitySchemas = {
         type: ['integer', 'null'],
         minimum: 0,
         description:
-          'Steps finished so far, plus one while a step is running. Null until the server reports a step plan.',
+          'Where the deploy is in the step list: the one-based place of the running step (or of the step that failed); once nothing runs, the steps done or already on the server. Null until the server reports a step plan.',
       },
       totalSteps: {
         type: ['integer', 'null'],
         minimum: 0,
         description:
-          'Steps that have work to do (planned steps that were already on the server are not counted). Null until the server reports a step plan.',
+          'Every step the plan lists, including steps already on the server, in list order. Null until the server reports a step plan.',
       },
       stepLabel: {
         type: ['string', 'null'],

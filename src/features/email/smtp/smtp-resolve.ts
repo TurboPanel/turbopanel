@@ -1,11 +1,14 @@
 import type { Db } from '../../../db/connection.ts'
 import { resolveEmailSettings } from '../../settings/email-settings.ts'
+import { resolveSmtpSecurity, type SmtpSecurity } from './smtp-security.ts'
 
 export type SmtpConfig = {
   host: string
   port: number
   user?: string
   pass?: string
+  /** Connection security; unset keeps the plain legacy options (the Mailpit catcher). */
+  security?: SmtpSecurity
 }
 
 export type SmtpRuntimeEnv = Record<string, string | undefined>
@@ -15,6 +18,7 @@ export function parseExplicitSmtpConfig(
   portRaw: string,
   user: string,
   pass?: string,
+  security?: SmtpSecurity
 ): SmtpConfig | undefined {
   const trimmedHost = host.trim()
   const trimmedPort = portRaw.trim()
@@ -30,6 +34,7 @@ export function parseExplicitSmtpConfig(
     port,
     ...(trimmedUser !== '' ? { user: trimmedUser } : {}),
     ...(trimmedPass !== undefined && trimmedPass !== '' ? { pass: trimmedPass } : {}),
+    ...(security ? { security } : {}),
   }
 }
 
@@ -44,12 +49,13 @@ export function smtpConfigFromRuntimeEnv(env: SmtpRuntimeEnv): SmtpConfig | unde
   const portRaw = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT ?? ''
   const user = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_USER ?? ''
   const pass = env.TURBOPANEL_SYSTEM_EMAIL__SMTP_PASS
-  return parseExplicitSmtpConfig(host, portRaw, user, pass)
+  const security = resolveSmtpSecurity(env.TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY)
+  return parseExplicitSmtpConfig(host, portRaw, user, pass, security)
 }
 
 export async function resolveSelfHostedSmtpConfig(
   db: Db,
-  runtimeEnv: SmtpRuntimeEnv,
+  runtimeEnv: SmtpRuntimeEnv
 ): Promise<SmtpConfig | undefined> {
   const resolved = await resolveEmailSettings(db, runtimeEnv)
   if (resolved.provider !== 'smtp') return undefined
@@ -58,7 +64,7 @@ export async function resolveSelfHostedSmtpConfig(
 
 export async function resolveSelfHostedMailFromAddress(
   db: Db,
-  runtimeEnv: SmtpRuntimeEnv,
+  runtimeEnv: SmtpRuntimeEnv
 ): Promise<string> {
   const resolved = await resolveEmailSettings(db, runtimeEnv)
   return resolved.from

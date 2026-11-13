@@ -80,7 +80,9 @@ changes.
   are more). Each item carries `state` + `failure`, `finishedAt`, `actorType` /
   `actorName` (a current member's name or email; otherwise `Platform Admin` for an instance administrator or `Former Member`), the push `trigger` (`branch`, `commitSha`, `sourceId`, and `pushedBy`: the pusher's git login, `null` when unknown) and the `commit` (first recorded release,
   else the pushed SHA); `step` / `totalSteps` / `stepLabel` come from the
-  daemon's step plan on `command.progress` (`null` until it reports one);
+  daemon's step plan on `command.progress` (`null` until it reports one;
+  `totalSteps` is every listed step and `step` the running step's place in the
+  list, so the web interface's "Step N of M" matches);
   `crashCount` is always `null` until restart counts are recorded. Gate as the
   members list: unreachable org or bad uuid **404**, no owner/manager rights
   **403**; rows are limited to `listVisible(server)` and to servers of the

@@ -1657,6 +1657,11 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       nativeAppVariables: preparedByServer.flatMap((row) =>
         previewNativeAppVariables(row.prepared, reservedPorts.get(row.serverId), environmentId)
       ),
+      ...presentFields({
+        serviceVariables: oncePerApp(
+          preparedByServer.flatMap((row) => row.prepared.serviceVariables ?? [])
+        ),
+      }),
       nativeAppNodeVersions: oncePerApp(
         preparedByServer.flatMap((row) => row.prepared.nativeAppNodeVersions ?? [])
       ),

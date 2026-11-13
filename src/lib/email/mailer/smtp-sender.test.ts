@@ -2,7 +2,13 @@ import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import nodemailer from 'nodemailer'
 import type { EmailJob } from '../../../features/email/types.ts'
-import { createMailerSmtpSender, isRecipientRejected, MailerSmtpSender } from './smtp-sender.ts'
+import {
+  createMailerSmtpSender,
+  encryptionUnavailableMessage,
+  isEncryptionUnavailableError,
+  isRecipientRejected,
+  MailerSmtpSender,
+} from './smtp-sender.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -374,4 +380,159 @@ test('only a refused recipient with a dead-address status code counts as rejecte
     false
   )
   assertEquals(isRecipientRejected(null), false)
+})
+
+async function transportOptionsFor(
+  security: string,
+  port: string
+): Promise<Record<string, unknown>> {
+  const { transports, restore } = installTransportStub()
+  try {
+    await smtpSender({
+      ...SMTP_ENV,
+      TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: port,
+      TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: security,
+    }).sendJob(SIGNUP_JOB)
+    return transports[0]?.options ?? {}
+  } finally {
+    restore()
+  }
+}
+
+test('transport options follow the encryption mode and port', async () => {
+  assertEquals((await transportOptionsFor('auto', '465')).secure, true)
+  const auto587 = await transportOptionsFor('auto', '587')
+  assertEquals(auto587.secure, false)
+  assertEquals(auto587.requireTLS, true)
+  assertEquals((await transportOptionsFor('tls', '587')).secure, true)
+  assertEquals((await transportOptionsFor('starttls', '465')).requireTLS, true)
+  const none = await transportOptionsFor('none', '25')
+  assertEquals(none.ignoreTLS, true)
+  assertEquals(none.requireTLS, undefined)
+  for (const mode of ['auto', 'tls', 'starttls', 'none']) {
+    assertEquals('tls' in (await transportOptionsFor(mode, '587')), false)
+  }
+})
+
+test('mailpit transport stays plain: no TLS required, no upgrade attempted', async () => {
+  const { transports, restore } = installTransportStub()
+  try {
+    await smtpSender({
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-smtp',
+      TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'tls',
+    }).sendJob(SIGNUP_JOB)
+    const co = transports[0]?.options ?? {}
+    assertEquals(co.secure, false)
+    assertEquals(co.requireTLS, undefined)
+    assertEquals(co.ignoreTLS, true)
+  } finally {
+    restore()
+  }
+})
+
+test('sendJob builds a STARTTLS-required transport by default and a new one when the mode changes', async () => {
+  const { transports, restore } = installTransportStub()
+  try {
+    await smtpSender().sendJob(SIGNUP_JOB)
+    assertEquals(transports[0]?.options.requireTLS, true)
+    const sender = smtpSender({ ...SMTP_ENV, TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'none' })
+    await sender.sendJob(SIGNUP_JOB)
+    assertEquals(transports[1]?.options.ignoreTLS, true)
+  } finally {
+    restore()
+  }
+})
+
+test('transport cache is keyed by the encryption mode', async () => {
+  const env: Record<string, string | undefined> = { ...SMTP_ENV }
+  const { transports, restore } = installTransportStub()
+  try {
+    const sender = smtpSender(env)
+    await sender.sendJob(SIGNUP_JOB)
+    await sender.sendJob(SIGNUP_JOB)
+    assertEquals(transports.length, 1)
+    env.TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY = 'tls'
+    await sender.sendJob(SIGNUP_JOB)
+    assertEquals(transports.length, 2)
+    assertEquals(transports[1]?.options.secure, true)
+  } finally {
+    restore()
+  }
+})
+
+test('a server that cannot do the required encryption is a permanent, clear error', async () => {
+  const refused = Object.assign(new Error('Error upgrading connection with STARTTLS'), {
+    code: 'ETLS',
+    command: 'STARTTLS',
+    responseCode: 502,
+  })
+  const { restore } = installTransportStub(() => Promise.reject(refused))
+  try {
+    const failure = assertFailure(await smtpSender().sendJob(SIGNUP_JOB))
+    assertEquals(failure.permanent, true)
+    assertEquals(failure.error.startsWith('the mail server did not offer encryption'), true)
+  } finally {
+    restore()
+  }
+})
+
+test('encryption errors are classified from the codes the library reports', () => {
+  const starttls = (responseCode: number) =>
+    Object.assign(new Error('Error upgrading connection with STARTTLS'), {
+      code: 'ETLS',
+      command: 'STARTTLS',
+      responseCode,
+    })
+  assertEquals(isEncryptionUnavailableError(starttls(554)), true)
+  assertEquals(isEncryptionUnavailableError(starttls(454)), false)
+
+  // A failed handshake arrives as ESOCKET with the Node TLS code in originalCode.
+  const socket = (originalCode: string, message = 'handshake failed') =>
+    Object.assign(new Error(message), { code: 'ESOCKET', originalCode, command: 'CONN' })
+  for (const code of [
+    'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'SELF_SIGNED_CERT_IN_CHAIN',
+    'CERT_HAS_EXPIRED',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+  ]) {
+    assertEquals(
+      encryptionUnavailableMessage(socket(code))?.startsWith("the mail server's certificate"),
+      true
+    )
+  }
+  assertEquals(
+    encryptionUnavailableMessage(
+      socket('ERR_SSL_WRONG_VERSION_NUMBER', 'received corrupt message of type InvalidContentType')
+    )?.startsWith('the mail server does not speak TLS'),
+    true
+  )
+
+  // Message text never decides, and network trouble still retries.
+  assertEquals(isEncryptionUnavailableError(socket('ECONNRESET', 'self-signed certificate')), false)
+  assertEquals(isEncryptionUnavailableError(socket('ETIMEDOUT')), false)
+  assertEquals(
+    isEncryptionUnavailableError(
+      Object.assign(new Error('Connection closed unexpectedly'), { code: 'ETLS', command: 'CONN' })
+    ),
+    false
+  )
+})
+
+test('a certificate failure is a permanent send error with a plain message', async () => {
+  const failure = Object.assign(new Error('self-signed certificate'), {
+    code: 'ESOCKET',
+    originalCode: 'DEPTH_ZERO_SELF_SIGNED_CERT',
+  })
+  const { restore } = installTransportStub(() => Promise.reject(failure))
+  try {
+    const result = assertFailure(await smtpSender().sendJob(SIGNUP_JOB))
+    assertEquals(result.permanent, true)
+    assertEquals(
+      result.error.startsWith("the mail server's certificate could not be verified"),
+      true
+    )
+  } finally {
+    restore()
+  }
 })
