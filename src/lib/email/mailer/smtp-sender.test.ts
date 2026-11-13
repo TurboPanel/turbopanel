@@ -3,7 +3,6 @@ import { stub } from '@std/testing/mock'
 import nodemailer from 'nodemailer'
 import type { EmailJob } from '../../../features/email/types.ts'
 import {
-  buildSmtpTransportOptions,
   createMailerSmtpSender,
   isEncryptionUnavailableError,
   isRecipientRejected,
@@ -382,26 +381,52 @@ test('only a refused recipient with a dead-address status code counts as rejecte
   assertEquals(isRecipientRejected(null), false)
 })
 
-test('transport options follow the encryption mode and port', () => {
-  const opts = (security: 'auto' | 'tls' | 'starttls' | 'none', port: number) =>
-    buildSmtpTransportOptions({ host: 'mail.example.com', port, security })
-  assertEquals(opts('auto', 465).secure, true)
-  assertEquals(opts('auto', 587).secure, false)
-  assertEquals(opts('auto', 587).requireTLS, true)
-  assertEquals(opts('tls', 587).secure, true)
-  assertEquals(opts('starttls', 465).requireTLS, true)
-  assertEquals(opts('none', 25).ignoreTLS, true)
-  assertEquals(opts('none', 25).requireTLS, undefined)
-  for (const mode of ['auto', 'tls', 'starttls', 'none'] as const) {
-    assertEquals('tls' in opts(mode, 587), false)
+async function transportOptionsFor(
+  security: string,
+  port: string
+): Promise<Record<string, unknown>> {
+  const { transports, restore } = installTransportStub()
+  try {
+    await smtpSender({
+      ...SMTP_ENV,
+      TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: port,
+      TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: security,
+    }).sendJob(SIGNUP_JOB)
+    return transports[0]?.options ?? {}
+  } finally {
+    restore()
+  }
+}
+
+test('transport options follow the encryption mode and port', async () => {
+  assertEquals((await transportOptionsFor('auto', '465')).secure, true)
+  const auto587 = await transportOptionsFor('auto', '587')
+  assertEquals(auto587.secure, false)
+  assertEquals(auto587.requireTLS, true)
+  assertEquals((await transportOptionsFor('tls', '587')).secure, true)
+  assertEquals((await transportOptionsFor('starttls', '465')).requireTLS, true)
+  const none = await transportOptionsFor('none', '25')
+  assertEquals(none.ignoreTLS, true)
+  assertEquals(none.requireTLS, undefined)
+  for (const mode of ['auto', 'tls', 'starttls', 'none']) {
+    assertEquals('tls' in (await transportOptionsFor(mode, '587')), false)
   }
 })
 
-test('mailpit transport stays plain: no TLS required, no upgrade attempted', () => {
-  const co = buildSmtpTransportOptions({ host: '127.0.0.1', port: 1025, security: 'none' })
-  assertEquals(co.secure, false)
-  assertEquals(co.requireTLS, undefined)
-  assertEquals(co.ignoreTLS, true)
+test('mailpit transport stays plain: no TLS required, no upgrade attempted', async () => {
+  const { transports, restore } = installTransportStub()
+  try {
+    await smtpSender({
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-smtp',
+      TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'tls',
+    }).sendJob(SIGNUP_JOB)
+    const co = transports[0]?.options ?? {}
+    assertEquals(co.secure, false)
+    assertEquals(co.requireTLS, undefined)
+    assertEquals(co.ignoreTLS, true)
+  } finally {
+    restore()
+  }
 })
 
 test('sendJob builds a STARTTLS-required transport by default and a new one when the mode changes', async () => {

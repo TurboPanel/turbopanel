@@ -69,34 +69,34 @@ function validateResolvedSmtpConfig(resolved: ResolvedEmailSettings): SmtpConfig
   return resolved.smtp
 }
 
-/**
- * Nodemailer options for a configured SMTP server. A config with a `security`
- * mode (the `smtp` provider) gets that mode's TLS options and always verifies
- * certificates (no `tls` override). A config without one (the co-located
- * Mailpit catcher) keeps the plain, opportunistic legacy options.
- */
-export function buildSmtpTransportOptions(cfg: SmtpConfig): Record<string, unknown> {
-  const auth =
-    typeof cfg.user === 'string' &&
+function smtpAuth(cfg: SmtpConfig): { user: string; pass: string } | undefined {
+  return typeof cfg.user === 'string' &&
     cfg.user.length > 0 &&
     typeof cfg.pass === 'string' &&
     cfg.pass.length > 0
-      ? { user: cfg.user, pass: cfg.pass }
-      : undefined
-  return {
-    host: cfg.host,
-    port: cfg.port,
-    ...smtpTransportSecurityOptions(cfg.security, cfg.port),
-    ...(auth && { auth }),
-    ...POOL_OPTS,
-  }
+    ? { user: cfg.user, pass: cfg.pass }
+    : undefined
 }
 
+/**
+ * A config from the `smtp` provider carries its Encryption mode: TLS options
+ * follow it and certificates are always verified (no `tls` override). The
+ * development catcher's config carries `none`.
+ */
 function buildTransport(
   cfg: SmtpConfig | undefined,
   env: Record<string, string | undefined>
 ): Transporter {
-  if (cfg) return nodemailer.createTransport(buildSmtpTransportOptions(cfg))
+  const auth = cfg ? smtpAuth(cfg) : undefined
+  if (cfg) {
+    return nodemailer.createTransport({
+      host: cfg.host,
+      port: cfg.port,
+      ...smtpTransportSecurityOptions(cfg.security, cfg.port),
+      ...(auth && { auth }),
+      ...POOL_OPTS,
+    })
+  }
   const port = mailpitPort(env)
   return nodemailer.createTransport({
     host: 'localhost',
