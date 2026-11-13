@@ -3824,6 +3824,17 @@ async function applyDeployVariables(
   return withVariables
 }
 
+/** Each source entry's build limits, only when the target daemon lists `build-limits-v1`. */
+async function withBuildLimitsForDaemon(
+  db: Db,
+  serverId: string,
+  sources: EnvironmentDeploySource[],
+  levels: Parameters<typeof attachBuildLimits>[1]
+): Promise<EnvironmentDeploySource[]> {
+  const features = await storedDaemonFeatures(db, serverId)
+  return features.includes(BUILD_LIMITS_FEATURE) ? attachBuildLimits(sources, levels) : sources
+}
+
 /** Project caches and helper reach for this server; its warnings join the deploy's. */
 async function prepareCachesStep(
   db: Db,
@@ -4201,15 +4212,11 @@ export async function prepareDeployCompose(
   if (!Array.isArray(builtSources)) return toApplyVariablesPrepareError(builtSources)
   // Build limits ride only to a daemon that lists them; the commit hash never
   // includes them, so changing a limit does not make a deploy look new.
-  const sourceMaterial = (await storedDaemonFeatures(db, params.serverId)).includes(
-    BUILD_LIMITS_FEATURE
-  )
-    ? attachBuildLimits(builtSources, {
-        organizationOptions: orgRow?.options,
-        serverOptions: serverRow?.options,
-        serviceOptionsByComposeName: pipeline.optionsByComposeName,
-      })
-    : builtSources
+  const sourceMaterial = await withBuildLimitsForDaemon(db, params.serverId, builtSources, {
+    organizationOptions: orgRow?.options,
+    serverOptions: serverRow?.options,
+    serviceOptionsByComposeName: pipeline.optionsByComposeName,
+  })
 
   const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
     c,

@@ -2066,8 +2066,7 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
   assignWebServerSettings(options, value)
-  const buildLimits = parseBuildLimitSettings(value.buildLimits)
-  if (Object.keys(buildLimits).length > 0) options.buildLimits = buildLimits
+  assignServerBuildLimits(options, value.buildLimits)
   if ('metricsCapabilityPlan' in value) {
     const metricsCapabilityPlan = parseServerMetricsCapabilityPlanOverride(
       value.metricsCapabilityPlan
@@ -2084,6 +2083,11 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   }
   assignTunnelCarry(options, value.tunnels)
   return Object.keys(options).length > 0 ? options : {}
+}
+
+function assignServerBuildLimits(options: ServerOptions, value: unknown): void {
+  const buildLimits = parseBuildLimitSettings(value)
+  if (Object.keys(buildLimits).length > 0) options.buildLimits = buildLimits
 }
 
 function assignTunnelCarry(options: ServerOptions, value: unknown): void {
