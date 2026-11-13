@@ -11,12 +11,13 @@ export function buildMailpitSmtpConfig(
   smtpPort: string,
   mailpitSmtpPort: string,
   user: string,
-  pass?: string,
+  pass?: string
 ): SmtpConfig {
-  const explicit = parseExplicitSmtpConfig(smtpHost, smtpPort, user, pass)
+  // The development mail catcher speaks plain SMTP; the Encryption setting is for real relays.
+  const explicit = parseExplicitSmtpConfig(smtpHost, smtpPort, user, pass, 'none')
   if (explicit) return explicit
 
   const port = resolveMailpitSmtpPort(mailpitSmtpPort)
   const effectivePort = port > 0 ? port : DEFAULT_MAILPIT_SMTP_PORT
-  return { host: DEFAULT_MAILPIT_SMTP_HOST, port: effectivePort }
+  return { host: DEFAULT_MAILPIT_SMTP_HOST, port: effectivePort, security: 'none' }
 }

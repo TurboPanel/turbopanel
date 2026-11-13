@@ -43,11 +43,11 @@ test('normalizeMailpitSmtpEnv maps legacy SMTP port env', () => {
 test('buildMailpitSmtpConfig prefers explicit SMTP host/port', () => {
   assertEquals(
     buildMailpitSmtpConfig('203.0.113.10', '2525', '', '', ''),
-    { host: '203.0.113.10', port: 2525 },
+    { host: '203.0.113.10', port: 2525, security: 'none' },
   )
   assertEquals(
     buildMailpitSmtpConfig('', '', '1125', '', ''),
-    { host: '127.0.0.1', port: 1125 },
+    { host: '127.0.0.1', port: 1125, security: 'none' },
   )
 })
 

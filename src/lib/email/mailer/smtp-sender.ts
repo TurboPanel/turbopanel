@@ -86,7 +86,7 @@ export function buildSmtpTransportOptions(cfg: SmtpConfig): Record<string, unkno
   return {
     host: cfg.host,
     port: cfg.port,
-    ...(cfg.security ? smtpTransportSecurityOptions(cfg.security, cfg.port) : { secure: false }),
+    ...smtpTransportSecurityOptions(cfg.security, cfg.port),
     ...(auth && { auth }),
     ...POOL_OPTS,
   }

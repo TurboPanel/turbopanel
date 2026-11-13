@@ -397,11 +397,11 @@ test('transport options follow the encryption mode and port', () => {
   }
 })
 
-test('mailpit transport keeps its plain legacy options', () => {
-  const co = buildSmtpTransportOptions({ host: '127.0.0.1', port: 1025 })
+test('mailpit transport stays plain: no TLS required, no upgrade attempted', () => {
+  const co = buildSmtpTransportOptions({ host: '127.0.0.1', port: 1025, security: 'none' })
   assertEquals(co.secure, false)
   assertEquals(co.requireTLS, undefined)
-  assertEquals(co.ignoreTLS, undefined)
+  assertEquals(co.ignoreTLS, true)
 })
 
 test('sendJob builds a STARTTLS-required transport by default and a new one when the mode changes', async () => {

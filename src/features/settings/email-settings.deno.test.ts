@@ -125,7 +125,7 @@ test('SMTP_SECURITY defaults to auto, reads the env override and never reaches t
     TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-smtp',
     TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'tls',
   })
-  assertEquals(mailpit.smtp?.security, undefined)
+  assertEquals(mailpit.smtp?.security, 'none')
 })
 
 test('invalidEmailSettingUpdate refuses an unknown SMTP_SECURITY and leaves other updates alone', () => {
