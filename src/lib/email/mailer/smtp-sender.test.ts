@@ -4,6 +4,7 @@ import nodemailer from 'nodemailer'
 import type { EmailJob } from '../../../features/email/types.ts'
 import {
   createMailerSmtpSender,
+  encryptionUnavailableMessage,
   isEncryptionUnavailableError,
   isRecipientRejected,
   MailerSmtpSender,
@@ -475,22 +476,63 @@ test('a server that cannot do the required encryption is a permanent, clear erro
   }
 })
 
-test('encryption errors: only refusals and certificate or protocol failures are permanent', () => {
-  const tls = (message: string, command: string, responseCode?: number) =>
-    Object.assign(new Error(message), { code: 'ETLS', command, responseCode })
-  assertEquals(isEncryptionUnavailableError(tls('x', 'STARTTLS', 554)), true)
-  assertEquals(isEncryptionUnavailableError(tls('x', 'STARTTLS', 454)), false)
+test('encryption errors are classified from the codes the library reports', () => {
+  const starttls = (responseCode: number) =>
+    Object.assign(new Error('Error upgrading connection with STARTTLS'), {
+      code: 'ETLS',
+      command: 'STARTTLS',
+      responseCode,
+    })
+  assertEquals(isEncryptionUnavailableError(starttls(554)), true)
+  assertEquals(isEncryptionUnavailableError(starttls(454)), false)
+
+  // A failed handshake arrives as ESOCKET with the Node TLS code in originalCode.
+  const socket = (originalCode: string, message = 'handshake failed') =>
+    Object.assign(new Error(message), { code: 'ESOCKET', originalCode, command: 'CONN' })
+  for (const code of [
+    'DEPTH_ZERO_SELF_SIGNED_CERT',
+    'SELF_SIGNED_CERT_IN_CHAIN',
+    'CERT_HAS_EXPIRED',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+    'ERR_TLS_CERT_ALTNAME_INVALID',
+  ]) {
+    assertEquals(
+      encryptionUnavailableMessage(socket(code))?.startsWith("the mail server's certificate"),
+      true
+    )
+  }
   assertEquals(
-    isEncryptionUnavailableError(tls('Error initiating TLS - wrong version number', 'CONN')),
+    encryptionUnavailableMessage(
+      socket('ERR_SSL_WRONG_VERSION_NUMBER', 'received corrupt message of type InvalidContentType')
+    )?.startsWith('the mail server does not speak TLS'),
     true
   )
+
+  // Message text never decides, and network trouble still retries.
+  assertEquals(isEncryptionUnavailableError(socket('ECONNRESET', 'self-signed certificate')), false)
+  assertEquals(isEncryptionUnavailableError(socket('ETIMEDOUT')), false)
   assertEquals(
-    isEncryptionUnavailableError(tls('Error initiating TLS - self-signed certificate', 'STARTTLS')),
-    true
-  )
-  assertEquals(isEncryptionUnavailableError(tls('Connection closed unexpectedly', 'CONN')), false)
-  assertEquals(
-    isEncryptionUnavailableError(Object.assign(new Error('x'), { code: 'ESOCKET' })),
+    isEncryptionUnavailableError(
+      Object.assign(new Error('Connection closed unexpectedly'), { code: 'ETLS', command: 'CONN' })
+    ),
     false
   )
+})
+
+test('a certificate failure is a permanent send error with a plain message', async () => {
+  const failure = Object.assign(new Error('self-signed certificate'), {
+    code: 'ESOCKET',
+    originalCode: 'DEPTH_ZERO_SELF_SIGNED_CERT',
+  })
+  const { restore } = installTransportStub(() => Promise.reject(failure))
+  try {
+    const result = assertFailure(await smtpSender().sendJob(SIGNUP_JOB))
+    assertEquals(result.permanent, true)
+    assertEquals(
+      result.error.startsWith("the mail server's certificate could not be verified"),
+      true
+    )
+  } finally {
+    restore()
+  }
 })

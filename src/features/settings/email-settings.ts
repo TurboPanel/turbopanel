@@ -507,7 +507,8 @@ export async function resolveEmailSettings(
           keys.SMTP_PORT.value,
           keys.MAILPIT_SMTP_PORT.value,
           keys.SMTP_USER.value,
-          keys.SMTP_PASS.value
+          keys.SMTP_PASS.value,
+          resolveSmtpSecurity(keys.SMTP_SECURITY.value)
         )
       : parseExplicitSmtpConfig(
           keys.SMTP_HOST.value,

@@ -108,30 +108,63 @@ function buildTransport(
 }
 
 const NO_ENCRYPTION_MESSAGE =
-  'the mail server did not offer encryption (STARTTLS) or the TLS connection failed; check the Encryption setting and the server certificate'
+  'the mail server did not offer encryption (STARTTLS); check the Encryption setting, or choose None for a trusted relay'
+const CERTIFICATE_MESSAGE =
+  "the mail server's certificate could not be verified; check the server name and certificate"
+const NOT_TLS_MESSAGE =
+  'the mail server does not speak TLS on this port; check the Encryption setting and the port'
 
-/** TLS failures that a retry can not fix: wrong protocol for the port or a certificate that does not verify. */
-const TLS_CONFIG_FAILURE =
-  /wrong version number|packet length too long|unknown protocol|certificate|altnames|self[- ]signed/i
+/** Node TLS codes (`originalCode` on a nodemailer socket error) for a certificate that does not verify. */
+const CERTIFICATE_CODES: ReadonlySet<string> = new Set([
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_REVOKED',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+])
+
+/** Node TLS codes for a peer that is not speaking TLS (TLS against a plain port). */
+const NOT_TLS_CODES: ReadonlySet<string> = new Set([
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_SSL_PACKET_LENGTH_TOO_LONG',
+  'ERR_SSL_UNKNOWN_PROTOCOL',
+  'ERR_SSL_RECORD_LAYER_FAILURE',
+])
 
 /**
- * True when the server refused or could not do the TLS the setting demands, so
- * trying again can not help. A 4xx refusal of STARTTLS (a temporary condition)
- * and a dropped connection mid-handshake stay retryable.
+ * The plain message for a send error that retrying can not fix because the
+ * server can not do the TLS the setting demands, or undefined for any other
+ * error. A 5xx refusal of STARTTLS, a certificate that does not verify and a
+ * peer that does not speak TLS qualify. A 4xx refusal of STARTTLS (a temporary
+ * condition) and a dropped connection mid-handshake stay retryable.
+ *
+ * nodemailer reports a failed handshake as `ESOCKET` with the Node TLS code in
+ * `originalCode`, so that code (a fixed set) decides, never the message text.
  */
-export function isEncryptionUnavailableError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false
+export function encryptionUnavailableMessage(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
   const e = error as {
     code?: unknown
+    originalCode?: unknown
     command?: unknown
     responseCode?: unknown
-    message?: unknown
   }
-  if (e.code !== 'ETLS') return false
-  if (e.command === 'STARTTLS' && typeof e.responseCode === 'number') {
-    return e.responseCode >= 500
+  if (e.code === 'ETLS' && e.command === 'STARTTLS' && typeof e.responseCode === 'number') {
+    return e.responseCode >= 500 ? NO_ENCRYPTION_MESSAGE : undefined
   }
-  return typeof e.message === 'string' && TLS_CONFIG_FAILURE.test(e.message)
+  if (e.code !== 'ESOCKET' && e.code !== 'ETLS') return undefined
+  const original = typeof e.originalCode === 'string' ? e.originalCode : ''
+  if (CERTIFICATE_CODES.has(original)) return CERTIFICATE_MESSAGE
+  if (NOT_TLS_CODES.has(original)) return NOT_TLS_MESSAGE
+  return undefined
+}
+
+export function isEncryptionUnavailableError(error: unknown): boolean {
+  return encryptionUnavailableMessage(error) !== undefined
 }
 
 /**
@@ -302,8 +335,8 @@ export class MailerSmtpSender {
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e)
       logError('mailer', `send failed: ${detail}`)
-      const noEncryption = isEncryptionUnavailableError(e)
-      const errMsg = noEncryption ? `${NO_ENCRYPTION_MESSAGE} (${detail})` : detail
+      const encryptionMessage = encryptionUnavailableMessage(e)
+      const errMsg = encryptionMessage ? `${encryptionMessage} (${detail})` : detail
       return {
         success: false,
         error: errMsg,

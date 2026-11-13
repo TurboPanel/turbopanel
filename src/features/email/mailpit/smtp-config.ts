@@ -1,4 +1,5 @@
 import { parseExplicitSmtpConfig, type SmtpConfig } from '../smtp/smtp-resolve.ts'
+import type { SmtpSecurity } from '../smtp/smtp-security.ts'
 import {
   DEFAULT_MAILPIT_SMTP_HOST,
   DEFAULT_MAILPIT_SMTP_PORT,
@@ -11,10 +12,12 @@ export function buildMailpitSmtpConfig(
   smtpPort: string,
   mailpitSmtpPort: string,
   user: string,
-  pass?: string
+  pass?: string,
+  security?: SmtpSecurity
 ): SmtpConfig {
-  // The development mail catcher speaks plain SMTP; the Encryption setting is for real relays.
-  const explicit = parseExplicitSmtpConfig(smtpHost, smtpPort, user, pass, 'none')
+  // An explicit host is a real relay (this provider is accepted on any install), so it
+  // honours the Encryption setting. Only the built-in localhost catcher below is plain.
+  const explicit = parseExplicitSmtpConfig(smtpHost, smtpPort, user, pass, security)
   if (explicit) return explicit
 
   const port = resolveMailpitSmtpPort(mailpitSmtpPort)
