@@ -26,6 +26,7 @@ See "Deno mailer throttling and prefetch" below for rate/burst/prefetch behavior
 | `TURBOPANEL_BASE_URL` | Workers | Public base URL for mailed links. Self-hosted links never read it: they use the primary hostname under Admin › Access › Hostnames, else the discovered address (`src/features/install/control-plane-origins.ts`) |
 | `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | Both | `smtp`, `mailgun`, `mailpit-api` (Workers only), or `mailpit-smtp` (Deno only) |
 | `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Deno (`smtp` or optional override for `mailpit-smtp`) | Real SMTP relay configuration |
+| `TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY` | Deno (`smtp` only) | Connection encryption: `auto` (default), `tls`, `starttls`, `none` (see below) |
 | `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | Deno | Token-bucket rate limit for the email consumer (default 60) |
 | `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL` | Workers (`mailpit-api`, required) | Full Mailpit HTTP API base URL (e.g. `https://mailpit.turbopanel.dev`) |
 | `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT` | Deno (`mailpit-smtp`) | Co-located Mailpit SMTP port when `SMTP_HOST` / `SMTP_PORT` are unset (default 1025) |
@@ -53,12 +54,15 @@ Short keys and new rate/queue keys (added to `src/features/settings/email-settin
 | `MAILGUN_API_KEY` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY` | secret |
 | `MAILGUN_DOMAIN` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN` | |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | — | `TURBOPANEL_SYSTEM_EMAIL__SMTP_*` | |
+| `SMTP_SECURITY` | `auto` | `TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY` | `auto` (port 465 implicit TLS, else STARTTLS required), `tls`, `starttls`, `none` (plain text, warned in the UI) |
 | `MAILPIT_API_URL` / `MAILPIT_SMTP_PORT` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_*` | Workers read API URL only; Deno reads SMTP port only |
 | `RATE_LIMIT_PER_MINUTE` | `60` | `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | used by the Deno email consumer |
 | `RATE_LIMIT_BURST` | same as rate | — | max bucket size; see mailer throttling |
 | `QUEUE_PREFETCH` | `1` | — | RabbitMQ `channel.prefetch` for the email consumer |
 
 The consumer resolves settings via `resolveEmailSettings(db, env, dataEncryptionSecrets)` with a 30s TTL cache and re-resolves on each consumed message. Without restart, it hot-applies **provider** (swaps the active sender), **rate/burst** (swaps the token bucket), and **prefetch** (re-applies `channel.prefetch`). **FROM**, SMTP/Mailgun credentials, and transport config are re-resolved inside `MailerSmtpSender` / `MailerMailgunSender` on each send.
+
+**SMTP encryption (`SMTP_SECURITY`).** Real SMTP (`smtp` provider) always verifies the server certificate and never falls back to plain text unless the mode is `none` (`ignoreTLS`); `smtp/smtp-security.ts` maps mode and port to nodemailer options. A missing value is `auto`; an unknown stored or env value also resolves to `auto` (never `none`), and `PUT /settings/email` refuses one with a 400. The key lives in the existing `SYSTEM_EMAIL` JSON row, so it needs no migration. The `mailpit-smtp` provider ignores it and keeps its plain, unverified catcher options. A server that refuses STARTTLS (5xx) or fails the certificate or protocol check is a permanent send error ("the mail server did not offer encryption"); a 4xx refusal or a dropped handshake still retries. The sender's transport cache is keyed on the mode.
 
 ### Deno mailer throttling and prefetch
 

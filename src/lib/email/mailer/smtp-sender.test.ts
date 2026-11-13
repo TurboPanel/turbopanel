@@ -2,7 +2,13 @@ import { assertEquals } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import nodemailer from 'nodemailer'
 import type { EmailJob } from '../../../features/email/types.ts'
-import { createMailerSmtpSender, isRecipientRejected, MailerSmtpSender } from './smtp-sender.ts'
+import {
+  buildSmtpTransportOptions,
+  createMailerSmtpSender,
+  isEncryptionUnavailableError,
+  isRecipientRejected,
+  MailerSmtpSender,
+} from './smtp-sender.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -374,4 +380,94 @@ test('only a refused recipient with a dead-address status code counts as rejecte
     false
   )
   assertEquals(isRecipientRejected(null), false)
+})
+
+test('transport options follow the encryption mode and port', () => {
+  const opts = (security: 'auto' | 'tls' | 'starttls' | 'none', port: number) =>
+    buildSmtpTransportOptions({ host: 'mail.example.com', port, security }, {})
+  assertEquals(opts('auto', 465).secure, true)
+  assertEquals(opts('auto', 587).secure, false)
+  assertEquals(opts('auto', 587).requireTLS, true)
+  assertEquals(opts('tls', 587).secure, true)
+  assertEquals(opts('starttls', 465).requireTLS, true)
+  assertEquals(opts('none', 25).ignoreTLS, true)
+  assertEquals(opts('none', 25).requireTLS, undefined)
+  for (const mode of ['auto', 'tls', 'starttls', 'none'] as const) {
+    assertEquals('tls' in opts(mode, 587), false)
+  }
+})
+
+test('mailpit transport keeps its plain legacy options', () => {
+  const co = buildSmtpTransportOptions({ host: '127.0.0.1', port: 1025 }, {})
+  assertEquals(co.secure, false)
+  assertEquals(co.requireTLS, undefined)
+  assertEquals(co.ignoreTLS, undefined)
+  const fallback = buildSmtpTransportOptions(undefined, {})
+  assertEquals(fallback.tls, { rejectUnauthorized: false })
+})
+
+test('sendJob builds a STARTTLS-required transport by default and a new one when the mode changes', async () => {
+  const { transports, restore } = installTransportStub()
+  try {
+    await smtpSender().sendJob(SIGNUP_JOB)
+    assertEquals(transports[0]?.options.requireTLS, true)
+    const sender = smtpSender({ ...SMTP_ENV, TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'none' })
+    await sender.sendJob(SIGNUP_JOB)
+    assertEquals(transports[1]?.options.ignoreTLS, true)
+  } finally {
+    restore()
+  }
+})
+
+test('transport cache is keyed by the encryption mode', async () => {
+  const env: Record<string, string | undefined> = { ...SMTP_ENV }
+  const { transports, restore } = installTransportStub()
+  try {
+    const sender = smtpSender(env)
+    await sender.sendJob(SIGNUP_JOB)
+    await sender.sendJob(SIGNUP_JOB)
+    assertEquals(transports.length, 1)
+    env.TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY = 'tls'
+    await sender.sendJob(SIGNUP_JOB)
+    assertEquals(transports.length, 2)
+    assertEquals(transports[1]?.options.secure, true)
+  } finally {
+    restore()
+  }
+})
+
+test('a server that cannot do the required encryption is a permanent, clear error', async () => {
+  const refused = Object.assign(new Error('Error upgrading connection with STARTTLS'), {
+    code: 'ETLS',
+    command: 'STARTTLS',
+    responseCode: 502,
+  })
+  const { restore } = installTransportStub(() => Promise.reject(refused))
+  try {
+    const failure = assertFailure(await smtpSender().sendJob(SIGNUP_JOB))
+    assertEquals(failure.permanent, true)
+    assertEquals(failure.error.startsWith('the mail server did not offer encryption'), true)
+  } finally {
+    restore()
+  }
+})
+
+test('encryption errors: only refusals and certificate or protocol failures are permanent', () => {
+  const tls = (message: string, command: string, responseCode?: number) =>
+    Object.assign(new Error(message), { code: 'ETLS', command, responseCode })
+  assertEquals(isEncryptionUnavailableError(tls('x', 'STARTTLS', 554)), true)
+  assertEquals(isEncryptionUnavailableError(tls('x', 'STARTTLS', 454)), false)
+  assertEquals(
+    isEncryptionUnavailableError(tls('Error initiating TLS - wrong version number', 'CONN')),
+    true
+  )
+  assertEquals(
+    isEncryptionUnavailableError(tls('Error initiating TLS - self-signed certificate', 'STARTTLS')),
+    true
+  )
+  assertEquals(isEncryptionUnavailableError(tls('Connection closed unexpectedly', 'CONN')), false)
+  assertEquals(
+    isEncryptionUnavailableError(Object.assign(new Error('x'), { code: 'ESOCKET' })),
+    false
+  )
 })

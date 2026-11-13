@@ -64,6 +64,7 @@ import {
 import {
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
+  invalidEmailSettingUpdate,
   resolveEmailSettings,
   updateEmailSettings,
 } from '../features/settings/email-settings.ts'
@@ -504,6 +505,9 @@ export function registerAdminRoutes(
     if (!updates) {
       return c.json({ error: 'expected a JSON object of setting keys' }, 400)
     }
+
+    const invalidUpdate = invalidEmailSettingUpdate(updates)
+    if (invalidUpdate) return c.json({ error: invalidUpdate }, 400)
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     // DB-backed secret writes must be sealed at rest — require an encryption key,
