@@ -32,6 +32,7 @@ import {
   parseOrganizationDockerNetworking,
 } from '../deploy/docker-address-pools.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
+import { type BuildLimitSettings, parseBuildLimitSettings } from '../deploy/build-limits.ts'
 import {
   DEFAULT_DIRECTORY_NAME_MODE,
   type DirectoryNameMode,
@@ -191,6 +192,12 @@ export type OrganizationOptions = {
    * then the options parser drops hook fields and no deploy carries them.
    */
   deployHooksEnabled?: boolean
+  /**
+   * The most cores and memory any one build of this organization may use, on
+   * any server (per build, not a total). Part of the smallest-wins resolution
+   * in `../deploy/build-limits.ts`.
+   */
+  buildLimits?: BuildLimitSettings
   /**
    * Whether the new-project form opens its Environment section (the primary
    * environment name) without being asked. Off by default: most projects keep
@@ -410,6 +417,8 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   }
   assignProjectFormDefaults(options, value)
   assignComposeDefaultResourceLimits(options, value)
+  const buildLimits = parseBuildLimitSettings(value.buildLimits)
+  if (Object.keys(buildLimits).length > 0) options.buildLimits = buildLimits
   assignPhpModes(options, value)
   assignDirectoryNames(options, value)
   return options

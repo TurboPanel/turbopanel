@@ -21,6 +21,7 @@ import {
   DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
   PROJECT_CACHE_FEATURE,
+  BUILD_LIMITS_FEATURE,
   TUNNEL_LOCK_ADD_FEATURE,
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
@@ -457,8 +458,14 @@ test('project-cache-v1 is advertised', () => {
   assertEquals(DAEMON_WIRE_FEATURES.includes(PROJECT_CACHE_FEATURE), true)
 })
 
-test('tunnel-lock-add-v1 is the last daemon wire feature and raised no floor', () => {
+test('tunnel-lock-add-v1 is advertised and raised no floor', () => {
   assertEquals(TUNNEL_LOCK_ADD_FEATURE, 'tunnel-lock-add-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), TUNNEL_LOCK_ADD_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_LOCK_ADD_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('build-limits-v1 is the last daemon wire feature and raised no floor', () => {
+  assertEquals(BUILD_LIMITS_FEATURE, 'build-limits-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), BUILD_LIMITS_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })

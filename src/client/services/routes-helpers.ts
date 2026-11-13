@@ -1,3 +1,4 @@
+import { parseBuildLimitSettingsInput } from '../../features/deploy/build-limits.ts'
 import { readServiceApp } from '../../features/environments/app-facts.ts'
 import type { ServiceRunStateView } from '../../features/environments/service-run-state.ts'
 import {
@@ -124,6 +125,13 @@ export function parseOptionalServiceOptions(
   // command or worker would otherwise be saved away with a success answer.
   const lifecycleProblem = validateSiteLifecycleOptions(optionsResult)
   if (lifecycleProblem) return { kind: 'invalid', message: lifecycleProblem }
+  // Same for the build limits: out-of-range values are refused, not dropped.
+  const build = (optionsResult as Record<string, unknown>).build
+  if (build !== undefined && build !== null) {
+    const limits = parseBuildLimitSettingsInput(build)
+    if (!limits.ok)
+      return { kind: 'invalid', message: limits.error.replace('buildLimits', 'build') }
+  }
   const parsed = parseServiceOptions(optionsResult, parseOptions)
   if (parsed === null) return { kind: 'invalid' }
   return { kind: 'value', value: parsed }

@@ -240,6 +240,7 @@ export const DAEMON_WIRE_FEATURES = [
   'site-db-url-ca-v1',
   'project-cache-v1',
   'tunnel-lock-add-v1',
+  'build-limits-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -537,6 +538,14 @@ export const PROJECT_CACHE_FEATURE: DaemonWireFeature = 'project-cache-v1'
  * locked without a deploy. Without it that lock waits for the next deploy.
  */
 export const TUNNEL_LOCK_ADD_FEATURE: DaemonWireFeature = 'tunnel-lock-add-v1'
+
+/**
+ * `environment.deploy` carries `buildLimits` on each `sourceMaterial[]` entry:
+ * the most CPU cores and memory one build may use (the smallest of the
+ * organization, server and service limits). Sent only to a daemon that lists
+ * it; an older daemon would ignore the field and build with its fixed limit.
+ */
+export const BUILD_LIMITS_FEATURE: DaemonWireFeature = 'build-limits-v1'
 
 /**
  * The daemon runs a native app on Deno (`nativeAppServices[].runtime: "deno"`

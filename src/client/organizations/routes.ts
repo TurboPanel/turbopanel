@@ -53,7 +53,10 @@ import {
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
   defaultTimezonePutResponse,
+  buildLimitsGetResponse,
+  buildLimitsPutResponse,
   deployHooksGetResponse,
+  parseBuildLimitsPatch,
   deployHooksPutResponse,
   dockerNetworkingGetResponse,
   dockerNetworkingPutResponse,
@@ -130,6 +133,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/docker-networking', createSessionMiddleware(secrets))
   router.use('/organizations/:id/tls-settings', createSessionMiddleware(secrets))
   router.use('/organizations/:id/compose-privileged-fields', createSessionMiddleware(secrets))
+  router.use('/organizations/:id/build-limits', createSessionMiddleware(secrets))
   router.use('/timezones', createSessionMiddleware(secrets))
   registerOrganizationFabricRoutes(router, opts)
 
@@ -346,6 +350,26 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       audit: (patch) => ({
         action: 'organization.compose_privileged_fields.set',
         context: { composeGatedFieldsEnabled: patch.composeGatedFieldsEnabled },
+      }),
+    })
+  )
+
+  // The most cores and memory any one build of the organization may use, on any
+  // server. The smallest of the organization, server and service limits applies.
+  router.get('/organizations/:id/build-limits', orgOptionsGetRoute('owner', buildLimitsGetResponse))
+  router.put(
+    '/organizations/:id/build-limits',
+    orgOptionsPatchRoute({
+      gate: 'owner',
+      parse: parseBuildLimitsPatch,
+      respond: buildLimitsPutResponse,
+      audit: (patch) => ({
+        action: 'organization.build_limits.set',
+        context: {
+          cores: patch.buildLimits.cores ?? null,
+          memoryBytes: patch.buildLimits.memoryBytes ?? null,
+          swap: patch.buildLimits.swap ?? null,
+        },
       }),
     })
   )
