@@ -471,6 +471,8 @@ export type ServerHostDefaultsFields = {
   /** Effective Via header: this server's setting, else the organization's, else off. */
   sendViaHeader: boolean
   sendViaHeaderSource: string | null
+  /** This server's own build limits (`null` parts are not set); see `features/deploy/build-limits.ts`. */
+  buildLimits: { cores: number | null; memoryBytes: number | null }
 }
 
 export function resolveServerTimezoneFields(
@@ -508,6 +510,10 @@ export function resolveServerHostDefaultsFields(
     hideWebServerNamesSource: hide.source,
     sendViaHeader: via.sendViaHeader,
     sendViaHeaderSource: via.source,
+    buildLimits: {
+      cores: serverOptions?.buildLimits?.cores ?? null,
+      memoryBytes: serverOptions?.buildLimits?.memoryBytes ?? null,
+    },
   }
 }
 
