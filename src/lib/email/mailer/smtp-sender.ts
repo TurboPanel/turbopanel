@@ -18,6 +18,7 @@ import {
   normalizeMailpitSmtpEnv,
 } from '../../../features/email/mailpit/env.ts'
 import type { SmtpConfig } from '../../../features/email/smtp/smtp-resolve.ts'
+import { smtpTransportSecurityOptions } from '../../../features/email/smtp/smtp-security.ts'
 
 type Transporter = ReturnType<typeof nodemailer.createTransport>
 
@@ -68,33 +69,102 @@ function validateResolvedSmtpConfig(resolved: ResolvedEmailSettings): SmtpConfig
   return resolved.smtp
 }
 
+function smtpAuth(cfg: SmtpConfig): { user: string; pass: string } | undefined {
+  return typeof cfg.user === 'string' &&
+    cfg.user.length > 0 &&
+    typeof cfg.pass === 'string' &&
+    cfg.pass.length > 0
+    ? { user: cfg.user, pass: cfg.pass }
+    : undefined
+}
+
+/**
+ * A config from the `smtp` provider carries its Encryption mode: TLS options
+ * follow it and certificates are always verified (no `tls` override). The
+ * development catcher's config carries `none`.
+ */
 function buildTransport(
   cfg: SmtpConfig | undefined,
   env: Record<string, string | undefined>
 ): Transporter {
+  const auth = cfg ? smtpAuth(cfg) : undefined
   if (cfg) {
-    const auth =
-      typeof cfg.user === 'string' &&
-      cfg.user.length > 0 &&
-      typeof cfg.pass === 'string' &&
-      cfg.pass.length > 0
-        ? { user: cfg.user, pass: cfg.pass }
-        : undefined
     return nodemailer.createTransport({
       host: cfg.host,
       port: cfg.port,
-      secure: false,
+      ...smtpTransportSecurityOptions(cfg.security, cfg.port),
       ...(auth && { auth }),
       ...POOL_OPTS,
     })
   }
+  const port = mailpitPort(env)
   return nodemailer.createTransport({
     host: 'localhost',
-    port: mailpitPort(env),
-    secure: false,
+    port,
+    ...smtpTransportSecurityOptions('none', port),
     tls: { rejectUnauthorized: false },
     ...POOL_OPTS,
   })
+}
+
+const NO_ENCRYPTION_MESSAGE =
+  'the mail server did not offer encryption (STARTTLS); check the Encryption setting, or choose None for a trusted relay'
+const CERTIFICATE_MESSAGE =
+  "the mail server's certificate could not be verified; check the server name and certificate"
+const NOT_TLS_MESSAGE =
+  'the mail server does not speak TLS on this port; check the Encryption setting and the port'
+
+/** Node TLS codes (`originalCode` on a nodemailer socket error) for a certificate that does not verify. */
+const CERTIFICATE_CODES: ReadonlySet<string> = new Set([
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'SELF_SIGNED_CERT_IN_CHAIN',
+  'CERT_HAS_EXPIRED',
+  'CERT_NOT_YET_VALID',
+  'CERT_REVOKED',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+])
+
+/** Node TLS codes for a peer that is not speaking TLS (TLS against a plain port). */
+const NOT_TLS_CODES: ReadonlySet<string> = new Set([
+  'ERR_SSL_WRONG_VERSION_NUMBER',
+  'ERR_SSL_PACKET_LENGTH_TOO_LONG',
+  'ERR_SSL_UNKNOWN_PROTOCOL',
+  'ERR_SSL_RECORD_LAYER_FAILURE',
+])
+
+/**
+ * The plain message for a send error that retrying can not fix because the
+ * server can not do the TLS the setting demands, or undefined for any other
+ * error. A 5xx refusal of STARTTLS, a certificate that does not verify and a
+ * peer that does not speak TLS qualify. A 4xx refusal of STARTTLS (a temporary
+ * condition) and a dropped connection mid-handshake stay retryable.
+ *
+ * nodemailer reports a failed handshake as `ESOCKET` with the Node TLS code in
+ * `originalCode`, so that code (a fixed set) decides, never the message text.
+ */
+export function encryptionUnavailableMessage(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const e = error as {
+    code?: unknown
+    originalCode?: unknown
+    command?: unknown
+    responseCode?: unknown
+  }
+  if (e.code === 'ETLS' && e.command === 'STARTTLS' && typeof e.responseCode === 'number') {
+    return e.responseCode >= 500 ? NO_ENCRYPTION_MESSAGE : undefined
+  }
+  if (e.code !== 'ESOCKET' && e.code !== 'ETLS') return undefined
+  const original = typeof e.originalCode === 'string' ? e.originalCode : ''
+  if (CERTIFICATE_CODES.has(original)) return CERTIFICATE_MESSAGE
+  if (NOT_TLS_CODES.has(original)) return NOT_TLS_MESSAGE
+  return undefined
+}
+
+export function isEncryptionUnavailableError(error: unknown): boolean {
+  return encryptionUnavailableMessage(error) !== undefined
 }
 
 /**
@@ -135,6 +205,7 @@ export function isRecipientRejected(error: unknown): boolean {
 
 function isPermanentSmtpError(error: unknown): boolean {
   if (error instanceof PermanentSendError) return true
+  if (isEncryptionUnavailableError(error)) return true
   if (!error || typeof error !== 'object') return false
 
   const maybeError = error as { responseCode?: unknown; code?: unknown; command?: unknown }
@@ -165,7 +236,7 @@ export class MailerSmtpSender {
 
   private smtpSignature(cfg: SmtpConfig | undefined): string {
     if (!cfg) return 'mailpit'
-    return `${cfg.host}:${cfg.port}:${cfg.user ?? ''}:${cfg.pass ?? ''}`
+    return `${cfg.host}:${cfg.port}:${cfg.security ?? ''}:${cfg.user ?? ''}:${cfg.pass ?? ''}`
   }
 
   private async resolveEmailConfig(): Promise<Awaited<ReturnType<typeof resolveEmailSettings>>> {
@@ -262,8 +333,10 @@ export class MailerSmtpSender {
       })
       return { success: true }
     } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e)
-      logError('mailer', `send failed: ${errMsg}`)
+      const detail = e instanceof Error ? e.message : String(e)
+      logError('mailer', `send failed: ${detail}`)
+      const encryptionMessage = encryptionUnavailableMessage(e)
+      const errMsg = encryptionMessage ? `${encryptionMessage} (${detail})` : detail
       return {
         success: false,
         error: errMsg,
