@@ -607,10 +607,16 @@ function identityLabelsFor(
   serviceName: string,
   environmentId: string | undefined
 ): Record<string, string> {
+  // Both prefixes: a daemon from the previous release reads only
+  // `com.turbopanel.*`, a current one reads `io.turbopanel.*` first. The old
+  // pair is dropped in a later release, together with the daemon's old-prefix
+  // reads.
   const labels: Record<string, string> = {
+    'io.turbopanel.service': serviceName,
     'com.turbopanel.service': serviceName,
   }
   if (environmentId) {
+    labels['io.turbopanel.environment'] = environmentId
     labels['com.turbopanel.environment'] = environmentId
   }
   return labels

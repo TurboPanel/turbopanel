@@ -68,7 +68,7 @@ Canonical mapping (implementation: `src/lib/naming.ts`):
 Two different components legitimately land on `-in` / `role: 'ingress'` — the
 shared HTTP Traefik (`hosting-ingress`) and the shared ProxySQL
 (`managed-ingress`) — so **the suffix alone never disambiguates them**. What
-does: the `com.turbopanel.system.component` label, and the **compose project**,
+does: the `io.turbopanel.system.component` label (the daemon also reads the old `com.turbopanel.` prefix until a later release), and the **compose project**,
 which is each component's own allocated `serviceId`. Both projects are bare
 UUIDs; there is no `turbopanel-ingress` / `turbopanel-proxysql` literal to key
 off. Only the self-hosted instance stack keeps a human-readable project name
@@ -100,7 +100,7 @@ colocated server (`ensureSelfHostSystemHierarchy`). Then `docker compose up`
 hierarchy allocates the `service` / `container` rows and assigns each service a
 UUID → a `system.reconcile` command carries that allocated `serviceId` (as the
 compose service's container name) to the daemon → the daemon inspects
-`docker compose ps` by the `com.turbopanel.system.component` label and reports
+`docker compose ps` by the `io.turbopanel.system.component` label (the daemon also reads the old `com.turbopanel.` prefix until a later release) and reports
 identity/status back by container name. Inventory rows exist before the daemon
 ever inspects the stack; the daemon never invents ids.
 
