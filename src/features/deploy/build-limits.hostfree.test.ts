@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import type { BuildLimits } from '../../contracts/commands/schemas.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
+import { parseOptionalServiceOptions } from '../../client/services/routes-helpers.ts'
 import { parseServiceOptions } from '../projects/service-options.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import {
@@ -31,26 +32,51 @@ test('the smallest limit set among the levels wins, cores and memory on their ow
   })
 })
 
-test('swap is off unless a level opts in; the narrowest level that sets it decides', () => {
+test('swap is off unless a level opts in and none says off; the deciding level is the source', () => {
   assertEquals(resolveBuildLimits({ organization: { swap: true }, server: {}, service: {} }), {
     swap: { allowed: true, source: 'organization' },
   })
+  // Off at any level wins, whatever the order.
   assertEquals(resolveBuildLimits({ organization: { swap: true }, server: { swap: false } }), {
     swap: { allowed: false, source: 'server' },
   })
   assertEquals(
     resolveBuildLimits({
       organization: { swap: false },
-      server: { swap: false },
+      server: { swap: true },
       service: { swap: true },
     }),
-    { swap: { allowed: true, source: 'service' } }
+    { swap: { allowed: false, source: 'organization' } }
+  )
+  assertEquals(
+    resolveBuildLimits({
+      organization: { swap: true },
+      server: { swap: true },
+      service: { swap: false },
+    }),
+    { swap: { allowed: false, source: 'service' } }
+  )
+  // On when at least one says on; the narrowest on-level is the source.
+  assertEquals(
+    resolveBuildLimits({ organization: { swap: true }, server: { swap: true }, service: {} }),
+    { swap: { allowed: true, source: 'server' } }
   )
   assertEquals(parseBuildLimitSettings({ swap: true, cores: 2 }), { swap: true, cores: 2 })
   assertEquals(parseBuildLimitSettings({ swap: 'yes' }), {})
   assertEquals(parseBuildLimitSettingsInput({ swap: null }), { ok: true, value: {} })
   assertEquals(parseBuildLimitSettingsInput({ swap: true }), { ok: true, value: { swap: true } })
   assertEquals(parseBuildLimitSettingsInput({ swap: 'on' }).ok, false)
+})
+
+test('a service saved with out-of-range build limits is refused, not silently dropped', () => {
+  for (const build of [{ cores: 0.5 }, { cores: 1000 }, { memoryBytes: 1000 }, { swap: 'on' }]) {
+    const result = parseOptionalServiceOptions({ options: { build } })
+    assertEquals(result.kind, 'invalid')
+  }
+  const ok = parseOptionalServiceOptions({
+    options: { build: { disableCache: true, cores: 2, swap: false } },
+  })
+  assertEquals(ok.kind, 'value')
 })
 
 test('a tie goes to the narrowest level, and nothing set means nothing sent', () => {

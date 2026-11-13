@@ -4,8 +4,8 @@
  * A limit can be set at three levels: the organization (per build, on any
  * server), the server, and the service. The effective limit of a build is the
  * smallest one set, for cores and for memory on their own. Swap is off unless
- * a level opts in: the narrowest level that sets it (service, server,
- * organization) decides. Nothing is stored
+ * a level opts in and none says off (off at any level wins); the daemon then
+ * caps swap at the build's memory limit. Nothing is stored
  * in new columns: `organization.options.buildLimits`,
  * `server.options.buildLimits` and `service.options.build.{cores,memoryBytes}`.
  *
@@ -30,7 +30,7 @@ export const BUILD_MEMORY_MAX_BYTES = 1024 ** 4
 export type BuildLimitSettings = {
   cores?: number
   memoryBytes?: number
-  /** Whether a build may use swap; absent is not set (off unless a wider level opts in). */
+  /** Whether a build may use swap; absent is not set. Off at any level wins. */
   swap?: boolean
 }
 
@@ -117,9 +117,13 @@ export function resolveBuildLimits(levels: {
   let memory: BuildLimits['memory']
   let swap: BuildLimits['swap']
   for (const [source, settings] of ordered) {
-    // Swap is not a smallest-wins limit: the narrowest level that set it decides.
-    if (swap === undefined && settings?.swap !== undefined) {
-      swap = { allowed: settings.swap, source }
+    // Swap is not a smallest-wins limit: off at any level wins; on only when a
+    // level allows it and none says off. The narrowest level that said the
+    // winning answer is the source.
+    if (settings?.swap === false && swap?.allowed !== false) {
+      swap = { allowed: false, source }
+    } else if (settings?.swap === true && swap === undefined) {
+      swap = { allowed: true, source }
     }
     if (settings?.cores !== undefined && (!cores || settings.cores < cores.cores)) {
       cores = { cores: settings.cores, source }
