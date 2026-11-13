@@ -97,10 +97,11 @@ function buildTransport(
   env: Record<string, string | undefined>
 ): Transporter {
   if (cfg) return nodemailer.createTransport(buildSmtpTransportOptions(cfg))
+  const port = mailpitPort(env)
   return nodemailer.createTransport({
     host: 'localhost',
-    port: mailpitPort(env),
-    secure: false,
+    port,
+    ...smtpTransportSecurityOptions('none', port),
     tls: { rejectUnauthorized: false },
     ...POOL_OPTS,
   })
