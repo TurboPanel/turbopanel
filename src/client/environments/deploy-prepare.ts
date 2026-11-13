@@ -1,5 +1,9 @@
 import { attachBuildLimits } from '../../features/deploy/build-limits.ts'
 import type { Context } from 'hono'
+import {
+  buildServiceVariablesViews,
+  type ServiceVariablesView,
+} from '../../features/compose/service-variables-view.ts'
 import { panelHostnameRefusal } from '../../features/hostings/panel-hostname-guard.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
@@ -582,6 +586,12 @@ export type PreparedDeployCompose = ServerDeployment & {
    * `nativeAppServices[].variables`.
    */
   nativeAppVariables?: NativeAppVariablesView[]
+  /**
+   * Every service's variables by the names a person set, split into build and
+   * runtime use, for people. Secret values are left out. Never sent to a daemon.
+   * With several servers the preview keeps the last server's list per service.
+   */
+  serviceVariables?: ServiceVariablesView[]
   /**
    * The Node series each native app runs and where it came from (the compose
    * service, the repository's `package.json` / `.nvmrc` / `.node-version`, or
@@ -2996,6 +3006,7 @@ async function toPreparedDeployResult(
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
     nativeAppVariables?: NativeAppVariablesView[]
+    serviceVariables?: ServiceVariablesView[]
     nativeAppNodeVersions?: NativeAppNodeVersionView[]
     nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
@@ -3054,6 +3065,7 @@ async function toPreparedDeployResult(
     sites: parts.sites,
     nativeAppServices: parts.nativeAppServices,
     nativeAppVariables: parts.nativeAppVariables ?? [],
+    ...(parts.serviceVariables === undefined ? {} : { serviceVariables: parts.serviceVariables }),
     nativeAppNodeVersions: parts.nativeAppNodeVersions ?? [],
     nativeAppDenoVersions: parts.nativeAppDenoVersions ?? [],
     sourceMaterial: parts.sourceMaterial,
@@ -4254,6 +4266,14 @@ export async function prepareDeployCompose(
     sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
+    serviceVariables: buildServiceVariablesViews(
+      withVariables,
+      new Set(
+        sourceMaterial
+          .filter((row) => row.rollbackToReleaseId === undefined && row.build.kind !== 'static')
+          .map((row) => row.composeServiceName)
+      )
+    ),
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial,
