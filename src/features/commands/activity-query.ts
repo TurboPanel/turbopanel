@@ -18,6 +18,7 @@
  */
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import type { CommandProgressStep } from '../../contracts/cell-protocol.ts'
 import { command, environment, grant, project, team, teammate, user } from '../../db/schema.ts'
 import { outcomeFromErrorCode } from '../deploy/deploy-outcome.ts'
 import { readDeploymentTrigger, type DeploymentTrigger } from '../deploy/deployment-history.ts'
@@ -233,9 +234,13 @@ type EnvironmentNames = Map<
 >
 
 /**
- * "Step N of M" from a stored step plan: M counts every step that has work
- * to do (`ready` ones were already on the server), N the steps done plus the
- * one running. Nulls when the daemon has not reported a plan.
+ * "Step N of M" from a stored step plan, counted the way the web interface
+ * counts a plan: M is every step the plan lists and N
+ * is the place of the running step in that list, one-based. Steps already on
+ * the server (`ready`) count as done. With no step running, N is the place of
+ * the step that failed, else, once everything is done or already there, the total (a
+ * finished plan reads M of M and a stopped one the steps before the first
+ * skipped; 0 before anything has run). Nulls when the daemon has not reported a plan.
  */
 export function activityStepsOf(progress: unknown): {
   step: number | null
@@ -244,13 +249,31 @@ export function activityStepsOf(progress: unknown): {
 } {
   const plan = parseStoredCommandProgress(progress)
   if (plan === null) return { step: null, totalSteps: null, stepLabel: null }
-  const running = plan.steps.find((step) => step.state === 'running')
-  const done = plan.steps.filter((step) => step.state === 'done').length
+  const steps = plan.steps
+  const running =
+    steps.find((step) => step.id === plan.current && step.state === 'running') ??
+    steps.find((step) => step.state === 'running')
   return {
-    step: done + (running ? 1 : 0),
-    totalSteps: plan.steps.filter((step) => step.state !== 'ready').length,
+    step: activityStepPosition(steps, running),
+    totalSteps: steps.length,
     stepLabel: running?.label ?? null,
   }
+}
+
+/** The "N" of "Step N of M": same branch order as the web interface's headline. */
+function activityStepPosition(
+  steps: readonly CommandProgressStep[],
+  running: CommandProgressStep | undefined
+): number {
+  if (running) return steps.indexOf(running) + 1
+  const failed = steps.find((step) => step.state === 'failed')
+  if (failed) return steps.indexOf(failed) + 1
+  const settled = steps.filter((step) => step.state === 'done' || step.state === 'ready').length
+  if (settled === steps.length) return settled
+  // Stopped: the steps before the first skipped one are the ones that ran.
+  const skipped = steps.findIndex((step) => step.state === 'skipped')
+  // Not started yet (or between steps of a live deploy): no position to show.
+  return Math.max(skipped, 0)
 }
 
 /**
