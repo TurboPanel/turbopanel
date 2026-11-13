@@ -99,6 +99,20 @@ export function serviceBuildLimitSettings(build: unknown): BuildLimitSettings {
 }
 
 /**
+ * Swap is not a smallest-wins limit: off at any level wins; on only when a
+ * level allows it and none says off. The narrowest level that said the winning
+ * answer is the source. `ordered` lists the narrowest level first.
+ */
+function resolveSwap(
+  ordered: ReadonlyArray<[BuildLimitSource, BuildLimitSettings | undefined]>
+): BuildLimits['swap'] {
+  const off = ordered.find(([, settings]) => settings?.swap === false)
+  if (off) return { allowed: false, source: off[0] }
+  const on = ordered.find(([, settings]) => settings?.swap === true)
+  return on ? { allowed: true, source: on[0] } : undefined
+}
+
+/**
  * The effective limits of one build: the smallest set among the levels, each
  * part on its own. A tie goes to the narrowest level (service, then server,
  * then organization). `undefined` when no level sets anything.
@@ -115,16 +129,7 @@ export function resolveBuildLimits(levels: {
   ]
   let cores: BuildLimits['cores']
   let memory: BuildLimits['memory']
-  let swap: BuildLimits['swap']
   for (const [source, settings] of ordered) {
-    // Swap is not a smallest-wins limit: off at any level wins; on only when a
-    // level allows it and none says off. The narrowest level that said the
-    // winning answer is the source.
-    if (settings?.swap === false && swap?.allowed !== false) {
-      swap = { allowed: false, source }
-    } else if (settings?.swap === true && swap === undefined) {
-      swap = { allowed: true, source }
-    }
     if (settings?.cores !== undefined && (!cores || settings.cores < cores.cores)) {
       cores = { cores: settings.cores, source }
     }
@@ -132,6 +137,7 @@ export function resolveBuildLimits(levels: {
       memory = { bytes: settings.memoryBytes, source }
     }
   }
+  const swap = resolveSwap(ordered)
   if (!cores && !memory && !swap) return undefined
   return {
     ...(cores ? { cores } : {}),
