@@ -2499,6 +2499,19 @@ export type EnvironmentDeployNativeAppVariable = {
 /** Auth shape of a clone credential — see `EnvironmentDeploySource.credentialKind`. */
 export type EnvironmentDeploySourceCredentialKind = 'token' | 'ssh_key'
 
+/** Which level set a build limit: the smallest set among the three wins. */
+export type BuildLimitSource = 'organization' | 'server' | 'service'
+
+/**
+ * The most CPU cores and memory one build may use, as the control plane
+ * resolved it (`build-limits-v1`). Either part may be absent; the daemon then
+ * applies its default (half the server's cores; its RAM less 1 GiB).
+ */
+export type BuildLimits = {
+  cores?: { cores: number; source: BuildLimitSource }
+  memory?: { bytes: number; source: BuildLimitSource }
+}
+
 export type EnvironmentDeploySource = {
   sourceId: string
   composeServiceName: string
@@ -2507,6 +2520,8 @@ export type EnvironmentDeploySource = {
    * Echoed on native/hosting/ingress rows for the same compose name.
    */
   releaseServiceId?: string
+  /** The limits of this entry's build, in full (organization, server, service). */
+  buildLimits?: BuildLimits
   /**
    * Which control-plane provider resolved this entry. Carried for tracing and
    * for the host's own logs; the daemon never branches on it — everything it
@@ -4368,6 +4383,55 @@ function applyOptionalSourceFields(
   )
 }
 
+const BUILD_LIMIT_SOURCES = new Set<string>(['organization', 'server', 'service'])
+
+function parseBuildLimitSource(value: unknown, field: string): BuildLimitSource {
+  if (typeof value !== 'string' || !BUILD_LIMIT_SOURCES.has(value)) {
+    throw new Error(`Invalid ${field} source`)
+  }
+  return value as BuildLimitSource
+}
+
+/** `buildLimits`: optional, strict, either part may be absent. */
+export function parseBuildLimits(value: unknown, field = 'buildLimits'): BuildLimits | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) throw new Error(`Invalid ${field}`)
+  const limits: BuildLimits = {}
+  if (value.cores !== undefined) {
+    const entry = value.cores
+    if (
+      !isRecord(entry) ||
+      typeof entry.cores !== 'number' ||
+      !Number.isFinite(entry.cores) ||
+      entry.cores < 1 ||
+      entry.cores > 999
+    ) {
+      throw new Error(`Invalid ${field} cores`)
+    }
+    limits.cores = {
+      cores: Math.round(entry.cores * 100) / 100,
+      source: parseBuildLimitSource(entry.source, field),
+    }
+  }
+  if (value.memory !== undefined) {
+    const entry = value.memory
+    if (
+      !isRecord(entry) ||
+      typeof entry.bytes !== 'number' ||
+      !Number.isInteger(entry.bytes) ||
+      entry.bytes < 1024 ** 3 ||
+      entry.bytes > 1024 ** 4
+    ) {
+      throw new Error(`Invalid ${field} memory`)
+    }
+    limits.memory = {
+      bytes: entry.bytes,
+      source: parseBuildLimitSource(entry.source, field),
+    }
+  }
+  return limits.cores || limits.memory ? limits : undefined
+}
+
 function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {
   if (!isRecord(entry)) throw new Error('Invalid sourceMaterial entry')
   if (!hasValidSourceIdentity(entry)) {
@@ -4395,6 +4459,8 @@ function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {
   applyOptionalSourceFields(entry, source)
   const principal = parseDeploySitePrincipal(entry.principal)
   if (principal) source.principal = principal
+  const buildLimits = parseBuildLimits(entry.buildLimits, 'sourceMaterial buildLimits')
+  if (buildLimits) source.buildLimits = buildLimits
   return source
 }
 

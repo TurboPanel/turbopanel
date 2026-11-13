@@ -1,4 +1,8 @@
 import {
+  type BuildLimitSettings,
+  parseBuildLimitSettingsInput,
+} from '../../features/deploy/build-limits.ts'
+import {
   parseDefaultEnvironmentNameInput,
   parseMaxServersInput,
   parseDeployTimeoutMinutes,
@@ -206,6 +210,10 @@ export function applyTlsSettingsPatch(
 
 export type ComposeGatedFieldsPatch = {
   composeGatedFieldsEnabled: boolean
+}
+
+export type BuildLimitsPatch = {
+  buildLimits: BuildLimitSettings
 }
 
 export type DeployHooksPatch = {
@@ -599,6 +607,26 @@ export function parseComposeGatedFieldsPatch(
     ok: true,
     patch: { composeGatedFieldsEnabled: body.composeGatedFieldsEnabled },
   }
+}
+
+/** `{ cores, memoryBytes }`, each a number in range or null (not set). */
+export function parseBuildLimitsPatch(
+  body: Record<string, unknown>
+): { ok: true; patch: BuildLimitsPatch } | OrganizationRouteValidationError {
+  const parsed = parseBuildLimitSettingsInput(body)
+  if (!parsed.ok) return { ok: false, error: parsed.error, status: 400 }
+  return { ok: true, patch: { buildLimits: parsed.value } }
+}
+
+export function buildLimitsGetResponse(options: { buildLimits?: BuildLimitSettings }) {
+  return {
+    cores: options.buildLimits?.cores ?? null,
+    memoryBytes: options.buildLimits?.memoryBytes ?? null,
+  }
+}
+
+export function buildLimitsPutResponse(options: { buildLimits?: BuildLimitSettings }) {
+  return { ok: true as const, ...buildLimitsGetResponse(options) }
 }
 
 export function parseDeployHooksPatch(

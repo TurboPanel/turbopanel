@@ -8027,3 +8027,43 @@ test('parseEnvironmentStopResult reads volume states and drops malformed ones', 
   )
   assertEquals(parseEnvironmentStopResult({ projectName: 'x' }).volumes, undefined)
 })
+
+test('sourceMaterial carries optional build limits, strictly', () => {
+  const GIB = 1024 ** 3
+  const none = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY }],
+  })
+  assertEquals(none.sourceMaterial?.[0]?.buildLimits, undefined)
+
+  const limited = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [
+      {
+        ...GITLAB_SOURCE_ENTRY,
+        buildLimits: {
+          cores: { cores: 1.5, source: 'server' },
+          memory: { bytes: 2 * GIB, source: 'service' },
+        },
+      },
+    ],
+  })
+  assertEquals(limited.sourceMaterial?.[0]?.buildLimits, {
+    cores: { cores: 1.5, source: 'server' },
+    memory: { bytes: 2 * GIB, source: 'service' },
+  })
+
+  for (const bad of [
+    { cores: { cores: 0.5, source: 'server' } },
+    { cores: { cores: 2, source: 'default' } },
+    { memory: { bytes: 5, source: 'server' } },
+    'x',
+  ]) {
+    assertThrows(() =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, buildLimits: bad }],
+      })
+    )
+  }
+})

@@ -3,6 +3,7 @@
  * decision trees that do not need a Hono Context or live DB client.
  */
 
+import { parseBuildLimitSettingsInput } from '../../features/deploy/build-limits.ts'
 import {
   formatServerOsDisplay,
   parseServerOptions,
@@ -220,6 +221,12 @@ function parseServerPatchOptions(
     overlayWebServerSwitch(options, raw, 'hideWebServerNames') ??
     overlayWebServerSwitch(options, raw, 'sendViaHeader')
   if (switchError) return switchError
+  if ('buildLimits' in raw) {
+    // Replaces the stored object; `{}` or `null` clears every part.
+    const buildLimits = parseBuildLimitSettingsInput(raw.buildLimits)
+    if (!buildLimits.ok) return { ok: false, error: buildLimits.error, status: 400 }
+    options.buildLimits = buildLimits.value
+  }
   return { ok: true, options }
 }
 

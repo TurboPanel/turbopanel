@@ -1,3 +1,4 @@
+import { attachBuildLimits } from '../../features/deploy/build-limits.ts'
 import type { Context } from 'hono'
 import { panelHostnameRefusal } from '../../features/hostings/panel-hostname-guard.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
@@ -154,6 +155,7 @@ import {
 } from '../../features/bindings/host-run.ts'
 import {
   ACME_ISSUE_FEATURE,
+  BUILD_LIMITS_FEATURE,
   DEPLOY_CONFIG_FILES_FEATURE,
   PHP_SITE_MODES_FEATURE,
 } from '../../lib/version-wire.ts'
@@ -4195,8 +4197,19 @@ export async function prepareDeployCompose(
   })
   if (isPrepareStop(edge)) return edge
 
-  const sourceMaterial = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
-  if (!Array.isArray(sourceMaterial)) return toApplyVariablesPrepareError(sourceMaterial)
+  const builtSources = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
+  if (!Array.isArray(builtSources)) return toApplyVariablesPrepareError(builtSources)
+  // Build limits ride only to a daemon that lists them; the commit hash never
+  // includes them, so changing a limit does not make a deploy look new.
+  const sourceMaterial = (await storedDaemonFeatures(db, params.serverId)).includes(
+    BUILD_LIMITS_FEATURE
+  )
+    ? attachBuildLimits(builtSources, {
+        organizationOptions: orgRow?.options,
+        serverOptions: serverRow?.options,
+        serviceOptionsByComposeName: pipeline.optionsByComposeName,
+      })
+    : builtSources
 
   const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
     c,

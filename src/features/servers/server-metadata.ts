@@ -15,6 +15,7 @@ import {
   parseSshPort,
 } from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
+import { type BuildLimitSettings, parseBuildLimitSettings } from '../deploy/build-limits.ts'
 import {
   type ManagedExternalAccess,
   parseManagedExternalAccess,
@@ -381,6 +382,11 @@ export type ServerMetadata = {
  * when both are present.
  */
 export type ServerOptions = {
+  /**
+   * The most cores and memory one build on this server may use. Part of the
+   * smallest-wins resolution in `../deploy/build-limits.ts`.
+   */
+  buildLimits?: BuildLimitSettings
   /**
    * Cloudflare `locationHint` for the daemon cell (e.g. `"wnam"`, `"eeur"`).
    * Takes precedence over `server.metadata.cell.locationHint` when set.
@@ -2060,6 +2066,8 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
   assignWebServerSettings(options, value)
+  const buildLimits = parseBuildLimitSettings(value.buildLimits)
+  if (Object.keys(buildLimits).length > 0) options.buildLimits = buildLimits
   if ('metricsCapabilityPlan' in value) {
     const metricsCapabilityPlan = parseServerMetricsCapabilityPlanOverride(
       value.metricsCapabilityPlan
