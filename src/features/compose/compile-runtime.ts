@@ -607,12 +607,13 @@ function identityLabelsFor(
   serviceName: string,
   environmentId: string | undefined
 ): Record<string, string> {
-  // Both prefixes: a daemon from the previous release reads only
-  // `com.turbopanel.*`, a current one reads `io.turbopanel.*` first. The old
-  // pair is dropped in a later release, together with the daemon's old-prefix
-  // reads.
+  // The service label stays on the old prefix only: a daemon uses
+  // `io.turbopanel.service` for the hosting service id, which this compose
+  // service name is not. The control plane stamps `io.turbopanel.service` only
+  // in the later release that removes the old prefix. The environment id has
+  // the same meaning under both prefixes, so it is stamped under both (a daemon
+  // from the previous release reads only `com.turbopanel.*`).
   const labels: Record<string, string> = {
-    'io.turbopanel.service': serviceName,
     'com.turbopanel.service': serviceName,
   }
   if (environmentId) {
