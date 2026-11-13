@@ -686,6 +686,7 @@ export const serverSchemas = {
         properties: {
           cores: { type: ['number', 'null'] },
           memoryBytes: { type: ['integer', 'null'] },
+          swap: { type: ['boolean', 'null'] },
         },
       },
       colocatedWithInstance: {

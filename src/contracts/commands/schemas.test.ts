@@ -8044,6 +8044,7 @@ test('sourceMaterial carries optional build limits, strictly', () => {
         buildLimits: {
           cores: { cores: 1.5, source: 'server' },
           memory: { bytes: 2 * GIB, source: 'service' },
+          swap: { allowed: true, source: 'organization' },
         },
       },
     ],
@@ -8051,12 +8052,14 @@ test('sourceMaterial carries optional build limits, strictly', () => {
   assertEquals(limited.sourceMaterial?.[0]?.buildLimits, {
     cores: { cores: 1.5, source: 'server' },
     memory: { bytes: 2 * GIB, source: 'service' },
+    swap: { allowed: true, source: 'organization' },
   })
 
   for (const bad of [
     { cores: { cores: 0.5, source: 'server' } },
     { cores: { cores: 2, source: 'default' } },
     { memory: { bytes: 5, source: 'server' } },
+    { swap: { allowed: 'yes', source: 'server' } },
     'x',
   ]) {
     assertThrows(() =>

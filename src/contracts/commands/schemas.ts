@@ -2510,6 +2510,8 @@ export type BuildLimitSource = 'organization' | 'server' | 'service'
 export type BuildLimits = {
   cores?: { cores: number; source: BuildLimitSource }
   memory?: { bytes: number; source: BuildLimitSource }
+  /** Whether the build may use swap (off unless a level opts in). */
+  swap?: { allowed: boolean; source: BuildLimitSource }
 }
 
 export type EnvironmentDeploySource = {
@@ -4429,7 +4431,14 @@ export function parseBuildLimits(value: unknown, field = 'buildLimits'): BuildLi
       source: parseBuildLimitSource(entry.source, field),
     }
   }
-  return limits.cores || limits.memory ? limits : undefined
+  if (value.swap !== undefined) {
+    const entry = value.swap
+    if (!isRecord(entry) || typeof entry.allowed !== 'boolean') {
+      throw new Error(`Invalid ${field} swap`)
+    }
+    limits.swap = { allowed: entry.allowed, source: parseBuildLimitSource(entry.source, field) }
+  }
+  return limits.cores || limits.memory || limits.swap ? limits : undefined
 }
 
 function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {

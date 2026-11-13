@@ -3,7 +3,9 @@
  *
  * A limit can be set at three levels: the organization (per build, on any
  * server), the server, and the service. The effective limit of a build is the
- * smallest one set, for cores and for memory on their own. Nothing is stored
+ * smallest one set, for cores and for memory on their own. Swap is off unless
+ * a level opts in: the narrowest level that sets it (service, server,
+ * organization) decides. Nothing is stored
  * in new columns: `organization.options.buildLimits`,
  * `server.options.buildLimits` and `service.options.build.{cores,memoryBytes}`.
  *
@@ -28,6 +30,8 @@ export const BUILD_MEMORY_MAX_BYTES = 1024 ** 4
 export type BuildLimitSettings = {
   cores?: number
   memoryBytes?: number
+  /** Whether a build may use swap; absent is not set (off unless a wider level opts in). */
+  swap?: boolean
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -58,6 +62,7 @@ export function parseBuildLimitSettings(value: unknown): BuildLimitSettings {
   if (cores !== undefined) settings.cores = cores
   const memoryBytes = validMemory(value.memoryBytes)
   if (memoryBytes !== undefined) settings.memoryBytes = memoryBytes
+  if (typeof value.swap === 'boolean') settings.swap = value.swap
   return settings
 }
 
@@ -80,6 +85,10 @@ export function parseBuildLimitSettingsInput(
     const memoryBytes = validMemory(value.memoryBytes)
     if (memoryBytes === undefined) return { ok: false, error: 'Invalid buildLimits memoryBytes' }
     settings.memoryBytes = memoryBytes
+  }
+  if (value.swap !== undefined && value.swap !== null) {
+    if (typeof value.swap !== 'boolean') return { ok: false, error: 'Invalid buildLimits swap' }
+    settings.swap = value.swap
   }
   return { ok: true, value: settings }
 }
@@ -106,7 +115,12 @@ export function resolveBuildLimits(levels: {
   ]
   let cores: BuildLimits['cores']
   let memory: BuildLimits['memory']
+  let swap: BuildLimits['swap']
   for (const [source, settings] of ordered) {
+    // Swap is not a smallest-wins limit: the narrowest level that set it decides.
+    if (swap === undefined && settings?.swap !== undefined) {
+      swap = { allowed: settings.swap, source }
+    }
     if (settings?.cores !== undefined && (!cores || settings.cores < cores.cores)) {
       cores = { cores: settings.cores, source }
     }
@@ -114,8 +128,12 @@ export function resolveBuildLimits(levels: {
       memory = { bytes: settings.memoryBytes, source }
     }
   }
-  if (!cores && !memory) return undefined
-  return { ...(cores ? { cores } : {}), ...(memory ? { memory } : {}) }
+  if (!cores && !memory && !swap) return undefined
+  return {
+    ...(cores ? { cores } : {}),
+    ...(memory ? { memory } : {}),
+    ...(swap ? { swap } : {}),
+  }
 }
 
 function optionsBuildLimits(options: unknown): BuildLimitSettings {

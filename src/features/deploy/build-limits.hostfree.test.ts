@@ -31,6 +31,28 @@ test('the smallest limit set among the levels wins, cores and memory on their ow
   })
 })
 
+test('swap is off unless a level opts in; the narrowest level that sets it decides', () => {
+  assertEquals(resolveBuildLimits({ organization: { swap: true }, server: {}, service: {} }), {
+    swap: { allowed: true, source: 'organization' },
+  })
+  assertEquals(resolveBuildLimits({ organization: { swap: true }, server: { swap: false } }), {
+    swap: { allowed: false, source: 'server' },
+  })
+  assertEquals(
+    resolveBuildLimits({
+      organization: { swap: false },
+      server: { swap: false },
+      service: { swap: true },
+    }),
+    { swap: { allowed: true, source: 'service' } }
+  )
+  assertEquals(parseBuildLimitSettings({ swap: true, cores: 2 }), { swap: true, cores: 2 })
+  assertEquals(parseBuildLimitSettings({ swap: 'yes' }), {})
+  assertEquals(parseBuildLimitSettingsInput({ swap: null }), { ok: true, value: {} })
+  assertEquals(parseBuildLimitSettingsInput({ swap: true }), { ok: true, value: { swap: true } })
+  assertEquals(parseBuildLimitSettingsInput({ swap: 'on' }).ok, false)
+})
+
 test('a tie goes to the narrowest level, and nothing set means nothing sent', () => {
   assertEquals(
     resolveBuildLimits({

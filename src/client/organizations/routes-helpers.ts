@@ -622,6 +622,7 @@ export function buildLimitsGetResponse(options: { buildLimits?: BuildLimitSettin
   return {
     cores: options.buildLimits?.cores ?? null,
     memoryBytes: options.buildLimits?.memoryBytes ?? null,
+    swap: options.buildLimits?.swap ?? null,
   }
 }
 

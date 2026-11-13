@@ -43,6 +43,8 @@ export type ServiceOptions = {
     cores?: number
     /** The most memory one build of this service may use, in bytes (1 GiB to 1 TiB). */
     memoryBytes?: number
+    /** Whether a build of this service may use swap; absent follows the server, then the organization (off). */
+    swap?: boolean
   }
   operations?: {
     stopGracePeriodSeconds?: number

@@ -368,6 +368,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
         context: {
           cores: patch.buildLimits.cores ?? null,
           memoryBytes: patch.buildLimits.memoryBytes ?? null,
+          swap: patch.buildLimits.swap ?? null,
         },
       }),
     })

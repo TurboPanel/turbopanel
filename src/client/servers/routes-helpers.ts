@@ -472,7 +472,7 @@ export type ServerHostDefaultsFields = {
   sendViaHeader: boolean
   sendViaHeaderSource: string | null
   /** This server's own build limits (`null` parts are not set); see `features/deploy/build-limits.ts`. */
-  buildLimits: { cores: number | null; memoryBytes: number | null }
+  buildLimits: { cores: number | null; memoryBytes: number | null; swap: boolean | null }
 }
 
 export function resolveServerTimezoneFields(
@@ -513,6 +513,7 @@ export function resolveServerHostDefaultsFields(
     buildLimits: {
       cores: serverOptions?.buildLimits?.cores ?? null,
       memoryBytes: serverOptions?.buildLimits?.memoryBytes ?? null,
+      swap: serverOptions?.buildLimits?.swap ?? null,
     },
   }
 }
