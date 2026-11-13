@@ -5,7 +5,9 @@
   // live TURBOPANEL_IS_SIGNUP_ENABLED, which must not be committed in env.live
   // or every deploy would overwrite the Cloudflare dashboard value).
   "keep_vars": true,
-  "account_id": "a574c2793baa3e2276ac16e96097bc8c",
+  // Development, testing and staging use the development Cloudflare account;
+  // live sets its own account below.
+  "account_id": "1ce26b585b66602feb84a68aeda5062b",
   "name": "dev-instance",
   "main": "src/workers.ts",
   // Runs before wrangler bundles on every deploy / versions upload / dev.
@@ -185,7 +187,7 @@
     }
   ],
   "vars": {
-    "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+    "CLOUDFLARE_ACCOUNT_ID": "1ce26b585b66602feb84a68aeda5062b",
     // The dev box runs on the local overlay catalog, which only carries trunk
     // builds; with no channel a control plane follows release.
     "TURBOPANEL_UPDATE_CHANNEL": "trunk",
@@ -207,6 +209,7 @@
   "env": {
     "testing": {
       "name": "testing-instance",
+      "account_id": "1ce26b585b66602feb84a68aeda5062b",
       "queues": {
         "producers": [
           { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "testing-daemon-commands" },
@@ -342,7 +345,7 @@
         "TURBOPANEL_BASE_URL": "https://testing.turbopanel.dev",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://testing.turbopanel.io",
         "TURBOPANEL_IS_SIGNUP_ENABLED": "1",
-        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+        "CLOUDFLARE_ACCOUNT_ID": "1ce26b585b66602feb84a68aeda5062b",
         "TURBOPANEL_UPDATE_CHANNEL": "canary",
         // Read by scripts/migrate-locked.mjs at build time (not by the Worker): this
         // database is behind a pooling proxy that refuses the migration advisory lock.
@@ -389,6 +392,7 @@
     // sign-up is opened from the dashboard or the admin console.
     "staging": {
       "name": "staging-instance",
+      "account_id": "1ce26b585b66602feb84a68aeda5062b",
       "queues": {
         "producers": [
           { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" },
@@ -523,7 +527,7 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://staging.turbopanel.dev",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://staging.turbopanel.io",
-        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+        "CLOUDFLARE_ACCOUNT_ID": "1ce26b585b66602feb84a68aeda5062b",
         "TURBOPANEL_UPDATE_CHANNEL": "rc",
         // Read by scripts/migrate-locked.mjs at build time (not by the Worker): this
         // database is behind a pooling proxy that refuses the migration advisory lock.
@@ -541,6 +545,7 @@
     },
     "live": {
       "name": "instance",
+      "account_id": "a574c2793baa3e2276ac16e96097bc8c",
       "queues": {
         "producers": [
           { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "daemon-commands" },
