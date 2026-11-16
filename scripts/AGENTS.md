@@ -163,7 +163,11 @@ The pre-commit hook (`.githooks/pre-commit`) runs the secret scan and then
 `scripts/` — the same whole-file check CI's format step runs.
 `TURBOPANEL_SKIP_HOOK_TESTS=1` does not skip it; `TURBOPANEL_SKIP_HOOK_FORMAT=1`
 does (for a change whose whole-file reflow goes in its own commit). Without a
-`node_modules` tree it skips with a message.
+`node_modules` tree it skips with a message. On a Vagrant or Incus host
+(`TURBOPANEL_DEV_ENV` in `<repos folder>/.turbopanel-dev-mode`) or a host with no
+`node` on `PATH`, the hook runs the secret scan only and says so in one line:
+the host needs no Node, and the guest and CI run the format check. The mode file
+is not in the guest, so the guest and a Direct machine with Node are unchanged.
 
 CI analysis config, the Vitest+Deno LCOV coverage merge, analysis-scope /
 exclusion rules, and the coverage-attribution traps moved to
