@@ -71,7 +71,7 @@ runner also prints status docs that can be applied to the Road page.
 ## Running it
 
 ```sh
-set -a; . ~/.claude/test-creds.env; set +a   # TESTING_URL/EMAIL/PASSWORD (and CANARY_*)
+set -a; . ~/.config/turbopanel-tests/test-creds.env; set +a   # TESTING_URL/EMAIL/PASSWORD (and CANARY_*)
 
 # plan only (default)
 deno run -A scripts/checklist-runner/cli.ts

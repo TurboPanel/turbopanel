@@ -2,7 +2,7 @@
 /**
  * Testing Checklist live-proof runner. Dry run by default; see README.md.
  *
- *   set -a; . ~/.claude/test-creds.env; set +a
+ *   set -a; . ~/.config/turbopanel-tests/test-creds.env; set +a
  *   deno run -A scripts/checklist-runner/cli.ts                      # plan only
  *   deno run -A scripts/checklist-runner/cli.ts --apply --safety readonly
  */
