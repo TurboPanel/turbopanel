@@ -20,11 +20,7 @@ import { type Db, runWithDbTimeout } from '../../db/connection.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { managed, replica, server } from '../../db/schema.ts'
 import type { Alert, AlertSender } from './alert-sender.ts'
-import {
-  adoptLegacyAlertWebhook,
-  type AlertWebhookPolicy,
-  ALERT_WEBHOOK_POLICY,
-} from './alert-webhook-settings.ts'
+import { type AlertWebhookPolicy, ALERT_WEBHOOK_POLICY } from './alert-webhook-settings.ts'
 import { type EmitEmail, emitNotification } from '../notifications/emit.ts'
 import type { NotificationContext, NotificationEvent } from '../notifications/events.ts'
 
@@ -132,28 +128,14 @@ async function toEvent(
   }
 }
 
-export async function resolveAlertSender(
+export function resolveAlertSender(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   trace?: AlertSenderTrace,
   policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
-  email?: EmitEmail | (() => Promise<EmitEmail | undefined>),
-  opts: { adoptLegacy?: boolean } = {}
+  email?: EmitEmail | (() => Promise<EmitEmail | undefined>)
 ): Promise<AlertSender> {
-  // An instance upgraded past the ALERT_WEBHOOK_URL setting keeps its
-  // webhook: the setting becomes an instance channel on first touch, and the
-  // pipeline below reaches it like any other. Bounded, and never the reason
-  // a sweep fails.
-  try {
-    if (opts.adoptLegacy !== false) {
-      await runWithDbTimeout(db, (tx) => adoptLegacyAlertWebhook(tx, dataEncryptionSecrets))
-    }
-  } catch (err) {
-    trace?.('alert-sender-resolve-failed', {
-      error: err instanceof Error ? err.message : String(err),
-    })
-  }
-  return async (alert) => {
+  return Promise.resolve<AlertSender>(async (alert) => {
     try {
       const mapped = await toEvent(db, alert, trace)
       if (!mapped) return
@@ -176,5 +158,5 @@ export async function resolveAlertSender(
         error: err instanceof Error ? err.message : String(err),
       })
     }
-  }
+  })
 }

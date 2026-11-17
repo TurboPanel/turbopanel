@@ -19,7 +19,7 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from '../authz/http.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {
@@ -239,7 +239,7 @@ test('GET /workspaces returns System before Default for same-transaction install
     }
     assertEquals(body.workspaces.length, 2)
     assertEquals(body.workspaces[0]?.name, SYSTEM_WORKSPACE_DISPLAY_NAME)
-    assertEquals(body.workspaces[0]?.kind, WORKSPACE_KIND_SYSTEM)
+    assertEquals(body.workspaces[0]?.kind, WORKSPACE_KIND_TURBOPANEL)
     assertEquals(body.workspaces[1]?.name, 'Default Workspace')
     assertEquals(body.workspaces[1]?.kind, WORKSPACE_KIND_USER)
   } finally {
@@ -335,7 +335,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
       }
       const systemRow = listBody.workspaces.find((row) => row.id === systemWorkspaceId)
       if (!systemRow) throw new TypeError('expected system workspace in list')
-      assertEquals(systemRow.kind, WORKSPACE_KIND_SYSTEM)
+      assertEquals(systemRow.kind, WORKSPACE_KIND_TURBOPANEL)
 
       const detail = await app.request(`/workspaces/${systemWorkspaceId}`, {
         headers: {
@@ -345,7 +345,7 @@ test('workspace reads expose kind and system workspace is immutable', async () =
       })
       assertEquals(detail.status, 200)
       const detailBody = (await detail.json()) as { workspace: { kind: string } }
-      assertEquals(detailBody.workspace.kind, WORKSPACE_KIND_SYSTEM)
+      assertEquals(detailBody.workspace.kind, WORKSPACE_KIND_TURBOPANEL)
 
       const create = await app.request('/workspaces', {
         method: 'POST',

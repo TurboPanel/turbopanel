@@ -29,9 +29,6 @@ skips them when there is no `Deno` global (High Availability).
 - The daemon still writes `TURBOPANEL_PUBLIC_URLS` to
   `/etc/turbopanel/instance/runtime.env` on apply. That copy is derived from
   the rows and read only by the `instance-certs` role for certificate SANs.
-- `migrateLegacyPublicUrls` copies the old `TURBOPANEL_PUBLIC_URLS` _setting
-  row_ (database, admin-written) into `origin` once when the table is empty.
-  It never reads the environment.
 
 ### Instance hostnames and instance ACME
 

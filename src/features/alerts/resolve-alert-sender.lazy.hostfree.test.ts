@@ -23,31 +23,18 @@ function countingDb(): { db: Db; touches: () => number } {
 
 const NO_SERVER: Alert = { kind: 'server.offline', text: 'x', detail: {} }
 
-test('idle tick: no legacy-webhook DB op and the mail setup is never resolved', async () => {
+test('idle tick: no database operation and the mail setup is never resolved', async () => {
   const { db, touches } = countingDb()
   let emailResolutions = 0
-  const sender = await resolveAlertSender(
-    db,
-    undefined,
-    undefined,
-    undefined,
-    () => {
-      emailResolutions += 1
-      return Promise.resolve(undefined)
-    },
-    { adoptLegacy: false }
-  )
+  const sender = await resolveAlertSender(db, undefined, undefined, undefined, () => {
+    emailResolutions += 1
+    return Promise.resolve(undefined)
+  })
   assertEquals(touches(), 0)
   assertEquals(emailResolutions, 0)
   // An alert that maps to no event still never needs the mail setup.
   await sender(NO_SERVER)
   assertEquals(emailResolutions, 0)
-})
-
-test('adoptLegacy defaults to on: the DB is consulted once', async () => {
-  const { db, touches } = countingDb()
-  await resolveAlertSender(db, undefined)
-  assertEquals(touches() > 0, true)
 })
 
 /** Drizzle-shaped double: each query (one `select`) consumes the next queued result set. */

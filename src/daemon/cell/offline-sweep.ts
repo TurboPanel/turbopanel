@@ -1841,13 +1841,7 @@ export async function runOfflineSweep(
             sweepTrace,
             undefined,
             // Resolved only if an alert is actually sent this tick.
-            () => workersNotificationEmail(env, db, tlsRenewal),
-            // The legacy-webhook adoption is a one-time migration touch: the
-            // 15-minute window is plenty, not every minute.
-            {
-              adoptLegacy:
-                opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
-            }
+            () => workersNotificationEmail(env, db, tlsRenewal)
           ))
         stats = await sweepOnceSafely(env, db, {
           ...opts.sweepOnceDeps,

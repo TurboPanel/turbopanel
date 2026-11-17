@@ -4,9 +4,9 @@
  * Mirrors the server-metrics setting shape: one jsonb row keyed by a stable
  * name, read fresh on every call so a panel change applies without a
  * redeploy. Updates are always automatic, so the only stored choice is how many
- * servers update at once (`batch`). Rows written before that change also carry
- * `autoUpdate` and `maintenanceWindow`; they are read and ignored, never
- * rejected, so a saved batch survives the upgrade. This module only stores and
+ * servers update at once (`batch`). A stored row may still carry `autoUpdate`
+ * and `maintenanceWindow`; they are read and ignored, never rejected, so a
+ * saved batch survives. This module only stores and
  * validates.
  */
 import { eq } from 'drizzle-orm'
@@ -37,20 +37,11 @@ export const DEFAULT_UPGRADE_SETTINGS: UpgradeSettings = {
 }
 
 /**
- * Keys an older row (or an older console's save) may still carry. They are
- * accepted and dropped; nothing reads them any more.
+ * Keys a stored row may still carry from saves that wrote them beside
+ * `batch`. They are accepted and dropped; nothing reads them. A save no
+ * longer writes them.
  */
 const LEGACY_KEYS = ['autoUpdate', 'maintenanceWindow'] as const
-
-/**
- * What a save writes beside `batch`, so a control plane rolled back to a build
- * that still reads these keys sees a valid row with automatic updates on and
- * no window.
- */
-const LEGACY_COMPAT_FIELDS = {
-  autoUpdate: true,
-  maintenanceWindow: { enabled: false, startMinute: 0, durationMinutes: 60, weekdays: [] },
-}
 
 const PERCENT_MIN = 1
 const PERCENT_MAX = 100
@@ -146,14 +137,13 @@ export async function setUpgradeSettings(db: Db, settings: UpgradeSettings): Pro
   if (!normalized) {
     throw new TypeError('upgrade settings are invalid')
   }
-  const stored = { ...LEGACY_COMPAT_FIELDS, ...normalized }
   await db
     .insert(setting)
-    .values({ key: UPGRADE_SETTINGS_KEY, value: stored })
+    .values({ key: UPGRADE_SETTINGS_KEY, value: normalized })
     .onConflictDoUpdate({
       target: setting.key,
       set: {
-        value: stored,
+        value: normalized,
         updatedAt: nowTs(),
       },
     })

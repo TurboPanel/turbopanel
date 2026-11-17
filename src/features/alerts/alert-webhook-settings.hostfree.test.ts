@@ -6,13 +6,10 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import {
-  ALERT_WEBHOOK_URL_KEY,
   AlertWebhookUrlError,
   assertAlertWebhookUrlAllowed,
   describeAlertWebhook,
-  getAlertWebhookUrl,
   ALERT_WEBHOOK_POLICY,
-  adoptLegacyAlertWebhook,
   setOperatorWebhookUrl,
 } from './alert-webhook-settings.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -25,18 +22,6 @@ import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
-
-function readingDb(value: unknown): Db {
-  return {
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(value === undefined ? [] : [{ value }]),
-        }),
-      }),
-    }),
-  } as unknown as Db
-}
 
 test('a plausible incoming-webhook URL is accepted', async () => {
   assertEquals(
@@ -109,25 +94,6 @@ test('what a settings panel renders is the origin, never the path', () => {
   })
 })
 
-test('no row means no webhook, and neither does an unreadable one', async () => {
-  assertEquals(await getAlertWebhookUrl(readingDb(undefined), undefined), null)
-  assertEquals(await getAlertWebhookUrl(readingDb(''), undefined), null)
-  assertEquals(await getAlertWebhookUrl(readingDb(42), undefined), null)
-  // A sealed value with no key to open it: no alerts, not a failed sweep.
-  assertEquals(await getAlertWebhookUrl(readingDb('tpsecret.v1.aaaa'), undefined), null)
-})
-
-test('an unsealed legacy value is still readable', async () => {
-  assertEquals(
-    await getAlertWebhookUrl(readingDb('https://hooks.example.com/x'), undefined),
-    'https://hooks.example.com/x'
-  )
-})
-
-test('the setting key is stable', () => {
-  assertEquals(ALERT_WEBHOOK_URL_KEY, 'ALERT_WEBHOOK_URL')
-})
-
 /** A db double whose every read is empty and which records the first insert's values. */
 function recordingDb(inserted: Array<Record<string, unknown>>): Db {
   const chain: unknown = new Proxy(() => undefined, {
@@ -159,47 +125,4 @@ test('a new operator webhook is created hearing every organization', async () =>
   assertEquals(inserted.length, 1)
   assertEquals(inserted[0].scope, 'instance')
   assertEquals(inserted[0].isAllOrganizationsNotified, true)
-})
-
-test('an existing operator webhook with the switch off is switched on before routing', async () => {
-  const updates: Array<Record<string, unknown>> = []
-  const row = {
-    id: 'c1',
-    scope: 'instance',
-    organizationId: null,
-    userId: null,
-    kind: 'webhook',
-    label: 'Operator alert webhook',
-    address: 'x',
-    signingSecret: null,
-    verifiedAt: null,
-    disabledAt: null,
-    createdAt: '2026-01-01T00:00:00.000Z',
-    digestCadence: null,
-    quietStartMinute: null,
-    quietEndMinute: null,
-    isPrimary: false,
-    isAllOrganizationsNotified: false,
-  }
-  let reads = 0
-  const chain: unknown = new Proxy(() => undefined, {
-    get: (_t, prop) => {
-      if (prop === 'then') {
-        return (resolve: (v: unknown) => void) => resolve(reads++ === 0 ? [row] : [])
-      }
-      return () => chain
-    },
-  })
-  const db = {
-    select: () => chain,
-    update: () => ({
-      set: (values: Record<string, unknown>) => {
-        updates.push(values)
-        return { where: () => Promise.resolve() }
-      },
-    }),
-  } as unknown as Db
-  const channel = await adoptLegacyAlertWebhook(db, undefined)
-  assertEquals(updates, [{ isAllOrganizationsNotified: true }])
-  assertEquals(channel?.allOrganizations, true)
 })

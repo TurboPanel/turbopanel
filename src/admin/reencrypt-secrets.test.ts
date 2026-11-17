@@ -27,7 +27,6 @@ import {
   variable,
 } from '../db/schema.ts'
 import { SYSTEM_AUTH_PROVIDERS_DB_KEY } from '../features/settings/auth-provider-settings.ts'
-import { ALERT_WEBHOOK_URL_KEY } from '../features/alerts/alert-webhook-settings.ts'
 import { SYSTEM_EMAIL_DB_KEY } from '../features/settings/email-settings.ts'
 import { INSTANCE_ACME_ACCOUNT_SETTING_KEY } from '../features/install/instance-acme-settings.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
@@ -1089,13 +1088,12 @@ test('reencryptAtRestSecrets reseals ingress.token_envelope and the INSTANCE_ACM
   })
 })
 
-test('reencryptAtRestSecrets reseals monitor.secret_envelope, relay.preshared_key and the ALERT_WEBHOOK_URL setting', async () => {
+test('reencryptAtRestSecrets reseals monitor.secret_envelope, relay.preshared_key and destination.secret_key_sealed', async () => {
   const v1Only = await createV1OnlySecrets()
   const rotated = await createRotatedSecrets()
   const suffix = crypto.randomUUID().replaceAll('-', '')
   const monitorPlain = `monitor-${suffix}`
   const presharedPlain = `psk-${suffix}`
-  const webhookPlain = `https://hooks.example.test/${suffix}`
   const monitorV1 = await encryptSecret(v1Only, monitorPlain)
   const monitorV2 = await encryptSecret(rotated, 'already-current')
   const presharedV1 = await encryptSecret(v1Only, presharedPlain)
@@ -1145,12 +1143,9 @@ test('reencryptAtRestSecrets reseals monitor.secret_envelope, relay.preshared_ke
     const monitorV2Id = await insertMonitor(monitorV2)
     const relayV1Id = await insertRelay(presharedV1)
     const relayNullId = await insertRelay(null)
-    await scoped
-      .insert(setting)
-      .values({ key: ALERT_WEBHOOK_URL_KEY, value: await encryptSecret(v1Only, webhookPlain) })
 
     const totals = await reencryptAtRestSecretsToCompletion(scoped, rotated)
-    assertEquals(totals.reencrypted, 4)
+    assertEquals(totals.reencrypted, 3)
     assertEquals(totals.failed, 0)
 
     const [resealedDestination] = await scoped
@@ -1175,14 +1170,6 @@ test('reencryptAtRestSecrets reseals monitor.secret_envelope, relay.preshared_ke
     assertEquals(parseSecretEnvelope(resealedRelay!)?.keyVersion, 2)
     assertEquals(await decryptSecret(rotated, resealedRelay!), presharedPlain)
     assertEquals(await relayOf(relayNullId), null)
-
-    const [hook] = await scoped
-      .select({ value: setting.value })
-      .from(setting)
-      .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-    const hookValue = hook!.value as string
-    assertEquals(parseSecretEnvelope(hookValue)?.keyVersion, 2)
-    assertEquals(await decryptSecret(rotated, hookValue), webhookPlain)
 
     // Second pass is a no-op: everything is current.
     const again = await reencryptAtRestSecretsToCompletion(scoped, rotated)

@@ -8,11 +8,9 @@ import { instanceHostname, instanceUploadedCertificate, setting } from '../../db
 import {
   certificateSourceForInstallOrigin,
   deriveInstanceHostnameStatus,
-  getInstanceHostnamesLegacyShim,
   INSTANCE_ACME_HTTP01_ISSUER_UNREACHABLE,
   instanceAcmeHttp01PreflightFailure,
   listInstanceHostnames,
-  migrateLegacyPublicUrls,
   recordInstanceAcmeIssuance,
   replaceInstanceHostnames,
   replacePublicUrlList,
@@ -167,26 +165,9 @@ test('deriveInstanceHostnameStatus prefers failure, then expiry, then pending', 
   )
 })
 
-test('migrateLegacyPublicUrls backfills once and get/set still round-trip', async () => {
+test('get and set public URLs round-trip through the hostname table', async () => {
   const { db, hostnames, settings } = createMemoryDb()
-  settings.push({
-    key: PUBLIC_URLS_SETTING_KEY,
-    value: ' panel.example.com , https://other.example.com/ ',
-  })
-
-  assertEquals(await getPublicUrls(db), ['panel.example.com', 'https://other.example.com:8443'])
-  assertEquals(hostnames.length, 2)
-  assertEquals(
-    hostnames.every((row) => row.source === 'platform-ca'),
-    true
-  )
-
-  await migrateLegacyPublicUrls(db)
-  assertEquals(hostnames.length, 2)
-  assertEquals(await getInstanceHostnamesLegacyShim(db), [
-    'panel.example.com',
-    'https://other.example.com:8443',
-  ])
+  assertEquals(await getPublicUrls(db), [])
 
   await setPublicUrls(db, ['https://panel.example.com:9443'])
   assertEquals(await getPublicUrls(db), ['https://panel.example.com:8443'])

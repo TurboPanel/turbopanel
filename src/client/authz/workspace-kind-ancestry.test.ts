@@ -13,7 +13,7 @@ import {
   variable,
   workspace,
 } from '../../db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { resolveWorkspaceKindForEntity } from './workspace-kind-ancestry.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -62,7 +62,7 @@ async function withAncestryFixtures(
     .values({
       name: 'System Workspace',
       organizationId,
-      kind: WORKSPACE_KIND_SYSTEM,
+      kind: WORKSPACE_KIND_TURBOPANEL,
     })
     .returning({ id: workspace.id })
   const systemWorkspaceId = insertedSystemWorkspace!.id
@@ -116,7 +116,7 @@ test('resolveWorkspaceKindForEntity returns kind for project-scoped principals',
       )
       assertEquals(
         await resolveWorkspaceKindForEntity(db, 'principal', systemPrincipalId),
-        WORKSPACE_KIND_SYSTEM
+        WORKSPACE_KIND_TURBOPANEL
       )
     } finally {
       await db.delete(principal).where(eq(principal.id, userPrincipalId))
@@ -162,7 +162,7 @@ test('resolveWorkspaceKindForEntity walks workspace, project, and environment an
       )
       assertEquals(
         await resolveWorkspaceKindForEntity(db, 'project', systemProjectId),
-        WORKSPACE_KIND_SYSTEM
+        WORKSPACE_KIND_TURBOPANEL
       )
     } finally {
       await db.delete(environment).where(eq(environment.id, userEnvironmentId))
@@ -219,11 +219,11 @@ test('resolveWorkspaceKindForEntity resolves service and hosting descendants', a
     try {
       assertEquals(
         await resolveWorkspaceKindForEntity(db, 'service', systemServiceId),
-        WORKSPACE_KIND_SYSTEM
+        WORKSPACE_KIND_TURBOPANEL
       )
       assertEquals(
         await resolveWorkspaceKindForEntity(db, 'hosting', systemHostingId),
-        WORKSPACE_KIND_SYSTEM
+        WORKSPACE_KIND_TURBOPANEL
       )
     } finally {
       await db.delete(hosting).where(eq(hosting.id, systemHostingId))

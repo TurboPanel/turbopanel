@@ -3398,27 +3398,16 @@ test('GET /servers returns Postgres data without calling getSnapshots', async ()
   })
 })
 
-test('GET /servers includes os, osDisplay, and osLogo from metadata without caching them', async () => {
+test('GET /servers includes os, osDisplay, and osLogo from the os columns without caching them', async () => {
   await withServerDeleteFixtures(async ({ db, secrets, userId, organizationId, serverId }) => {
-    const existing = await db
-      .select({ metadata: server.metadata })
-      .from(server)
-      .where(eq(server.id, serverId))
-      .limit(1)
     await db
       .update(server)
       .set({
-        // hostname is a dedicated column now — only os-shaped facts live in metadata.
-        metadata: {
-          ...(existing[0]?.metadata ?? {}),
-          os: {
-            family: 'linux',
-            id: 'debian',
-            version: '13',
-            codename: 'trixie',
-            prettyName: 'Debian GNU/Linux 13 (trixie)',
-          },
-        },
+        osFamily: 'linux',
+        osId: 'debian',
+        osVersion: '13',
+        osCodename: 'trixie',
+        osPrettyName: 'Debian GNU/Linux 13 (trixie)',
         updatedAt: new Date().toISOString(),
       })
       .where(eq(server.id, serverId))

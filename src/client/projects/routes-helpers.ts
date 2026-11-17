@@ -1,6 +1,6 @@
 import {
   applyValidatedComposeOption,
-  stripProjectComposePlacementOption,
+  stripComposePlacementOption,
   type ComposeValidateOptions,
   type ComposeValidationIssue,
 } from '../../features/compose/index.ts'
@@ -191,7 +191,7 @@ export function parseCreateProjectOptions(
   if (optionsResult !== null) {
     const deployOptions = validateDeployOptions(optionsResult, 'project')
     if (!deployOptions.ok) return { ok: false, error: deployOptions.reason, status: 400 }
-    stripProjectComposePlacementOption(optionsResult)
+    stripComposePlacementOption(optionsResult)
     return { ok: true, options: settleDeployOptions(null, optionsResult, 'project') }
   }
   return { ok: true, options: optionsResult }
@@ -374,7 +374,7 @@ export function normalizeProjectPatchOptions(
   const deployOptions = validateDeployOptions(optionsResult, 'project')
   if (!deployOptions.ok) return { ok: false, error: deployOptions.reason, status: 400 }
 
-  stripProjectComposePlacementOption(optionsResult)
+  stripComposePlacementOption(optionsResult)
   return { ok: true, options: optionsResult }
 }
 
