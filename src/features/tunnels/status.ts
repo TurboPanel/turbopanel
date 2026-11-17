@@ -278,12 +278,15 @@ export function toApiPeerHop(metadata: unknown): ApiPeerHop {
 }
 
 /**
- * States in which a connector the server was asked to run is installed but not
- * running, which a resend repairs (the daemon starts it again). `not-installed`
- * is left out: a daemon that still holds the connector's record skips it on a
- * resend, so asking again would only repeat the same list every poll.
+ * States in which a connector the server was asked to run is not running, which
+ * a resend repairs: the daemon starts a stopped or failed connector again and
+ * reinstalls a missing one (`not-installed`) from its stored token copy.
  */
-const NOT_RUNNING: ReadonlySet<TunnelStatusConnectorState> = new Set(['stopped', 'failed'])
+const NOT_RUNNING: ReadonlySet<TunnelStatusConnectorState> = new Set([
+  'stopped',
+  'failed',
+  'not-installed',
+])
 
 /** A connector command that has not finished yet. */
 const OPEN_COMMAND: ReadonlySet<string> = new Set([
@@ -296,7 +299,7 @@ const OPEN_COMMAND: ReadonlySet<string> = new Set([
 
 /**
  * The connectors the last list asked this server to run that it reports as
- * stopped or failed (stopped by hand, or given up on by systemd), sorted. Pure.
+ * not running (stopped by hand, given up on by systemd, or its unit gone), sorted. Pure.
  */
 export function connectorsNeedingRepair(
   result: TunnelStatusCommandResult,

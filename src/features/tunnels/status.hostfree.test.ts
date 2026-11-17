@@ -104,6 +104,7 @@ test('an all-servers tunnel has no portal rows, so one server going down only mo
 test('only asked connectors that are not running need a repair', () => {
   const other = '1b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e'
   const third = '2c3d4e5f-6a7b-4c8d-8e9f-1a2b3c4d5e6f'
+  const fourth = '3d4e5f6a-7b8c-4d9e-9fa0-2b3c4d5e6f70'
   const result = {
     pinnedVersion: '2026.5.2',
     connectors: [
@@ -111,15 +112,17 @@ test('only asked connectors that are not running need a repair', () => {
       { ...base, tunnelId: other, status: 'connected' as const },
       { ...base, tunnelId: third, status: 'failed' as const },
       { ...base, tunnelId: 'instance', status: 'stopped' as const },
+      { ...base, tunnelId: fourth, status: 'not-installed' as const },
     ],
   }
   // The control plane's own tunnel and ids it never asked for are not its to repair.
   assertEquals(connectorsNeedingRepair(result, [base.tunnelId, other]), [base.tunnelId])
   assertEquals(connectorsNeedingRepair(result, [third, base.tunnelId]), [base.tunnelId, third])
+  assertEquals(connectorsNeedingRepair(result, [fourth, other]), [fourth])
   assertEquals(connectorsNeedingRepair(result, [other]), [])
   assertEquals(connectorsNeedingRepair(result, []), [])
-  // Running, starting, or gone (a resend would not reinstall it): nothing to repair.
-  for (const status of ['connecting', 'connected', 'not-installed'] as const) {
+  // Running or starting: nothing to repair.
+  for (const status of ['connecting', 'connected'] as const) {
     assertEquals(
       connectorsNeedingRepair({ ...result, connectors: [{ ...base, status }] }, [base.tunnelId]),
       []
