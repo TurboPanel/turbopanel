@@ -23,7 +23,7 @@ function countingDb(): { db: Db; touches: () => number } {
 
 const NO_SERVER: Alert = { kind: 'server.offline', text: 'x', detail: {} }
 
-test('idle tick: no legacy-webhook DB op and the mail setup is never resolved', async () => {
+test('idle tick: no database operation and the mail setup is never resolved', async () => {
   const { db, touches } = countingDb()
   let emailResolutions = 0
   const sender = await resolveAlertSender(db, undefined, undefined, undefined, () => {

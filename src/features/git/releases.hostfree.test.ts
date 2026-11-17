@@ -40,7 +40,7 @@ describe('imageIdentitiesFromResult', () => {
     })
   })
 
-  it('reads the old passthrough field names from a daemon that has not moved yet', () => {
+  it('ignores the old passthrough field names', () => {
     const identities = imageIdentitiesFromResult({
       releases: [
         {
@@ -52,25 +52,7 @@ describe('imageIdentitiesFromResult', () => {
         },
       ],
     })
-    assertEquals(identities.get('web rel-42'), {
-      imageTag: 'turbopanel-app/web:rel-42',
-      builderFrontendVersion: '0.9.0',
-      builderPlanVersion: '1',
-    })
-  })
-
-  it('prefers the new field name when both spellings are present', () => {
-    const identities = imageIdentitiesFromResult({
-      releases: [
-        {
-          composeServiceName: 'web',
-          releaseId: 'rel-1',
-          builderFrontendVersion: 'new',
-          railpackFrontendVersion: 'old',
-        },
-      ],
-    })
-    assertEquals(identities.get('web rel-1'), { builderFrontendVersion: 'new' })
+    assertEquals(identities.get('web rel-42'), { imageTag: 'turbopanel-app/web:rel-42' })
   })
 
   it('omits a native release, which has no image identity at all', () => {
