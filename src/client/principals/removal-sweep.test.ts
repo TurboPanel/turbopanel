@@ -73,7 +73,7 @@ async function withWorld(fn: (world: World) => Promise<void>): Promise<void> {
     .returning({ id: workspace.id })
   const [srv] = await db
     .insert(server)
-    .values({ organizationId, name: 'Kore' })
+    .values({ organizationId, name: 'host-b' })
     .returning({ id: server.id })
   const serverId = srv!.id
   const suffix = crypto.randomUUID().slice(0, 6)
