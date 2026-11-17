@@ -15,7 +15,7 @@ import { isBuildEnvNameAllowed, buildEnvSaveProblem } from '../../features/compo
 
 const test = Deno.test.bind(Deno)
 
-const server = { serverId: 's-1', name: 'omicron' }
+const server = { serverId: 's-1', name: 'server-f' }
 
 test('the feature is advertised right after deploy-config-files-v1', () => {
   assertEquals(SITE_PHP_LIFECYCLE_FEATURE, 'site-php-lifecycle-v1')
@@ -121,7 +121,7 @@ test('an old daemon is refused with a sentence naming the server, only when need
   const refused = siteLifecycleUnsupported([withCommands], ['deploy-config-files-v1'], server)
   assertEquals(
     refused?.message,
-    'The daemon on omicron is too old to run post-deploy commands and background workers. Update the server, then deploy again.'
+    'The daemon on server-f is too old to run post-deploy commands and background workers. Update the server, then deploy again.'
   )
   assertEquals(refused && mapPrepareErrorResponse(refused).status, 409)
 })

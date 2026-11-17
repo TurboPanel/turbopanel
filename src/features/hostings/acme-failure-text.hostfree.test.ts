@@ -9,17 +9,17 @@ import { plainCertificateFailure } from './acme-failure-text.ts'
 const test = Deno.test.bind(Deno)
 
 const NO_DNS_RAW =
-  'fetch failed: error sending request for url (https://tptest-cs2.munch.ws/): client error (Connect): dns error: failed to lookup address information: Name or service not known'
+  'fetch failed: error sending request for url (https://tptest-cs2.example.net/): client error (Connect): dns error: failed to lookup address information: Name or service not known'
 
 test('a name with no DNS record says so in one sentence', () => {
-  const text = plainCertificateFailure(NO_DNS_RAW, 'tptest-cs2.munch.ws')
-  assertEquals(text.startsWith('tptest-cs2.munch.ws has no DNS record yet'), true)
+  const text = plainCertificateFailure(NO_DNS_RAW, 'tptest-cs2.example.net')
+  assertEquals(text.startsWith('tptest-cs2.example.net has no DNS record yet'), true)
   assertEquals(text.includes('fetch failed'), false)
 })
 
 test('the name is read from the raw text when the caller does not know it', () => {
   assertEquals(
-    plainCertificateFailure(NO_DNS_RAW).startsWith('tptest-cs2.munch.ws has no DNS record yet'),
+    plainCertificateFailure(NO_DNS_RAW).startsWith('tptest-cs2.example.net has no DNS record yet'),
     true
   )
 })
@@ -53,11 +53,11 @@ test("the authority's own reason is kept", () => {
 test("a server's own check that was aborted by its time limit reads as one plain sentence", () => {
   const text = plainCertificateFailure(
     'The operation was aborted due to timeout',
-    'tptest-cs12.munch.ws'
+    'tptest-cs12.example.net'
   )
   assertEquals(
     text,
-    'tptest-cs12.munch.ws did not answer in time, so the server could not check its certificate. The server tries again by itself.'
+    'tptest-cs12.example.net did not answer in time, so the server could not check its certificate. The server tries again by itself.'
   )
   assertEquals(
     plainCertificateFailure('The operation was aborted due to timeout').startsWith(

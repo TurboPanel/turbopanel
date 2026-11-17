@@ -74,7 +74,7 @@ const report = (current: string, pinnedBy: VerifiedPinReport['pinnedBy'] = 'inst
 test('a matching report is stored and raises nothing', async () => {
   const { db, writes } = fakeDb({
     organizationId: 'o1',
-    name: 'kappa',
+    name: 'server-c',
     fingerprint: null,
     matching: null,
   })
@@ -105,7 +105,7 @@ test('a matching report is stored and raises nothing', async () => {
 test('a report naming the next key matches too', async () => {
   const { db, writes } = fakeDb({
     organizationId: 'o1',
-    name: 'kappa',
+    name: 'server-c',
     fingerprint: null,
     matching: null,
   })
@@ -117,7 +117,7 @@ test('a report naming the next key matches too', async () => {
 test('an unsafe pin counts as matching (it has its own badge)', async () => {
   const { db, writes } = fakeDb({
     organizationId: 'o1',
-    name: 'kappa',
+    name: 'server-c',
     fingerprint: null,
     matching: null,
   })
@@ -133,7 +133,12 @@ test('an unsafe pin counts as matching (it has its own badge)', async () => {
 })
 
 test('another key raises one audit row and one notification, once per fingerprint', async () => {
-  const first = fakeDb({ organizationId: 'o1', name: 'kappa', fingerprint: null, matching: null })
+  const first = fakeDb({
+    organizationId: 'o1',
+    name: 'server-c',
+    fingerprint: null,
+    matching: null,
+  })
   const r = recorder()
   assertEquals(
     await recordPinReport(first.db, undefined, 's1', report(FP_B), { current: FP_A }, r.deps),
@@ -154,13 +159,18 @@ test('another key raises one audit row and one notification, once per fingerprin
     {
       event: 'panel.pin_mismatch',
       organizationId: 'o1',
-      context: { serverName: 'kappa', reported: FP_B, expected: FP_A },
+      context: { serverName: 'server-c', reported: FP_B, expected: FP_A },
       targetType: 'server',
       targetId: 's1',
     },
   ])
   // The same mismatch again: stored, not raised again.
-  const again = fakeDb({ organizationId: 'o1', name: 'kappa', fingerprint: FP_B, matching: false })
+  const again = fakeDb({
+    organizationId: 'o1',
+    name: 'server-c',
+    fingerprint: FP_B,
+    matching: false,
+  })
   assertEquals(
     await recordPinReport(again.db, undefined, 's1', report(FP_B), { current: FP_A }, r.deps),
     false
@@ -172,9 +182,13 @@ test('another key raises one audit row and one notification, once per fingerprin
 test('the notice names a server that has only a hostname', async () => {
   const title = NOTIFICATION_EVENT_DEFINITIONS['panel.pin_mismatch'].title
   const cases: [string | null, string | null, string][] = [
-    [null, 'manvm', 'Server manvm reported a different control plane key'],
-    ['  ', 'manvm.lan', 'Server manvm.lan reported a different control plane key'],
-    ['kappa', 'manvm', 'Server kappa reported a different control plane key'],
+    [null, 'server-d', 'Server server-d reported a different control plane key'],
+    [
+      '  ',
+      'server-d.example.lan',
+      'Server server-d.example.lan reported a different control plane key',
+    ],
+    ['server-c', 'server-d', 'Server server-c reported a different control plane key'],
     [null, null, 'Server unknown reported a different control plane key'],
   ]
   for (const [name, hostname, expected] of cases) {
@@ -237,7 +251,7 @@ test('the hello intake verifies the report, then reads the identity and records 
   )
   const { db, writes } = fakeDb({
     organizationId: null,
-    name: 'kappa',
+    name: 'server-c',
     fingerprint: null,
     matching: null,
   })
@@ -296,7 +310,7 @@ test('rotation passkeys: behind, unknown and unreported are not a mismatch', () 
 test('a passkeys mismatch says both sides, in the audit row and in the mail', async () => {
   const { db, writes } = fakeDb({
     organizationId: 'o1',
-    name: 'kappa',
+    name: 'server-c',
     fingerprint: null,
     matching: null,
   })
@@ -316,28 +330,33 @@ test('a passkeys mismatch says both sides, in the audit row and in the mail', as
   })
   const emitted = r.emits[0] as { context: Record<string, string> }
   assertEquals(emitted.context, {
-    serverName: 'kappa',
+    serverName: 'server-c',
     reported: FP_A,
     expected: FP_A,
     reportedPasskeys: HASH_OLD,
     expectedPasskeys: HASH_NOW,
   })
   const mail = describeEvent('panel.pin_mismatch', emitted.context)
-  assertEquals(mail.title, 'Server kappa reported different rotation passkeys')
+  assertEquals(mail.title, 'Server server-c reported different rotation passkeys')
   const body = mail.body ?? ''
   assert(body.includes(HASH_OLD) && body.includes(HASH_NOW), body)
   // The wrong-key mail still names the two keys.
   const otherKey = describeEvent('panel.pin_mismatch', {
-    serverName: 'kappa',
+    serverName: 'server-c',
     reported: FP_B,
     expected: FP_A,
   })
-  assertEquals(otherKey.title, 'Server kappa reported a different control plane key')
+  assertEquals(otherKey.title, 'Server server-c reported a different control plane key')
   const otherBody = otherKey.body ?? ''
   assert(otherBody.includes(FP_B) && otherBody.includes(FP_A), otherBody)
 
   // The same server one key set behind: recorded as matching, nothing raised.
-  const behind = fakeDb({ organizationId: 'o1', name: 'kappa', fingerprint: null, matching: null })
+  const behind = fakeDb({
+    organizationId: 'o1',
+    name: 'server-c',
+    fingerprint: null,
+    matching: null,
+  })
   const quiet = recorder()
   assertEquals(
     await recordPinReport(behind.db, undefined, 's1', { ...pinned, keyset: 2 }, kids, quiet.deps),
@@ -368,7 +387,7 @@ test('the hello intake: a failed read of the marked passkeys does not flag the s
   // This double has no `orderBy`, so the marked passkeys read throws.
   const { db, writes } = fakeDb({
     organizationId: 'o1',
-    name: 'kappa',
+    name: 'server-c',
     fingerprint: null,
     matching: null,
   })
