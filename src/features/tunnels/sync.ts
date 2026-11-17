@@ -32,6 +32,7 @@ import {
   daemonLockFollowsTable,
   daemonTakesPeerClientAuth,
 } from './daemon-gate.ts'
+import { markPeerLeafReminted, peerDowngradeRepeats, peerLeafRemintDue } from './status.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
   buildTunnelRoutes,
@@ -249,7 +250,16 @@ export async function syncServerTunnelRoutes(
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)
-  const open = !params.force && !params.issue
+  // A daemon that downgraded `require` has a leaf without client use: it gets
+  // a new one in this send, once per report (see peerLeafRemintDue).
+  const remint = built.peerClientAuth !== undefined && peerLeafRemintDue(ready.metadata)
+  if (!remint && peerDowngradeRepeats(ready.metadata)) {
+    compatLogWarn(
+      'tunnel-sync',
+      `server ${serverId}: the peer hop still runs without client certificates after a new peer certificate`
+    )
+  }
+  const open = !params.force && !params.issue && !remint
   if (open && (await isAlreadyCurrent(db, serverId, sent, built, stateHash))) {
     return { status: 'unchanged' }
   }
@@ -273,6 +283,7 @@ export async function syncServerTunnelRoutes(
     material ? issue.leaf : null
   )
   if (!queued.ok) return { status: 'failed', reason: queued.reason }
+  if (remint && material) await markPeerLeafReminted(db, serverId)
   await recordSent(db, serverId, {
     stateHash,
     commandId: queued.commandId,

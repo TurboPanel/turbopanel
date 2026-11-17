@@ -528,6 +528,9 @@ provider accounts.
   `recordTunnelStatus` keeps it in `server.metadata.tunnelPeerHop`
   (`peerHopStatusOf`), outside the table hash. Tunnels between a server on this
   version and one without it fail until both are updated (owner decision).
+  A stored downgrade makes the next send mint the peer leaf again, once per
+  report (`peerLeafRemintDue`, `markPeerLeafReminted` sets `reminted`); a repeat
+  after that is only logged.
 - Firewall: `peer-exposure.ts` turns the same `peerAddresses` the route builder
   sends a server into one derived rule, accept tcp 9443 (`TUNNEL_PEER_PORT`, the
   daemon's peer-facing server, checked by `check:contract-drift`) on the host

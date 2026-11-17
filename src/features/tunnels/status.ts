@@ -184,6 +184,36 @@ async function clearPeerClientAuth(db: Db, serverId: string): Promise<void> {
 }
 
 /**
+ * A daemon reported that `require` runs as `verify` (its peer leaf lacks client
+ * use) and the leaf has not been minted again for this report. Once per
+ * report: {@link markPeerLeafReminted} sets the flag, and a report that
+ * changes the mode starts a new one, so a daemon that still downgrades after a
+ * fresh leaf is logged by the caller, not served another one every tick.
+ */
+export function peerLeafRemintDue(metadata: unknown): boolean {
+  const raw = (metadata as { tunnelPeerHop?: { downgraded?: unknown; reminted?: unknown } } | null)
+    ?.tunnelPeerHop
+  return raw?.downgraded === true && raw.reminted !== true
+}
+
+/** True when this report is a downgrade whose re-mint was already done. */
+export function peerDowngradeRepeats(metadata: unknown): boolean {
+  const raw = (metadata as { tunnelPeerHop?: { downgraded?: unknown; reminted?: unknown } } | null)
+    ?.tunnelPeerHop
+  return raw?.downgraded === true && raw.reminted === true
+}
+
+/** Record that the peer leaf was minted again because of the stored downgrade. */
+export async function markPeerLeafReminted(db: Db, serverId: string): Promise<void> {
+  await db
+    .update(server)
+    .set({
+      metadata: sql`jsonb_set(coalesce(${server.metadata}, '{}'::jsonb), '{tunnelPeerHop,reminted}', 'true'::jsonb)`,
+    })
+    .where(and(eq(server.id, serverId), sql`${server.metadata} -> 'tunnelPeerHop' IS NOT NULL`))
+}
+
+/**
  * Keep the reported peer hop mode on the server (`server.metadata.tunnelPeerHop`),
  * so the server's tunnel status can show a downgrade. It is a report and never
  * part of the table hash, so writing it does not make the table go out again.
