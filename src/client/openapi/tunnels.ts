@@ -303,6 +303,34 @@ export const tunnelSchemas = {
         description: 'Servers that run a connector now, from the placement rules.',
       },
       warnings: { type: 'array', items: { type: 'string' } },
+      peerHop: {
+        type: 'array',
+        description:
+          'What each server that carries this Tunnel or runs one of its sites last reported about the client-certificate check on the hop between servers, sorted by server. Servers that only run a site are asked too.',
+        items: {
+          type: 'object',
+          required: ['serverId', 'mode', 'downgraded', 'reportedAt'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            mode: {
+              type: 'string',
+              enum: ['require', 'verify', 'none'],
+              description:
+                '`require`: the server checks a client certificate. `verify`: it checks one when shown but admits a peer without. `none`: the daemon has reported no mode (not updated yet, or no table sent).',
+            },
+            downgraded: {
+              type: 'boolean',
+              description:
+                '`require` was asked for and `verify` is what runs (the peer certificate lacks client use); the panel issues a new certificate once per report.',
+            },
+            reportedAt: {
+              type: ['string', 'null'],
+              format: 'date-time',
+              description: 'When the daemon last reported the mode; null when `mode` is `none`.',
+            },
+          },
+        },
+      },
       verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
       runTokenRotation: {
         oneOf: [{ $ref: '#/components/schemas/TunnelRunTokenRotation' }, { type: 'null' }],
@@ -376,7 +404,7 @@ export const tunnelSchemas = {
       routingNote: {
         type: ['string', 'null'],
         description:
-          'Why this name is not being forwarded to its site right now, in plain words (for example the site runs on no server yet, or no server that runs it has a datacenter network address or a public address). Only on the list of hostnames; null when the name is routed or the reason is unknown.',
+          'Why this name is not being forwarded to its site right now, in plain words (for example the site runs on no server yet, no server that runs it has a datacenter network address or a public address, or the server that runs it needs a daemon update before tunnels can reach it). Only on the list of hostnames; null when the name is routed or the reason is unknown.',
       },
       createdAt: { type: 'string', format: 'date-time' },
     },

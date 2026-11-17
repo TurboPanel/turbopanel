@@ -58,6 +58,7 @@ import {
   TUNNEL_CONNECTOR_FEATURE,
   TUNNEL_CONNECTOR_TOKEN_CHANGE_FEATURE,
   TUNNEL_FORWARDING_FEATURE,
+  TUNNEL_PEER_MTLS_FEATURE,
   TUNNEL_STATUS_FEATURE,
 } from '../../lib/version-wire.ts'
 
@@ -1066,6 +1067,114 @@ test('a name whose site runs nowhere yet is reported unrouted with its reason', 
     // The site is not deployed anywhere yet.
     const before = await loadUnroutedReasons(f.db, f.orgA, tunnel)
     assertEquals(before.get('shop.example.com')?.includes('does not run on any server'), true)
+  })
+})
+
+test('the hostname list says in its routingNote why a name is not forwarded', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'shop.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    const listed = await call(
+      f,
+      'GET',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie
+    )
+    assertEquals(listed.status, 200, listed.text)
+    const names = listed.body.hostnames as { hostname: string; routingNote: string | null }[]
+    assertEquals(names.length, 1)
+    assertEquals(names[0]!.hostname, 'shop.example.com')
+    // The site runs nowhere yet.
+    assert(names[0]!.routingNote?.includes('does not run on any server'))
+  })
+})
+
+test('a site on a server without peer client certificates is named in the hostname note, the tunnel warnings and the peer hop report', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const site = await insertHosting(f, f.orgA, f.servers[2])
+    await f.db
+      .insert(hostname)
+      .values({ hostingId: site, routingOrganizationId: f.orgA, hostname: 'shop.example.com' })
+    const [svc] = await f.db
+      .select({ environmentId: service.environmentId })
+      .from(hosting)
+      .innerJoin(service, eq(service.id, hosting.serviceId))
+      .where(eq(hosting.id, site))
+    await f.db
+      .insert(deployment)
+      .values({ environmentId: svc!.environmentId, serverId: f.servers[2], status: 'applied' })
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'shop.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    // The carriers take the peer hop's client certificates, the site's server does not.
+    // A daemon state needs an enrolled key.
+    await f.db.insert(key).values(
+      f.servers.map((serverId) => ({
+        serverId,
+        algorithm: 'Ed25519',
+        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+        fingerprint: `fp-${crypto.randomUUID()}`,
+      }))
+    )
+    f.cleanup.push(async () => {
+      await f.db.delete(key).where(inArray(key.serverId, f.servers))
+    })
+    await f.db
+      .update(server)
+      .set({ daemon: { projection: { features: [TUNNEL_PEER_MTLS_FEATURE] } } })
+      .where(inArray(server.id, [f.servers[0], f.servers[1]]))
+    const reportedAt = '2026-11-17T10:00:00.000Z'
+    await f.db
+      .update(server)
+      .set({ metadata: { tunnelPeerHop: { clientAuth: 'verify', downgraded: true, reportedAt } } })
+      .where(eq(server.id, f.servers[0]))
+
+    const listed = await call(
+      f,
+      'GET',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie
+    )
+    const names = listed.body.hostnames as { routingNote: string | null }[]
+    assert(names[0]!.routingNote?.includes('Tunnel Test 3 needs a daemon update'))
+
+    const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    const tunnelBody = shown.body.tunnel as {
+      warnings: string[]
+      peerHop: { serverId: string; mode: string; downgraded: boolean; reportedAt: string | null }[]
+    }
+    assert(
+      tunnelBody.warnings.some(
+        (w) => w.includes('Tunnel Test 3 needs a daemon update') && w.includes('shop.example.com')
+      )
+    )
+    const hop = (serverId: string) => tunnelBody.peerHop.find((h) => h.serverId === serverId)
+    assertEquals(hop(f.servers[0]), {
+      serverId: f.servers[0],
+      mode: 'verify',
+      downgraded: true,
+      reportedAt,
+    })
+    // A server that never reported has no mode; the site-only server is listed too.
+    assertEquals(hop(f.servers[2]), {
+      serverId: f.servers[2],
+      mode: 'none',
+      downgraded: false,
+      reportedAt: null,
+    })
   })
 })
 

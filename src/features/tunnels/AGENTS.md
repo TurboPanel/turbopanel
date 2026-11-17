@@ -540,6 +540,13 @@ provider accounts.
   `recordTunnelStatus` keeps it in `server.metadata.tunnelPeerHop`
   (`peerHopStatusOf`), outside the table hash. Tunnels between a server on this
   version and one without it fail until both are updated (owner decision).
+  The status poll also asks a connected server that only runs a site (no
+  portal, but a stored table), so its mode and downgrade are recorded too;
+  `reportedAt` is kept next to them and moves on every report. The tunnel
+  response shows the report as `peerHop` (`mode` require, verify or none,
+  `downgraded`, `reportedAt`) for each carrying and site server. A sender with
+  the feature whose receiver lacks it is named in plain words (`old-receivers.ts`):
+  in the send's log, in the tunnel's `warnings` and in the name's `routingNote`.
   A stored downgrade makes the next send mint the peer leaf again, once per
   report (`peerLeafRemintDue`, `markPeerLeafReminted` sets `reminted`); a repeat
   after that is only logged.

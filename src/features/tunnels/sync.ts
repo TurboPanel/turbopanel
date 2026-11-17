@@ -41,6 +41,8 @@ import {
   toRoutesPayload,
 } from './route-builder.ts'
 import { relinkDoorwayHostings } from './doorway-links.ts'
+import { oldReceiverMessage, serverLabels } from './old-receivers.ts'
+import { compareText } from './order.ts'
 import { loadRoutingFacts } from './route-facts.ts'
 import { generationForDaemon, resolveTunnelGeneration } from './table-generation.ts'
 
@@ -319,16 +321,25 @@ async function markRemintDone(
  */
 async function noteOldReceivers(db: Db, built: RouteBuildResult): Promise<void> {
   if (built.peerClientAuth === undefined) return
-  const receivers = new Set(
-    built.routes.flatMap((route) => route.upstreams.map((upstream) => upstream.serverId))
-  )
-  for (const receiverId of receivers) {
+  const names = new Map<string, string[]>()
+  for (const route of built.routes) {
+    for (const upstream of route.upstreams) {
+      names.set(upstream.serverId, [...(names.get(upstream.serverId) ?? []), route.hostname])
+    }
+  }
+  const old: [string, string[]][] = []
+  for (const [receiverId, hostnames] of names) {
     const state = await getServerDaemonStateByServerId(db, receiverId)
-    if (daemonTakesPeerClientAuth(state?.projection?.features)) continue
-    built.warnings.push(
-      'The server that runs a site on this Tunnel needs a daemon update before tunnels can reach it'
-    )
-    return
+    if (!daemonTakesPeerClientAuth(state?.projection?.features)) {
+      old.push([receiverId, [...new Set(hostnames)].toSorted(compareText)])
+    }
+  }
+  const labels = await serverLabels(
+    db,
+    old.map(([id]) => id)
+  )
+  for (const [receiverId, hostnames] of old) {
+    built.warnings.push(oldReceiverMessage(labels.get(receiverId) ?? receiverId, hostnames))
   }
 }
 

@@ -8,6 +8,7 @@ import {
   peerLeafRemintDue,
   portalErrorOf,
   portalStateOf,
+  toApiPeerHop,
 } from './status.ts'
 
 /**
@@ -151,4 +152,22 @@ test('a downgrade asks for one new peer leaf per report, and a repeat is only lo
   assertEquals(peerDowngradeRepeats(hop({ downgraded: true, reminted: true })), true)
   // A mode that is no longer downgraded is neither.
   assertEquals(peerDowngradeRepeats(hop({ downgraded: false, reminted: true })), false)
+})
+
+test('the API shows the peer hop as a mode, a downgrade flag and the report time', () => {
+  const none = { mode: 'none' as const, downgraded: false, reportedAt: null }
+  assertEquals(toApiPeerHop(null), none)
+  assertEquals(toApiPeerHop({ tunnelPeerHop: { clientAuth: 'bad' } }), none)
+  assertEquals(
+    toApiPeerHop({
+      tunnelPeerHop: { clientAuth: 'verify', downgraded: true, reportedAt: '2026-11-17T10:00:00Z' },
+    }),
+    { mode: 'verify', downgraded: true, reportedAt: '2026-11-17T10:00:00Z' }
+  )
+  // A report stored before the time was kept has no time.
+  assertEquals(toApiPeerHop({ tunnelPeerHop: { clientAuth: 'require' } }), {
+    mode: 'require',
+    downgraded: false,
+    reportedAt: null,
+  })
 })
