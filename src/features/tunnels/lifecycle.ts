@@ -156,10 +156,12 @@ export type ApiDoorway = {
   dns: 'created' | 'none'
   /** A plain-words reason a removal is waiting (for example no API Token can edit its DNS), else null. */
   warning: string | null
+  /** Why this name is not being forwarded to its site right now, in plain words, else null. */
+  routingNote: string | null
   createdAt: string
 }
 
-export function toApiDoorway(row: DoorwayRow): ApiDoorway {
+export function toApiDoorway(row: DoorwayRow, routingNote: string | null = null): ApiDoorway {
   return {
     id: row.id,
     tunnelId: row.tunnelId,
@@ -169,6 +171,7 @@ export function toApiDoorway(row: DoorwayRow): ApiDoorway {
     status: row.status,
     dns: row.externalDnsRecordId ? 'created' : 'none',
     warning: doorwayWarning(row),
+    routingNote,
     createdAt: row.createdAt,
   }
 }

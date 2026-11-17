@@ -373,6 +373,11 @@ export const tunnelSchemas = {
         description:
           'Why a removal is waiting, in plain words (for example no API Token can edit the DNS of its zone); the row stays in `attention` and a retry finishes it. Null otherwise.',
       },
+      routingNote: {
+        type: ['string', 'null'],
+        description:
+          'Why this name is not being forwarded to its site right now, in plain words (for example the site runs on no server yet, or no server that runs it has a datacenter network address or a public address). Only on the list of hostnames; null when the name is routed or the reason is unknown.',
+      },
       createdAt: { type: 'string', format: 'date-time' },
     },
   },

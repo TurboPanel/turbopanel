@@ -350,9 +350,21 @@ provider accounts.
   `doorway.create` audit row.
 - The route builder turns the facts into the `server.tunnel.routes` payload for
   one server: routes only for tunnels the server carries; a name whose site
-  runs on this server is `local`; otherwise the upstreams are the datacenter
-  addresses of the servers that run the site (exact addresses, preferred
-  family first). `peerAddresses` is the other carrying servers of a tunnel
+  runs on this server is `local`; otherwise the upstreams are the addresses of
+  the servers that run the site. The address is chosen per carrier and site
+  server pair (`pairAddresses`): both use their datacenter network addresses
+  only when they share a datacenter (exact addresses, preferred family first),
+  otherwise both use their dedicated public addresses (shared ones never). Each
+  side is cut to one IP version both servers have (IPv4 preferred on public
+  addresses); a pair with no shared version is not routed and the reason says
+  the two servers share no IP version. The upstream, `peerAddresses`,
+  `listenAddresses`, the firewall rule and the receiver's address lock all come
+  from that one choice, so they agree. A public hop gets the same
+  mutual TLS and address lock as any other (port 9443 when the receiver is
+  updated, see below). A name no
+  server can reach is left out of the table and its reason is on the hostname
+  list as `routingNote`.
+  `peerAddresses` is the other carrying servers of a tunnel
   whose site runs here (inbound only: servers allowed to forward to this one). A
   server that only carries tunnels sends an empty list. Sites count as running on a server through an
   `applied` deployment of their environment. The hash covers the routes, the
