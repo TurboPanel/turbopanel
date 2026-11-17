@@ -4,7 +4,7 @@
  * Needs a database.
  */
 import { assertEquals } from '@std/assert'
-import { eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import {
@@ -23,6 +23,7 @@ import {
 } from '../../db/schema.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
+import { confirmFolderRemoved } from '../../features/folders/allocate.ts'
 import { deleteProjectCascade } from '../../features/projects/project-delete.ts'
 import { markPlacementsAbsent } from '../../features/principals/placement-records.ts'
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
@@ -333,44 +334,169 @@ test('a Hosting Account that is used again before its removal keeps its row and 
   })
 })
 
-test('an orphan folder no service or volume names does not hold the removal back forever', async () => {
-  await withWorld(async ({ db, serverId, newProject, newPrincipal }) => {
-    const doomed = await newProject('Stray')
-    const owner = await newPrincipal('stray', doomed.projectId)
-    await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
-    await db.insert(principalPlacement).values({
-      principalId: owner,
-      serverId,
-      state: 'present',
-      home: '/srv/users/stray',
-      source: 'manual',
-    })
-    assertEquals((await deleteProjectCascade(db, doomed.projectId)).ok, true)
-    // A reconcile after the delete found a folder no row names.
+type Orphan = { kind: 'service' | 'volume'; slug: string; serviceId?: string }
+
+async function orphanWorld(
+  world: World,
+  name: string,
+  orphans: Orphan[]
+): Promise<{ owner: string; stateOf: (slug: string) => Promise<string | undefined> }> {
+  const { db, serverId, newProject, newPrincipal } = world
+  const doomed = await newProject(name)
+  const owner = await newPrincipal(name.toLowerCase(), doomed.projectId)
+  await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+  await db.insert(principalPlacement).values({
+    principalId: owner,
+    serverId,
+    state: 'present',
+    home: `/srv/users/${name.toLowerCase()}`,
+    source: 'manual',
+  })
+  assertEquals((await deleteProjectCascade(db, doomed.projectId)).ok, true)
+  // A reconcile after the delete found folders no row names (or one a service names).
+  for (const orphan of orphans) {
     await db.insert(folder).values({
       serverId,
       principalId: owner,
       environmentId: null,
       scope: 'production',
-      kind: 'service',
-      slug: 'leftover',
+      kind: orphan.kind,
+      slug: orphan.slug,
+      serviceId: orphan.serviceId ?? null,
       state: 'orphan',
     })
+  }
+  return {
+    owner,
+    stateOf: async (slug) =>
+      (
+        await db
+          .select({ state: folder.state })
+          .from(folder)
+          .where(and(eq(folder.principalId, owner), eq(folder.slug, slug)))
+      )[0]?.state,
+  }
+}
+
+function folderRemovals(sent: CommandEnvelope[]): CommandEnvelope[] {
+  return sent.filter((envelope) => envelope.type === 'server.folders.remove')
+}
+
+test('a leftover service folder no service names goes through the folder removal, audited, and the account then goes', async () => {
+  await withWorld(async (world) => {
+    const { db, serverId, organizationId } = world
+    const { owner, stateOf } = await orphanWorld(world, 'Stray', [
+      { kind: 'service', slug: 'leftover' },
+    ])
     const { queue, sent } = recordingQueue()
 
-    // The sweep sees the orphan, queues it for removal and waits for the host.
+    // The sweep marks the folder `removing`, asks the host through the normal folder
+    // removal and waits for its confirmation.
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
+    assertEquals(await stateOf('leftover'), 'removing')
+    assertEquals(folderRemovals(sent).length, 1)
+    assertEquals(sent.length, 1)
+    const entries = await db
+      .select({ actorUserId: audit.actorUserId, context: audit.context })
+      .from(audit)
+      .where(and(eq(audit.organizationId, organizationId), eq(audit.action, 'folder.remove')))
+    assertEquals(entries.length, 1)
+    assertEquals(entries[0]?.actorUserId, null)
+    assertEquals((entries[0]?.context as { slug?: string }).slug, 'leftover')
+    assertEquals(await placementState(db, owner), 'present')
+
+    // The host confirmed it gone the way the report path does: the account is retired.
+    assertEquals(
+      await confirmFolderRemoved(db, {
+        serverId,
+        principalId: owner,
+        scope: 'production',
+        kind: 'service',
+        slug: 'leftover',
+      }),
+      true
+    )
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
+    assertEquals(await placementState(db, owner), 'retiring')
+  })
+})
+
+test('an orphan volume folder is never removed by the sweep and says why the account stays', async () => {
+  await withWorld(async (world) => {
+    const { db } = world
+    const { owner, stateOf } = await orphanWorld(world, 'Holds', [{ kind: 'volume', slug: 'data' }])
+    const { queue, sent } = recordingQueue()
+
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
+    assertEquals(await stateOf('data'), 'orphan')
     assertEquals(sent.length, 0)
+    assertEquals(await placementState(db, owner), 'present')
     const [row] = await db
-      .select({ state: folder.state })
+      .select({ note: folder.removalNote })
       .from(folder)
       .where(eq(folder.principalId, owner))
-    assertEquals(row?.state, 'removing')
+    assertEquals(row?.note?.includes('Hosting Account'), true)
+    // The same through the step a delete asks for directly.
+    assertEquals(await removeRequestedPrincipal(db, queue, undefined, owner), 'waiting')
+    assertEquals(await stateOf('data'), 'orphan')
+    assertEquals(sent.length, 0)
+  })
+})
 
-    // The host confirmed it gone: the account is retired.
-    await db.delete(folder).where(eq(folder.principalId, owner))
+test('a service folder next to an orphan volume waits with it; a named orphan is left alone', async () => {
+  await withWorld(async (world) => {
+    const { db, newProject } = world
+    const other = await newProject('Named')
+    const { stateOf } = await orphanWorld(world, 'Mixed', [
+      { kind: 'volume', slug: 'data' },
+      { kind: 'service', slug: 'named', serviceId: other.serviceId },
+    ])
+    const { queue, sent } = recordingQueue()
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
-    assertEquals(sent.length, 1)
-    assertEquals(await placementState(db, owner), 'retiring')
+    assertEquals(await stateOf('data'), 'orphan')
+    assertEquals(await stateOf('named'), 'orphan')
+    assertEquals(sent.length, 0)
+  })
+})
+
+test('a Hosting Account used again keeps its orphans, and another account is untouched', async () => {
+  await withWorld(async (world) => {
+    const { db, newProject, newPrincipal } = world
+    const { owner, stateOf } = await orphanWorld(world, 'Kept', [
+      { kind: 'service', slug: 'leftover' },
+      { kind: 'volume', slug: 'data' },
+    ])
+    // A principal nobody asked to remove, with its own orphan.
+    const live = await newProject('Live')
+    const bystander = await newPrincipal('bystander', live.projectId)
+    await db.insert(folder).values({
+      serverId: world.serverId,
+      principalId: bystander,
+      environmentId: null,
+      scope: 'production',
+      kind: 'service',
+      slug: 'theirs',
+      state: 'orphan',
+    })
+    const keeper = await newProject('Keeper')
+    await db.insert(tenancy).values({ principalId: owner, serviceId: keeper.serviceId })
+    const { queue, sent } = recordingQueue()
+
+    assertEquals(await removeRequestedPrincipal(db, queue, undefined, owner), 'kept')
+    assertEquals((await readPrincipal(db, owner))?.removalRequestedAt, null)
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
+    assertEquals(await stateOf('leftover'), 'orphan')
+    assertEquals(await stateOf('data'), 'orphan')
+    const [note] = await db
+      .select({ note: folder.removalNote })
+      .from(folder)
+      .where(and(eq(folder.principalId, owner), eq(folder.slug, 'data')))
+    assertEquals(note?.note, null)
+    const [theirs] = await db
+      .select({ state: folder.state })
+      .from(folder)
+      .where(eq(folder.principalId, bystander))
+    assertEquals(theirs?.state, 'orphan')
+    assertEquals(sent.length, 0)
   })
 })

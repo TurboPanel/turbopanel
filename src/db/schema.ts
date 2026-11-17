@@ -4940,8 +4940,9 @@ export const folder = pgTable(
     state: text().notNull(),
     /**
      * Why the host kept a `removing` folder, in plain words, from its last
-     * answer; NULL when it has not refused. Cleared when the row leaves
-     * `removing`.
+     * answer; NULL when it has not refused. On an `orphan` volume folder it
+     * says the folder holds back a deleted project's Hosting Account. Cleared
+     * when the row leaves those states.
      */
     removalNote: text('removal_note'),
     /** When the owners were told this folder is an orphan; NULL until then and again once it stops being one. */
