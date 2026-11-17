@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:38f4600f955413ef9ce8429b1f8f3e21c68553d9adf88c5b542e81ab796b74de
-pnpm-lock.yaml sha256:aa36a0622c76d6941e45095a3ced90dffe3baac1ec741d99143b685b75b6e58d
+deno.lock sha256:214909054e15e8a6413368911dbee1c106ed24bced6fd1af71128f3c3a2e595d
+pnpm-lock.yaml sha256:761aacaf63c7492554f10bad577a38f40eec802002b48595d71dc6820e8723b4
 -->
 
 ## Production dependencies
@@ -97,7 +97,7 @@ pnpm-lock.yaml sha256:aa36a0622c76d6941e45095a3ced90dffe3baac1ec741d99143b685b75
 - Copyright: Drizzle Team
 - Homepage: https://orm.drizzle.team
 
-### hono@4.13.11
+### hono@4.13.18
 
 - License: MIT
 - Copyright: Yusuke Wada
@@ -311,7 +311,7 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Homepage: https://github.com/evanw/esbuild#readme
 
-### @hono/hono@4.13.7
+### @hono/hono@4.13.18
 
 - License: MIT
 - Source: deno.lock (jsr)
