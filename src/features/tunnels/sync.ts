@@ -249,7 +249,7 @@ export async function syncServerTunnelRoutes(
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)
-  const remint = remintDue(serverId, ready.metadata, built)
+  const remint = remintDue(serverId, ready.metadata)
   const open = !params.force && !params.issue && !remint
   if (open && (await isAlreadyCurrent(db, serverId, sent, built, stateHash))) {
     return { status: 'unchanged' }
@@ -289,8 +289,8 @@ export async function syncServerTunnelRoutes(
  * new one in this send, once per report (see peerLeafRemintDue). A repeat after
  * that is only logged.
  */
-function remintDue(serverId: string, metadata: unknown, built: RouteBuildResult): boolean {
-  const due = built.peerClientAuth !== undefined && peerLeafRemintDue(metadata)
+function remintDue(serverId: string, metadata: unknown): boolean {
+  const due = peerLeafRemintDue(metadata)
   if (!due && peerDowngradeRepeats(metadata)) {
     compatLogWarn(
       'tunnel-sync',

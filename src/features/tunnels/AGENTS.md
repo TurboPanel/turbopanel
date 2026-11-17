@@ -544,7 +544,7 @@ provider accounts.
   portal, but a stored table), so its mode and downgrade are recorded too;
   `reportedAt` is kept next to them and moves on every report. The tunnel
   response shows the report as `peerHop` (`mode` require, verify or none,
-  `downgraded`, `reportedAt`) for each carrying and site server. A sender with
+  `downgraded`, `reportedAt`) for each carrying and site server.
   There is no support for daemons without `tunnel-peer-mtls-v1` (pre-MVP): every
   table carries `peerClientAuth: 'require'` and the peer hop is always 9443.
   A stored downgrade makes the next send mint the peer leaf again, once per

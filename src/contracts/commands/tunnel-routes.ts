@@ -240,7 +240,7 @@ export type TunnelRoutesCommandPayload = {
   listenAddresses?: string[]
   /** Required when `routes` or `peerAddresses` is not empty. */
   peerMaterial?: TunnelPeerMaterial
-  /** Client certificate policy of the peer-facing site. Sent only to a daemon that lists `tunnel-peer-mtls-v1`. */
+  /** Client certificate policy of the peer-facing site. Always sent with a table. */
   peerClientAuth?: TunnelPeerClientAuth
   /**
    * Every tunnel name whose site runs here, with who may forward it. Sent only
