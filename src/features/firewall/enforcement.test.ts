@@ -81,7 +81,7 @@ test('a wildcard, a malformed entry or too many servers closes the switch for ev
   )
 })
 
-test('only the testing environment commits the apply allowlist (staging and live are an operator act)', async () => {
+test('no environment commits the apply allowlist (it is an operator act)', async () => {
   const root = new URL('../../../', import.meta.url)
   for await (const entry of Deno.readDir(root)) {
     if (!/^wrangler.*\.jsonc?$/.test(entry.name)) continue
@@ -97,13 +97,7 @@ test('only the testing environment commits the apply allowlist (staging and live
     } = JSON.parse(text.replace(/^\s*\/\/.*$/gm, ''))
     assertEquals(wrangler.vars?.[FIREWALL_APPLY_SERVERS_ENV], undefined, 'top-level vars')
     for (const [name, env] of Object.entries(wrangler.env)) {
-      const raw = env.vars?.[FIREWALL_APPLY_SERVERS_ENV]
-      if (name !== 'testing') {
-        assertEquals(raw, undefined, `env.${name}`)
-        continue
-      }
-      // A throwaway proof host, and a list the parser accepts whole.
-      assertEquals(parseFirewallApplyServers(raw).size, 1, 'env.testing')
+      assertEquals(env.vars?.[FIREWALL_APPLY_SERVERS_ENV], undefined, `env.${name}`)
     }
   }
 })

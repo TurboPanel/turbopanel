@@ -96,7 +96,7 @@ test('an apply that worked keeps its warnings', async () => {
     commandId: 'c1',
     action: 'apply',
     ok: true,
-    warnings: ['LAN route 10.194.0.0/16 via 10.10.3.86 not installed: eth0 already routes it'],
+    warnings: ['LAN route 10.194.0.0/16 via 10.50.3.86 not installed: eth0 already routes it'],
   })
   const outcome = readFabricReconcileOutcome(relay.metadata())
   assertEquals(outcome?.state, 'done')

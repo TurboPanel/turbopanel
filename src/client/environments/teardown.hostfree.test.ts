@@ -127,7 +127,7 @@ test('planEnvironmentTeardown falls back to the effective pin and collects ingre
         hostingOptions: { protocol: 'tcp', ports: [{ published: 9000, target: 80 }] },
       },
     ],
-    [{ networkId: 'net-1', serverId: DEFAULT_SERVER_ID, subnet: '10.10.0.0/24' }],
+    [{ networkId: 'net-1', serverId: DEFAULT_SERVER_ID, subnet: '10.50.0.0/24' }],
   ])
   const result = await planEnvironmentTeardown(db, ENV_ID)
   assertEquals(result?.serverIds, [DEFAULT_SERVER_ID])

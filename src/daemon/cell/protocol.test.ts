@@ -538,12 +538,12 @@ it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
     outboundEnvelopeToWireMessage({
       ...base,
       kind: 'public-urls-update',
-      urls: ['https://panel.example.com', 'huey.lan:8443'],
+      urls: ['https://panel.example.com', 'server-a.example.lan:8443'],
     }),
     {
       type: 'public-urls-update',
       id: 'req-1',
-      urls: ['https://panel.example.com', 'huey.lan:8443'],
+      urls: ['https://panel.example.com', 'server-a.example.lan:8443'],
       at: base.at,
     }
   )
