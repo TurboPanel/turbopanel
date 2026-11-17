@@ -380,7 +380,13 @@ export type ServerMetadata = {
    * report, written from the tunnel status and never part of the table hash.
    * jsonb, so no migration.
    */
-  tunnelPeerHop?: { clientAuth: 'verify' | 'require'; downgraded: boolean; reminted?: boolean }
+  tunnelPeerHop?: {
+    clientAuth: 'verify' | 'require'
+    downgraded: boolean
+    reminted?: boolean
+    /** When the daemon last reported it (ISO 8601). */
+    reportedAt?: string
+  }
 }
 
 /**

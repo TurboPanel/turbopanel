@@ -1,5 +1,5 @@
 /**
- * Asks each server that carries a tunnel what its connectors are doing and
+ * Asks each server that carries a tunnel, or receives its peer traffic, what its connectors are doing and
  * which version they run (`server.tunnel.status`), and writes the answer onto
  * the server's portal rows (`status.ts`).
  *
@@ -8,7 +8,7 @@
  * is recorded once, and a new question is sent when the last one is old enough.
  * Only a connected server whose daemon advertises `tunnel-status-v1` is asked.
  */
-import { and, eq, gt, isNull, sql } from 'drizzle-orm'
+import { and, eq, gt, isNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, portal, server } from '../../db/schema.ts'
 import { parseTunnelStatusResult } from '../../contracts/commands/tunnel-status.ts'
@@ -162,13 +162,25 @@ export async function pollServerTunnelStatus(
   return 'asked'
 }
 
-/** Servers that carry a tunnel (they have a portal row) and are connected now. */
+/**
+ * Connected servers that carry a tunnel (they have a portal row) or were sent a
+ * forwarding table (a server that only runs a site behind a tunnel receives
+ * peer traffic and has a peer-hop mode to report too). The same gap applies to
+ * both, so the cost is one question per server per ten minutes.
+ */
 async function serversToPoll(db: Db) {
   return await db
-    .selectDistinct({ id: server.id, metadata: server.metadata })
-    .from(portal)
-    .innerJoin(server, eq(portal.serverId, server.id))
-    .where(eq(server.isConnected, true))
+    .select({ id: server.id, metadata: server.metadata })
+    .from(server)
+    .where(
+      and(
+        eq(server.isConnected, true),
+        or(
+          sql`exists (select 1 from ${portal} where ${portal.serverId} = ${server.id})`,
+          sql`${server.metadata} -> 'tunnelRoutes' is not null`
+        )
+      )
+    )
 }
 
 /** The sweep: ask every connected server that carries a tunnel. */

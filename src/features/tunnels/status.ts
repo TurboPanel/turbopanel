@@ -240,13 +240,41 @@ async function recordPeerClientAuth(
     .where(eq(server.id, serverId))
     .limit(1)
   const current = peerHopStatusOf(row?.metadata)
-  if (current?.clientAuth === next.clientAuth && current.downgraded === next.downgraded) return
+  const reportedAt = new Date().toISOString()
+  if (current?.clientAuth === next.clientAuth && current.downgraded === next.downgraded) {
+    // The same report again: only its time moves, so the re-mint flag stays.
+    await db
+      .update(server)
+      .set({
+        metadata: sql`jsonb_set(${server.metadata}, '{tunnelPeerHop,reportedAt}', ${JSON.stringify(reportedAt)}::jsonb)`,
+      })
+      .where(eq(server.id, serverId))
+    return
+  }
   await db
     .update(server)
     .set({
-      metadata: sql`jsonb_set(coalesce(${server.metadata}, '{}'::jsonb), '{tunnelPeerHop}', ${JSON.stringify(next)}::jsonb)`,
+      metadata: sql`jsonb_set(coalesce(${server.metadata}, '{}'::jsonb), '{tunnelPeerHop}', ${JSON.stringify({ ...next, reportedAt })}::jsonb)`,
     })
     .where(eq(server.id, serverId))
+}
+
+/** What the API shows of a server's peer hop: `none` when the daemon reports no mode. */
+export type ApiPeerHop = {
+  mode: 'require' | 'verify' | 'none'
+  downgraded: boolean
+  reportedAt: string | null
+}
+
+export function toApiPeerHop(metadata: unknown): ApiPeerHop {
+  const status = peerHopStatusOf(metadata)
+  if (status === null) return { mode: 'none', downgraded: false, reportedAt: null }
+  const at = (metadata as { tunnelPeerHop?: { reportedAt?: unknown } }).tunnelPeerHop?.reportedAt
+  return {
+    mode: status.clientAuth,
+    downgraded: status.downgraded,
+    reportedAt: typeof at === 'string' ? at : null,
+  }
 }
 
 /**
