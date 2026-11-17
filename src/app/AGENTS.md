@@ -14,9 +14,26 @@
   `src/app/version.ts`); `resolveDaemonSupport` holds it against
   `MIN_SUPPORTED_DAEMON_VERSION`. An **unsupported** daemon keeps its
   connection (that is the update path) but the command consumer fails its
-  commands with `daemon_unsupported`; a build reporting no version is
-  **unknown** and passes — flag, not refusal, until the fleet is re-enrolled
-  on tagged builds. The other direction lives on the daemon
+  commands with `daemon_update_required`. A daemon is also refused (same
+  code) when its stored hello does not list **every** name in
+  `DAEMON_WIRE_FEATURES`, or when it reports no version or one that does not
+  parse: the check fails closed (`resolveDaemonSupport(version, features)`).
+  The refusal names the missing features; the server's update status
+  (`daemonSupport`: `status: unsupported`, `code`, `missingFeatures`, `reason`)
+  carries the same. How a refused daemon still updates: the daemon has no
+  updater of its own that runs without the control plane (its update-guard
+  timer is only a rollback watchdog), so an update is the `update` message
+  the upgrade coordinator (`src/features/upgrades/coordinator.ts`) writes to
+  the daemon's open connection. That message is not a command, never reaches
+  the consumer's refusal, and consults neither the version floor nor the
+  feature list; the daemon then fetches and verifies the release itself.
+  `coordinator-refused-daemon.hostfree.test.ts` pins it. Only the command
+  consumer refuses today, and a refusal inside the first 30 seconds of a
+  connection (`HELLO_PROJECTION_GRACE_MS`) is looked at again each second,
+  because a freshly updated daemon's hello is not stored yet and the stored
+  version and features are still the previous build's; other paths that read the stored feature list keep
+  their own gates until those gates are removed. The other direction lives on
+  the daemon
   (`../turbopaneld/src/instance/version-wire.ts`): every daemon REST response
   (including non-OK and the 401 before a refresh) and the cell attach
   `{ type: "version", instanceVersion }` frame (`src/daemon/attach-version.ts`,
@@ -33,7 +50,7 @@
   2026-11-05 as a **pre-launch hard cutoff**: `0.1.18` is the first daemon
   that registers a sealing key, opens sealed decrypt answers and opens the
   sealed reconcile password hash, and `0.1.22` is the first control plane
-  that seals them. Older daemons get `daemon_unsupported` on every command;
+  that seals them. Older daemons get `daemon_update_required` on every command;
   older control planes are flagged by the daemon and refused as an
   `instance-update` target. Every peer on those two lines is let in,
   including trunk builds from before the sealing work landed; only canary

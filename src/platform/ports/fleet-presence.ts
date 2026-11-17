@@ -9,9 +9,13 @@ import type { Db } from '../../db/connection.ts'
 /** Minimal presence shape command dispatch reads through this port. */
 export type FleetPresencePortSnapshot = {
   connected: boolean
+  /** When the current connection opened; a hello may still be on its way for a short while after. */
+  connectedAt?: string | null
   daemonBuild?: {
     version?: string
   }
+  /** The wire features the daemon's last hello listed; `undefined` when none are stored. */
+  features?: readonly string[]
 }
 
 export type ResolveFleetPresence = (
