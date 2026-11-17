@@ -332,3 +332,45 @@ test('a Hosting Account that is used again before its removal keeps its row and 
     assertEquals(row?.removalRequestedAt, null)
   })
 })
+
+test('an orphan folder no service or volume names does not hold the removal back forever', async () => {
+  await withWorld(async ({ db, serverId, newProject, newPrincipal }) => {
+    const doomed = await newProject('Stray')
+    const owner = await newPrincipal('stray', doomed.projectId)
+    await db.update(server).set({ isConnected: true }).where(eq(server.id, serverId))
+    await db.insert(principalPlacement).values({
+      principalId: owner,
+      serverId,
+      state: 'present',
+      home: '/srv/users/stray',
+      source: 'manual',
+    })
+    assertEquals((await deleteProjectCascade(db, doomed.projectId)).ok, true)
+    // A reconcile after the delete found a folder no row names.
+    await db.insert(folder).values({
+      serverId,
+      principalId: owner,
+      environmentId: null,
+      scope: 'production',
+      kind: 'service',
+      slug: 'leftover',
+      state: 'orphan',
+    })
+    const { queue, sent } = recordingQueue()
+
+    // The sweep sees the orphan, queues it for removal and waits for the host.
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
+    assertEquals(sent.length, 0)
+    const [row] = await db
+      .select({ state: folder.state })
+      .from(folder)
+      .where(eq(folder.principalId, owner))
+    assertEquals(row?.state, 'removing')
+
+    // The host confirmed it gone: the account is retired.
+    await db.delete(folder).where(eq(folder.principalId, owner))
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
+    assertEquals(sent.length, 1)
+    assertEquals(await placementState(db, owner), 'retiring')
+  })
+})

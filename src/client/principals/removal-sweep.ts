@@ -8,8 +8,11 @@
  * the record of the account until every server has confirmed it gone:
  *
  * 1. Nothing happens while a folder row still names the principal (the host
- *    has not confirmed its folders gone). If something else starts using it
- *    meanwhile, the mark is cleared and the principal stays.
+ *    has not confirmed its folders gone). A folder no service or volume names
+ *    (an `orphan` the host reported) would wait for an admin forever, so it is
+ *    set to `removing` here and the folder sweep clears it from the host. If
+ *    something else starts using the principal meanwhile, the mark is cleared
+ *    and the principal stays.
  * 2. On each server it is placed on, once that server is connected and has no
  *    `environment.stop` still running (the stop of the delete itself), the
  *    placement turns `retiring` and the server gets a `server.principals.
@@ -24,7 +27,19 @@
  * tick (Deno) and the cron (Workers) run {@link runPrincipalRemovalSweep} for
  * the rest. Never throws.
  */
-import { and, asc, eq, inArray, isNotNull, ne, notExists, notInArray, sql } from 'drizzle-orm'
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  ne,
+  not,
+  notExists,
+  notInArray,
+  sql,
+  type SQL,
+} from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, folder, principal, principalPlacement, server } from '../../db/schema.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
@@ -149,6 +164,11 @@ type RemovedPrincipal = {
   serverIds: string[]
 }
 
+/** A folder the host reported that no service or volume names. */
+function isUnnamedOrphan(): SQL {
+  return sql`(${folder.state} = 'orphan' AND ${folder.serviceId} IS NULL AND ${folder.storageId} IS NULL)`
+}
+
 type RemovalStep =
   | { result: 'waiting' | 'kept' }
   | { result: 'removed'; removed: RemovedPrincipal }
@@ -177,8 +197,15 @@ async function removalStep(tx: Db, principalId: string): Promise<RemovalStep> {
       .where(eq(principal.id, principalId))
     return { result: 'kept' }
   }
-  // Folders still being cleared: the home must not go before them.
-  if (folders > 0) return { result: 'waiting' }
+  // Folders still being cleared: the home must not go before them. Orphans no
+  // asset names would never clear on their own: queue them for removal too.
+  if (folders > 0) {
+    await tx
+      .update(folder)
+      .set({ state: 'removing', removalNote: null })
+      .where(and(eq(folder.principalId, principalId), isUnnamedOrphan()))
+    return { result: 'waiting' }
+  }
 
   const placements: PlacementRow[] = await tx
     .select({
@@ -334,8 +361,12 @@ export async function runPrincipalRemovalSweep(
     .where(
       and(
         isNotNull(principal.removalRequestedAt),
+        // Unnamed orphans do not hold the principal back: the step queues them.
         notExists(
-          db.select({ id: folder.id }).from(folder).where(eq(folder.principalId, principal.id))
+          db
+            .select({ id: folder.id })
+            .from(folder)
+            .where(and(eq(folder.principalId, principal.id), not(isUnnamedOrphan())))
         ),
         notExists(
           db
