@@ -37,7 +37,11 @@ import {
   serversWithoutLockAdd,
   serversWithoutTunnelSupport,
 } from '../../features/tunnels/daemon-gate.ts'
-import { lockAddSkippedServers, siteServersOfTunnel } from '../../features/tunnels/route-facts.ts'
+import {
+  loadUnroutedReasons,
+  lockAddSkippedServers,
+  siteServersOfTunnel,
+} from '../../features/tunnels/route-facts.ts'
 import {
   hostnameLockSkippedWarning,
   hostnameLockWarning,
@@ -318,7 +322,13 @@ function deleteResponse(registry: TunnelAdapterRegistry) {
 async function listDoorwaysResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const row = await loadTunnelParam(c, scope)
   if (row instanceof Response) return row
-  return c.json({ hostnames: (await listDoorways(scope.db, row.id)).map(toApiDoorway) })
+  const notes = await loadUnroutedReasons(scope.db, scope.organizationId, row)
+  const doorways = await listDoorways(scope.db, row.id)
+  return c.json({
+    hostnames: doorways.map((d) =>
+      toApiDoorway(d, d.status === 'removing' ? null : (notes.get(d.hostname) ?? null))
+    ),
+  })
 }
 
 function addDoorwayResponse(registry: TunnelAdapterRegistry) {

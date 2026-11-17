@@ -41,9 +41,13 @@ import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { insertBadge, insertCarrier, sealToken } from '../../features/tunnels/records.ts'
-import { loadRoutingFacts } from '../../features/tunnels/route-facts.ts'
+import {
+  loadRoutingFacts,
+  loadServerAddresses,
+  loadUnroutedReasons,
+} from '../../features/tunnels/route-facts.ts'
 import { NO_CAPABILITIES } from '../../features/tunnels/vocabulary.ts'
-import { carryingServers } from '../../features/tunnels/lifecycle.ts'
+import { carryingServers, listTunnels } from '../../features/tunnels/lifecycle.ts'
 import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
 import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
 import { recordTunnelStatus } from '../../features/tunnels/status.ts'
@@ -1020,6 +1024,51 @@ test('a bad hostname and an unknown tunnel are refused', async () => {
   })
 })
 
+test('server addresses carry datacenter and dedicated public addresses, never shared ones', async () => {
+  await withFixture(async (f) => {
+    const [one, two] = f.servers
+    await f.db.insert(ip).values(
+      [
+        [one, '192.0.2.21', 'dedicated'],
+        [one, '192.0.2.20', 'dedicated'],
+        [one, '192.0.2.99', 'shared'],
+        [two, '192.0.2.98', 'shared'],
+      ].map(([serverId, address, allocation]) => ({
+        organizationId: f.orgA,
+        serverId,
+        address,
+        allocation,
+        scope: 'public',
+      }))
+    )
+    const book = await loadServerAddresses(f.db, f.orgA, [one, two])
+    assertEquals(book.get(one), {
+      datacenters: { [f.datacenterId]: ['10.93.0.10'] },
+      public: ['192.0.2.20', '192.0.2.21'],
+    })
+    // A server with only a shared public address has no public address to use.
+    assertEquals(book.get(two), {
+      datacenters: { [f.datacenterId]: ['10.93.0.11'] },
+      public: [],
+    })
+    assertEquals(await loadServerAddresses(f.db, f.orgA, []), new Map())
+  })
+})
+
+test('a name whose site runs nowhere yet is reported unrouted with its reason', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    await call(f, 'POST', `/organizations/${f.orgA}/tunnels/${id}/hostnames`, f.managerCookie, {
+      hostname: 'shop.example.com',
+    })
+    const tunnel = (await listTunnels(f.db, f.orgA)).find((t) => t.id === id)
+    assert(tunnel)
+    // The site is not deployed anywhere yet.
+    const before = await loadUnroutedReasons(f.db, f.orgA, tunnel)
+    assertEquals(before.get('shop.example.com')?.includes('does not run on any server'), true)
+  })
+})
+
 test('the placement can be changed, and the route facts carry exact datacenter addresses', async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f)
@@ -1044,7 +1093,10 @@ test('the placement can be changed, and the route facts carry exact datacenter a
     assertEquals(facts.tunnels[0]!.doorways, [
       { hostname: 'shop.example.com', siteServerIds: [], isLocalOnly: true },
     ])
-    assertEquals(facts.addresses.get(f.servers[2]), ['10.93.0.12'])
+    assertEquals(facts.addresses.get(f.servers[2]), {
+      datacenters: { [f.datacenterId]: ['10.93.0.12'] },
+      public: [],
+    })
     const bad = await call(
       f,
       'PUT',

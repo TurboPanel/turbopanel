@@ -4,14 +4,14 @@
  * local connector and the servers that forward to it; everyone else is
  * dropped. A name that is also public (its doorway is not local-only) stays
  * open to everyone. Servers that forward here are the other servers that carry
- * the same tunnel, by their exact datacenter addresses.
+ * the same tunnel, by their exact addresses (chosen per pair, see `pairAddresses`).
  */
 import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { doorway } from '../../db/schema.ts'
 import type { EnvironmentDeployHostingTunnel } from '../../contracts/commands/tunnel-routes.ts'
 import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
-import { TUNNEL_TABLE_CAPS } from './route-builder.ts'
+import { pairAddresses, TUNNEL_TABLE_CAPS, type AddressBook } from './route-builder.ts'
 import { compareText } from './order.ts'
 import { daemonCanCarryTunnels } from './daemon-gate.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
@@ -38,9 +38,9 @@ export type NameLockInput = {
   doorways: readonly NameLockDoorway[]
   /** Servers that carry each tunnel right now. */
   carryingByTunnel: ReadonlyMap<string, readonly string[]>
-  /** This server and its exact datacenter addresses. */
+  /** This server and the exact addresses of it and the carrying servers. */
   serverId: string
-  addresses: ReadonlyMap<string, readonly string[]>
+  addresses: AddressBook
 }
 
 export type NameLock = {
@@ -48,18 +48,34 @@ export type NameLock = {
   lockedHostnames: string[]
   /** What the deploy sends; absent when the hosting carries no tunnel name. */
   tunnel: EnvironmentDeployHostingTunnel | undefined
+  /** Plain-words notes when a contract cap cut an address list short. */
+  warnings: string[]
 }
 
-/** Peers first, in a stable order, cut at the contract cap. */
-function peerAddressesOf(input: NameLockInput, tunnelIds: ReadonlySet<string>): string[] {
+/** The carriers' addresses and this server's own, chosen per carrier; both sorted as found, cut at the cap with a note. */
+function peerAddressesOf(
+  input: NameLockInput,
+  tunnelIds: ReadonlySet<string>
+): { peers: string[]; own: string[]; warnings: string[] } {
   const peers = new Set<string>()
+  const own = new Set<string>()
   for (const tunnelId of tunnelIds) {
-    for (const carrier of input.carryingByTunnel.get(tunnelId) ?? []) {
+    for (const carrier of [...(input.carryingByTunnel.get(tunnelId) ?? [])].toSorted(compareText)) {
       if (carrier === input.serverId) continue
-      for (const address of input.addresses.get(carrier) ?? []) peers.add(address)
+      const pair = pairAddresses(input.addresses, carrier, input.serverId)
+      for (const address of pair.carrier) peers.add(address)
+      for (const address of pair.site) own.add(address)
     }
   }
-  return [...peers].toSorted(compareText).slice(0, TUNNEL_TABLE_CAPS.addresses)
+  const warnings: string[] = []
+  const cap = TUNNEL_TABLE_CAPS.addresses
+  if (peers.size > cap) warnings.push(`Only ${cap} peer addresses can be sent for a name lock`)
+  if (own.size > cap) warnings.push(`Only ${cap} listen addresses can be sent for a name lock`)
+  return {
+    peers: [...peers].toSorted(compareText).slice(0, cap),
+    own: [...own].slice(0, cap),
+    warnings,
+  }
 }
 
 export function buildNameLock(input: NameLockInput): NameLock {
@@ -69,21 +85,20 @@ export function buildNameLock(input: NameLockInput): NameLock {
     const site = siteByLower.get(d.hostname.toLowerCase())
     if (site !== undefined && !names.has(site)) names.set(site, d)
   }
-  if (names.size === 0) return { lockedHostnames: [], tunnel: undefined }
+  if (names.size === 0) return { lockedHostnames: [], tunnel: undefined, warnings: [] }
   const hostnames = [...names.keys()].toSorted(compareText)
   const open = hostnames.filter((name) => names.get(name)?.isLocalOnly === false)
   const locked = hostnames.filter((name) => !open.includes(name))
   const tunnelIds = new Set([...names.values()].map((d) => d.tunnelId))
-  const peers = peerAddressesOf(input, tunnelIds)
+  const { peers, own, warnings } = peerAddressesOf(input, tunnelIds)
   const tunnel: EnvironmentDeployHostingTunnel = {
     hostnames,
     peers: peers.length > 0 ? peers : [LOOPBACK_PEER],
   }
   if (open.length > 0) tunnel.openHostnames = open
-  // Peers reach this server on its own datacenter addresses.
-  const own = [...(input.addresses.get(input.serverId) ?? [])].slice(0, TUNNEL_TABLE_CAPS.addresses)
+  // Peers reach this server on its own address of each pair.
   if (peers.length > 0 && own.length > 0) tunnel.extraBind = own
-  return { lockedHostnames: locked, tunnel }
+  return { lockedHostnames: locked, tunnel, warnings }
 }
 
 /**
@@ -134,7 +149,7 @@ export async function loadNameLock(
   }
 ): Promise<NameLock> {
   const rows = await loadDoorwayRows(db, params)
-  if (rows.length === 0) return { lockedHostnames: [], tunnel: undefined }
+  if (rows.length === 0) return { lockedHostnames: [], tunnel: undefined, warnings: [] }
   const tunnelIds = new Set(rows.map((r) => r.tunnelId))
   const tunnels = (await listTunnels(db, params.organizationId)).filter((t) => tunnelIds.has(t.id))
   const carrying = await Promise.all(tunnels.map((t) => carryingServers(db, t)))

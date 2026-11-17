@@ -27,6 +27,8 @@ const DAEMON_STALE_WARNING = 'ignored: a newer forwarding table is already in pl
 
 const NOW = 1_800_000_000_000
 
+const inDc = (list: string[]) => ({ datacenters: { dc1: list }, public: [] as string[] })
+
 function facts(order: 'a' | 'b'): RoutingFacts {
   const doorways = [
     { hostname: 'a.example.com', siteServerIds: ['s2', 's1'], isLocalOnly: true },
@@ -42,12 +44,12 @@ function facts(order: 'a' | 'b'): RoutingFacts {
     addresses: new Map(
       order === 'a'
         ? [
-            ['s1', ['10.0.0.1']],
-            ['s2', ['10.0.0.2']],
+            ['s1', inDc(['10.0.0.1'])],
+            ['s2', inDc(['10.0.0.2'])],
           ]
         : [
-            ['s2', ['10.0.0.2']],
-            ['s1', ['10.0.0.1']],
+            ['s2', inDc(['10.0.0.2'])],
+            ['s1', inDc(['10.0.0.1'])],
           ]
     ),
   }
@@ -115,7 +117,7 @@ test('builds a deploy tunnel block with no generation of its own', () => {
     doorways: [{ hostname: 'a.example.com', tunnelId: 't1', isLocalOnly: true }],
     carryingByTunnel: new Map([['t1', ['s1', 's2']]]),
     serverId: 's1',
-    addresses: new Map([['s2', ['10.0.0.2']]]),
+    addresses: new Map([['s2', inDc(['10.0.0.2'])]]),
   })
   assertEquals(lock.tunnel && 'generation' in lock.tunnel, false)
 })
