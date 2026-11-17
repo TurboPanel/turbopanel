@@ -88,7 +88,7 @@ function input(
   return {
     serverId: 'a',
     peers: [
-      { serverId: 'a', name: 'adrastea' },
+      { serverId: 'a', name: 'host-a' },
       { serverId: 'b', name: 'server-b' },
     ],
     caches: caches(options),
