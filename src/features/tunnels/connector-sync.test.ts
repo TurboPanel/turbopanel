@@ -354,6 +354,22 @@ test('a connector the server reports stopped is sent again; a running one is not
   })
 })
 
+test('a connector the server reports not installed is sent again', async () => {
+  await withServer({ connected: true, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
+    const providerId = await c.addTunnel('Missing')
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    await c.db.update(command).set({ status: 'succeeded' }).where(eq(command.serverId, c.serverId))
+    await recordTunnelStatus(c.db, c.serverId, {
+      pinnedVersion: '2026.10.7',
+      connectors: [
+        { tunnelId: providerId, status: 'not-installed', version: '2026.10.7', slot: 'a' },
+      ],
+    })
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    assertEquals(c.queued.length, 2)
+  })
+})
+
 test('a stopped report while the last list is still on its way waits for that list', async () => {
   await withServer({ connected: true, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
     const providerId = await c.addTunnel('InFlight')
