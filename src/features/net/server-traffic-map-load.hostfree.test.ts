@@ -80,7 +80,7 @@ function createDb(): Db {
           { address: '10.9.0.10', version: 4, scope: 'private', interface: 'eth1', link: 'down' },
         ]),
       },
-      { id: B, name: 'kore', metadata: serverMetadata([]) },
+      { id: B, name: 'server-b', metadata: serverMetadata([]) },
     ],
   }
   return {
@@ -101,13 +101,13 @@ test('loadServerTrafficMap lists peers that share a network, with the flagged ba
     organizationId: 'org-1',
     candidates: [
       { serverId: A, name: 'adrastea' },
-      { serverId: B, name: 'kore' },
+      { serverId: B, name: 'server-b' },
       { serverId: C, name: 'elsewhere' },
     ],
   })
   assertEquals(
     map.peers.map((peer) => peer.name),
-    ['kore']
+    ['server-b']
   )
   const peer = map.peers[0]
   assertEquals(peer.chosenDatacenterId, LAN)

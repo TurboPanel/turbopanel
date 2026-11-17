@@ -1,8 +1,8 @@
 /**
  * Host-affecting managed-database checks. Each creates its own cluster,
- * named with the run prefix, on server-e or megaclite only (the first such
- * `--host`), and destroys it in cleanup. The shared managed Postgres on
- * adrastea/server-c is never a placement and never read.
+ * named with the run prefix, on the first `--host`, and destroys it in
+ * cleanup. A host listed as carrying a shared managed Postgres is never a
+ * placement and never read.
  */
 import type { Check, CheckContext } from '../types.ts'
 import { createProject, createWorkspace, managedServer } from './fixtures.ts'
@@ -20,7 +20,7 @@ import {
 } from './helpers.ts'
 
 const V1 = '/client/v1'
-const NO_HOST = 'needs --host server-e or --host megaclite'
+const NO_HOST = 'needs --host <server>'
 
 export interface Cluster {
   environmentId: string

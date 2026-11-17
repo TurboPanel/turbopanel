@@ -113,7 +113,7 @@ async function buildApp(options: { allowed: boolean; visible: string[] }) {
           }
           const all = [
             { id: A, name: 'adrastea', metadata: null },
-            { id: B, name: 'kore', metadata: null },
+            { id: B, name: 'server-b', metadata: null },
             { id: C, name: 'secret-box', metadata: null },
           ]
           // The route's names query is `WHERE id IN (visible ids)`: the fake

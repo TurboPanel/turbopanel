@@ -1,6 +1,6 @@
 /**
  * Host-affecting deploy checks. Each deploys onto the first `--host` (never
- * dev-workstation, adrastea or server-c) inside a run-owned workspace and tears the
+ * a forbidden or shared-database host) inside a run-owned workspace and tears the
  * environment down (stop, then delete) in cleanup. Native and site services
  * create a Unix principal on the host that environment delete does not remove;
  * the README lists that as a known leftover.
@@ -20,7 +20,7 @@ import {
 import { excerpt, expectStatus, fail, listOf, objOf, pass, skip, str, type Rec } from './helpers.ts'
 
 const V1 = '/client/v1'
-const NO_HOST = 'needs --host <server> (not dev-workstation/adrastea/server-c)'
+const NO_HOST = 'needs --host <server> (not a forbidden or shared-database host)'
 
 export const REPOS = {
   node: 'https://github.com/heroku/node-js-getting-started.git',
@@ -301,7 +301,7 @@ async function listReleases(ctx: CheckContext, environmentId: string): Promise<R
 
 /**
  * Compose `build:` from a git context (docker/welcome-to-docker, port 3000).
- * The body mirrors the earlier manual proof on server-c; a second deploy without
+ * The body mirrors the earlier manual proof; a second deploy without
  * noCache must reuse the built image.
  */
 export const deployDockerfile: Check = {

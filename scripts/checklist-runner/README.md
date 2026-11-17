@@ -33,10 +33,11 @@ runner also prints status docs that can be applied to the Road page.
   - `host-affecting` needs `--apply --allow-host-affecting`. It also needs the
     target server named with `--host`.
 - **Host rules** (constants in `safety.ts`):
-  - dev-workstation is never touched, not even over SSH.
-  - adrastea and server-c carry the shared managed Postgres. They are never a
-    `--host` for host-affecting work and never a managed placement.
-  - Managed clusters go on server-e or megaclite only.
+  - Hosts in `FORBIDDEN_HOSTS` are never touched, not even over SSH.
+  - Hosts in `SHARED_DATABASE_HOSTS` carry a shared managed Postgres. They are
+    never a `--host` for host-affecting work and never a managed placement.
+  - Both lists ship empty; an empty list matches no host.
+  - Managed clusters go on the first `--host`.
   - UIDs and the Docker gate switch are never changed.
   - There are no metrics or analytics checks.
 - **Cleanup.**
@@ -84,7 +85,7 @@ deno run -A scripts/checklist-runner/cli.ts --apply
 
 # host-affecting, on named servers only
 deno run -A scripts/checklist-runner/cli.ts --apply --allow-host-affecting \
-  --host server-f --host server-e --ssh-host server-f.example.lan
+  --host server-a --ssh-host server-a.example.lan
 ```
 
 | Flag                     | Meaning                                                                                                                                      |
@@ -93,7 +94,7 @@ deno run -A scripts/checklist-runner/cli.ts --apply --allow-host-affecting \
 | `--apply`                | Execute. Without it nothing beyond `/api/health` is sent                                                                                     |
 | `--safety <class>`       | Highest class to run: `readonly`, `creates-objects` (default), `host-affecting`                                                              |
 | `--allow-host-affecting` | Allow host-affecting checks (implies `--safety host-affecting`)                                                                              |
-| `--host <name>`          | A server host-affecting checks may use. Deploys use the first one. Managed checks use the first server-e/megaclite. Repeat the flag for more |
+| `--host <name>`          | A server host-affecting checks may use. Deploys use the first one. Managed checks use the first one too. Repeat the flag for more |
 | `--ssh-host <host>`      | Allow read-only SSH to that host (for `network-addresses`, the docker cross-check, daemon stop/start, partition)                             |
 | `--only a,b`             | Run only these row ids                                                                                                                       |
 | `--out <dir>`            | Output directory (default `$TMPDIR/turbopanel-checklist-runs`)                                                                               |
@@ -137,7 +138,7 @@ The orchestrator applies these to the Road artifact database (collection
 
 | Row                        | Class           | What it proves                                                                                                                                                          |
 | -------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fleet-overview`           | readonly        | All servers (dev-workstation excluded) connected with OS/docker versions. Optional SSH cross-check of docker                                                            |
+| `fleet-overview`           | readonly        | All servers (forbidden hosts excluded) connected with OS/docker versions. Optional SSH cross-check of docker                                                            |
 | `fleet-daemon-update`      | readonly        | `/servers/updates`: no server has an update available                                                                                                                   |
 | `ops-audit`                | readonly        | Org audit returns entries with actor, action and time                                                                                                                   |
 | `ops-container-logs`       | readonly        | `logs?tail=20` works on up to 3 service containers plus 1 ingress container                                                                                             |

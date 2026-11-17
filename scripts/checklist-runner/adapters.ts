@@ -1,6 +1,6 @@
 /**
  * Read-only side channels: the Mailpit sink (loopback only, GET only) and SSH
- * (explicitly named hosts only, never dev-workstation).
+ * (explicitly named hosts only, never a forbidden host).
  */
 import type { FetchLike } from './http.ts'
 import { SafetyError, assertSshHost, isRecord } from './safety.ts'

@@ -135,7 +135,7 @@ export function isGpuDerivedSignalId(signalId: unknown): boolean {
 /**
  * How many of `signals` prove host-level sensors. GPU-derived signals are
  * excluded: a virtual display adapter or passthrough GPU reports them on a VM
- * too (the io/megaclite/server-e bug), so they never make a machine physical.
+ * too (the io/megaclite bug), so they never make a machine physical.
  * Accepts topology snapshot entries (`{ signalId }`) and sample signals alike.
  */
 export function countHostLevelSignals(signals: readonly unknown[]): number {
