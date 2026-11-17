@@ -1069,6 +1069,89 @@ test('a name whose site runs nowhere yet is reported unrouted with its reason', 
   })
 })
 
+test('the hostname list says in its routingNote why a name is not forwarded', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'shop.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    const listed = await call(
+      f,
+      'GET',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie
+    )
+    assertEquals(listed.status, 200, listed.text)
+    const names = listed.body.hostnames as { hostname: string; routingNote: string | null }[]
+    assertEquals(names.length, 1)
+    assertEquals(names[0]!.hostname, 'shop.example.com')
+    // The site runs nowhere yet.
+    assert(names[0]!.routingNote?.includes('does not run on any server'))
+  })
+})
+
+test('the tunnel response reports the peer hop mode of carrying and site servers', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const site = await insertHosting(f, f.orgA, f.servers[2])
+    await f.db
+      .insert(hostname)
+      .values({ hostingId: site, routingOrganizationId: f.orgA, hostname: 'shop.example.com' })
+    const [svc] = await f.db
+      .select({ environmentId: service.environmentId })
+      .from(hosting)
+      .innerJoin(service, eq(service.id, hosting.serviceId))
+      .where(eq(hosting.id, site))
+    await f.db
+      .insert(deployment)
+      .values({ environmentId: svc!.environmentId, serverId: f.servers[2], status: 'applied' })
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'shop.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    const reportedAt = '2026-11-17T10:00:00.000Z'
+    await f.db
+      .update(server)
+      .set({ metadata: { tunnelPeerHop: { clientAuth: 'verify', downgraded: true, reportedAt } } })
+      .where(eq(server.id, f.servers[0]))
+
+    const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    const hops = (
+      shown.body.tunnel as {
+        peerHop: {
+          serverId: string
+          mode: string
+          downgraded: boolean
+          reportedAt: string | null
+        }[]
+      }
+    ).peerHop
+    const hop = (serverId: string) => hops.find((h) => h.serverId === serverId)
+    assertEquals(hop(f.servers[0]), {
+      serverId: f.servers[0],
+      mode: 'verify',
+      downgraded: true,
+      reportedAt,
+    })
+    // A server that never reported has no mode; the site-only server is listed too.
+    assertEquals(hop(f.servers[2]), {
+      serverId: f.servers[2],
+      mode: 'none',
+      downgraded: false,
+      reportedAt: null,
+    })
+  })
+})
+
 test('the placement can be changed, and the route facts carry exact datacenter addresses', async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f)

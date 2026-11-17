@@ -27,6 +27,7 @@ import {
   runTunnelStatusPollTick,
   TUNNEL_STATUS_NEW_PORTAL_GAP_MS,
 } from './status-poll.ts'
+import { markPeerLeafReminted, peerHopStatusOf, recordTunnelStatus } from './status.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
 const test = Deno.test.bind(Deno)
@@ -281,5 +282,65 @@ test('the sweep asks the connected servers that carry a tunnel, and does nothing
       asked: 0,
       recorded: 0,
     })
+  })
+})
+
+test('a connected server that only receives peer traffic is asked too, once per gap', async () => {
+  await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
+    // A site-only server: no portal, but it was sent a forwarding table.
+    const [org] = await c.db
+      .select({ id: server.organizationId })
+      .from(server)
+      .where(eq(server.id, c.serverId))
+    const [site] = await c.db
+      .insert(server)
+      .values({
+        organizationId: org!.id,
+        name: 'Site Only',
+        isConnected: true,
+        daemon: { projection: { features: [TUNNEL_STATUS_FEATURE] } },
+        metadata: { tunnelRoutes: { stateHash: 'h', commandId: 'c', sentAt: 'x', forwarded: 0 } },
+      })
+      .returning({ id: server.id })
+    await c.db.insert(key).values({
+      serverId: site!.id,
+      algorithm: 'Ed25519',
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+      fingerprint: `fp-${crypto.randomUUID()}`,
+    })
+    try {
+      await runTunnelStatusPollTick(c.db, c.queue)
+      const asked = () => c.queued.filter((e) => e.serverId === site!.id).length
+      assertEquals(asked(), 1)
+      // Inside the gap nothing more is sent for it.
+      await runTunnelStatusPollTick(c.db, c.queue)
+      assertEquals(asked(), 1)
+    } finally {
+      await c.db.delete(command).where(eq(command.serverId, site!.id))
+      await c.db.delete(key).where(eq(key.serverId, site!.id))
+      await c.db.delete(server).where(eq(server.id, site!.id))
+    }
+  })
+})
+
+test('a report with no connectors still records the peer hop, and a repeat only moves its time', async () => {
+  await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
+    const report = { pinnedVersion: '2026.6.0', connectors: [], peerClientAuth: 'verify' as const }
+    await recordTunnelStatus(c.db, c.serverId, {
+      ...report,
+      peerClientAuthDowngraded: true,
+    })
+    await markPeerLeafReminted(c.db, c.serverId)
+    const first = (await c.row()).metadata as { tunnelPeerHop: { reportedAt: string } }
+    assert(typeof first.tunnelPeerHop.reportedAt === 'string')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    await recordTunnelStatus(c.db, c.serverId, { ...report, peerClientAuthDowngraded: true })
+    const again = (await c.row()).metadata as {
+      tunnelPeerHop: { reportedAt: string; reminted?: boolean }
+    }
+    assert(again.tunnelPeerHop.reportedAt > first.tunnelPeerHop.reportedAt)
+    // The re-mint flag survives a repeat of the same report.
+    assertEquals(again.tunnelPeerHop.reminted, true)
+    assertEquals(peerHopStatusOf(again), { clientAuth: 'verify', downgraded: true })
   })
 })

@@ -10,12 +10,8 @@ import type { Db } from '../../db/connection.ts'
 import { isValidIpAddress } from '../../lib/ip-address.ts'
 import type { DerivedExposure } from '../firewall/derive.ts'
 import { TUNNEL_PEER_PORT } from '../../contracts/commands/tunnel-routes.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
-import { daemonTakesPeerClientAuth } from './daemon-gate.ts'
 import { buildTunnelRoutes } from './route-builder.ts'
 import { loadRoutingFacts } from './route-facts.ts'
-
-const HOSTING_HTTPS_PORT = 443
 
 export const TUNNEL_PEER_COMMENT = 'Tunnel peers'
 
@@ -49,16 +45,7 @@ export function tunnelPeerExposures(
   ]
 }
 
-/**
- * The port peers dial on a receiver: the peer hop port on a daemon with
- * `tunnel-peer-mtls-v1`, the hosting HTTPS port on an older one (its tunnels
- * keep working as before). Never 80, 443/udp or the panel port.
- */
-export function tunnelPeerPortFor(features: readonly string[] | undefined): number {
-  return daemonTakesPeerClientAuth(features) ? TUNNEL_PEER_PORT : HOSTING_HTTPS_PORT
-}
-
-/** Peer exposures for one server, on the port its daemon version serves. */
+/** Peer exposures for one server, on the peer hop port. */
 export async function loadTunnelPeerExposures(
   db: Db,
   organizationId: string,
@@ -67,6 +54,5 @@ export async function loadTunnelPeerExposures(
   const facts = await loadRoutingFacts(db, organizationId)
   if (facts.tunnels.length === 0) return []
   const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses)
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return tunnelPeerExposures(built.peerAddresses, tunnelPeerPortFor(state?.projection?.features))
+  return tunnelPeerExposures(built.peerAddresses, TUNNEL_PEER_PORT)
 }

@@ -9,7 +9,7 @@ import { deriveFirewall, type FirewallDeriveInput } from '../firewall/derive.ts'
 import { DEFAULT_FIREWALL_ORG_POLICY } from '../firewall/policy.ts'
 import { MAX_FIREWALL_RULE_ADDRESSES } from '../firewall/vocabulary.ts'
 import { commandMayChangeFirewallPreview } from '../firewall/preview.ts'
-import { TUNNEL_PEER_COMMENT, tunnelPeerExposures, tunnelPeerPortFor } from './peer-exposure.ts'
+import { TUNNEL_PEER_COMMENT, tunnelPeerExposures } from './peer-exposure.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -78,12 +78,4 @@ test('the exposure copies its addresses', () => {
 
 test('a successful forwarding table makes the server preview its firewall again', () => {
   assertEquals(commandMayChangeFirewallPreview('server.tunnel.routes'), true)
-})
-
-test('the receiver port follows its daemon: the peer port with tunnel-peer-mtls-v1, 443 without', () => {
-  assertEquals(tunnelPeerPortFor(['tunnel-peer-mtls-v1']), TUNNEL_PEER_PORT)
-  assertEquals(tunnelPeerPortFor(['tunnel-status-v1']), 443)
-  assertEquals(tunnelPeerPortFor(undefined), 443)
-  const [old] = tunnelPeerExposures(['10.0.0.10'], tunnelPeerPortFor(undefined))
-  assertEquals(old?.ports, '443')
 })

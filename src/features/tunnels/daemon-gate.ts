@@ -9,7 +9,6 @@ import {
   TUNNEL_FORWARDING_FEATURE,
   TUNNEL_LOCK_ADD_FEATURE,
   TUNNEL_LOCK_FOLLOW_FEATURE,
-  TUNNEL_PEER_MTLS_FEATURE,
   TUNNEL_STATUS_FEATURE,
 } from '../../lib/version-wire.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
@@ -34,14 +33,6 @@ export function daemonLockFollowsTable(features: readonly string[] | undefined):
  */
 export function daemonAddsLockFromTable(features: readonly string[] | undefined): boolean {
   return features?.includes(TUNNEL_LOCK_ADD_FEATURE) === true
-}
-
-/**
- * Only a daemon that advertises `tunnel-peer-mtls-v1` takes `peerClientAuth`
- * and shows its peer certificate as a client certificate.
- */
-export function daemonTakesPeerClientAuth(features: readonly string[] | undefined): boolean {
-  return features?.includes(TUNNEL_PEER_MTLS_FEATURE) === true
 }
 
 /** Only a daemon that advertises `tunnel-status-v1` knows `server.tunnel.status`. */
