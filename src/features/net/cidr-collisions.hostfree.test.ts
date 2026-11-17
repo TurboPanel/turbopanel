@@ -97,7 +97,7 @@ const FABRIC_ROW: Row = {
 const SITE_A: Row = {
   id: NET_SITE_A,
   kind: 'datacenter',
-  cidr: '10.10.0.0/24',
+  cidr: '10.50.0.0/24',
   datacenterId: DC_A,
   name: 'lan-a',
 }
@@ -241,14 +241,14 @@ test('subnet_overlaps — another subnet in the same datacenter', async () => {
   const db = createDb({ network: [SITE_A] })
   const hit = await assertCidrAvailable(db, {
     organizationId: ORG,
-    cidr: '10.10.0.128/25',
+    cidr: '10.50.0.128/25',
     intent: 'datacenter',
     datacenterId: DC_A,
   })
   assertEquals(hit, {
     code: 'subnet_overlaps',
-    cidr: '10.10.0.128/25',
-    conflictingCidr: '10.10.0.0/24',
+    cidr: '10.50.0.128/25',
+    conflictingCidr: '10.50.0.0/24',
     networkId: NET_SITE_A,
     datacenterId: DC_A,
   })
@@ -277,7 +277,7 @@ const GATEWAY_PINS: Row[] = [
     serverId: SERVER_A,
     datacenterId: DC_A,
     networkId: NET_SITE_A,
-    address: '10.10.0.2',
+    address: '10.50.0.2',
   },
   {
     ipId: '22222222-bbbb-4bbb-8bbb-222222222222',
@@ -476,7 +476,7 @@ test('excludeNetworkId lets a PATCH keep or narrow its own range', async () => {
   assertEquals(
     (await assertCidrAvailable(db, {
       organizationId: ORG,
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       intent: 'reserved',
       excludeNetworkId: NET_RESERVED,
     }))?.code,
@@ -536,7 +536,7 @@ test('assertCidrsAvailable loads the registry once and reports the first registr
   const db = createDb({ fabric: [FABRIC_ROW], network: [RESERVED, SITE_A] })
   const hit = await assertCidrsAvailable(db, {
     organizationId: ORG,
-    cidrs: ['10.40.0.0/24', '10.40.0.0/24', '10.100.1.0/24', '10.10.0.0/24'],
+    cidrs: ['10.40.0.0/24', '10.40.0.0/24', '10.100.1.0/24', '10.50.0.0/24'],
     intent: 'datacenter',
     datacenterId: DC_B,
   })
@@ -579,7 +579,7 @@ test('loadCidrAllocationExclusions returns every registered CIDR plus the fabric
     network: [SITE_A, SITE_B, RESERVED, DOCKER, { ...DOCKER, id: 'dup' }],
   })
   assertEquals(await loadCidrAllocationExclusions(db, ORG), [
-    '10.10.0.0/24',
+    '10.50.0.0/24',
     '10.20.0.0/24',
     '10.100.0.0/16',
     '172.18.0.0/16',
@@ -637,7 +637,7 @@ test('excludeDockerHostCidrs lets the docker PUT replace the stored pools/bridge
   // Everything else still applies.
   const site = await assertCidrAvailable(db, {
     organizationId: ORG,
-    cidr: '10.10.0.0/16',
+    cidr: '10.50.0.0/16',
     intent: 'docker',
     excludeDockerHostCidrs: true,
   })
@@ -743,7 +743,7 @@ test('loadCidrAllocationExclusions appends the org Docker host cidrs', async () 
     organization: [ORG_WITH_POOLS],
   })
   assertEquals(await loadCidrAllocationExclusions(db, ORG), [
-    '10.10.0.0/24',
+    '10.50.0.0/24',
     '10.250.0.0/16',
     '10.200.0.0/16',
     '10.201.0.0/16',

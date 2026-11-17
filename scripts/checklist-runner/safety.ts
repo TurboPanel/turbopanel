@@ -18,16 +18,16 @@ export const ALLOWED_ENVIRONMENTS: readonly string[] = ['testing', 'canary']
 export const REFUSED_ENVIRONMENTS: readonly string[] = ['live', 'staging', 'production']
 
 /** Hosts the runner never touches over SSH or as a placement target. */
-export const FORBIDDEN_HOSTS: readonly string[] = ['studio.lan', 'studio']
+export const FORBIDDEN_HOSTS: readonly string[] = ['dev-workstation.example.lan', 'dev-workstation']
 
 /**
  * Hosts that carry the shared managed Postgres. Managed clusters are never
  * placed there and host-affecting checks never target them.
  */
-export const SHARED_DATABASE_HOSTS: readonly string[] = ['adrastea', 'kore']
+export const SHARED_DATABASE_HOSTS: readonly string[] = ['adrastea', 'server-c']
 
 /** Where host-affecting managed-database checks may create their clusters. */
-export const MANAGED_PLACEMENT_HOSTS: readonly string[] = ['themisto', 'megaclite']
+export const MANAGED_PLACEMENT_HOSTS: readonly string[] = ['server-e', 'megaclite']
 
 export class SafetyError extends Error {
   override name = 'SafetyError'
@@ -75,12 +75,12 @@ export function assertHealthEnvironment(status: number, body: Json, hostname = '
   return env
 }
 
-/** First DNS label, lowercased: `themisto.privatehosting.xyz` -> `themisto`. */
+/** First DNS label, lowercased: `server-e.privatehosting.xyz` -> `server-e`. */
 export function shortHost(host: string): string {
   return host.trim().toLowerCase().split('.')[0] ?? ''
 }
 
-/** Refuse SSH to studio and to anything the operator did not name explicitly. */
+/** Refuse SSH to dev-workstation and to anything the operator did not name explicitly. */
 export function assertSshHost(host: string, allowed: readonly string[]): void {
   const short = shortHost(host)
   if (FORBIDDEN_HOSTS.includes(host.toLowerCase()) || FORBIDDEN_HOSTS.includes(short)) {

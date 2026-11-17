@@ -417,7 +417,7 @@ function rowsFor(m, tier, lay, o){
     add('managed.database_proxy', 'One per ProxySQL source, when managed databases run.', proxyRow());
   }
   if (!v12 && m.qemu && m.gpus.length === 0){
-    add('gpu', 'Bug: QEMU\'s virtual display adapter is counted as a GPU (seen on io, megaclite, themisto). Allowed because S1–S3 grant 2 GPU slots whatever the machine class.', fill(many('gpu',['utilizationPercent','memoryUsedBytes','memoryActivityPercent','pcieReceiveBytesPerSecond','pcieTransmitBytesPerSecond','throttlePercent'],'bochs-drm').map(s => nul(s,'The virtual display reports nothing.'))), {bug:true});
+    add('gpu', 'Bug: QEMU\'s virtual display adapter is counted as a GPU (seen on io, megaclite, server-e). Allowed because S1–S3 grant 2 GPU slots whatever the machine class.', fill(many('gpu',['utilizationPercent','memoryUsedBytes','memoryActivityPercent','pcieReceiveBytesPerSecond','pcieTransmitBytesPerSecond','throttlePercent'],'bochs-drm').map(s => nul(s,'The virtual display reports nothing.'))), {bug:true});
     add('hardware.physical', 'Same bug: null GPU signals make the VM look physical, so it gets a sensor row.', fill(['gpu:temp','gpu:power','gpu:memtemp'].map(id => sl(sig(id,'GPU-derived signal from the virtual display.'), 'Signal ' + id, {st:'null', note:'Always null.'}))), {bug:true});
   }
   const ORDER = ['host.system','host.io','block','filesystem','network','host.diagnostics','managed.storage','host.footprint','managed.docker','managed.ingress','managed.router','managed.database','managed.database_proxy','gpu','hardware.physical'];

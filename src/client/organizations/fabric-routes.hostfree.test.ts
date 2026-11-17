@@ -671,7 +671,7 @@ test('fabric GET does not surface a private datacenter endpoint across datacente
   const caches: EndpointAddressCaches = {
     ...emptyEndpointCaches(),
     reportedByServer: new Map([
-      ['srv-dc-a', [{ address: '10.10.0.5', version: 4, scope: 'private' }]],
+      ['srv-dc-a', [{ address: '10.50.0.5', version: 4, scope: 'private' }]],
       ['srv-dc-b', [{ address: '10.20.0.5', version: 4, scope: 'private' }]],
     ]),
     datacenterMembershipsByServer: new Map([
@@ -683,7 +683,7 @@ test('fabric GET does not surface a private datacenter endpoint across datacente
             serverId: 'srv-dc-a',
             datacenterId: 'dc-a',
             networkId: 'net-a',
-            address: '10.10.0.5',
+            address: '10.50.0.5',
             family: 4,
           },
         ],
@@ -728,7 +728,7 @@ test('fabric GET does not surface a private datacenter endpoint across datacente
     [null, null]
   )
   for (const row of body.relays) {
-    assertEquals(row.resolvedEndpoint === '10.10.0.5', false)
+    assertEquals(row.resolvedEndpoint === '10.50.0.5', false)
     assertEquals(row.resolvedEndpoint === '10.20.0.5', false)
   }
 })

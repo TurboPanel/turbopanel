@@ -33,9 +33,9 @@ export async function affectedServer(ctx: CheckContext): Promise<Rec | undefined
   return server
 }
 
-/** A managed-database placement: the first `--host` that is themisto or megaclite. */
+/** A managed-database placement: the first `--host` that is server-e or megaclite. */
 export async function managedServer(ctx: CheckContext): Promise<Rec | undefined> {
-  const name = ctx.hosts.find((h) => ['themisto', 'megaclite'].includes(shortHost(h)))
+  const name = ctx.hosts.find((h) => ['server-e', 'megaclite'].includes(shortHost(h)))
   if (!name) return undefined
   const server = await findServer(ctx, name)
   assertManagedPlacement(str(server, 'hostname'))

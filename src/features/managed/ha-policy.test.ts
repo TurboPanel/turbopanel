@@ -219,8 +219,8 @@ test('pickHaAdvertiseAddress prefers IPv4 datacenter pins', () => {
 
 test('selectHaRaftMembers keeps the raft group inside this server datacenter', () => {
   const pins = new Map([
-    ['lan-a', [{ datacenterId: 'dc-lan', address: '10.10.1.10', family: 4 as const }]],
-    ['lan-b', [{ datacenterId: 'dc-lan', address: '10.10.1.20', family: 4 as const }]],
+    ['lan-a', [{ datacenterId: 'dc-lan', address: '10.50.1.10', family: 4 as const }]],
+    ['lan-b', [{ datacenterId: 'dc-lan', address: '10.50.1.20', family: 4 as const }]],
     ['vpc-a', [{ datacenterId: 'dc-vpc', address: '10.100.0.4', family: 4 as const }]],
     ['vpc-b', [{ datacenterId: 'dc-vpc', address: '10.100.0.5', family: 4 as const }]],
   ])

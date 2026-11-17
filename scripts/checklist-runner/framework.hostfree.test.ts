@@ -438,7 +438,7 @@ Deno.test('client: DELETE reauths once when the panel asks for it', async () => 
 })
 
 Deno.test(
-  'host gates: studio never, shared Postgres hosts never, managed only on themisto/megaclite',
+  'host gates: dev-workstation never, shared Postgres hosts never, managed only on server-e/megaclite',
   () => {
     const refuses = (fn: () => void) => {
       try {
@@ -448,15 +448,17 @@ Deno.test(
         return error instanceof SafetyError
       }
     }
-    assert(refuses(() => assertSshHost('studio.lan', ['studio.lan'])))
+    assert(
+      refuses(() => assertSshHost('dev-workstation.example.lan', ['dev-workstation.example.lan']))
+    )
     assert(refuses(() => assertSshHost('io.privatehosting.xyz', [])))
     assert(!refuses(() => assertSshHost('io.privatehosting.xyz', ['io.privatehosting.xyz'])))
     assert(refuses(() => assertManagedPlacement('adrastea')))
-    assert(refuses(() => assertManagedPlacement('kore.lan')))
-    assert(refuses(() => assertManagedPlacement('europa')))
-    assert(!refuses(() => assertManagedPlacement('themisto')))
-    assert(refuses(() => assertAffectedHost('kore', ['kore'])))
-    assert(refuses(() => assertAffectedHost('io', ['europa'])))
+    assert(refuses(() => assertManagedPlacement('server-c.example.lan')))
+    assert(refuses(() => assertManagedPlacement('server-f')))
+    assert(!refuses(() => assertManagedPlacement('server-e')))
+    assert(refuses(() => assertAffectedHost('server-c', ['server-c'])))
+    assert(refuses(() => assertAffectedHost('io', ['server-f'])))
     assert(!refuses(() => assertAffectedHost('io.privatehosting.xyz', ['io'])))
   }
 )
@@ -496,7 +498,7 @@ Deno.test('ssh refuses unnamed hosts and passes strict options', async () => {
   })
   assertEquals(await exec('io.privatehosting.xyz', 'systemctl is-active turbopaneld'), 'active\n')
   assert(seen[0]?.includes('StrictHostKeyChecking=yes'))
-  await assertRejects(() => exec('studio.lan', 'true'), SafetyError)
+  await assertRejects(() => exec('dev-workstation.example.lan', 'true'), SafetyError)
 })
 
 Deno.test('run prefix is short, unique-ish and marked', () => {
@@ -569,7 +571,7 @@ Deno.test('managed placement refuses adrastea even when passed with --host', asy
   }
   const result = await runOne(managedPgSingle, { api, ...silent, hosts: ['adrastea'] }, [])
   assertEquals(result.verdict, 'skip')
-  const themisto = await runOne(
+  const serverE = await runOne(
     managedPgSingle,
     {
       api: {
@@ -577,17 +579,17 @@ Deno.test('managed placement refuses adrastea even when passed with --host', asy
         get: () =>
           Promise.resolve({
             status: 200,
-            body: { servers: [{ id: 's1', hostname: 'kore' }] },
+            body: { servers: [{ id: 's1', hostname: 'server-c' }] },
             headers: new Headers(),
           }),
       },
       ...silent,
-      hosts: ['themisto'],
+      hosts: ['server-e'],
     },
     []
   )
-  assertEquals(themisto.verdict, 'fail')
-  assertStringIncludes(themisto.evidence, 'not in this organization')
+  assertEquals(serverE.verdict, 'fail')
+  assertStringIncludes(serverE.evidence, 'not in this organization')
 })
 
 Deno.test('health gate: null environment is accepted only for canary', () => {

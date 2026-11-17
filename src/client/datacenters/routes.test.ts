@@ -504,7 +504,7 @@ test('DELETE /datacenters/:id returns 409 when members remain', async () => {
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'DC Net',
       createdAt: now,
       updatedAt: now,
@@ -524,7 +524,7 @@ test('DELETE /datacenters/:id returns 409 when members remain', async () => {
     datacenterId: dc!.id,
     networkId: net!.id,
     serverId: srv!.id,
-    address: '10.10.0.10',
+    address: '10.50.0.10',
     allocation: 'dedicated',
     scope: 'datacenter',
   })
@@ -574,7 +574,7 @@ test('GET /datacenters lists datacenters with privateCidrs', async () => {
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'Site LAN',
       createdAt: now,
       updatedAt: now,
@@ -592,7 +592,7 @@ test('GET /datacenters lists datacenters with privateCidrs', async () => {
     assertEquals(body.datacenters.length, 1)
     assertEquals(body.datacenters[0]?.id, dc!.id)
     assertEquals(body.datacenters[0]?.name, 'Listed DC')
-    assertEquals(body.datacenters[0]?.privateCidrs, ['10.10.0.0/24'])
+    assertEquals(body.datacenters[0]?.privateCidrs, ['10.50.0.0/24'])
   })
 })
 
@@ -909,7 +909,7 @@ test('DELETE /datacenters/:id removes an empty datacenter including its site net
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'Site LAN',
       createdAt: now,
       updatedAt: now,
@@ -1862,7 +1862,7 @@ test('POST /datacenters/:id/subnets reports each collision code from the authori
         organizationId,
         datacenterId: dc!.id,
         kind: 'datacenter',
-        cidr: '10.10.0.0/24',
+        cidr: '10.50.0.0/24',
         name: 'lan',
         createdAt: now,
         updatedAt: now,
@@ -1927,11 +1927,11 @@ test('POST /datacenters/:id/subnets reports each collision code from the authori
         },
       ],
       [
-        '10.10.0.128/25',
+        '10.50.0.128/25',
         {
           error: 'subnet_overlaps',
-          cidr: '10.10.0.128/25',
-          conflictingCidr: '10.10.0.0/24',
+          cidr: '10.50.0.128/25',
+          conflictingCidr: '10.50.0.0/24',
           networkId: ownSite!.id,
           datacenterId: dc!.id,
         },

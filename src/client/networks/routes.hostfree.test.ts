@@ -112,7 +112,7 @@ const SITE_ROW: Row = {
   id: siteId,
   kind: 'datacenter',
   datacenterId,
-  cidr: '10.10.0.0/24',
+  cidr: '10.50.0.0/24',
   name: 'lan',
 }
 
