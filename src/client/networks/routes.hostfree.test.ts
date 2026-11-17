@@ -60,9 +60,10 @@ test('network routes return 401 without a session cookie', async () => {
     const res = await app.request(path, {
       method,
       headers: { 'content-type': 'application/json' },
-      body: method === 'GET' || method === 'DELETE'
-        ? undefined
-        : JSON.stringify({ kind: 'docker', name: 'net' }),
+      body:
+        method === 'GET' || method === 'DELETE'
+          ? undefined
+          : JSON.stringify({ kind: 'docker', name: 'net' }),
     })
     assertEquals(res.status, 401, `${method} ${path}`)
     assertEquals(await res.json(), { ok: false, error: 'Unauthorized' })
@@ -234,7 +235,9 @@ test('POST /networks returns 409 cidr_overlaps_reserved and writes nothing', asy
 test('POST /networks returns 409 cidr_overlaps_fabric for a reserved range inside tp0', async () => {
   const { app, cookie, inserts } = await buildSessionApp({
     networkRows: [],
-    fabricRows: [{ id: '77777777-7777-4777-8777-777777777777', cidr: '10.250.0.0/16', options: {} }],
+    fabricRows: [
+      { id: '77777777-7777-4777-8777-777777777777', cidr: '10.250.0.0/16', options: {} },
+    ],
   })
   const res = await app.request('/networks', {
     method: 'POST',
@@ -283,7 +286,7 @@ test('POST /networks returns 409 cidr_overlaps_docker_network for a range inside
     }),
   })
   assertEquals(docker.status, 409)
-  assertEquals((await docker.json() as { error: string }).error, 'cidr_overlaps_docker_network')
+  assertEquals(((await docker.json()) as { error: string }).error, 'cidr_overlaps_docker_network')
   assertEquals(inserts.length, 0)
 })
 
@@ -300,13 +303,15 @@ test('POST /networks inserts a reserved range that collides with nothing', async
     }),
   })
   assertEquals(res.status, 200)
-  assertEquals((await res.json() as { ok: boolean }).ok, true)
-  assertEquals(inserts, [{
-    organizationId,
-    kind: 'reserved',
-    name: 'Corp VPN - Chicago branch',
-    cidr: '192.168.0.0/16',
-  }])
+  assertEquals(((await res.json()) as { ok: boolean }).ok, true)
+  assertEquals(inserts, [
+    {
+      organizationId,
+      kind: 'reserved',
+      name: 'Corp VPN - Chicago branch',
+      cidr: '192.168.0.0/16',
+    },
+  ])
 })
 
 test('PATCH /networks/:id excludes the row itself but still collides with another row', async () => {
