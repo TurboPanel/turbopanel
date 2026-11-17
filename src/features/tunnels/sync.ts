@@ -276,7 +276,7 @@ export async function syncServerTunnelRoutes(
     material ? issue.leaf : null
   )
   if (!queued.ok) return { status: 'failed', reason: queued.reason }
-  if (remint && material) await markPeerLeafReminted(db, serverId)
+  await markRemintDone(db, serverId, remint, material)
   await recordSent(db, serverId, {
     stateHash,
     commandId: queued.commandId,
@@ -300,6 +300,16 @@ function remintDue(serverId: string, metadata: unknown, built: RouteBuildResult)
     )
   }
   return due
+}
+
+/** Remember that this send carried the new leaf, so the same report does not ask again. */
+async function markRemintDone(
+  db: Db,
+  serverId: string,
+  remint: boolean,
+  material: unknown
+): Promise<void> {
+  if (remint && material !== undefined) await markPeerLeafReminted(db, serverId)
 }
 
 /**
