@@ -37,7 +37,6 @@ import {
   serversWithoutLockAdd,
   serversWithoutTunnelSupport,
 } from '../../features/tunnels/daemon-gate.ts'
-import { oldReceiverNotes } from '../../features/tunnels/old-receivers.ts'
 import { toApiPeerHop } from '../../features/tunnels/status.ts'
 import {
   loadUnroutedReasons,
@@ -120,13 +119,6 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   const deployOnly = await serversWithDeployOnlyLock(scope.db, siteServers)
   const noLockAdd = await serversWithoutLockAdd(scope.db, siteServers)
   const warnings = [...shown.warnings]
-  const stored = await doorwaysOf(scope.db, row.id)
-  const oldReceivers = await oldReceiverNotes(
-    scope.db,
-    scope.organizationId,
-    stored.map((d) => d.hostname)
-  )
-  warnings.push(...oldReceivers.lines)
   if (old.length > 0) {
     const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
     warnings.push(
@@ -160,11 +152,6 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
     ...new Set([...shown.carryingServerIds, ...siteServers]),
   ])
   return { ...shown, warnings, runTokenRotationBlock, peerHop }
-}
-
-/** The names of a tunnel that are not being removed. */
-async function doorwaysOf(db: Scope['db'], tunnelId: string) {
-  return (await listDoorways(db, tunnelId)).filter((d) => d.status !== 'removing')
 }
 
 /**
@@ -356,19 +343,9 @@ async function listDoorwaysResponse(c: Context<AppEnv>, scope: Scope): Promise<R
   if (row instanceof Response) return row
   const notes = await loadUnroutedReasons(scope.db, scope.organizationId, row)
   const doorways = await listDoorways(scope.db, row.id)
-  const old = await oldReceiverNotes(
-    scope.db,
-    scope.organizationId,
-    doorways.map((d) => d.hostname)
-  )
   return c.json({
     hostnames: doorways.map((d) =>
-      toApiDoorway(
-        d,
-        d.status === 'removing'
-          ? null
-          : (notes.get(d.hostname) ?? old.byHostname.get(d.hostname) ?? null)
-      )
+      toApiDoorway(d, d.status === 'removing' ? null : (notes.get(d.hostname) ?? null))
     ),
   })
 }

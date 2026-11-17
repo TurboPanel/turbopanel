@@ -527,8 +527,8 @@ provider accounts.
   logged note, never sent whole to be refused. A hostname whose site belongs to
   another organization is refused (409 `hosting_mismatch`), and a site counts as
   running on a server only when its hosting is in the tunnel's organization.
-- Client certificates on the hop: every daemon that advertises
-  `tunnel-peer-mtls-v1` gets `peerClientAuth: 'require'` (it is part of the table
+- Client certificates on the hop: every table carries
+  `peerClientAuth: 'require'` (it is part of the table
   hash, so verify to require resends). `require` needs a peer leaf with client
   authentication; the leaf row has no certificate or EKU column, so
   `peerLeafIsCurrent` treats a leaf issued before `PEER_LEAF_CLIENT_AUTH_SINCE`
@@ -545,8 +545,8 @@ provider accounts.
   `reportedAt` is kept next to them and moves on every report. The tunnel
   response shows the report as `peerHop` (`mode` require, verify or none,
   `downgraded`, `reportedAt`) for each carrying and site server. A sender with
-  the feature whose receiver lacks it is named in plain words (`old-receivers.ts`):
-  in the send's log, in the tunnel's `warnings` and in the name's `routingNote`.
+  There is no support for daemons without `tunnel-peer-mtls-v1` (pre-MVP): every
+  table carries `peerClientAuth: 'require'` and the peer hop is always 9443.
   A stored downgrade makes the next send mint the peer leaf again, once per
   report (`peerLeafRemintDue`, `markPeerLeafReminted` sets `reminted`); a repeat
   after that is only logged.
@@ -554,7 +554,7 @@ provider accounts.
   sends a server into one derived rule, accept tcp 9443 (`TUNNEL_PEER_PORT`, the
   daemon's peer-facing server, checked by `check:contract-drift`) on the host
   from exactly those addresses (`facts.ts` adds it to the hosting exposures; not
-  80, not 443, not 443/udp, not the panel port). The port is per receiver: 9443 only on a daemon with `tunnel-peer-mtls-v1` (`tunnelPeerPortFor`), 443 on an older one, so pairs of old servers keep working. The rule and the Caddy address lock therefore
+  80, not 443, not 443/udp, not the panel port). The port is always 9443. The rule and the Caddy address lock therefore
   name the same servers, and a carrier-only server gets no rule. A successful
   `server.tunnel.routes` is a firewall preview trigger
   (`commandMayChangeFirewallPreview`), so the rule follows the table. It only

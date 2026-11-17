@@ -30,7 +30,6 @@ import {
   daemonAddsLockFromTable,
   daemonCanCarryTunnels,
   daemonLockFollowsTable,
-  daemonTakesPeerClientAuth,
 } from './daemon-gate.ts'
 import { markPeerLeafReminted, peerDowngradeRepeats, peerLeafRemintDue } from './status.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
@@ -41,8 +40,6 @@ import {
   toRoutesPayload,
 } from './route-builder.ts'
 import { relinkDoorwayHostings } from './doorway-links.ts'
-import { oldReceiverMessage, serverLabels } from './old-receivers.ts'
-import { compareText } from './order.ts'
 import { loadRoutingFacts } from './route-facts.ts'
 import { generationForDaemon, resolveTunnelGeneration } from './table-generation.ts'
 
@@ -248,7 +245,7 @@ export async function syncServerTunnelRoutes(
     // The daemon shows its peer certificate and checks one when it is shown;
     // `require` goes out with a leaf that allows client authentication: a leaf
     // issued before that is stale (peerLeafIsCurrent), so the same send re-mints it.
-    ...(daemonTakesPeerClientAuth(ready.features) ? { peerClientAuth: 'require' as const } : {}),
+    peerClientAuth: 'require' as const,
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)
@@ -266,7 +263,6 @@ export async function syncServerTunnelRoutes(
     resolveTunnelGeneration(db, organizationId, facts)
   )
   if (generation !== undefined) payload.generation = generation
-  await noteOldReceivers(db, built)
   const notes = [...built.warnings, ...built.skipped.map((n) => `${n.hostname}: ${n.reason}`)]
   for (const note of notes) compatLogWarn('tunnel-sync', `server ${serverId}: ${note}`)
   // The leaf is tracked as delivered only when the certificate really went out.
@@ -312,35 +308,6 @@ async function markRemintDone(
   material: unknown
 ): Promise<void> {
   if (remint && material !== undefined) await markPeerLeafReminted(db, serverId)
-}
-
-/**
- * A sender that dials the peer port cannot reach a receiver whose daemon lacks
- * `tunnel-peer-mtls-v1` (it answers nothing there). Say so in plain words
- * instead of leaving visitors a silent 503.
- */
-async function noteOldReceivers(db: Db, built: RouteBuildResult): Promise<void> {
-  if (built.peerClientAuth === undefined) return
-  const names = new Map<string, string[]>()
-  for (const route of built.routes) {
-    for (const upstream of route.upstreams) {
-      names.set(upstream.serverId, [...(names.get(upstream.serverId) ?? []), route.hostname])
-    }
-  }
-  const old: [string, string[]][] = []
-  for (const [receiverId, hostnames] of names) {
-    const state = await getServerDaemonStateByServerId(db, receiverId)
-    if (!daemonTakesPeerClientAuth(state?.projection?.features)) {
-      old.push([receiverId, [...new Set(hostnames)].toSorted(compareText)])
-    }
-  }
-  const labels = await serverLabels(
-    db,
-    old.map(([id]) => id)
-  )
-  for (const [receiverId, hostnames] of old) {
-    built.warnings.push(oldReceiverMessage(labels.get(receiverId) ?? receiverId, hostnames))
-  }
 }
 
 /** The leaf to send: the one handed in, or a freshly minted one when the table needs a certificate. */

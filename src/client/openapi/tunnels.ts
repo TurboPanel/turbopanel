@@ -404,7 +404,7 @@ export const tunnelSchemas = {
       routingNote: {
         type: ['string', 'null'],
         description:
-          'Why this name is not being forwarded to its site right now, in plain words (for example the site runs on no server yet, no server that runs it has a datacenter network address or a public address, or the server that runs it needs a daemon update before tunnels can reach it). Only on the list of hostnames; null when the name is routed or the reason is unknown.',
+          'Why this name is not being forwarded to its site right now, in plain words (for example the site runs on no server yet, or no server that runs it has a datacenter network address or a public address). Only on the list of hostnames; null when the name is routed or the reason is unknown.',
       },
       createdAt: { type: 'string', format: 'date-time' },
     },

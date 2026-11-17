@@ -58,7 +58,6 @@ import {
   TUNNEL_CONNECTOR_FEATURE,
   TUNNEL_CONNECTOR_TOKEN_CHANGE_FEATURE,
   TUNNEL_FORWARDING_FEATURE,
-  TUNNEL_PEER_MTLS_FEATURE,
   TUNNEL_STATUS_FEATURE,
 } from '../../lib/version-wire.ts'
 
@@ -1096,7 +1095,7 @@ test('the hostname list says in its routingNote why a name is not forwarded', as
   })
 })
 
-test('a site on a server without peer client certificates is named in the hostname note, the tunnel warnings and the peer hop report', async () => {
+test('the tunnel response reports the peer hop mode of carrying and site servers', async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f)
     const site = await insertHosting(f, f.orgA, f.servers[2])
@@ -1119,49 +1118,24 @@ test('a site on a server without peer client certificates is named in the hostna
       { hostname: 'shop.example.com' }
     )
     assertEquals(added.status, 201, added.text)
-    // The carriers take the peer hop's client certificates, the site's server does not.
-    // A daemon state needs an enrolled key.
-    await f.db.insert(key).values(
-      f.servers.map((serverId) => ({
-        serverId,
-        algorithm: 'Ed25519',
-        publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
-        fingerprint: `fp-${crypto.randomUUID()}`,
-      }))
-    )
-    f.cleanup.push(async () => {
-      await f.db.delete(key).where(inArray(key.serverId, f.servers))
-    })
-    await f.db
-      .update(server)
-      .set({ daemon: { projection: { features: [TUNNEL_PEER_MTLS_FEATURE] } } })
-      .where(inArray(server.id, [f.servers[0], f.servers[1]]))
     const reportedAt = '2026-11-17T10:00:00.000Z'
     await f.db
       .update(server)
       .set({ metadata: { tunnelPeerHop: { clientAuth: 'verify', downgraded: true, reportedAt } } })
       .where(eq(server.id, f.servers[0]))
 
-    const listed = await call(
-      f,
-      'GET',
-      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
-      f.managerCookie
-    )
-    const names = listed.body.hostnames as { routingNote: string | null }[]
-    assert(names[0]!.routingNote?.includes('Tunnel Test 3 needs a daemon update'))
-
     const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
-    const tunnelBody = shown.body.tunnel as {
-      warnings: string[]
-      peerHop: { serverId: string; mode: string; downgraded: boolean; reportedAt: string | null }[]
-    }
-    assert(
-      tunnelBody.warnings.some(
-        (w) => w.includes('Tunnel Test 3 needs a daemon update') && w.includes('shop.example.com')
-      )
-    )
-    const hop = (serverId: string) => tunnelBody.peerHop.find((h) => h.serverId === serverId)
+    const hops = (
+      shown.body.tunnel as {
+        peerHop: {
+          serverId: string
+          mode: string
+          downgraded: boolean
+          reportedAt: string | null
+        }[]
+      }
+    ).peerHop
+    const hop = (serverId: string) => hops.find((h) => h.serverId === serverId)
     assertEquals(hop(f.servers[0]), {
       serverId: f.servers[0],
       mode: 'verify',
