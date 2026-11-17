@@ -16,15 +16,15 @@ const test = Deno.test.bind(Deno)
 
 test('resolveDefaultSignupOrganizationName uses email plus apostrophe-s suffix', () => {
   assertEquals(
-    resolveDefaultSignupOrganizationName('james@example.com'),
-    "james@example.com's organization"
+    resolveDefaultSignupOrganizationName('alex@example.com'),
+    "alex@example.com's organization"
   )
 })
 
 test('resolveDefaultSignupOrganizationName normalizes email like sign-up', () => {
   assertEquals(
-    resolveDefaultSignupOrganizationName('  James@Example.COM  '),
-    "james@example.com's organization"
+    resolveDefaultSignupOrganizationName('  Alex@Example.COM  '),
+    "alex@example.com's organization"
   )
 })
 

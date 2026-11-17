@@ -25,8 +25,8 @@ const OPEN: EdgeGate = { open: true, waiting: [], remoteServers: 0, forcedClosed
 const SHUT: EdgeGate = {
   open: false,
   reason:
-    "1 server still needs to re-learn this control plane's key before an edge mode can be used: kappa.",
-  waiting: [{ id: 'srv-1', name: 'kappa', organizationId: 'org-1', pinnedBy: null }],
+    "1 server still needs to re-learn this control plane's key before an edge mode can be used: server-c.",
+  waiting: [{ id: 'srv-1', name: 'server-c', organizationId: 'org-1', pinnedBy: null }],
   remoteServers: 1,
   forcedClosed: false,
 }
@@ -123,7 +123,7 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
     )
     assertEquals(held.ok ? 0 : held.status, 409)
     assertEquals(held.ok ? '' : held.error, SHUT.reason)
-    assertEquals(held.ok ? [] : held.waiting?.map((item) => item.name), ['kappa'])
+    assertEquals(held.ok ? [] : held.waiting?.map((item) => item.name), ['server-c'])
     const set = await setHostnameIngress(
       db,
       hostnameId,

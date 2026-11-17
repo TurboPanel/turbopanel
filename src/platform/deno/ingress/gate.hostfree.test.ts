@@ -24,7 +24,7 @@ test('every remote server pinned by install or upgrade: ready', () => {
 
 test('a server that never pinned, or was installed with the skip flag, keeps the gate shut', () => {
   const gate = edgeGateFrom(
-    [srv('a', 'install'), srv('b', null, 'kappa'), srv('c', 'unsafe', 'omicron')],
+    [srv('a', 'install'), srv('b', null, 'server-c'), srv('c', 'unsafe', 'server-f')],
     NONE,
     undefined
   )
@@ -32,15 +32,15 @@ test('a server that never pinned, or was installed with the skip flag, keeps the
   assertEquals(
     gate.waiting.map((item) => [item.name, item.pinnedBy]),
     [
-      ['kappa', null],
-      ['omicron', 'unsafe'],
+      ['server-c', null],
+      ['server-f', 'unsafe'],
     ]
   )
   assertEquals(
     gate.reason,
-    "2 servers still need to re-learn this control plane's key before an edge mode can be used: kappa, omicron."
+    "2 servers still need to re-learn this control plane's key before an edge mode can be used: server-c, server-f."
   )
-  const one = edgeGateFrom([srv('b', null, 'kappa')], NONE, undefined)
+  const one = edgeGateFrom([srv('b', null, 'server-c')], NONE, undefined)
   assert(one.reason?.startsWith('1 server still needs'))
 })
 
