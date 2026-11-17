@@ -52,11 +52,15 @@ const test = Deno.test.bind(Deno)
 const dbUrl = getDatabaseUrl()
 
 /** Make the last send look old enough to be repeated. */
-async function ageLastSend(db: ReturnType<typeof createDenoDb>, serverId: string): Promise<void> {
+async function ageLastSend(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  ageMs = 3_600_000
+): Promise<void> {
   await db
     .update(server)
     .set({
-      metadata: sql`jsonb_set(${server.metadata}, '{tunnelRoutes,sentAt}', to_jsonb(${new Date(Date.now() - 3_600_000).toISOString()}::text))`,
+      metadata: sql`jsonb_set(${server.metadata}, '{tunnelRoutes,sentAt}', to_jsonb(${new Date(Date.now() - ageMs).toISOString()}::text))`,
     })
     .where(eq(server.id, serverId))
 }
@@ -166,6 +170,23 @@ test('a server that once held a table is told to drop it, and a send that failed
     await ageLastSend(c.db, c.serverId)
     assertEquals((await syncServerTunnelRoutes(c.db, c.deps, c)).status, 'sent')
     assertEquals(c.queued.length, 2)
+    // A table the daemon refused as older than its own (and that the generation bump
+    // limit left unraised) is sent again after the bump gap, not after the long gap.
+    await c.db
+      .update(command)
+      .set({
+        status: 'succeeded',
+        resultSummary: {
+          applied: false,
+          routeCount: 0,
+          warnings: ['ignored: a newer forwarding table is already in place'],
+        },
+      })
+      .where(eq(command.serverId, c.serverId))
+    await ageLastSend(c.db, c.serverId, 30_000)
+    assertEquals(await syncServerTunnelRoutes(c.db, c.deps, c), { status: 'unchanged' })
+    await ageLastSend(c.db, c.serverId, 90_000)
+    assertEquals((await syncServerTunnelRoutes(c.db, c.deps, c)).status, 'sent')
     // The sweep reaches the same server through its remembered table.
     await c.db.update(command).set({ status: 'failed' }).where(eq(command.serverId, c.serverId))
     await ageLastSend(c.db, c.serverId)

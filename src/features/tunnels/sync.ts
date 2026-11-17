@@ -41,7 +41,12 @@ import {
 } from './route-builder.ts'
 import { relinkDoorwayHostings } from './doorway-links.ts'
 import { loadRoutingFacts } from './route-facts.ts'
-import { generationForDaemon, resolveTunnelGeneration } from './table-generation.ts'
+import { staleTunnelTableWarning } from './stale-table-note.ts'
+import {
+  generationForDaemon,
+  resolveTunnelGeneration,
+  TUNNEL_GENERATION_BUMP_GAP_MS,
+} from './table-generation.ts'
 
 /** The least time between two sends of the same table to one server. */
 export const TUNNEL_ROUTES_RESEND_GAP_MS = 10 * 60 * 1000
@@ -196,6 +201,22 @@ async function checkServerReady(
 }
 
 /**
+ * How long an unsettled table waits before it is sent again. A table the daemon
+ * refused as older than its own waits only the generation bump gap: the refusal
+ * raises the organization's generation at most once in that time, so a refusal
+ * inside it left the table unsent, and the next send after the gap carries the
+ * raised number (or raises it again).
+ */
+export function resendGapAfter(
+  row: { status: string; resultSummary: unknown } | undefined
+): number {
+  const refused =
+    row?.status === 'succeeded' &&
+    staleTunnelTableWarning('server.tunnel.routes', row.resultSummary) !== undefined
+  return refused ? TUNNEL_GENERATION_BUMP_GAP_MS : TUNNEL_ROUTES_RESEND_GAP_MS
+}
+
+/**
  * Is the table already where it should be? A table that finished is left alone.
  * One that did not finish waits out the gap before it is sent again, so a table
  * the server keeps refusing is not sent (and a new certificate minted) every tick.
@@ -214,7 +235,7 @@ async function isAlreadyCurrent(
   if (sent.stateHash !== stateHash) return false
   const last = await loadLastSend(db, sent)
   if (lastSendIsSettled(last, sent, Date.now())) return true
-  if (Date.now() - Date.parse(sent.sentAt) < TUNNEL_ROUTES_RESEND_GAP_MS) return true
+  if (Date.now() - Date.parse(sent.sentAt) < resendGapAfter(last)) return true
   compatLogWarn(
     'tunnel-sync',
     `server ${serverId}: the last forwarding table was not applied (${describeUnsettled(last)}); sending it again`
