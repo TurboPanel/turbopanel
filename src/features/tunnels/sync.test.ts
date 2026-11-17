@@ -28,7 +28,10 @@ import {
   tunnel,
   workspace,
 } from '../../db/schema.ts'
-import { parseTunnelRoutesPayload } from '../../contracts/commands/tunnel-routes.ts'
+import {
+  parseTunnelRoutesPayload,
+  TUNNEL_PEER_PORT,
+} from '../../contracts/commands/tunnel-routes.ts'
 import { applyPendingTlsLeafSideEffect } from '../commands/consumer.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -40,7 +43,6 @@ import {
   loadTunnelPeerExposures,
   TUNNEL_PEER_COMMENT,
   tunnelPeerExposures,
-  tunnelPeerPortFor,
 } from './peer-exposure.ts'
 import { runTunnelRoutesSweepTick, syncServerTunnelRoutes } from './sync.ts'
 
@@ -311,10 +313,7 @@ test('a carrying server and a site server are sent real tables with a peer certi
     // The firewall opens the hosting HTTPS port to exactly the peers the table names,
     // and a server that only carries tunnels gets no such rule.
     const sitePeers = await loadTunnelPeerExposures(db, organizationId, siteId)
-    assertEquals(
-      sitePeers,
-      tunnelPeerExposures(sitePayload.peerAddresses, tunnelPeerPortFor(undefined))
-    )
+    assertEquals(sitePeers, tunnelPeerExposures(sitePayload.peerAddresses, TUNNEL_PEER_PORT))
     assertEquals(sitePeers[0]?.sources, ['10.94.0.10'])
     assertEquals(await loadTunnelPeerExposures(db, organizationId, carrierId), [])
     const facts = await loadFirewallFacts(db, siteId)
