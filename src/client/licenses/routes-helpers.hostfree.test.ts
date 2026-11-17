@@ -206,7 +206,7 @@ test('serializeLicenseListEntry shows the tier an unused key holds and when it e
 })
 
 test('serializeLicenseListEntry marks an unbound key whose daemon is enrolling as provisioning, never a bound one', () => {
-  const attempt = { since: '2026-09-27T01:00:00.000Z', hostname: 'adrastea' }
+  const attempt = { since: '2026-09-27T01:00:00.000Z', hostname: 'host-a' }
   const base = {
     id: 'l1',
     name: null,

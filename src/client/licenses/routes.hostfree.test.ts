@@ -1097,7 +1097,7 @@ test('T9 · a key whose server is being provisioned is in use: never listed as u
     servers: [{ id: SERVER, name: 'edge-1' }],
     licenses: [{ id: L_ACTIVE }, { id: L_BOUND, serverId: SERVER }],
   })
-  await recordLicenseEnrollAttempt(db as unknown as Db, L_ACTIVE, 'adrastea', Date.parse(NOW))
+  await recordLicenseEnrollAttempt(db as unknown as Db, L_ACTIVE, 'host-a', Date.parse(NOW))
 
   const refused = await mint(app, headers)
   assertEquals(refused.status, 409)
@@ -1114,7 +1114,7 @@ test('T9 · a key whose server is being provisioned is in use: never listed as u
     licenses: Array<{ id: string; provisioning: { since: string; hostname: string | null } | null }>
   }
   const byId = new Map(body.licenses.map((entry) => [entry.id, entry.provisioning]))
-  assertEquals(byId.get(L_ACTIVE), { since: NOW, hostname: 'adrastea' })
+  assertEquals(byId.get(L_ACTIVE), { since: NOW, hostname: 'host-a' })
   assertEquals(byId.get(L_BOUND), null)
 })
 

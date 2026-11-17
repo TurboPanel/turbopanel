@@ -74,7 +74,7 @@ function createDb(): Db {
     server: () => [
       {
         id: A,
-        name: 'adrastea',
+        name: 'host-a',
         metadata: serverMetadata([
           { address: '192.168.1.10', version: 4, scope: 'private', interface: 'eth0', link: 'up' },
           { address: '10.9.0.10', version: 4, scope: 'private', interface: 'eth1', link: 'down' },
@@ -100,7 +100,7 @@ test('loadServerTrafficMap lists peers that share a network, with the flagged ba
     serverId: A,
     organizationId: 'org-1',
     candidates: [
-      { serverId: A, name: 'adrastea' },
+      { serverId: A, name: 'host-a' },
       { serverId: B, name: 'server-b' },
       { serverId: C, name: 'elsewhere' },
     ],
@@ -131,7 +131,7 @@ test('loadServerTrafficMap lists peers that share a network, with the flagged ba
 test('loadServerTrafficMap filters to peers that share a network before it caps, in name order', async () => {
   const SERVERS = 170
   const pins: Row[] = [pinRow(A, LAN, '192.168.1.10')]
-  const candidates = [{ serverId: A, name: 'adrastea' }]
+  const candidates = [{ serverId: A, name: 'host-a' }]
   for (let n = 0; n < SERVERS; n++) {
     const id = `00000000-0000-4000-8000-${String(1000 + n).padStart(12, '0')}`
     // Every third server shares nothing with A and must not use up a slot.
