@@ -199,9 +199,8 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   keeps it to one run at a time.
 - **Batch size** stays an admin setting (`UPGRADE_SETTINGS.batch`, default 100%
   of the fleet). The maintenance window and `autoUpdate` are gone: a row saved
-  before keeps its batch, the other keys are read and ignored, and a save still
-  writes `autoUpdate: true` and a disabled window so a control plane rolled back
-  to an older build reads a valid row with updates on.
+  before keeps its batch, the other keys are read and ignored, and a save
+  writes only `batch`.
 - `GET /instance/updates` adds `automatic`, `updatesPaused`, `pausedAt`,
   `pausedBy`, `daemonsBehind` (`anyDaemonBehind`, one `limit 1` read against
   the cached daemon manifest), `updateWaiting`, `nextCheckAt`, `lastCheckAt`,

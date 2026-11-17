@@ -62,7 +62,7 @@ export type CertificateRenewalFailure = {
   firstIssuance?: boolean
 }
 
-/** Which certificate alert this is (`context.kind`); older rows have none and read as `renewal`. */
+/** Which certificate alert this is (`context.kind`). */
 export type CertificateAlertKind = 'issuance' | 'renewal' | 'request_dropped'
 
 export type CertificateAlertDeps = {

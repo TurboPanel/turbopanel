@@ -84,7 +84,6 @@ export {
   type ComposeValidationIssue,
   type ComposeValidationResult,
   stripComposePlacementOption,
-  stripProjectComposePlacementOption,
   validateComposeDocument,
 } from './validate.ts'
 export {

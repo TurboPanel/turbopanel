@@ -423,7 +423,6 @@ export function getAdminOpenApiSpec(
                 'ingress',
                 'authproviders',
                 'email',
-                'alertwebhook',
                 'identity',
               ],
             },

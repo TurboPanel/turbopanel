@@ -306,39 +306,9 @@ export function uploadedCertificateCoversHost(dnsNames: string[], host: string):
   return coversHostname(dnsNames, hostname)
 }
 
-function coercePublicUrlValue(raw: unknown): string[] {
-  if (raw == null) return []
-  if (Array.isArray(raw)) {
-    return raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
-  }
-  if (typeof raw !== 'string') return []
-  return raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry !== '')
-}
-
-function legacyUrlsToStore(raw: string[]): string[] {
-  const parsed = parsePublicUrlEntries(raw)
-  if (parsed.ok) return parsed.urls
-  const kept: string[] = []
-  for (const entry of raw) {
-    const one = parsePublicUrlEntries([entry])
-    if (one.ok && one.urls[0]) kept.push(one.urls[0])
-  }
-  return kept
-}
-
 async function loadHostnameRows(db: Db): Promise<StoredHostname[]> {
   const rows = await db.select().from(instanceHostname).where(isNotNull(instanceHostname.id))
   return rows.map((row) => mapStored(row as HostnameRow)).sort(byCreated)
-}
-
-async function readLegacyPublicUrls(db: Db): Promise<string[]> {
-  const rows = await db.select().from(setting).where(eq(setting.key, PUBLIC_URLS_SETTING_KEY))
-  const row = rows.find((item) => item.key === PUBLIC_URLS_SETTING_KEY)
-  if (!row) return []
-  return coercePublicUrlValue(row.value)
 }
 
 async function writeLegacyPublicUrls(db: Db, urls: string[]): Promise<void> {
@@ -444,25 +414,7 @@ function certForHost(
   return { ok: true, cert }
 }
 
-/**
- * Copy `TURBOPANEL_PUBLIC_URLS` into `hostname` once, when the table is empty.
- * Idempotent: a later call sees the rows and does nothing. Safe on every read.
- */
-export async function migrateLegacyPublicUrls(db: Db): Promise<void> {
-  const existing = await loadHostnameRows(db)
-  if (existing.length > 0) return
-  const legacy = await readLegacyPublicUrls(db)
-  if (legacy.length === 0) return
-  const urls = legacyUrlsToStore(legacy)
-  if (urls.length === 0) return
-  await insertHostnameRows(
-    db,
-    urls.map((host, index) => newPlatformCaRow(host, index))
-  )
-}
-
 export async function listInstanceHostnames(db: Db): Promise<InstanceHostnameRecord[]> {
-  await migrateLegacyPublicUrls(db)
   const rows = await loadHostnameRows(db)
   return rows.map(toRecord)
 }
@@ -512,7 +464,6 @@ export async function publicUrlsSiteConflict(
   db: Db,
   urls: readonly string[]
 ): Promise<InstanceHostnameFailure | null> {
-  await migrateLegacyPublicUrls(db)
   const current = await loadHostnameRows(db)
   const used = await panelHostsUsedBySites(
     db,
@@ -710,7 +661,6 @@ export async function replacePublicUrlList(db: Db, urls: string[]): Promise<void
     seen.add(key)
     return true
   })
-  await migrateLegacyPublicUrls(db)
   const current = await loadHostnameRows(db)
   await persistHostnameRows(
     db,
@@ -1007,7 +957,6 @@ export async function replaceInstanceHostnames(
   db: Db,
   entries: InstanceHostnameEntry[]
 ): Promise<{ ok: true; hostnames: InstanceHostnameRecord[] } | InstanceHostnameFailure> {
-  await migrateLegacyPublicUrls(db)
   const current = await loadHostnameRows(db)
   const built = await buildReplacementRows(db, entries, current)
   if (!built.ok) return built
@@ -1075,7 +1024,6 @@ export async function upsertInstanceHostname(
 }
 
 export async function removeInstanceHostname(db: Db, host: string): Promise<void> {
-  await migrateLegacyPublicUrls(db)
   const rows = await loadHostnameRows(db)
   const key = canonicalHostKey(host)
   await persistHostnameRows(
@@ -1203,7 +1151,6 @@ export async function applyUploadedCertificateHosts(
   cert: UploadedCertHit,
   hosts: string[]
 ): Promise<{ ok: true; hostnames: string[] } | InstanceHostnameFailure> {
-  await migrateLegacyPublicUrls(db)
   const current = await loadHostnameRows(db)
   const resolved = desiredUploadedCertificateHosts(cert, hosts)
   if (!resolved.ok) return resolved

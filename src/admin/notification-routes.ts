@@ -7,14 +7,12 @@
  * difference: an instance email channel may name any administrator's account
  * email.
  *
- * The operator's legacy `ALERT_WEBHOOK_URL` setting shows up here as the
- * channel it was folded into ("Operator alert webhook"); `PUT
- * /settings/alert-webhook` still edits that same channel.
+ * The operator's alert webhook shows up here as the "Operator alert webhook"
+ * channel; `PUT /settings/alert-webhook` edits that same channel.
  */
 import type { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { getDb } from '../db/connection.ts'
-import { adoptLegacyAlertWebhook } from '../features/alerts/alert-webhook-settings.ts'
 import {
   createNotificationChannel,
   deleteChannel,
@@ -118,10 +116,6 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
   admin.get('/notification-channels', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
-    // The legacy setting, if it still exists, becomes a channel here so the
-    // operator sees one list.
-    // This may write: it switches an older operator webhook on (see adoptLegacyAlertWebhook).
-    await adoptLegacyAlertWebhook(db, c.get('dataEncryptionSecrets'))
     const channels = await listInstanceChannels(db)
     return c.json({
       channels: await Promise.all(channels.map((ch) => presentInstanceChannel(c, ch))),

@@ -27,7 +27,7 @@ import {
   variable,
   workspace,
 } from '../../db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM } from '../../db/workspace-kind.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from '../authz/http.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerProjectRoutes } from './routes.ts'
@@ -1422,7 +1422,7 @@ test('system workspace project mutations return system_resource_immutable', asyn
         .from(workspace)
         .where(eq(workspace.id, systemWorkspaceId))
         .limit(1)
-      assertEquals(systemWs?.kind, WORKSPACE_KIND_SYSTEM)
+      assertEquals(systemWs?.kind, WORKSPACE_KIND_TURBOPANEL)
     }
   )
 })

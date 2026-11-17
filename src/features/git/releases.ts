@@ -199,14 +199,8 @@ export function imageIdentitiesFromResult(result: unknown): Map<string, ReleaseI
     const releaseId = resultField(record, 'releaseId')
     if (!composeServiceName || !releaseId) continue
     const imageTag = resultField(record, 'imageTag')
-    // Accept both spellings: results stored from a daemon released before the
-    // rename hold the old field names. The new name wins when both are present.
-    // This read-side fallback is removed on wipe day.
-    const builderFrontendVersion =
-      resultField(record, 'builderFrontendVersion') ??
-      resultField(record, 'railpackFrontendVersion')
-    const builderPlanVersion =
-      resultField(record, 'builderPlanVersion') ?? resultField(record, 'railpackPlanVersion')
+    const builderFrontendVersion = resultField(record, 'builderFrontendVersion')
+    const builderPlanVersion = resultField(record, 'builderPlanVersion')
     if (!imageTag && !builderFrontendVersion && !builderPlanVersion) continue
     identities.set(releaseKey(composeServiceName, releaseId), {
       ...(imageTag === undefined ? {} : { imageTag }),

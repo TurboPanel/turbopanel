@@ -78,29 +78,6 @@ test('getPublicUrls reads array values through the hostname table', async () => 
   })
 })
 
-test('getPublicUrls migrates a legacy setting string when the hostname table is empty', async () => {
-  await withPublicUrlsFixture(async (db) => {
-    await db.delete(instanceHostname)
-    await db
-      .insert(setting)
-      .values({
-        key: PUBLIC_URLS_SETTING_KEY,
-        value: ' https://one.example.com , https://two.example.com ',
-      })
-      .onConflictDoUpdate({
-        target: setting.key,
-        set: {
-          value: ' https://one.example.com , https://two.example.com ',
-          updatedAt: new Date().toISOString(),
-        },
-      })
-    assertEquals(await getPublicUrls(db), [
-      'https://one.example.com:8443',
-      'https://two.example.com:8443',
-    ])
-  })
-})
-
 test('setPublicUrls persists and replaces prior values', async () => {
   await withPublicUrlsFixture(async (db) => {
     await setPublicUrls(db, ['https://first.example.com'])

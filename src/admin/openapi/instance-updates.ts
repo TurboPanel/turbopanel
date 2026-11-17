@@ -107,7 +107,7 @@ export const INSTANCE_UPDATES_PATHS = {
         'upgrade tick once every server in the current one has finished or ' +
         'failed. Settings belong to this environment. With nothing saved, ' +
         '`batch` is every server at once (100%) unless the environment sets ' +
-        '`TURBOPANEL_UPGRADE_BATCH`. A row saved by an older control plane keeps ' +
+        '`TURBOPANEL_UPGRADE_BATCH`. A stored row keeps ' +
         'its batch; its `autoUpdate` and maintenance window are ignored.',
       security: [...cookieSecurity],
       responses: {

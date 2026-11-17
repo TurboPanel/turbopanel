@@ -1,9 +1,5 @@
 import { assertEquals } from '@std/assert'
-import {
-  githubWebhookReachability,
-  webhookPathFor,
-  webhookReachability,
-} from './webhook-reachability.ts'
+import { webhookPathFor, webhookReachability } from './webhook-reachability.ts'
 import { GITHUB_WEBHOOK_PATH } from '../../app/surfaces.ts'
 
 /**
@@ -13,6 +9,9 @@ import { GITHUB_WEBHOOK_PATH } from '../../app/surfaces.ts'
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+const githubWebhookReachability = (origins: readonly string[]) =>
+  webhookReachability(origins, 'github')
 
 test('a public https origin is reachable and carries no note', () => {
   const result = githubWebhookReachability(['https://panel.example.com'])
@@ -44,10 +43,7 @@ test('LAN-only origins report unreachable but still show the endpoint', () => {
 })
 
 test('the first publicly reachable origin wins over a LAN one listed first', () => {
-  const result = githubWebhookReachability([
-    'https://panel.lan:8443',
-    'https://panel.example.com',
-  ])
+  const result = githubWebhookReachability(['https://panel.lan:8443', 'https://panel.example.com'])
   assertEquals(result.reachable, true)
   assertEquals(result.webhookUrl, `https://panel.example.com${GITHUB_WEBHOOK_PATH}`)
 })
@@ -78,11 +74,11 @@ test('the ref rides in the path only for a self-hosted origin', () => {
   // header is not a safe single point of failure — the ref is the fallback.
   assertEquals(
     webhookPathFor('github', 'ref-1', 'https://github.acme.test'),
-    '/webhook/github/ref-1',
+    '/webhook/github/ref-1'
   )
   assertEquals(
     webhookPathFor('gitlab', 'ref-1', 'https://gitlab.acme.test'),
-    '/webhook/gitlab/ref-1',
+    '/webhook/gitlab/ref-1'
   )
 
   // A trailing slash is not a different origin — one slash or several.
@@ -95,10 +91,7 @@ test('the ref rides in the path only for a self-hosted origin', () => {
 })
 
 test('a self-hosted ref is escaped into its path segment', () => {
-  assertEquals(
-    webhookPathFor('github', 'a/b', 'https://github.acme.test'),
-    '/webhook/github/a%2Fb',
-  )
+  assertEquals(webhookPathFor('github', 'a/b', 'https://github.acme.test'), '/webhook/github/a%2Fb')
 })
 
 test('webhookReachability threads the origin through to the path', () => {
@@ -106,7 +99,7 @@ test('webhookReachability threads the origin through to the path', () => {
     ['https://panel.example.com'],
     'github',
     'ref-1',
-    'https://github.com',
+    'https://github.com'
   )
   assertEquals(hosted.webhookUrl, 'https://panel.example.com/webhook/github')
 
@@ -114,7 +107,7 @@ test('webhookReachability threads the origin through to the path', () => {
     ['https://panel.example.com'],
     'github',
     'ref-1',
-    'https://github.acme.test',
+    'https://github.acme.test'
   )
   assertEquals(enterprise.webhookUrl, 'https://panel.example.com/webhook/github/ref-1')
 })

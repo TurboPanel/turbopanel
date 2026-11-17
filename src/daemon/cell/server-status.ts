@@ -19,7 +19,7 @@ import type {
   ServerHostResources,
 } from '../../features/servers/server-metadata.ts'
 import {
-  resolveServerOsForRead,
+  osMetadataFromColumns,
   parseServerHostResources,
   parseServerDockerMetadata,
   parseServerHardwareProfile,
@@ -191,17 +191,14 @@ export async function resolveFleetPresence(
     const metadata = (row.metadata ?? {}) as ServerMetadata
     const resources = parseServerHostResources(metadata.resources) ?? null
     const os =
-      resolveServerOsForRead(
-        {
-          osId: row.osId ?? null,
-          osFamily: row.osFamily ?? null,
-          osVersion: row.osVersion ?? null,
-          osCodename: row.osCodename ?? null,
-          osPrettyName: row.osPrettyName ?? null,
-          osArchitecture: row.osArchitecture ?? null,
-        },
-        metadata
-      ) ?? null
+      osMetadataFromColumns({
+        osId: row.osId ?? null,
+        osFamily: row.osFamily ?? null,
+        osVersion: row.osVersion ?? null,
+        osCodename: row.osCodename ?? null,
+        osPrettyName: row.osPrettyName ?? null,
+        osArchitecture: row.osArchitecture ?? null,
+      }) ?? null
     const timeSync =
       timeSyncFromColumns({
         timezone: row.timezone ?? null,

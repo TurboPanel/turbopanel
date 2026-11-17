@@ -61,12 +61,7 @@ file that created it. No mode, flag or constant lets a shipped migration be
 edited, removed or regenerated.
 
 The reset got past the freeze guards through one named, owner-approved
-exception in `check-migration-additions.mjs` (`RESET_EXCEPTION`: generation 13
-to 14, one `0000_init` journal entry). It matches only that shape on top of a
-generation-13 base, so it can never match again once the reset is the base. The
-promotion pull requests are checked against a generation-13 base until staging
-and live carry the reset; after that a later change deletes the constant and
-its tests, and no mode or flag brings it back. The upgrade check (`check-migration-upgrade.mjs`) keeps
+exception that has since been removed; no mode or flag brings it back. The upgrade check (`check-migration-upgrade.mjs`) keeps
 a lasting rule, not a bypass: when the previous release tag's manifest has a
 lower generation than the checkout's, there is nothing to upgrade from, so it
 only builds a fresh database and proves the seed fits; once a release is tagged
