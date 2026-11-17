@@ -250,15 +250,7 @@ export async function syncServerTunnelRoutes(
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)
-  // A daemon that downgraded `require` has a leaf without client use: it gets
-  // a new one in this send, once per report (see peerLeafRemintDue).
-  const remint = built.peerClientAuth !== undefined && peerLeafRemintDue(ready.metadata)
-  if (!remint && peerDowngradeRepeats(ready.metadata)) {
-    compatLogWarn(
-      'tunnel-sync',
-      `server ${serverId}: the peer hop still runs without client certificates after a new peer certificate`
-    )
-  }
+  const remint = remintDue(serverId, ready.metadata, built)
   const open = !params.force && !params.issue && !remint
   if (open && (await isAlreadyCurrent(db, serverId, sent, built, stateHash))) {
     return { status: 'unchanged' }
@@ -272,6 +264,7 @@ export async function syncServerTunnelRoutes(
     resolveTunnelGeneration(db, organizationId, facts)
   )
   if (generation !== undefined) payload.generation = generation
+  await noteOldReceivers(db, built)
   const notes = [...built.warnings, ...built.skipped.map((n) => `${n.hostname}: ${n.reason}`)]
   for (const note of notes) compatLogWarn('tunnel-sync', `server ${serverId}: ${note}`)
   // The leaf is tracked as delivered only when the certificate really went out.
@@ -291,6 +284,42 @@ export async function syncServerTunnelRoutes(
     forwarded: built.routes.filter((r) => !r.local).length,
   })
   return { status: 'sent', commandId: queued.commandId }
+}
+
+/**
+ * A daemon that downgraded `require` has a leaf without client use: it gets a
+ * new one in this send, once per report (see peerLeafRemintDue). A repeat after
+ * that is only logged.
+ */
+function remintDue(serverId: string, metadata: unknown, built: RouteBuildResult): boolean {
+  const due = built.peerClientAuth !== undefined && peerLeafRemintDue(metadata)
+  if (!due && peerDowngradeRepeats(metadata)) {
+    compatLogWarn(
+      'tunnel-sync',
+      `server ${serverId}: the peer hop still runs without client certificates after a new peer certificate`
+    )
+  }
+  return due
+}
+
+/**
+ * A sender that dials the peer port cannot reach a receiver whose daemon lacks
+ * `tunnel-peer-mtls-v1` (it answers nothing there). Say so in plain words
+ * instead of leaving visitors a silent 503.
+ */
+async function noteOldReceivers(db: Db, built: RouteBuildResult): Promise<void> {
+  if (built.peerClientAuth === undefined) return
+  const receivers = new Set(
+    built.routes.flatMap((route) => route.upstreams.map((upstream) => upstream.serverId))
+  )
+  for (const receiverId of receivers) {
+    const state = await getServerDaemonStateByServerId(db, receiverId)
+    if (daemonTakesPeerClientAuth(state?.projection?.features)) continue
+    built.warnings.push(
+      'The server that runs a site on this Tunnel needs a daemon update before tunnels can reach it'
+    )
+    return
+  }
 }
 
 /** The leaf to send: the one handed in, or a freshly minted one when the table needs a certificate. */
