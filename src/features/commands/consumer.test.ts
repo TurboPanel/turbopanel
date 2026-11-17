@@ -482,13 +482,23 @@ test('a command that arrives between a reconnect and its hello being stored wait
     })
     const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
 
+    // The poll wait is held by the test: it knows when the consumer is
+    // waiting, and decides when the next look happens.
+    let release = () => {}
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let reachWait = () => {}
+    const waiting = new Promise<void>((resolve) => (reachWait = resolve))
     const running = processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
       firewallApplyGate: DENY_FIREWALL_APPLY,
       helloGraceMs: 10_000,
       helloPollMs: 20,
+      helloSleep: () => {
+        reachWait()
+        return held
+      },
     })
     // Still waiting: neither failed nor sent.
-    await new Promise((resolve) => setTimeout(resolve, 150))
+    await waiting
     assertEquals((await getCommandRecord(db, record.id))?.status === 'failed', false)
     assertEquals(registry.enqueueCalled, false)
 
@@ -498,6 +508,7 @@ test('a command that arrives between a reconnect and its hello being stored wait
       daemonBuild: { commit: 'abc1234', buildId: 'b-new', version: MIN_SUPPORTED_DAEMON_VERSION },
     })
     await touchServerMetadata(db, serverId, { features: [...DAEMON_WIRE_FEATURES] })
+    release()
     await running
     assertEquals(registry.enqueueCalled, true)
   })
@@ -514,10 +525,16 @@ test('a refusal stands once the hello grace has passed without a hello being sto
     })
     const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
 
+    // A fake clock: every wait moves it forward by the poll interval.
+    let clock = Date.now()
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
       firewallApplyGate: DENY_FIREWALL_APPLY,
       helloGraceMs: 200,
       helloPollMs: 20,
+      now: () => clock,
+      helloSleep: async (ms) => {
+        clock += ms
+      },
     })
 
     const updated = await getCommandRecord(db, record.id)

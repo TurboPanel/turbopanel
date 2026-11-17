@@ -257,6 +257,10 @@ export type CommandConsumerDeps = {
   helloGraceMs?: number
   /** Test seam: how often a refused daemon whose hello may be on its way is looked at again. */
   helloPollMs?: number
+  /** Test seam: the wait between those looks; defaults to a real timer. */
+  helloSleep?: (ms: number) => Promise<void>
+  /** Test seam: the clock the hello grace is counted against; defaults to `Date.now`. */
+  now?: () => number
 }
 
 /**
@@ -627,10 +631,11 @@ async function readPresence(db: Db, registry: DaemonCellRegistry, serverId: stri
 /** The connection opened less than `graceMs` ago, so its hello may not be stored yet. */
 function helloMayBePending(
   presence: { connectedAt?: string | null } | undefined,
-  graceMs: number
+  graceMs: number,
+  now: () => number
 ): boolean {
   const openedAt = presence?.connectedAt ? Date.parse(presence.connectedAt) : Number.NaN
-  return Number.isFinite(openedAt) && Date.now() - openedAt < graceMs
+  return Number.isFinite(openedAt) && now() - openedAt < graceMs
 }
 
 /** `null` when the command can be delivered; otherwise the error it was failed with. */
@@ -654,19 +659,20 @@ async function ensureServerAndDaemonOnline(
     return 'Server not found'
   }
 
-  let presence = await readPresence(db, registry, envelope.serverId)
-  if (!presence?.connected) {
+  const failOffline = async (): Promise<string> => {
     commandConsumerTrace('dispatch-failed', {
       commandId: record.id,
       commandType: record.type,
       serverId: envelope.serverId,
       reason: 'offline',
     })
-    await transitionCommand(db, record.id, {
-      status: 'failed',
-      error: 'Daemon not connected',
-    })
+    await transitionCommand(db, record.id, { status: 'failed', error: 'Daemon not connected' })
     return 'Daemon not connected'
+  }
+
+  let presence = await readPresence(db, registry, envelope.serverId)
+  if (!presence?.connected) {
+    return failOffline()
   }
 
   // A daemon below the supported floor, missing a required wire feature, or
@@ -679,15 +685,16 @@ async function ensureServerAndDaemonOnline(
   // written, so a refusal inside that window is looked at again, not final.
   const graceMs = deps?.helloGraceMs ?? HELLO_PROJECTION_GRACE_MS
   const pollMs = deps?.helloPollMs ?? HELLO_PROJECTION_POLL_MS
-  while (support.status === 'unsupported' && helloMayBePending(presence, graceMs)) {
-    await new Promise((resolve) => setTimeout(resolve, pollMs))
+  const now = deps?.now ?? Date.now
+  const sleep = deps?.helloSleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  while (support.status === 'unsupported' && helloMayBePending(presence, graceMs, now)) {
+    await sleep(pollMs)
     presence = await readPresence(db, registry, envelope.serverId)
     if (!presence?.connected) break
     support = resolveDaemonSupport(presence.daemonBuild?.version, presence.features)
   }
   if (!presence?.connected) {
-    await transitionCommand(db, record.id, { status: 'failed', error: 'Daemon not connected' })
-    return 'Daemon not connected'
+    return failOffline()
   }
   if (support.status === 'unsupported') {
     commandConsumerTrace('dispatch-failed', {
