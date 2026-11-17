@@ -253,7 +253,20 @@ export type CommandConsumerDeps = {
    * see `deployMayLeaveLane`.
    */
   leaveLane?: () => void
+  /** Test seam: how long after a connection opens its hello may still be on its way. */
+  helloGraceMs?: number
+  /** Test seam: how often a refused daemon whose hello may be on its way is looked at again. */
+  helloPollMs?: number
 }
+
+/**
+ * A daemon that just reconnected has not necessarily had its hello written to
+ * the database yet, and until it is the stored version and wire features are
+ * the previous build's. A command that arrives in that window waits this long
+ * (counted from when the connection opened) before a refusal stands.
+ */
+export const HELLO_PROJECTION_GRACE_MS = 30_000
+const HELLO_PROJECTION_POLL_MS = 1_000
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'daemon.ping': 30_000,
@@ -607,12 +620,26 @@ async function markDispatching(
   return true
 }
 
+async function readPresence(db: Db, registry: DaemonCellRegistry, serverId: string) {
+  return (await getResolveFleetPresence()(db, registry, [serverId])).get(serverId)
+}
+
+/** The connection opened less than `graceMs` ago, so its hello may not be stored yet. */
+function helloMayBePending(
+  presence: { connectedAt?: string | null } | undefined,
+  graceMs: number
+): boolean {
+  const openedAt = presence?.connectedAt ? Date.parse(presence.connectedAt) : Number.NaN
+  return Number.isFinite(openedAt) && Date.now() - openedAt < graceMs
+}
+
 /** `null` when the command can be delivered; otherwise the error it was failed with. */
 async function ensureServerAndDaemonOnline(
   db: Db,
   registry: DaemonCellRegistry,
   record: DispatchableCommandRecord,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  deps?: CommandConsumerDeps
 ): Promise<string | null> {
   const serverBinding = await getServerLicenseBinding(db, envelope.serverId)
   if (!serverBinding) {
@@ -627,8 +654,7 @@ async function ensureServerAndDaemonOnline(
     return 'Server not found'
   }
 
-  const presenceMap = await getResolveFleetPresence()(db, registry, [envelope.serverId])
-  const presence = presenceMap.get(envelope.serverId)
+  let presence = await readPresence(db, registry, envelope.serverId)
   if (!presence?.connected) {
     commandConsumerTrace('dispatch-failed', {
       commandId: record.id,
@@ -647,7 +673,22 @@ async function ensureServerAndDaemonOnline(
   // with no usable version keeps its connection — that is how it gets updated
   // (the update envelope is not a command) — but gets no commands until it is
   // current. See lib/version-wire.ts.
-  const support = resolveDaemonSupport(presence.daemonBuild?.version, presence.features)
+  let support = resolveDaemonSupport(presence.daemonBuild?.version, presence.features)
+  // A daemon that has only just reconnected (an update restarts it) still has
+  // the previous build's version and features stored until its hello is
+  // written, so a refusal inside that window is looked at again, not final.
+  const graceMs = deps?.helloGraceMs ?? HELLO_PROJECTION_GRACE_MS
+  const pollMs = deps?.helloPollMs ?? HELLO_PROJECTION_POLL_MS
+  while (support.status === 'unsupported' && helloMayBePending(presence, graceMs)) {
+    await new Promise((resolve) => setTimeout(resolve, pollMs))
+    presence = await readPresence(db, registry, envelope.serverId)
+    if (!presence?.connected) break
+    support = resolveDaemonSupport(presence.daemonBuild?.version, presence.features)
+  }
+  if (!presence?.connected) {
+    await transitionCommand(db, record.id, { status: 'failed', error: 'Daemon not connected' })
+    return 'Daemon not connected'
+  }
   if (support.status === 'unsupported') {
     commandConsumerTrace('dispatch-failed', {
       commandId: record.id,
@@ -4016,7 +4057,7 @@ export async function processCommandEnvelope(
   const record = resumed ?? (await attachDispatchPayload(db, open, envelope))
   if (!record) return
 
-  const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
+  const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope, deps)
   if (notReady !== null) {
     await applyUndeliveredSideEffects(db, record, envelope, notReady, deps)
     return

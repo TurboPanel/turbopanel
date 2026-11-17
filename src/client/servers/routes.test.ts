@@ -10,6 +10,7 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { STEP_UP_WINDOW_MS, stampStepUp } from '../authn/step-up.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { DAEMON_WIRE_FEATURES, MIN_SUPPORTED_DAEMON_VERSION } from '../../lib/version-wire.ts'
 import {
   command,
   container,
@@ -4414,6 +4415,57 @@ test('GET /servers/:id/update returns idle status for a disconnected server', as
     assertEquals(body.serverId, serverId)
     assertEquals(body.colocatedWithInstance, false)
     assertEquals(typeof body.status, 'string')
+  })
+})
+
+test('the three server update status routes judge the daemon by its stored hello features', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await attachDaemonStateToServer(db, serverId, {
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      fingerprint: `fp-test-${crypto.randomUUID()}`,
+    })
+    const store = async (features: readonly string[]) => {
+      await db
+        .update(server)
+        .set({
+          daemon: {
+            projection: {
+              daemonBuild: { commit: 'aaa', buildId: 'b1', version: MIN_SUPPORTED_DAEMON_VERSION },
+              features: [...features],
+            },
+          },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(server.id, serverId))
+    }
+    type Support = { status: string; code?: string; missingFeatures?: string[] }
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+    const supports = async (): Promise<Support[]> => {
+      const list = await app.request('/servers/updates', { headers })
+      const one = await app.request(`/servers/${serverId}/update`, { headers })
+      const reset = await app.request(`/servers/${serverId}/update/reset`, {
+        method: 'POST',
+        headers,
+      })
+      assertEquals(list.status, 200)
+      assertEquals(one.status, 200)
+      assertEquals(reset.status, 200)
+      const listBody = (await list.json()) as { servers: Array<{ daemonSupport: Support }> }
+      const oneBody = (await one.json()) as { daemonSupport: Support }
+      const resetBody = (await reset.json()) as { daemonSupport: Support }
+      return [listBody.servers[0]!.daemonSupport, oneBody.daemonSupport, resetBody.daemonSupport]
+    }
+
+    await store(DAEMON_WIRE_FEATURES.filter((name) => name !== 'build-limits-v1'))
+    for (const support of await supports()) {
+      assertEquals(support.status, 'unsupported')
+      assertEquals(support.code, 'daemon_update_required')
+      assertEquals(support.missingFeatures, ['build-limits-v1'])
+    }
+
+    await store(DAEMON_WIRE_FEATURES)
+    for (const support of await supports()) assertEquals(support.status, 'supported')
   })
 })
 

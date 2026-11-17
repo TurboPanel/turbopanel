@@ -156,13 +156,14 @@ test('daemonUnsupportedReason names the code, the numbers, a capped feature list
     'daemon_update_required: daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
   )
   const bare = daemonUnsupportedReason(resolveDaemonSupport(undefined, []))
+  const total = DAEMON_WIRE_FEATURES.length
   assertEquals(
     bare.startsWith(
-      'daemon_update_required: daemon reports no usable version and does not list 69 required features: '
+      `daemon_update_required: daemon reports no usable version and does not list ${total} required features: `
     ),
     true
   )
-  assertEquals(bare.endsWith(' and 61 more — update the daemon'), true)
+  assertEquals(bare.endsWith(` and ${total - 8} more — update the daemon`), true)
 })
 
 test('the floor is a semver no newer than this instance', () => {

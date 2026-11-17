@@ -409,7 +409,11 @@ test('processCommandEnvelope refuses a connected daemon that is not current, nam
         payload: {},
       })
       const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
-      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+      // No hello is on its way: the refusal stands at once.
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
+        helloGraceMs: 0,
+      })
       const updated = await getCommandRecord(db, record.id)
       assertEquals(updated?.status, 'failed')
       // Never reached the cell: the update envelope is the only thing such a
@@ -462,6 +466,64 @@ test('processCommandEnvelope refuses a connected daemon that is not current, nam
     const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
     assertEquals(registry.enqueueCalled, true)
+  })
+})
+
+test('a command that arrives between a reconnect and its hello being stored waits for the hello instead of failing', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    // The daemon just reconnected after an update: the stored hello is still
+    // the previous build's (no usable version, no features).
+    await attachConnectedDaemonStatus(db, serverId, { currentDaemon: false })
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+
+    const running = processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      helloGraceMs: 10_000,
+      helloPollMs: 20,
+    })
+    // Still waiting: neither failed nor sent.
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    assertEquals((await getCommandRecord(db, record.id))?.status === 'failed', false)
+    assertEquals(registry.enqueueCalled, false)
+
+    // The hello is stored; the same command goes out.
+    await projectServerDaemon(db, serverId, {
+      kind: 'daemon-build',
+      daemonBuild: { commit: 'abc1234', buildId: 'b-new', version: MIN_SUPPORTED_DAEMON_VERSION },
+    })
+    await touchServerMetadata(db, serverId, { features: [...DAEMON_WIRE_FEATURES] })
+    await running
+    assertEquals(registry.enqueueCalled, true)
+  })
+})
+
+test('a refusal stands once the hello grace has passed without a hello being stored', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId, { currentDaemon: false })
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      helloGraceMs: 200,
+      helloPollMs: 20,
+    })
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'failed')
+    assertEquals(updated?.errorCode, 'daemon_update_required')
+    assertEquals(registry.enqueueCalled, false)
   })
 })
 

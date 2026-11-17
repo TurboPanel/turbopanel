@@ -28,7 +28,10 @@
   the consumer's refusal, and consults neither the version floor nor the
   feature list; the daemon then fetches and verifies the release itself.
   `coordinator-refused-daemon.hostfree.test.ts` pins it. Only the command
-  consumer refuses today; other paths that read the stored feature list keep
+  consumer refuses today, and a refusal inside the first 30 seconds of a
+  connection (`HELLO_PROJECTION_GRACE_MS`) is looked at again each second,
+  because a freshly updated daemon's hello is not stored yet and the stored
+  version and features are still the previous build's; other paths that read the stored feature list keep
   their own gates until those gates are removed. The other direction lives on
   the daemon
   (`../turbopaneld/src/instance/version-wire.ts`): every daemon REST response
@@ -47,7 +50,7 @@
   2026-11-05 as a **pre-launch hard cutoff**: `0.1.18` is the first daemon
   that registers a sealing key, opens sealed decrypt answers and opens the
   sealed reconcile password hash, and `0.1.22` is the first control plane
-  that seals them. Older daemons get `daemon_unsupported` on every command;
+  that seals them. Older daemons get `daemon_update_required` on every command;
   older control planes are flagged by the daemon and refused as an
   `instance-update` target. Every peer on those two lines is let in,
   including trunk builds from before the sealing work landed; only canary

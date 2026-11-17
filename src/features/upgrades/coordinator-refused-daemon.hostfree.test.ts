@@ -44,19 +44,22 @@ function host(serverId: string, overrides: Partial<FleetServerFact>): FleetServe
   }
 }
 
-test('a refused daemon is still sent the update message', async () => {
-  const facts = [
+function refusedHosts(): FleetServerFact[] {
+  return [
     host('no-version', { version: null, features: [] }),
     host('below-floor', { version: '0.0.9', features: ['managed-upgrade-v1'] }),
     host('missing-feature', { version: '0.1.21', features: ['managed-upgrade-v1'] }),
-    host('no-managed-upgrade', { version: null, features: [] }),
+    // A usable version, but a hello that lists no feature at all.
+    host('no-features', { version: '0.1.21', features: [] }),
   ]
+}
+
+function setup(facts: FleetServerFact[]) {
   for (const fact of facts) {
     const support = resolveDaemonSupport(fact.version, fact.features)
     assertEquals(support.status, 'unsupported', fact.serverId)
     assertEquals(support.code, 'daemon_update_required', fact.serverId)
   }
-
   const store = createMemoryUpgradeStore({
     facts,
     latest: { daemon: build('older-daemon'), instance: null, ui: null },
@@ -78,9 +81,22 @@ test('a refused daemon is still sent the update message', async () => {
     instanceInstalled: { version: '0.1.22', commit: 'new-instance' },
     resolveTarget: () => Promise.resolve(target),
   })
+  return { coordinator, sent }
+}
 
+test('a refused daemon is still sent the update message by Update Now', async () => {
+  const facts = refusedHosts()
+  const { coordinator, sent } = setup(facts)
   const result = await coordinator.updateNow({ startedBy: ADMIN })
   assertEquals(result.ok, true)
+  assertEquals(sent.map((item) => item.serverId).sort(), facts.map((f) => f.serverId).sort())
+  for (const item of sent) assertEquals(item.envelope.kind, 'update')
+})
+
+test('a refused daemon is still sent the update message by the scheduled automatic check', async () => {
+  const facts = refusedHosts()
+  const { coordinator, sent } = setup(facts)
+  await coordinator.tick({ resolveManifests: true })
   assertEquals(sent.map((item) => item.serverId).sort(), facts.map((f) => f.serverId).sort())
   for (const item of sent) assertEquals(item.envelope.kind, 'update')
 })
