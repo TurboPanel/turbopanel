@@ -6,6 +6,7 @@ import {
 } from '../../lib/version-wire.ts'
 import {
   daemonAddsLockFromTable,
+  daemonTakesPeerClientAuth,
   daemonCanCarryTunnels,
   daemonLockFollowsTable,
 } from './daemon-gate.ts'
@@ -38,4 +39,10 @@ test('only a daemon that advertises tunnel-lock-add-v1 adds a lock from the tabl
   assertEquals(daemonAddsLockFromTable(undefined), false)
   assertEquals(daemonAddsLockFromTable([TUNNEL_LOCK_FOLLOW_FEATURE]), false)
   assertEquals(daemonAddsLockFromTable([TUNNEL_LOCK_ADD_FEATURE]), true)
+})
+
+test('only a daemon that advertises tunnel-peer-mtls-v1 takes peerClientAuth', () => {
+  assertEquals(daemonTakesPeerClientAuth(undefined), false)
+  assertEquals(daemonTakesPeerClientAuth([TUNNEL_LOCK_ADD_FEATURE]), false)
+  assertEquals(daemonTakesPeerClientAuth(['tunnel-peer-mtls-v1']), true)
 })

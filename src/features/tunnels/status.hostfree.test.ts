@@ -3,6 +3,9 @@ import {
   connectorsNeedingRepair,
   connectorUpdateNotice,
   nextTunnelStatus,
+  peerDowngradeRepeats,
+  peerHopStatusOf,
+  peerLeafRemintDue,
   portalErrorOf,
   portalStateOf,
 } from './status.ts'
@@ -121,4 +124,31 @@ test('only asked connectors that are not running need a repair', () => {
       []
     )
   }
+})
+
+test('the reported peer hop mode is read back from server metadata, and a downgrade shows', () => {
+  assertEquals(peerHopStatusOf(null), null)
+  assertEquals(peerHopStatusOf({}), null)
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'x' } }), null)
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'require' } }), {
+    clientAuth: 'require',
+    downgraded: false,
+  })
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'verify', downgraded: true } }), {
+    clientAuth: 'verify',
+    downgraded: true,
+  })
+})
+
+test('a downgrade asks for one new peer leaf per report, and a repeat is only logged', () => {
+  const hop = (extra: object) => ({ tunnelPeerHop: { clientAuth: 'verify', ...extra } })
+  assertEquals(peerLeafRemintDue(null), false)
+  assertEquals(peerLeafRemintDue(hop({ downgraded: false })), false)
+  assertEquals(peerLeafRemintDue(hop({ downgraded: true })), true)
+  assertEquals(peerDowngradeRepeats(hop({ downgraded: true })), false)
+  // After the re-mint was marked, the same report asks for nothing more.
+  assertEquals(peerLeafRemintDue(hop({ downgraded: true, reminted: true })), false)
+  assertEquals(peerDowngradeRepeats(hop({ downgraded: true, reminted: true })), true)
+  // A mode that is no longer downgraded is neither.
+  assertEquals(peerDowngradeRepeats(hop({ downgraded: false, reminted: true })), false)
 })

@@ -148,8 +148,105 @@ export async function recordTunnelStatus(
     await followTunnelStatus(db, serverId, connector.tunnelId, portalStateOf(connector.status))
     return portals.length
   })
+  await recordPeerClientAuth(db, serverId, result)
   await requestConnectorRepair(db, serverId, result)
   return counts.reduce((sum, n) => sum + n, 0)
+}
+
+/** What a server reports about the client-certificate check on its peer hop. */
+export type PeerHopStatus = {
+  clientAuth: 'verify' | 'require'
+  /** `require` was asked and `verify` is what runs. */
+  downgraded: boolean
+}
+
+/** Read the peer hop status from `server.metadata`, or null when the daemon never reported one. */
+export function peerHopStatusOf(metadata: unknown): PeerHopStatus | null {
+  const raw = (
+    metadata as { tunnelPeerHop?: { clientAuth?: unknown; downgraded?: unknown } } | null
+  )?.tunnelPeerHop
+  if (raw?.clientAuth !== 'verify' && raw?.clientAuth !== 'require') return null
+  return { clientAuth: raw.clientAuth, downgraded: raw.downgraded === true }
+}
+
+/** Remove `server.metadata.tunnelPeerHop` when there is one. */
+async function clearPeerClientAuth(db: Db, serverId: string): Promise<void> {
+  const [row] = await db
+    .select({ metadata: server.metadata })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  if (peerHopStatusOf(row?.metadata) === null) return
+  await db
+    .update(server)
+    .set({ metadata: sql`${server.metadata} - 'tunnelPeerHop'` })
+    .where(eq(server.id, serverId))
+}
+
+/**
+ * A daemon reported that `require` runs as `verify` (its peer leaf lacks client
+ * use) and the leaf has not been minted again for this report. Once per
+ * report: {@link markPeerLeafReminted} sets the flag, and a report that
+ * changes the mode starts a new one, so a daemon that still downgrades after a
+ * fresh leaf is logged by the caller, not served another one every tick.
+ */
+export function peerLeafRemintDue(metadata: unknown): boolean {
+  const raw = (metadata as { tunnelPeerHop?: { downgraded?: unknown; reminted?: unknown } } | null)
+    ?.tunnelPeerHop
+  return raw?.downgraded === true && raw.reminted !== true
+}
+
+/** True when this report is a downgrade whose re-mint was already done. */
+export function peerDowngradeRepeats(metadata: unknown): boolean {
+  const raw = (metadata as { tunnelPeerHop?: { downgraded?: unknown; reminted?: unknown } } | null)
+    ?.tunnelPeerHop
+  return raw?.downgraded === true && raw.reminted === true
+}
+
+/** Record that the peer leaf was minted again because of the stored downgrade. */
+export async function markPeerLeafReminted(db: Db, serverId: string): Promise<void> {
+  await db
+    .update(server)
+    .set({
+      metadata: sql`jsonb_set(coalesce(${server.metadata}, '{}'::jsonb), '{tunnelPeerHop,reminted}', 'true'::jsonb)`,
+    })
+    .where(and(eq(server.id, serverId), sql`${server.metadata} -> 'tunnelPeerHop' IS NOT NULL`))
+}
+
+/**
+ * Keep the reported peer hop mode on the server (`server.metadata.tunnelPeerHop`),
+ * so the server's tunnel status can show a downgrade. It is a report and never
+ * part of the table hash, so writing it does not make the table go out again.
+ * Written only when it changed.
+ */
+async function recordPeerClientAuth(
+  db: Db,
+  serverId: string,
+  result: TunnelStatusCommandResult
+): Promise<void> {
+  if (result.peerClientAuth === undefined) {
+    // A daemon that no longer reports a mode (the table went away, or it was
+    // rolled back) must not leave an old downgrade showing.
+    await clearPeerClientAuth(db, serverId)
+    return
+  }
+  const next: PeerHopStatus = {
+    clientAuth: result.peerClientAuth,
+    downgraded: result.peerClientAuthDowngraded === true,
+  }
+  const [row] = await db
+    .select({ metadata: server.metadata })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  const current = peerHopStatusOf(row?.metadata)
+  if (current?.clientAuth === next.clientAuth && current.downgraded === next.downgraded) return
+  await db
+    .update(server)
+    .set({
+      metadata: sql`jsonb_set(coalesce(${server.metadata}, '{}'::jsonb), '{tunnelPeerHop}', ${JSON.stringify(next)}::jsonb)`,
+    })
+    .where(eq(server.id, serverId))
 }
 
 /**

@@ -9,6 +9,7 @@
  */
 import type {
   TunnelInbound,
+  TunnelPeerClientAuth,
   TunnelPeerMaterial,
   TunnelRoute,
   TunnelRouteUpstream,
@@ -46,6 +47,8 @@ export type RouteBuildResult = {
   /** Set only when asked for (`withInbound`): the names whose site runs here and who may forward each. */
   inbound?: TunnelInbound[]
   needsPeerMaterial: boolean
+  /** Set only when asked for (`peerClientAuth`): the receiving side's client certificate policy. */
+  peerClientAuth?: TunnelPeerClientAuth
   /** Names that could not be routed, with a plain-words reason. */
   skipped: { hostname: string; reason: string }[]
   /** Plain-words notes when a contract cap cut the table short. */
@@ -131,29 +134,52 @@ function noteInbound(
   if (doorway.isLocalOnly) facts.locked.add(doorway.hostname)
 }
 
+type Collected = {
+  routes: Map<string, TunnelRoute>
+  peers: Set<string>
+  inbound: InboundFacts
+  skipped: RouteBuildResult['skipped']
+}
+
+/** One tunnel's doorways: who may forward to the site here, and the routes this server carries. */
+function collectDoorways(
+  tunnel: TunnelFact,
+  serverId: string,
+  addresses: AddressBook,
+  into: Collected
+): void {
+  const carriesHere = tunnel.carrying.includes(serverId)
+  for (const doorway of tunnel.doorways) {
+    const siteHere = doorway.siteServerIds.includes(serverId)
+    if (siteHere) noteInbound(into.inbound, into.peers, tunnel, doorway, serverId, addresses)
+    if (!carriesHere || into.routes.has(doorway.hostname)) continue
+    const built = routeFor(doorway, siteHere, addresses)
+    if ('route' in built) into.routes.set(doorway.hostname, built.route)
+    else into.skipped.push({ hostname: doorway.hostname, reason: built.reason })
+  }
+}
+
 export function buildTunnelRoutes(
   serverId: string,
   tunnels: readonly TunnelFact[],
   addresses: AddressBook,
-  options: { withInbound?: boolean; withLockAdd?: boolean } = {}
+  options: {
+    withInbound?: boolean
+    withLockAdd?: boolean
+    peerClientAuth?: TunnelPeerClientAuth
+  } = {}
 ): RouteBuildResult {
   const routes = new Map<string, TunnelRoute>()
   const peers = new Set<string>()
   const inbound: InboundFacts = { peers: new Map(), locked: new Set() }
   const skipped: RouteBuildResult['skipped'] = []
-
   for (const tunnel of tunnels) {
-    const carriesHere = tunnel.carrying.includes(serverId)
-    for (const doorway of tunnel.doorways) {
-      const siteHere = doorway.siteServerIds.includes(serverId)
-      if (siteHere) noteInbound(inbound, peers, tunnel, doorway, serverId, addresses)
-      if (!carriesHere || routes.has(doorway.hostname)) continue
-      const built = routeFor(doorway, siteHere, addresses)
-      if ('route' in built) routes.set(doorway.hostname, built.route)
-      else skipped.push({ hostname: doorway.hostname, reason: built.reason })
-    }
+    collectDoorways(tunnel, serverId, addresses, { routes, peers, inbound, skipped })
   }
-  const table = finishTable(serverId, routes, peers, skipped, addresses)
+  const found = finishTable(serverId, routes, peers, skipped, addresses)
+  const table = options.peerClientAuth
+    ? { ...found, peerClientAuth: options.peerClientAuth }
+    : found
   if (!options.withInbound) return table
   const lockNames = options.withLockAdd ? inbound.locked : new Set<string>()
   return { ...table, inbound: finishInbound(inbound.peers, table.warnings, lockNames) }
@@ -230,7 +256,10 @@ async function sha256Hex(text: string): Promise<string> {
  * sealing the same key twice gives different text.
  */
 export async function hashTunnelRoutes(
-  built: Pick<RouteBuildResult, 'routes' | 'peerAddresses' | 'listenAddresses' | 'inbound'>,
+  built: Pick<
+    RouteBuildResult,
+    'routes' | 'peerAddresses' | 'listenAddresses' | 'inbound' | 'peerClientAuth'
+  >,
   material: Pick<TunnelPeerMaterial, 'certificatePem' | 'caCertPem'> | undefined
 ): Promise<string> {
   return await sha256Hex(
@@ -242,6 +271,8 @@ export async function hashTunnelRoutes(
       caCertPem: material?.caCertPem ?? null,
       // Only when sent, so a daemon without the feature keeps the hash it had.
       ...(built.inbound ? { inbound: built.inbound } : {}),
+      // Only when sent: a change of policy changes the hash, so a server is sent its certificate again.
+      ...(built.peerClientAuth ? { peerClientAuth: built.peerClientAuth } : {}),
     })
   )
 }
@@ -262,5 +293,6 @@ export async function toRoutesPayload(
   if (built.listenAddresses.length > 0) payload.listenAddresses = built.listenAddresses
   if (material) payload.peerMaterial = material
   if (built.inbound) payload.inbound = built.inbound
+  if (built.peerClientAuth) payload.peerClientAuth = built.peerClientAuth
   return payload
 }

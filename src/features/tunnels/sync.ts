@@ -30,7 +30,9 @@ import {
   daemonAddsLockFromTable,
   daemonCanCarryTunnels,
   daemonLockFollowsTable,
+  daemonTakesPeerClientAuth,
 } from './daemon-gate.ts'
+import { markPeerLeafReminted, peerDowngradeRepeats, peerLeafRemintDue } from './status.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
   buildTunnelRoutes,
@@ -241,10 +243,15 @@ export async function syncServerTunnelRoutes(
   const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses, {
     withInbound: daemonLockFollowsTable(ready.features),
     withLockAdd: daemonAddsLockFromTable(ready.features),
+    // The daemon shows its peer certificate and checks one when it is shown;
+    // `require` goes out with a leaf that allows client authentication: a leaf
+    // issued before that is stale (peerLeafIsCurrent), so the same send re-mints it.
+    ...(daemonTakesPeerClientAuth(ready.features) ? { peerClientAuth: 'require' as const } : {}),
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)
-  const open = !params.force && !params.issue
+  const remint = remintDue(serverId, ready.metadata, built)
+  const open = !params.force && !params.issue && !remint
   if (open && (await isAlreadyCurrent(db, serverId, sent, built, stateHash))) {
     return { status: 'unchanged' }
   }
@@ -257,6 +264,7 @@ export async function syncServerTunnelRoutes(
     resolveTunnelGeneration(db, organizationId, facts)
   )
   if (generation !== undefined) payload.generation = generation
+  await noteOldReceivers(db, built)
   const notes = [...built.warnings, ...built.skipped.map((n) => `${n.hostname}: ${n.reason}`)]
   for (const note of notes) compatLogWarn('tunnel-sync', `server ${serverId}: ${note}`)
   // The leaf is tracked as delivered only when the certificate really went out.
@@ -268,6 +276,7 @@ export async function syncServerTunnelRoutes(
     material ? issue.leaf : null
   )
   if (!queued.ok) return { status: 'failed', reason: queued.reason }
+  await markRemintDone(db, serverId, remint, material)
   await recordSent(db, serverId, {
     stateHash,
     commandId: queued.commandId,
@@ -275,6 +284,52 @@ export async function syncServerTunnelRoutes(
     forwarded: built.routes.filter((r) => !r.local).length,
   })
   return { status: 'sent', commandId: queued.commandId }
+}
+
+/**
+ * A daemon that downgraded `require` has a leaf without client use: it gets a
+ * new one in this send, once per report (see peerLeafRemintDue). A repeat after
+ * that is only logged.
+ */
+function remintDue(serverId: string, metadata: unknown, built: RouteBuildResult): boolean {
+  const due = built.peerClientAuth !== undefined && peerLeafRemintDue(metadata)
+  if (!due && peerDowngradeRepeats(metadata)) {
+    compatLogWarn(
+      'tunnel-sync',
+      `server ${serverId}: the peer hop still runs without client certificates after a new peer certificate`
+    )
+  }
+  return due
+}
+
+/** Remember that this send carried the new leaf, so the same report does not ask again. */
+async function markRemintDone(
+  db: Db,
+  serverId: string,
+  remint: boolean,
+  material: unknown
+): Promise<void> {
+  if (remint && material !== undefined) await markPeerLeafReminted(db, serverId)
+}
+
+/**
+ * A sender that dials the peer port cannot reach a receiver whose daemon lacks
+ * `tunnel-peer-mtls-v1` (it answers nothing there). Say so in plain words
+ * instead of leaving visitors a silent 503.
+ */
+async function noteOldReceivers(db: Db, built: RouteBuildResult): Promise<void> {
+  if (built.peerClientAuth === undefined) return
+  const receivers = new Set(
+    built.routes.flatMap((route) => route.upstreams.map((upstream) => upstream.serverId))
+  )
+  for (const receiverId of receivers) {
+    const state = await getServerDaemonStateByServerId(db, receiverId)
+    if (daemonTakesPeerClientAuth(state?.projection?.features)) continue
+    built.warnings.push(
+      'The server that runs a site on this Tunnel needs a daemon update before tunnels can reach it'
+    )
+    return
+  }
 }
 
 /** The leaf to send: the one handed in, or a freshly minted one when the table needs a certificate. */

@@ -78,3 +78,12 @@ test('server.tunnel.status keeps the connector facts and refuses bad ones', () =
   bad({ hostnames: ['x'.repeat(254)] })
   bad({ hostnames: Array.from({ length: 101 }, (_, i) => `n${i}.example.com`) })
 })
+
+test('server.tunnel.status carries what the peer hop does about client certificates', () => {
+  const down = { ...GOOD, peerClientAuth: 'verify', peerClientAuthDowngraded: true }
+  assertEquals(parseTunnelStatusResult(down) as unknown, down)
+  const ok = { ...GOOD, peerClientAuth: 'require' }
+  assertEquals(parseTunnelStatusResult(ok) as unknown, ok)
+  assertThrows(() => parseTunnelStatusResult({ ...GOOD, peerClientAuth: 'x' }))
+  assertThrows(() => parseTunnelStatusResult({ ...GOOD, peerClientAuthDowngraded: false }))
+})

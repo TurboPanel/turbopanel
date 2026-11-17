@@ -241,6 +241,7 @@ export const DAEMON_WIRE_FEATURES = [
   'project-cache-v1',
   'tunnel-lock-add-v1',
   'build-limits-v1',
+  'tunnel-peer-mtls-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -809,3 +810,11 @@ export function resolveInstanceCapabilities(
 ): Record<string, boolean> {
   return resolvePeerCapabilities(reportedVersion, floors)
 }
+
+/**
+ * `server.tunnel.routes` carries `peerClientAuth`, and the daemon shows its
+ * peer certificate as a client certificate on the hop between servers. Sent
+ * only to a daemon that lists it; an older daemon ignores the field and its
+ * peer site asks for no client certificate.
+ */
+export const TUNNEL_PEER_MTLS_FEATURE: DaemonWireFeature = 'tunnel-peer-mtls-v1'
