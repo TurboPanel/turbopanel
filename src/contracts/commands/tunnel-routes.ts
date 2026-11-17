@@ -395,6 +395,29 @@ function parseTunnelInboundList(value: unknown): TunnelInbound[] {
   return inbound
 }
 
+/** The optional fields of `server.tunnel.routes`, parsed onto `payload`. */
+function readTunnelRoutesOptionals(
+  value: Record<string, unknown>,
+  payload: TunnelRoutesCommandPayload
+): void {
+  if (value.listenAddresses !== undefined) {
+    payload.listenAddresses = parseAddressList(
+      value.listenAddresses,
+      'server.tunnel.routes listenAddresses',
+      { min: 1, max: MAX_TUNNEL_ADDRESSES }
+    )
+  }
+  if (value.peerMaterial !== undefined) {
+    payload.peerMaterial = parseTunnelPeerMaterial(value.peerMaterial)
+  }
+  if (value.peerClientAuth !== undefined) {
+    payload.peerClientAuth = parseTunnelPeerClientAuth(value.peerClientAuth)
+  }
+  if (value.inbound !== undefined) payload.inbound = parseTunnelInboundList(value.inbound)
+  const generation = parseTunnelGeneration(value.generation, 'server.tunnel.routes generation')
+  if (generation !== undefined) payload.generation = generation
+}
+
 export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPayload {
   if (!isRecord(value)) throw new TypeError('Invalid server.tunnel.routes payload')
   if (!isString(value.hash) || !SHA256_HEX_RE.test(value.hash)) {
@@ -415,22 +438,7 @@ export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPay
           max: MAX_TUNNEL_ADDRESSES,
         })
   const payload: TunnelRoutesCommandPayload = { hash: value.hash, routes, peerAddresses }
-  if (value.listenAddresses !== undefined) {
-    payload.listenAddresses = parseAddressList(
-      value.listenAddresses,
-      'server.tunnel.routes listenAddresses',
-      { min: 1, max: MAX_TUNNEL_ADDRESSES }
-    )
-  }
-  if (value.peerMaterial !== undefined) {
-    payload.peerMaterial = parseTunnelPeerMaterial(value.peerMaterial)
-  }
-  if (value.peerClientAuth !== undefined) {
-    payload.peerClientAuth = parseTunnelPeerClientAuth(value.peerClientAuth)
-  }
-  if (value.inbound !== undefined) payload.inbound = parseTunnelInboundList(value.inbound)
-  const generation = parseTunnelGeneration(value.generation, 'server.tunnel.routes generation')
-  if (generation !== undefined) payload.generation = generation
+  readTunnelRoutesOptionals(value, payload)
   const needsMaterial = routes.length > 0 || peerAddresses.length > 0
   if (needsMaterial && !payload.peerMaterial) {
     throw new TypeError('Invalid server.tunnel.routes peerMaterial: required with routes or peers')

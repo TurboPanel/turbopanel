@@ -169,6 +169,20 @@ export function peerHopStatusOf(metadata: unknown): PeerHopStatus | null {
   return { clientAuth: raw.clientAuth, downgraded: raw.downgraded === true }
 }
 
+/** Remove `server.metadata.tunnelPeerHop` when there is one. */
+async function clearPeerClientAuth(db: Db, serverId: string): Promise<void> {
+  const [row] = await db
+    .select({ metadata: server.metadata })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  if (peerHopStatusOf(row?.metadata) === null) return
+  await db
+    .update(server)
+    .set({ metadata: sql`${server.metadata} - 'tunnelPeerHop'` })
+    .where(eq(server.id, serverId))
+}
+
 /**
  * Keep the reported peer hop mode on the server (`server.metadata.tunnelPeerHop`),
  * so the server's tunnel status can show a downgrade. It is a report and never
@@ -180,7 +194,12 @@ async function recordPeerClientAuth(
   serverId: string,
   result: TunnelStatusCommandResult
 ): Promise<void> {
-  if (result.peerClientAuth === undefined) return
+  if (result.peerClientAuth === undefined) {
+    // A daemon that no longer reports a mode (the table went away, or it was
+    // rolled back) must not leave an old downgrade showing.
+    await clearPeerClientAuth(db, serverId)
+    return
+  }
   const next: PeerHopStatus = {
     clientAuth: result.peerClientAuth,
     downgraded: result.peerClientAuthDowngraded === true,

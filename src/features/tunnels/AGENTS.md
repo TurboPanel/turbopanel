@@ -532,7 +532,7 @@ provider accounts.
   sends a server into one derived rule, accept tcp 9443 (`TUNNEL_PEER_PORT`, the
   daemon's peer-facing server, checked by `check:contract-drift`) on the host
   from exactly those addresses (`facts.ts` adds it to the hosting exposures; not
-  80, not 443, not 443/udp, not the panel port). The rule and the Caddy address lock therefore
+  80, not 443, not 443/udp, not the panel port). The port is per receiver: 9443 only on a daemon with `tunnel-peer-mtls-v1` (`tunnelPeerPortFor`), 443 on an older one, so pairs of old servers keep working. The rule and the Caddy address lock therefore
   name the same servers, and a carrier-only server gets no rule. A successful
   `server.tunnel.routes` is a firewall preview trigger
   (`commandMayChangeFirewallPreview`), so the rule follows the table. It only

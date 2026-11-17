@@ -9,7 +9,7 @@ import { deriveFirewall, type FirewallDeriveInput } from '../firewall/derive.ts'
 import { DEFAULT_FIREWALL_ORG_POLICY } from '../firewall/policy.ts'
 import { MAX_FIREWALL_RULE_ADDRESSES } from '../firewall/vocabulary.ts'
 import { commandMayChangeFirewallPreview } from '../firewall/preview.ts'
-import { TUNNEL_PEER_COMMENT, tunnelPeerExposures } from './peer-exposure.ts'
+import { TUNNEL_PEER_COMMENT, tunnelPeerExposures, tunnelPeerPortFor } from './peer-exposure.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -19,7 +19,7 @@ function inputWith(peers: string[]): FirewallDeriveInput {
     sshPortHint: 22,
     coLocated: false,
     controlPlaneTcpPorts: [],
-    exposures: tunnelPeerExposures(peers),
+    exposures: tunnelPeerExposures(peers, TUNNEL_PEER_PORT),
     edicts: [],
     sources: { servers: [], datacenter: ['10.0.0.0/24'], fabric: [] },
   }
@@ -30,7 +30,7 @@ function derive(peers: string[]) {
 }
 
 test('no inbound peers means no rule', () => {
-  assertEquals(tunnelPeerExposures([]), [])
+  assertEquals(tunnelPeerExposures([], TUNNEL_PEER_PORT), [])
   assertEquals(derive([]).rules, [])
 })
 
@@ -44,9 +44,9 @@ test('peers get HTTPS only, from their exact addresses and never the whole datac
 })
 
 test('a range is never turned into a rule, only bare addresses are', () => {
-  assertEquals(tunnelPeerExposures(['10.0.0.0/24']), [])
+  assertEquals(tunnelPeerExposures(['10.0.0.0/24'], TUNNEL_PEER_PORT), [])
   assertEquals(derive(['10.0.0.0/24', 'not-an-address']).rules, [])
-  const [exposure] = tunnelPeerExposures(['10.0.0.5/24', '10.0.0.6'])
+  const [exposure] = tunnelPeerExposures(['10.0.0.5/24', '10.0.0.6'], TUNNEL_PEER_PORT)
   assertEquals(exposure?.sources, ['10.0.0.6'])
 })
 
@@ -71,11 +71,19 @@ test('only the peer port is ever opened: no 80, no 443, no 443/udp, no wider sou
 
 test('the exposure copies its addresses', () => {
   const peers = ['10.0.0.10']
-  const [exposure] = tunnelPeerExposures(peers)
+  const [exposure] = tunnelPeerExposures(peers, TUNNEL_PEER_PORT)
   peers.push('10.0.0.99')
   assertEquals(exposure?.sources, ['10.0.0.10'])
 })
 
 test('a successful forwarding table makes the server preview its firewall again', () => {
   assertEquals(commandMayChangeFirewallPreview('server.tunnel.routes'), true)
+})
+
+test('the receiver port follows its daemon: the peer port with tunnel-peer-mtls-v1, 443 without', () => {
+  assertEquals(tunnelPeerPortFor(['tunnel-peer-mtls-v1']), TUNNEL_PEER_PORT)
+  assertEquals(tunnelPeerPortFor(['tunnel-status-v1']), 443)
+  assertEquals(tunnelPeerPortFor(undefined), 443)
+  const [old] = tunnelPeerExposures(['10.0.0.10'], tunnelPeerPortFor(undefined))
+  assertEquals(old?.ports, '443')
 })
