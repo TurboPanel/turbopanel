@@ -359,7 +359,12 @@ provider accounts.
   addresses); a pair with no shared version is not routed and the reason says
   the two servers share no IP version. The upstream, `peerAddresses`,
   `listenAddresses`, the firewall rule and the receiver's address lock all come
-  from that one choice, so they agree. A public hop gets the same
+  from that one choice, so they agree. Each upstream also carries
+  `localAddress`: the carrier's own first address of that pair (the same IP
+  version, the one the receiver's allowlist names), so the daemon dials the hop
+  from the address the receiver admits and not whichever the kernel picks on a
+  host with several. No carrier address in the pair = the field is left out. It
+  is part of the routes, so it is in the hash. A public hop gets the same
   mutual TLS and address lock as any other (port 9443 when the receiver is
   updated, see below). A name no
   server can reach is left out of the table and its reason is on the hostname
@@ -422,7 +427,13 @@ provider accounts.
   The tunnel routes once sent only the connector lists, so a server added to a
   tunnel started its connector at once but got its forwarding table only from
   the sweep (or the next deploy result): the tables and the lists go out
-  together from every trigger.
+  together from every trigger. A datacenter address a daemon reports moving
+  (a repin or link change, found at hello, which may not enqueue) is the last
+  trigger: the repin fan-out sweep (`client/datacenters/repin-fanout.ts`) nudges
+  each affected organization once per pass after its routing fan-out. Only the
+  tables that changed go out (the carrier's `localAddress`, the peers' allowed
+  sources), and one already sent and awaiting its result is left alone, so a
+  burst of changes is one resend per server, not a storm.
   **A request handler never waits for it**: it calls
   `nudgeTunnelRoutesAfterResponse` (`src/client/organizations/tunnel-nudge.ts`),
   which runs the work after the response (`runAfterResponse`) on its own

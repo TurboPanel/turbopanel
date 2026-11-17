@@ -49,7 +49,7 @@ test('a name whose site runs elsewhere is forwarded to that server', () => {
       hostname: 'shop.example.com',
       local: false,
       lock: true,
-      upstreams: [{ serverId: B, addresses: ['fd00::b'] }],
+      upstreams: [{ serverId: B, addresses: ['fd00::b'], localAddress: 'fd00::a' }],
     },
   ])
   // A carrier-only server has no inbound peers: the list is empty and it listens on nothing extra.
@@ -284,7 +284,7 @@ test('the hash of a fixed table is pinned, so the order feeding it never drifts 
   const cert = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n'
   assertEquals(
     await hashTunnelRoutes(built, { certificatePem: cert, caCertPem: cert }),
-    '2d07617b9051cf5724a4c2980733b865d8914d320b5453ee08a178af2d8fb168'
+    'd3ca46a05e562eb17d86709341291dbd5f42d47624a82c95746b6b18148168b1'
   )
 })
 
@@ -490,7 +490,9 @@ test('a site server with no datacenter address is reached on its public address'
     [B, pub(PUBLIC_B)],
   ])
   const built = buildTunnelRoutes(A, shop(B), addresses)
-  assertEquals(built.routes[0].upstreams, [{ serverId: B, addresses: [PUBLIC_B] }])
+  assertEquals(built.routes[0].upstreams, [
+    { serverId: B, addresses: [PUBLIC_B], localAddress: PUBLIC_A },
+  ])
   assertEquals(built.skipped, [])
   // The hop stays authenticated: the table still asks for peer material.
   assertEquals(built.needsPeerMaterial, true)
@@ -513,7 +515,9 @@ test('a shared datacenter address is preferred over public addresses on both sid
     [B, inDc(['fd00::b'], [PUBLIC_B])],
   ])
   const sender = buildTunnelRoutes(A, shop(B), addresses)
-  assertEquals(sender.routes[0].upstreams, [{ serverId: B, addresses: ['fd00::b'] }])
+  assertEquals(sender.routes[0].upstreams, [
+    { serverId: B, addresses: ['fd00::b'], localAddress: 'fd00::a' },
+  ])
   const receiver = buildTunnelRoutes(B, shop(B), addresses)
   assertEquals(receiver.peerAddresses, ['fd00::a'])
   assertEquals(receiver.listenAddresses, ['fd00::b'])
@@ -526,7 +530,9 @@ test('a shared datacenter address is preferred over public addresses on both sid
  */
 function assertAgree(addresses: AddressBook, carrierSide: string[], siteSide: string[]): void {
   const sender = buildTunnelRoutes(A, shop(B), addresses)
-  assertEquals(sender.routes[0].upstreams, [{ serverId: B, addresses: siteSide }])
+  assertEquals(sender.routes[0].upstreams, [
+    { serverId: B, addresses: siteSide, localAddress: carrierSide[0] },
+  ])
   const receiver = buildTunnelRoutes(B, shop(B), addresses, { withInbound: true })
   assertEquals(receiver.peerAddresses, carrierSide)
   assertEquals(receiver.listenAddresses, siteSide)
@@ -596,10 +602,10 @@ test('each carrier and site server pair is chosen on its own', () => {
   assertEquals(receiver.peerAddresses, [PUBLIC_C, 'fd00::a'].toSorted())
   assertEquals(receiver.listenAddresses, ['fd00::b', PUBLIC_B])
   assertEquals(buildTunnelRoutes(A, tunnels, addresses).routes[0].upstreams, [
-    { serverId: B, addresses: ['fd00::b'] },
+    { serverId: B, addresses: ['fd00::b'], localAddress: 'fd00::a' },
   ])
   assertEquals(buildTunnelRoutes(C, tunnels, addresses).routes[0].upstreams, [
-    { serverId: B, addresses: [PUBLIC_B] },
+    { serverId: B, addresses: [PUBLIC_B], localAddress: PUBLIC_C },
   ])
 })
 
@@ -650,7 +656,7 @@ test('a datacenter with no shared IP version falls back to public addresses', ()
     [B, { datacenters: { dc1: ['fd00::b'] }, public: [PUBLIC_B] }],
   ])
   assertEquals(buildTunnelRoutes(A, shop(B), addresses).routes[0].upstreams, [
-    { serverId: B, addresses: [PUBLIC_B] },
+    { serverId: B, addresses: [PUBLIC_B], localAddress: PUBLIC_A },
   ])
 })
 
@@ -691,4 +697,92 @@ test('with no address of any kind the name is skipped and the reason is reported
     [B, pub(PUBLIC_B)],
   ])
   assertEquals(unroutedReasons([A], shop(B), routed).size, 0)
+})
+
+test('a server with only IPv4 sends from its IPv4 address, and that address is the one the receiver admits', () => {
+  const addresses: AddressBook = new Map([
+    [A, pub(PUBLIC_A)],
+    [B, pub(PUBLIC_B)],
+  ])
+  const sender = buildTunnelRoutes(A, shop(B), addresses)
+  assertEquals(sender.routes[0].upstreams[0].localAddress, PUBLIC_A)
+  const receiver = buildTunnelRoutes(B, shop(B), addresses, { withInbound: true })
+  assert(receiver.peerAddresses.includes(PUBLIC_A))
+  assertEquals(receiver.inbound?.[0].peers, [PUBLIC_A])
+})
+
+test('a server with both families sends from the address of the family the hop uses', () => {
+  // Public addresses: both families on both sides, IPv4 wins.
+  const publicBook: AddressBook = new Map([
+    [A, pub('2001:db8::a', PUBLIC_A)],
+    [B, pub('2001:db8::b', PUBLIC_B)],
+  ])
+  const upstream = buildTunnelRoutes(A, shop(B), publicBook).routes[0].upstreams[0]
+  assertEquals(upstream.addresses, [PUBLIC_B])
+  assertEquals(upstream.localAddress, PUBLIC_A)
+  // A datacenter that prefers IPv6: the IPv6 pair is used on both sides.
+  const dcBook: AddressBook = new Map([
+    [A, inDc(['fd00::a', '10.0.0.10'])],
+    [B, inDc(['fd00::b', '10.0.0.11'])],
+  ])
+  const v6 = buildTunnelRoutes(A, shop(B), dcBook).routes[0].upstreams[0]
+  assertEquals(v6.addresses, ['fd00::b'])
+  assertEquals(v6.localAddress, 'fd00::a')
+  // The sender has IPv6 only on the shared network, the site IPv4 only: no shared family, no table entry.
+  const mixed: AddressBook = new Map([
+    [A, pub('2001:db8::a')],
+    [B, pub(PUBLIC_B)],
+  ])
+  assertEquals(buildTunnelRoutes(A, shop(B), mixed).routes, [])
+})
+
+test('every pair has its own source address and the payload carries it through the contract parser', async () => {
+  const addresses: AddressBook = new Map([
+    [A, inDc(['fd00::a'], [PUBLIC_A])],
+    [B, inDc(['fd00::b'], [PUBLIC_B])],
+    [C, pub(PUBLIC_C)],
+  ])
+  const built = buildTunnelRoutes(
+    A,
+    [
+      {
+        carrying: [A],
+        doorways: [{ hostname: 'shop.example.com', siteServerIds: [B, C], isLocalOnly: true }],
+      },
+    ],
+    addresses
+  )
+  assertEquals(
+    built.routes[0].upstreams.map((u) => [u.serverId, u.localAddress]),
+    [
+      [B, 'fd00::a'],
+      [C, PUBLIC_A],
+    ]
+  )
+  const cert = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n'
+  const payload = await toRoutesPayload(built, {
+    certificatePem: cert,
+    caCertPem: cert,
+    privateKeyEnvelope: 'tpdaemon.sealed',
+  })
+  assertEquals(
+    parseTunnelRoutesPayload(payload).routes[0].upstreams.map((u) => u.localAddress),
+    ['fd00::a', PUBLIC_A]
+  )
+})
+
+test('a changed source address changes the hash, so the table is sent again', async () => {
+  const table = (own: string) =>
+    buildTunnelRoutes(
+      A,
+      shop(B),
+      new Map([
+        [A, pub(own)],
+        [B, pub(PUBLIC_B)],
+      ])
+    )
+  assert(
+    (await hashTunnelRoutes(table(PUBLIC_A), undefined)) !==
+      (await hashTunnelRoutes(table(PUBLIC_C), undefined))
+  )
 })
