@@ -1,4 +1,4 @@
-import { assert, assertEquals, assertRejects } from '@std/assert'
+import { assert, assertEquals, assertRejects, assertThrows } from '@std/assert'
 import { parseTunnelRoutesPayload } from '../../contracts/commands/tunnel-routes.ts'
 import { buildTunnelRoutes, hashTunnelRoutes, toRoutesPayload } from './route-builder.ts'
 
@@ -413,5 +413,41 @@ test('lock: true goes out per name, only for local-only names and only when the 
       })
     ).inbound,
     built.inbound
+  )
+})
+
+test('peerClientAuth is sent only when asked for, and changes the hash', async () => {
+  const tunnels = [
+    {
+      carrying: [A],
+      doorways: [{ hostname: 's.example.com', siteServerIds: [B], isLocalOnly: false }],
+    },
+  ]
+  const cert = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n'
+  const material = { certificatePem: cert, caCertPem: cert }
+  const plain = buildTunnelRoutes(A, tunnels, book)
+  const verified = buildTunnelRoutes(A, tunnels, book, { peerClientAuth: 'verify' })
+  assertEquals(plain.peerClientAuth, undefined)
+  assertEquals(verified.peerClientAuth, 'verify')
+  assert((await hashTunnelRoutes(plain, material)) !== (await hashTunnelRoutes(verified, material)))
+  const payload = await toRoutesPayload(verified, {
+    certificatePem: cert,
+    privateKeyEnvelope: 'tpdaemon.sealed',
+    caCertPem: cert,
+  })
+  assertEquals(parseTunnelRoutesPayload(payload).peerClientAuth, 'verify')
+  assertEquals(
+    'peerClientAuth' in
+      (await toRoutesPayload(plain, {
+        certificatePem: cert,
+        privateKeyEnvelope: 'tpdaemon.sealed',
+        caCertPem: cert,
+      })),
+    false
+  )
+  assertThrows(
+    () => parseTunnelRoutesPayload({ ...payload, peerClientAuth: 'always' }),
+    TypeError,
+    'peerClientAuth'
   )
 })

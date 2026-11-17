@@ -30,6 +30,7 @@ import {
   daemonAddsLockFromTable,
   daemonCanCarryTunnels,
   daemonLockFollowsTable,
+  daemonTakesPeerClientAuth,
 } from './daemon-gate.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
@@ -241,6 +242,9 @@ export async function syncServerTunnelRoutes(
   const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses, {
     withInbound: daemonLockFollowsTable(ready.features),
     withLockAdd: daemonAddsLockFromTable(ready.features),
+    // The daemon shows its peer certificate and checks one when it is shown;
+    // turning on `require` waits until every server holds a certificate that allows it.
+    ...(daemonTakesPeerClientAuth(ready.features) ? { peerClientAuth: 'verify' as const } : {}),
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)

@@ -193,6 +193,15 @@ export type TunnelPeerMaterial = {
 }
 
 /**
+ * What the receiving side of the hop between servers does about client
+ * certificates (daemon feature `tunnel-peer-mtls-v1`). Absent = it asks for
+ * none. `verify` checks a client certificate against the organization's
+ * authority when one is shown and lets a server without one through; `require`
+ * also refuses a server that shows none.
+ */
+export type TunnelPeerClientAuth = 'verify' | 'require'
+
+/**
  * A tunnel name whose site runs on this server, with the exact addresses of the
  * other servers that carry it (empty when only this server does). The daemon
  * sets the lock and trusted peers of that name's site block from it without a
@@ -223,6 +232,8 @@ export type TunnelRoutesCommandPayload = {
   listenAddresses?: string[]
   /** Required when `routes` or `peerAddresses` is not empty. */
   peerMaterial?: TunnelPeerMaterial
+  /** Client certificate policy of the peer-facing site. Sent only to a daemon that lists `tunnel-peer-mtls-v1`. */
+  peerClientAuth?: TunnelPeerClientAuth
   /**
    * Every tunnel name whose site runs here, with who may forward it. Sent only
    * to a daemon that advertises `tunnel-lock-follow-v1`; absent = the locks stay
@@ -398,6 +409,12 @@ export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPay
   }
   if (value.peerMaterial !== undefined) {
     payload.peerMaterial = parseTunnelPeerMaterial(value.peerMaterial)
+  }
+  if (value.peerClientAuth !== undefined) {
+    if (value.peerClientAuth !== 'verify' && value.peerClientAuth !== 'require') {
+      throw new TypeError('Invalid server.tunnel.routes peerClientAuth')
+    }
+    payload.peerClientAuth = value.peerClientAuth
   }
   if (value.inbound !== undefined) payload.inbound = parseTunnelInboundList(value.inbound)
   const generation = parseTunnelGeneration(value.generation, 'server.tunnel.routes generation')

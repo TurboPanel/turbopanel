@@ -22,6 +22,7 @@ import {
   DAEMON_WIRE_FEATURES,
   PROJECT_CACHE_FEATURE,
   BUILD_LIMITS_FEATURE,
+  TUNNEL_PEER_MTLS_FEATURE,
   TUNNEL_LOCK_ADD_FEATURE,
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
@@ -464,8 +465,14 @@ test('tunnel-lock-add-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
-test('build-limits-v1 is the last daemon wire feature and raised no floor', () => {
+test('build-limits-v1 is a daemon wire feature and raised no floor', () => {
   assertEquals(BUILD_LIMITS_FEATURE, 'build-limits-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), BUILD_LIMITS_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(BUILD_LIMITS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('tunnel-peer-mtls-v1 is the last daemon wire feature and raised no floor', () => {
+  assertEquals(TUNNEL_PEER_MTLS_FEATURE, 'tunnel-peer-mtls-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), TUNNEL_PEER_MTLS_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })

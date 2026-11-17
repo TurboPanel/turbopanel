@@ -9,6 +9,7 @@
  */
 import type {
   TunnelInbound,
+  TunnelPeerClientAuth,
   TunnelPeerMaterial,
   TunnelRoute,
   TunnelRouteUpstream,
@@ -46,6 +47,8 @@ export type RouteBuildResult = {
   /** Set only when asked for (`withInbound`): the names whose site runs here and who may forward each. */
   inbound?: TunnelInbound[]
   needsPeerMaterial: boolean
+  /** Set only when asked for (`peerClientAuth`): the receiving side's client certificate policy. */
+  peerClientAuth?: TunnelPeerClientAuth
   /** Names that could not be routed, with a plain-words reason. */
   skipped: { hostname: string; reason: string }[]
   /** Plain-words notes when a contract cap cut the table short. */
@@ -135,7 +138,11 @@ export function buildTunnelRoutes(
   serverId: string,
   tunnels: readonly TunnelFact[],
   addresses: AddressBook,
-  options: { withInbound?: boolean; withLockAdd?: boolean } = {}
+  options: {
+    withInbound?: boolean
+    withLockAdd?: boolean
+    peerClientAuth?: TunnelPeerClientAuth
+  } = {}
 ): RouteBuildResult {
   const routes = new Map<string, TunnelRoute>()
   const peers = new Set<string>()
@@ -153,7 +160,10 @@ export function buildTunnelRoutes(
       else skipped.push({ hostname: doorway.hostname, reason: built.reason })
     }
   }
-  const table = finishTable(serverId, routes, peers, skipped, addresses)
+  const found = finishTable(serverId, routes, peers, skipped, addresses)
+  const table = options.peerClientAuth
+    ? { ...found, peerClientAuth: options.peerClientAuth }
+    : found
   if (!options.withInbound) return table
   const lockNames = options.withLockAdd ? inbound.locked : new Set<string>()
   return { ...table, inbound: finishInbound(inbound.peers, table.warnings, lockNames) }
@@ -230,7 +240,10 @@ async function sha256Hex(text: string): Promise<string> {
  * sealing the same key twice gives different text.
  */
 export async function hashTunnelRoutes(
-  built: Pick<RouteBuildResult, 'routes' | 'peerAddresses' | 'listenAddresses' | 'inbound'>,
+  built: Pick<
+    RouteBuildResult,
+    'routes' | 'peerAddresses' | 'listenAddresses' | 'inbound' | 'peerClientAuth'
+  >,
   material: Pick<TunnelPeerMaterial, 'certificatePem' | 'caCertPem'> | undefined
 ): Promise<string> {
   return await sha256Hex(
@@ -242,6 +255,8 @@ export async function hashTunnelRoutes(
       caCertPem: material?.caCertPem ?? null,
       // Only when sent, so a daemon without the feature keeps the hash it had.
       ...(built.inbound ? { inbound: built.inbound } : {}),
+      // Only when sent: a change of policy changes the hash, so a server is sent its certificate again.
+      ...(built.peerClientAuth ? { peerClientAuth: built.peerClientAuth } : {}),
     })
   )
 }
@@ -262,5 +277,6 @@ export async function toRoutesPayload(
   if (built.listenAddresses.length > 0) payload.listenAddresses = built.listenAddresses
   if (material) payload.peerMaterial = material
   if (built.inbound) payload.inbound = built.inbound
+  if (built.peerClientAuth) payload.peerClientAuth = built.peerClientAuth
   return payload
 }

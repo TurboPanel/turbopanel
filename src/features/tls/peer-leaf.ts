@@ -12,8 +12,10 @@
  * name {@link PEER_LEAF_NAME}: the sending Caddy dials the datacenter address
  * but verifies that name, and trusts the Organization CA only for that hop.
  *
- * Server-auth use only (no client-auth purpose): nothing presents it as a
- * client certificate.
+ * The leaf allows both server and client use: the same certificate is what the
+ * receiving Caddy presents and what the sending Caddy shows as its client
+ * certificate, so a receiver can check that a peer holds a certificate of the
+ * organization's authority and not only a trusted source address.
  */
 import { and, asc, eq, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -39,7 +41,7 @@ const MS_PER_DAY = 86_400_000
 /** A peer leaf with less than this left (a third of its lifetime) is replaced. */
 export const PEER_LEAF_RENEW_BEFORE_MS = (ORGANIZATION_CA_LEAF_VALID_DAYS * MS_PER_DAY) / 3
 
-/** What a server's daemon needs to serve and trust the peer hop. */
+/** What a server's daemon needs to serve, show and trust the peer hop. */
 export type PeerLeafMaterial = {
   /** PEM leaf certificate for {@link PEER_LEAF_NAME}. */
   certificatePem: string
@@ -115,6 +117,7 @@ export async function buildPeerLeafMaterial(
 ): Promise<PeerLeafMaterial> {
   const issued = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, [PEER_LEAF_NAME], {
     commonName: PEER_LEAF_NAME,
+    includeClientAuth: true,
     ...(ipAddresses.length > 0 ? { ipAddresses: [...ipAddresses] } : {}),
   })
   const sealedKey = await encryptSecret(dataEncryptionSecrets, issued.privateKeyPem)

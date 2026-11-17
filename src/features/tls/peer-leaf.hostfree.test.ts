@@ -92,7 +92,8 @@ test('a peer leaf is signed by the Organization CA, named tp-peer.internal and c
   const serverAuth = [0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01]
   const clientAuth = [0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02]
   assertEquals(contains(der, serverAuth), true)
-  assertEquals(contains(der, clientAuth), false)
+  // Clients show the same leaf on the hop, so it must allow client use too.
+  assertEquals(contains(der, clientAuth), true)
 })
 
 test('the peer leaf key is sealed for one server and is never in the clear', async () => {
