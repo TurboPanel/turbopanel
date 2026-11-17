@@ -41,6 +41,8 @@ import { ip } from '../../db/schema.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { listManagedIdsForServer } from '../../features/bindings/resolve-endpoint.ts'
+import { nudgeTunnelRoutes, tunnelSyncDepsFrom } from '../../features/tunnels/nudge.ts'
+import { compareText } from '../../features/tunnels/order.ts'
 import { fanOutDatacenterRoutingChange } from './routing-fanout.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
@@ -51,6 +53,7 @@ export const DATACENTER_REPIN_FANOUT_SWEEP_CAP = 25
 export type DatacenterRepinFanoutDeps = Readonly<{
   fanOut?: typeof fanOutDatacenterRoutingChange
   listManagedIdsForServer?: typeof listManagedIdsForServer
+  nudgeTunnelRoutes?: typeof nudgeTunnelRoutes
 }>
 
 type PendingPinRow = {
@@ -148,6 +151,35 @@ async function fanOutGroup(
 }
 
 /**
+ * A server's datacenter address moved, so the source address it dials from and
+ * the addresses its peers admit moved too. Each affected organization's tunnel
+ * tables are built again once per pass (not once per group): a table that did
+ * not change is not sent, and one already sent and awaiting its result is left
+ * alone, so a burst of address changes causes one resend per server, never a storm.
+ * Never throws; the minute sweep sends anything this misses.
+ */
+async function resendTunnelTables(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: Readonly<{
+    secretsConfig: SecretsConfig
+    dataEncryptionSecrets: DerivedSecretsConfig
+  }>,
+  organizationIds: readonly string[],
+  deps: DatacenterRepinFanoutDeps
+): Promise<void> {
+  const syncDeps = tunnelSyncDepsFrom({
+    commandQueue,
+    secretsConfig: params.secretsConfig,
+    dataEncryptionSecrets: params.dataEncryptionSecrets,
+  })
+  const nudge = deps.nudgeTunnelRoutes ?? nudgeTunnelRoutes
+  await forEachSequential([...organizationIds].sort(compareText), (organizationId) =>
+    nudge(db, syncDeps, organizationId)
+  )
+}
+
+/**
  * Drain `ip.repin_pending_fanout_at` markers: one routing fan-out per
  * `(organization, datacenter)` group, then clear the markers of that group.
  * Returns the number of pins whose marker was cleared.
@@ -170,6 +202,7 @@ export async function runDatacenterRepinFanoutSweep(
   if (pending.length === 0) return { processed: 0 }
 
   let processed = 0
+  const movedOrganizations = new Set<string>()
   await forEachSequential(groupPendingPins(pending), async (group) => {
     try {
       await fanOutGroup(db, commandQueue, group, params, deps)
@@ -185,6 +218,8 @@ export async function runDatacenterRepinFanoutSweep(
     }
     await clearPendingFanout(db, group.pins, new Date().toISOString())
     processed += group.pins.length
+    movedOrganizations.add(group.organizationId)
   })
+  await resendTunnelTables(db, commandQueue, params, [...movedOrganizations], deps)
   return { processed }
 }

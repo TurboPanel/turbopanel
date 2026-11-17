@@ -118,7 +118,7 @@ export function pairAddresses(book: AddressBook, carrierId: string, siteId: stri
   return sharedFamily(carrier.public, site.public, false)
 }
 
-/** The servers that run the site that this carrier can reach, with the address for each pair. */
+/** The servers that run the site that this carrier can reach, with the addresses for each pair (theirs to dial, ours to dial from). */
 function remoteUpstreams(
   carrierId: string,
   doorway: DoorwayFact,
@@ -126,9 +126,16 @@ function remoteUpstreams(
 ): TunnelRouteUpstream[] {
   return doorway.siteServerIds
     .flatMap((id) => {
-      const list = pairAddresses(addresses, carrierId, id).site
-      if (list.length === 0) return []
-      return [{ serverId: id, addresses: list.slice(0, TUNNEL_TABLE_CAPS.addressesPerUpstream) }]
+      const pair = pairAddresses(addresses, carrierId, id)
+      if (pair.site.length === 0) return []
+      const upstream: TunnelRouteUpstream = {
+        serverId: id,
+        addresses: pair.site.slice(0, TUNNEL_TABLE_CAPS.addressesPerUpstream),
+      }
+      // The carrier's own address of the pair's IP version: the one the receiver's allowlist names.
+      const localAddress = pair.carrier[0]
+      if (localAddress !== undefined) upstream.localAddress = localAddress
+      return [upstream]
     })
     .toSorted((a, b) => compareText(a.serverId, b.serverId))
     .slice(0, TUNNEL_TABLE_CAPS.upstreamsPerRoute)

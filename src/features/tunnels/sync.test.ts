@@ -217,6 +217,7 @@ test('a carrying server and a site server are sent real tables with a peer certi
     secretsConfig,
     dataEncryptionSecrets,
   }
+  const routeSends = () => queued.filter((e) => e.type === 'server.tunnel.routes')
   const [org] = await db.insert(organization).values({ name: 'Tunnel Sync Real Org' }).returning()
   const organizationId = org!.id
   try {
@@ -318,6 +319,8 @@ test('a carrying server and a site server are sent real tables with a peer certi
       [['shop.example.com', false]]
     )
     assertEquals(carrierPayload.routes[0]!.upstreams[0]!.addresses, ['10.94.0.11'])
+    // The carrier dials from its own address on the shared network, the one the site server admits.
+    assertEquals(carrierPayload.routes[0]!.upstreams[0]!.localAddress, '10.94.0.10')
     // A server that only carries tunnels has no inbound peers.
     assertEquals(carrierPayload.peerAddresses, [])
     assert(carrierPayload.peerMaterial !== undefined)
@@ -356,6 +359,30 @@ test('a carrying server and a site server are sent real tables with a peer certi
       tracked.map((r) => [r.kind, r.serverId]),
       [['peer', carrierId]]
     )
+
+    // The carrier's address moves (a repin): both tables change, each goes out
+    // once, and a second pass sends nothing, however often the change is announced.
+    await db.update(ip).set({ address: '10.94.0.20' }).where(eq(ip.serverId, carrierId))
+    const sentBefore = routeSends().length
+    const syncOrganization = async () => {
+      for (const serverId of [carrierId, siteId]) {
+        await syncServerTunnelRoutes(db, deps, { organizationId, serverId })
+      }
+    }
+    await syncOrganization()
+    const resent = routeSends().slice(sentBefore)
+    assertEquals(resent.map((e) => e.serverId).toSorted(), [carrierId, siteId].toSorted())
+    for (const envelope of resent) {
+      const next = parseTunnelRoutesPayload(await getCommandDispatchPayload(db, envelope.commandId))
+      if (envelope.serverId === carrierId) {
+        assertEquals(next.routes[0]!.upstreams[0]!.localAddress, '10.94.0.20')
+      } else {
+        assertEquals(next.peerAddresses, ['10.94.0.20'])
+      }
+    }
+    await syncOrganization()
+    await syncOrganization()
+    assertEquals(routeSends().length, sentBefore + 2)
   } finally {
     await db.delete(command).where(
       inArray(

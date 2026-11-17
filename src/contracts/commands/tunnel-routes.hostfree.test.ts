@@ -354,3 +354,25 @@ test('a tunnel table and a deploy tunnel block accept a generation and refuse a 
   assertThrows(() => parseTunnelRoutesPayload({ ...table, generation: '7' }))
   assertEquals('generation' in parseTunnelRoutesPayload({ ...table, generation: undefined }), false)
 })
+
+test('server.tunnel.routes: an upstream source address parses, stays absent when absent, and a bad one is refused', () => {
+  const withSource = (localAddress: unknown) =>
+    payload({
+      routes: [
+        {
+          hostname: 'app.example.com',
+          local: false,
+          lock: true,
+          upstreams: [{ serverId: SERVER_A, addresses: ['10.0.0.5'], localAddress }],
+        },
+      ],
+    })
+  for (const good of ['10.0.0.7', 'fd00::7']) {
+    const parsed = parseTunnelRoutesPayload(withSource(good))
+    assertEquals(parsed.routes[0].upstreams[0].localAddress, good)
+  }
+  assertEquals('localAddress' in parseTunnelRoutesPayload(payload()).routes[0].upstreams[0], false)
+  for (const bad of ['10.0.0.0/24', 'not-an-address', 7, null, '']) {
+    assertThrows(() => parseTunnelRoutesPayload(withSource(bad)), TypeError)
+  }
+})
