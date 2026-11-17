@@ -1,13 +1,15 @@
 /**
  * The firewall's view of tunnel forwarding: the servers that carry a tunnel
- * for a site that runs here may open the hosting HTTPS port, and nobody new
- * beyond their exact addresses. The addresses are the `peerAddresses` the
+ * for a site that runs here may open the peer hop port (`TUNNEL_PEER_PORT`),
+ * and nobody new beyond their exact addresses. The hosting port needs no peer
+ * opening: the peer server forwards to it on loopback. The addresses are the `peerAddresses` the
  * route builder sends to this server, so the rule and the Caddy address lock
  * can never name different servers.
  */
 import type { Db } from '../../db/connection.ts'
 import { isValidIpAddress } from '../../lib/ip-address.ts'
 import type { DerivedExposure } from '../firewall/derive.ts'
+import { TUNNEL_PEER_PORT } from '../../contracts/commands/tunnel-routes.ts'
 import { buildTunnelRoutes } from './route-builder.ts'
 import { loadRoutingFacts } from './route-facts.ts'
 
@@ -32,7 +34,7 @@ export function tunnelPeerExposures(peerAddresses: readonly string[]): DerivedEx
       source: 'hosting',
       scope: 'host',
       proto: 'tcp',
-      ports: '443',
+      ports: String(TUNNEL_PEER_PORT),
       reach: 'peers',
       comment: TUNNEL_PEER_COMMENT,
       sources: exact,
@@ -40,7 +42,7 @@ export function tunnelPeerExposures(peerAddresses: readonly string[]): DerivedEx
   ]
 }
 
-/** HTTPS only: not 80, not 443/udp, not the panel port. */
+/** The peer hop port only: not 80, not 443, not 443/udp, not the panel port. */
 export async function loadTunnelPeerExposures(
   db: Db,
   organizationId: string,

@@ -436,6 +436,11 @@ test('peerClientAuth is sent only when asked for, and changes the hash', async (
     caCertPem: cert,
   })
   assertEquals(parseTunnelRoutesPayload(payload).peerClientAuth, 'verify')
+  const required = buildTunnelRoutes(A, tunnels, book, { peerClientAuth: 'require' })
+  assertEquals(required.peerClientAuth, 'require')
+  assert(
+    (await hashTunnelRoutes(verified, material)) !== (await hashTunnelRoutes(required, material))
+  )
   assertEquals(
     'peerClientAuth' in
       (await toRoutesPayload(plain, {

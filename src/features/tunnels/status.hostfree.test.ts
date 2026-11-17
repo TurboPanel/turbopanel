@@ -3,6 +3,7 @@ import {
   connectorsNeedingRepair,
   connectorUpdateNotice,
   nextTunnelStatus,
+  peerHopStatusOf,
   portalErrorOf,
   portalStateOf,
 } from './status.ts'
@@ -121,4 +122,18 @@ test('only asked connectors that are not running need a repair', () => {
       []
     )
   }
+})
+
+test('the reported peer hop mode is read back from server metadata, and a downgrade shows', () => {
+  assertEquals(peerHopStatusOf(null), null)
+  assertEquals(peerHopStatusOf({}), null)
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'x' } }), null)
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'require' } }), {
+    clientAuth: 'require',
+    downgraded: false,
+  })
+  assertEquals(peerHopStatusOf({ tunnelPeerHop: { clientAuth: 'verify', downgraded: true } }), {
+    clientAuth: 'verify',
+    downgraded: true,
+  })
 })

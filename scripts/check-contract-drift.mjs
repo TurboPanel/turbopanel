@@ -1228,6 +1228,25 @@ function checkExpandOnly(tp, td) {
     extractConst(daemonWire, 'INSTANCE_VERSION_HEADER'),
     'INSTANCE_VERSION_HEADER'
   )
+  // The port of the peer hop: the firewall rule here and the daemon's
+  // peer-facing server must agree.
+  constantEqual(
+    extractConst(
+      requireText(
+        readRel(tp, 'src/contracts/commands/tunnel-routes.ts'),
+        'instance tunnel-routes contract missing'
+      ),
+      'TUNNEL_PEER_PORT'
+    ),
+    extractConst(
+      requireText(
+        readRel(td, 'src/contracts/commands-contracts.ts'),
+        'daemon commands contract missing'
+      ),
+      'TUNNEL_PEER_PORT'
+    ),
+    'TUNNEL_PEER_PORT'
+  )
   // The two floors name versions on two separate release lines (the daemon's
   // and the control plane's), so they are not equal. Each must be a plain
   // X.Y.Z no newer than the version the peer repo is building.

@@ -4,6 +4,7 @@
  * preview its firewall again.
  */
 import { assert, assertEquals } from '@std/assert'
+import { TUNNEL_PEER_PORT } from '../../contracts/commands/tunnel-routes.ts'
 import { deriveFirewall, type FirewallDeriveInput } from '../firewall/derive.ts'
 import { DEFAULT_FIREWALL_ORG_POLICY } from '../firewall/policy.ts'
 import { MAX_FIREWALL_RULE_ADDRESSES } from '../firewall/vocabulary.ts'
@@ -37,7 +38,7 @@ test('peers get HTTPS only, from their exact addresses and never the whole datac
   const { rules } = derive(['10.0.0.10', 'fd00::10'])
   assertEquals(rules.length, 1)
   const rule = rules[0]!
-  assertEquals([rule.action, rule.scope, rule.proto, rule.ports], ['accept', 'host', 'tcp', '443'])
+  assertEquals([rule.action, rule.scope, rule.proto, rule.ports], ['accept', 'host', 'tcp', '9443'])
   assertEquals(rule.sources, ['10.0.0.10/32', 'fd00::10/128'])
   assertEquals(rule.comment, TUNNEL_PEER_COMMENT)
 })
@@ -59,11 +60,11 @@ test('too many peers: the rule is left out with a note, never cut short or widen
   assert(derivation.notes.some((note) => note.includes(TUNNEL_PEER_COMMENT)))
 })
 
-test('only 443/tcp is ever opened: no 80, no 443/udp, no wider source', () => {
+test('only the peer port is ever opened: no 80, no 443, no 443/udp, no wider source', () => {
   const { rules } = derive(['10.0.0.10'])
   assertEquals(
     rules.map((r) => [r.proto, r.ports]),
-    [['tcp', '443']]
+    [['tcp', String(TUNNEL_PEER_PORT)]]
   )
   assert(!rules.some((r) => r.sources.includes('any') || r.sources.includes('10.0.0.0/24')))
 })

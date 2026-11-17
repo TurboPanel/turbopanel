@@ -243,8 +243,9 @@ export async function syncServerTunnelRoutes(
     withInbound: daemonLockFollowsTable(ready.features),
     withLockAdd: daemonAddsLockFromTable(ready.features),
     // The daemon shows its peer certificate and checks one when it is shown;
-    // turning on `require` waits until every server holds a certificate that allows it.
-    ...(daemonTakesPeerClientAuth(ready.features) ? { peerClientAuth: 'verify' as const } : {}),
+    // `require` goes out with a leaf that allows client authentication: a leaf
+    // issued before that is stale (peerLeafIsCurrent), so the same send re-mints it.
+    ...(daemonTakesPeerClientAuth(ready.features) ? { peerClientAuth: 'require' as const } : {}),
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)

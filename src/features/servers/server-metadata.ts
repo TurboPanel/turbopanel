@@ -374,6 +374,13 @@ export type ServerMetadata = {
    * hosting path, drivetemp opt-in, generation). jsonb, so no migration.
    */
   hardwareProfile?: ServerHardwareProfile
+  /**
+   * What the daemon reports about the client-certificate check on the tunnel
+   * peer hop (`require` asked for, `verify` in force when `downgraded`). A
+   * report, written from the tunnel status and never part of the table hash.
+   * jsonb, so no migration.
+   */
+  tunnelPeerHop?: { clientAuth: 'verify' | 'require'; downgraded: boolean }
 }
 
 /**

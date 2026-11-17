@@ -23,6 +23,14 @@ import { isValidHostname } from './hostname.ts'
 /** The fixed certificate name of the hop between servers. Same on both sides. */
 export const TUNNEL_PEER_TLS_NAME = 'tp-peer.internal'
 
+/**
+ * The port of the peer-facing server on a server that carries a tunnel. A server
+ * of its own, apart from the hosting port, because a server that checks client
+ * certificates matches names strictly. Not 7443 (the reverse proxy listens
+ * there). Same on both sides; the daemon reserves it for apps.
+ */
+export const TUNNEL_PEER_PORT = 9443
+
 const MAX_TUNNEL_HOSTNAMES = 256
 const MAX_TUNNEL_ADDRESSES = 64
 const MAX_TUNNEL_ROUTES = 2000
@@ -369,6 +377,13 @@ function parseTunnelInbound(value: unknown): TunnelInbound {
   }
 }
 
+function parseTunnelPeerClientAuth(value: unknown): TunnelPeerClientAuth {
+  if (value !== 'verify' && value !== 'require') {
+    throw new TypeError('Invalid server.tunnel.routes peerClientAuth')
+  }
+  return value
+}
+
 function parseTunnelInboundList(value: unknown): TunnelInbound[] {
   if (!Array.isArray(value) || value.length > MAX_TUNNEL_ROUTES) {
     throw new TypeError('Invalid server.tunnel.routes inbound')
@@ -411,10 +426,7 @@ export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPay
     payload.peerMaterial = parseTunnelPeerMaterial(value.peerMaterial)
   }
   if (value.peerClientAuth !== undefined) {
-    if (value.peerClientAuth !== 'verify' && value.peerClientAuth !== 'require') {
-      throw new TypeError('Invalid server.tunnel.routes peerClientAuth')
-    }
-    payload.peerClientAuth = value.peerClientAuth
+    payload.peerClientAuth = parseTunnelPeerClientAuth(value.peerClientAuth)
   }
   if (value.inbound !== undefined) payload.inbound = parseTunnelInboundList(value.inbound)
   const generation = parseTunnelGeneration(value.generation, 'server.tunnel.routes generation')

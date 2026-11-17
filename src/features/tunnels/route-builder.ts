@@ -134,6 +134,31 @@ function noteInbound(
   if (doorway.isLocalOnly) facts.locked.add(doorway.hostname)
 }
 
+type Collected = {
+  routes: Map<string, TunnelRoute>
+  peers: Set<string>
+  inbound: InboundFacts
+  skipped: RouteBuildResult['skipped']
+}
+
+/** One tunnel's doorways: who may forward to the site here, and the routes this server carries. */
+function collectDoorways(
+  tunnel: TunnelFact,
+  serverId: string,
+  addresses: AddressBook,
+  into: Collected
+): void {
+  const carriesHere = tunnel.carrying.includes(serverId)
+  for (const doorway of tunnel.doorways) {
+    const siteHere = doorway.siteServerIds.includes(serverId)
+    if (siteHere) noteInbound(into.inbound, into.peers, tunnel, doorway, serverId, addresses)
+    if (!carriesHere || into.routes.has(doorway.hostname)) continue
+    const built = routeFor(doorway, siteHere, addresses)
+    if ('route' in built) into.routes.set(doorway.hostname, built.route)
+    else into.skipped.push({ hostname: doorway.hostname, reason: built.reason })
+  }
+}
+
 export function buildTunnelRoutes(
   serverId: string,
   tunnels: readonly TunnelFact[],
@@ -148,17 +173,8 @@ export function buildTunnelRoutes(
   const peers = new Set<string>()
   const inbound: InboundFacts = { peers: new Map(), locked: new Set() }
   const skipped: RouteBuildResult['skipped'] = []
-
   for (const tunnel of tunnels) {
-    const carriesHere = tunnel.carrying.includes(serverId)
-    for (const doorway of tunnel.doorways) {
-      const siteHere = doorway.siteServerIds.includes(serverId)
-      if (siteHere) noteInbound(inbound, peers, tunnel, doorway, serverId, addresses)
-      if (!carriesHere || routes.has(doorway.hostname)) continue
-      const built = routeFor(doorway, siteHere, addresses)
-      if ('route' in built) routes.set(doorway.hostname, built.route)
-      else skipped.push({ hostname: doorway.hostname, reason: built.reason })
-    }
+    collectDoorways(tunnel, serverId, addresses, { routes, peers, inbound, skipped })
   }
   const found = finishTable(serverId, routes, peers, skipped, addresses)
   const table = options.peerClientAuth

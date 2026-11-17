@@ -72,11 +72,21 @@ export type PeerLeafOutcome =
 /** Tracked state of a server's deployed peer leaf. */
 export type PeerLeafTracking = {
   notAfter: string
+  issuedAt: string
   caGeneration: number
   state: string
 }
 
-/** True when a tracked peer leaf can stay: active, on the active CA generation and not near expiry. */
+/**
+ * A peer leaf issued before this moment has no client-authentication usage, and
+ * the hop now needs it. The leaf row records no usages (and no column is added
+ * for it), so the issue time stands in: an older leaf is stale at once, so the
+ * send that turns on `require` also carries a new certificate, not at the next
+ * renewal.
+ */
+export const PEER_LEAF_CLIENT_AUTH_SINCE = '2026-11-17T17:32:18.000Z'
+
+/** True when a tracked peer leaf can stay: active, on the active CA generation, shows client authentication and not near expiry. */
 export function peerLeafIsCurrent(
   tracked: PeerLeafTracking | null,
   activeCaGeneration: number,
@@ -84,6 +94,10 @@ export function peerLeafIsCurrent(
 ): boolean {
   if (tracked?.state !== 'active') return false
   if (tracked.caGeneration !== activeCaGeneration) return false
+  const issuedAtMs = Date.parse(tracked.issuedAt)
+  if (!Number.isFinite(issuedAtMs) || issuedAtMs < Date.parse(PEER_LEAF_CLIENT_AUTH_SINCE)) {
+    return false
+  }
   const notAfterMs = Date.parse(tracked.notAfter)
   return Number.isFinite(notAfterMs) && notAfterMs - nowMs >= PEER_LEAF_RENEW_BEFORE_MS
 }
@@ -205,6 +219,7 @@ export async function ensurePeerLeaf(
   const [tracked] = await db
     .select({
       notAfter: leaf.notAfter,
+      issuedAt: leaf.issuedAt,
       caGeneration: leaf.caGeneration,
       state: leaf.state,
       activeGeneration: tls.caGeneration,

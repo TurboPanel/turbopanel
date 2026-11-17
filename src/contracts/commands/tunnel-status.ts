@@ -38,6 +38,10 @@ export type TunnelStatusCommandResult = {
   /** The connector version the daemon moves every tunnel to. */
   pinnedVersion: string
   connectors: TunnelStatusConnector[]
+  /** How the peer hop checks client certificates on this server (daemon feature `tunnel-peer-mtls-v1`); absent when no table asked. */
+  peerClientAuth?: 'verify' | 'require'
+  /** Present (true) when `require` was asked but only `verify` could be applied, because this server's own certificate lacks client authentication. */
+  peerClientAuthDowngraded?: true
 }
 
 const STATUS_VALUES = new Set<string>([
@@ -154,5 +158,22 @@ export function parseTunnelStatusResult(value: unknown): TunnelStatusCommandResu
   ) {
     throw new TypeError('Invalid server.tunnel.status result')
   }
-  return { pinnedVersion: value.pinnedVersion, connectors: value.connectors.map(parseConnector) }
+  if (
+    value.peerClientAuth !== undefined &&
+    value.peerClientAuth !== 'verify' &&
+    value.peerClientAuth !== 'require'
+  ) {
+    throw new TypeError('Invalid server.tunnel.status peerClientAuth')
+  }
+  if (value.peerClientAuthDowngraded !== undefined && value.peerClientAuthDowngraded !== true) {
+    throw new TypeError('Invalid server.tunnel.status peerClientAuthDowngraded')
+  }
+  return {
+    pinnedVersion: value.pinnedVersion,
+    connectors: value.connectors.map(parseConnector),
+    ...(value.peerClientAuth === undefined ? {} : { peerClientAuth: value.peerClientAuth }),
+    ...(value.peerClientAuthDowngraded === undefined
+      ? {}
+      : { peerClientAuthDowngraded: true as const }),
+  }
 }
