@@ -1,5 +1,11 @@
 import { assertEquals } from '@std/assert'
-import { lastSendIsSettled, TUNNEL_ROUTES_STALE_MS } from './sync.ts'
+import {
+  lastSendIsSettled,
+  resendGapAfter,
+  TUNNEL_ROUTES_RESEND_GAP_MS,
+  TUNNEL_ROUTES_STALE_MS,
+} from './sync.ts'
+import { TUNNEL_GENERATION_BUMP_GAP_MS } from './table-generation.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -48,5 +54,23 @@ test('a failed, expired or missing command is sent again; a moving one is waited
       NOW
     ),
     false
+  )
+})
+
+test("a table refused as older than the daemon's own is sent again after the bump gap, others after the long gap", () => {
+  const refused = {
+    status: 'succeeded',
+    resultSummary: {
+      applied: false,
+      warnings: ['ignored: a newer forwarding table is already in place'],
+    },
+  }
+  assertEquals(resendGapAfter(refused), TUNNEL_GENERATION_BUMP_GAP_MS)
+  const other = { status: 'succeeded', resultSummary: { applied: true, warnings: ['x'] } }
+  assertEquals(resendGapAfter(other), TUNNEL_ROUTES_RESEND_GAP_MS)
+  assertEquals(resendGapAfter(undefined), TUNNEL_ROUTES_RESEND_GAP_MS)
+  assertEquals(
+    resendGapAfter({ status: 'failed', resultSummary: null }),
+    TUNNEL_ROUTES_RESEND_GAP_MS
   )
 })

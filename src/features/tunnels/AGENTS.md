@@ -597,7 +597,8 @@ generation is raised to `max(previous + 1, now)` with the same compare-and-set
 (`bumpedAt` in the stored value limits that to once a minute per organization,
 so two stuck daemons cannot loop) and that server is sent its table again
 through `syncServerTunnelRoutes` with `force`. A server refused inside the
-minute is not requeued at once; the sweep sends it the table again.
+minute is not requeued at once; the sweep sends it the table again once that
+minute is over (`resendGapAfter` in `sync.ts`, not the ten minute gap).
 Anything that writes `organization.options` must merge into it (a jsonb merge or
 `jsonb_set`), never replace it whole, or the counter is lost. A deploy
 preparation (a preview too) can write the counter: the generation is stored the

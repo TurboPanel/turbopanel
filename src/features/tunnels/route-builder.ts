@@ -44,7 +44,7 @@ export type RouteBuildResult = {
   routes: TunnelRoute[]
   peerAddresses: string[]
   listenAddresses: string[]
-  /** Set only when asked for (`withInbound`): the names whose site runs here and who may forward each. */
+  /** The names whose site runs here and who may forward each. Sync always asks for it (`withInbound`); only a direct caller that leaves it off gets none. */
   inbound?: TunnelInbound[]
   needsPeerMaterial: boolean
   /** Set only when asked for (`peerClientAuth`): the receiving side's client certificate policy. */
