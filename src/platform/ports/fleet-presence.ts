@@ -12,6 +12,8 @@ export type FleetPresencePortSnapshot = {
   daemonBuild?: {
     version?: string
   }
+  /** The wire features the daemon's last hello listed; `undefined` when none are stored. */
+  features?: readonly string[]
 }
 
 export type ResolveFleetPresence = (

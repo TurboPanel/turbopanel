@@ -3,6 +3,11 @@ import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals, assertRejects } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
+import {
+  COMMAND_RECOVERY_FEATURE,
+  DAEMON_WIRE_FEATURES,
+  MIN_SUPPORTED_DAEMON_VERSION,
+} from '../../lib/version-wire.ts'
 import { eq, inArray, sql } from 'drizzle-orm'
 import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -140,7 +145,8 @@ const TEST_COMMAND_ACTOR = {
 
 async function attachConnectedDaemonStatus(
   db: ReturnType<typeof createDenoDb>,
-  serverId: string
+  serverId: string,
+  options: { currentDaemon?: boolean } = {}
 ): Promise<void> {
   // First registered key wins: a server that already holds a key keeps it,
   // so a second call only refreshes the status columns below.
@@ -164,6 +170,19 @@ async function attachConnectedDaemonStatus(
       updatedAt: now,
     })
     .where(eq(server.id, serverId))
+  // The control plane only dispatches to a daemon that reports a usable
+  // version and lists every wire feature; give the fixture daemon both.
+  if (options.currentDaemon ?? true) {
+    await projectServerDaemon(db, serverId, {
+      kind: 'daemon-build',
+      daemonBuild: {
+        commit: 'abc1234',
+        buildId: 'b-current',
+        version: MIN_SUPPORTED_DAEMON_VERSION,
+      },
+    })
+    await touchServerMetadata(db, serverId, { features: [...DAEMON_WIRE_FEATURES] })
+  }
 }
 
 function createDispatchMockRegistry(
@@ -379,53 +398,70 @@ test('processCommandEnvelope does not persist timezone option when daemon is off
   })
 })
 
-test('processCommandEnvelope refuses a connected daemon below the supported floor, and passes one that reports no version', async () => {
+test('processCommandEnvelope refuses a connected daemon that is not current, naming daemon_update_required', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
+    const refuse = async (): Promise<{ errorCode?: string | null; error?: string | null }> => {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'daemon.ping',
+        payload: {},
+      })
+      const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'failed')
+      // Never reached the cell: the update envelope is the only thing such a
+      // daemon should get, and that is not a command.
+      assertEquals(registry.enqueueCalled, false)
+      return { errorCode: updated?.errorCode, error: updated?.error }
+    }
+
+    // Below the version floor.
     await projectServerDaemon(db, serverId, {
       kind: 'daemon-build',
       daemonBuild: { commit: 'abc1234', buildId: 'b-old', version: '0.0.9' },
     })
+    const old = await refuse()
+    assertEquals(old.errorCode, 'daemon_update_required')
+    assertEquals(
+      old.error,
+      'daemon_update_required: daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
+    )
+
+    // No version at all fails closed.
+    await projectServerDaemon(db, serverId, {
+      kind: 'daemon-build',
+      daemonBuild: { commit: 'abc1234', buildId: 'b-unversioned' },
+    })
+    const unversioned = await refuse()
+    assertEquals(unversioned.errorCode, 'daemon_update_required')
+    assertEquals(unversioned.error?.includes('reports no usable version'), true)
+
+    // A current version that lacks one feature names it.
+    await projectServerDaemon(db, serverId, {
+      kind: 'daemon-build',
+      daemonBuild: { commit: 'abc1234', buildId: 'b-new', version: MIN_SUPPORTED_DAEMON_VERSION },
+    })
+    await touchServerMetadata(db, serverId, {
+      features: DAEMON_WIRE_FEATURES.filter((name) => name !== 'build-limits-v1'),
+    })
+    const lacking = await refuse()
+    assertEquals(lacking.errorCode, 'daemon_update_required')
+    assertEquals(lacking.error?.includes('build-limits-v1'), true)
+
+    // Listing every feature opens the door again.
+    await touchServerMetadata(db, serverId, { features: [...DAEMON_WIRE_FEATURES] })
     const record = await createCommandRecord(db, {
       serverId,
       ...TEST_COMMAND_ACTOR,
       type: 'daemon.ping',
       payload: {},
     })
-    const registry = createDispatchMockRegistry(serverId, {
-      waitForRequestResult: null,
-    })
-
+    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
-
-    const updated = await getCommandRecord(db, record.id)
-    assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.errorCode, 'daemon_unsupported')
-    assertEquals(
-      updated?.error,
-      'Daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
-    )
-    // Never reached the cell: the update envelope is the only thing such a
-    // daemon should get, and that is not a command.
-    assertEquals(registry.enqueueCalled, false)
-
-    // A build that reports no version (every build before 0.1.0) still gets
-    // its commands — unknown is a flag, not a refusal.
-    await projectServerDaemon(db, serverId, {
-      kind: 'daemon-build',
-      daemonBuild: { commit: 'abc1234', buildId: 'b-unversioned' },
-    })
-    const second = await createCommandRecord(db, {
-      serverId,
-      ...TEST_COMMAND_ACTOR,
-      type: 'daemon.ping',
-      payload: {},
-    })
-    const registry2 = createDispatchMockRegistry(serverId, {
-      waitForRequestResult: null,
-    })
-    await processCommandEnvelope(db, registry2, buildEnvelope(second, serverId))
-    assertEquals(registry2.enqueueCalled, true)
+    assertEquals(registry.enqueueCalled, true)
   })
 })
 
@@ -6768,6 +6804,11 @@ test('a deploy the server already has gives up its server lane while it is waite
 test('a deploy that has been running longer than the run cap times out, counted from its start', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
+    // This pins the fixed ten minute rule, which applies without the
+    // command-recovery feature; the fixture daemon lists it, so drop it here.
+    await touchServerMetadata(db, serverId, {
+      features: DAEMON_WIRE_FEATURES.filter((name) => name !== COMMAND_RECOVERY_FEATURE),
+    })
     const record = await sentDeploy(db, serverId, {
       sentAgoMs: 3 * 60 * 60_000,
       runningSinceAgoMs: 11 * 60_000,
@@ -7509,7 +7550,9 @@ test('an outcome is confirmed to the daemon only when it is stored and the daemo
     }
     const stored = ACKED_REQUEST(serverId, record.id)
 
-    // An older daemon is never sent a message it does not know.
+    // A daemon that lacks the feature is never sent a message it does not know
+    // (the fixture daemon lists every feature, so drop them for this step).
+    await touchServerMetadata(db, serverId, { features: [] })
     assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: stored }), null)
 
     await touchServerMetadata(db, serverId, { features: ['command-recovery-v1'] })

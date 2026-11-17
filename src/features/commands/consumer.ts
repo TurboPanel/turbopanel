@@ -217,7 +217,11 @@ import { claimServerTurn } from './server-turn.ts'
 import { QUEUE_RETRY_EXHAUSTED_CODE, ServerBusyError } from './delivery-retry.ts'
 
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { daemonUnsupportedReason, resolveDaemonSupport } from '../../lib/version-wire.ts'
+import {
+  DAEMON_UPDATE_REQUIRED_CODE,
+  daemonUnsupportedReason,
+  resolveDaemonSupport,
+} from '../../lib/version-wire.ts'
 
 export { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 
@@ -639,22 +643,22 @@ async function ensureServerAndDaemonOnline(
     return 'Daemon not connected'
   }
 
-  // A daemon below the supported floor keeps its connection — that is how it
-  // gets updated (the update envelope is not a command) — but gets no
-  // commands until it is. Builds that report no version are `unknown` and
-  // pass; see lib/version-wire.ts.
-  const support = resolveDaemonSupport(presence.daemonBuild?.version)
+  // A daemon below the supported floor, missing a required wire feature, or
+  // with no usable version keeps its connection — that is how it gets updated
+  // (the update envelope is not a command) — but gets no commands until it is
+  // current. See lib/version-wire.ts.
+  const support = resolveDaemonSupport(presence.daemonBuild?.version, presence.features)
   if (support.status === 'unsupported') {
     commandConsumerTrace('dispatch-failed', {
       commandId: record.id,
       commandType: record.type,
       serverId: envelope.serverId,
-      reason: 'daemon_unsupported',
+      reason: DAEMON_UPDATE_REQUIRED_CODE,
     })
     const error = daemonUnsupportedReason(support)
     await transitionCommand(db, record.id, {
       status: 'failed',
-      errorCode: 'daemon_unsupported',
+      errorCode: DAEMON_UPDATE_REQUIRED_CODE,
       error,
     })
     return error

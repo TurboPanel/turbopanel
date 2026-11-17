@@ -61,6 +61,8 @@ export type ServerFleetPresence = {
     channel?: string
     version?: string
   }
+  /** The wire features the daemon's last hello listed; `undefined` when none are stored. */
+  features?: string[]
   geo: ServerGeo | null
   /** From `server.os_*` columns (daemon hello). */
   os: ServerOsMetadata | null
@@ -235,6 +237,7 @@ export async function resolveFleetPresence(
       lastInboundAt,
       keyLastUsedAt: snapshot?.keyLastUsedAt ?? null,
       daemonBuild: projection?.daemonBuild ?? snapshot?.daemonBuild ?? undefined,
+      features: projection?.features,
       geo: parseServerGeo(metadata.geo),
       os,
       resources,

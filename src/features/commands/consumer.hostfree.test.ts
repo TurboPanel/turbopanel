@@ -35,6 +35,7 @@ import {
   resolveManagedMemberIdFromFailedPayload,
 } from './consumer.ts'
 import { RECOVERY_STEP_FAILED_MESSAGE } from '../managed/recovery.ts'
+import { DAEMON_WIRE_FEATURES, MIN_SUPPORTED_DAEMON_VERSION } from '../../lib/version-wire.ts'
 import { createNoopCommandQueue } from './noop-command-queue.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
 import { setResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
@@ -527,6 +528,15 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
                             publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
                             fingerprint: 'fp',
                             createdAt: '2020-01-01T00:00:00.000Z',
+                          },
+                          // A daemon the control plane dispatches to reports a
+                          // usable version and lists every wire feature.
+                          projection: {
+                            daemonBuild: {
+                              commit: 'abc1234',
+                              version: MIN_SUPPORTED_DAEMON_VERSION,
+                            },
+                            features: [...DAEMON_WIRE_FEATURES],
                           },
                         },
                         metadata: null,

@@ -146,9 +146,10 @@ export type ServerUpdateGetResponse = {
   /** True when operators may clear a stale non-terminal update projection. */
   canResetUpdateStatus?: boolean
   /**
-   * The daemon's reported version held against the control plane's floor
-   * (lib/version-wire.ts). `unsupported` daemons stay connected but get no
-   * commands until updated; `unknown` is a build that reports no version.
+   * The daemon's reported version and hello features held against what the
+   * control plane requires (lib/version-wire.ts). `unsupported` daemons
+   * (`code: daemon_update_required`, with `missingFeatures` and `reason`) stay
+   * connected and can still be updated, but get no commands until they are.
    */
   daemonSupport: DaemonSupport
 }
@@ -294,6 +295,8 @@ export async function resolveServerUpdateStatus(params: {
   targetManifest?: UpdateManifestTarget | null
   /** Co-located daemon on this control plane host — remote updates blocked. */
   colocatedWithInstance?: boolean
+  /** The wire features the daemon's last hello listed (none stored counts as none). */
+  daemonFeatures?: readonly string[] | null
 }): Promise<
   Pick<
     ServerUpdateGetResponse,
@@ -363,7 +366,7 @@ export async function resolveServerUpdateStatus(params: {
     ...(lastUpdateError ? { lastUpdateError } : {}),
     ...(queuedAt ? { queuedAt } : {}),
     ...(canResetUpdateStatus ? { canResetUpdateStatus: true } : {}),
-    daemonSupport: resolveDaemonSupport(params.current?.version),
+    daemonSupport: resolveDaemonSupport(params.current?.version, params.daemonFeatures),
   }
 }
 

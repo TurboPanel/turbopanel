@@ -24,6 +24,7 @@ import {
   BUILD_LIMITS_FEATURE,
   TUNNEL_PEER_MTLS_FEATURE,
   TUNNEL_LOCK_ADD_FEATURE,
+  DAEMON_UPDATE_REQUIRED_CODE,
   daemonUnsupportedReason,
   DENO_NATIVE_APPS_FEATURE,
   DEPLOY_CANCEL_FEATURE,
@@ -107,31 +108,61 @@ test('compareSemver follows semver precedence, pre-releases before their release
   assertEquals(cmp('0.1.0+a', '0.1.0+b'), 0)
 })
 
-test('resolveDaemonSupport: at or above the floor is supported, below is unsupported, absent is unknown', () => {
-  assertEquals(resolveDaemonSupport('0.1.18'), {
+test('resolveDaemonSupport: needs a parsable version at or above the floor and every wire feature', () => {
+  const all = [...DAEMON_WIRE_FEATURES]
+  assertEquals(resolveDaemonSupport('0.1.18', all), {
     status: 'supported',
     version: '0.1.18',
     minVersion: MIN_SUPPORTED_DAEMON_VERSION,
+    missingFeatures: [],
   })
-  assertEquals(resolveDaemonSupport('0.4.2').status, 'supported')
-  assertEquals(resolveDaemonSupport('0.1.18-rc.1').status, 'unsupported')
-  assertEquals(resolveDaemonSupport('0.1.17').status, 'unsupported')
-  assertEquals(resolveDaemonSupport('0.1.0').status, 'unsupported')
-  assertEquals(resolveDaemonSupport('0.0.9').status, 'unsupported')
-  assertEquals(resolveDaemonSupport(undefined), {
-    status: 'unknown',
-    version: null,
-    minVersion: MIN_SUPPORTED_DAEMON_VERSION,
-  })
-  assertEquals(resolveDaemonSupport('unstamped').status, 'unknown')
-  assertEquals(resolveDaemonSupport('0.0.1', '0.0.1').status, 'supported')
+  assertEquals(resolveDaemonSupport('0.4.2', all).status, 'supported')
+  assertEquals(resolveDaemonSupport('0.1.18-rc.1', all).status, 'unsupported')
+  assertEquals(resolveDaemonSupport('0.1.17', all).status, 'unsupported')
+  assertEquals(resolveDaemonSupport('0.0.9', all).status, 'unsupported')
+  assertEquals(resolveDaemonSupport('0.0.1', all, '0.0.1').status, 'supported')
+  // Fail closed: no version, an unparsable one.
+  for (const version of [undefined, null, '', 'unstamped']) {
+    const refused = resolveDaemonSupport(version, all)
+    assertEquals(refused.status, 'unsupported')
+    assertEquals(refused.version, null)
+    assertEquals(refused.code, DAEMON_UPDATE_REQUIRED_CODE)
+  }
 })
 
-test('daemonUnsupportedReason names both numbers and the fix', () => {
+test('resolveDaemonSupport names every missing feature, and no stored list means all are missing', () => {
+  const lacking = DAEMON_WIRE_FEATURES.filter((name) => name !== 'build-limits-v1')
+  const one = resolveDaemonSupport('0.4.2', lacking)
+  assertEquals(one.status, 'unsupported')
+  assertEquals(one.code, 'daemon_update_required')
+  assertEquals(one.missingFeatures, ['build-limits-v1'])
   assertEquals(
-    daemonUnsupportedReason(resolveDaemonSupport('0.0.9')),
-    'Daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
+    one.reason,
+    'daemon_update_required: daemon does not list 1 required feature: build-limits-v1 — update the daemon'
   )
+  // A name the control plane does not know is ignored, not required.
+  assertEquals(
+    resolveDaemonSupport('0.4.2', [...DAEMON_WIRE_FEATURES, 'future-v9']).status,
+    'supported'
+  )
+  for (const none of [undefined, null, []]) {
+    assertEquals(resolveDaemonSupport('0.4.2', none).missingFeatures, [...DAEMON_WIRE_FEATURES])
+  }
+})
+
+test('daemonUnsupportedReason names the code, the numbers, a capped feature list and the fix', () => {
+  assertEquals(
+    daemonUnsupportedReason(resolveDaemonSupport('0.0.9', DAEMON_WIRE_FEATURES)),
+    'daemon_update_required: daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
+  )
+  const bare = daemonUnsupportedReason(resolveDaemonSupport(undefined, []))
+  assertEquals(
+    bare.startsWith(
+      'daemon_update_required: daemon reports no usable version and does not list 69 required features: '
+    ),
+    true
+  )
+  assertEquals(bare.endsWith(' and 61 more — update the daemon'), true)
 })
 
 test('the floor is a semver no newer than this instance', () => {
@@ -166,12 +197,12 @@ test('resolveDaemonCapabilities closes on an unknown peer and opens at the featu
 
 test('an old daemon is unsupported while the resolver itself does not disconnect', () => {
   // Dispatch refusal lives in the command consumer (consumer.test.ts): the
-  // socket stays up. This resolver only classifies. An unknown version still
-  // passes the floor and stays closed for capability gates.
-  const support = resolveDaemonSupport('0.0.9')
+  // socket stays up. This resolver only classifies. An unknown version is
+  // refused too, and stays closed for capability gates.
+  const support = resolveDaemonSupport('0.0.9', DAEMON_WIRE_FEATURES)
   assertEquals(support.status, 'unsupported')
   assertEquals(resolveDaemonCapabilities('0.0.9')[CERT_SOURCES], false)
-  assertEquals(resolveDaemonSupport(undefined).status, 'unknown')
+  assertEquals(resolveDaemonSupport(undefined, DAEMON_WIRE_FEATURES).status, 'unsupported')
   assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
 })
 

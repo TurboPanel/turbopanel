@@ -4,11 +4,11 @@
  * Daemon ↔ control plane: the daemon reports its semver as
  * `daemonBuild.version` in the hello / heartbeat / ping (turbopaneld
  * src/app/version.ts). This module holds it against the floor the control plane
- * supports. A daemon below the floor keeps its connection — the update path
- * *is* that connection — but the command consumer refuses to dispatch to it
- * and the servers page says why. A daemon that reports no version at all is
- * `unknown`: every build before 0.1.0 is one, so this stays a flag rather
- * than a refusal until the fleet is re-enrolled on tagged builds.
+ * supports and against `DAEMON_WIRE_FEATURES`, which its hello must list in
+ * full. A daemon below the floor, missing a feature, or reporting no version
+ * (or one that does not parse) keeps its connection — the update path *is*
+ * that connection — but the command consumer refuses to dispatch to it
+ * (`daemon_update_required`) and the servers page says why.
  *
  * App ↔ instance: the instance stamps `x-turbopanel-version` on every
  * response and `/api/health` carries `version`; a client that is not the
@@ -106,45 +106,92 @@ export function compareSemver(a: ParsedSemver, b: ParsedSemver): number {
   return a.prerelease.length - b.prerelease.length
 }
 
-export type DaemonSupportStatus = 'supported' | 'unsupported' | 'unknown'
+export type DaemonSupportStatus = 'supported' | 'unsupported'
+
+/** The one code a refused daemon carries on the command, the status and the API. */
+export const DAEMON_UPDATE_REQUIRED_CODE = 'daemon_update_required'
 
 export type DaemonSupport = {
   status: DaemonSupportStatus
   /** The version the daemon reported, verbatim; `null` when it sent none or something unparsable. */
   version: string | null
   minVersion: string
+  /** Set when `status` is `unsupported`. */
+  code?: typeof DAEMON_UPDATE_REQUIRED_CODE
+  /** Every `DAEMON_WIRE_FEATURES` name the daemon's hello does not list; empty when it lists all. */
+  missingFeatures?: string[]
+  /** The sentence the command consumer fails commands with and the servers page shows. */
+  reason?: string
+}
+
+/** The advertised names this control plane requires of every daemon. */
+export function missingDaemonWireFeatures(
+  advertised: readonly string[] | undefined | null
+): string[] {
+  const have = new Set(advertised ?? [])
+  return DAEMON_WIRE_FEATURES.filter((name) => !have.has(name))
 }
 
 /**
- * Hold a daemon's reported version against `MIN_SUPPORTED_DAEMON_VERSION`.
- * No version, or one that is not a semver, is `unknown` — see the module
- * comment for why that is not `unsupported` yet.
+ * Hold a daemon against what this control plane requires: a version that
+ * parses and is at or above `MIN_SUPPORTED_DAEMON_VERSION`, and a hello that
+ * lists every name in `DAEMON_WIRE_FEATURES`. It fails closed: no version, an
+ * unparsable one, or no stored feature list is `unsupported`.
+ *
+ * A refused daemon keeps its connection. The control plane only withholds
+ * commands from it; the `update` message that brings it current is not a
+ * command and is never gated here.
  */
 export function resolveDaemonSupport(
   reportedVersion: string | undefined | null,
+  advertisedFeatures: readonly string[] | undefined | null,
   minVersion: string = MIN_SUPPORTED_DAEMON_VERSION
 ): DaemonSupport {
   const parsed = parseSemver(reportedVersion)
   const floor = parseSemver(minVersion)
-  if (!parsed || !floor) {
-    return {
-      status: 'unknown',
-      version: parsed ? reportedVersion!.trim() : null,
+  const version = parsed ? reportedVersion!.trim() : null
+  const missingFeatures = missingDaemonWireFeatures(advertisedFeatures)
+  const belowFloor = !parsed || !floor || compareSemver(parsed, floor) < 0
+  if (belowFloor || missingFeatures.length > 0) {
+    const refused: DaemonSupport = {
+      status: 'unsupported',
+      version,
       minVersion,
+      code: DAEMON_UPDATE_REQUIRED_CODE,
+      missingFeatures,
     }
+    return { ...refused, reason: daemonUnsupportedReason(refused) }
   }
-  return {
-    status: compareSemver(parsed, floor) < 0 ? 'unsupported' : 'supported',
-    version: reportedVersion!.trim(),
-    minVersion,
-  }
+  return { status: 'supported', version, minVersion, missingFeatures: [] }
 }
+
+const REASON_FEATURE_LIST_CAP = 8
 
 /** The command consumer's refusal, and the servers page's explanation. */
 export function daemonUnsupportedReason(support: DaemonSupport): string {
-  return `Daemon version ${
-    support.version ?? 'unknown'
-  } is below the supported minimum ${support.minVersion} — update the daemon`
+  const parts: string[] = []
+  const missing = support.missingFeatures ?? []
+  if (support.version === null) {
+    parts.push('reports no usable version')
+  } else if (compareVersionStrings(support.version, support.minVersion) < 0) {
+    parts.push(`version ${support.version} is below the supported minimum ${support.minVersion}`)
+  }
+  if (missing.length > 0) {
+    const shown = missing.slice(0, REASON_FEATURE_LIST_CAP).join(', ')
+    const more = missing.length - REASON_FEATURE_LIST_CAP
+    parts.push(
+      `does not list ${missing.length} required feature${missing.length === 1 ? '' : 's'}: ${shown}${
+        more > 0 ? ` and ${more} more` : ''
+      }`
+    )
+  }
+  return `${DAEMON_UPDATE_REQUIRED_CODE}: daemon ${parts.join(' and ')} — update the daemon`
+}
+
+function compareVersionStrings(a: string, b: string): number {
+  const pa = parseSemver(a)
+  const pb = parseSemver(b)
+  return pa && pb ? compareSemver(pa, pb) : 0
 }
 
 /**
