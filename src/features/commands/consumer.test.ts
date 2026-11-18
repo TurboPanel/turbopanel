@@ -3,11 +3,7 @@ import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals, assertRejects } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
-import {
-  COMMAND_RECOVERY_FEATURE,
-  DAEMON_WIRE_FEATURES,
-  MIN_SUPPORTED_DAEMON_VERSION,
-} from '../../lib/version-wire.ts'
+import { DAEMON_WIRE_FEATURES, MIN_SUPPORTED_DAEMON_VERSION } from '../../lib/version-wire.ts'
 import { eq, inArray, sql } from 'drizzle-orm'
 import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -6883,14 +6879,9 @@ test('a deploy the server already has gives up its server lane while it is waite
 test('a deploy that has been running longer than the run cap times out, counted from its start', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
-    // This pins the fixed ten minute rule, which applies without the
-    // command-recovery feature; the fixture daemon lists it, so drop it here.
-    await touchServerMetadata(db, serverId, {
-      features: DAEMON_WIRE_FEATURES.filter((name) => name !== COMMAND_RECOVERY_FEATURE),
-    })
     const record = await sentDeploy(db, serverId, {
       sentAgoMs: 3 * 60 * 60_000,
-      runningSinceAgoMs: 11 * 60_000,
+      runningSinceAgoMs: 31 * 60_000,
     })
     const registry = registryWithRequest(serverId, (id) => ACKED_REQUEST(serverId, id))
 
@@ -6900,7 +6891,7 @@ test('a deploy that has been running longer than the run cap times out, counted 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'timed_out')
-    assertEquals(updated?.error?.includes('10 minutes'), true)
+    assertEquals(updated?.error?.includes('30 minutes'), true)
   })
 })
 
