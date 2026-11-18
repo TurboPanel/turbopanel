@@ -1,14 +1,13 @@
 /**
  * Build the `public-urls-update` body for the co-located daemon.
  *
- * A daemon below `instance-cert-sources-per-hostname` receives the flat
- * `urls` list only. Capable daemons also receive each hostname's source and,
- * for `uploaded`, the certificate plus its key: sealed to the daemon as
- * `keyEnvelope` when `sealing` is set (the daemon advertises
- * `sealed-instance-secrets-v1`), otherwise the legacy plaintext `keyPem`.
- * A capable daemon also receives `publicPort`, but only on `cloudflare-tunnel` hostnames: the
- * daemon redirects other ports to it, and on a direct, proxied or uploaded
- * name ports 80 and 443 belong to hosting and may serve a different site.
+ * The daemon receives each hostname's source and, for `uploaded`, the
+ * certificate plus its key: sealed to the daemon as `keyEnvelope` when
+ * `sealing` is set (the daemon advertises `sealed-instance-secrets-v1`),
+ * otherwise the legacy plaintext `keyPem`. It also receives `publicPort`, but
+ * only on `cloudflare-tunnel` hostnames: the daemon redirects other ports to
+ * it, and on a direct, proxied or uploaded name ports 80 and 443 belong to
+ * hosting and may serve a different site.
  */
 
 import { inArray } from 'drizzle-orm'
@@ -31,7 +30,6 @@ import {
 } from '../features/install/instance-hostnames.ts'
 import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
-import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
 import type { InstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 import { getServerDaemonStateByServerId } from '../features/servers/server-identity-db.ts'
 
@@ -63,18 +61,12 @@ export async function colocatedDaemonFeatures(
 
 export async function resolvePublicUrlsApplyPayload(
   db: Db,
-  urls: string[],
-  daemonVersion: string | undefined,
   secrets: DerivedSecretsConfig | undefined,
   env: Record<string, string | undefined>,
   sealing: InstanceSecretSealing | null = null,
   options: PublicUrlsApplyPayloadOptions = {}
 ): Promise<PublicUrlsApplyPayload> {
   const { now = Date.now() } = options
-  const capable =
-    resolveDaemonCapabilities(daemonVersion)['instance-cert-sources-per-hostname'] === true
-  if (!capable) return { urls }
-
   // A DNS-01 name travels as `uploaded` with its issued pair, or as
   // `platform-ca` before its first certificate and after it expires. An
   // HTTP-01 name travels under the daemon's own name, `lets-encrypt`.
@@ -109,9 +101,9 @@ export async function resolvePublicUrlsApplyPayload(
     }
   })
   const letsEncrypt = hostnames.some((entry) => entry.source === 'lets-encrypt')
-  if (!letsEncrypt) return { urls, hostnames }
+  if (!letsEncrypt) return { hostnames }
   const instanceAcme = await loadInstanceAcme(db, env)
-  return { urls, hostnames, instanceAcme }
+  return { hostnames, instanceAcme }
 }
 
 async function loadInstanceAcme(

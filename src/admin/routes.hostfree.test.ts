@@ -1100,12 +1100,10 @@ test('instance access reads are runtime-scoped and capability-shaped', async () 
     applicable: boolean
     connected: boolean
     version: string | null
-    capabilities: Record<string, boolean>
   }>(knownRes)
   assertEquals(knownBody.applicable, true)
   assertEquals(knownBody.connected, true)
   assertEquals(knownBody.version, '0.1.1')
-  assertEquals(knownBody.capabilities['instance-cert-sources-per-hostname'], true)
 
   const unknownId = crypto.randomUUID()
   const unknown = await buildApp({
@@ -1117,12 +1115,9 @@ test('instance access reads are runtime-scoped and capability-shaped', async () 
   const unknownRes = await unknown.app.request(`${ADMIN_API_PREFIX}/instance/daemon`, {
     headers: { Cookie: unknown.cookie },
   })
-  const unknownBody = await jsonBody<{
-    version: string | null
-    capabilities: Record<string, boolean>
-  }>(unknownRes)
+  const unknownBody = await jsonBody<{ version: string | null }>(unknownRes)
   assertEquals(unknownBody.version, null)
-  assertEquals(unknownBody.capabilities['instance-cert-sources-per-hostname'], false)
+  assertEquals('capabilities' in unknownBody, false)
 
   const { app, cookie } = await buildApp()
   const missingCa = await app.request(`${ADMIN_API_PREFIX}/instance/platform-ca`, {

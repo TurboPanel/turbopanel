@@ -30,7 +30,7 @@
  * control plane's, and each side is checked against the other repository's
  * trunk (never another pull request's branch). So the rule is one-way:
  *
- *   - lists and maps (DAEMON_WIRE_FEATURES, DAEMON_FEATURE_MIN_VERSIONS,
+ *   - lists and maps (DAEMON_WIRE_FEATURES,
  *     INSTANCE_FEATURE_MIN_VERSIONS, UPDATE_CHANNELS, the ServerReportedIp
  *     field names) and the field snapshot: every control plane entry must be
  *     in the daemon's, unchanged. The daemon may have more (a daemon-only
@@ -1259,11 +1259,6 @@ function checkExpandOnly(tp, td) {
     extractConst(instanceWire, 'MIN_SUPPORTED_DAEMON_VERSION'),
     readDenoVersion(td),
     'MIN_SUPPORTED_DAEMON_VERSION'
-  )
-  requireMapSubset(
-    extractObjectLiteral(instanceWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
-    extractObjectLiteral(daemonWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
-    'DAEMON_FEATURE_MIN_VERSIONS'
   )
   requireMapSubset(
     extractObjectLiteral(instanceWire, 'INSTANCE_FEATURE_MIN_VERSIONS'),

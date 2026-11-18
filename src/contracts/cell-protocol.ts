@@ -1231,10 +1231,7 @@ export type DaemonMessage =
   | {
       type: 'public-urls-update'
       id: string
-      /** Flat compatibility list. Daemons below the per-hostname floor read only this. */
-      urls: string[]
-      /** Present when the daemon can render per-hostname certificate sources. */
-      hostnames?: InstanceHostnameWireEntry[]
+      hostnames: InstanceHostnameWireEntry[]
       /** Present when any hostname uses `lets-encrypt`. */
       instanceAcme?: InstanceAcmeWireSettings
       /** Present only for a daemon that advertises `instance-edge-trust-v1`. */
@@ -3239,8 +3236,7 @@ export type DaemonOutboundEnvelope =
     })
   | (OutboundEnvelopeBase & {
       kind: 'public-urls-update'
-      urls: string[]
-      hostnames?: InstanceHostnameWireEntry[]
+      hostnames: InstanceHostnameWireEntry[]
       instanceAcme?: InstanceAcmeWireSettings
       edgeTrust?: InstanceEdgeTrustWire
     })
@@ -3743,19 +3739,13 @@ function devSyncMessage(env: OutboundEnvelopeOf<'dev-sync'>): DaemonMessage {
   return { type: 'dev-sync-end', id: env.requestId, at: env.at }
 }
 
-/**
- * Omit `hostnames` and `instanceAcme` when absent so an older daemon sees
- * the flat `urls` list it already understands.
- */
+/** `instanceAcme` travels only with `hostnames` and only when set. */
 function publicUrlsUpdateMessage(env: OutboundEnvelopeOf<'public-urls-update'>): DaemonMessage {
   return {
     type: 'public-urls-update' as const,
     id: env.requestId,
-    urls: env.urls,
-    ...(env.hostnames === undefined ? {} : { hostnames: env.hostnames }),
-    ...(env.hostnames === undefined || env.instanceAcme === undefined
-      ? {}
-      : { instanceAcme: env.instanceAcme }),
+    hostnames: env.hostnames,
+    ...(env.instanceAcme === undefined ? {} : { instanceAcme: env.instanceAcme }),
     ...(env.edgeTrust === undefined ? {} : { edgeTrust: env.edgeTrust }),
     at: env.at,
   }

@@ -18,7 +18,6 @@ import {
   REPO_KEY_REPORT_FEATURE,
   FABRIC_PEER_REPORT_FEATURE,
   FABRIC_RETAIN_KEYS_FEATURE,
-  DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
   PROJECT_CACHE_FEATURE,
   BUILD_LIMITS_FEATURE,
@@ -47,7 +46,6 @@ import {
   HOSTING_VIA_HEADER_FEATURE,
   parseSemver,
   PHP_SITE_MODES_FEATURE,
-  resolveDaemonCapabilities,
   resolveDaemonSupport,
   resolveInstanceCapabilities,
   MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE,
@@ -179,19 +177,12 @@ test('header names are lower-case, as Hono and fetch normalize them', () => {
   assertEquals(CLIENT_VERSION_HEADER, CLIENT_VERSION_HEADER.toLowerCase())
 })
 
-const CERT_SOURCES = 'instance-cert-sources-per-hostname'
-
 test('the daemon floor pin is the documented 0.1.18 cutoff', () => {
   // Changing the constant requires the Versions-on-the-wires note in src/app/AGENTS.md and turbopaneld/src/instance/AGENTS.md (Versions on the wires).
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
-test('resolveDaemonCapabilities closes on an unknown peer and opens at the feature floor', () => {
-  assertEquals(resolveDaemonCapabilities('0.1.1')[CERT_SOURCES], true)
-  assertEquals(resolveDaemonCapabilities('0.1.0')[CERT_SOURCES], false)
-  assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
-  assertEquals(resolveDaemonCapabilities('unstamped')[CERT_SOURCES], false)
-  assertEquals(DAEMON_FEATURE_MIN_VERSIONS[CERT_SOURCES], '0.1.1')
+test('resolveInstanceCapabilities closes on an unknown peer and opens at the feature floor', () => {
   assertEquals(resolveInstanceCapabilities('0.1.1', { demo: '0.1.1' }).demo, true)
   assertEquals(resolveInstanceCapabilities(null, { demo: '0.1.1' }).demo, false)
 })
@@ -202,9 +193,7 @@ test('an old daemon is unsupported while the resolver itself does not disconnect
   // refused too, and stays closed for capability gates.
   const support = resolveDaemonSupport('0.0.9', DAEMON_WIRE_FEATURES)
   assertEquals(support.status, 'unsupported')
-  assertEquals(resolveDaemonCapabilities('0.0.9')[CERT_SOURCES], false)
   assertEquals(resolveDaemonSupport(undefined, DAEMON_WIRE_FEATURES).status, 'unsupported')
-  assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
 })
 
 test('managed-health-report-v1 is advertised to daemons, so they push health reports', () => {

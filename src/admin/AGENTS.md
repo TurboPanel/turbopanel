@@ -10,7 +10,7 @@
   of any organization's ACME opt-in); the reads stay admin-gated but the
   writes (PUT hostnames, POST certificates, PATCH certificate hostnames, PUT
   acme) sit behind `createRootOnlyMiddleware` like public URLs and apply; `GET /instance/daemon` reports the
-  co-located daemon's `resolveDaemonCapabilities` snapshot (`{ applicable: false }`
+  co-located daemon's connection and version (`{ applicable: false }`
   on Workers, and it must not wake a cell); `GET /instance/updates` reports the
   installed control-plane version (`INSTANCE_VERSION` plus `resolveInstanceRevision`)
   and the co-located daemon's `daemonBuild` beside each channel manifest target,
@@ -36,11 +36,11 @@
   `src/deno-dev.ts` while the developer surface is on, so they are absent (404)
   elsewhere and stay out of the admin spec; this file must never import
   `src/developer/*`. GET answers `{ ok, daemonBuild: { built: { commit,
-  buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
-  servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
-  }], job: null | { id, state: building | pushing | done | failed, startedAt,
-  endedAt, message, servers: [{ id, name, ok, skipped, error }] },
-  pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
+buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
+servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
+}], job: null | { id, state: building | pushing | done | failed, startedAt,
+endedAt, message, servers: [{ id, name, ok, skipped, error }] },
+pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
   restart forgets it). `host` is the co-located daemon's development host
   status (`dev-host-status`, feature `dev-host-v1`, kept in memory by
   `src/developer/dev-host-status.ts`) with the control plane part's
