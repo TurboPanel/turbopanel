@@ -133,8 +133,7 @@ export function noLicenseAvailableBody(
 ) {
   // Destructured, not spread: the route's summary also carries `granted`
   // and `bound`, which are not part of this refusal's contract.
-  const { purchased, inUse, provisioning, unusedKeys, ending, endsAt, available } =
-    summary
+  const { purchased, inUse, provisioning, unusedKeys, ending, endsAt, available } = summary
   return {
     error: NO_LICENSE_AVAILABLE_ERROR,
     message,
@@ -227,7 +226,10 @@ export function serializeLicenseListEntry(params: {
     // Only for an unbound key: once its server binds, `boundServer` says it all.
     provisioning:
       !params.bound && params.provisioning
-        ? { since: params.provisioning.since, hostname: params.provisioning.hostname }
+        ? {
+            since: params.provisioning.since,
+            hostname: params.provisioning.hostname,
+          }
         : null,
     boundServer: params.bound
       ? {

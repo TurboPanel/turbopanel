@@ -27,7 +27,9 @@ test('parseLicenseCreateFields accepts partial string fields and ignores extras'
   assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge node' })), {
     name: 'Edge node',
   })
-  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Rack 2' })), { name: 'Rack 2' })
+  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Rack 2' })), {
+    name: 'Rack 2',
+  })
   assertEquals(
     parseLicenseCreateFields(
       JSON.stringify({
@@ -312,5 +314,7 @@ test('parseLicenseCreateFields reads the tier chosen in Add Server and refuses a
     'invalid'
   )
   assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge', tierId: 3 })), 'invalid')
-  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge' })), { name: 'Edge' })
+  assertEquals(parseLicenseCreateFields(JSON.stringify({ name: 'Edge' })), {
+    name: 'Edge',
+  })
 })

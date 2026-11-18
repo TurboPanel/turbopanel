@@ -49,7 +49,9 @@ it('assertDispatchInfrastructure returns 503 when registry is missing', async ()
   assertEquals(response instanceof Response, true)
   if (response instanceof Response) {
     assertEquals(response.status, 503)
-    assertEquals(await response.json(), { error: 'Daemon cell registry unavailable' })
+    assertEquals(await response.json(), {
+      error: 'Daemon cell registry unavailable',
+    })
   }
 })
 

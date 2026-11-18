@@ -24,7 +24,12 @@ export type FabricGateRecord = {
 
 export type FabricGateOutcome =
   | { kind: 'ready' }
-  | { kind: 'failed'; serverId: string; commandId: string; error: string | null }
+  | {
+      kind: 'failed'
+      serverId: string
+      commandId: string
+      error: string | null
+    }
   | { kind: 'pending'; pending: FabricGateCommand[] }
   /** TurboFabric was paused or removed while the caller waited for it. */
   | { kind: 'turned_off'; message: string }

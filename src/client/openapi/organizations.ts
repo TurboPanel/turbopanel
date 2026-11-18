@@ -511,7 +511,10 @@ export const organizationSchemas = {
           properties: {
             fromServerId: { type: 'string', format: 'uuid' },
             toServerId: { type: 'string', format: 'uuid' },
-            path: { type: 'string', enum: ['lan', 'fabric', 'fabric_over_untrusted_lan', 'none'] },
+            path: {
+              type: 'string',
+              enum: ['lan', 'fabric', 'fabric_over_untrusted_lan', 'none'],
+            },
             reason: { type: 'string' },
             tunnel: {
               type: 'object',
@@ -1261,7 +1264,9 @@ export const organizationPaths: Record<string, unknown> = {
         required: true,
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/OrganizationTlsSettingsUpdate' },
+            schema: {
+              $ref: '#/components/schemas/OrganizationTlsSettingsUpdate',
+            },
           },
         },
       },
@@ -2005,18 +2010,17 @@ export const organizationPaths: Record<string, unknown> = {
             'application/json': {
               schema: {
                 type: 'object',
-                required: [
-                  'nameScheme',
-                  'effectiveNameScheme',
-                  'schemeLocked',
-                ],
+                required: ['nameScheme', 'effectiveNameScheme', 'schemeLocked'],
                 properties: {
                   nameScheme: {
                     type: 'string',
                     enum: ['plain', 'partial', 'random'],
                     nullable: true,
                   },
-                  effectiveNameScheme: { type: 'string', enum: ['plain', 'partial', 'random'] },
+                  effectiveNameScheme: {
+                    type: 'string',
+                    enum: ['plain', 'partial', 'random'],
+                  },
                   schemeLocked: { type: 'boolean' },
                 },
               },
@@ -2133,7 +2137,10 @@ export const organizationPaths: Record<string, unknown> = {
                     enum: ['slug', 'uuid', 'both'],
                     nullable: true,
                   },
-                  effectiveNames: { type: 'string', enum: ['slug', 'uuid', 'both'] },
+                  effectiveNames: {
+                    type: 'string',
+                    enum: ['slug', 'uuid', 'both'],
+                  },
                   locked: { type: 'boolean' },
                   lockedByFolders: { type: 'boolean' },
                 },
@@ -2486,7 +2493,12 @@ export const organizationPaths: Record<string, unknown> = {
         "Manage-gated. Tears TurboFabric down on every member (`server.fabric.reconcile` `{ enabled: false }`: `tp0`, routed bridges, `TP-FORWARD`, keys, state), then deletes the fabric row and its relays and reclaims the `network(kind='compose')` / `subnet` rows of networks that need a tunnel. A container network whose servers all share a trusted datacenter network (each pair a trusted LAN pair) is kept, and those servers are sent the payload with no tunnel again (`tunnel: false`, LAN routes), since the teardown removed their LAN routes. Works whether TurboFabric is on or paused; a never-enabled org is a no-op. Servers switched out of the mesh are torn down too (they kept their key). 503 `fabric_teardown_not_queued` (with `message` and `serverIds`) keeps the fabric row, relays and container networks when a teardown could not be queued; servers that were already reached have dropped their tunnel and key and get a new key on the next apply. Returns the cleared settings.",
       security: [{ cookieAuth: [] }],
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
       ],
       responses: {
         '200': {
@@ -2610,7 +2622,12 @@ export const organizationPaths: Record<string, unknown> = {
         "Manage-gated. `{ enabled?, role? }`; `role` is `gateway`, `client` or null (automatic: gateway when the server has its own public address; an endpoint override does not count). `enabled: false` takes the server's `tp0` down (keeping its key when its daemon can) and re-plans the mesh so no peer lists it, no ladder hands out its fabric address and its WireGuard port closes; its relay row stays, so its address, endpoint pin, preshared key and LAN sharing come back when it is switched on. Refused with 409 `fabric_server_in_use` (plain `message`, `dependents[]`) while a cross-server container network that reaches it through a tunnel (one whose other servers all share a trusted LAN with it does not count), a managed database replicating over TurboFabric, an app-to-database connection that resolves to its fabric address, or a datacenter network LAN only it shares depends on it, and 503 `fabric_teardown_not_queued` when its teardown could not be queued. `enabled: true` lets it join on the next reconcile (immediately when TurboFabric is on). Returns `{ ok, server }`.",
       security: [{ cookieAuth: [] }],
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
         {
           name: 'serverId',
           in: 'path',
@@ -2626,7 +2643,11 @@ export const organizationPaths: Record<string, unknown> = {
               type: 'object',
               properties: {
                 enabled: { type: 'boolean' },
-                role: { type: 'string', enum: ['gateway', 'client'], nullable: true },
+                role: {
+                  type: 'string',
+                  enum: ['gateway', 'client'],
+                  nullable: true,
+                },
               },
             },
           },
@@ -2642,7 +2663,9 @@ export const organizationPaths: Record<string, unknown> = {
                 required: ['ok'],
                 properties: {
                   ok: { type: 'boolean' },
-                  server: { $ref: '#/components/schemas/OrganizationFabricServer' },
+                  server: {
+                    $ref: '#/components/schemas/OrganizationFabricServer',
+                  },
                 },
               },
             },
@@ -2728,15 +2751,30 @@ export const organizationPaths: Record<string, unknown> = {
         "Manage-gated. Lists the organization's folder rows that a person can act on or is waiting for: orphan (on a server with no service or volume that owns it), removing (asked to go, the host has not confirmed) and missing (the host no longer has it). Filter with state (comma separated), page with limit (1 to 100, default 50) and offset. reason is plain words, including what the host said the last time it kept a removing folder. action says what POST /folders/{id}/remove would do: remove (an orphan), retry (ask again now) or forget (a missing row); null for a folder in use.",
       security: [{ cookieAuth: [] }],
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
         {
           name: 'state',
           in: 'query',
           required: false,
           schema: { type: 'string', example: 'orphan,removing' },
         },
-        { name: 'limit', in: 'query', required: false, schema: { type: 'integer' } },
-        { name: 'offset', in: 'query', required: false, schema: { type: 'integer' } },
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer' },
+        },
+        {
+          name: 'offset',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer' },
+        },
       ],
       responses: {
         '200': {
@@ -2757,13 +2795,20 @@ export const organizationPaths: Record<string, unknown> = {
                       properties: {
                         id: { type: 'string', format: 'uuid' },
                         kind: { type: 'string', enum: ['service', 'volume'] },
-                        state: { type: 'string', enum: ['orphan', 'removing', 'missing'] },
+                        state: {
+                          type: 'string',
+                          enum: ['orphan', 'removing', 'missing'],
+                        },
                         scope: { type: 'string' },
                         slug: { type: 'string' },
                         owner: { type: 'string' },
                         serverId: { type: 'string', format: 'uuid' },
                         serverName: { type: 'string', nullable: true },
-                        assetId: { type: 'string', format: 'uuid', nullable: true },
+                        assetId: {
+                          type: 'string',
+                          format: 'uuid',
+                          nullable: true,
+                        },
                         assetName: { type: 'string', nullable: true },
                         hasAsset: { type: 'boolean' },
                         reason: { type: 'string', nullable: true },
@@ -2808,7 +2853,12 @@ export const organizationPaths: Record<string, unknown> = {
         'Manage-gated. An orphan folder is moved to removing and its server is asked to delete it (permanent; asks for step-up re-authentication when the organization requires it); a folder already removing is asked again now; a missing row is forgotten, since the host has no folder. A folder a service or volume is using (planned or present), or an orphan a service or volume row still names, is refused with 409 folder_in_use: delete that service or volume instead. Recorded in the audit trail as folder.remove.',
       security: [{ cookieAuth: [] }],
       parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
       ],
       responses: {
         '200': {

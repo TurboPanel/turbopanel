@@ -2,11 +2,7 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandStatus } from '../commands/types.ts'
 import { composeNetworkNamesByServer, type EnvironmentComposeNetwork } from './fabric-records.ts'
-import {
-  awaitFabricReconcile,
-  classifyFabricGate,
-  type FabricGateRecord,
-} from './gate.ts'
+import { awaitFabricReconcile, classifyFabricGate, type FabricGateRecord } from './gate.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -28,17 +24,12 @@ function gateRecord(
   id: string,
   serverId: string,
   status: CommandStatus,
-  error: string | null = null,
+  error: string | null = null
 ): FabricGateRecord {
   return { id, serverId, status, errorMessage: error }
 }
 
-function commandRow(
-  id: string,
-  serverId: string,
-  status: string,
-  error?: string,
-) {
+function commandRow(id: string, serverId: string, status: string, error?: string) {
   return {
     id,
     serverId,
@@ -77,11 +68,8 @@ function createCommandStatusDb(rowsByCall: unknown[][]): Db {
 
 test('classifyFabricGate treats succeeded as ready', () => {
   assertEquals(
-    classifyFabricGate([
-      gateRecord('c1', 's1', 'succeeded'),
-      gateRecord('c2', 's2', 'succeeded'),
-    ]),
-    { kind: 'ready' },
+    classifyFabricGate([gateRecord('c1', 's1', 'succeeded'), gateRecord('c2', 's2', 'succeeded')]),
+    { kind: 'ready' }
   )
 })
 
@@ -91,25 +79,16 @@ test('classifyFabricGate treats other terminal statuses as failed', () => {
       gateRecord('c1', 's1', 'succeeded'),
       gateRecord('c2', 's2', 'failed', 'apply failed'),
     ]),
-    { kind: 'failed', serverId: 's2', commandId: 'c2', error: 'apply failed' },
+    { kind: 'failed', serverId: 's2', commandId: 'c2', error: 'apply failed' }
   )
-  assertEquals(
-    classifyFabricGate([gateRecord('c1', 's1', 'timed_out')]).kind,
-    'failed',
-  )
-  assertEquals(
-    classifyFabricGate([gateRecord('c1', 's1', 'cancelled')]).kind,
-    'failed',
-  )
+  assertEquals(classifyFabricGate([gateRecord('c1', 's1', 'timed_out')]).kind, 'failed')
+  assertEquals(classifyFabricGate([gateRecord('c1', 's1', 'cancelled')]).kind, 'failed')
 })
 
 test('classifyFabricGate reports pending non-terminal rows', () => {
   assertEquals(
-    classifyFabricGate([
-      gateRecord('c1', 's1', 'succeeded'),
-      gateRecord('c2', 's2', 'queued'),
-    ]),
-    { kind: 'pending', pending: [{ serverId: 's2', commandId: 'c2' }] },
+    classifyFabricGate([gateRecord('c1', 's1', 'succeeded'), gateRecord('c2', 's2', 'queued')]),
+    { kind: 'pending', pending: [{ serverId: 's2', commandId: 'c2' }] }
   )
 })
 
@@ -119,7 +98,7 @@ test('classifyFabricGate prefers failed over pending', () => {
       gateRecord('c1', 's1', 'queued'),
       gateRecord('c2', 's2', 'failed', 'boom'),
     ]),
-    { kind: 'failed', serverId: 's2', commandId: 'c2', error: 'boom' },
+    { kind: 'failed', serverId: 's2', commandId: 'c2', error: 'boom' }
   )
 })
 
@@ -129,9 +108,7 @@ test('awaitFabricReconcile returns ready immediately for an empty command list',
 })
 
 test('awaitFabricReconcile returns immediately when the first poll succeeds', async () => {
-  const db = createCommandStatusDb([
-    [commandRow('c1', 's1', 'succeeded')],
-  ])
+  const db = createCommandStatusDb([[commandRow('c1', 's1', 'succeeded')]])
   const outcome = await awaitFabricReconcile(db, {
     commands: [{ serverId: 's1', commandId: 'c1' }],
     timeoutMs: 20_000,
@@ -144,9 +121,7 @@ test('awaitFabricReconcile returns immediately when the first poll succeeds', as
 
 test('awaitFabricReconcile times out while commands stay pending', async () => {
   let nowMs = 0
-  const db = createCommandStatusDb([
-    [commandRow('c1', 's1', 'queued')],
-  ])
+  const db = createCommandStatusDb([[commandRow('c1', 's1', 'queued')]])
   const outcome = await awaitFabricReconcile(db, {
     commands: [{ serverId: 's1', commandId: 'c1' }],
     timeoutMs: 1_000,

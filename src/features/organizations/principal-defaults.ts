@@ -13,10 +13,7 @@ import {
   type PrincipalNameScheme,
   resolveOrgPrincipalNameScheme,
 } from '../../lib/principal-name-scheme.ts'
-import {
-  type OrganizationOptions,
-  resolvePrincipalNamePolicy,
-} from './organization-options.ts'
+import { type OrganizationOptions, resolvePrincipalNamePolicy } from './organization-options.ts'
 
 export type PrincipalDefaultsPatch = {
   /** `undefined` leaves the scheme alone; `null` clears it to the platform default. */

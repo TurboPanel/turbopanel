@@ -187,13 +187,19 @@ test('principal name scheme options parse and default to partial', () => {
     parseOrganizationOptions({ principalNameSchemeLocked: 'yes' }).principalNameSchemeLocked,
     undefined
   )
-  assertEquals(resolvePrincipalNamePolicy({}), { defaultScheme: 'partial', locked: false })
+  assertEquals(resolvePrincipalNamePolicy({}), {
+    defaultScheme: 'partial',
+    locked: false,
+  })
   assertEquals(resolvePrincipalNamePolicy({ randomizedPrincipalUsernames: false }), {
     defaultScheme: 'plain',
     locked: false,
   })
   assertEquals(
-    resolvePrincipalNamePolicy({ principalNameScheme: 'random', principalNameSchemeLocked: true }),
+    resolvePrincipalNamePolicy({
+      principalNameScheme: 'random',
+      principalNameSchemeLocked: true,
+    }),
     { defaultScheme: 'random', locked: true }
   )
 })

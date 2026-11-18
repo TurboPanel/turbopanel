@@ -663,7 +663,13 @@ test('the exhaustion sentence never calls an ending license "in use" and names t
   )
   assertEquals(
     licenseExhaustionMessage(
-      summaryFor({ ...base, purchased: 4, releasing: 1, ending: 1, endsAt: null })
+      summaryFor({
+        ...base,
+        purchased: 4,
+        releasing: 1,
+        ending: 1,
+        endsAt: null,
+      })
     ),
     '3 in use, 1 ends at the end of the billing period — restore one to add this server.'
   )
@@ -727,47 +733,111 @@ test('the exhaustion sentence: every combination of in use, unused keys, ending 
   const cases: [string, Parameters<typeof summaryFor>[0], string][] = [
     [
       'several unused keys, nothing else leaving',
-      { purchased: 5, releasing: 0, ending: 0, endsAt: null, held: 5, bound: 2 },
+      {
+        purchased: 5,
+        releasing: 0,
+        ending: 0,
+        endsAt: null,
+        held: 5,
+        bound: 2,
+      },
       '2 in use, 3 held by unused registration keys — delete one or use one to add this server.',
     ],
     [
       'unused keys only',
-      { purchased: 2, releasing: 0, ending: 0, endsAt: null, held: 2, bound: 0 },
+      {
+        purchased: 2,
+        releasing: 0,
+        ending: 0,
+        endsAt: null,
+        held: 2,
+        bound: 0,
+      },
       '2 held by unused registration keys — delete one or use one to add this server.',
     ],
     [
       'a single unused key with provisioning beside it',
-      { purchased: 3, releasing: 0, ending: 0, endsAt: null, held: 3, bound: 1, provisioning: 1 },
+      {
+        purchased: 3,
+        releasing: 0,
+        ending: 0,
+        endsAt: null,
+        held: 3,
+        bound: 1,
+        provisioning: 1,
+      },
       '2 in use (1 provisioning), 1 held by an unused registration key — delete it or use it to add this server.',
     ],
     [
       'several unused keys and several ending: the unused-and-ending line wins',
-      { purchased: 8, releasing: 2, ending: 2, endsAt: ENDS, held: 6, bound: 3 },
+      {
+        purchased: 8,
+        releasing: 2,
+        ending: 2,
+        endsAt: ENDS,
+        held: 6,
+        bound: 3,
+      },
       '3 in use, 3 held by unused registration keys, 2 end Oct 26 — use or delete the unused key, or restore one, to add this server.',
     ],
     [
       'ending with no known date',
-      { purchased: 4, releasing: 1, ending: 1, endsAt: null, held: 3, bound: 3 },
+      {
+        purchased: 4,
+        releasing: 1,
+        ending: 1,
+        endsAt: null,
+        held: 3,
+        bound: 3,
+      },
       '3 in use, 1 ends at the end of the billing period — restore one to add this server.',
     ],
     [
       'a downgrade holding the last license back, ending and unused keys absent',
-      { purchased: 5, releasing: 2, ending: 0, endsAt: null, held: 3, bound: 3 },
+      {
+        purchased: 5,
+        releasing: 2,
+        ending: 0,
+        endsAt: null,
+        held: 3,
+        bound: 3,
+      },
       '3 in use, 2 changing tier at the end of the billing period — buy another to add this server now.',
     ],
     [
       'changing tier is what releasing has beyond ending, capped by what is not held',
-      { purchased: 5, releasing: 4, ending: 1, endsAt: ENDS, held: 4, bound: 4 },
+      {
+        purchased: 5,
+        releasing: 4,
+        ending: 1,
+        endsAt: ENDS,
+        held: 4,
+        bound: 4,
+      },
       '4 in use, 1 ends Oct 26, 1 changing tier at the end of the billing period — restore one to add this server.',
     ],
     [
       'unused keys take the closing line over a downgrade',
-      { purchased: 5, releasing: 2, ending: 0, endsAt: null, held: 4, bound: 3 },
+      {
+        purchased: 5,
+        releasing: 2,
+        ending: 0,
+        endsAt: null,
+        held: 4,
+        bound: 3,
+      },
       '3 in use, 1 held by an unused registration key, 1 changing tier at the end of the billing period — delete it or use it to add this server.',
     ],
     [
       'nothing changing when releasing is all ending',
-      { purchased: 4, releasing: 2, ending: 2, endsAt: ENDS, held: 2, bound: 2 },
+      {
+        purchased: 4,
+        releasing: 2,
+        ending: 2,
+        endsAt: ENDS,
+        held: 2,
+        bound: 2,
+      },
       '2 in use, 2 end Oct 26 — restore one to add this server.',
     ],
     [
@@ -777,7 +847,15 @@ test('the exhaustion sentence: every combination of in use, unused keys, ending 
     ],
     [
       'fully used, provisioning noted in the closing line',
-      { purchased: 3, releasing: 0, ending: 0, endsAt: null, held: 3, bound: 2, provisioning: 1 },
+      {
+        purchased: 3,
+        releasing: 0,
+        ending: 0,
+        endsAt: null,
+        held: 3,
+        bound: 2,
+        provisioning: 1,
+      },
       'All 3 licenses are in use (1 provisioning) — buy another to add this server.',
     ],
   ]
@@ -964,7 +1042,10 @@ type FakeSession = {
 /** A Stripe that keeps Checkout sessions: list by status, expire, create. */
 function sessionStripe(
   seed: FakeSession[] = [],
-  hooks: { onExpire?: (id: string, s: FakeSession) => void; listFails?: boolean } = {}
+  hooks: {
+    onExpire?: (id: string, s: FakeSession) => void
+    listFails?: boolean
+  } = {}
 ) {
   const sessions = [...seed]
   const nowSec = Math.floor(Date.parse(NOW) / 1000)
@@ -982,7 +1063,12 @@ function sessionStripe(
   const stripe = (call: StripeCall): unknown => {
     if (call.method === 'GET' && call.path === '/v1/checkout/sessions') {
       if (hooks.listFails) {
-        throw new StripeApiError({ status: 500, type: 'api_error', code: null, message: 'boom' })
+        throw new StripeApiError({
+          status: 500,
+          type: 'api_error',
+          code: null,
+          message: 'boom',
+        })
       }
       const status = formOf(call, 'status')
       return { data: sessions.filter((s) => s.status === status).map(view) }
@@ -1037,7 +1123,10 @@ const livePosts = (h: Awaited<ReturnType<typeof buildApp>>) =>
 
 test('a different tier or quantity expires the open session and opens a new one in the same request', async () => {
   const fake = sessionStripe()
-  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const h = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: fake.stripe,
+  })
   const first = await postCheckout(h, S3, 2)
   assertEquals((await first.json()).sessionId, 'cs_1')
   // Well past the quick-return window.
@@ -1060,7 +1149,10 @@ test('a different tier or quantity expires the open session and opens a new one 
 
 test('going back to an earlier choice is a new request, never the expired session its key once made', async () => {
   const fake = sessionStripe()
-  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const h = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: fake.stripe,
+  })
   await postCheckout(h, S3, 2)
   await postCheckout(h, S5, 2)
   const back = await postCheckout(h, S3, 2)
@@ -1077,7 +1169,10 @@ test('going back to an earlier choice is a new request, never the expired sessio
 
 test('a quick repeat of the same choice hands back the open session; an older one is replaced', async () => {
   const fake = sessionStripe()
-  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const h = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: fake.stripe,
+  })
   const a = await (await postCheckout(h, S3, 2)).json()
   const b = await (await postCheckout(h, S3, 2)).json()
   assertEquals(b, a)
@@ -1096,10 +1191,19 @@ test('a quick repeat of the same choice hands back the open session; an older on
 test('other open sessions are expired even when one is handed back', async () => {
   const nowSec = Math.floor(Date.parse(NOW) / 1000)
   const fake = sessionStripe([
-    { id: 'cs_1', status: 'open', tier: S5, quantity: 1, created: nowSec - 3000 },
+    {
+      id: 'cs_1',
+      status: 'open',
+      tier: S5,
+      quantity: 1,
+      created: nowSec - 3000,
+    },
     { id: 'cs_2', status: 'open', tier: S3, quantity: 2, created: nowSec - 10 },
   ])
-  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const h = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: fake.stripe,
+  })
   const res = await (await postCheckout(h, S3, 2)).json()
   assertEquals(res.sessionId, 'cs_2')
   assertEquals(
@@ -1112,10 +1216,21 @@ test('other open sessions are expired even when one is handed back', async () =>
 test('a session that completes before it can be expired stops the purchase: subscription_exists, nothing created', async () => {
   const nowSec = Math.floor(Date.parse(NOW) / 1000)
   const fake = sessionStripe(
-    [{ id: 'cs_1', status: 'open', tier: S3, quantity: 1, created: nowSec - 600 }],
+    [
+      {
+        id: 'cs_1',
+        status: 'open',
+        tier: S3,
+        quantity: 1,
+        created: nowSec - 600,
+      },
+    ],
     { onExpire: (_id, s) => (s.status = 'complete') }
   )
-  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const h = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: fake.stripe,
+  })
   const res = await postCheckout(h, S5, 1)
   assertEquals(res.status, 409)
   assertEquals(await res.json(), { error: 'subscription_exists' })
@@ -1125,10 +1240,19 @@ test('a session that completes before it can be expired stops the purchase: subs
 test('a session paid a moment ago (webhook not yet projected) stops the purchase before anything is expired or created', async () => {
   const nowSec = Math.floor(Date.parse(NOW) / 1000)
   const fake = sessionStripe([
-    { id: 'cs_1', status: 'complete', tier: S3, quantity: 1, created: nowSec - 120 },
+    {
+      id: 'cs_1',
+      status: 'complete',
+      tier: S3,
+      quantity: 1,
+      created: nowSec - 120,
+    },
     { id: 'cs_2', status: 'open', tier: S5, quantity: 1, created: nowSec - 60 },
   ])
-  const h = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const h = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: fake.stripe,
+  })
   const res = await postCheckout(h, S5, 3)
   assertEquals(res.status, 409)
   assertEquals(await res.json(), { error: 'subscription_exists' })
@@ -1142,7 +1266,13 @@ test('a session paid a moment ago (webhook not yet projected) stops the purchase
 test('an old completed session (a cancelled subscription) does not block a new purchase', async () => {
   const nowSec = Math.floor(Date.parse(NOW) / 1000)
   const fake = sessionStripe([
-    { id: 'cs_1', status: 'complete', tier: S3, quantity: 1, created: nowSec - 86_400 * 30 },
+    {
+      id: 'cs_1',
+      status: 'complete',
+      tier: S3,
+      quantity: 1,
+      created: nowSec - 86_400 * 30,
+    },
   ])
   const h = await buildApp({
     view: viewWith(stateWith(null, [])),
@@ -1150,7 +1280,9 @@ test('an old completed session (a cancelled subscription) does not block a new p
       // Stripe applies the created filter; mimic it.
       if (call.path === '/v1/checkout/sessions' && formOf(call, 'status') === 'complete') {
         const floor = Number(formOf(call, 'created[gte]'))
-        return { data: fake.sessions.filter((s) => s.status === 'complete' && s.created >= floor) }
+        return {
+          data: fake.sessions.filter((s) => s.status === 'complete' && s.created >= floor),
+        }
       }
       return fake.stripe(call)
     },
@@ -1163,7 +1295,13 @@ test('an old completed session (a cancelled subscription) does not block a new p
 test('an already expired session that Stripe refuses to expire again is skipped, and the purchase goes on', async () => {
   const nowSec = Math.floor(Date.parse(NOW) / 1000)
   const fake = sessionStripe([
-    { id: 'cs_1', status: 'open', tier: S3, quantity: 1, created: nowSec - 600 },
+    {
+      id: 'cs_1',
+      status: 'open',
+      tier: S3,
+      quantity: 1,
+      created: nowSec - 600,
+    },
   ])
   // It lapses on its own between the listing and the expire call.
   const lapse = fake.stripe
@@ -1182,20 +1320,34 @@ test('an already expired session that Stripe refuses to expire again is skipped,
 test('a Stripe failure while listing or expiring answers a plain retryable error and creates nothing', async () => {
   const nowSec = Math.floor(Date.parse(NOW) / 1000)
   const listing = sessionStripe([], { listFails: true })
-  const a = await buildApp({ view: viewWith(stateWith(null, [])), stripe: listing.stripe })
+  const a = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: listing.stripe,
+  })
   const listed = await postCheckout(a, S3, 1)
   assertEquals(listed.status, 503)
   assertEquals((await listed.json()).error, 'stripe_error')
   assertEquals(livePosts(a).length, 0)
 
   const fake = sessionStripe([
-    { id: 'cs_1', status: 'open', tier: S3, quantity: 1, created: nowSec - 600 },
+    {
+      id: 'cs_1',
+      status: 'open',
+      tier: S3,
+      quantity: 1,
+      created: nowSec - 600,
+    },
   ])
   const b = await buildApp({
     view: viewWith(stateWith(null, [])),
     stripe: (call) => {
       if (call.path.endsWith('/expire')) {
-        throw new StripeApiError({ status: 500, type: 'api_error', code: null, message: 'down' })
+        throw new StripeApiError({
+          status: 500,
+          type: 'api_error',
+          code: null,
+          message: 'down',
+        })
       }
       return fake.stripe(call)
     },
@@ -1204,7 +1356,10 @@ test('a Stripe failure while listing or expiring answers a plain retryable error
   assertEquals(expired.status, 503)
   assertEquals(livePosts(b).length, 0)
   // Nothing was lost: the next try starts again and succeeds.
-  const retry = await buildApp({ view: viewWith(stateWith(null, [])), stripe: fake.stripe })
+  const retry = await buildApp({
+    view: viewWith(stateWith(null, [])),
+    stripe: fake.stripe,
+  })
   assertEquals((await postCheckout(retry, S5, 1)).status, 200)
   assertEquals(fake.sessions.filter((s) => s.status === 'open').length, 1)
 })
@@ -1212,7 +1367,13 @@ test('a Stripe failure while listing or expiring answers a plain retryable error
 test('an expire refused for a session that is still open is an error, not a second live session', async () => {
   const nowSec = Math.floor(Date.parse(NOW) / 1000)
   const fake = sessionStripe([
-    { id: 'cs_1', status: 'open', tier: S3, quantity: 1, created: nowSec - 600 },
+    {
+      id: 'cs_1',
+      status: 'open',
+      tier: S3,
+      quantity: 1,
+      created: nowSec - 600,
+    },
   ])
   const h = await buildApp({
     view: viewWith(stateWith(null, [])),
@@ -1455,7 +1616,9 @@ test('POST /billing/preview refuses what cannot be quoted, each with its own bod
   assertEquals(none.stripeCalls(), [])
 
   // A target tier the provider cannot sell (retired): 400 tier_not_purchasable.
-  const retired = await buildApp({ routes: { 'POST /v1/invoices/create_preview': EMPTY_PREVIEW } })
+  const retired = await buildApp({
+    routes: { 'POST /v1/invoices/create_preview': EMPTY_PREVIEW },
+  })
   retired.db.rows(tier).find((row) => row.id === S5)!.isActive = false
   const notPurchasable = await retired.app.request('/billing/preview', {
     method: 'POST',
@@ -1474,7 +1637,9 @@ test('POST /billing/preview refuses what cannot be quoted, each with its own bod
   )
 
   // Removing more seats than the tier has: 400 Invalid request from the item arithmetic.
-  const over = await buildApp({ routes: { 'POST /v1/invoices/create_preview': EMPTY_PREVIEW } })
+  const over = await buildApp({
+    routes: { 'POST /v1/invoices/create_preview': EMPTY_PREVIEW },
+  })
   const tooMany = await over.app.request('/billing/preview', {
     method: 'POST',
     headers: over.headers,
@@ -1515,7 +1680,10 @@ test('POST /billing/preview maps a Stripe refusal to 502 stripe_error, whether t
   }
   for (const routes of [
     { 'POST /v1/invoices/create_preview': refuse },
-    { 'GET /v1/products/prod_s5': refuse, 'POST /v1/invoices/create_preview': EMPTY_PREVIEW },
+    {
+      'GET /v1/products/prod_s5': refuse,
+      'POST /v1/invoices/create_preview': EMPTY_PREVIEW,
+    },
   ]) {
     const { app, headers } = await buildApp({ routes })
     const writeStub = stub(Deno.stderr, 'writeSync', (data) => data.byteLength)
@@ -1572,7 +1740,11 @@ test('POST /billing/restore validates { tierId, count } before the lease', async
     JSON.stringify({ tierId: 'x', count: 1 }),
     'nope',
   ]) {
-    const res = await app.request('/billing/restore', { method: 'POST', headers, body })
+    const res = await app.request('/billing/restore', {
+      method: 'POST',
+      headers,
+      body,
+    })
     assertEquals(res.status, 400, body)
   }
   assertEquals(leases, [])
@@ -1591,7 +1763,12 @@ test('POST /billing/restore takes ending licenses back under the lease — no pu
     body: JSON.stringify({ tierId: S3, count: 3 }),
   })
   assertEquals(res.status, 200)
-  assertEquals(await res.json(), { ok: true, restored: 3, ending: 0, scheduleId: null })
+  assertEquals(await res.json(), {
+    ok: true,
+    restored: 3,
+    ending: 0,
+    scheduleId: null,
+  })
   assertEquals(stripeCalls(), [])
   assertEquals(leases, ['begin', 'end'])
 
@@ -1602,7 +1779,10 @@ test('POST /billing/restore takes ending licenses back under the lease — no pu
     body: JSON.stringify({ tierId: S3, count: 1 }),
   })
   assertEquals(refused.status, 409)
-  assertEquals(await refused.json(), { error: NO_LICENSES_ENDING_ERROR, tierId: S3 })
+  assertEquals(await refused.json(), {
+    error: NO_LICENSES_ENDING_ERROR,
+    tierId: S3,
+  })
 })
 
 test('POST /billing/upgrade validates { fromTierId, toTierId } and forwards to upgradeTier, which decides the direction', async () => {

@@ -36,7 +36,11 @@ export function registerServerReenrollTicketRoutes(router: Hono<AppEnv>, opts: A
 
     // One live ticket per server: issuing a new one retires the old.
     await revokeServerTickets(db, serverId)
-    const issued = await mintTicket(db, { organizationId, serverId, userId: session.userId })
+    const issued = await mintTicket(db, {
+      organizationId,
+      serverId,
+      userId: session.userId,
+    })
     await recordAudit(db, {
       organizationId,
       actorUserId: session.userId,

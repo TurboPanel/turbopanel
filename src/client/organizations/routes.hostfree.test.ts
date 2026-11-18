@@ -715,7 +715,9 @@ test('PUT /project-settings returns 400 for a switch that is not a boolean', asy
     body: JSON.stringify({ openEnvironmentSectionByDefault: 'yes' }),
   })
   assertEquals(res.status, 400)
-  assertEquals(await res.json(), { error: 'Invalid openEnvironmentSectionByDefault' })
+  assertEquals(await res.json(), {
+    error: 'Invalid openEnvironmentSectionByDefault',
+  })
 })
 
 test('PUT /project-settings writes one switch', async () => {

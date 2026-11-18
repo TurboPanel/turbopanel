@@ -387,13 +387,17 @@ test('cancelNonTerminalCommand cancels a live command and leaves a finished one'
     await transitionCommand(db, finished.id, { status: 'succeeded' })
 
     assertEquals(
-      await cancelNonTerminalCommand(db, live.id, { error: 'Superseded by a follow-primary' }),
+      await cancelNonTerminalCommand(db, live.id, {
+        error: 'Superseded by a follow-primary',
+      }),
       true
     )
     assertEquals((await getCommandRecord(db, live.id))?.status, 'cancelled')
 
     assertEquals(
-      await cancelNonTerminalCommand(db, finished.id, { error: 'Superseded by a follow-primary' }),
+      await cancelNonTerminalCommand(db, finished.id, {
+        error: 'Superseded by a follow-primary',
+      }),
       false
     )
     assertEquals((await getCommandRecord(db, finished.id))?.status, 'succeeded')

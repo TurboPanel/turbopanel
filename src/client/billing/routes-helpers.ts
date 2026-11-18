@@ -154,7 +154,11 @@ export async function loadBillingOrgView(
   const { ledger } = state.subscription
     ? await readPendingChanges(db, organizationId, state.subscription.providerSubscriptionId)
     : {
-        ledger: { version: 2 as const, providerSubscriptionId: '', intents: [] },
+        ledger: {
+          version: 2 as const,
+          providerSubscriptionId: '',
+          intents: [],
+        },
       }
   return { state, licenses, servers, ledger, reserved, heldKeys }
 }
@@ -325,7 +329,12 @@ export function licensesEndingRefusal(
 ): LicensesEndingRefusal | null {
   const ending = endingLicensesByTier(ledger).get(tierId)
   if (!ending || ending.count === 0) return null
-  return { error: LICENSES_ENDING_ERROR, tierId, ending: ending.count, endsAt: ending.endsAt }
+  return {
+    error: LICENSES_ENDING_ERROR,
+    tierId,
+    ending: ending.count,
+    endsAt: ending.endsAt,
+  }
 }
 
 /** `Oct 26` for an ISO instant, in UTC (the boundary Stripe bills on). */

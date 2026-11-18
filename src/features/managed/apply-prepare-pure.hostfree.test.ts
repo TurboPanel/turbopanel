@@ -220,7 +220,9 @@ test('prepareErrorResponse status codes stay stable per kind', async () => {
     kind: 'managed_credential_not_sealed',
   })
   assertEquals(credential.status, 500)
-  assertEquals(await credential.json(), { error: 'managed_credential_not_sealed' })
+  assertEquals(await credential.json(), {
+    error: 'managed_credential_not_sealed',
+  })
 
   const settings = prepareErrorResponse(c, {
     kind: 'managed_settings_invalid',
@@ -351,8 +353,12 @@ test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA b
     keyId: '66666666-6666-4666-8666-666666666666',
   }
   const orgA = await mintOrganizationCa({ organizationId: 'Org A CA' })
-  const orgBActive = await mintOrganizationCa({ organizationId: 'Org B CA Active' })
-  const orgBRetired = await mintOrganizationCa({ organizationId: 'Org B CA Retired' })
+  const orgBActive = await mintOrganizationCa({
+    organizationId: 'Org B CA Active',
+  })
+  const orgBRetired = await mintOrganizationCa({
+    organizationId: 'Org B CA Retired',
+  })
   const orgBBundle = `${orgBActive.certificatePem}${orgBRetired.certificatePem}`
 
   const leafA = await buildManagedOrgTlsMaterial(
@@ -392,7 +398,9 @@ test('buildManagedOrgTlsMaterial ships trustBundlePem as caCertPem and signs wit
     'data-encryption'
   )
   const active = await mintOrganizationCa({ organizationId: 'Org CA Active' })
-  const retired = await mintOrganizationCa({ organizationId: 'Org CA Retired' })
+  const retired = await mintOrganizationCa({
+    organizationId: 'Org CA Retired',
+  })
   const trustBundlePem = `${active.certificatePem}${retired.certificatePem}`
   const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
@@ -421,7 +429,9 @@ test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replica
     'data-encryption'
   )
   const managedId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
-  const ca = await mintOrganizationCa({ organizationId: 'Org CA Remote Primary' })
+  const ca = await mintOrganizationCa({
+    organizationId: 'Org CA Remote Primary',
+  })
   const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
     dataEncryptionSecrets,
@@ -591,7 +601,10 @@ test('buildDatabaseOps names the chosen owner login on an owner-role create', ()
   )
   // A recorded owner for a database without an owner role is never sent.
   assertEquals(
-    buildDatabaseOps({ databases: ['shop'], databaseOwners: { shop: { username: 'app_x' } } }),
+    buildDatabaseOps({
+      databases: ['shop'],
+      databaseOwners: { shop: { username: 'app_x' } },
+    }),
     [{ name: 'shop', action: 'create' }]
   )
 })
@@ -604,7 +617,12 @@ test('buildDatabaseOps asks for a conversion only for a listed owner-role databa
       convertDatabases: ['first'],
     }),
     [
-      { name: 'first', action: 'create', ownerRole: true, convertExisting: true },
+      {
+        name: 'first',
+        action: 'create',
+        ownerRole: true,
+        convertExisting: true,
+      },
       { name: 'shop', action: 'create', ownerRole: true },
     ]
   )

@@ -260,7 +260,9 @@ test('POST /projects/:projectId/principals persists default shell when options o
     assertEquals(row?.username, 'appuser')
     assertEquals(row?.appliedUsername, body.appliedUsername)
     // Home follows the applied login — that's the account on the host.
-    assertEquals(row?.metadata, { home: principalHomeDir(body.appliedUsername) })
+    assertEquals(row?.metadata, {
+      home: principalHomeDir(body.appliedUsername),
+    })
   })
 })
 
@@ -433,7 +435,10 @@ test('POST /projects/:projectId/principals rejects invalid shell', async () => {
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ username: 'appuser', options: { shell: 'bash' } }),
+      body: JSON.stringify({
+        username: 'appuser',
+        options: { shell: 'bash' },
+      }),
     })
 
     assertEquals(res.status, 400)
@@ -484,7 +489,11 @@ test('GET /projects/:projectId/principals lists principals with serviceIds', asy
       })
       assertEquals(list.status, 200)
       const body = (await list.json()) as {
-        principals: Array<{ id: string; username: string; serviceIds: string[] }>
+        principals: Array<{
+          id: string
+          username: string
+          serviceIds: string[]
+        }>
       }
       assertEquals(body.principals.length, 1)
       assertEquals(body.principals[0]?.id, created.id)
@@ -508,7 +517,11 @@ test('POST /projects/:projectId/principals accepts uid and gid override', async 
     })
 
     assertEquals(res.status, 200)
-    const body = (await res.json()) as { ok: boolean; uid: number; gid: number }
+    const body = (await res.json()) as {
+      ok: boolean
+      uid: number
+      gid: number
+    }
     assertEquals(body.uid, 15001)
     assertEquals(body.gid, 15001)
   })
@@ -675,7 +688,10 @@ test('PATCH /projects/:projectId/principals/:id updates serviceIds', async () =>
         body: JSON.stringify({ serviceIds: [serviceId] }),
       })
       assertEquals(patch.status, 200)
-      const patched = (await patch.json()) as { ok: boolean; serviceIds: string[] }
+      const patched = (await patch.json()) as {
+        ok: boolean
+        serviceIds: string[]
+      }
       assertEquals(patched.ok, true)
       assertEquals(patched.serviceIds, [serviceId])
     }
@@ -865,7 +881,10 @@ test('DELETE /projects/:projectId/principals/:id removes principal', async () =>
         assertEquals(trail.length, 1)
         assertEquals(trail[0]!.action, 'principal.delete')
         assertEquals(trail[0]!.actorUserId, userId)
-        const context = trail[0]!.context as { username: string; appliedUsername: string }
+        const context = trail[0]!.context as {
+          username: string
+          appliedUsername: string
+        }
         assertEquals(context.username, 'deleteme')
         assertEquals(typeof context.appliedUsername, 'string')
       } finally {
@@ -1026,7 +1045,11 @@ test('POST /projects/:projectId/principals rejects mutations on turbopanel works
       .returning({ id: workspace.id })
     const [platformProject] = await db
       .insert(project)
-      .values({ name: 'Platform Project', workspaceId: platformWorkspace!.id, organizationId })
+      .values({
+        name: 'Platform Project',
+        workspaceId: platformWorkspace!.id,
+        organizationId,
+      })
       .returning({ id: project.id })
 
     const cookie = await sessionCookie(db, secrets, userId)
@@ -1074,7 +1097,9 @@ test('GET and PUT /organizations/:id/resource-limits round-trip limits', async (
     const put = await app.request(`/organizations/${organizationId}/resource-limits`, {
       method: 'PUT',
       headers,
-      body: JSON.stringify({ resourceLimits: { maxCpus: 4, maxMemoryBytes: 8192 } }),
+      body: JSON.stringify({
+        resourceLimits: { maxCpus: 4, maxMemoryBytes: 8192 },
+      }),
     })
     assertEquals(put.status, 200)
     const putBody = (await put.json()) as {
@@ -1122,7 +1147,9 @@ test('GET and PUT /servers/:id/resource-limits round-trip limits', async () => {
     const put = await app.request(`/servers/${serverId}/resource-limits`, {
       method: 'PUT',
       headers,
-      body: JSON.stringify({ resourceLimits: { maxServicesPerEnvironment: 10 } }),
+      body: JSON.stringify({
+        resourceLimits: { maxServicesPerEnvironment: 10 },
+      }),
     })
     assertEquals(put.status, 200)
     const putBody = (await put.json()) as {
@@ -1131,7 +1158,9 @@ test('GET and PUT /servers/:id/resource-limits round-trip limits', async () => {
     }
     assertEquals(putBody.resourceLimits.maxServicesPerEnvironment, 10)
 
-    const get = await app.request(`/servers/${serverId}/resource-limits`, { headers })
+    const get = await app.request(`/servers/${serverId}/resource-limits`, {
+      headers,
+    })
     assertEquals(get.status, 200)
     const getBody = (await get.json()) as {
       resourceLimits: { maxServicesPerEnvironment: number }
@@ -1228,7 +1257,10 @@ test('POST principals: each scheme derives the system name on the server and kee
     assertEquals(dflt.nameScheme, 'partial')
     assertMatch(dflt.appliedUsername, /^dflt_[a-z0-9]{11}$/)
 
-    const plainRes = await create({ username: 'plainone', nameScheme: 'plain' })
+    const plainRes = await create({
+      username: 'plainone',
+      nameScheme: 'plain',
+    })
     const plain = (await plainRes.json()) as CreatedPrincipalBody
     assertEquals(plain.nameScheme, 'plain')
     assertEquals(plain.appliedUsername, 'plainone')
@@ -1242,7 +1274,10 @@ test('POST principals: each scheme derives the system name on the server and kee
     const partial = (await partialRes.json()) as CreatedPrincipalBody
     assertMatch(partial.appliedUsername, /^partone_[a-z0-9]{11}$/)
 
-    const randomRes = await create({ username: 'randone', nameScheme: 'random' })
+    const randomRes = await create({
+      username: 'randone',
+      nameScheme: 'random',
+    })
     assertEquals(randomRes.status, 200)
     const random = (await randomRes.json()) as CreatedPrincipalBody
     assertEquals(random.nameScheme, 'random')
@@ -1254,13 +1289,21 @@ test('POST principals: each scheme derives the system name on the server and kee
     assertEquals(row?.username, 'randone')
     assertEquals(row?.appliedUsername, random.appliedUsername)
     assertEquals(row?.options, { nameScheme: 'random' })
-    assertEquals(row?.metadata, { home: principalHomeDir(random.appliedUsername) })
+    assertEquals(row?.metadata, {
+      home: principalHomeDir(random.appliedUsername),
+    })
 
     // The list route reports both names and the scheme.
-    const list = await app.request(`/projects/${projectId}/principals`, { headers })
+    const list = await app.request(`/projects/${projectId}/principals`, {
+      headers,
+    })
     const listed = (
       (await list.json()) as {
-        principals: { username: string; appliedUsername: string; nameScheme: string }[]
+        principals: {
+          username: string
+          appliedUsername: string
+          nameScheme: string
+        }[]
       }
     ).principals
     const listedRandom = listed.find((entry) => entry.username === 'randone')
@@ -1294,7 +1337,9 @@ test('POST principals: length limits follow the scheme (28 plain/random, 16 part
     assertEquals((await create(`v${'a'.repeat(27)}`, 'random')).status, 200)
     const tooLongForPartial = await create(`w${'a'.repeat(16)}`, 'partial')
     assertEquals(tooLongForPartial.status, 400)
-    assertEquals(await tooLongForPartial.json(), { error: 'username_too_long' })
+    assertEquals(await tooLongForPartial.json(), {
+      error: 'username_too_long',
+    })
     assertEquals((await create(`x${'a'.repeat(28)}`, 'plain')).status, 400)
   })
 })
@@ -1316,10 +1361,14 @@ test('POST principals: org default scheme and the legacy boolean fallback', asyn
       ).json()) as CreatedPrincipalBody
 
     // Legacy `false` still means plain; legacy `true` still means partial.
-    await setOrgOptions(db, organizationId, { randomizedPrincipalUsernames: false })
+    await setOrgOptions(db, organizationId, {
+      randomizedPrincipalUsernames: false,
+    })
     const legacyOff = await create('legacyoff')
     assertEquals([legacyOff.nameScheme, legacyOff.appliedUsername], ['plain', 'legacyoff'])
-    await setOrgOptions(db, organizationId, { randomizedPrincipalUsernames: true })
+    await setOrgOptions(db, organizationId, {
+      randomizedPrincipalUsernames: true,
+    })
     assertEquals((await create('legacyon')).nameScheme, 'partial')
 
     // The new key wins over the legacy boolean.
@@ -1358,7 +1407,10 @@ test('principal-defaults: lock refuses another scheme at create, allows the lock
       await create({ username: 'before', nameScheme: 'partial' })
     ).json()) as CreatedPrincipalBody
 
-    const locked = await putDefaults({ nameScheme: 'plain', schemeLocked: true })
+    const locked = await putDefaults({
+      nameScheme: 'plain',
+      schemeLocked: true,
+    })
     assertEquals(locked.status, 200)
     assertEquals(await locked.json(), {
       ok: true,
@@ -1367,7 +1419,10 @@ test('principal-defaults: lock refuses another scheme at create, allows the lock
       schemeLocked: true,
     })
 
-    const refused = await create({ username: 'sneaky', nameScheme: 'random' })
+    const refused = await create({
+      username: 'sneaky',
+      nameScheme: 'random',
+    })
     assertEquals(refused.status, 409)
     assertEquals(await refused.json(), { error: 'principal_scheme_locked' })
     const none = await db
@@ -1401,7 +1456,10 @@ test('principal-defaults: lock refuses another scheme at create, allows the lock
       headers,
     })
     assertEquals(read.status, 200)
-    const readBody = (await read.json()) as { schemeLocked: boolean; effectiveNameScheme: string }
+    const readBody = (await read.json()) as {
+      schemeLocked: boolean
+      effectiveNameScheme: string
+    }
     assertEquals([readBody.schemeLocked, readBody.effectiveNameScheme], [true, 'plain'])
   })
 })
@@ -1487,7 +1545,12 @@ test('principal-defaults: only an owner or manager may read or set them; other o
           'Content-Type': 'application/json',
         },
         ...(method === 'PUT'
-          ? { body: JSON.stringify({ nameScheme: 'random', schemeLocked: true }) }
+          ? {
+              body: JSON.stringify({
+                nameScheme: 'random',
+                schemeLocked: true,
+              }),
+            }
           : {}),
       })
 
@@ -1528,7 +1591,13 @@ test('DELETE /projects/:projectId/principals/:id refuses while a database login 
       const created = (await create.json()) as { id: string }
       const [cluster] = await db
         .insert(managed)
-        .values({ environmentId, serverId, name: 'DB login', engine: 'postgres', status: 'ready' })
+        .values({
+          environmentId,
+          serverId,
+          name: 'DB login',
+          engine: 'postgres',
+          status: 'ready',
+        })
         .returning({ id: managed.id })
       await db.insert(login).values({
         recipe: 'app',
