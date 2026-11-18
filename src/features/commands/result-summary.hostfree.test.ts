@@ -39,6 +39,11 @@ test('result summary is null when the report does not fit its command type', () 
   assertEquals(resultSummaryForPersist('server.hostname.set', 'not an object'), null)
 })
 
+test('result summary is null for a malformed server.tunnel.status result', () => {
+  assertEquals(resultSummaryForPersist('server.tunnel.status', { pinnedVersion: 5 }), null)
+  assertEquals(resultSummaryForPersist('server.tunnel.status', { pinnedVersion: '2026.5.2' }), null)
+})
+
 test('result summary is null for an unknown command type', () => {
   assertEquals(resultSummaryForPersist('server.mystery', { a: 1 }), null)
 })

@@ -123,7 +123,8 @@ export function deployRunState(input: {
  * server, which also makes a later stop or destroy of that environment wait,
  * and the server runs one build at a time. A server that has said nothing
  * {@link DEPLOY_SIGNAL_GRACE_MS} after the send is offline (the request waits in
- * its outbox, ahead of anything sent later) or has lost the deploy; waiting on it must not hold up the server's other commands either.
+ * its outbox, ahead of anything sent later) or has lost the deploy; waiting
+ * on it must not hold up the server's other commands either.
  */
 export function deployMayLeaveLane(input: {
   progress: unknown

@@ -2996,9 +2996,7 @@ export type EnvironmentDeployContainer = {
  * round trip to the host. An image-built release has no promoted directory and
  * no commit-backed tree to point at, so its identity there is the image tag
  * plus the pinned tools that produced it (`builderFrontendVersion` /
- * `builderPlanVersion`); a native release omits all three. The parser also
- * accepts the older field names from a daemon that has not moved yet and
- * reports them under the new names.
+ * `builderPlanVersion`); a native release omits all three.
  */
 export type EnvironmentDeployResultRelease = {
   composeServiceName: string
