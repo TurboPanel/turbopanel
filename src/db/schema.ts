@@ -850,6 +850,16 @@ export const server = pgTable(
       mode: 'string',
     }),
     /**
+     * Last time `/secrets/decrypt` answered this server in plaintext (an older
+     * daemon, or a newer one with no registered sealing key). Written at most
+     * hourly; the edge go-live gate reads "any recent value".
+     */
+    plaintextSecretsAt: timestamp('plaintext_secrets_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    /**
      * Operator-chosen TurboFabric role (`gateway` accepts connections, `client`
      * only dials out). NULL = automatic: gateway when the server has its own
      * public address (an endpoint override does not count), else client. Stored

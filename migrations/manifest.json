@@ -11,9 +11,9 @@
     },
     {
       "idx": 1,
-      "tag": "0001_drop_legacy_columns",
-      "when": 1795025682784,
-      "sha256": "68e5b71a8ea6748fd731b60951550747a9d4e73e93b9c3e15e53cfd5e491f4ef"
+      "tag": "0001_delete_orphan_public_urls_setting",
+      "when": 1795028797979,
+      "sha256": "c3fb0f9c9a7d28f811e5a498aa633585339ac1b9366a9ddf73a5e88445498b49"
     }
   ]
 }
