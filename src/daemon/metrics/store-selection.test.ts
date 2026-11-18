@@ -246,11 +246,10 @@ function buildHostSample(overrides: {
   const at = new Date(overrides.atMs).toISOString()
   const sample = buildMetricsSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: at,
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: {

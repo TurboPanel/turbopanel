@@ -240,7 +240,6 @@ export type HostSeriesChartPoint = {
   expectedSampleCount?: number
   /** Seconds between stored samples in this bucket — see `HostSeriesPoint.sampleSpacingSeconds`. */
   sampleSpacingSeconds?: number
-  topologyGeneration?: number | null
 }
 
 export type HostSeriesChartResponse = {

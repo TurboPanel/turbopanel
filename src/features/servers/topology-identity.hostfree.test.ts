@@ -34,7 +34,6 @@ const SNAPSHOT = {
 
 function sample(
   overrides: Partial<{
-    topologyGeneration: number
     networks: string[]
     filesystems: string[]
     blockDevices: string[]
@@ -48,9 +47,6 @@ function sample(
       intervalSeconds: 60,
       sequence: 1,
       bootGeneration: 1,
-      ...(overrides.topologyGeneration === undefined
-        ? {}
-        : { topologyGeneration: overrides.topologyGeneration }),
     },
     networks: (overrides.networks ?? ['eth0', 'tp0']).map((deviceId) => ({
       deviceId,
@@ -144,16 +140,12 @@ test('sampleFitsTopology needs every named network, filesystem, block device and
   )
 })
 
-test('sampleMatchesRecordedTopology: generation numbers decide while both sides carry one', () => {
+test('sampleMatchesRecordedTopology: the sample entity ids decide', () => {
   const record = { generation: 3, snapshot: SNAPSHOT }
-  assert(sampleMatchesRecordedTopology(record, sample({ topologyGeneration: 3 })))
-  // An older daemon's different number is a different topology, even with known ids.
-  assertEquals(sampleMatchesRecordedTopology(record, sample({ topologyGeneration: 4 })), false)
-  // Without a number on the sample, the ids decide.
   assert(sampleMatchesRecordedTopology(record, sample()))
   assertEquals(sampleMatchesRecordedTopology(record, sample({ networks: ['eth9'] })), false)
-  // A record from a daemon that sends no number: the ids decide even if the sample has one.
-  assert(sampleMatchesRecordedTopology({ snapshot: SNAPSHOT }, sample({ topologyGeneration: 8 })))
+  // A record from a daemon that sends no number matches the same way.
+  assert(sampleMatchesRecordedTopology({ snapshot: SNAPSHOT }, sample()))
   assertEquals(sampleMatchesRecordedTopology(undefined, sample()), false)
 })
 

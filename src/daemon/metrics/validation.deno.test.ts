@@ -1,9 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import {
-  METRICS_LEGACY_WIRE_VERSION,
-  METRICS_SCHEMA_VERSION,
-} from '../../contracts/metrics-contract.ts'
+import { METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
 import {
   MAX_METRICS_PAYLOAD_BYTES,
   rateLimitedMetricsLog,
@@ -35,11 +32,10 @@ function validRaw(
   return {
     type: 'metrics',
     metadata: {
-      version: METRICS_LEGACY_WIRE_VERSION,
+      version: METRICS_SCHEMA_VERSION,
       sampledAt: new Date().toISOString(),
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 0,
       bootGeneration: 0,
       ...metadata,
     },
@@ -101,22 +97,23 @@ it('validateMetricsSample rejects a wrong metadata schema version', () => {
   assertEquals(result.ok, false)
 })
 
-it('validateMetricsSample refuses wire version 7 with the version error (hard cut to wire version 8)', () => {
-  for (const version of [5, 7, 9]) {
+it('validateMetricsSample refuses every version but 8 with the version error', () => {
+  for (const version of [5, 6, 7, 9]) {
     const result = validateMetricsSample(validRaw({ metadata: { version } }), ctx())
     assertEquals(result.ok, false)
     if (!result.ok) {
-      assertEquals(result.reason.includes('metadata.version must be one of 6, 8'), true)
+      assertEquals(result.reason.includes('metadata.version must be 8'), true)
     }
   }
 })
 
-it('validateMetricsSample accepts both v6 and wire version 8 samples and keeps the wire version', () => {
-  for (const version of [METRICS_LEGACY_WIRE_VERSION, METRICS_SCHEMA_VERSION]) {
-    const result = validateMetricsSample(validRaw({ metadata: { version } }), ctx())
-    assertEquals(result.ok, true)
-    if (result.ok) assertEquals(result.sample.metadata.version, version)
-  }
+it('validateMetricsSample accepts a wire version 8 sample and keeps the version', () => {
+  const result = validateMetricsSample(
+    validRaw({ metadata: { version: METRICS_SCHEMA_VERSION } }),
+    ctx()
+  )
+  assertEquals(result.ok, true)
+  if (result.ok) assertEquals(result.sample.metadata.version, METRICS_SCHEMA_VERSION)
 })
 
 it('validateMetricsSample carries the durable flag and rejects a non-boolean one', () => {
@@ -220,31 +217,20 @@ it('validateMetricsSample rejects intervalSeconds out of range', () => {
   assertEquals(result.ok, false)
 })
 
-it('validateMetricsSample rejects a negative sequence/topologyGeneration/bootGeneration', () => {
+it('validateMetricsSample rejects a negative sequence/bootGeneration', () => {
   assertEquals(validateMetricsSample(validRaw({ metadata: { sequence: -1 } }), ctx()).ok, false)
-  assertEquals(
-    validateMetricsSample(validRaw({ metadata: { topologyGeneration: -1 } }), ctx()).ok,
-    false
-  )
   assertEquals(
     validateMetricsSample(validRaw({ metadata: { bootGeneration: -1 } }), ctx()).ok,
     false
   )
 })
 
-it('validateMetricsSample accepts a sample without the deprecated topologyGeneration', () => {
-  const raw = validRaw()
-  delete (raw.metadata as Record<string, unknown>).topologyGeneration
-  const result = validateMetricsSample(raw, ctx())
-  assertEquals(result.ok, true)
-  if (!result.ok) return
-  assertEquals('topologyGeneration' in result.sample.metadata, false)
-  assertEquals(result.sample.metadata.bootGeneration, 0)
-  // A value that is sent still has to be a valid generation number.
-  assertEquals(
-    validateMetricsSample(validRaw({ metadata: { topologyGeneration: 'x' } }), ctx()).ok,
-    false
-  )
+it('validateMetricsSample rejects the removed topologyGeneration metadata field', () => {
+  const result = validateMetricsSample(validRaw({ metadata: { topologyGeneration: 1 } }), ctx())
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.reason.includes('metadata.topologyGeneration'), true)
+  }
 })
 
 it('validateMetricsSample rejects the removed collectionMode metadata field', () => {
@@ -653,18 +639,11 @@ it('validateMetricsSample accepts a valid event with entityId/source/payload', (
 it('validateMetricsSample rejects generations that do not fit the 32-bit column types', () => {
   const max = 2_147_483_647
   assertEquals(
-    validateMetricsSample(
-      validRaw({ metadata: { topologyGeneration: max, bootGeneration: max } }),
-      ctx()
-    ).ok,
+    validateMetricsSample(validRaw({ metadata: { bootGeneration: max } }), ctx()).ok,
     true
   )
   assertEquals(
-    validateMetricsSample(validRaw({ metadata: { topologyGeneration: max + 1 } }), ctx()).ok,
-    false
-  )
-  assertEquals(
-    validateMetricsSample(validRaw({ metadata: { topologyGeneration: 3_000_000_000 } }), ctx()).ok,
+    validateMetricsSample(validRaw({ metadata: { bootGeneration: max + 1 } }), ctx()).ok,
     false
   )
   assertEquals(

@@ -1016,8 +1016,8 @@ function isSlotMappableTopologySnapshot(value: Record<string, unknown>): value i
 
 /**
  * Resolve the {@link SlotMapping} for a sample from the snapshot it was
- * collected under (`sampleMatchesRecordedTopology`: an older daemon's
- * `metadata.topologyGeneration`, else the entity ids the sample names) and the
+ * collected under (`sampleMatchesRecordedTopology`: the entity ids
+ * the sample names) and the
  * operator's `hardwareProfile` overrides. `undefined` when the sample does not
  * match the stored snapshot, the snapshot is not a plausible topology report,
  * or resolution otherwise fails — callers must fall back to topology-agnostic packing in that case

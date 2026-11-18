@@ -2729,7 +2729,6 @@ function buildValidMetricsFrame(
       sampledAt: new Date().toISOString(),
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 0,
       bootGeneration: 0,
       ...metadataOverrides,
     },
@@ -3467,8 +3466,7 @@ test('POST /metrics accepts a known topology generation without requesting a res
         Authorization: `Bearer ${daemonToken}`,
         'Content-Type': 'application/json',
       },
-      // Default frame reports metadata.topologyGeneration: 0 — matches the
-      // generation just recorded above.
+      // The default frame names the devices of the topology just recorded above.
       body: JSON.stringify(buildValidMetricsFrame()),
     })
     assertEquals(response.status, 202)
@@ -3533,10 +3531,9 @@ test('POST /metrics resolves a SlotMapping from a full recorded topology snapsho
   })
 })
 
-test('POST /metrics accepts an unknown topology generation and requests a resync', async () => {
+test('POST /metrics accepts a sample with no recorded topology and requests a resync', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    // No topology generation ever recorded for this server — the daemon's
-    // reported generation is unknown.
+    // No topology ever recorded for this server.
     const { app, writes } = await createMetricsTestAppWithDb(db)
     const daemonToken = await issueDaemonToken(serverId, keyId)
     const response = await app.request('/api/daemon/v1/metrics', {
@@ -3545,11 +3542,7 @@ test('POST /metrics accepts an unknown topology generation and requests a resync
         Authorization: `Bearer ${daemonToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(
-        buildValidMetricsFrame({
-          metadata: { topologyGeneration: 7 },
-        })
-      ),
+      body: JSON.stringify(buildValidMetricsFrame()),
     })
     assertEquals(response.status, 202)
     assertEquals(writes.length, 1)
@@ -3558,11 +3551,11 @@ test('POST /metrics accepts an unknown topology generation and requests a resync
       const metadata = await readServerMetadata(db, serverId)
       return typeof metadata.topologyResyncRequestedAt === 'string'
     })
-    assert(requested, 'expected an unknown topology generation to stamp topologyResyncRequestedAt')
+    assert(requested, 'expected an unknown topology to stamp topologyResyncRequestedAt')
   })
 })
 
-/** A metrics frame as a daemon sends it once it no longer stamps a topology generation. */
+/** A metrics frame naming the given network devices. */
 function numberlessMetricsFrame(nicIds: string[]): Record<string, unknown> {
   const frame = buildValidMetricsFrame({
     networks: nicIds.map((deviceId) => ({
@@ -3575,7 +3568,6 @@ function numberlessMetricsFrame(nicIds: string[]): Record<string, unknown> {
       transmitDropsPerSecond: null,
     })),
   })
-  delete (frame.metadata as Record<string, unknown>).topologyGeneration
   return frame
 }
 

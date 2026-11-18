@@ -101,10 +101,7 @@ type SeriesRouteJsonBody = {
       values: Record<string, number | null>
       derived?: Record<string, number | null>
       sampleCount: number
-      topologyGeneration?: number | null
     }>
-    topologyGenerationBreaks: number[]
-    topologyGenerations?: number[]
   } | null
   entities?: Array<{
     family: string
@@ -118,7 +115,6 @@ type SeriesRouteJsonBody = {
     }>
   }>
   inventory?: unknown
-  topologyGeneration?: number | null
   cpuLimits?: {
     tdpWatts: number | null
     tjMaxCelsius: number | null
@@ -1224,7 +1220,7 @@ it('GET /servers/:id/metrics/series fans out per-entity-family selectors and att
   )
 })
 
-it('GET /servers/:id/metrics/series allows a slot-mapped NIC as a standalone network entity, forwarding slotMapping/topologyGeneration to queryEntitySeries', async () => {
+it('GET /servers/:id/metrics/series allows a slot-mapped NIC as a standalone network entity, forwarding slotMapping to queryEntitySeries', async () => {
   const fakeStore = createFakeMetricsStore({
     queryEntitySeries: (input) =>
       Promise.resolve({
@@ -1961,7 +1957,6 @@ function liveBufferedSample(
       sampledAt,
       intervalSeconds: 10,
       sequence: 1,
-      topologyGeneration: 0,
       bootGeneration: 0,
     },
     host: {

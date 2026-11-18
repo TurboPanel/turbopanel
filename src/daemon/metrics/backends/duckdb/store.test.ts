@@ -65,7 +65,6 @@ function sample(overrides: {
   atMs: number
   intervalSeconds?: number
   sequence?: number
-  topologyGeneration?: number
   bootGeneration?: number
   cpuBusyPercent?: number | null
   gpuCount?: number
@@ -83,11 +82,10 @@ function sample(overrides: {
   const networkCount = overrides.networkCount ?? 0
   const sample = buildMetricsSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: at,
       intervalSeconds: overrides.intervalSeconds ?? 60,
       sequence: overrides.sequence ?? 1,
-      topologyGeneration: overrides.topologyGeneration ?? 1,
       bootGeneration: overrides.bootGeneration ?? 1,
     },
     diagnostics: overrides.diagnostics,
@@ -640,7 +638,6 @@ it('v5 queryHostSeries: weighted-average math and real NULL for an unpopulated m
         atMs: DAY_START,
         intervalSeconds: 60,
         cpuBusyPercent: 10,
-        topologyGeneration: 1,
       })
     )
     await store.writeSample(
@@ -649,7 +646,6 @@ it('v5 queryHostSeries: weighted-average math and real NULL for an unpopulated m
         sequence: 2,
         intervalSeconds: 60,
         cpuBusyPercent: 30,
-        topologyGeneration: 2,
       })
     )
 
@@ -707,7 +703,7 @@ it('v6 queryHostSeries: diagnostics memory fields resolve via the left-joined me
     )
     // A reading neither edition stores reads as empty, whatever was sent.
     assertEquals(point.values['diagnostics.pageScanDirectPerSecond'], null)
-    // sample_count/topologyGeneration still reflect both host rows, not just the joined one.
+    // sample_count still reflect both host rows, not just the joined one.
     assertEquals(result.sampleCount, 2)
   })
 })
