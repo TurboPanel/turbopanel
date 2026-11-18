@@ -72,12 +72,12 @@ import {
   type NodePackageManager,
   readServiceTurbopanelExtension,
 } from '../../features/compose/index.ts'
-import {
-  type EnvironmentDeployPrincipalMaterial,
-  type EnvironmentDeploySource,
-  type EnvironmentDeploySourceBuild,
-  type EnvironmentDeploySourceCredentialKind,
-  type EnvironmentDeploySitePrincipal,
+import type {
+  EnvironmentDeployPrincipalMaterial,
+  EnvironmentDeploySource,
+  EnvironmentDeploySourceBuild,
+  EnvironmentDeploySourceCredentialKind,
+  EnvironmentDeploySitePrincipal,
 } from '../../contracts/commands/schemas.ts'
 import { secret, repository } from '../../db/schema.ts'
 import {
