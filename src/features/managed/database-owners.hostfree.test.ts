@@ -107,8 +107,7 @@ test('small owner helpers answer the way the routes need', () => {
       allowedSources: undefined,
       maxConnections: undefined,
     },
-    { patch: { privileges: ['admin'] }, grantMode: 'recipe' },
-    { ownerRole: true, databaseOwner: true }
+    { patch: { privileges: ['admin'] }, grantMode: 'recipe' }
   )
   assertEquals(checks.refusal?.error, 'managed_login_owns_databases')
   assertEquals(checks.notes.length, 1)

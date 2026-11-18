@@ -29,12 +29,27 @@ import {
 } from '../../db/schema.ts'
 import { TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
 import { settleTunnelOnlyHosting } from './tunnel-only-certificate.ts'
-import { LOOPBACK_PEER, loadNameLock, resolveDeployNameLock } from './name-lock.ts'
+import {
+  LOOPBACK_PEER,
+  loadNameLock,
+  resolveDeployNameLock as resolveWithGeneration,
+} from './name-lock.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
 const test = Deno.test.bind(Deno)
 
 const dbUrl = getDatabaseUrl()
+
+/** The deploy lock without its table generation (a clock reading), after checking one is sent. */
+async function resolveDeployNameLock(
+  ...args: Parameters<typeof resolveWithGeneration>
+): Promise<Awaited<ReturnType<typeof resolveWithGeneration>>> {
+  const result = await resolveWithGeneration(...args)
+  if (!('tunnel' in result) || result.tunnel === undefined) return result
+  assertEquals(typeof result.tunnel.generation, 'number')
+  const { generation: _generation, ...tunnel } = result.tunnel
+  return { ...result, tunnel }
+}
 const NAME = 'shop.example.com'
 
 type Db = ReturnType<typeof createDenoDb>

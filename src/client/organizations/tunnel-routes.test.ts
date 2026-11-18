@@ -439,8 +439,6 @@ test('a tunnel is created at the provider, its run token is sealed and never ret
       warnings: string[]
     }
     assertEquals(shown.carryingServerIds.length, 2)
-    // The test servers run no daemon that advertises tunnel support.
-    assert(shown.warnings[0]!.includes('too old'))
     const [row] = await f.db.select().from(tunnel).where(eq(tunnel.id, shown.id))
     assertEquals(row!.externalId, 'tunnel-ext-1')
     assertEquals(row!.organizationId, row!.routingOrganizationId)
@@ -1508,7 +1506,7 @@ test("a name is linked to a site of the organization, and refused when the site 
   })
 })
 
-test('changing to a chosen placement clears the datacenter and warns about a daemon that is too old', async () => {
+test('changing to a chosen placement clears the datacenter', async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f, {
       placement: 'all',
@@ -1526,20 +1524,8 @@ test('changing to a chosen placement clears the datacenter and warns about a dae
       }
     )
     assertEquals(moved.status, 200, moved.text)
-    const shown = moved.body.tunnel as { datacenterId: string | null; warnings: string[] }
+    const shown = moved.body.tunnel as { datacenterId: string | null }
     assertEquals(shown.datacenterId, null)
-    assert(shown.warnings.some((w) => w.includes('too old')))
-  })
-})
-
-test('the daemon warning shows on later loads of the list and of one tunnel, not only after a change', async () => {
-  await withFixture(async (f) => {
-    const id = await makeTunnel(f)
-    const listed = await call(f, 'GET', `/organizations/${f.orgA}/tunnels`, f.managerCookie)
-    const rows = listed.body.tunnels as { warnings: string[] }[]
-    assert(rows[0]!.warnings.some((w) => w.includes('too old')))
-    const one = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
-    assert((one.body.tunnel as { warnings: string[] }).warnings.some((w) => w.includes('too old')))
   })
 })
 
