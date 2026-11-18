@@ -11,10 +11,7 @@ import { registerDaemonApiRoutes } from '../daemon/api-routes.ts'
 import { deriveDaemonJwtKeyring } from '../daemon/authn/daemon-jwt-keyring.ts'
 import { issueDaemonJwt } from '../daemon/authn/daemon-jwt.ts'
 import { METRICS_SCHEMA_VERSION } from '../contracts/metrics-contract.ts'
-import type {
-  AuthenticatedMetricsSample,
-  ServerMetricsStore,
-} from '../daemon/metrics/types.ts'
+import type { AuthenticatedMetricsSample, ServerMetricsStore } from '../daemon/metrics/types.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -178,7 +175,6 @@ test('createApp wires serverMetricsStore through to POST /api/daemon/v1/metrics'
         sampledAt: new Date().toISOString(),
         intervalSeconds: 60,
         sequence: 1,
-        topologyGeneration: 0,
         bootGeneration: 0,
       },
       host: { cpu: {}, kernel: {}, memory: {}, storage: {}, network: {} },

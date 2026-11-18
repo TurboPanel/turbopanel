@@ -91,11 +91,10 @@ function zeroFields<T extends readonly string[]>(fields: T): { [K in T[number]]:
 function baseInput(overrides: Partial<MetricsSampleInput> = {}): MetricsSampleInput {
   return {
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-01T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: {
@@ -170,11 +169,10 @@ const NIC0_RX_DOUBLE_INDEX = V12_HOST_ROW_SPECS['host.network'].doubles.indexOf(
 it('a host.network row embeds the slot-mapped NIC and names it in blob6', () => {
   const sampleA = buildSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-01T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     networks: [nic('eth0', 100)],
@@ -188,11 +186,10 @@ it('a host.network row embeds the slot-mapped NIC and names it in blob6', () => 
 it('a replaced NIC is embedded and named under its own id', () => {
   const sampleB = buildSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-02T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 2,
-      topologyGeneration: 2,
       bootGeneration: 1,
     },
     networks: [nic('eth1', 300)],
@@ -206,11 +203,10 @@ it('a replaced NIC is embedded and named under its own id', () => {
 it("packing a sample with a mapping that does not name its device never reads another device's value (identity-addressed, not positional)", () => {
   const sampleB = buildSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-02T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 2,
-      topologyGeneration: 2,
       bootGeneration: 1,
     },
     networks: [nic('eth1', 300)],
@@ -263,11 +259,10 @@ it('without a SlotMapping, host.network falls back to positional embedding (netw
 it('every row is written with an empty blob4, whatever generation the sample reports', () => {
   const sample = buildSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-03T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 3,
-      topologyGeneration: 7,
       bootGeneration: 1,
     },
     networks: [nic('eth0', 1), nic('eth1', 2), nic('eth2', 3), nic('eth3', 4)],
@@ -317,11 +312,10 @@ it("queryEntitySeries resolves a page-position swap by identity, not by slot: a 
     const gen1AtMs = BASE_MS
     const gen1Sample = buildSample({
       metadata: {
-        version: 6,
+        version: 8,
         sampledAt: new Date(gen1AtMs).toISOString(),
         intervalSeconds: INTERVAL_SECONDS,
         sequence: 1,
-        topologyGeneration: 1,
         bootGeneration: 1,
       },
       gpus: [gpu('gpu0', 11), gpu('gpu1', 22)],
@@ -336,11 +330,10 @@ it("queryEntitySeries resolves a page-position swap by identity, not by slot: a 
     const gen2AtMs = BASE_MS + INTERVAL_SECONDS * 1000
     const gen2Sample = buildSample({
       metadata: {
-        version: 6,
+        version: 8,
         sampledAt: new Date(gen2AtMs).toISOString(),
         intervalSeconds: INTERVAL_SECONDS,
         sequence: 2,
-        topologyGeneration: 2,
         bootGeneration: 1,
       },
       gpus: [gpu('gpu0', 33), gpu('gpu1', 44)],
@@ -403,11 +396,10 @@ it('queryEntitySeries (network): an embedded NIC keeps its own history when anot
     const firstAtMs = BASE_MS
     const first = buildSample({
       metadata: {
-        version: 6,
+        version: 8,
         sampledAt: new Date(firstAtMs).toISOString(),
         intervalSeconds: INTERVAL_SECONDS,
         sequence: 1,
-        topologyGeneration: 1,
         bootGeneration: 1,
       },
       networks: [nic('eth0', 100)],
@@ -419,11 +411,10 @@ it('queryEntitySeries (network): an embedded NIC keeps its own history when anot
     const secondAtMs = BASE_MS + INTERVAL_SECONDS * 1000
     const second = buildSample({
       metadata: {
-        version: 6,
+        version: 8,
         sampledAt: new Date(secondAtMs).toISOString(),
         intervalSeconds: INTERVAL_SECONDS,
         sequence: 2,
-        topologyGeneration: 2,
         bootGeneration: 1,
       },
       networks: [nic('eth1', 300)],

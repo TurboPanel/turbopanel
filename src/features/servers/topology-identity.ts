@@ -1,9 +1,8 @@
 /**
  * Telling topologies apart without the daemon's topology generation number.
  *
- * Older daemons number every topology they report (`topology-report.generation`)
- * and stamp that number on every metrics sample (`metadata.topologyGeneration`).
- * Newer daemons leave both out once the control plane lists the
+ * Older daemons number every topology they report (`topology-report.generation`).
+ * Newer daemons leave it out once the control plane lists the
  * `topology-generation-optional-v1` wire feature, so the control plane works
  * out the same two answers from content it already receives:
  *
@@ -21,8 +20,7 @@
  *   Hardware signals are left out of the check: a signal the snapshot does not
  *   list only moves to the end of its page.
  *
- * While both sides still carry a generation number (an older daemon), the
- * number decides, exactly as before. Pure functions, no I/O.
+ * Pure functions, no I/O.
  */
 import type { MetricsSample } from '../../contracts/metrics-contract.ts'
 
@@ -112,19 +110,14 @@ export function sampleFitsTopology(
 export type RecordedTopology = { generation?: number; snapshot: unknown }
 
 /**
- * Whether a sample was collected under the stored topology. An older daemon's
- * generation number decides when both the sample and the record carry one;
- * otherwise the sample's entity ids decide ({@link sampleFitsTopology}).
+ * Whether a sample was collected under the stored topology: the sample's
+ * entity ids decide ({@link sampleFitsTopology}).
  */
 export function sampleMatchesRecordedTopology(
   record: RecordedTopology | undefined,
   sample: Pick<MetricsSample, 'metadata' | 'networks' | 'filesystems' | 'blockDevices' | 'gpus'>
 ): boolean {
   if (!record) return false
-  const generation = sample.metadata.topologyGeneration
-  if (generation !== undefined && record.generation !== undefined) {
-    return record.generation === generation
-  }
   return sampleFitsTopology(sample, record.snapshot)
 }
 

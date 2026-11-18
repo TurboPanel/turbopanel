@@ -278,10 +278,9 @@ export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
  * it matches a metrics sample to the stored topology by the entity ids the
  * sample names, and tells topology reports apart by their content
  * (`src/features/servers/topology-identity.ts`). A daemon attached to a
- * control plane that lists this leaves `metadata.topologyGeneration` off its
- * samples, `generation` and `bootGeneration` off its `topology-report`, and
- * stops sending the `topology_generation_changed` event. Both are still
- * accepted from older daemons.
+ * control plane that lists this leaves `generation` and `bootGeneration` off
+ * its `topology-report` and stops sending the `topology_generation_changed`
+ * event. Both are still accepted from older daemons.
  */
 export const TOPOLOGY_GENERATION_OPTIONAL_FEATURE: DaemonWireFeature =
   'topology-generation-optional-v1'

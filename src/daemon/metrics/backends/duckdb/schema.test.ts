@@ -87,11 +87,10 @@ it('HOST_METRIC_FIELD_REFS has exactly the 22 stored entries covering every host
 it('every leaf metric of a real v5 sample maps to a known host column', () => {
   const sample = buildMetricsSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: new Date().toISOString(),
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: {

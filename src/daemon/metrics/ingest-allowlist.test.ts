@@ -18,7 +18,6 @@ function sampleWith(parts: Record<string, unknown>): MetricsSample {
       sampledAt: '2026-10-03T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: { cpu: {}, kernel: {}, memory: {}, storage: {}, network: {} },

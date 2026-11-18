@@ -111,7 +111,6 @@ function gpuSignalPageOrder(gpuIds: readonly string[]): string[] {
 function inputForTick(opts: {
   sequence: number
   atMs: number
-  topologyGeneration: number
   cpuBusy: number
   routerBackendsUp: number
   hostingUsedBytes: number
@@ -120,11 +119,10 @@ function inputForTick(opts: {
 }): MetricsSampleInput {
   return {
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: new Date(opts.atMs).toISOString(),
       intervalSeconds: INTERVAL_SECONDS,
       sequence: opts.sequence,
-      topologyGeneration: opts.topologyGeneration,
       bootGeneration: 1,
     },
     host: {
@@ -270,7 +268,6 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     const tick1Input = inputForTick({
       sequence: 1,
       atMs: BASE_MS,
-      topologyGeneration: 1,
       cpuBusy: 12,
       routerBackendsUp: 3,
       hostingUsedBytes: 4096,
@@ -307,7 +304,6 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     const tick2Input = inputForTick({
       sequence: 2,
       atMs: tick2AtMs,
-      topologyGeneration: 2,
       cpuBusy: 34,
       routerBackendsUp: 1,
       hostingUsedBytes: 8192,

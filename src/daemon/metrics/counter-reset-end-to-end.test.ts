@@ -35,17 +35,15 @@ function inputForTick(opts: {
   sequence: number
   atMs: number
   bootGeneration: number
-  topologyGeneration?: number
   diskReadBytesPerSecond: number | null
   nicReceiveBytesPerSecond: number | null
 }): MetricsSampleInput {
   return {
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: new Date(opts.atMs).toISOString(),
       intervalSeconds: INTERVAL_SECONDS,
       sequence: opts.sequence,
-      topologyGeneration: opts.topologyGeneration ?? 1,
       bootGeneration: opts.bootGeneration,
     },
     host: {
@@ -222,7 +220,7 @@ it('counter-reset end-to-end: a bootGeneration bump with null rate fields report
   }
 })
 
-it('counter-reset end-to-end: a topologyGeneration bump with no reboot and continuing counters reports a continuous series, never a fabricated discontinuity', async () => {
+it('counter-reset end-to-end: a topology change with no reboot and continuing counters reports a continuous series, never a fabricated discontinuity', async () => {
   const metricsDir = await Deno.makeTempDir({
     prefix: 'tp-counter-reset-e2e-',
   })
@@ -233,21 +231,20 @@ it('counter-reset end-to-end: a topologyGeneration bump with no reboot and conti
     }
   )
   try {
-    // Tick 1: pre-topology-change, normal counters, topologyGeneration 1.
+    // Tick 1: pre-topology-change, normal counters.
     await store.writeSample(
       authenticate(
         inputForTick({
           sequence: 1,
           atMs: BASE_MS,
           bootGeneration: 1,
-          topologyGeneration: 1,
           diskReadBytesPerSecond: 1000,
           nicReceiveBytesPerSecond: 500,
         })
       )
     )
 
-    // Tick 2: a slot reorder / GPU swap — topologyGeneration bumps, but
+    // Tick 2: a slot reorder / GPU swap — the topology changes, but
     // bootGeneration is unchanged and the daemon's own counters kept
     // counting the same logical device without interruption, so its
     // rate-derived fields are real values, never the daemon-emitted `null`
@@ -258,21 +255,19 @@ it('counter-reset end-to-end: a topologyGeneration bump with no reboot and conti
           sequence: 2,
           atMs: BASE_MS + INTERVAL_SECONDS * 1000,
           bootGeneration: 1,
-          topologyGeneration: 2,
           diskReadBytesPerSecond: 1200,
           nicReceiveBytesPerSecond: 560,
         })
       )
     )
 
-    // Tick 3: topology stays at the new generation, counters keep climbing.
+    // Tick 3: topology stays as it is, counters keep climbing.
     await store.writeSample(
       authenticate(
         inputForTick({
           sequence: 3,
           atMs: BASE_MS + INTERVAL_SECONDS * 2000,
           bootGeneration: 1,
-          topologyGeneration: 2,
           diskReadBytesPerSecond: 1400,
           nicReceiveBytesPerSecond: 620,
         })
