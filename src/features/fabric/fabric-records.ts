@@ -268,7 +268,7 @@ export function lanPairInputs(
   }
 }
 
-/** The pair shares a trusted LAN and both daemons route over it: no tunnel between them. */
+/** The pair shares a trusted LAN with an IPv4 address on both ends: no tunnel between them. */
 export function pairSharesTrustedLan(
   fromServerId: string,
   toServerId: string,
@@ -1391,7 +1391,7 @@ function failedKindsForPair(
  * public then NAT candidates for an arbitrary `(from → to)` pair. A trusted
  * LAN whose NIC link is reported down is not tried first: it is appended
  * last, so the tunnel only uses it when no other direct path exists. A pair
- * that shares a trusted LAN with both daemons routing over it has no tunnel
+ * that shares a trusted LAN with an IPv4 address on both ends has no tunnel
  * at all, so it has no candidate ({@link pairSharesTrustedLan}).
  */
 export function directCandidates(
@@ -2250,7 +2250,7 @@ type FabricReconcileBuild = {
 
 /**
  * `lanRoutes` for `selfServerId`: every other server it shares a trusted LAN
- * with (both daemons routing over it) and that has a container range, routed
+ * with (with an IPv4 address on both ends) and that has a container range, routed
  * via that server's IPv4 address on the shared network. Sorted by range so
  * the desired hash is stable.
  */

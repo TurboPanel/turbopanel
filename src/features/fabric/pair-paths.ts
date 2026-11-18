@@ -2,8 +2,8 @@
  * How each pair of servers in the organization talks, in plain words, for the
  * TurboFabric page (`GET /organizations/:id/fabric` `pairs`).
  *
- * - `lan`: they share a trusted datacenter network and both daemons route over
- *   it, so there is no tunnel between them.
+ * - `lan`: they share a trusted datacenter network with an IPv4 address on
+ *   both ends, so there is no tunnel between them.
  * - `fabric`: a TurboFabric tunnel carries their traffic.
  * - `fabric_over_untrusted_lan`: the tunnel runs over a shared network marked
  *   untrusted (encrypted over the LAN).

@@ -12,9 +12,9 @@
  *   another build. The run cap ({@link DEPLOY_DEFAULT_TIMEOUT_MS}) counts from
  *   `runningSince` only.
  *
- * A server that does not report `runningSince` (an older build) is treated as
- * running from the moment the command was sent once {@link DEPLOY_SIGNAL_GRACE_MS}
- * has passed, which is the deadline the panel always had.
+ * A server that has not reported `runningSince` once {@link DEPLOY_SIGNAL_GRACE_MS}
+ * has passed since the send is treated as running from the moment the command
+ * was sent.
  *
  * Pure helpers and the wait loop live here; `consumer.ts` and `stale-sweep.ts`
  * call them so the two never disagree.
@@ -58,7 +58,7 @@ export const DEPLOY_REQUEST_TTL_SECONDS = Math.ceil(DEPLOY_WAIT_LIMIT_MS / 1000)
 /** How long a deploy sent to an offline server waits for it to come back. */
 export const DEPLOY_OFFLINE_LIMIT_MS = 15 * 60_000
 
-/** How long a server may stay silent about `runningSince` before it counts as an older build. */
+/** How long a server may stay silent about `runningSince` before it counts as running from the send. */
 export const DEPLOY_SIGNAL_GRACE_MS = 2 * 60_000
 
 /**
@@ -122,9 +122,8 @@ export function deployRunState(input: {
  * waits for another build): it then holds its environment's lock on the
  * server, which also makes a later stop or destroy of that environment wait,
  * and the server runs one build at a time. A server that has said nothing
- * {@link DEPLOY_SIGNAL_GRACE_MS} after the send is an older build, offline (the
- * request waits in its outbox, ahead of anything sent later) or has lost the
- * deploy; waiting on it must not hold up the server's other commands either.
+ * {@link DEPLOY_SIGNAL_GRACE_MS} after the send is offline (the request waits in
+ * its outbox, ahead of anything sent later) or has lost the deploy; waiting on it must not hold up the server's other commands either.
  */
 export function deployMayLeaveLane(input: {
   progress: unknown
