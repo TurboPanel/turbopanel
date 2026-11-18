@@ -76,16 +76,29 @@ export async function dispatchInstanceTunnelToken(params: {
     throw err
   }
 
+  if (!sealing && params.token !== '') {
+    return {
+      ok: false,
+      status: 503,
+      error: 'the co-located daemon does not open sealed instance secrets; upgrade it',
+    }
+  }
+
   return await sendInstanceTunnelToken(params.registry, serverId, params.token, sealing)
 }
 
-/** The token field(s) for the envelope: sealed when possible, never both. */
+/** The token field for the envelope: always sealed, except the empty teardown token. */
 async function tunnelTokenFields(
   token: string,
   sealing: InstanceSecretSealing | null
 ): Promise<{ token: string } | { tokenEnvelope: string }> {
   // The empty teardown token carries no secret; every daemon reads it as-is.
-  if (!sealing || token === '') return { token }
+  if (token === '') return { token }
+  if (!sealing) {
+    throw new InstanceSecretSealingError(
+      'the co-located daemon does not open sealed instance secrets; upgrade it'
+    )
+  }
   return {
     tokenEnvelope: await encryptSecretForDaemon(sealing.secretsConfig, sealing.recipient, token),
   }

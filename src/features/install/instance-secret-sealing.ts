@@ -1,12 +1,13 @@
 /**
- * Whether, and to whom, secrets bound for the co-located daemon are sealed.
+ * To whom secrets bound for the co-located daemon are sealed.
  *
  * Uploaded instance TLS keys (`public-urls-update`) and the tunnel token
  * (`tunnel-token`) sit in the cell outbox (Redis stream / Durable Object
  * storage) until the daemon takes them. A daemon that advertises
  * `sealed-instance-secrets-v1` receives them as recipient-bound `tpdaemon`
  * envelopes — the same sealing every deploy secret uses — so the outbox never
- * holds the plaintext. An older daemon still gets the legacy plaintext fields.
+ * holds the plaintext. A daemon without the feature gets nothing: there is no
+ * plaintext delivery.
  */
 import type { Db } from "../../db/connection.ts";
 import { isDaemonKeyActive } from "../servers/daemon-state.ts";
@@ -20,7 +21,7 @@ export type InstanceSecretSealing = {
   recipient: DaemonSecretRecipient;
 };
 
-/** The daemon can open sealed secrets, but this instance cannot seal to it. */
+/** Secrets cannot be sealed to the co-located daemon. */
 export class InstanceSecretSealingError extends Error {
   constructor(message: string) {
     super(message);
@@ -29,9 +30,10 @@ export class InstanceSecretSealingError extends Error {
 }
 
 /**
- * `null` when the daemon does not advertise `sealed-instance-secrets-v1`
- * (legacy plaintext delivery). Throws {@link InstanceSecretSealingError}
- * rather than fall back to plaintext when the daemon can open envelopes but
+ * `null` when the daemon does not advertise `sealed-instance-secrets-v1`:
+ * callers that have a secret to send refuse then (there is no plaintext
+ * delivery), and callers with none carry on. Throws
+ * {@link InstanceSecretSealingError} when the daemon can open envelopes but
  * the instance cannot produce one.
  */
 export async function resolveInstanceSecretSealing(

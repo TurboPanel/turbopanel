@@ -65,7 +65,6 @@ export const STEP_UP_ACTIONS = {
  */
 export const INSTANCE_STEP_UP_ACTIONS = {
   'panel.key.change': "Change the control plane's key or the passkeys that approve it",
-  'server.sealing_key.clear': "Clear a server's sealing key",
   'instance.tunnel_token.set': 'Change the tunnel token',
   'instance.ingress_account.added': 'Connect a Cloudflare account',
   'instance.ingress_account.removed': 'Remove a Cloudflare account',

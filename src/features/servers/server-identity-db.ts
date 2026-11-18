@@ -1,8 +1,7 @@
-import { and, eq, isNull, or, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { ServerMetadata } from './server-metadata.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
-import { DAEMON_SEALED_SECRETS_FEATURE } from '../../lib/version-wire.ts'
 import { key, server } from '../../db/schema.ts'
 import {
   buildDefaultDaemonStatus,
@@ -14,9 +13,6 @@ import {
   type ServerDaemonStatus,
 } from './daemon-state.ts'
 import { effectiveTrustLevel } from './trust-level.ts'
-
-/** `["daemon-sealed-secrets-v1"]`, for a jsonb containment check on the stored hello features. */
-const SEALED_SECRETS_FEATURE_JSON = JSON.stringify([DAEMON_SEALED_SECRETS_FEATURE])
 
 function nowTs(): string {
   return new Date().toISOString()
@@ -192,37 +188,6 @@ function clearedSealingKeyColumns() {
  */
 function clearedTrustReportsColumns() {
   return { trustReportsSignedAt: null }
-}
-
-/**
- * Clear only the registered sealing key, leaving the identity key and the
- * daemon state alone: the superadmin recovery for a host rolled back to a
- * daemon build without sealed secrets. Only while the key on file is still
- * `kid`, the one the operator was shown, and only while no connected daemon
- * lists `daemon-sealed-secrets-v1` in its hello (checked in the same
- * statement, so a current daemon that connects after the caller's read keeps
- * its key). True when the key was cleared.
- */
-export async function clearDaemonSealingKey(
-  db: Db,
-  serverId: string,
-  kid: string
-): Promise<boolean> {
-  const cleared = await db
-    .update(server)
-    .set({ ...clearedSealingKeyColumns(), updatedAt: nowTs() })
-    .where(
-      and(
-        eq(server.id, serverId),
-        eq(server.sealingKeyKid, kid),
-        or(
-          eq(server.isConnected, false),
-          sql`not coalesce(${server.daemon} #> '{projection,features}' @> ${SEALED_SECRETS_FEATURE_JSON}::jsonb, false)`
-        )
-      )
-    )
-    .returning({ id: server.id })
-  return cleared.length > 0
 }
 
 /**
