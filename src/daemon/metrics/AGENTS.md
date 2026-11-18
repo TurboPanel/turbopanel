@@ -358,12 +358,11 @@ sample order). No matching topology yet (first sample, resync pending) degrades
 gracefully to pre-topology positional packing — never a dropped sample.
 
 **Matching a sample to its topology** (`features/servers/topology-identity.ts`):
-`metadata.topologyGeneration` is deprecated and optional. While an older daemon
-sends it and the stored `server.hardware` value carries a `generation`, the
-numbers must be equal, as before. Otherwise the sample matches when every
+Metrics samples carry no topology generation (the field is gone from the wire
+contract, which has the one version 8). A sample matches when every
 network device, filesystem, block device and GPU it names is in the stored
 snapshot (hardware signals are left out: an unknown one only moves to the end
-of its page). A daemon stops sending the number, the `topology-report`
+of its page). A daemon stops sending the `topology-report`
 `generation`/`bootGeneration` and the `topology_generation_changed` event once
 the control plane lists the `topology-generation-optional-v1` wire feature.
 `recordTopologyGeneration` tells a new topology from a resend the same way:

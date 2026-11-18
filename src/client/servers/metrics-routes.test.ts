@@ -1961,7 +1961,6 @@ function liveBufferedSample(
       sampledAt,
       intervalSeconds: 10,
       sequence: 1,
-      topologyGeneration: 0,
       bootGeneration: 0,
     },
     host: {

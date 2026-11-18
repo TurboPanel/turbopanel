@@ -188,7 +188,6 @@ function buildSample(): Built {
       sampledAt: new Date(AT_MS).toISOString(),
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: {
