@@ -353,7 +353,7 @@ test('preview resolves a generic-git binding from the source default branch', as
   assertEquals(result[0]?.principal, undefined)
 })
 
-test('preview keeps sending the old build kind on the wire for the new image value', async () => {
+test('preview sends the image build kind on the wire', async () => {
   const result = await resolveDeploySourceMaterial(
     mockContext(),
     fakeDb([[sourceRow({ subdirectory: 'apps/web' })], []]),
