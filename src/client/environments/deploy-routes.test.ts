@@ -3132,18 +3132,6 @@ test('POST /environments/:id/stop refuses to delete data before anything stops',
       const stale = await postEnvironment(ctx, 'stop', destroyBody([ids.db_data!]))
       assertEquals(stale.status, 409)
       assertEquals(((await stale.json()) as { error: string }).error, 'data_volumes_changed')
-      // The server's daemon does not list the feature.
-      const outdated = await postEnvironment(ctx, 'stop', destroyBody(shown))
-      assertEquals(outdated.status, 409)
-      const body = (await outdated.json()) as {
-        error: string
-        servers: Array<{ serverId: string }>
-      }
-      assertEquals(body.error, 'delete_volumes_needs_daemon_update')
-      assertEquals(
-        body.servers.map((entry) => entry.serverId),
-        [ctx.serverId]
-      )
 
       assertEquals(await stopsQueued(ctx), 0)
       assertEquals((await targetsByServer(ctx)).get(ctx.serverId), 'pending')

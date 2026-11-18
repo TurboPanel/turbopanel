@@ -35,7 +35,6 @@ import {
 } from './config-files.ts'
 import {
   hasComposeInterpolation,
-  hasEmbeddedRefToken,
   formatVariableRef,
   type ParsedVariableRef,
   splitEmbeddedRefs,
@@ -48,8 +47,6 @@ export type ConfigFileWarning = {
 }
 
 export type ConfigFilesContext = {
-  /** The target daemon lists `deploy-config-files-v1`. */
-  enabled: boolean
   projectId: string
   environmentId: string
   runDir: string
@@ -60,7 +57,7 @@ export type ConfigFilesContext = {
 }
 
 export function newConfigFilesContext(
-  params: Pick<ConfigFilesContext, 'enabled' | 'projectId' | 'environmentId' | 'runDir'> & {
+  params: Pick<ConfigFilesContext, 'projectId' | 'environmentId' | 'runDir'> & {
     secretMaterial: DeployVariableMaterial[]
   }
 ): ConfigFilesContext {
@@ -253,15 +250,6 @@ function compileConfigEntry(
   topLevel: Record<string, unknown>,
   lookup: ConfigLookup
 ): { entry: unknown } | ApplyVariablesError {
-  if (!ctx.enabled) {
-    if (!hasEmbeddedRefToken(content)) return { entry: item }
-    return fileError(
-      composeServiceName,
-      name,
-      `Config ${name} uses {$…} values; update the daemon on this server first`,
-      'config_files_need_daemon_update'
-    )
-  }
   const parts = buildParts(ctx, composeServiceName, name, content, lookup)
   if (!Array.isArray(parts)) return parts
   const file: DeployConfigFileEntry = {
@@ -352,7 +340,7 @@ export function finishConfigFiles(
   ctx: ConfigFilesContext,
   data: Record<string, unknown>
 ): ApplyVariablesError | null {
-  if (!ctx.enabled || !isRecord(data.configs)) return null
+  if (!isRecord(data.configs)) return null
   const topLevel = { ...data.configs }
   const services = isRecord(data.services) ? data.services : {}
   for (const [name, service] of Object.entries(services)) {

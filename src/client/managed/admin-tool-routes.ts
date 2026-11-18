@@ -18,7 +18,6 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import { isValidHostname } from '../../contracts/commands/hostname.ts'
-import { DEPLOY_CONFIG_FILES_FEATURE } from '../../lib/version-wire.ts'
 import { generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
 import {
   adminToolLoginName,
@@ -144,22 +143,6 @@ async function checkCreateRequest(
   return null
 }
 
-/** The server the tool runs on must be able to write config files when the tool uses them. */
-async function daemonRefusal(
-  store: AdminToolStore,
-  serverId: string,
-  tool: AdminToolBody['tool']
-): Promise<Refusal | null> {
-  if (tool === 'phpmyadmin') return null
-  const features = await store.daemonFeatures(serverId)
-  if (features.includes(DEPLOY_CONFIG_FILES_FEATURE)) return null
-  return {
-    error: 'admin_tool_needs_daemon_update',
-    status: 409,
-    message: `The daemon on this Database Cluster's server must be updated before ${ADMIN_TOOLS[tool].label} can run there.`,
-  }
-}
-
 /** pgAdmin signs in with the adder's email; a special-use domain fails its own check. */
 function pgAdminEmailRefusal(tool: AdminToolBody['tool'], email?: string): Refusal | null {
   if (tool !== 'pgadmin' || (email && isAcceptablePgAdminEmail(email))) return null
@@ -198,8 +181,6 @@ async function planCreate<S extends AdminToolScope>(
   if (refused) return refuse(c, refused)
   const serverId = resolveManagedTargetServerId(c, scope.row.serverId)
   if (serverId instanceof Response) return serverId
-  const oldDaemon = await daemonRefusal(store, serverId, body.tool)
-  if (oldDaemon) return refuse(c, oldDaemon)
   const email = body.tool === 'pgadmin' ? (c.get('session')?.email ?? undefined) : undefined
   const badEmail = pgAdminEmailRefusal(body.tool, email)
   if (badEmail) return refuse(c, badEmail)

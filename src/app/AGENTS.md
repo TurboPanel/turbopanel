@@ -81,11 +81,9 @@
   control plane, and the contract check fails a control plane that lists a
   feature daemon trunk lacks; `filterHelloFeatures` ignores names this
   control plane does not know) and the daemon checks `instanceSupports()` before
-  treating the peer as able to speak it. `php-site-modes-v1` gates a deploy
+  treating the peer as able to speak it. `php-site-modes-v1` covers a deploy
   field rather than a message: the daemon runs each PHP site in its `php.mode`
-  (FastCGI or php-fpm, nginx and Apache). Deploy prepare refuses a mode other
-  than php-fpm for a daemon that does not list it (`php_mode_unavailable`,
-  reason `daemon_unsupported`) and stamps no mode on its sites. A deployment
+  (FastCGI or php-fpm, nginx and Apache). A deployment
   record without `phpModes` means the modes are unknown, not php-fpm.
   OpenLiteSpeed and Caddy sites ignore `php.mode` in the daemon for now (the
   OpenLiteSpeed lsphp work is turbopaneld#250). `update-progress`

@@ -1019,14 +1019,6 @@ test('config file prepare errors map to 422 and the daemon gate to 409 naming se
     'config_interpolation'
   )
   assertEquals(mapPrepareErrorResponse({ kind: 'config_file_shared', message: 'x' }).status, 422)
-  const gate = mapPrepareErrorResponse({
-    kind: 'config_files_need_daemon_update',
-    message: 'update the daemon',
-    servers: [{ serverId: 'srv-1', name: 'old-box' }],
-  })
-  assertEquals(gate.status, 409)
-  assertEquals(gate.body.error, 'config_files_need_daemon_update')
-  assertEquals(gate.body.servers, [{ serverId: 'srv-1', name: 'old-box' }])
 })
 
 test('the preview shows secret slots by name and never a value or a size', () => {

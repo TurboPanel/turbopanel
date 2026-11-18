@@ -960,7 +960,7 @@ export const deployPaths = {
         404: { description: 'No such environment' },
         409: {
           description:
-            '`data_volumes_changed`: the volume list changed since it was shown (the body carries the new list), or `delete_volumes_needs_daemon_update`: a server the stop goes to runs a daemon that cannot delete data volumes yet (`servers` names them). Nothing was stopped.',
+            '`data_volumes_changed`: the volume list changed since it was shown (the body carries the new list). Nothing was stopped.',
         },
         503: {
           description: 'The control plane has no link to the command queue or database',

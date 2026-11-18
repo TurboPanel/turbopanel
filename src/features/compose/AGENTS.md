@@ -866,10 +866,7 @@ prep sends `runtime: 'deno'` and `denoVersion` on `nativeAppServices[]` only for
 a Deno app, so a Node app's payload is byte-identical to before. What changes
 around it:
 
-- **Daemon first.** `deploy-deno-gate.ts` refuses (422 `deno_feature_missing`) a
-  Deno app bound for a daemon that does not advertise `deno-native-apps-v1`
-  (`DENO_NATIVE_APPS_FEATURE`, twin of the daemon list), because an older daemon
-  would ignore `runtime` and start the app on Node; and refuses (422
+- **Series check.** `deploy-deno-gate.ts` refuses (422
   `deno_version_unsupported`) a series the registry mirror does not offer. The
   lint warns on the same series at save.
 - **No repository read.** A Deno app is skipped by `deploy-node-version.ts`: no
@@ -1070,10 +1067,7 @@ readable by every user in the container). Refused as `config_file_invalid`: a
 name ending in `.tmp`, a generated name another config already uses, over the
 limits (64 KiB text per file, 16 per service, 256 KiB per deploy);
 `config_file_shared` when a service names another service's generated source.
-The target daemon must list `deploy-config-files-v1`: otherwise a content
-config with a real `{$…}` token returns `409 config_files_need_daemon_update`
-(naming the servers) and one without a token stays as authored (Compose's own
-`content`). `desiredHash` covers `configFiles` (the parts) so a text-only change
+`desiredHash` covers `configFiles` (the parts) so a text-only change
 is not skipped as unchanged; an environment with none keeps its hash.
 
 ### The compiler IR — four models (`ir.ts`)

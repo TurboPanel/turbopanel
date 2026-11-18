@@ -45,9 +45,7 @@ changes.
   sentence, because the parse drops what it cannot read. Deploy prepare
   (`environments/deploy-site-lifecycle.ts`) turns them into `sites[].postDeploy`
   and `sites[].workers`: a site with either and no principal is
-  **422 `site_lifecycle_unowned`**; a server whose daemon lacks
-  `site-php-lifecycle-v1` is **409 `site_lifecycle_unsupported`** naming the
-  server (a site without them deploys as before). Commands on a managed-directory
+  **422 `site_lifecycle_unowned`** (a site without them deploys as before). Commands on a managed-directory
   site are not sent (no release); workers are. A retried deploy can run commands
   again, so say "should be safe to run more than once" wherever they are described.
   The server services response carries the PHP patch versions (`patches`),

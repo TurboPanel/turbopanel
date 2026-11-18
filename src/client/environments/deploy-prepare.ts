@@ -135,35 +135,17 @@ import {
   denoRuntimeSeries,
 } from '../../contracts/runtime-registry.ts'
 import {
-  type DenoAppFeatureError,
-  withDenoNativeApps,
+  type DenoAppVersionError,
+  denoAppWithUnsupportedVersion,
   withRecordedRuntimes,
 } from './deploy-deno-gate.ts'
-import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
-import {
-  renderSiteLifecycleForDeploy,
-  type SiteLifecycleUnsupportedError,
-  siteLifecycleUnowned,
-  siteLifecycleUnsupported,
-  sitesCarryLifecycle,
-} from './deploy-site-lifecycle.ts'
-import {
-  type NodeAppModeFeatureError,
-  withCustomNodeAppModes,
-} from './deploy-node-app-mode-gate.ts'
+import { renderSiteLifecycleForDeploy, siteLifecycleUnowned } from './deploy-site-lifecycle.ts'
 import { type SiteDbBindingsWarning, withSiteDbBindings } from './deploy-site-db-bindings.ts'
 import {
   type BindingDelivery,
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
 } from '../../features/bindings/host-run.ts'
-import {
-  ACME_ISSUE_FEATURE,
-  BUILD_LIMITS_FEATURE,
-  DEPLOY_CONFIG_FILES_FEATURE,
-  PHP_SITE_MODES_FEATURE,
-} from '../../lib/version-wire.ts'
-import { storedDaemonFeatures } from './destroy-data.ts'
 import { effectiveAccountLimits } from './account-limits.ts'
 import {
   applyDeliveryToMap,
@@ -638,20 +620,13 @@ export type NativeAppVariablesView = {
   variables: NativeAppVariableView[]
 }
 
-/** A generated config file the compose cannot compile, or the daemon cannot take. */
-export type ConfigFilesPrepareError =
-  | {
-      kind: 'config_interpolation' | 'config_file_invalid' | 'config_file_shared'
-      message: string
-      composeServiceName?: string
-      envKey?: string
-    }
-  | {
-      kind: 'config_files_need_daemon_update'
-      message: string
-      /** The servers whose daemon lacks `deploy-config-files-v1`. */
-      servers: Array<{ serverId: string; name: string }>
-    }
+/** A generated config file the compose cannot compile. */
+export type ConfigFilesPrepareError = {
+  kind: 'config_interpolation' | 'config_file_invalid' | 'config_file_shared'
+  message: string
+  composeServiceName?: string
+  envKey?: string
+}
 
 export type DeployPrepareError =
   | ConfigFilesPrepareError
@@ -729,12 +704,9 @@ export type DeployPrepareError =
   | { kind: 'site_lifecycle_unowned'; composeServiceName: string }
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
-  | SiteEngineFeatureError
-  | SiteLifecycleUnsupportedError
   /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
-  | DenoAppFeatureError
+  | DenoAppVersionError
   /** An app with a custom application mode goes to a daemon that would refuse it. */
-  | NodeAppModeFeatureError
   /**
    * The repository asks for a Node version no offered series satisfies, names
    * one that is not a version range, or (a deploy only) could not be read.
@@ -843,13 +815,10 @@ type HardDeployPrepareError =
   | { kind: 'binding_host_site_unsupported'; message: string }
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
-  | SiteEngineFeatureError
   // Hard in preview too: an older daemon would refuse the whole deploy.
-  | SiteLifecycleUnsupportedError
   // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
-  | DenoAppFeatureError
+  | DenoAppVersionError
   // Hard in preview too: an older daemon would refuse the whole deploy.
-  | NodeAppModeFeatureError
   // Hard in preview too: the build would get a Node the app says it cannot run on.
   | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
@@ -3118,27 +3087,6 @@ function projectCacheFields(
   }
 }
 
-/** The server this slice compiles for, named the way people know it. */
-async function namedServer(db: Db, serverId: string): Promise<{ serverId: string; name: string }> {
-  const [row] = await db
-    .select({ name: server.name, hostname: server.hostname })
-    .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1)
-  return { serverId, name: row?.name?.trim() || row?.hostname || serverId }
-}
-
-/** Refuses commands or workers for a server whose daemon cannot run them; names the server only then. */
-async function withSiteLifecycleGate(
-  db: Db,
-  serverId: string,
-  sites: readonly EnvironmentDeploySite[],
-  features: readonly string[]
-): Promise<SiteLifecycleUnsupportedError | undefined> {
-  if (!sitesCarryLifecycle(sites)) return undefined
-  return siteLifecycleUnsupported(sites, features, await namedServer(db, serverId))
-}
-
 /** A list as a one-key object, or nothing when it is absent or empty (keeps old hashes and payloads as they were). */
 function nonEmptyListField<K extends string, T>(
   key: K,
@@ -3146,17 +3094,6 @@ function nonEmptyListField<K extends string, T>(
 ): Partial<Record<K, T[]>> {
   if (list === undefined || list.length === 0) return {}
   return { [key]: [...list] } as Partial<Record<K, T[]>>
-}
-
-/** The prepare error for a failed variable pass; the daemon gate names this slice's server. */
-async function variablesPrepareFailure(
-  db: Db,
-  serverId: string,
-  error: ApplyVariablesError
-): Promise<DeployPrepareError> {
-  const prepareError = toApplyVariablesPrepareError(error)
-  if (prepareError.kind !== 'config_files_need_daemon_update') return prepareError
-  return { ...prepareError, servers: [await namedServer(db, serverId)] }
 }
 
 function configFileWarnings(
@@ -3171,9 +3108,6 @@ function configFileWarnings(
 
 function toApplyVariablesPrepareError(error: ApplyVariablesError): DeployPrepareError {
   const { kind, message, ref, composeServiceName, envKey } = error
-  if (kind === 'config_files_need_daemon_update') {
-    return { kind, message, servers: [] }
-  }
   if (kind === 'variable_unresolved') {
     return {
       kind,
@@ -3539,10 +3473,8 @@ async function prepareNativeAppRuntimes(
 > {
   // A rollback runs each app on the runtime its release ran on.
   const nativeApps = withRecordedRuntimes(args.nativeApps, args.params.rollback?.releaseByService)
-  const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
-  if ('kind' in denoGate) return denoGate
-  const appModeGate = await withCustomNodeAppModes(db, args.params.serverId, nativeApps)
-  if ('kind' in appModeGate) return appModeGate
+  const denoGate = denoAppWithUnsupportedVersion(nativeApps)
+  if (denoGate) return denoGate
 
   // An app with no `nodeVersion` gets one here from its repository at the
   // commit being deployed.
@@ -3643,12 +3575,9 @@ async function resolveLocalSitesBoundForDeploy(
     tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>
   }
 ): Promise<EnvironmentDeploySite[] | DeployPrepareError> {
-  const phpDaemonState = await getServerDaemonStateByServerId(db, args.params.serverId)
   const siteResolved = await withSitePhpModes(
     db,
     {
-      daemonRunsModes:
-        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
       environmentId: args.params.environmentId,
       serverId: args.params.serverId,
       localServiceNames: args.pipeline.localServiceNames,
@@ -3674,21 +3603,11 @@ async function resolveLocalSitesBoundForDeploy(
   )
   if ('kind' in siteResolved) return siteResolved
   const localSite = sitesOnScheduledServer(siteResolved, args.pipeline.localServiceNames)
-  const engineGate = await withSiteEngineFeature(db, args.params.serverId, localSite)
-  if ('kind' in engineGate) return engineGate
-  const lifecycleGate = await withSiteLifecycleGate(
-    db,
-    args.params.serverId,
-    localSite,
-    phpDaemonState?.projection?.features ?? []
-  )
-  if (lifecycleGate) return lifecycleGate
   const dbBindingWarnings: SiteDbBindingsWarning[] = []
   const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
     organizationId: args.params.organizationId,
     sites: localSite,
     serviceRows: args.serviceRows,
-    daemonFeatures: phpDaemonState?.projection?.features ?? [],
     warnings: dbBindingWarnings,
   })
   if ('kind' in localSiteBound) return localSiteBound
@@ -3825,26 +3744,12 @@ async function applyDeployVariables(
     nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
     projectId: input.projectId,
     environmentId: params.environmentId,
-    configFilesEnabled: (await storedDaemonFeatures(db, params.serverId)).includes(
-      DEPLOY_CONFIG_FILES_FEATURE
-    ),
   })
   if (isApplyVariablesError(withVariables)) {
-    return await variablesPrepareFailure(db, params.serverId, withVariables)
+    return toApplyVariablesPrepareError(withVariables)
   }
   warnings.push(...configFileWarnings(withVariables.configWarnings))
   return withVariables
-}
-
-/** Each source entry's build limits, only when the target daemon lists `build-limits-v1`. */
-async function withBuildLimitsForDaemon(
-  db: Db,
-  serverId: string,
-  sources: EnvironmentDeploySource[],
-  levels: Parameters<typeof attachBuildLimits>[1]
-): Promise<EnvironmentDeploySource[]> {
-  const features = await storedDaemonFeatures(db, serverId)
-  return features.includes(BUILD_LIMITS_FEATURE) ? attachBuildLimits(sources, levels) : sources
 }
 
 /** Project caches and helper reach for this server; its warnings join the deploy's. */
@@ -4222,9 +4127,9 @@ export async function prepareDeployCompose(
 
   const builtSources = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
   if (!Array.isArray(builtSources)) return toApplyVariablesPrepareError(builtSources)
-  // Build limits ride only to a daemon that lists them; the commit hash never
-  // includes them, so changing a limit does not make a deploy look new.
-  const sourceMaterial = await withBuildLimitsForDaemon(db, params.serverId, builtSources, {
+  // The commit hash never includes build limits, so changing a limit does not
+  // make a deploy look new.
+  const sourceMaterial = attachBuildLimits(builtSources, {
     organizationOptions: orgRow?.options,
     serverOptions: serverRow?.options,
     serviceOptionsByComposeName: pipeline.optionsByComposeName,
@@ -4794,30 +4699,26 @@ function tlsPinErrorResponse(
   )
 }
 
-/** The 409 for a hosting whose tunnel names cannot be locked; `serverId` is named when the daemon is the problem. */
+/** The 409 for a hosting whose tunnel names cannot be locked. */
 function nameLockRefusalResponse(
   refusal: { code: string; hostnames: string[] },
-  hostingId: string,
-  serverId: string
+  hostingId: string
 ): Response {
   return Response.json(
     {
       error: refusal.code,
       hostingId,
       hostnames: refusal.hostnames,
-      ...(refusal.code === 'tunnel_daemon_too_old' ? { serverId } : {}),
     },
     { status: 409 }
   )
 }
 
-/** The pinned row holds a pair ordered by this flow, and the target server's daemon lists the feature. */
-async function takesCentralPair(
-  db: Db,
+/** The pinned row holds a pair ordered by this flow and covering every name the site answers on. */
+function takesCentralPair(
   pinned: OrgTlsCandidate | undefined,
-  serverId: string,
   site: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
-): Promise<boolean> {
+): boolean {
   if (!pinned?.httpCentralPair || !pinned.certificatePem || !pinned.privateKeyPem) return false
   // One stored pair serves every site that pins the row, so it must cover all the
   // row's names, and every name this site answers on (its www mode adds the other
@@ -4825,9 +4726,7 @@ async function takesCentralPair(
   // them stays with the server's own web server.
   const stored = pinned.metadata.acme?.storedNames
   if (!stored || !coversAllHostnames(stored, pinned.metadata.dnsNames)) return false
-  if (!coversAllHostnames(stored, hostingCertificateNames(site))) return false
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
+  return coversAllHostnames(stored, hostingCertificateNames(site))
 }
 
 /**
@@ -4911,7 +4810,7 @@ async function resolveHttpHostingEntry(
     status: pinned?.metadata.status,
     bindScope,
     acmeEnabled,
-    centralPair: await takesCentralPair(db, pinned, serverId, { hostnames, www }),
+    centralPair: takesCentralPair(pinned, { hostnames, www }),
   })
   if (!tlsWire.ok) {
     return {
@@ -4936,7 +4835,7 @@ async function resolveHttpHostingEntry(
     www,
     tlsMode: tlsWire.tlsMode,
   })
-  if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id, serverId) }
+  if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id) }
 
   // A hosting whose names are all tunnel-only never asks for a public certificate,
   // and keeps no Let's Encrypt row waiting on one.
