@@ -4,9 +4,16 @@
  * in `schema.ts` for why the id keeps the daemon's `bk_<hex>` format.
  */
 
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, ne } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { backup, backupCopy, managedDatabase } from '../../db/schema.ts'
+import {
+  backup,
+  backupCopy,
+  environment,
+  managed,
+  managedDatabase,
+  project,
+} from '../../db/schema.ts'
 import { backupRelativePath } from './vocabulary.ts'
 
 const CHECKSUM_SHA256_RE = /^[a-f0-9]{64}$/
@@ -139,6 +146,30 @@ export async function findManagedBackupById(
     .where(and(eq(backup.managedId, managedId), eq(backup.backupId, backupId)))
     .limit(1)
   return row ? toRecord(row) : undefined
+}
+
+/** Whether another cluster of the same organization holds a backup with this id. */
+export async function backupExistsOnOtherCluster(
+  db: Db,
+  organizationId: string,
+  managedId: string,
+  backupId: string
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: backup.id })
+    .from(backup)
+    .innerJoin(managed, eq(managed.id, backup.managedId))
+    .innerJoin(environment, eq(environment.id, managed.environmentId))
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .where(
+      and(
+        eq(backup.backupId, backupId),
+        ne(backup.managedId, managedId),
+        eq(project.organizationId, organizationId)
+      )
+    )
+    .limit(1)
+  return Boolean(row)
 }
 
 export async function deleteManagedBackup(

@@ -2744,8 +2744,13 @@ const managedBasePaths = {
           description: 'Restore command enqueued',
           ...jsonSchema('ManagedBackupCommandResponse'),
         },
+        400: {
+          description:
+            'unknown_fields: the body carries a field other than fromCopy (the `fields` list names them). A restore always runs in place.',
+        },
         404: {
-          description: 'backup_not_found',
+          description:
+            'backup_not_found, or backup_on_other_cluster (the id belongs to another cluster of the organization; restore only works in place and carries a `message`)',
           ...jsonSchema('BackupNotFoundError'),
         },
         409: {

@@ -210,11 +210,16 @@ import {
   saveManagedOptions,
   writeManagedSettings,
 } from '../../features/managed/options.ts'
-import { findManagedBackupById, listManagedBackups } from '../../features/backups/backup-records.ts'
+import {
+  backupExistsOnOtherCluster,
+  findManagedBackupById,
+  listManagedBackups,
+} from '../../features/backups/backup-records.ts'
 import {
   copyTargetForDelete,
   copyTargetForNewBackup,
   describeClusterBackupTarget,
+  refuseUnknownRestoreFields,
   refuseWrongHostRestore,
   copySourceForRestore,
   wantsRestoreFromCopy,
@@ -4344,8 +4349,23 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
+    const unknownField = await refuseUnknownRestoreFields(c)
+    if (unknownField) return unknownField
+
     const record = await findManagedBackupById(db, row.id, backupId)
-    if (!record) return c.json({ error: 'backup_not_found' }, 404)
+    if (!record) {
+      if (await backupExistsOnOtherCluster(db, auth.organizationId, row.id, backupId)) {
+        return c.json(
+          {
+            error: 'backup_on_other_cluster',
+            message:
+              'This backup belongs to another database cluster. A restore only works in place: it puts a backup back on the cluster that made it. Restoring into a different cluster is not available.',
+          },
+          404
+        )
+      }
+      return c.json({ error: 'backup_not_found' }, 404)
+    }
 
     // Restore must run on the host that actually owns the engine —
     // `managed.server_id`, not the (possibly drifted) environment placement.

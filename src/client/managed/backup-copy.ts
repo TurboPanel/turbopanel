@@ -104,6 +104,28 @@ export async function restoreSourceFromCopy(
   return { ok: true, source: { target, key: live.copy.objectKey } }
 }
 
+const RESTORE_BODY_FIELDS = new Set(['fromCopy'])
+
+/**
+ * A restore body may only carry `fromCopy`. Any other field (for example one
+ * naming another cluster) is refused instead of being dropped, so a restore
+ * never runs in place when the caller meant something else.
+ */
+export async function refuseUnknownRestoreFields(c: Context<AppEnv>): Promise<Response | null> {
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+  const unknown = Object.keys(body).filter((key) => !RESTORE_BODY_FIELDS.has(key))
+  if (unknown.length === 0) return null
+  return c.json(
+    {
+      error: 'unknown_fields',
+      fields: unknown,
+      message: `A restore takes only fromCopy. Remove: ${unknown.join(', ')}. A restore always runs in place, on the cluster that made the backup.`,
+    },
+    400
+  )
+}
+
 /** Whether a restore request body asks for the bucket copy (`{ "fromCopy": true }`). An empty or unreadable body means no. */
 export async function wantsRestoreFromCopy(c: Context<AppEnv>): Promise<boolean> {
   const body = await parseJsonBody(c)
