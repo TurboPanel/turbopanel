@@ -148,15 +148,19 @@ export async function findManagedBackupById(
   return row ? toRecord(row) : undefined
 }
 
-/** Whether another cluster of the same organization holds a backup with this id. */
-export async function backupExistsOnOtherCluster(
+/**
+ * The environment of another cluster in the same organization that holds a
+ * backup with this id, or undefined. Callers must check read access to that
+ * environment before telling anyone it exists.
+ */
+export async function otherClusterEnvironmentOfBackup(
   db: Db,
   organizationId: string,
   managedId: string,
   backupId: string
-): Promise<boolean> {
+): Promise<string | undefined> {
   const [row] = await db
-    .select({ id: backup.id })
+    .select({ environmentId: environment.id })
     .from(backup)
     .innerJoin(managed, eq(managed.id, backup.managedId))
     .innerJoin(environment, eq(environment.id, managed.environmentId))
@@ -169,7 +173,7 @@ export async function backupExistsOnOtherCluster(
       )
     )
     .limit(1)
-  return Boolean(row)
+  return row?.environmentId
 }
 
 export async function deleteManagedBackup(

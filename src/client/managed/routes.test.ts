@@ -1724,6 +1724,82 @@ test('POST restore refuses unknown body fields and says restore is in place only
   )
 })
 
+test('POST restore does not confirm a backup id held by another organization', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, workspaceId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const managedId = ((await create.json()) as { managed: { id: string } }).managed.id
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+
+      const [foreignOrg] = await db
+        .insert(organization)
+        .values({ name: 'Restore Foreign Org' })
+        .returning({ id: organization.id })
+      const [foreignProject] = await db
+        .insert(project)
+        .values({
+          name: 'Foreign Cluster',
+          workspaceId,
+          organizationId: foreignOrg!.id,
+          kind: 'managed',
+          metadata: { code: 'postgres' },
+        })
+        .returning({ id: project.id })
+      const [foreignEnv] = await db
+        .insert(environment)
+        .values({ name: 'production', projectId: foreignProject!.id, serverId })
+        .returning({ id: environment.id })
+      const [foreignManaged] = await db
+        .insert(managed)
+        .values({
+          environmentId: foreignEnv!.id,
+          serverId,
+          name: 'Foreign Postgres',
+          engine: 'postgres',
+          status: 'ready',
+          options: { settings: getManagedEngineSpec('postgres')!.defaultSettings },
+        })
+        .returning({ id: managed.id })
+      try {
+        await db.insert(backup).values({
+          backupId: 'bk_foreign_org',
+          managedId: foreignManaged!.id,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          sizeBytes: 100,
+          checksum: 'a'.repeat(64),
+          database: 'postgres',
+          path: '/var/lib/turbopanel/managed/x/backups/bk_foreign_org.dump',
+          serverId,
+        })
+        const res = await app.request(
+          `/environments/${environmentId}/managed/backups/bk_foreign_org/restore`,
+          { method: 'POST', headers, body: '{}' }
+        )
+        assertEquals(res.status, 404)
+        assertEquals(await res.json(), { error: 'backup_not_found' })
+      } finally {
+        await db.delete(backup).where(eq(backup.managedId, foreignManaged!.id))
+        await db.delete(managed).where(eq(managed.id, foreignManaged!.id))
+        await db.delete(environment).where(eq(environment.id, foreignEnv!.id))
+        await db.delete(project).where(eq(project.id, foreignProject!.id))
+        await db.delete(organization).where(eq(organization.id, foreignOrg!.id))
+      }
+    }
+  )
+})
+
 test('POST restore still enqueues when serverId is null (legacy rows)', async () => {
   await withManagedFixtures(
     {},
