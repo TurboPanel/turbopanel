@@ -68,11 +68,11 @@ export class DevOverlayRebuildError extends Error {
 export const ERROR_TEXT_MAX_BYTES = 4096
 // ESC [ ... final byte (colour, cursor), and ESC ] ... BEL or ESC \ (titles, links).
 // ESC [ ... final byte (colour, cursor), and ESC ] ... BEL or ESC \ (titles, links).
-// Built from char codes so no control character appears in a regex literal.
-const ESC = String.fromCharCode(0x1b)
-const BEL = String.fromCharCode(0x07)
+// Built from code points so no control character appears in a regex literal.
+const ESC = String.fromCodePoint(0x1b)
+const BEL = String.fromCodePoint(0x07)
 const ANSI_PATTERN = new RegExp(
-  `${ESC}\\[[0-?]*[ -/]*[@-~]|${ESC}\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\)`,
+  String.raw`${ESC}\[[0-?]*[ -/]*[@-~]|${ESC}\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\)`,
   'g'
 )
 
