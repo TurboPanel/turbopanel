@@ -1,29 +1,9 @@
 /** Host-free coverage for the request and daemon checks of a Destroy that deletes data. */
 import { assertEquals } from '@std/assert'
-import type { Db } from '../../db/connection.ts'
 import { parseDestroyRequest, sameVolumeList } from './destroy-data.ts'
 
 /** Sonar typescript:S2187 only recognizes `test()`; alias Deno.test so analysis sees it. */
 const test = Deno.test.bind(Deno)
-
-/** Drizzle-shaped double: each `await` consumes the next queued result set. */
-function fakeDb(resultSets: unknown[][]): Db {
-  const queue = [...resultSets]
-  const chain: unknown = new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        if (prop === 'then') {
-          const promise = Promise.resolve(queue.shift() ?? [])
-          return promise.then.bind(promise)
-        }
-        if (prop === 'catch' || prop === 'finally') return undefined
-        return () => chain
-      },
-    }
-  )
-  return chain as Db
-}
 
 test('parseDestroyRequest keeps an empty body a plain Destroy', () => {
   assertEquals(parseDestroyRequest({}), { deleteVolumes: false })

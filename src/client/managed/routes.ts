@@ -80,7 +80,6 @@ import {
 } from '../../features/managed/login-limit-fields.ts'
 import {
   createLoginForPrincipal,
-  applySettingsPatch,
   createManagedLogin,
   findManagedLogin,
   findManagedLoginByRole,
@@ -3130,7 +3129,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const parsed = await parseLoginPatchRequest(c, db, ctx, body, options, target)
     if (parsed instanceof Response) return parsed
-    const { dryRun, limits, plan } = parsed
+    const { dryRun, plan } = parsed
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId

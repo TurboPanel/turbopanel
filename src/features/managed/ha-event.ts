@@ -31,7 +31,6 @@ import {
 } from './members.ts'
 import { haMemberDialForReporter } from './ha-desired.ts'
 import { getManagedEngineSpec } from './index.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
   haEventRejection,
   ORCHESTRATOR_DETECTOR,
