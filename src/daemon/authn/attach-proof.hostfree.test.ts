@@ -71,6 +71,16 @@ test('no proof is accepted only before the server proved itself', async () => {
   assertEquals((await decideAttachProof(undefined, (await setup(2)).ctx)).kind, 'refused')
 })
 
+test('where signed sessions are required, no proof is refused at any trust level', async () => {
+  for (const level of [0, 1, 2]) {
+    const { ctx } = await setup(level)
+    assertEquals(
+      (await decideAttachProof(undefined, { ...ctx, requireSigned: true })).kind,
+      'refused'
+    )
+  }
+})
+
 test('another session, key, clock or a malformed proof is refused', async () => {
   const { proof, ctx } = await setup()
   const refused = [

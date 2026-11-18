@@ -158,6 +158,7 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
       serverId,
       cnfJkt: payload.cnf?.jkt,
       state: daemonState,
+      requireSigned: true,
       panelIdentity: options.panelIdentity,
     })
     if (refused) return new Response(refused.error, { status: refused.status })

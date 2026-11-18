@@ -490,7 +490,8 @@ async function readDaemonState(
 async function createTestApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: 'workers' | 'deno' = 'workers',
-  panelIdentity?: PanelIdentity
+  panelIdentity?: PanelIdentity,
+  requireSigned = false
 ): Promise<Hono<AppEnv>> {
   setRevokeBoundDaemonKey(revokeDaemonKey)
   const app = new Hono<AppEnv>()
@@ -506,6 +507,7 @@ async function createTestApp(
     challengeSigningSecrets,
     secretsConfig,
     runtime,
+    requireSigned,
     ...(panelIdentity ? { panelIdentity: () => Promise.resolve(panelIdentity) } : {}),
   })
   return app
@@ -596,6 +598,7 @@ async function createTestAppWithRegistry(
     challengeSigningSecrets,
     secretsConfig,
     runtime,
+    requireSigned: false,
   })
   return app
 }
@@ -4616,6 +4619,29 @@ test('POST /auth/session refuses a v1 proof once the server has used a signed se
     )
     assertEquals(refused.status, 403)
     assertEquals(((await refused.json()) as { error: string }).error, 'Signed proof required')
+  })
+})
+
+test('on the Workers runtime a v1 proof is refused at trust level 0, at enroll and sign-in', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const strict = await createTestApp(fixture.db, 'workers', await fixtureIdentity(), true)
+    const session = await postSessionBody(strict, await signedSessionBody(strict, fixture))
+    assertEquals(session.status, 403)
+    assertEquals(((await session.json()) as { error: string }).error, 'Signed proof required')
+    const reenroll = await mintTicket(fixture.db, {
+      organizationId: fixture.organizationId,
+      serverId: fixture.serverId,
+    })
+    const enroll = await postEnroll(strict, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId: fixture.serverId,
+      machineKey: fixture.machineKey,
+      hostname: fixture.hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(enroll.status, 403)
+    assertEquals(((await enroll.json()) as { error: string }).error, 'Signed proof required')
   })
 })
 

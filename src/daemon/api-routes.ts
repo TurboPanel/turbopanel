@@ -1447,13 +1447,18 @@ type ProofRefusal = { status: 400 | 403; error: string }
 /** Read the proof version from the body and check it against this control plane's key. */
 async function refuseUnacceptableProof(
   body: Record<string, unknown>,
-  ctx: { identity: (() => Promise<PanelIdentity | null>) | undefined; trustLevel: number }
+  ctx: {
+    identity: (() => Promise<PanelIdentity | null>) | undefined
+    trustLevel: number
+    requireSigned: boolean
+  }
 ): Promise<{ refusal: ProofRefusal } | { proof: ProofVersion }> {
   const parsed = parseProofVersion(body)
   if (!parsed.ok) return { refusal: parsed }
   const checked = checkProofVersion(parsed.value, {
     identity: ctx.identity ? await ctx.identity() : null,
     trustLevel: ctx.trustLevel,
+    requireSigned: ctx.requireSigned,
     nowMs: Date.now(),
   })
   return checked.ok ? { proof: parsed.value } : { refusal: checked }
@@ -1594,6 +1599,12 @@ export function registerDaemonApiRoutes<E extends Env>(
      */
     runtime?: 'workers' | 'deno'
     /**
+     * Refuse v1 proofs, unsigned sessions and requests without a daemon signature, whatever the
+     * server's trust level. Defaults to true on the Workers runtime (no co-located daemon), false
+     * on Deno (the daemon on a self-hosted control plane's own host has no panel key pin).
+     */
+    requireSigned?: boolean
+    /**
      * When true, GET /instance/ca answers 404 for a name that presents a
      * Let's Encrypt or uploaded leaf. An unlisted name on the self-hosted
      * listener still receives the bundle: that request hits the Platform CA
@@ -1650,6 +1661,10 @@ export function registerDaemonApiRoutes<E extends Env>(
   }
   const tlsPublic = options.tlsPublic ?? false
   const deployment = metricsDeploymentKindForRuntime(runtime)
+  // The Workers runtime serves hosted and high-availability control planes and has no co-located
+  // daemon, so it takes only signed sign-ins and requests. The Deno runtime keeps the unpinned
+  // form for the daemon on a self-hosted control plane's own host, which has no panel key pin.
+  const requireSigned = options.requireSigned ?? runtime === 'workers'
   const metricsChartCache = createMetricsChartCache(runtime)
   const restLimiter = options.restLimiter ?? createNoopRateLimiter()
   const metricsLimiter = options.metricsLimiter ?? createNoopRateLimiter()
@@ -1787,7 +1802,7 @@ export function registerDaemonApiRoutes<E extends Env>(
   /**
    * A request must be signed by the daemon key when its token is bound to that
    * key (`cnf`) or the server already proved itself with its key
-   * (`trust_level` 2). The body is read here once, within the route's limit,
+   * (`trust_level` 2), or always on the Workers runtime. The body is read here once, within the route's limit,
    * and handed on through `daemonBody`. Null when the request may go on.
    */
   const refuseUnsignedRequest = async (
@@ -1797,7 +1812,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     gate: DaemonKeyGate
   ): Promise<Response | null> => {
     const cnf = c.get('daemonCnfJkt')
-    if (!cnf && (state.trustLevel ?? 0) < DAEMON_PROOF_TRUST_LEVEL) return null
+    if (!requireSigned && !cnf && (state.trustLevel ?? 0) < DAEMON_PROOF_TRUST_LEVEL) return null
     if (cnf && cnf !== (await daemonKeyThumbprint(state.key.publicJwk))) {
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
@@ -2287,12 +2302,14 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'Invalid license' }, 401)
     }
 
-    // A new server has used no signed session (level 0), so v1 is accepted for
+    // On the Workers runtime (hosted) a v1 proof is always refused. Elsewhere a
+    // new server has used no signed session (level 0), so v1 is accepted for
     // it. A re-enroll names an existing server, and one that has used a signed
     // session must send a v2 proof (403 Signed proof required otherwise).
     const enrollProofResult = await refuseUnacceptableProof(body, {
       identity: options.panelIdentity,
       trustLevel: await readEnrollTrustLevel(db, credential, serverIdBody),
+      requireSigned,
     })
     if ('refusal' in enrollProofResult) {
       return c.json(
@@ -2376,6 +2393,7 @@ export function registerDaemonApiRoutes<E extends Env>(
     const sessionProofResult = await refuseUnacceptableProof(body, {
       identity: options.panelIdentity,
       trustLevel: keyState.daemonState.trustLevel ?? 0,
+      requireSigned,
     })
     if ('refusal' in sessionProofResult) {
       return c.json(
