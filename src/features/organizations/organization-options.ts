@@ -103,9 +103,8 @@ export type OrganizationOptions = {
   managedDatabase?: ManagedOrganizationDefaults
   /**
    * Org default principal name scheme (`plain` | `partial` | `random`) for
-   * the system name (login on the host or engine). Wins over the legacy
-   * boolean above, which stays readable as a fallback (true = partial,
-   * false = plain). See `lib/principal-name-scheme.ts`.
+   * the system name (login on the host or engine). See
+   * `lib/principal-name-scheme.ts`.
    */
   principalNameScheme?: PrincipalNameScheme
   /**

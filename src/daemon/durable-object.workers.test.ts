@@ -2,7 +2,7 @@
 /// <reference path="./vitest-env.d.ts" />
 /// <reference path="../../worker-configuration.d.ts" />
 import { env, runInDurableObject } from 'cloudflare:test'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import type { Db } from '../db/connection.ts'
@@ -405,6 +405,10 @@ afterEach(async () => {
   // Attach/disconnect projections run in ctx.waitUntil — cover the 300ms
   // heartbeat sleeps some tests use before close.
   await new Promise((resolve) => setTimeout(resolve, 350))
+})
+
+afterAll(() => {
+  setDaemonCellUnsignedSessionsAllowedForTests(false)
 })
 
 /**
