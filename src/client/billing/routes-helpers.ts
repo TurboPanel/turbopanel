@@ -243,8 +243,7 @@ export type LicenseSummary = Readonly<{
   endsAt: string | null
   /**
    * Active licenses held, bound or waiting to connect: `inUse + unusedKeys`.
-   * @deprecated for display — show `inUse` and `unusedKeys`; it stays the
-   * number the mint gate subtracts.
+   * Internal: the number the mint gate subtracts, never sent on the wire.
    */
   held: number
   /** What the console calls "in use": `bound + provisioning`. */
@@ -379,7 +378,7 @@ function endingPart({ ending, endsAt }: ExhaustionSummary): string | null {
  * mint gate's arithmetic (`purchased` minus what is held). What is held is
  * `inUse + unusedKeys`: a bound license is always an active one (both come
  * from one `countActiveLicenses` query), so `bound <= held` and the two
- * display fields sum to the deprecated `held` exactly.
+ * display fields sum to `held` exactly.
  */
 function changingTierCount(summary: ExhaustionSummary): number {
   const held = summary.inUse + summary.unusedKeys
