@@ -18,7 +18,7 @@ import {
   validateHostnameSource,
 } from './instance-hostnames.ts'
 import { SELF_HOSTED_PUBLIC_PORT_ERROR, setSelfHostedAddress } from './ingress-modes.ts'
-import { getPublicUrls, PUBLIC_URLS_SETTING_KEY, setPublicUrls } from './public-urls.ts'
+import { getPublicUrls, setPublicUrls } from './public-urls.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -172,8 +172,8 @@ test('get and set public URLs round-trip through the hostname table', async () =
   await setPublicUrls(db, ['https://panel.example.com:9443'])
   assertEquals(await getPublicUrls(db), ['https://panel.example.com:8443'])
   assertEquals(hostnames.length, 1)
-  const projected = settings.find((row) => row.key === PUBLIC_URLS_SETTING_KEY)
-  assertEquals(projected?.value, ['https://panel.example.com:8443'])
+  // The hostname table is the only store: no settings row is written.
+  assertEquals(settings.length, 0)
 })
 
 test("replaceInstanceHostnames keeps Let's Encrypt state when a portless row is saved again", async () => {

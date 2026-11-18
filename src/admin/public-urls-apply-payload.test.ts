@@ -139,14 +139,7 @@ test('an uploaded key reaches the Redis outbox only as a tpdaemon envelope', asy
       features: [SEALED_INSTANCE_SECRETS_FEATURE],
     })
     const sealing = await resolveInstanceSecretSealing(tx, serverId, secretsConfig)
-    const payload = await resolvePublicUrlsApplyPayload(
-      tx,
-      [host],
-      '0.1.1',
-      await dataEncryption(),
-      {},
-      sealing
-    )
+    const payload = await resolvePublicUrlsApplyPayload(tx, await dataEncryption(), {}, sealing)
     const { registry, outboxWrites } = recordingRedisRegistry(serverId)
 
     await waitForPublicUrlsApply(registry, serverId, payload)
@@ -169,14 +162,7 @@ test('an uploaded key reaches the Redis outbox only as a tpdaemon envelope', asy
 test('a daemon without the feature still receives the legacy plaintext key', async () => {
   await withRollback(async (tx) => {
     const host = await seedUploadedHostname(tx)
-    const payload = await resolvePublicUrlsApplyPayload(
-      tx,
-      [host],
-      '0.1.1',
-      await dataEncryption(),
-      {},
-      null
-    )
+    const payload = await resolvePublicUrlsApplyPayload(tx, await dataEncryption(), {}, null)
     const entry = payload.hostnames?.find((candidate) => candidate.host === host)
     assertEquals(entry?.keyPem, UPLOADED_KEY)
     assertEquals(entry?.keyEnvelope, undefined)
@@ -192,8 +178,7 @@ test('only tunnel hostnames carry the public port', async () => {
       { host: direct, source: 'platform-ca', publicPort: 8443 },
       { host: tunnel, source: 'platform-ca', publicPort: 443, mode: 'cloudflare-tunnel' },
     ])
-    const build = () =>
-      resolvePublicUrlsApplyPayload(tx, [direct, tunnel], '0.1.1', undefined, {}, null)
+    const build = () => resolvePublicUrlsApplyPayload(tx, undefined, {}, null)
     const entryFor = (
       payload: Awaited<ReturnType<typeof build>>,
       host: string
@@ -239,8 +224,7 @@ test('a DNS-01 name reaches the daemon as uploaded while its pair is live, else 
       { host: waiting, source: 'acme-dns-01' },
     ])
     const secrets = await dataEncryption()
-    const build = (at: number) =>
-      resolvePublicUrlsApplyPayload(tx, [issued, waiting], '0.1.1', secrets, {}, null, { now: at })
+    const build = (at: number) => resolvePublicUrlsApplyPayload(tx, secrets, {}, null, { now: at })
     const sourceOf = (payload: Awaited<ReturnType<typeof build>>, host: string) =>
       payload.hostnames?.find((entry) => entry.host === host)?.source
 
