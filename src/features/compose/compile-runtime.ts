@@ -603,22 +603,12 @@ type CompiledLocalServices = {
   addressByCompiled: Map<string, string | undefined>
 }
 
-function identityLabelsFor(
-  serviceName: string,
-  environmentId: string | undefined
-): Record<string, string> {
-  // The service label stays on the old prefix only: a daemon uses
-  // `io.turbopanel.service` for the hosting service id, which this compose
-  // service name is not. The control plane stamps `io.turbopanel.service` only
-  // in the later release that removes the old prefix. The environment id has
-  // the same meaning under both prefixes, so it is stamped under both (a daemon
-  // from the previous release reads only `com.turbopanel.*`).
-  const labels: Record<string, string> = {
-    'com.turbopanel.service': serviceName,
-  }
+function identityLabelsFor(environmentId: string | undefined): Record<string, string> {
+  // The daemon stamps the hosting service id (`io.turbopanel.service`) itself;
+  // a compose service name is not that id, so only the environment is stamped.
+  const labels: Record<string, string> = {}
   if (environmentId) {
     labels['io.turbopanel.environment'] = environmentId
-    labels['com.turbopanel.environment'] = environmentId
   }
   return labels
 }
@@ -699,7 +689,7 @@ function compileOneLocalService(
   const body = stripLocalDependsOn(stripSchedulerDeploy(structuredClone(raw)), localNames)
   const replicas = options.localReplicaCounts?.get(name) ?? 1
   if (replicas < 1) return
-  const identityLabels = identityLabelsFor(name, options.environmentId)
+  const identityLabels = identityLabelsFor(options.environmentId)
   if (shouldExpandSpanningReplicas(replicas, body, spanning)) {
     emitExpandedSpanningReplicas(compiled, {
       name,
