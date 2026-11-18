@@ -52,7 +52,6 @@ import {
   mainClientAddressHost,
   resolveClientAddresses,
 } from '../net/client-addresses-pure.ts'
-import {} from '../../lib/version-wire.ts'
 import { consumerServerIdsForManaged } from '../bindings/resolve-endpoint.ts'
 import { hasRemoteConsumerServers } from '../bindings/remote-consumers.ts'
 import { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
