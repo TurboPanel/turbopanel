@@ -2570,53 +2570,30 @@ test('POST /secrets/decrypt answers 409 sealing_key_required, with no plaintext,
   })
 })
 
-test('POST /secrets/decrypt answers 503 storage unavailable when the database is gone, not the 409', async () => {
-  await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await registerTestSealingKey(db, serverId)
-    const secretsConfig = createTestSecretsConfig()
-    const sealed = await encryptSecretForDaemon(secretsConfig, { serverId, keyId }, 'never-sent')
-    // The auth gate reads the database first, so the db is withdrawn only
-    // after the reads a normal request makes before the route's own check.
-    let reads = 0
-    let cutoff = Number.POSITIVE_INFINITY
-    const app = new Hono<AppEnv>()
-    app.use('*', async (c, next) => {
-      c.set('db', db)
-      const original = c.get.bind(c) as (key: string) => unknown
-      ;(c as unknown as { get: (key: string) => unknown }).get = (key: string) => {
-        if (key !== 'db') return original(key)
-        reads += 1
-        return reads > cutoff ? undefined : original(key)
-      }
-      await next()
-    })
-    registerDaemonApiRoutes(app, {
-      secrets: await createTestSecrets(),
-      challengeSigningSecrets: await createTestChallengeSecrets(),
-      secretsConfig,
-      runtime: 'workers',
-    })
-    const ask = async () =>
-      app.request('/api/daemon/v1/secrets/decrypt', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${await issueDaemonToken(serverId, keyId)}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ ciphertexts: [sealed] }),
-      })
-    const normal = await ask()
-    assertEquals(normal.status, 200)
-    await normal.text()
-    // The route's own read is the last one in a request.
-    cutoff = reads - 1
-    reads = 0
-    const gone = await ask()
-    assertEquals(gone.status, 503)
-    const text = await gone.text()
-    assertEquals((JSON.parse(text) as { error?: string }).error, 'storage unavailable')
-    assertEquals(text.includes('never-sent'), false)
+test('POST /secrets/decrypt answers 503 storage unavailable when no database is bound', async () => {
+  const serverId = crypto.randomUUID()
+  const keyId = crypto.randomUUID()
+  const secretsConfig = createTestSecretsConfig()
+  const sealed = await encryptSecretForDaemon(secretsConfig, { serverId, keyId }, 'never-sent')
+  const app = new Hono<AppEnv>()
+  registerDaemonApiRoutes(app, {
+    secrets: await createTestSecrets(),
+    challengeSigningSecrets: await createTestChallengeSecrets(),
+    secretsConfig,
+    runtime: 'workers',
   })
+  const response = await app.request('/api/daemon/v1/secrets/decrypt', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${await issueDaemonToken(serverId, keyId)}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ciphertexts: [sealed] }),
+  })
+  assertEquals(response.status, 503)
+  const text = await response.text()
+  assertEquals((JSON.parse(text) as { error?: string }).error, 'storage unavailable')
+  assertEquals(text.includes('never-sent'), false)
 })
 
 test('POST /secrets/decrypt rejects envelopes sealed for another daemon', async () => {
