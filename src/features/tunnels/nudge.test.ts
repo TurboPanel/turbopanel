@@ -339,7 +339,7 @@ test('a server is sent each name it runs and the carriers that may forward it', 
     const toA = sentTo(s, s.siteAId)
     assertEquals(toA.length, 1)
     assertEquals((await tableOf(s, s.queued.indexOf(toA[0]!))).inbound, [
-      { hostname: NAME, peers: ['10.95.0.10'] },
+      { hostname: NAME, lock: true, peers: ['10.95.0.10'] },
     ])
   })
 })

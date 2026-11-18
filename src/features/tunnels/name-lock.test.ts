@@ -273,11 +273,18 @@ test('a locked name pinned to a library certificate stays locked and is not refu
   })
 })
 
-test('an all-public hosting needs no tunnel lock', async () => {
+test('an all-public hosting keeps its names open and locks none', async () => {
   await withSite({ hereFeatures: [] }, async (c) => {
     await addDoorway(c)
     await c.db.update(doorway).set({ isLocalOnly: false }).where(eq(doorway.hostname, NAME))
-    assertEquals(await resolveDeployNameLock(c.db, params(c)), { tunnel: undefined })
+    assertEquals(await resolveDeployNameLock(c.db, params(c)), {
+      tunnel: {
+        hostnames: [NAME],
+        openHostnames: [NAME],
+        peers: ['10.95.0.11'],
+        extraBind: ['10.95.0.10'],
+      },
+    })
   })
 })
 
