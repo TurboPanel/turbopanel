@@ -2294,12 +2294,9 @@ export type EnvironmentDeploySite = {
  *
  * `kind: 'static'` is reserved for the site release phase; only `native` and
  * the image kind are produced today.
- *
- * `railpack` stays in the type and the parse set only for parity with the
- * daemon's contract twin; the panel never sends it.
  */
 export type EnvironmentDeploySourceBuild = {
-  kind: 'native' | 'static' | 'image' | 'railpack'
+  kind: 'native' | 'static' | 'image'
   /**
    * Package manager for a `kind: 'native'` node-app install. Omitted means
    * the daemon auto-detects from the lockfile at build time. An explicit
@@ -4163,7 +4160,6 @@ const SOURCE_BUILD_KINDS = new Set<EnvironmentDeploySourceBuild['kind']>([
   'native',
   'static',
   'image',
-  'railpack',
 ])
 
 /** Cap mirrors compose `SOURCE_COMMAND_MAX_LENGTH`. */
