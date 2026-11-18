@@ -260,17 +260,10 @@ export function parseHostingOptions(value: unknown): HostingOptions | null {
   return options
 }
 
-/**
- * The www mode stored on a hosting's raw options. A row saved before the mode
- * existed may still carry `wwwRedirect: true` ("send the other spelling to the
- * name as written"), read as the mode that keeps the typed name the site.
- */
+/** The www mode stored on a hosting's raw options; `'off'` when unset or invalid. */
 export function readHostingWwwMode(value: unknown): HostingWwwMode {
   if (!isRecord(value)) return 'off'
-  if (isHostingWwwMode(value.www)) return value.www
-  if (value.wwwRedirect !== true) return 'off'
-  const first = Array.isArray(value.hostnames) ? value.hostnames[0] : undefined
-  return typeof first === 'string' && first.startsWith('www.') ? 'root-to-www' : 'www-to-root'
+  return isHostingWwwMode(value.www) ? value.www : 'off'
 }
 
 /** Defaults to `'http'` when unset/invalid — the only protocol prior to `tcp`/`udp` support. */

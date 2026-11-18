@@ -424,8 +424,6 @@ test('hosting option readers filter invalid values', () => {
   assertEquals(readWwwMode({ www: 'both' }), 'both')
   assertEquals(readWwwMode({ www: 'root-to-www' }), 'root-to-www')
   assertEquals(readWwwMode({ www: 'yes' }), 'off')
-  assertEquals(readWwwMode({ wwwRedirect: true, hostnames: ['example.com'] }), 'www-to-root')
-  assertEquals(readWwwMode({ wwwRedirect: 'true' }), 'off')
   assertEquals(readWwwMode(null), 'off')
   assertEquals(readTargetPort({ targetPort: 8080 }), 8080)
   assertEquals(readTargetPort({ targetPort: Number.NaN }), undefined)

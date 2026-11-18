@@ -254,9 +254,9 @@ test('PUT use-letsencrypt: waits for DNS, then the sweep pins it once the name r
   })
   try {
     f.setLookup(nowhere)
-    // An old client may still send `wwwRedirect`: it is ignored, not refused.
+    // The body carries no www setting: only the hosting's own options count.
     const waiting = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {
-      wwwRedirect: 'yes',
+      www: 'off',
     })
     assertEquals(waiting.status, 200)
     const waitingBody = (await waiting.json()) as CertificateBody
@@ -358,7 +358,7 @@ test('PUT use-letsencrypt: refuses a www setting when the other spelling is alre
   try {
     // The body cannot turn the setting off: only the hosting's own options count.
     const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {
-      wwwRedirect: false,
+      www: 'off',
     })
     assertEquals(res.status, 400)
     const body = (await res.json()) as { error: string; message: string }

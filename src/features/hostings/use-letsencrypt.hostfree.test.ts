@@ -343,19 +343,6 @@ test('both names listed is fine while www is off', async () => {
   assertEquals(created, [['example.com', 'www.example.com']])
 })
 
-test('a row saved with the old wwwRedirect flag still covers both spellings', async () => {
-  const { store, created } = fakeStore()
-  const out = await requestLetsEncrypt({
-    store,
-    lookup: pointing,
-    now: NOW,
-    hosting: record({ options: { hostnames: ['www.example.com'], wwwRedirect: true } }),
-    acmeEnabled: true,
-  })
-  assertEquals(out.ok && out.outcome, 'pinned')
-  assertEquals(created, [['example.com', 'www.example.com']])
-})
-
 test('a www name that does not point here yet keeps the request waiting and is named', async () => {
   const { store, saved, created } = fakeStore()
   const onlyBare: DnsLookup = (name) =>
