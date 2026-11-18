@@ -13,12 +13,10 @@ function reasonSuffix(reason: string | null | undefined): string {
 }
 
 function skippedLine(entry: RosterEntry): string {
-  switch (entry.skip) {
-    case 'offline':
-      return `${entry.label} is offline. It will get the certificate when it is back.`
-    default:
-      return `${entry.label} is not in this name's DNS records, so it did not take part in the check. It has the certificate installed and will use it if you add it to DNS.`
+  if (entry.skip === 'offline') {
+    return `${entry.label} is offline. It will get the certificate when it is back.`
   }
+  return `${entry.label} is not in this name's DNS records, so it did not take part in the check. It has the certificate installed and will use it if you add it to DNS.`
 }
 
 function helperLine(entry: RosterEntry, state: HttpIssuanceState, issuerLabel: string): string {
