@@ -3374,6 +3374,7 @@ test('POST /metrics does not await the store write before responding', async () 
     secrets: await createTestSecrets(),
     challengeSigningSecrets: await createTestChallengeSecrets(),
     secretsConfig: createTestSecretsConfig(),
+    requireSigned: false,
   })
 
   const response = await app.request('/api/daemon/v1/metrics', {
