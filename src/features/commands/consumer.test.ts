@@ -7302,29 +7302,6 @@ test("the deploy time limit is the one the server's organization set", async () 
   })
 })
 
-test('a server without sign-of-life reports keeps the fixed cap, worded as no result rather than a stop', async () => {
-  await withDeployFixtures(async (ctx) => {
-    const record = await quietDeploy({
-      ctx,
-      environmentId: ctx.environmentId,
-      projectId: ctx.projectId,
-      ranMs: 11 * MIN,
-      silentMs: 11 * MIN,
-      recovery: false,
-    })
-    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
-
-    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
-      firewallApplyGate: DENY_FIREWALL_APPLY,
-    })
-
-    const stored = await getCommandRecord(ctx.db, record.id)
-    assertEquals(stored?.status, 'timed_out')
-    assertEquals(stored?.error?.includes('No result came back'), true)
-    assertEquals(stored?.error?.includes('may still have finished'), true)
-  })
-})
-
 type DeployFixtures = Parameters<Parameters<typeof withDeployFixtures>[0]>[0]
 
 /** A deploy on a server that confirms results, given up on as `timed_out` after hours of silence. */

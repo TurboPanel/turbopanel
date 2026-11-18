@@ -223,13 +223,12 @@ test('the waiter stops when the command was already finished by someone else', a
   assertEquals(h.waiter.verdict, 'settled')
 })
 
-const REPORTING = { recovery: true as const }
 const STARTED = T0 + 60_000
 const RUNNING = plan(iso(STARTED))
 
 test('a server that keeps reporting may run past ten minutes, up to the deploy time limit', () => {
   const endAtMs = STARTED + 10 * DEPLOY_DEFAULT_TIMEOUT_MS
-  const base = { ...REPORTING, progress: RUNNING, endAtMs }
+  const base = { progress: RUNNING, endAtMs }
   assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS + 1 }), null)
   assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_DEFAULT_TIMEOUT_MS - 1 }), null)
   assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_DEFAULT_TIMEOUT_MS }), 'run_cap')
@@ -240,7 +239,6 @@ test('a server that keeps reporting may run past ten minutes, up to the deploy t
 
 test('a quiet server is checked on, not failed, until the whole reconcile window has passed', () => {
   const base = {
-    ...REPORTING,
     progress: RUNNING,
     nowMs: STARTED + 2 * DEPLOY_DEFAULT_TIMEOUT_MS,
     endAtMs: STARTED + 10 * DEPLOY_RECONCILE_WINDOW_MS,
@@ -251,21 +249,11 @@ test('a quiet server is checked on, not failed, until the whole reconcile window
   assertEquals(verdict({ ...base, silentMs: DEPLOY_RECONCILE_WINDOW_MS }), 'unreachable')
 })
 
-test('a server without signs of life keeps the fixed ten minute cap', () => {
-  const base = { progress: RUNNING, endAtMs: STARTED + DEPLOY_RECONCILE_WINDOW_MS }
-  assertEquals(
-    verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS - 1, silentMs: 9 * 60_000 }),
-    null
-  )
-  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS }), 'run_cap')
-})
-
-test('a deploy is "checking" only when it runs, its server sends signs of life, and it went quiet', () => {
+test('a deploy is "checking" only when it runs and went quiet', () => {
   const base = { progress: RUNNING, sentAt: iso(T0), nowMs: STARTED + 20 * 60_000 }
-  const quiet = { ...base, silentMs: DEPLOY_RUN_SILENCE_MS, recovery: true }
+  const quiet = { ...base, silentMs: DEPLOY_RUN_SILENCE_MS }
   assertEquals(deployIsChecking(quiet), true)
   assertEquals(deployIsChecking({ ...quiet, silentMs: DEPLOY_RUN_SILENCE_MS - 1 }), false)
-  assertEquals(deployIsChecking({ ...quiet, recovery: false }), false)
   assertEquals(deployIsChecking({ ...quiet, progress: plan(null) }), false)
 })
 
@@ -306,7 +294,6 @@ test('the waiter marks a quiet deploy as checking, once', async () => {
     holdMs: 60_000,
     endMs: 60_000,
     pollMs: 10_000,
-    recovery: true,
     onContactLost: (at) => {
       marks.push(at)
       return Promise.resolve()
@@ -318,14 +305,11 @@ test('the waiter marks a quiet deploy as checking, once', async () => {
 })
 
 test('the messages say what is true about each way a deploy can end without a result', () => {
-  const waiter = (verdict: string, recovery: boolean) =>
-    ({ verdict, recovery, runCapMs: 45 * 60_000, lastProgress: plan(iso(STARTED)) }) as never
-  assertEquals(deployWaitMessage(waiter('none', true)), undefined)
-  assertEquals(deployWaitMessage(waiter('handoff', true)), undefined)
-  assertEquals(deployWaitMessage(waiter('run_cap', true))?.includes('45 minutes'), true)
-  const legacy = deployWaitMessage(waiter('run_cap', false))
-  assertEquals(legacy?.includes('No result came back'), true)
-  assertEquals(legacy?.includes('stopped waiting for it'), false)
+  const waiter = (verdict: string) =>
+    ({ verdict, runCapMs: 45 * 60_000, lastProgress: plan(iso(STARTED)) }) as never
+  assertEquals(deployWaitMessage(waiter('none')), undefined)
+  assertEquals(deployWaitMessage(waiter('handoff')), undefined)
+  assertEquals(deployWaitMessage(waiter('run_cap'))?.includes('45 minutes'), true)
   assertEquals(
     deployUnreachableMessage('Build running').includes('Last known step: Build running.'),
     true
@@ -355,7 +339,6 @@ test('the request outlives the whole wait, and a deploy is given up on before it
       holdUntilMs: 0,
       endAtMs: Number.POSITIVE_INFINITY,
       silentMs,
-      recovery: true,
     })
   assertEquals(verdict(0), 'run_cap')
   assertEquals(verdict(10 * 60_000), 'unreachable')
@@ -375,7 +358,7 @@ test('the deploy time limit is the organization setting: 30 minutes unset, the v
 
 test('a custom time limit decides when a reporting server is stopped, and the message names it and where to change it', () => {
   const ninety = deployRunCapFromMinutes(90)
-  const base = { ...REPORTING, progress: RUNNING, endAtMs: STARTED + 10 * ninety, runCapMs: ninety }
+  const base = { progress: RUNNING, endAtMs: STARTED + 10 * ninety, runCapMs: ninety }
   assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_DEFAULT_TIMEOUT_MS }), null)
   assertEquals(verdict({ ...base, nowMs: STARTED + ninety - 1 }), null)
   assertEquals(verdict({ ...base, nowMs: STARTED + ninety }), 'run_cap')
@@ -385,18 +368,6 @@ test('a custom time limit decides when a reporting server is stopped, and the me
     message.includes('organization manager can change this in the organization settings'),
     true
   )
-})
-
-test('a server that cannot send signs of life keeps the ten minute cap whatever the organization set', () => {
-  const base = {
-    ...REPORTING,
-    recovery: false,
-    progress: RUNNING,
-    endAtMs: STARTED + 10 * DEPLOY_DEFAULT_TIMEOUT_MS,
-    runCapMs: 240 * 60_000,
-  }
-  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS - 1 }), null)
-  assertEquals(verdict({ ...base, nowMs: STARTED + DEPLOY_RUN_CAP_MS }), 'run_cap')
 })
 
 test('a deploy leaves its server lane once the server reports it, or once the grace has passed', () => {
