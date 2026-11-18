@@ -103,9 +103,7 @@ test('compileRuntimeComposeDocument sets scale and drops container_name for loca
   assertEquals(web?.scale, 3)
   assertEquals('container_name' in (web ?? {}), false)
   assertEquals(web?.labels, {
-    'com.turbopanel.service': 'web',
     'io.turbopanel.environment': 'env-1',
-    'com.turbopanel.environment': 'env-1',
   })
 })
 
@@ -400,9 +398,7 @@ test('compileRuntimeComposeDocument expands two local spanning replicas with dis
     frontend: { ipv4_address: '203.0.113.11' },
   })
   assertEquals(services['web-1']?.labels, {
-    'com.turbopanel.service': 'web',
     'io.turbopanel.environment': 'env-1',
-    'com.turbopanel.environment': 'env-1',
   })
   assertEquals(services.api?.depends_on, ['web-1', 'web-2'])
 })
@@ -553,7 +549,7 @@ test('compileRuntimeComposeDocument merges identity labels when scale is greater
       services: {
         web: {
           image: 'nginx',
-          labels: ['com.example=keep', 'com.turbopanel.service=stale'],
+          labels: ['com.example=keep'],
           container_name: 'custom-web',
         },
       },
@@ -566,12 +562,7 @@ test('compileRuntimeComposeDocument merges identity labels when scale is greater
   const services = compiled.data.services as Record<string, Record<string, unknown>>
   assertEquals(services.web?.scale, 3)
   assertEquals('container_name' in (services.web ?? {}), false)
-  assertEquals(services.web?.labels, [
-    'com.example=keep',
-    'com.turbopanel.service=web',
-    'io.turbopanel.environment=env-1',
-    'com.turbopanel.environment=env-1',
-  ])
+  assertEquals(services.web?.labels, ['com.example=keep', 'io.turbopanel.environment=env-1'])
 })
 
 test('compileRuntimeComposeDocument prunes volumes not referenced by remaining services', () => {
@@ -950,10 +941,8 @@ test('compileRuntimeComposeDocument merges map-form labels when scale is greater
   assertEquals(web?.scale, 3)
   assertEquals(web?.labels, {
     'com.example': 'keep',
-    'com.turbopanel.service': 'web',
   })
   assertEquals('io.turbopanel.environment' in (web?.labels as object), false)
-  assertEquals('com.turbopanel.environment' in (web?.labels as object), false)
 })
 
 test('compileRuntimeComposeDocument skips extra_hosts that already use name= form', () => {
@@ -1413,7 +1402,6 @@ test('deploy.labels stays out of container labels even when identity labels merg
   const web = (compiled.data.services as Record<string, Record<string, unknown>>).web
   assertEquals(web?.labels, {
     'com.example.owner': 'containers',
-    'com.turbopanel.service': 'web',
   })
   assertEquals(web?.scale, 2)
 })
