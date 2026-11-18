@@ -8,8 +8,7 @@
  * `server.fabric.reconcile` payload; a server outside the mesh (TurboFabric
  * off or paused, or this server switched off) gets a payload with no tunnel:
  * `{ enabled: true, tunnel: false, prefix, networks, lanRoutes }`, no `tp0`
- * address and no peers. Only daemons that list `fabric-lan-routes-v1` get one;
- * the planner never puts an older daemon on a LAN-only network.
+ * address and no peers.
  */
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -34,7 +33,7 @@ import {
   listSubnetsForServers,
   type RelayMetadata,
 } from './fabric-records.ts'
-import { daemonAdvertisesLanRoutes, loadLanPairInputs } from './lan-pairs.ts'
+import { loadLanPairInputs } from './lan-pairs.ts'
 
 export type ServerNetworkingActor = { type: string; id: string }
 
@@ -46,8 +45,7 @@ export type ServerNetworkingSecrets = {
 type TunnellessTarget = { serverId: string; prefix: string }
 
 /**
- * Org servers holding a piece of a cross-server network whose daemon can take
- * a payload with no tunnel. `switchedOffOnly` keeps those switched out of the
+ * Org servers holding a piece of a cross-server network. `switchedOffOnly` keeps those switched out of the
  * mesh (the ones a running fabric does not reach).
  */
 async function loadTunnellessTargets(
@@ -61,7 +59,6 @@ async function loadTunnellessTargets(
   const rows = await db
     .selectDistinct({
       id: server.id,
-      daemon: server.daemon,
       isFabricEnabled: server.isFabricEnabled,
     })
     .from(subnet)
@@ -70,7 +67,6 @@ async function loadTunnellessTargets(
   const out: TunnellessTarget[] = []
   for (const row of rows) {
     if (params.switchedOffOnly && row.isFabricEnabled !== false) continue
-    if (!daemonAdvertisesLanRoutes(row.daemon)) continue
     const prefix = params.containerPrefixByServer.get(row.id)
     if (prefix) out.push({ serverId: row.id, prefix })
   }

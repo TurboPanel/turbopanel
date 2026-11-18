@@ -63,8 +63,6 @@ type Fixture = {
   /** Single-row result for loadServerDatacenterAddress / loadServerPublicAddress. */
   singleAddress?: string | null
   datacenterOptions?: Array<{ id: string; options: unknown }>
-  /** Servers whose daemon lists `fabric-lan-routes-v1`. */
-  lanRouteServerIds?: string[]
   /** Servers whose daemon is offline (every other server reads connected). */
   disconnected?: string[]
 }
@@ -216,28 +214,15 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
         }
       }
 
-      // loadLanRouteServerIds: { id, daemon }; loadConnectedServerIds: { id, connected }
-      if (
-        keys.length === 2 &&
-        keySet.has('id') &&
-        (keySet.has('daemon') || keySet.has('connected'))
-      ) {
+      // loadConnectedServerIds: { id, connected }
+      if (keys.length === 2 && keySet.has('id') && keySet.has('connected')) {
         const ids = new Set([
           ...relays.map((row) => row.serverId),
           ...memberships.map((row) => row.serverId),
-          ...(fixture.lanRouteServerIds ?? []),
           ...(fixture.disconnected ?? []),
         ])
-        const lan = new Set(fixture.lanRouteServerIds ?? [])
         const offline = new Set(fixture.disconnected ?? [])
-        const rows = [...ids].map((id) =>
-          keySet.has('daemon')
-            ? {
-                id,
-                daemon: lan.has(id) ? { projection: { features: ['fabric-lan-routes-v1'] } } : null,
-              }
-            : { id, connected: !offline.has(id) }
-        )
+        const rows = [...ids].map((id) => ({ id, connected: !offline.has(id) }))
         return {
           from() {
             return {

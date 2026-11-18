@@ -13,15 +13,9 @@ import type { EnvironmentDeployHostingTunnel } from '../../contracts/commands/tu
 import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
 import { pairAddresses, TUNNEL_TABLE_CAPS, type AddressBook } from './route-builder.ts'
 import { compareText } from './order.ts'
-import { daemonCanCarryTunnels } from './daemon-gate.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import { carryingServers, listTunnels } from './lifecycle.ts'
 import { loadRoutingFacts, loadServerAddresses, type RoutingFacts } from './route-facts.ts'
-import {
-  canonicalTunnelFacts,
-  daemonTakesTunnelGeneration,
-  resolveTunnelGeneration,
-} from './table-generation.ts'
+import { canonicalTunnelFacts, resolveTunnelGeneration } from './table-generation.ts'
 
 /** Always allowed anyway; sent when no other server forwards here so the list is never empty. */
 export const LOOPBACK_PEER = '127.0.0.1'
@@ -207,8 +201,8 @@ async function settleSnapshot(
 }
 
 export type NameLockRefusal = {
-  /** `tunnel_daemon_too_old`: the server's daemon would serve a locked name to anyone. `tunnel_name_public_certificate`: a locked name is pinned to a public certificate. */
-  code: 'tunnel_daemon_too_old' | 'tunnel_name_public_certificate'
+  /** `tunnel_name_public_certificate`: a locked name is pinned to a public certificate. */
+  code: 'tunnel_name_public_certificate'
   hostnames: string[]
 }
 
@@ -236,10 +230,7 @@ export type DeployNameLock = {
 }
 
 /**
- * What a deploy sends as `hostings[].tunnel`, or why it must be refused. An
- * older daemon would serve a locked name to everyone, so a hosting with a
- * locked name waits until the server's daemon carries tunnels; a hosting whose
- * names are all public needs nothing from it.
+ * What a deploy sends as `hostings[].tunnel`, or why it must be refused.
  *
  * A tunnel block never asks for a public certificate, and a public certificate
  * is one choice for the whole hosting. When every name the hosting serves is a
@@ -268,18 +259,10 @@ export async function resolveDeployNameLock(
   if (acmePinned && !everyNameLocked(params.siteHostnames, params.www, locked)) {
     return { refusal: { code: 'tunnel_name_public_certificate', hostnames: locked } }
   }
-  const state = await getServerDaemonStateByServerId(db, params.serverId)
-  if (!daemonCanCarryTunnels(state?.projection?.features)) {
-    if (locked.length === 0) return { tunnel: undefined }
-    return { refusal: { code: 'tunnel_daemon_too_old', hostnames: locked } }
-  }
-  // The generation of the table these peers were taken from, for a daemon that keeps one.
-  let tunnel = lock.tunnel
-  if (daemonTakesTunnelGeneration(state?.projection?.features)) {
-    const settled = await peersWithGeneration(db, params)
-    if (settled.lock.tunnel === undefined) return { tunnel: undefined }
-    tunnel = { ...settled.lock.tunnel, generation: settled.generation }
-  }
+  // The generation of the table these peers were taken from.
+  const settled = await peersWithGeneration(db, params)
+  if (settled.lock.tunnel === undefined) return { tunnel: undefined }
+  const tunnel = { ...settled.lock.tunnel, generation: settled.generation }
   return { tunnel, ...(acmePinned ? { dropPublicCertificate: true as const } : {}) }
 }
 

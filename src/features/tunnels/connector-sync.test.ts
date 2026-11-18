@@ -162,21 +162,13 @@ async function sentPayload(c: Ctx, index = c.queued.length - 1) {
   )
 }
 
-test('an offline server and an old daemon are skipped', async () => {
+test('an offline server is skipped', async () => {
   await withServer({ connected: false, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
     await c.addTunnel('Offline')
     assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), {
       status: 'skipped',
       reason: 'server offline',
     })
-  })
-  await withServer({ connected: true, features: ['tunnel-forwarding-v1'] }, async (c) => {
-    await c.addTunnel('Old')
-    assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), {
-      status: 'skipped',
-      reason: 'daemon too old',
-    })
-    assertEquals(c.queued.length, 0)
   })
 })
 

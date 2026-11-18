@@ -486,7 +486,7 @@ export const deploySchemas = {
       nativeAppDenoVersions: {
         type: 'array',
         description:
-          'For each Deno app (a native service with `x-turbopanel.runtime: deno`) in the deploy, once: the Deno series it runs. Deno ships one major version (2) and the server runs its newest release, so `2.9` and `2.9.7` both mean series `2`. `compose` means `x-turbopanel.denoVersion` pinned it; `default` means the platform default. A server whose TurboPanel daemon is too old to run Deno apps refuses the deploy with `deno_feature_missing` (422).',
+          'For each Deno app (a native service with `x-turbopanel.runtime: deno`) in the deploy, once: the Deno series it runs. Deno ships one major version (2) and the server runs its newest release, so `2.9` and `2.9.7` both mean series `2`. `compose` means `x-turbopanel.denoVersion` pinned it; `default` means the platform default.',
         items: {
           type: 'object',
           required: ['composeServiceName', 'denoVersion', 'source'],
@@ -893,7 +893,7 @@ export const deployPaths = {
         404: { description: 'No such deploy attempt for this environment' },
         409: {
           description:
-            "`deploy_not_cancellable` (already finished), `deploy_too_late` (the host is already switching over and will finish), or `cancel_unsupported` (the server's daemon is too old to cancel)",
+            '`deploy_not_cancellable` (already finished) or `deploy_too_late` (the host is already switching over and will finish)',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -960,7 +960,7 @@ export const deployPaths = {
         404: { description: 'No such environment' },
         409: {
           description:
-            '`data_volumes_changed`: the volume list changed since it was shown (the body carries the new list), or `delete_volumes_needs_daemon_update`: a server the stop goes to runs a daemon that cannot delete data volumes yet (`servers` names them). Nothing was stopped.',
+            '`data_volumes_changed`: the volume list changed since it was shown (the body carries the new list). Nothing was stopped.',
         },
         503: {
           description: 'The control plane has no link to the command queue or database',
@@ -973,7 +973,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'List the data volumes a Destroy could delete',
       description:
-        'What "Also Delete the Data Volumes" on a Destroy would remove: the Docker volumes registered for this environment or its services that the control plane created and nothing else uses (`volumes`), the ones it keeps and why (`kept`: `common`, `shared`, `external` or `renamed`), where a copy stays because the stop does not go to its server (`staysOn`), and the servers whose daemon must be updated first (`outdatedServers`). `name` is the name people know the volume by (its compose key or the name it was given). Needs read on the environment.',
+        'What "Also Delete the Data Volumes" on a Destroy would remove: the Docker volumes registered for this environment or its services that the control plane created and nothing else uses (`volumes`), the ones it keeps and why (`kept`: `common`, `shared`, `external` or `renamed`), where a copy stays because the stop does not go to its server (`staysOn`). `outdatedServers` is always empty and is kept only for the web app. `name` is the name people know the volume by (its compose key or the name it was given). Needs read on the environment.',
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         200: {

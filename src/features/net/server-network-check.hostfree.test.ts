@@ -93,7 +93,7 @@ test('summarizeNetworkCheck counts unreachable and untested peers separately', (
         ],
       },
     ],
-    [B, { status: 'not_tested', reason: 'daemon_update_required' }],
+    [B, { status: 'not_tested', reason: 'offline' }],
   ])
   const report = summarizeNetworkCheck(DC, plan, outcomes)
   assertEquals(report.unreachableCount, 0)
@@ -108,7 +108,7 @@ test('summarizeNetworkCheck counts unreachable and untested peers separately', (
     interface: 'eth1',
   })
   assertEquals(report.servers[1]!.status, 'not_tested')
-  assertEquals(report.servers[1]!.reason, 'daemon_update_required')
+  assertEquals(report.servers[1]!.reason, 'offline')
 })
 
 test('summarizeNetworkCheck reports a refused peer and a peer the host did not answer for', () => {

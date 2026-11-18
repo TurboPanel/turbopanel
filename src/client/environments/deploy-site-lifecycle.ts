@@ -22,18 +22,10 @@ import type {
 import { parseCronCommand } from '../../features/deploy/cron.ts'
 import type { ServiceOptions } from '../../features/projects/service-options.ts'
 import { hasSiteLifecycle } from '../../features/projects/site-lifecycle-options.ts'
-import { SITE_PHP_LIFECYCLE_FEATURE } from '../../lib/version-wire.ts'
 
 export type SiteLifecycleWire = {
   postDeploy?: EnvironmentDeploySitePostDeploy
   workers?: EnvironmentDeploySiteWorker[]
-}
-
-export type SiteLifecycleUnsupportedError = {
-  kind: 'site_lifecycle_unsupported'
-  message: string
-  /** The servers whose daemon lacks `site-php-lifecycle-v1`. */
-  servers: Array<{ serverId: string; name: string }>
 }
 
 const BYTES_PER_MEGABYTE = 1024 * 1024
@@ -107,20 +99,4 @@ export function sitesCarryLifecycle(
   sites: ReadonlyArray<Pick<EnvironmentDeploySite, 'postDeploy' | 'workers'>>
 ): boolean {
   return sites.some((site) => site.postDeploy !== undefined || (site.workers?.length ?? 0) > 0)
-}
-
-/** The refusal for a daemon without the feature, or undefined when nothing needs it or it is there. */
-export function siteLifecycleUnsupported(
-  sites: ReadonlyArray<Pick<EnvironmentDeploySite, 'postDeploy' | 'workers'>>,
-  features: readonly string[],
-  server: { serverId: string; name: string }
-): SiteLifecycleUnsupportedError | undefined {
-  if (!sitesCarryLifecycle(sites) || features.includes(SITE_PHP_LIFECYCLE_FEATURE)) {
-    return undefined
-  }
-  return {
-    kind: 'site_lifecycle_unsupported',
-    message: `The daemon on ${server.name} is too old to run post-deploy commands and background workers. Update the server, then deploy again.`,
-    servers: [server],
-  }
 }

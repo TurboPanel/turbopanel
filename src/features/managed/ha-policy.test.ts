@@ -655,7 +655,6 @@ const BOUND_PRIMARY = { host: '10.0.0.5', port: 3306 }
 test('orchestratorBindingRejection: the current primary proceeds', () => {
   assertEquals(
     orchestratorBindingRejection({
-      reporterBindsInstance: true,
       instanceHost: '10.0.0.5',
       instancePort: 3306,
       expectedPrimary: BOUND_PRIMARY,
@@ -665,7 +664,7 @@ test('orchestratorBindingRejection: the current primary proceeds', () => {
 })
 
 test('orchestratorBindingRejection: another host, another port, or no primary address is stale', () => {
-  const base = { reporterBindsInstance: true, expectedPrimary: BOUND_PRIMARY }
+  const base = { expectedPrimary: BOUND_PRIMARY }
   assertEquals(
     typeof orchestratorBindingRejection({ ...base, instanceHost: '10.0.0.6', instancePort: 3306 }),
     'string'
@@ -685,25 +684,14 @@ test('orchestratorBindingRejection: another host, another port, or no primary ad
   )
 })
 
-test('orchestratorBindingRejection: a missing instance is legacy only for a daemon without the feature', () => {
-  assertEquals(
-    orchestratorBindingRejection({ reporterBindsInstance: false, expectedPrimary: BOUND_PRIMARY }),
-    null
-  )
-  assertEquals(
-    typeof orchestratorBindingRejection({
-      reporterBindsInstance: true,
-      expectedPrimary: BOUND_PRIMARY,
-    }),
-    'string'
-  )
+test('orchestratorBindingRejection: a missing instance is stale', () => {
+  assertEquals(typeof orchestratorBindingRejection({ expectedPrimary: BOUND_PRIMARY }), 'string')
 })
 
 test('orchestratorBindingRejection: a local primary is known by its published private listener', () => {
   // The control plane dials a local member by its Docker name; the daemon
   // registers it in Orchestrator as <private ip>:<privatePort>.
   const base = {
-    reporterBindsInstance: true,
     expectedPrimary: { host: 'abc-1', port: 3306 },
     localPrivatePort: 45001,
     localPrimaryHosts: ['172.20.4.10', 'abc-1'],
@@ -740,7 +728,6 @@ test('orchestratorBindingRejection: a local primary is known by its published pr
   // A remote primary (no local private port) is unchanged.
   assertEquals(
     typeof orchestratorBindingRejection({
-      reporterBindsInstance: true,
       expectedPrimary: BOUND_PRIMARY,
       localPrivatePort: null,
       instanceHost: '10.0.0.5',

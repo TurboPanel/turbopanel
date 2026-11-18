@@ -341,7 +341,6 @@ test('a running deploy on a server with signs of life is stranded past the time 
         runningSince: input.runningSince,
       },
       updatedAt: input.updatedAt,
-      recovery: true,
     })
   const at = (ms: number) => new Date(T0 + ms).toISOString()
   // Still listed as running a minute ago, but run for longer than 30 minutes: stranded.
@@ -366,15 +365,13 @@ test('a running deploy on a server with signs of life is stranded past the time 
   assertEquals(isStaleCommand(late(T0 + limit), T0 + limit), true)
 })
 
-test('a running deploy on a server without signs of life keeps the fixed run cap', () => {
+test('a running deploy with no last-heard time keeps the fixed run cap', () => {
   const started = new Date(T0).toISOString()
   const row = candidate({
     name: 'environment.deploy',
     status: 'running',
     sentAt: started,
     progress: { version: 1, steps: [], current: null, updatedAt: started, runningSince: started },
-    updatedAt: started,
-    recovery: false,
   })
   assertEquals(isStaleCommand(row, T0 + 10 * 60_000), false)
   assertEquals(isStaleCommand(row, T0 + 10 * 60_000 + STALE_COMMAND_GRACE_MS), true)
@@ -389,7 +386,6 @@ test('a running deploy is stranded at its organization time limit, not at a fixe
       sentAt: started,
       progress: { version: 1, steps: [], current: null, updatedAt: started, runningSince: started },
       updatedAt: new Date(T0 + 124 * 60_000).toISOString(),
-      recovery: true,
       ...(deployRunCapMs === undefined ? {} : { deployRunCapMs }),
     })
   const hour = 60 * 60_000

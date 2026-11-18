@@ -26,13 +26,7 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { issuePeerLeaf, type PeerLeafIssue } from '../tls/peer-leaf.ts'
 import { pendingTlsLeafMetadata } from '../tls/leaf-tracking.ts'
-import {
-  daemonAddsLockFromTable,
-  daemonCanCarryTunnels,
-  daemonLockFollowsTable,
-} from './daemon-gate.ts'
 import { markPeerLeafReminted, peerDowngradeRepeats, peerLeafRemintDue } from './status.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import {
   buildTunnelRoutes,
   hashTunnelRoutes,
@@ -42,11 +36,7 @@ import {
 import { relinkDoorwayHostings } from './doorway-links.ts'
 import { loadRoutingFacts } from './route-facts.ts'
 import { staleTunnelTableWarning } from './stale-table-note.ts'
-import {
-  generationForDaemon,
-  resolveTunnelGeneration,
-  TUNNEL_GENERATION_BUMP_GAP_MS,
-} from './table-generation.ts'
+import { resolveTunnelGeneration, TUNNEL_GENERATION_BUMP_GAP_MS } from './table-generation.ts'
 
 /** The least time between two sends of the same table to one server. */
 export const TUNNEL_ROUTES_RESEND_GAP_MS = 10 * 60 * 1000
@@ -173,11 +163,9 @@ async function enqueueRoutes(
   return { ok: true, commandId: record.id }
 }
 
-type ServerReady =
-  | { ok: true; metadata: unknown; features: readonly string[] }
-  | { ok: false; outcome: TunnelSyncOutcome }
+type ServerReady = { ok: true; metadata: unknown } | { ok: false; outcome: TunnelSyncOutcome }
 
-/** The server exists, is connected, and runs a daemon that advertises tunnel support. */
+/** The server exists and is connected. */
 async function checkServerReady(
   db: Db,
   organizationId: string,
@@ -194,10 +182,7 @@ async function checkServerReady(
   })
   if (!row) return skip('unknown server')
   if (!row.isConnected) return skip('server offline')
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  const features = state?.projection?.features
-  if (!daemonCanCarryTunnels(features)) return skip('daemon too old')
-  return { ok: true, metadata: row.metadata, features: Array.isArray(features) ? features : [] }
+  return { ok: true, metadata: row.metadata }
 }
 
 /**
@@ -259,10 +244,9 @@ export async function syncServerTunnelRoutes(
   const ready = await checkServerReady(db, organizationId, serverId)
   if (!ready.ok) return ready.outcome
   const facts = await loadRoutingFacts(db, organizationId)
-  // The name lock follows the table only on a daemon that says it can.
   const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses, {
-    withInbound: daemonLockFollowsTable(ready.features),
-    withLockAdd: daemonAddsLockFromTable(ready.features),
+    withInbound: true,
+    withLockAdd: true,
     // The daemon shows its peer certificate and checks one when it is shown;
     // `require` goes out with a leaf that allows client authentication: a leaf
     // issued before that is stale (peerLeafIsCurrent), so the same send re-mints it.
@@ -280,10 +264,7 @@ export async function syncServerTunnelRoutes(
   const material = built.needsPeerMaterial ? issue.leaf?.material : undefined
   const payload = await toRoutesPayload(built, material)
   // The generation is not part of the hash: an unchanged table keeps its number.
-  const generation = await generationForDaemon(ready.features, () =>
-    resolveTunnelGeneration(db, organizationId, facts)
-  )
-  if (generation !== undefined) payload.generation = generation
+  payload.generation = await resolveTunnelGeneration(db, organizationId, facts)
   const notes = [...built.warnings, ...built.skipped.map((n) => `${n.hostname}: ${n.reason}`)]
   for (const note of notes) compatLogWarn('tunnel-sync', `server ${serverId}: ${note}`)
   // The leaf is tracked as delivered only when the certificate really went out.

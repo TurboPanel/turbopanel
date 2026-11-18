@@ -300,23 +300,16 @@ export function describeLoginLimits(
   return lines
 }
 
-export type LoginWireLimits =
-  | { omit: true }
-  | {
-      omit: false
-      fields: { allowedSources?: string[]; allowLocalSources?: boolean; maxConnections?: number }
-    }
+export type LoginWireLimits = {
+  allowedSources?: string[]
+  allowLocalSources?: boolean
+  maxConnections?: number
+}
 
-/**
- * The fields to send for one app login. A daemon that lacks
- * `managed-login-limits-v1` would ignore a source limit and leave the login
- * open, so such a login is left out of its payload (it cannot sign in there)
- * rather than sent unlimited. A bare connection cap is only dropped.
- */
+/** The source and connection limits to send for one app login. */
 export function loginWireLimits(
   settings: { allowedSources: string[] | undefined; maxConnections: number | undefined },
   options: {
-    daemonSupportsLimits: boolean
     serverAddresses: ReadonlyMap<string, readonly string[]>
     /** The server this payload is for: naming it also lets its own programs in. */
     serverId?: string
@@ -324,13 +317,7 @@ export function loginWireLimits(
 ): LoginWireLimits {
   const sources = settings.allowedSources
   const cap = settings.maxConnections
-  if (!options.daemonSupportsLimits)
-    return sources === undefined ? { omit: false, fields: {} } : { omit: true }
-  const fields: {
-    allowedSources?: string[]
-    allowLocalSources?: boolean
-    maxConnections?: number
-  } = {}
+  const fields: LoginWireLimits = {}
   if (sources !== undefined) {
     const resolved = resolveLoginSourcesForWire(sources, options.serverAddresses)
     fields.allowedSources = resolved.allowedSources
@@ -340,5 +327,5 @@ export function loginWireLimits(
     if (resolved.allowLocalSources || namesThisServer) fields.allowLocalSources = true
   }
   if (cap !== undefined) fields.maxConnections = cap
-  return { omit: false, fields }
+  return fields
 }

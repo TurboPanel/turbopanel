@@ -4,7 +4,7 @@ const ALLOWED_SOURCES_SCHEMA = {
   type: 'array',
   items: { type: 'string' },
   description:
-    "Where the login may be used from. Items: `any` (alone: everywhere, stored as the pair `address:0.0.0.0/0` and `address:::/0`; typing the range `0.0.0.0/0` or `::/0` means the same), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address (host names are refused), a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Needs a server daemon that supports it (409 `managed_login_limits_need_daemon_update`). Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
+    "Where the login may be used from. Items: `any` (alone: everywhere, stored as the pair `address:0.0.0.0/0` and `address:::/0`; typing the range `0.0.0.0/0` or `::/0` means the same), `internal` (this server: its own programs and containers; anything arriving as the Docker gateway address counts as local), `server:<id>` (one of the organization's servers, all its addresses), `address:<ip | prefix% | cidr>` (one address (host names are refused), a prefix such as `203.0.113.%` or `2001:db8:1:%`, or a range that can be said exactly: IPv4 /8, /16, /24 or /32, IPv6 whole 16-bit groups /16 to /112; other ranges answer 400 `managed_login_source_range_not_exact`). The login still signs in from anywhere: the database proxy refuses every query from other addresses, so tools may show an empty page. An empty list answers 400 `managed_login_sources_empty`. Other 400s: `managed_login_sources_invalid`, `managed_login_source_invalid`, `managed_login_sources_too_many`, `managed_login_sources_any_alone`, `managed_login_source_server_unknown`.",
 } as const
 
 const MAX_CONNECTIONS_SCHEMA = {
@@ -1037,7 +1037,7 @@ export const managedSchemas = {
     type: 'object',
     required: ['error'],
     properties: {
-      error: { type: 'string', enum: ['daemon_update_required', 'permissions_read_failed'] },
+      error: { type: 'string', enum: ['permissions_read_failed'] },
       reason: { type: 'string' },
       message: { type: 'string' },
     },
@@ -1110,7 +1110,7 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'string', enum: ['owner', 'read-write', 'read-only', 'admin'] },
         description:
-          'What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins the owner role of each listed database that has one, and gets read and write access on a listed database made before owner roles (it is never refused over owner roles: the answer lists `notes` saying what it got; a daemon older than owner roles adds the login as read/write), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On MySQL and MariaDB the three jobs are: `read-only` (SELECT and SHOW VIEW; it cannot call stored functions), `read-write` (change rows, call stored routines, lock tables and use session-only temporary tables; it cannot create, alter or drop anything, and 409 `managed_readwrite_needs_daemon_update` when the daemon of the server is too old to enforce that) and `owner`, the migrations login (everything inside its database, without the grant option, so it cannot hand rights to others once the daemon of the server is up to date). Tables the migrations login makes are usable by the other two at once. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
+          'What the login may do in each listed database. `admin` makes it a Database admin login for tools: on Postgres it joins the owner role of each listed database that has one, and gets read and write access on a listed database made before owner roles (it is never refused over owner roles: the answer lists `notes` saying what it got; a daemon older than owner roles adds the login as read/write), on MySQL and MariaDB it gets ALL on each listed database with the grant option and nothing global. It is never read-only (400 `managed_admin_login_not_read_only`), is stored alone, and is a tool login (`tool` true) unless the request says `tool: false`. On MySQL and MariaDB the three jobs are: `read-only` (SELECT and SHOW VIEW; it cannot call stored functions), `read-write` (change rows, call stored routines, lock tables and use session-only temporary tables; it cannot create, alter or drop anything) and `owner`, the migrations login (everything inside its database, without the grant option, so it cannot hand rights to others once the daemon of the server is up to date). Tables the migrations login makes are usable by the other two at once. On Postgres, `owner` on a database with an owner role makes the login a migrations login: it works as the owner role by session default, so tables it creates belong to the owner role and the other logins can use them at once. Omitted = `read-only` for a `read-only` connectionRole, otherwise `read-write`. An empty list or an unknown name answers 400 `managed_user_privileges_invalid`, because a login with no grants can connect but is refused everywhere.',
       },
       connectionRole: {
         type: 'string',
@@ -1178,7 +1178,7 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Plain-words notes on what the owner login got when it is not the full owner rights (a database without an owner role, or an older daemon). Absent when there is nothing to say.',
+          'Plain-words notes on what the owner login got when it is not the full owner rights (a database without an owner role). Absent when there is nothing to say.',
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
@@ -1198,7 +1198,7 @@ export const managedSchemas = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'Plain-words notes on what a Database admin login got when it is not the full admin rights (a listed database made before owner roles, or a daemon older than owner roles). Absent when there is nothing to say. A login is never refused over owner roles.',
+          'Plain-words notes on what a Database admin login got when it is not the full admin rights (a listed database made before owner roles). Absent when there is nothing to say. A login is never refused over owner roles.',
       },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
@@ -1231,12 +1231,12 @@ export const managedSchemas = {
       ownerRole: {
         type: 'boolean',
         description:
-          'Postgres only, and only ever true (or left out): every new Postgres database is made with an owner role, three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role (or by the login picked with ownerLoginId). 400 `managed_owner_role_required` for false. 400 `managed_owner_role_name_too_long` for a name over 54 characters (choose a shorter name). 409 `managed_owner_role_needs_daemon_update` when true is asked for and the daemon of the server lacks `managed-owner-role-v1`; left out, such a daemon still makes the database without an owner role. 400 `managed_owner_role_unsupported` (MySQL, MariaDB). Databases made before this keep their owner; nothing converts them.',
+          'Postgres only, and only ever true (or left out): every new Postgres database is made with an owner role, three roles that cannot log in (`tp_<name>_owner`, `_rw`, `_ro`), with the database owned by the owner role (or by the login picked with ownerLoginId). 400 `managed_owner_role_required` for false. 400 `managed_owner_role_name_too_long` for a name over 54 characters (choose a shorter name). 400 `managed_owner_role_unsupported` (MySQL, MariaDB). Databases made before this keep their owner; nothing converts them.',
       },
       ownerLoginId: {
         type: 'string',
         description:
-          "Postgres only. The id of a login to make the database's owner instead of leaving the default owner role as the only owner. It has to be a migration (`owner`) or read/write login that the panel manages (not read-only, not a Database admin login, not root or replication, not manage-myself): 400 `managed_owner_login_invalid`. The database is added to the login's list so it can connect. The three owner-role roles are still made and still own what is created; the login owns the database itself and works through the owner role, so the other logins can use what it creates. 400 `managed_owner_login_unsupported` on MySQL and MariaDB (they have no database owner; a login gets rights on a database), 409 `managed_database_owner_needs_daemon_update` when the server's daemon lacks `managed-database-owner-v1`. Leave it out for the default owner role. The owner is never the root login or the platform admin.",
+          "Postgres only. The id of a login to make the database's owner instead of leaving the default owner role as the only owner. It has to be a migration (`owner`) or read/write login that the panel manages (not read-only, not a Database admin login, not root or replication, not manage-myself): 400 `managed_owner_login_invalid`. The database is added to the login's list so it can connect. The three owner-role roles are still made and still own what is created; the login owns the database itself and works through the owner role, so the other logins can use what it creates. 400 `managed_owner_login_unsupported` on MySQL and MariaDB (they have no database owner; a login gets rights on a database). Leave it out for the default owner role. The owner is never the root login or the platform admin.",
       },
     },
   },
@@ -2177,7 +2177,7 @@ const managedBasePaths = {
       tags: ['Managed services'],
       summary: 'Create the backup login (one per cluster, show-once password) and enqueue apply',
       description:
-        'A read-only login for a backup tool: on PostgreSQL `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database; on MySQL `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `SHOW_ROUTINE` and `FLUSH_TABLES` at global level (`*.*`); on MariaDB `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `LOCK TABLES` and `SHOW CREATE ROUTINE` at global level. Global, so a database made with plain SQL is covered too; that includes the system schemas (`mysql`, with its account rows, `sys` and `performance_schema`). `TRIGGER` and `EVENT` also allow creating and dropping triggers and events, because the engines need them to read their definitions. MySQL `FLUSH_TABLES` (not `RELOAD`) is there because on a server with GTIDs on, `mysqldump --single-transaction` takes `FLUSH TABLES WITH READ LOCK` around the start of its snapshot, then `UNLOCK TABLES`. Each dump holds that lock for a moment, after waiting for running statements to finish, so one long query holds writers up for that long. The right also lets the login take that global read lock by hand, which blocks every write on the server until it unlocks or disconnects, so treat the backup password like an admin password. No write, table or database DDL, or account right. An existing backup login gets `FLUSH_TABLES` on the next apply of its cluster by an updated server daemon, not when the daemon is updated. A server daemon from before global grants gives these rights only on the databases the panel made. Always routed to the primary. Refusals: 400 `managed_backup_login_sources_required`, 409 `managed_backup_login_exists`, 409 `managed_backup_login_needs_daemon_update`, 409 `managed_login_limits_need_daemon_update`, 409 `username_in_use`.',
+        'A read-only login for a backup tool: on PostgreSQL `pg_read_all_data`, `BYPASSRLS` and `CONNECT` on every database; on MySQL `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `SHOW_ROUTINE` and `FLUSH_TABLES` at global level (`*.*`); on MariaDB `SELECT`, `SHOW VIEW`, `TRIGGER`, `EVENT`, `LOCK TABLES` and `SHOW CREATE ROUTINE` at global level. Global, so a database made with plain SQL is covered too; that includes the system schemas (`mysql`, with its account rows, `sys` and `performance_schema`). `TRIGGER` and `EVENT` also allow creating and dropping triggers and events, because the engines need them to read their definitions. MySQL `FLUSH_TABLES` (not `RELOAD`) is there because on a server with GTIDs on, `mysqldump --single-transaction` takes `FLUSH TABLES WITH READ LOCK` around the start of its snapshot, then `UNLOCK TABLES`. Each dump holds that lock for a moment, after waiting for running statements to finish, so one long query holds writers up for that long. The right also lets the login take that global read lock by hand, which blocks every write on the server until it unlocks or disconnects, so treat the backup password like an admin password. No write, table or database DDL, or account right. An existing backup login gets `FLUSH_TABLES` on the next apply of its cluster by an updated server daemon, not when the daemon is updated. Always routed to the primary. Refusals: 400 `managed_backup_login_sources_required`, 409 `managed_backup_login_exists`, 409 `username_in_use`.',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         required: true,
@@ -2215,7 +2215,7 @@ const managedBasePaths = {
       tags: ['Managed services'],
       summary: 'Add an admin tool (phpMyAdmin, Adminer or pgAdmin) with its own login',
       description:
-        'Makes a tool login (reachable only from the server itself, with an explicit grant on every current database that is kept in step when a database is added) and a small project that runs the pinned tool image bound to that login, published on `hostname`. Body: `tool`, `hostname`, optional `access` (`admin` by default, or `read-only`). Both the login password and, for pgAdmin, the web sign-in password are returned once. Deploy the returned environment next. Refusals: 400 `admin_tool_unknown`, `invalid_hostname`, `admin_tool_access_invalid`, `admin_tool_engine_mismatch`, `admin_tool_email_invalid`; 409 `admin_tool_needs_database`, `admin_tool_needs_daemon_update`, `admin_tool_hostname_in_use`, `managed_destroy_in_progress`.',
+        'Makes a tool login (reachable only from the server itself, with an explicit grant on every current database that is kept in step when a database is added) and a small project that runs the pinned tool image bound to that login, published on `hostname`. Body: `tool`, `hostname`, optional `access` (`admin` by default, or `read-only`). Both the login password and, for pgAdmin, the web sign-in password are returned once. Deploy the returned environment next. Refusals: 400 `admin_tool_unknown`, `invalid_hostname`, `admin_tool_access_invalid`, `admin_tool_engine_mismatch`, `admin_tool_email_invalid`; 409 `admin_tool_needs_database`, `admin_tool_hostname_in_use`, `managed_destroy_in_progress`.',
       parameters: [ENV_ID_PARAM],
       requestBody: {
         required: true,
@@ -2306,7 +2306,7 @@ const managedBasePaths = {
       tags: ['Managed services'],
       summary: 'Effective permissions of a login, read from the engine',
       description:
-        'Read only. Asks the host that runs the cluster what the engine says the login can do right now and joins it to the privilege catalogue. Everything is reported as observed; the panel keeps no ledger of its own grants yet. 409 `daemon_update_required` when the server runs a TurboPanel version that cannot answer; 409 `server_offline`; 502 or 504 `permissions_read_failed` when the host answers badly or too slowly.',
+        'Read only. Asks the host that runs the cluster what the engine says the login can do right now and joins it to the privilege catalogue. Everything is reported as observed; the panel keeps no ledger of its own grants yet. 409 `server_offline`; 502 or 504 `permissions_read_failed` when the host answers badly or too slowly.',
       parameters: [ENV_ID_PARAM, LOGIN_ID_PARAM],
       responses: {
         200: {
@@ -2314,7 +2314,7 @@ const managedBasePaths = {
           ...jsonSchema('EffectivePermissionsResponse'),
         },
         409: {
-          description: 'daemon_update_required / server_offline',
+          description: 'server_offline',
           content: {
             'application/json': {
               schema: {
@@ -2539,7 +2539,7 @@ const managedBasePaths = {
       tags: ['Managed services'],
       summary: 'Move an existing Postgres database onto its owner role',
       description:
-        "Postgres only. For the cluster's first database, or any database made before owner roles: hands the database and everything in it (schemas, tables, views, sequences, functions, types that are not part of an extension) to its owner role `tp_<name>_owner`, whoever owns it now, then applies. It changes who owns things, never a row or a grant, and it runs only when asked: send `confirm: true` (400 `managed_owner_role_confirm_required` says what will happen). Afterwards the database behaves like one made through the API: several migration logins and a Database admin login can change each other's tables, and read/write and read-only logins reach all of it. It waits at most five seconds for a busy table and then stops without changing anything, so run it in a quiet window and repeat it if it stops. Asking again, also for a database that already has an owner role, repeats the move and picks up what other logins made since; it is safe. The database is recorded as having an owner role once the server reports the move done. Subject to the organization's re-authentication setting (`managed.database.owner_role`) and recorded in the audit trail as `managed.database.owner_role.move`. 400 `managed_owner_role_unsupported` on MySQL and MariaDB, 400 `managed_owner_role_database_not_movable` for the engine's own databases, 400 `managed_owner_role_name_too_long` for a name over 54 characters, 409 `managed_database_convert_needs_daemon_update` when the server's daemon lacks `managed-database-convert-v1`.",
+        "Postgres only. For the cluster's first database, or any database made before owner roles: hands the database and everything in it (schemas, tables, views, sequences, functions, types that are not part of an extension) to its owner role `tp_<name>_owner`, whoever owns it now, then applies. It changes who owns things, never a row or a grant, and it runs only when asked: send `confirm: true` (400 `managed_owner_role_confirm_required` says what will happen). Afterwards the database behaves like one made through the API: several migration logins and a Database admin login can change each other's tables, and read/write and read-only logins reach all of it. It waits at most five seconds for a busy table and then stops without changing anything, so run it in a quiet window and repeat it if it stops. Asking again, also for a database that already has an owner role, repeats the move and picks up what other logins made since; it is safe. The database is recorded as having an owner role once the server reports the move done. Subject to the organization's re-authentication setting (`managed.database.owner_role`) and recorded in the audit trail as `managed.database.owner_role.move`. 400 `managed_owner_role_unsupported` on MySQL and MariaDB, 400 `managed_owner_role_database_not_movable` for the engine's own databases, 400 `managed_owner_role_name_too_long` for a name over 54 characters when the server's daemon lacks `managed-database-convert-v1`.",
       parameters: [ENV_ID_PARAM, DATABASE_NAME_PARAM],
       requestBody: {
         required: true,
@@ -2560,7 +2560,6 @@ const managedBasePaths = {
         },
         400: { description: 'managed_owner_role_confirm_required and the refusals above' },
         404: { description: 'No such database' },
-        409: { description: 'managed_database_convert_needs_daemon_update' },
       },
     },
   },

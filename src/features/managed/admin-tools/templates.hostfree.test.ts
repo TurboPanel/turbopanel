@@ -71,7 +71,6 @@ function compile(tool: AdminToolId, engine: string) {
     perServiceEntries: new Map([['tool', ENTRIES]]),
     projectId: 'p1',
     environmentId: 'e1',
-    configFilesEnabled: true,
   })
   if (isApplyVariablesError(result)) throw new TypeError(result.message)
   return { document, result }

@@ -1,14 +1,12 @@
 /**
  * Which serving servers take part in one certificate order, and what each one
- * is told. Pure: the caller gathers who is online, which daemons list the
- * feature, each server's known public addresses and the addresses the name's
- * DNS answers with.
+ * is told. Pure: the caller gathers who is online, each server's known public
+ * addresses and the addresses the name's DNS answers with.
  *
- * Rule: only a server that is online, runs a daemon with the feature and is in
- * the name's DNS takes part. Every other serving server is skipped for the
- * check and receives the finished certificate later. When no serving server
- * has a known public address at all, every online server with the feature
- * counts as in DNS (the strict, safe reading).
+ * Rule: only a server that is online and in the name's DNS takes part. Every
+ * other serving server is skipped for the check and receives the finished
+ * certificate later. When no serving server has a known public address at all,
+ * every online server counts as in DNS (the strict, safe reading).
  */
 
 export type ServingServer = {
@@ -16,13 +14,11 @@ export type ServingServer = {
   /** The name shown to people in status lines. */
   label: string
   online: boolean
-  /** Its daemon lists `acme-issue-v1`. */
-  hasFeature: boolean
   /** Public addresses the server is known by (canonical form). */
   addresses: readonly string[]
 }
 
-export type SkipReason = 'offline' | 'not_in_dns' | 'old_daemon'
+export type SkipReason = 'offline' | 'not_in_dns'
 
 export type Participants = {
   issuer: ServingServer
@@ -63,7 +59,6 @@ export function chooseParticipants(params: {
   const ordered = [...params.servers].sort((a, b) => compareIds(a.serverId, b.serverId))
   for (const server of ordered) {
     if (!server.online) skipped.push({ server, reason: 'offline' })
-    else if (!server.hasFeature) skipped.push({ server, reason: 'old_daemon' })
     else {
       const address = addressInDns(server, dns)
       if (address !== null) eligible.push({ server, address })

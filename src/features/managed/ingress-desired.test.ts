@@ -601,21 +601,15 @@ test('external access on adds the IPv6 wildcard only for a daemon that publishes
         allocation: 'dedicated',
         scope: 'public',
       })
-      await setServer({ daemon: { projection: { features: ['managed-ingress-ipv6-v1'] } } })
       assertEquals(await build(), ['0.0.0.0'])
 
-      // A server with IPv6 whose daemon does not advertise the feature: IPv4 only.
-      await setServer({ daemon: { projection: { features: [] } }, metadata: { ips: [ipv6Ip] } })
-      assertEquals(await build(), ['0.0.0.0'])
-
-      // The daemon advertises it, but reports only a link-local IPv6 address.
+      // The daemon reports only a link-local IPv6 address.
       await setServer({
-        daemon: { projection: { features: ['managed-ingress-ipv6-v1'] } },
         metadata: { ips: [{ address: 'fe80::1', version: 6, scope: 'private' }] },
       })
       assertEquals(await build(), ['0.0.0.0'])
 
-      // Both: every IPv4 and every IPv6 address.
+      // A reported IPv6 address: every IPv4 and every IPv6 address.
       await setServer({ metadata: { ips: [ipv6Ip] } })
       assertEquals(await build(), ['0.0.0.0', '::'])
     }

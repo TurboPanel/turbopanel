@@ -9,10 +9,7 @@ import {
 } from '../features/install/instance-secret-sealing.ts'
 import { decryptSecretForDaemon, encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../lib/secrets/secrets.ts'
-import {
-  INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
-  SEALED_INSTANCE_SECRETS_FEATURE,
-} from '../lib/version-wire.ts'
+import { SEALED_INSTANCE_SECRETS_FEATURE } from '../lib/version-wire.ts'
 import { recordingRedisRegistry } from '../test-fixtures/recording-redis-registry.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { setSelfHostedAddress } from '../features/install/ingress-modes.ts'
@@ -186,7 +183,7 @@ test('a daemon without the feature still receives the legacy plaintext key', asy
   })
 })
 
-test('only tunnel hostnames carry the public port, and only for a daemon that lists the feature', async () => {
+test('only tunnel hostnames carry the public port', async () => {
   await withRollback(async (tx) => {
     const id = crypto.randomUUID()
     const direct = `direct-${id}.example.test`
@@ -195,20 +192,14 @@ test('only tunnel hostnames carry the public port, and only for a daemon that li
       { host: direct, source: 'platform-ca', publicPort: 8443 },
       { host: tunnel, source: 'platform-ca', publicPort: 443, mode: 'cloudflare-tunnel' },
     ])
-    const build = (features: string[]) =>
-      resolvePublicUrlsApplyPayload(tx, [direct, tunnel], '0.1.1', undefined, {}, null, {
-        daemonFeatures: features,
-      })
+    const build = () =>
+      resolvePublicUrlsApplyPayload(tx, [direct, tunnel], '0.1.1', undefined, {}, null)
     const entryFor = (
       payload: Awaited<ReturnType<typeof build>>,
       host: string
     ): Record<string, unknown> => payload.hostnames?.find((entry) => entry.host === host) ?? {}
 
-    const legacy = await build([SEALED_INSTANCE_SECRETS_FEATURE])
-    assertEquals(entryFor(legacy, tunnel).source, 'platform-ca')
-    assertEquals('publicPort' in entryFor(legacy, tunnel), false)
-
-    const capable = await build([INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE])
+    const capable = await build()
     assertEquals(entryFor(capable, tunnel).publicPort, 443)
     // A direct name never redirects: ports 80 and 443 there belong to hosting.
     assertEquals('publicPort' in entryFor(capable, direct), false)
@@ -216,7 +207,7 @@ test('only tunnel hostnames carry the public port, and only for a daemon that li
     // Self-hosted, the daemon is always sent 8443 whatever the row stored.
     setSelfHostedAddress(true)
     try {
-      const fixed = await build([INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE])
+      const fixed = await build()
       assertEquals(entryFor(fixed, tunnel).publicPort, 8443)
       assertEquals('publicPort' in entryFor(fixed, direct), false)
     } finally {

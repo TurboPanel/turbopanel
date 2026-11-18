@@ -505,8 +505,6 @@ and `haltRollout` for batches still waiting.
   `deployment` row `failed` with `metadata.cancelled` (its `outcome` check allows
   no new value). `applied_generation` is untouched: the previous release is the
   live one, so `needsRedeploy` stays true.
-- **Older daemons** cannot be asked: a running deploy on a daemon without
-  `deploy-cancel-v1` answers **409** `cancel_unsupported` before anything changes.
 - **No step-up**: `step-up-actions.ts` leaves out actions a re-deploy fully
   reverses. The cancel is audited (`deployment.cancel`).
 

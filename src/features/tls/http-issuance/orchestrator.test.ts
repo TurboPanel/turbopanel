@@ -66,7 +66,7 @@ type Fixture = {
 }
 
 async function setup(
-  options: { servers?: number; offline?: number[]; noFeature?: number[]; dnsFor?: number[] } = {}
+  options: { servers?: number; offline?: number[]; dnsFor?: number[] } = {}
 ): Promise<Fixture> {
   const db = database()
   const count = options.servers ?? 3
@@ -157,10 +157,6 @@ async function setup(
     dnsLookup: (_name, type) =>
       Promise.resolve(type === 'A' ? dnsIndexes.map((i) => servers[i]!.address) : []),
     isOnline: (id) => Promise.resolve(!(options.offline ?? []).some((i) => servers[i]!.id === id)),
-    daemonFeatures: (id) =>
-      Promise.resolve(
-        (options.noFeature ?? []).some((i) => servers[i]!.id === id) ? [] : ['acme-issue-v1']
-      ),
     contactEmail: () => Promise.resolve('ops@example.com'),
     staging: true,
     newRequestId: () => 'req_test_1',
@@ -316,19 +312,6 @@ test('a forward that cannot be sent to a helper leaves that helper out and the o
   }
 })
 
-test('a row whose serving servers all run older daemons is left alone', async () => {
-  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
-  const f = await setup({ servers: 2, noFeature: [0, 1] })
-  try {
-    const before = (await readRow(f)).metadata
-    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
-    assertEquals((await readRow(f)).metadata, before)
-    assertEquals(f.sent.length, 0)
-  } finally {
-    await f.cleanup()
-  }
-})
-
 test("nothing starts while the organization has Let's Encrypt turned off", async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance tests')
   const f = await setup({ servers: 1 })
@@ -363,9 +346,9 @@ test('a helper that never answers is left out after two minutes', async () => {
   }
 })
 
-test('offline, not-in-DNS and old-daemon servers are skipped and named in the status lines', async () => {
+test('offline and not-in-DNS servers are skipped and named in the status lines', async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance tests')
-  const f = await setup({ servers: 4, offline: [1], noFeature: [2], dnsFor: [0, 1, 2] })
+  const f = await setup({ servers: 4, offline: [1], dnsFor: [0, 1] })
   try {
     assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'ordering')
     assertEquals(f.sent.length, 1)
@@ -377,7 +360,7 @@ test('offline, not-in-DNS and old-daemon servers are skipped and named in the st
         .filter((r) => r.role === 'skipped')
         .map((r) => r.skip)
         .sort(),
-      ['not_in_dns', 'offline', 'old_daemon']
+      ['not_in_dns', 'not_in_dns', 'offline']
     )
     const acme = (
       row.metadata as { acme: { serverStatus: Array<{ text: string }>; stage: string } }
@@ -915,19 +898,6 @@ test('with no contact address nothing is sent or looked up, and the row says it 
   }
 })
 
-test('with no contact address a row served only by older daemons is left untouched', async () => {
-  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
-  const f = await setup({ servers: 2, noFeature: [0, 1] })
-  try {
-    const before = (await readRow(f)).metadata
-    const deps = f.deps({ contactEmail: () => Promise.resolve('  ') })
-    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'not_eligible')
-    assertEquals((await readRow(f)).metadata, before)
-  } finally {
-    await f.cleanup()
-  }
-})
-
 test('an organization with a contact address orders, and the address travels in the request', async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance tests')
   const f = await setup({ servers: 1 })
@@ -962,33 +932,7 @@ test('a row that is not due or is waiting out a back-off costs no lookups', asyn
   }
 })
 
-test('a row with several names is left alone while no serving daemon gets one certificate for all', async () => {
-  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
-  const f = await setup({ servers: 2 })
-  try {
-    const row = await readRow(f)
-    await f.db
-      .update(tls)
-      .set({ metadata: { ...(row.metadata as object), dnsNames: [HOST, `www.${HOST}`] } })
-      .where(eq(tls.id, f.tlsId))
-    const before = (await readRow(f)).metadata
-    let lookups = 0
-    const deps = f.deps({
-      dnsLookup: () => {
-        lookups += 1
-        return Promise.resolve([])
-      },
-    })
-    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'not_eligible')
-    assertEquals(lookups, 0)
-    assertEquals(f.sent.length, 0)
-    assertEquals((await readRow(f)).metadata, before)
-  } finally {
-    await f.cleanup()
-  }
-})
-
-test('a row with several names goes to a daemon that gets one certificate for all of them', async () => {
+test('a row with several names is ordered as one certificate for all of them', async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance tests')
   const f = await setup({ servers: 1 })
   try {
@@ -997,10 +941,7 @@ test('a row with several names goes to a daemon that gets one certificate for al
       .update(tls)
       .set({ metadata: { ...(row.metadata as object), dnsNames: [HOST, `shop2.${HOST}`] } })
       .where(eq(tls.id, f.tlsId))
-    const deps = f.deps({
-      daemonFeatures: () => Promise.resolve(['acme-issue-v1', 'acme-issue-one-cert-v1']),
-    })
-    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'ordering')
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'ordering')
     const order = f.sent[0]!.envelope
     assert(order.kind === 'acme-issue-request')
     assertEquals(order.names, [HOST, `shop2.${HOST}`])
@@ -1017,13 +958,7 @@ test("the order also asks for the www name a pinning site's www mode adds", asyn
       .update(hosting)
       .set({ options: { hostnames: [HOST], www: 'www-to-root' } })
       .where(eq(hosting.tlsId, f.tlsId))
-    // An older daemon would get one certificate per name: the row stays with the site's own web server.
-    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
-    assertEquals(f.sent.length, 0)
-    const deps = f.deps({
-      daemonFeatures: () => Promise.resolve(['acme-issue-v1', 'acme-issue-one-cert-v1']),
-    })
-    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'ordering')
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'ordering')
     const order = f.sent[0]!.envelope
     assert(order.kind === 'acme-issue-request')
     assertEquals(order.names, [HOST, `www.${HOST}`])

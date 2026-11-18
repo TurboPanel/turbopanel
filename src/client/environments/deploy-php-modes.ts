@@ -10,11 +10,8 @@
  * records per target. A record without it says nothing about what the sites
  * ran, so they count as unknown and get the default.
  *
- * A daemon that does not advertise `php-site-modes-v1` runs every PHP site on
- * one shared php-fpm pool and would ignore `php.mode`. It is never stamped
- * with a mode, and a site that asks for one other than php-fpm is refused
- * (`daemon_unsupported`). OpenLiteSpeed and Caddy daemons ignore `php.mode`
- * for now even with the feature (the lsphp work is turbopaneld#250).
+ * OpenLiteSpeed and Caddy daemons ignore `php.mode` for now (the lsphp work is
+ * turbopaneld#250).
  *
  * Narrowing a policy never breaks a running site: a site whose mode the policy
  * no longer offers keeps it, with a `php_mode_not_allowed` warning. Asking for
@@ -33,7 +30,6 @@ import {
   type PhpMode,
   type PhpModePolicy,
   type PhpModeRefusal,
-  SHARED_POOL_PHP_MODE,
 } from '../../features/hostings/php-mode.ts'
 
 export type PhpModePrepareError = {
@@ -55,8 +51,6 @@ export type SitePhpModeContext = {
   serverId: string
   /** Sites scheduled on this server; undefined means all of them. */
   localServiceNames?: ReadonlySet<string>
-  /** The server's daemon advertises `php-site-modes-v1`. */
-  daemonRunsModes: boolean
   /** Authored sites, for the `php.mode` they ask for. */
   specs: readonly SiteSpec[]
   orgOptions: unknown
@@ -114,24 +108,11 @@ export function resolveSitePhpMode(
   site: EnvironmentDeploySite,
   authored: PhpMode | undefined,
   policy: PhpModePolicy,
-  previous: PhpMode | undefined,
-  daemonRunsModes = true
+  previous: PhpMode | undefined
 ): SiteOutcome {
   if (!isPhpSite(site, authored)) return { site }
   // Caddy has no PHP mode: an unasked site keeps today's behaviour untouched.
   if (ENGINE_PHP_MODES[site.engine].length === 0 && authored === undefined) return { site }
-
-  if (!daemonRunsModes) {
-    if (authored === undefined || authored === SHARED_POOL_PHP_MODE) return { site }
-    const error: PhpModePrepareError = {
-      kind: 'php_mode_unavailable',
-      composeServiceName: site.composeServiceName,
-      reason: 'daemon_unsupported',
-      mode: authored,
-      allowed: [SHARED_POOL_PHP_MODE],
-    }
-    return { error }
-  }
 
   const decision = decideSitePhpMode({ engine: site.engine, policy, authored, previous })
   const { composeServiceName } = site
@@ -179,7 +160,7 @@ export async function withSitePhpModes<E extends { kind: string }>(
     const name = site.composeServiceName
     const local = ctx.localServiceNames?.has(name) ?? true
     const outcome = local
-      ? resolveSitePhpMode(site, authored.get(name), policy, previousOf(name), ctx.daemonRunsModes)
+      ? resolveSitePhpMode(site, authored.get(name), policy, previousOf(name))
       : { site }
     if ('error' in outcome) return outcome.error
     if (outcome.warning) ctx.warnings.push(outcome.warning)

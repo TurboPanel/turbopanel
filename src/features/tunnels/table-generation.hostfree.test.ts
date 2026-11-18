@@ -4,8 +4,6 @@ import { toRoutesPayload } from './route-builder.ts'
 import { healStaleTunnelTable, staleTunnelTableWarning } from './stale-table-note.ts'
 import {
   canonicalTunnelFacts,
-  daemonTakesTunnelGeneration,
-  generationForDaemon,
   decideTunnelGeneration,
   nextTunnelGeneration,
   planGenerationBump,
@@ -91,13 +89,7 @@ test('reads only a well-formed stored value', () => {
   assertEquals(readStoredTunnelGeneration(null), undefined)
 })
 
-test('is sent only to a daemon that lists the feature', () => {
-  assertEquals(daemonTakesTunnelGeneration(['tunnel-forwarding-v1']), false)
-  assertEquals(daemonTakesTunnelGeneration(undefined), false)
-  assertEquals(daemonTakesTunnelGeneration(['tunnel-table-generation-v1']), true)
-})
-
-test('does not change the table hash, so an old daemon keeps its hash', async () => {
+test('does not change the table hash, so an unchanged table keeps its hash', async () => {
   const built = {
     routes: [],
     peerAddresses: [],
@@ -129,18 +121,6 @@ test('notices the daemon refusing a table as older than its own', () => {
   const quiet = staleTunnelTableWarning('server.tunnel.routes', { applied: false, warnings: [] })
   assertEquals(quiet, undefined)
   assertEquals(staleTunnelTableWarning('server.tunnel.connectors', result), undefined)
-})
-
-test('an old daemon is resolved nothing, a daemon with the feature gets the table generation', async () => {
-  let calls = 0
-  const resolve = () => {
-    calls += 1
-    return Promise.resolve(NOW)
-  }
-  assertEquals(await generationForDaemon(['tunnel-forwarding-v1'], resolve), undefined)
-  assertEquals(calls, 0)
-  assertEquals(await generationForDaemon(['tunnel-table-generation-v1'], resolve), NOW)
-  assertEquals(calls, 1)
 })
 
 test('a refusal raises the generation to the clock, and not again within the gap', () => {

@@ -15,7 +15,7 @@
  *
  * Answers: 202 `{ ok: true, job: { id, action } }`; 409 `job_running` while a
  * host job or the Build and Push Daemon job runs; 503 `daemon_unavailable`
- * when the co-located daemon is offline, lacks `dev-host-v1`, refuses
+ * when the co-located daemon is offline, refuses
  * (`reason: 'not_development'`) or does not answer within 8 s.
  *
  * Mounted only from `src/deno-dev.ts`, only while the developer surface is
@@ -34,10 +34,8 @@ import {
 } from '../contracts/cell-protocol.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../db/connection.ts'
 import { recordAudit } from '../features/audit/audit-records.ts'
-import { getServerDaemonStateByServerId } from '../features/servers/server-identity-db.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { logWarn } from '../lib/logger.ts'
-import { DEV_HOST_FEATURE } from '../lib/version-wire.ts'
 import { type DevHostStatusStore, devHostStatusStore } from './dev-host-status.ts'
 import {
   captureRunningInstanceCommit,
@@ -61,13 +59,11 @@ const AUDIT_ACTIONS = {
 
 export type DevHostRoutesHooks = DevHostViewDeps & {
   pushJobActive?: () => boolean
-  daemonFeatures?: (db: Db, serverId: string) => Promise<readonly string[]>
 }
 
 type Resolved = {
   store: DevHostStatusStore
   pushJobActive: () => boolean
-  daemonFeatures: (db: Db, serverId: string) => Promise<readonly string[]>
   isConnected: (registry: DaemonCellRegistry, serverId: string) => Promise<boolean>
 }
 
@@ -75,12 +71,6 @@ function resolveHooks(hooks: DevHostRoutesHooks): Resolved {
   return {
     store: hooks.store ?? devHostStatusStore,
     pushJobActive: hooks.pushJobActive ?? isDevelopmentPushJobActive,
-    daemonFeatures:
-      hooks.daemonFeatures ??
-      (async (db, serverId) => {
-        const state = await getServerDaemonStateByServerId(db, serverId)
-        return state?.projection?.features ?? []
-      }),
     isConnected: hooks.isConnected ?? isCellConnected,
   }
 }
@@ -104,7 +94,6 @@ const JOB_RUNNING: DevHostActionOutcome = {
 
 /** Ask the co-located daemon to start `action`; never throws. */
 export async function requestDevHostAction(
-  db: Db,
   registry: DaemonCellRegistry,
   action: DevHostAction,
   hooks: DevHostRoutesHooks = {}
@@ -115,11 +104,7 @@ export async function requestDevHostAction(
   if (!stored) return unavailable()
   const serverId = stored.serverId
   try {
-    const [connected, features] = await Promise.all([
-      h.isConnected(registry, serverId),
-      h.daemonFeatures(db, serverId),
-    ])
-    if (!connected || !features.includes(DEV_HOST_FEATURE)) return unavailable()
+    if (!(await h.isConnected(registry, serverId))) return unavailable()
     const envelope: DaemonOutboundEnvelope = {
       kind: 'dev-host-action',
       deliveryId: generateDeliveryId(),
@@ -156,7 +141,7 @@ function actionHandler(action: DevHostAction, hooks: DevHostRoutesHooks) {
   return async (c: Context) => {
     const ctx = requestDeps(c)
     if (ctx instanceof Response) return ctx
-    const outcome = await requestDevHostAction(ctx.db, ctx.registry, action, hooks)
+    const outcome = await requestDevHostAction(ctx.registry, action, hooks)
     if (outcome.status === 202) {
       const session = (c as Context<AppEnv>).get('session')
       await recordAudit(ctx.db, {

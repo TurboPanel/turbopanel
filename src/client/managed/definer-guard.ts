@@ -61,9 +61,8 @@ export async function checkLoginMayBeDeleted(
     }
   }
   if (
-    outcome.status === 'unsupported' ||
-    (outcome.status === 'unavailable' &&
-      (outcome.reason === 'offline' || outcome.reason === 'no_registry'))
+    outcome.status === 'unavailable' &&
+    (outcome.reason === 'offline' || outcome.reason === 'no_registry')
   ) {
     return {
       kind: 'proceed',

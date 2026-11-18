@@ -31,23 +31,13 @@ import {
   updatePlacement,
   type TunnelRow,
 } from '../../features/tunnels/lifecycle.ts'
-import {
-  serversWithDeployOnlyLock,
-  serversWithLockAdd,
-  serversWithoutLockAdd,
-  serversWithoutTunnelSupport,
-} from '../../features/tunnels/daemon-gate.ts'
 import { toApiPeerHop } from '../../features/tunnels/status.ts'
 import {
   loadUnroutedReasons,
   lockAddSkippedServers,
   siteServersOfTunnel,
 } from '../../features/tunnels/route-facts.ts'
-import {
-  hostnameLockSkippedWarning,
-  hostnameLockWarning,
-  parsePlacementBody,
-} from '../../features/tunnels/placement.ts'
+import { hostnameLockSkippedWarning, parsePlacementBody } from '../../features/tunnels/placement.ts'
 import { rotationBlock, startRunTokenRotation } from '../../features/tunnels/run-token-rotation.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
 import {
@@ -108,39 +98,14 @@ async function loadTunnelParam(c: Context<AppEnv>, scope: Scope): Promise<Tunnel
 }
 
 /**
- * The tunnel as the API shows it, with a warning for servers whose daemon is
- * too old to carry it, and one for servers that run its sites but apply the
- * name lock only when a site is deployed again.
+ * The tunnel as the API shows it, with a warning for servers that run its
+ * sites on a certificate setup the name lock skips.
  */
 async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   const shown = await toApiTunnel(scope.db, row)
-  const old = await serversWithoutTunnelSupport(scope.db, shown.carryingServerIds)
   const siteServers = await siteServersOfTunnel(scope.db, scope.organizationId, row.id)
-  const deployOnly = await serversWithDeployOnlyLock(scope.db, siteServers)
-  const noLockAdd = await serversWithoutLockAdd(scope.db, siteServers)
   const warnings = [...shown.warnings]
-  if (old.length > 0) {
-    const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
-    warnings.push(
-      `${names} a daemon too old to carry Tunnels. Update it, or the Tunnel will not work there.`
-    )
-  }
-  if (deployOnly.length > 0) {
-    const one = deployOnly.length === 1
-    const who = one
-      ? '1 server that runs this Tunnel’s sites applies'
-      : `${deployOnly.length} servers that run this Tunnel’s sites apply`
-    const fix = one ? 'Update its daemon' : 'Update their daemons'
-    warnings.push(
-      `${who} a change of where the Tunnel runs only when the site is deployed again. ${fix}, or redeploy those sites after the change.`
-    )
-  }
-  const addWarning = hostnameLockWarning(noLockAdd.length)
-  if (addWarning) warnings.push(addWarning)
-  const skipped = await serversWithLockAdd(
-    scope.db,
-    await lockAddSkippedServers(scope.db, scope.organizationId, row.id)
-  )
+  const skipped = await lockAddSkippedServers(scope.db, scope.organizationId, row.id)
   const skippedWarning = hostnameLockSkippedWarning(skipped.length)
   if (skippedWarning) warnings.push(skippedWarning)
   // Why Rotate Run Token would be refused now, so the screen can say so before it is pressed.

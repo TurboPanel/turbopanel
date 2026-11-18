@@ -71,7 +71,7 @@ const writeErrors = {
   ...resourceErrorResponses({ badRequest: true, notFound: true }),
   '409': {
     description:
-      'daemon_update_needed (the server daemon cannot run caches); environment_not_placed; cache_name_taken; cache_prefix_taken; cache_key_conflict; too_many_caches',
+      'environment_not_placed; cache_name_taken; cache_prefix_taken; cache_key_conflict; too_many_caches',
     content: { 'application/json': { schema: clientErrorJson } },
   },
   '422': {

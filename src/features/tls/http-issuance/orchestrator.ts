@@ -52,7 +52,7 @@ import {
   withHttpIssuanceState,
 } from './state.ts'
 import { waitingText } from './status-text.ts'
-import { orderNamesFor, type PinningSite, takesOrderFor } from './names.ts'
+import { orderNamesFor, type PinningSite } from './names.ts'
 
 export type HttpIssuanceDeps = {
   db: Db
@@ -61,7 +61,6 @@ export type HttpIssuanceDeps = {
   send: (serverId: string, envelope: DaemonOutboundEnvelope) => Promise<void>
   dnsLookup: DnsLookup
   isOnline: (serverId: string) => Promise<boolean>
-  daemonFeatures: (serverId: string) => Promise<readonly string[]>
   /** The organization's certificate contact address, or null when it has none (orders cannot start). */
   contactEmail: (organizationId: string) => Promise<string | null>
   /** Order from the authority's test directory (a platform setting). */
@@ -201,22 +200,18 @@ async function loadServingServers(db: Db, tlsId: string): Promise<ServingRow[]> 
 
 async function describeServers(
   deps: HttpIssuanceDeps,
-  rows: ServingRow[],
-  names: readonly string[]
+  rows: ServingRow[]
 ): Promise<ServingServer[]> {
   return await Promise.all(
     rows.map(async (r) => {
-      const [online, features, addresses] = await Promise.all([
+      const [online, addresses] = await Promise.all([
         deps.isOnline(r.serverId),
-        deps.daemonFeatures(r.serverId),
         loadServerPublicAddresses(deps.db, r.serverId),
       ])
       return {
         serverId: r.serverId,
         label: r.label,
         online,
-        // Several names need a daemon that gets one certificate for all of them.
-        hasFeature: takesOrderFor(features, names),
         addresses,
       }
     })
@@ -288,8 +283,7 @@ function orderEnvelope(
 
 /**
  * Whether names may be ordered centrally at all: at least one, and no wildcard
- * (that needs the DNS proof). Several names are fine; who may take such an
- * order is `takesOrderFor`.
+ * (that needs the DNS proof). Several names are fine.
  */
 export function isHttpOrderable(names: readonly string[]): boolean {
   return names.length >= 1 && names.every((name) => !name.includes('*'))
@@ -310,13 +304,9 @@ async function gather(
   row: Pick<RowFacts, 'id' | 'orderNames'>,
   previous: HttpIssuanceState | null
 ): Promise<{ choice: Choice; servers: ServingServer[] }> {
-  const servers = await describeServers(
-    deps,
-    await loadServingServers(deps.db, row.id),
-    row.orderNames
-  )
+  const servers = await describeServers(deps, await loadServingServers(deps.db, row.id))
   // Nothing to choose from until the first pass over the servers: skip the DNS lookup.
-  if (!servers.some((s) => s.hasFeature)) {
+  if (servers.length === 0) {
     return { choice: { ok: false, reason: 'no_servers', skipped: [] }, servers }
   }
   const dnsAddresses = await dnsAddressesOf(deps.dnsLookup, row.orderNames)
@@ -531,11 +521,11 @@ export async function startHttpIssuance(
   if (!mayStartAttempt(attempts, now).ok) return 'backoff'
   const contactEmail = await deps.contactEmail(peek.organizationId)
   if (contactEmail === null || contactEmail.trim() === '') {
-    return await waitForContact(deps, peek.organizationId, tlsId, now, names)
+    return await waitForContact(deps, peek.organizationId, tlsId, now)
   }
   const { choice, servers } = await gather(deps, { id: tlsId, orderNames: names }, previous)
-  // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
-  if (!servers.some((s) => s.hasFeature)) return 'not_eligible'
+  // No serving server: the row is left alone.
+  if (servers.length === 0) return 'not_eligible'
   const result = await deps.db.transaction((tx) =>
     startInTransaction(tx as unknown as Db, { deps, now, tlsId, choice, contactEmail, due })
   )
@@ -544,23 +534,19 @@ export async function startHttpIssuance(
 }
 
 /**
- * No contact address for the organization. Only database reads: when a serving
- * server's daemon lists the feature the row says it is waiting for an address (an
- * unchanged marker is not rewritten); otherwise it is not ours and is left alone.
+ * No contact address for the organization. Only database reads: when a server
+ * serves the row it says it is waiting for an address (an unchanged marker is not
+ * rewritten); otherwise it is not ours and is left alone.
  * Never looks at DNS.
  */
 async function waitForContact(
   deps: HttpIssuanceDeps,
   organizationId: string,
   tlsId: string,
-  now: Date,
-  names: readonly string[]
+  now: Date
 ): Promise<StartOutcome> {
   const serving = await loadServingServers(deps.db, tlsId)
-  const lists = await Promise.all(
-    serving.map(async (s) => takesOrderFor(await deps.daemonFeatures(s.serverId), names))
-  )
-  if (!lists.some(Boolean)) return 'not_eligible'
+  if (serving.length === 0) return 'not_eligible'
   await deps.db.transaction(async (tx0) => {
     const tx = tx0 as unknown as Db
     const row = await lockRow(tx, tlsId)

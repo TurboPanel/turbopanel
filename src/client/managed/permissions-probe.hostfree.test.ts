@@ -2,7 +2,6 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
-import { MANAGED_PERMISSIONS_READ_FEATURE } from '../../lib/version-wire.ts'
 import {
   type ManagedPermissionsProbeDeps,
   type ManagedPermissionsProbeParams,
@@ -46,7 +45,6 @@ function fakeRegistry(reply: Reply) {
 
 function deps(overrides: Partial<ManagedPermissionsProbeDeps> = {}): ManagedPermissionsProbeDeps {
   return {
-    daemonFeatures: () => Promise.resolve([MANAGED_PERMISSIONS_READ_FEATURE]),
     isServerConnected: () => Promise.resolve(true),
     ...overrides,
   }
@@ -57,18 +55,6 @@ const REPORT = {
   observedAt: NOW,
   logins: [{ username: 'app', exists: true, memberships: [], grants: [], defaults: [] }],
 }
-
-test('sends nothing to a daemon that does not advertise managed-permissions-read-v1', async () => {
-  const { registry, sent } = fakeRegistry({ status: 'done', result: { ok: true } })
-  const outcome = await probeManagedPermissions(
-    DB,
-    registry,
-    PARAMS,
-    deps({ daemonFeatures: () => Promise.resolve(['managed-health-v1']) })
-  )
-  assertEquals(outcome, { status: 'unsupported' })
-  assertEquals(sent.length, 0)
-})
 
 test('is unavailable, sending nothing, without a registry or an online server', async () => {
   assertEquals(await probeManagedPermissions(DB, undefined, PARAMS, deps()), {

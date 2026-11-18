@@ -38,7 +38,7 @@ export type RosterEntry = {
   label: string
   role: 'issuer' | 'helper' | 'skipped'
   /** Why a `skipped` server did not take part. */
-  skip?: 'offline' | 'not_in_dns' | 'old_daemon'
+  skip?: 'offline' | 'not_in_dns'
 }
 
 export type HttpIssuanceState = {
@@ -118,7 +118,7 @@ function text(value: unknown): string | null {
 }
 
 const ROSTER_ROLES: ReadonlySet<string> = new Set(['issuer', 'helper', 'skipped'])
-const SKIP_REASONS: ReadonlySet<string> = new Set(['offline', 'not_in_dns', 'old_daemon'])
+const SKIP_REASONS: ReadonlySet<string> = new Set(['offline', 'not_in_dns'])
 
 function readRoster(value: unknown): RosterEntry[] {
   if (!Array.isArray(value)) return []

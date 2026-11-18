@@ -14,7 +14,6 @@ function srv(id: string, over: Partial<ServingServer> = {}): ServingServer {
     serverId: id,
     label: `Server ${id}`,
     online: true,
-    hasFeature: true,
     addresses: [`203.0.113.${id.charCodeAt(0) - 96}`],
     ...over,
   }
@@ -40,14 +39,9 @@ test('online servers in DNS take part: one issues, the rest help', () => {
   assertEquals(choice.skipped, [])
 })
 
-test('an offline server, one not in DNS and one on an old daemon are skipped with a reason', () => {
+test('an offline server and one not in DNS are skipped with a reason', () => {
   const choice = chooseParticipants({
-    servers: [
-      srv('a'),
-      srv('b', { online: false }),
-      srv('c', { addresses: ['198.51.100.9'] }),
-      srv('d', { hasFeature: false }),
-    ],
+    servers: [srv('a'), srv('b', { online: false }), srv('c', { addresses: ['198.51.100.9'] })],
     dnsAddresses: DNS,
   })
   assert(choice.ok)
@@ -57,7 +51,6 @@ test('an offline server, one not in DNS and one on an old daemon are skipped wit
     [
       ['b', 'offline'],
       ['c', 'not_in_dns'],
-      ['d', 'old_daemon'],
     ]
   )
 })

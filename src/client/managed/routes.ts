@@ -35,7 +35,6 @@ import {
   BACKUP_LOGIN_UNIQUE_INDEX,
   backupLoginSettings,
   backupLoginSourcesRefusal,
-  refuseBackupLoginOnOldDaemon,
 } from '../../features/managed/backup-login.ts'
 import { loadManagedExternalAccessView } from '../../features/managed/external-access.ts'
 import {
@@ -53,7 +52,7 @@ import {
   resolveManagedOwningOrganizationIds,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { loginPatchUndo, readWriteGrantState } from '../../features/managed/login-patch.ts'
+import { loginPatchUndo } from '../../features/managed/login-patch.ts'
 import {
   describeDatabaseOwners,
   listLoginOnDatabase,
@@ -74,19 +73,13 @@ import {
   OWNER_CHANGE_NOT_AVAILABLE,
 } from '../../features/managed/owner-role.ts'
 import {
-  daemonCanConvertDatabase,
-  daemonHonoursOwnerRole,
-  refuseLoginCreateIfDaemonCannot,
-  daemonOwnerSupport,
   type LoginLimitFields,
   loginLimitSettings,
   parseGatedLoginLimits,
   parseLoginPatchRequest,
-  refuseLoginPatchIfDaemonCannot,
 } from '../../features/managed/login-limit-fields.ts'
 import {
   createLoginForPrincipal,
-  applySettingsPatch,
   createManagedLogin,
   findManagedLogin,
   findManagedLoginByRole,
@@ -969,15 +962,8 @@ async function resolveManagedCreatePlan(
 
   const initialDatabase = readInitialDatabase(ctx.spec)
   // The cluster's first database is made by the engine's first start, for the
-  // platform admin. A daemon that can move it onto an owner role while it is
-  // empty is asked to; an older one leaves it as it was, so it is not recorded
-  // as having one.
-  const firstOwnerRole = resolveDatabaseOwnerRole(
-    ctx.spec.engine,
-    initialDatabase,
-    undefined,
-    ctx.spec.engine !== 'postgres' || (await daemonOwnerSupport(db, serverId)).databaseOwner
-  )
+  // platform admin, and the daemon moves it onto an owner role while it is empty.
+  const firstOwnerRole = resolveDatabaseOwnerRole(ctx.spec.engine, initialDatabase, undefined)
   return {
     name: displayName ?? ctx.envDisplayName ?? ctx.spec.displayName,
     settings,
@@ -1597,22 +1583,14 @@ async function restoreUnlessQueued(
 }
 
 /** Owner checks around a login PATCH: a refusal Response, or the notes for the answer. */
-async function gateLoginPatchOwnership(
+function gateLoginPatchOwnership(
   c: Context<AppEnv>,
-  db: Db,
   engine: string,
   options: ManagedRowOptions,
   target: Parameters<typeof loginPatchOwnerChecks>[2],
-  plan: { patch: LoginSettingsPatch; grantMode: string },
-  serverId: string
-): Promise<Response | { notes: string[] }> {
-  const checks = loginPatchOwnerChecks(
-    engine,
-    options,
-    target,
-    plan,
-    await daemonOwnerSupport(db, serverId)
-  )
+  plan: { patch: LoginSettingsPatch; grantMode: string }
+): Response | { notes: string[] } {
+  const checks = loginPatchOwnerChecks(engine, options, target, plan)
   if (!checks.refusal) return { notes: checks.notes }
   return c.json(
     { error: checks.refusal.error, message: checks.refusal.message },
@@ -1826,26 +1804,8 @@ async function gateLoginCreate(
   }
 ): Promise<Response | { commandQueue: CommandQueue; limits: LoginLimitFields; notes: string[] }> {
   const { ctx, row, options, targetServerId } = params
-  // Read-only checks, so they run together; the first refusal in grant order answers.
-  const refusals = await Promise.all(
-    params.grants.map((grant) =>
-      refuseLoginCreateIfDaemonCannot(
-        c,
-        db,
-        { engine: ctx.spec.engine, privileges: grant.privileges, grantMode: params.grantMode },
-        targetServerId
-      )
-    )
-  )
-  const daemonRefused = refusals.find((refusal) => refusal !== null)
-  if (daemonRefused) return daemonRefused
-  const ownerSupport = await daemonOwnerSupport(db, targetServerId)
   const notes = params.grants.flatMap((grant) =>
-    adminAccessNotes(
-      ctx.spec.engine,
-      { ...grant, ownerRoleDatabases: options.ownerRoleDatabases },
-      ownerSupport
-    )
+    adminAccessNotes(ctx.spec.engine, { ...grant, ownerRoleDatabases: options.ownerRoleDatabases })
   )
   const commandQueue = await assertManagedApplyReady(c, db, row, targetServerId)
   if (commandQueue instanceof Response) return commandQueue
@@ -1854,7 +1814,6 @@ async function gateLoginCreate(
     db,
     ctx.organizationId,
     params.body,
-    targetServerId,
     ctx.spec.engine
   )
   if (limits instanceof Response) return limits
@@ -2203,9 +2162,6 @@ async function createBackupLoginRoute(c: Context<AppEnv>): Promise<Response> {
   if (!dataEncryptionSecrets) return c.json({ error: 'Encryption unavailable' }, 503)
   const targetServerId = resolveManagedTargetServerId(c, row.serverId)
   if (targetServerId instanceof Response) return targetServerId
-
-  const daemonRefused = await refuseBackupLoginOnOldDaemon(db, targetServerId)
-  if (daemonRefused) return c.json(daemonRefused, 409)
 
   const gate = await gateLoginCreate(c, db, {
     ctx,
@@ -3173,21 +3129,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const parsed = await parseLoginPatchRequest(c, db, ctx, body, options, target)
     if (parsed instanceof Response) return parsed
-    const { dryRun, limits, plan } = parsed
+    const { dryRun, plan } = parsed
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
     // A login that owns a database stays able to own it; an admin login gets
     // notes on what it got.
-    const gate = await gateLoginPatchOwnership(
-      c,
-      db,
-      ctx.spec.engine,
-      options,
-      target,
-      plan,
-      targetServerId
-    )
+    const gate = gateLoginPatchOwnership(c, ctx.spec.engine, options, target, plan)
     if (gate instanceof Response) return gate
     const { notes } = gate
 
@@ -3202,25 +3150,6 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
     }
 
-    // An All Databases login is judged on the cluster's whole list.
-    const appliedPatch = applySettingsPatch(target, plan.patch)
-    const afterPatchSettings = appliedPatch.allDatabases
-      ? { ...appliedPatch, databases: options.databases }
-      : appliedPatch
-    const daemonRefused = await refuseLoginPatchIfDaemonCannot(
-      c,
-      db,
-      {
-        limits,
-        engine: ctx.spec.engine,
-        readWrite: {
-          before: readWriteGrantState(target),
-          after: readWriteGrantState(afterPatchSettings),
-        },
-      },
-      targetServerId
-    )
-    if (daemonRefused) return daemonRefused
     const previous = target
     await patchLogin(db, target.id, plan.patch)
     const restore = async () => {
@@ -3385,12 +3314,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
-    const refusal = evaluateOwnerRoleConversion(
-      ctx.spec.engine,
-      databaseName,
-      body.confirm,
-      await daemonCanConvertDatabase(db, targetServerId)
-    )
+    const refusal = evaluateOwnerRoleConversion(ctx.spec.engine, databaseName, body.confirm)
     if (refusal) {
       return c.json({ error: refusal.error, message: refusal.message }, refusal.status)
     }
@@ -3467,43 +3391,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       )
     }
 
-    // Validate the request first; the daemon check needs the server.
-    const requestedOwnerRole = resolveDatabaseOwnerRole(ctx.spec.engine, name, body.ownerRole)
-    if (!requestedOwnerRole.ok) {
-      return c.json(
-        {
-          error: requestedOwnerRole.error,
-          message: requestedOwnerRole.message,
-        },
-        requestedOwnerRole.status
-      )
+    const ownerRole = resolveDatabaseOwnerRole(ctx.spec.engine, name, body.ownerRole)
+    if (!ownerRole.ok) {
+      return c.json({ error: ownerRole.error, message: ownerRole.message }, ownerRole.status)
     }
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const ownerRole = resolveDatabaseOwnerRole(
-      ctx.spec.engine,
-      name,
-      body.ownerRole,
-      ctx.spec.engine !== 'postgres' || (await daemonHonoursOwnerRole(db, targetServerId))
-    )
-    if (!ownerRole.ok) {
-      return c.json({ error: ownerRole.error, message: ownerRole.message }, ownerRole.status)
-    }
-
     // A login the customer picked as the owner (Postgres): it must be able to
     // own a database, the daemon must know how, and it is listed on the new
     // database so it can connect to it.
-    const chosen = await resolveChosenOwnerLogin(
-      c,
-      db,
-      ctx.spec.engine,
-      row.id,
-      body,
-      name,
-      targetServerId
-    )
+    const chosen = await resolveChosenOwnerLogin(c, db, ctx.spec.engine, row.id, body, name)
     if (chosen instanceof Response) return chosen
     const conflict = ownerChoiceConflict(chosen, ownerRole.ownerRole)
     if (conflict) return c.json(conflict, 400)

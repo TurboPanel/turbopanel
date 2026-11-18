@@ -336,7 +336,8 @@ function sweepLater(f: Fixture): Promise<number> {
 test('the stale sweep timing out an in-flight rollout server flags it and stops the rollout', async () => {
   await withRollout(async (f) => {
     await f.db.update(command).set({ status: 'sent' }).where(eq(command.id, f.commandIds[0]!))
-    await sweepLater(f)
+    // A deploy the server never reported on waits out the whole queue limit.
+    await sweepStaleCommands(f.db, { now: Date.now() + 7 * 3_600_000 })
     assertEquals((await getCommandRecord(f.db, f.commandIds[0]!))?.status, 'timed_out')
     assertEquals(await targetStatus(f, f.serverIds[0]!), 'failed')
     assertEquals(await targetStatus(f, f.serverIds[1]!), 'failed')
