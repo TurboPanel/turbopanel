@@ -2277,14 +2277,6 @@ export type EnvironmentDeploySite = {
 }
 
 /**
- * The build kind the panel puts on the wire for an image-built source. A
- * released daemon only accepts this value, so the new `image` value stays
- * inside the panel until wipe day, when every server is reinstalled and the
- * send flips in one step.
- */
-export const IMAGE_BUILD_WIRE_KIND = 'railpack' as const
-
-/**
  * How the daemon turns a Git checkout into a runnable release.
  *
  * `env` is a **non-secret** build-time map only — build secrets keep riding
@@ -2303,10 +2295,8 @@ export const IMAGE_BUILD_WIRE_KIND = 'railpack' as const
  * `kind: 'static'` is reserved for the site release phase; only `native` and
  * the image kind are produced today.
  *
- * The panel accepts both the new `image` value and the old value everywhere it
- * reads one, but keeps SENDING the old value on the wire (`IMAGE_BUILD_WIRE_KIND`)
- * because a released daemon rejects `image` at its set check. The send flips
- * on wipe day, when every server is reinstalled.
+ * `railpack` stays in the type and the parse set only for parity with the
+ * daemon's contract twin; the panel never sends it.
  */
 export type EnvironmentDeploySourceBuild = {
   kind: 'native' | 'static' | 'image' | 'railpack'
@@ -5338,11 +5328,8 @@ function parseDeployResultReleases(value: unknown): EnvironmentDeployResultRelea
     ) {
       continue
     }
-    const builderFrontendVersion = firstString(
-      entry.builderFrontendVersion,
-      entry.railpackFrontendVersion
-    )
-    const builderPlanVersion = firstString(entry.builderPlanVersion, entry.railpackPlanVersion)
+    const builderFrontendVersion = firstString(entry.builderFrontendVersion)
+    const builderPlanVersion = firstString(entry.builderPlanVersion)
     out.push({
       composeServiceName: entry.composeServiceName,
       serviceId: entry.serviceId,

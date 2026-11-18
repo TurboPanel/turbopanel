@@ -95,21 +95,8 @@ stripped).
 
 `x-turbopanel.source.buildKind` is `native` or `image` ("Container Image
 (Auto-Detected)"). It is a different key from a service's own `image:`, which
-names an image to pull. Documents saved before the rename hold the old value
-(`LEGACY_IMAGE_BUILD_KIND`); the reader accepts both and returns `image`
-(`readSourceBuildKind`), and the linter treats either as an image-built source
-(`isImageBuildKind`). The panel still sends the old value to the daemon
-(`IMAGE_BUILD_WIRE_KIND` in `src/contracts/commands/schemas.ts`), because a
-released daemon rejects `image`. Release records sent to the web interface
-carry only `builderFrontendVersion` / `builderPlanVersion`, while the readers of
-stored daemon results (`imageIdentitiesFromResult` in `src/features/git/releases.ts`
-and the deploy result parser in `schemas.ts`) still accept the old field names.
-
-There is no backfill: live and staging keep their data until wipe day. On wipe
-day, when every database is wiped and every server reinstalled, one step flips
-the wire send to `image` and removes these read-side fallbacks (the old build
-kind value in compose documents and the old result field names), together with
-the daemon's acceptance of the old value.
+names an image to pull. The panel sends `image` to the daemon. Release records
+sent to the web interface carry `builderFrontendVersion` / `builderPlanVersion`.
 
 ### Validation pipeline (five stages, in this order)
 

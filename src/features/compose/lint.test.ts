@@ -767,13 +767,13 @@ test('lintComposeYaml skips image requirement for an image-built source', () => 
   )
 })
 
-test('lintComposeYaml skips image requirement for a source with the old build kind value', () => {
+test('lintComposeYaml skips image requirement for a source with the image build kind', () => {
   const issues = lintComposeYaml(`services:
   app:
     x-turbopanel:
       source:
         sourceId: ${SOURCE_ID}
-        buildKind: railpack
+        buildKind: image
 `)
   assertEquals(
     issues.some((issue) => issue.path === 'services.app' && issue.message.includes('image')),
@@ -781,13 +781,13 @@ test('lintComposeYaml skips image requirement for a source with the old build ki
   )
 })
 
-test('lintComposeYaml trims whitespace around the old buildKind value', () => {
+test('lintComposeYaml trims whitespace around the buildKind value', () => {
   const issues = lintComposeYaml(`services:
   app:
     x-turbopanel:
       source:
         sourceId: ${SOURCE_ID}
-        buildKind: "  railpack  "
+        buildKind: "  image  "
 `)
   assertEquals(
     issues.some((issue) => issue.path === 'services.app' && issue.message.includes('image')),
