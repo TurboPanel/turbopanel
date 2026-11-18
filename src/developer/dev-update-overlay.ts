@@ -66,10 +66,15 @@ export class DevOverlayRebuildError extends Error {
 
 /** Most bytes of build output or per-server error text kept for a caller. */
 export const ERROR_TEXT_MAX_BYTES = 4096
-
 // ESC [ ... final byte (colour, cursor), and ESC ] ... BEL or ESC \ (titles, links).
-// deno-lint-ignore no-control-regex
-const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g
+// ESC [ ... final byte (colour, cursor), and ESC ] ... BEL or ESC \ (titles, links).
+// Built from char codes so no control character appears in a regex literal.
+const ESC = String.fromCharCode(0x1b)
+const BEL = String.fromCharCode(0x07)
+const ANSI_PATTERN = new RegExp(
+  `${ESC}\\[[0-?]*[ -/]*[@-~]|${ESC}\\][^${BEL}${ESC}]*(?:${BEL}|${ESC}\\\\)`,
+  'g'
+)
 
 /** `text` without terminal escape sequences. */
 export function stripAnsi(text: string): string {
