@@ -851,6 +851,7 @@ test('GET /jwks.json returns public OKP keys only', async () => {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets: keyring,
     challengeSigningSecrets,
     secretsConfig,
@@ -1180,6 +1181,7 @@ test('POST /enroll charges the per-license bucket before checking the license to
         return next()
       })
       registerDaemonApiRoutes(app, {
+        requireSigned: false,
         secrets: await createTestSecrets(),
         challengeSigningSecrets: await createTestChallengeSecrets(),
         secretsConfig: createTestSecretsConfig(),
@@ -2277,6 +2279,7 @@ test('POST /auth/challenge returns 429 when restLimiter denies', async () => {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2304,6 +2307,7 @@ test('POST /auth/challenge enrollment path returns 429 when restLimiter denies',
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2340,6 +2344,7 @@ async function createRestLimitTestApp(restLimiter: {
 }) {
   const app = new Hono<AppEnv>()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets: await createTestSecrets(),
     challengeSigningSecrets: await createTestChallengeSecrets(),
     secretsConfig: createTestSecretsConfig(),
@@ -2402,6 +2407,7 @@ test('POST /commands/lease returns 429 when restLimiter denies with valid JWT', 
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2430,6 +2436,7 @@ test('POST /commands/lease proceeds when restLimiter allows', async () => {
   const secretsConfig = createTestSecretsConfig()
   let seenKey: string | undefined
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2564,6 +2571,7 @@ async function createDecryptTestApp(): Promise<Hono<AppEnv>> {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2790,6 +2798,7 @@ async function createMetricsTestApp(
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2831,6 +2840,7 @@ async function createMetricsTestAppWithRealCloudflareStore(): Promise<{
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2885,6 +2895,7 @@ async function createMetricsTestAppWithDb(
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
