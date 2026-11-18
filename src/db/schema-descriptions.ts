@@ -1851,7 +1851,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       sealing_key_reported_at:
         'When the daemon last registered its sealing key; NULL until it does.',
       plaintext_secrets_at:
-        'Unused: nothing writes or reads it any more (decrypt answers are always sealed). Kept until dropping the column is approved.',
+        'Unused: nothing writes or reads it any more; dropped in the release after the one that stopped reading it.',
       fabric_role:
         'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
       trust_pinned_by:

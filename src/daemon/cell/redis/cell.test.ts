@@ -1047,6 +1047,30 @@ test('readOutboxBatch serves xautoclaimed entries on attach', async () => {
   }
 })
 
+test('attach claims every pending entry, following the cursor past one page', async () => {
+  const { client, cell, serverId } = createTestCell()
+  try {
+    const first = await cell.attachDaemonSocket({ keyId: 'key-1' })
+    const consumerA = `ws:${first.connectionId}`
+    const total = 230
+    for (let i = 0; i < total; i += 1) await cell.enqueue(pingDispatch(`bulk-${i}`))
+    assertEquals((await cell.readOutboxBatch({ consumer: consumerA, count: total })).length, total)
+    await cell.detachDaemonSocket({ connectionId: first.connectionId })
+
+    const second = await cell.attachDaemonSocket({ keyId: 'key-2' })
+    const consumerB = `ws:${second.connectionId}`
+    const seen = new Set<string>()
+    for (let i = 0; i < 10 && seen.size < total; i += 1) {
+      for (const entry of await cell.readOutboxBatch({ consumer: consumerB, count: 100 })) {
+        seen.add(entry.requestId)
+      }
+    }
+    assertEquals(seen.size, total)
+  } finally {
+    await cleanupCell(client, serverId)
+  }
+})
+
 test('attach claims an entry the old socket read a moment before the reconnect', async () => {
   const { client, cell, serverId } = createTestCell()
   try {

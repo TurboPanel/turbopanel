@@ -2,7 +2,8 @@ import { assert, assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import type { DaemonCellRegistry } from '../../../contracts/cell.ts'
 import { createDenoDb, endDbConnection } from '../../../db/connection.ts'
-import { ingressAccount, instanceHostname } from '../../../db/schema.ts'
+import { command, ingressAccount, instanceHostname, server } from '../../../db/schema.ts'
+import { createCommandRecord } from '../../../features/commands/command-records.ts'
 import { deriveEncryptionSecretsConfig } from '../../../lib/secrets/secrets.ts'
 import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test.support.ts'
 import { parseTestSecretsConfig } from '../../../test-fixtures/secrets.ts'
@@ -128,6 +129,50 @@ test('the connector view explains why it is empty without a co-located daemon', 
     assertEquals(view.connector, null)
     assert(view.note)
   } finally {
+    await endDbConnection(db)
+  }
+})
+
+test('the connector view gives a note, not an error, when the stored tunnel status cannot be read', async () => {
+  if (!dbUrl) return skipWithoutDatabase('ingress flow tests')
+  const db = createDenoDb()
+  let serverId = ''
+  try {
+    // The co-located server is found by its host name (no organization).
+    const [row] = await db
+      .insert(server)
+      .values({ name: 'Tunnel Note Host', hostname: Deno.hostname() })
+      .returning({ id: server.id })
+    serverId = row!.id
+    const asked = await createCommandRecord(db, {
+      serverId,
+      actorType: 'system',
+      actorId: serverId,
+      type: 'server.tunnel.status',
+      payload: {},
+    })
+    await db
+      .update(server)
+      .set({
+        metadata: {
+          tunnelStatus: { commandId: asked.id, sentAt: new Date().toISOString() },
+        },
+      })
+      .where(eq(server.id, serverId))
+    // A report that did not fit its type is stored as a null summary.
+    await db
+      .update(command)
+      .set({ status: 'succeeded', resultSummary: null })
+      .where(eq(command.id, asked.id))
+
+    const view = await readInstanceConnector(db, NO_DAEMON)
+    assertEquals(view.connector, null)
+    assertEquals(view.note, 'The daemon sent a tunnel status that could not be read.')
+  } finally {
+    if (serverId) {
+      await db.delete(command).where(eq(command.serverId, serverId))
+      await db.delete(server).where(eq(server.id, serverId))
+    }
     await endDbConnection(db)
   }
 })

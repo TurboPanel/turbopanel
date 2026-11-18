@@ -68,7 +68,8 @@ type Fixture = {
   dbOpened: () => number
   run: (
     features: string[] | undefined,
-    report: CommandRecoveryReport | undefined
+    report: CommandRecoveryReport | undefined,
+    attachedAt?: string
   ) => Promise<string[]>
 }
 
@@ -96,14 +97,14 @@ function fixture(): Fixture {
     rows,
     sent,
     dbOpened: () => opened,
-    run: (features, report) =>
+    run: (features, report, attachedAt) =>
       redeliverLostCommands(
         cell as never,
         (fn) => {
           opened++
           return fn({} as Db)
         },
-        { serverId: SERVER_ID, features, report },
+        { serverId: SERVER_ID, features, report, attachedAt },
         reads
       ),
   }
@@ -247,4 +248,38 @@ test('a request that expired between the check and the cell step is not created 
   }
   assertEquals(await fx.run(RECOVERY_FEATURES, undefined), [])
   assertEquals(fx.sent.length, 0)
+})
+
+test('a type that is never sent again is dropped before the database opens', async () => {
+  const fx = fixture()
+  addCommand(fx, 'deploy', { command: 'environment.deploy' }, 'environment.deploy')
+  addCommand(fx, 'restore', { command: 'managed.restore' }, 'managed.restore')
+  assertEquals(await fx.run(RECOVERY_FEATURES, undefined), [])
+  assertEquals(fx.dbOpened(), 0)
+  addCommand(fx, 'ok', { command: 'system.reconcile' }, 'system.reconcile')
+  assertEquals(await fx.run(RECOVERY_FEATURES, undefined), ['ok'])
+  assertEquals(fx.dbOpened(), 1)
+})
+
+test('a command written after the connection attached is not sent again', async () => {
+  const fx = fixture()
+  const attachedAt = '2026-11-12T14:10:20.000Z'
+  addCommand(fx, 'before', { sentAt: '2026-11-12T14:10:19.000Z' })
+  addCommand(fx, 'after', { sentAt: '2026-11-12T14:10:21.000Z' })
+  addCommand(fx, 'unstamped')
+  assertEquals(await fx.run(RECOVERY_FEATURES, undefined, attachedAt), ['before', 'unstamped'])
+  assertEquals(await fx.run(RECOVERY_FEATURES, undefined, 'not a time'), [
+    'before',
+    'after',
+    'unstamped',
+  ])
+})
+
+test('an id listed twice in one hello is sent once', async () => {
+  const fx = fixture()
+  addCommand(fx, 'dup')
+  const original = fx.requests.values.bind(fx.requests)
+  fx.requests.values = () => [...original(), ...original()][Symbol.iterator]() as never
+  assertEquals(await fx.run(RECOVERY_FEATURES, undefined), ['dup'])
+  assertEquals(fx.sent.length, 1)
 })

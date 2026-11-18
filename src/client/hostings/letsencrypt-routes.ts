@@ -345,8 +345,8 @@ export function registerHostingLetsEncryptRoutes(
     const refused = await refuseHostingWrite(c, db, organizationId, id)
     if (refused) return refused
 
-    // The body is accepted for older clients but carries nothing: the www
-    // setting lives on the hosting itself (`options.www`).
+    // The body is read only to refuse malformed JSON; it carries nothing: the
+    // www setting lives on the hosting itself (`options.www`).
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 

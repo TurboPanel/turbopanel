@@ -339,12 +339,18 @@ test('daemonSupported comes from the stored daemon version and feature list', as
     // No enrolled key row and no stored hello: the daemon is not supported.
     assertEquals(await supported(), false)
 
+    // A full, current hello with no enrolled key row is still not supported.
+    await store({ version: MIN_SUPPORTED_DAEMON_VERSION }, DAEMON_WIRE_FEATURES)
+    assertEquals(await supported(), false)
+
     await c.db.insert(key).values({
       serverId: c.primaryServerId,
       algorithm: 'Ed25519',
       publicJwk: { kty: 'OKP', crv: 'Ed25519', x: crypto.randomUUID() },
       fingerprint: crypto.randomUUID(),
     })
+    // No stored hello (the daemon column is cleared) with the key present.
+    await c.db.update(server).set({ daemon: null }).where(eq(server.id, c.primaryServerId))
     assertEquals(await supported(), false)
 
     await store({ version: MIN_SUPPORTED_DAEMON_VERSION }, DAEMON_WIRE_FEATURES)
