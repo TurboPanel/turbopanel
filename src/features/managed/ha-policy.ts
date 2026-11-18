@@ -389,7 +389,7 @@ export type OrchestratorBindingInput = {
 export function orchestratorBindingRejection(input: OrchestratorBindingInput): string | null {
   const named = input.instanceHost !== undefined && input.instancePort !== undefined
   if (!named) {
-    return 'report names no instance although the daemon advertises managed-ha-instance-v1'
+    return 'report names no instance, so it cannot be tied to the current primary'
   }
   if (!input.expectedPrimary) return 'the current primary has no known private address and port'
   if (

@@ -147,7 +147,7 @@ type ServerReady =
 
 /**
  * Why a server cannot be sent a connector list right now (unknown, offline,
- * daemon too old, daemon key unusable), or null when it can.
+ * daemon key unusable), or null when it can.
  */
 export async function connectorServerProblem(
   db: Db,
