@@ -47,7 +47,7 @@ High Availability (Workers) must not contain any of it.
   `src/features/install/heartbeat-policy.ts` (that file cannot import this
   directory, so the test lives here). The Deno heartbeat reader is fed the
   hostname modes from `server.ts` every five minutes.
-  A `direct` name with `origin.behind_cdn_proxy` set (PATCH body `behindCdnProxy`,
+  A `direct` name with `origin.is_behind_cdn_proxy` set (PATCH body `behindCdnProxy`,
   boolean, default false) counts as `cloudflare-proxy` there: the owner says a
   CDN proxy sits in front of it, and the panel cannot detect that itself.
 - **Edge gate** (`gate.ts`), decided by the control plane alone. An `isEdge`

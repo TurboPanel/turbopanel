@@ -1,1 +1,1 @@
-ALTER TABLE "origin" ADD COLUMN "behind_cdn_proxy" boolean DEFAULT false NOT NULL;
+ALTER TABLE "origin" ADD COLUMN "is_behind_cdn_proxy" boolean DEFAULT false NOT NULL;

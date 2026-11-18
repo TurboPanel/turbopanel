@@ -5955,8 +5955,8 @@
           "notNull": true,
           "default": true
         },
-        "behind_cdn_proxy": {
-          "name": "behind_cdn_proxy",
+        "is_behind_cdn_proxy": {
+          "name": "is_behind_cdn_proxy",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,

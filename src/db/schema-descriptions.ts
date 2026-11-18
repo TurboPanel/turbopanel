@@ -644,7 +644,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'True for the one name used for links, sign-in callbacks and the default install URL; a partial unique index allows at most one row.',
       is_daemon_dial:
         'Whether install commands and the daemon URL list may name this hostname; false keeps it for people only.',
-      behind_cdn_proxy:
+      is_behind_cdn_proxy:
         'Set by the owner when a direct name sits behind a CDN proxy; the control plane then advises daemons the shorter heartbeat.',
       ingress_state:
         'Provider state for this name, such as tunnel id, DNS record id and last status; the shape depends on `mode` and the provider writes it.',
