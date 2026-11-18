@@ -332,13 +332,14 @@ test('Build and Push started while the daemon decides is refused with 409', asyn
     })
 
   const pending = press(app, 'update')
-  for (let i = 0; i < 100 && answer === undefined; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 1))
+  for (let i = 0; i < 500 && answer === undefined; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
   }
+  assert(answer !== undefined, 'the host action never reached the daemon request')
   // The daemon has not answered yet: the host job is already claimed.
   assertEquals((await push()).status, 409)
   assertEquals(rebuilt, 0)
-  answer!({ status: 'done', result: { ok: true, jobId: 'job-8' } } as PendingRequestRecord)
+  answer({ status: 'done', result: { ok: true, jobId: 'job-8' } } as PendingRequestRecord)
   assertEquals((await pending).status, 202)
   assertEquals((await push()).status, 409)
 })

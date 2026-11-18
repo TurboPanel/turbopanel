@@ -393,4 +393,10 @@ test('a failed build message is capped in bytes and colour-free', async () => {
   const ended = await waitForJobEnd(app)
   assertEquals(ended.message?.includes('\u001b'), false)
   assertEquals(new TextEncoder().encode(ended.message ?? '').length <= ERROR_TEXT_MAX_BYTES, true)
+  // The header survives however long the output is.
+  assertEquals(
+    ended.message?.startsWith('daemon overlay rebuild failed (deno task release:dev exited 1)\n'),
+    true
+  )
+  assertEquals(ended.message?.endsWith('q'), true)
 })

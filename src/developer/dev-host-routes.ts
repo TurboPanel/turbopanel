@@ -105,7 +105,8 @@ export async function requestDevHostAction(
   const serverId = stored.serverId
   // Claimed before any await, so a Build and Push pressed while the daemon
   // decides is refused. Kept only once the daemon names the job.
-  if (!h.store.reserveJob()) return JOB_RUNNING
+  const claim = h.store.reserveJob()
+  if (claim === null) return JOB_RUNNING
   let started = false
   try {
     if (!(await h.isConnected(registry, serverId))) return unavailable()
@@ -132,7 +133,7 @@ export async function requestDevHostAction(
     logWarn(LOG_COMPONENT, `host ${action} request failed: ${String(err)}`)
     return unavailable()
   } finally {
-    if (!started) h.store.releaseJob()
+    if (!started) h.store.releaseJob(claim)
   }
 }
 

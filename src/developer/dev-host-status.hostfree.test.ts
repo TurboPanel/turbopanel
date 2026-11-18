@@ -3,7 +3,7 @@
  * it (no database, no daemon): job tracking, staleness, the control plane's
  * own commit and the migrate count.
  */
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertNotEquals } from '@std/assert'
 import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import type { DevHostPart, DevHostStatus } from '../contracts/cell-protocol.ts'
 import type { Db } from '../db/connection.ts'
@@ -113,19 +113,27 @@ test('a started job counts as running until a status names it', () => {
 
 test('a reserved job counts as running until released, started or lapsed', () => {
   const store = createDevHostStatusStore()
-  assertEquals(store.reserveJob(0), true)
+  const first = store.reserveJob(0)
+  assertNotEquals(first, null)
   assertEquals(store.isJobRunning(10), true)
   // A second claim is refused while one is held.
-  assertEquals(store.reserveJob(20), false)
-  store.releaseJob()
+  assertEquals(store.reserveJob(20), null)
+  store.releaseJob(first!)
   assertEquals(store.isJobRunning(30), false)
-  assertEquals(store.reserveJob(40), true)
+  const second = store.reserveJob(40)
+  assertNotEquals(second, null)
   store.noteJobStarted('job-9', 50)
-  store.releaseJob()
+  store.releaseJob(second!)
   assertEquals(store.isJobRunning(60), true)
   const lapsing = createDevHostStatusStore()
-  assertEquals(lapsing.reserveJob(0), true)
+  const lapsed = lapsing.reserveJob(0)
+  assertNotEquals(lapsed, null)
   assertEquals(lapsing.isJobRunning(DEV_HOST_PENDING_JOB_MS), false)
+  // A lapsed claim's late release must not clear a later caller's claim.
+  const later = lapsing.reserveJob(DEV_HOST_PENDING_JOB_MS + 5)
+  assertNotEquals(later, null)
+  lapsing.releaseJob(lapsed!)
+  assertEquals(lapsing.isJobRunning(DEV_HOST_PENDING_JOB_MS + 10), true)
 })
 
 test('migratePendingFromState counts what migrate would apply', () => {

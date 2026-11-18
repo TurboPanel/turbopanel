@@ -41,6 +41,7 @@ import {
   DevOverlayRebuildError,
   type DevOverlayState,
   ensureDevOverlayCurrent,
+  ERROR_TEXT_MAX_BYTES,
   readDevOverlayState,
 } from './dev-update-overlay.ts'
 
@@ -151,7 +152,12 @@ export async function listRemoteDevelopmentServers(
 
 function errorMessage(err: unknown): string {
   if (err instanceof DevOverlayRebuildError) {
-    return boundErrorText(err.tail ? `${err.message}\n${err.tail}` : err.message)
+    // The header always survives; the tail gets the budget left after it.
+    const header = boundErrorText(err.message)
+    if (!err.tail) return header
+    const left = ERROR_TEXT_MAX_BYTES - new TextEncoder().encode(header).length - 1
+    if (left <= 0) return header
+    return `${header}\n${boundErrorText(err.tail, left)}`
   }
   return boundErrorText(err instanceof Error ? err.message : String(err))
 }

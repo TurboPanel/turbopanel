@@ -68,7 +68,7 @@ export class DevOverlayRebuildError extends Error {
 export const ERROR_TEXT_MAX_BYTES = 4096
 
 // ESC [ ... final byte (colour, cursor), and ESC ] ... BEL or ESC \ (titles, links).
-// eslint-disable-next-line no-control-regex
+// deno-lint-ignore no-control-regex
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g
 
 /** `text` without terminal escape sequences. */
