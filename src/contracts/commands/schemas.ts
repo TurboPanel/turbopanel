@@ -6604,8 +6604,8 @@ export type ManagedIngressReconcileCommandPayload = {
    * This server's own ProxySQL backend monitor credential (control-plane
    * minted, per server). The daemon sets the ProxySQL monitor globals from it
    * and rewrites host `monitor.cnf`. Password is a daemon-bound `tpdaemon`
-   * envelope. Absent on teardown payloads and from older control planes
-   * (daemon falls back to the host-seeded `monitor.cnf`).
+   * envelope. Absent only on empty-cluster teardown payloads; the daemon
+   * refuses any other reconcile without it.
    */
   monitor?: { username: string; password: string }
   segments?: Array<{ name: string; subnet: string }>
