@@ -26,9 +26,6 @@
  * read/write split), so a dump in one transaction stays on one server.
  */
 
-import type { Db } from '../../db/connection.ts'
-import { MANAGED_BACKUP_LOGIN_FEATURE } from '../../lib/version-wire.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import { loginLimitSettings, type LoginLimitFields } from './login-limit-fields.ts'
 import { parseLoginAllowedSources } from './login-sources.ts'
 import type { LoginSettingsPatch } from './logins.ts'
@@ -52,12 +49,6 @@ export const BACKUP_LOGIN_EXISTS: Refusal = {
   message: 'This cluster already has a backup login. Delete it first to make a new one.',
 }
 
-export const BACKUP_LOGIN_NEEDS_DAEMON_UPDATE: Refusal = {
-  error: 'managed_backup_login_needs_daemon_update',
-  message:
-    "This server's TurboPanel daemon is too old to give a backup login its rights. Update the server, then try again.",
-}
-
 /**
  * `null` when the request names at least one place the login may connect
  * from (and not `any`); otherwise the 400 answer. A malformed list answers
@@ -69,20 +60,6 @@ export function backupLoginSourcesRefusal(raw: unknown): Refusal | null {
   if (parsed === null) return BACKUP_LOGIN_SOURCES_REQUIRED
   if (!Array.isArray(parsed)) return parsed
   return null
-}
-
-/** 409 body when the server's daemon cannot give the login its rights; `null` when it can. */
-export function backupLoginDaemonRefusal(features: readonly string[]): Refusal | null {
-  return features.includes(MANAGED_BACKUP_LOGIN_FEATURE) ? null : BACKUP_LOGIN_NEEDS_DAEMON_UPDATE
-}
-
-/** Reads the server's advertised features, then {@link backupLoginDaemonRefusal}. */
-export async function refuseBackupLoginOnOldDaemon(
-  db: Db,
-  serverId: string
-): Promise<Refusal | null> {
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return backupLoginDaemonRefusal(state?.projection?.features ?? [])
 }
 
 /**

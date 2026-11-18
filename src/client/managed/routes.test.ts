@@ -54,7 +54,6 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
-import { MANAGED_DATA_ONLY_READWRITE_FEATURE } from '../../lib/version-wire.ts'
 import {
   createCommandRecord,
   getCommandRecord,
@@ -3376,31 +3375,6 @@ for (const engine of ['mysql', 'mariadb'] as const) {
   test(`POST app-logins on ${engine}: owner, read/write and read-only, no straight through`, async () => {
     await withManagedFixtures({ engine }, async (ctx) => {
       const cluster = await appLoginsCluster(ctx)
-      // A daemon too old for the data-only read/write level refuses, and nothing is added.
-      const tooOld = await cluster.appLogins({ prefix: 'shop' })
-      assertEquals(tooOld.status, 409)
-      assertEquals(await cluster.userLogins(), [])
-
-      const [current] = await ctx.db
-        .select({ daemon: server.daemon })
-        .from(server)
-        .where(eq(server.id, ctx.serverId))
-      const daemon = (current?.daemon ?? {}) as { projection?: { features?: string[] } }
-      await ctx.db
-        .update(server)
-        .set({
-          daemon: {
-            ...daemon,
-            projection: {
-              ...daemon.projection,
-              features: [
-                ...(daemon.projection?.features ?? []),
-                MANAGED_DATA_ONLY_READWRITE_FEATURE,
-              ],
-            },
-          },
-        })
-        .where(eq(server.id, ctx.serverId))
       const before = ctx.commandQueue.envelopes.length
       const made = await cluster.appLogins({ prefix: 'shop' })
       assertEquals(made.status, 200)

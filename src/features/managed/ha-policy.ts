@@ -360,8 +360,6 @@ export function haEventRejection(input: HaEventGateInput): string | null {
 }
 
 export type OrchestratorBindingInput = {
-  /** The reporting daemon lists `managed-ha-instance-v1`. */
-  reporterBindsInstance: boolean
   instanceHost?: string
   instancePort?: number
   /**
@@ -386,15 +384,12 @@ export type OrchestratorBindingInput = {
 /**
  * Why an Orchestrator dead-primary report is STALE (it does not name the
  * current primary, so it must never fence); `null` when it may proceed.
- * A daemon that does not list `managed-ha-instance-v1` sends no instance and
- * keeps the legacy behavior; one that lists it must send the instance.
+ * The daemon must name the instance that died.
  */
 export function orchestratorBindingRejection(input: OrchestratorBindingInput): string | null {
   const named = input.instanceHost !== undefined && input.instancePort !== undefined
   if (!named) {
-    return input.reporterBindsInstance
-      ? 'report names no instance although the daemon advertises managed-ha-instance-v1'
-      : null
+    return 'report names no instance although the daemon advertises managed-ha-instance-v1'
   }
   if (!input.expectedPrimary) return 'the current primary has no known private address and port'
   if (

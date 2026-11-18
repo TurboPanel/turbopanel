@@ -3,7 +3,6 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { MANAGED_HA_BOOT_HOLD_FEATURE } from '../../lib/version-wire.ts'
 import { MAX_FAILURE_SPAN_MS } from './ha-fresh-standby.ts'
 import {
   DEFAULT_HOST_LOSS_WINDOW_MS,
@@ -43,7 +42,6 @@ function facts(overrides: Partial<HostLossPreflightFacts> = {}): HostLossPreflig
     offlineSinceMs: NOW - WINDOW - 1_000,
     windowMs: WINDOW,
     engine: 'postgres',
-    primaryDaemonFeatures: [MANAGED_HA_BOOT_HOLD_FEATURE],
     plannedReboot: false,
     orgServers: 2,
     orgServersOffline: 1,
@@ -157,17 +155,6 @@ test('PostgreSQL, MySQL and MariaDB are probed on host loss; other engines alert
   })
 })
 
-test('a daemon that cannot hold a returning primary back is never trusted', () => {
-  assertEquals(hostLossPreflight(facts({ primaryDaemonFeatures: [] })), {
-    action: 'alert',
-    code: 'daemon_too_old',
-  })
-  assertEquals(
-    hostLossPreflight(facts({ primaryDaemonFeatures: ['managed-health-v1'] })).action,
-    'alert'
-  )
-})
-
 test('another member whose server is also offline cannot corroborate', () => {
   assertEquals(hostLossPreflight(facts({ peerServerOffline: true })), {
     action: 'alert',
@@ -178,7 +165,6 @@ test('another member whose server is also offline cannot corroborate', () => {
 test('the first matching refusal wins, in the documented order', () => {
   const everythingWrong = facts({
     engine: 'redis',
-    primaryDaemonFeatures: [],
     orgServers: 3,
     orgServersOffline: 3,
     peerServerOffline: true,

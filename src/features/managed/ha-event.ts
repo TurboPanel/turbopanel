@@ -32,7 +32,6 @@ import {
 import { haMemberDialForReporter } from './ha-desired.ts'
 import { getManagedEngineSpec } from './index.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
-import { MANAGED_HA_INSTANCE_FEATURE } from '../../lib/version-wire.ts'
 import {
   haEventRejection,
   ORCHESTRATOR_DETECTOR,
@@ -111,7 +110,6 @@ async function loadServerOrganization(db: Db, serverId: string): Promise<string 
 
 /** Lookups behind the Orchestrator binding check (test seam). */
 export type HaBindingLoaders = {
-  reporterBindsInstance: (db: Db, serverId: string) => Promise<boolean>
   primaryDial: (
     db: Db,
     reporterServerId: string,
@@ -124,11 +122,6 @@ export type HaBindingLoaders = {
     primary: ManagedMemberRow,
     members: readonly ManagedMemberRow[]
   ) => Promise<string[]>
-}
-
-async function reporterBindsInstance(db: Db, serverId: string): Promise<boolean> {
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return state?.projection?.features?.includes(MANAGED_HA_INSTANCE_FEATURE) === true
 }
 
 async function currentPrimaryDial(
@@ -171,7 +164,6 @@ export async function reporterPrivateHosts(
 }
 
 const DEFAULT_BINDING_LOADERS: HaBindingLoaders = {
-  reporterBindsInstance,
   primaryDial: currentPrimaryDial,
   reporterPrivateHosts,
 }
@@ -192,7 +184,6 @@ async function staleOrchestratorReason(
   }
 ): Promise<string | null> {
   if ((input.detector ?? ORCHESTRATOR_DETECTOR) !== ORCHESTRATOR_DETECTOR) return null
-  const bindsInstance = await ctx.loaders.reporterBindsInstance(db, ctx.reporterServerId)
   const named = input.instanceHost !== undefined && input.instancePort !== undefined
   const expectedPrimary = named
     ? await ctx.loaders.primaryDial(db, ctx.reporterServerId, ctx.engine, ctx.primary)
@@ -212,7 +203,6 @@ async function staleOrchestratorReason(
         ]
       : undefined
   return orchestratorBindingRejection({
-    reporterBindsInstance: bindsInstance,
     instanceHost: input.instanceHost,
     instancePort: input.instancePort,
     expectedPrimary,

@@ -142,7 +142,6 @@ function capturingDeps(enqueued: EnqueueCall[], extra: ReseedDemotedPrimaryDeps 
   const deps: ReseedDemotedPrimaryDeps = {
     listMembers: () => Promise.resolve([demoted(), promoted()]),
     serversConnected: () => Promise.resolve(true),
-    daemonsReportFinalPosition: () => Promise.resolve(true),
     findInFlightRecovery: () => Promise.resolve(switchoverRecord()),
     hasOutstandingApply: () => Promise.resolve(false),
     hasLiveBackup: () => Promise.resolve(false),
@@ -492,50 +491,13 @@ test('the wipe payload carries the recovery id and the primary epoch for the hos
   assertEquals(target?.payload.switchoverReseed, undefined)
 })
 
-test('a daemon that does not list the final position feature fails closed as too old', async () => {
+test('a missing member row skips the re-seed', async () => {
   const enqueued: EnqueueCall[] = []
-  const seen: string[][] = []
-  await reseed(
-    capturingDeps(enqueued, {
-      daemonsReportFinalPosition: (_db, ids) => {
-        seen.push([...ids].sort())
-        return Promise.resolve(false)
-      },
-    })
-  )
+  await reseed(capturingDeps(enqueued, { listMembers: () => Promise.resolve([promoted()]) }))
   assertEquals(enqueued.length, 0)
-  // Both the old and the new primary server are asked.
-  assertEquals(seen, [[SERVER_OLD, SERVER_NEW].sort()])
-  assertEquals(outcomes, [{ state: 'skipped', note: 'daemon too old' }])
-})
-
-test('a missing member row skips the re-seed instead of skipping the daemon check', async () => {
-  const enqueued: EnqueueCall[] = []
-  let asked = false
-  await reseed(
-    capturingDeps(enqueued, {
-      listMembers: () => Promise.resolve([promoted()]),
-      daemonsReportFinalPosition: () => {
-        asked = true
-        return Promise.resolve(true)
-      },
-    })
-  )
-  assertEquals(enqueued.length, 0)
-  assertEquals(asked, false)
   assertEquals(outcomes, [
     { state: 'skipped', note: 'the former or the new primary member is missing' },
   ])
-})
-
-test('the daemon check runs before the positions, so an old daemon is named as too old', async () => {
-  const enqueued: EnqueueCall[] = []
-  const { oldPrimaryFinalLsn: _old, newPrimaryReplayLsn: _new, ...begunOnly } = CLEAN_METADATA
-  await reseed(
-    capturingDeps(enqueued, { daemonsReportFinalPosition: () => Promise.resolve(false) }),
-    switchoverRecord({ metadata: begunOnly })
-  )
-  assertEquals(outcomes, [{ state: 'skipped', note: 'daemon too old' }])
 })
 
 test('a primary that changed again since the switchover began is not wiped over', async () => {

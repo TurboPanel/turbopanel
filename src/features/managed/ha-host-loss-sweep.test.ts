@@ -307,7 +307,6 @@ test('connected flags, org counts and recent reboots come from the database', as
     const before = await DEFAULT_HOST_LOSS_LOADERS.serverFacts(c.db, c.primaryServerId, since)
     assertEquals(before.rebootRecently, false)
     assertEquals(before.updateInFlight, false)
-    assertEquals(before.features, [])
 
     await createCommandRecord(c.db, {
       serverId: c.primaryServerId,
@@ -344,7 +343,6 @@ test('the sweep end to end on real queries: a confirmed lost host starts the fai
         // The pair has no daemon identity row; everything else is the real query.
         serverFacts: () =>
           Promise.resolve({
-            features: ['managed-ha-boot-hold-v1'],
             updateInFlight: false,
             rebootRecently: false,
           }),
@@ -516,7 +514,6 @@ test('power cut, failover, power back: the old primary is fenced, never started,
         ...onlyThisCluster(c),
         serverFacts: () =>
           Promise.resolve({
-            features: ['managed-ha-boot-hold-v1'],
             updateInFlight: false,
             rebootRecently: false,
           }),
@@ -713,7 +710,6 @@ test('with the switch off the loss is an alert row and nothing else', async () =
         ...onlyThisCluster(c),
         serverFacts: () =>
           Promise.resolve({
-            features: ['managed-ha-boot-hold-v1'],
             updateInFlight: false,
             rebootRecently: false,
           }),

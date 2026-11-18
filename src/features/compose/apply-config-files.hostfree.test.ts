@@ -337,7 +337,6 @@ test('a config file reads a database reference from the binding rows, secrets as
       ]),
       projectId: 'p1',
       environmentId: 'e1',
-      configFilesEnabled: true,
     })
   )
   const file = result.configFiles.find((f) => f.source === 'app_pgpass')

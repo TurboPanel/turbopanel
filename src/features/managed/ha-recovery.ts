@@ -562,10 +562,9 @@ async function enqueueFenceCommands(
   params: FenceParams
 ): Promise<RecoveryEnqueueResult> {
   const drains = await prepareDrainCommands(db, params)
-  const finalPosition = await finalPositionStopFields(db, {
+  const finalPosition = finalPositionStopFields({
     recovery: params.recovery,
     engine: params.engine,
-    sourceServerId: params.source.serverId,
   })
   const stop = await prepareCommand(db, {
     serverId: params.source.serverId,

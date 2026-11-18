@@ -77,7 +77,6 @@ export type HostLossCandidate = {
 
 /** What a tick needs to know about the primary's server beyond the member row. */
 export type HostLossServerFacts = {
-  features: readonly string[]
   updateInFlight: boolean
   rebootRecently: boolean
 }
@@ -218,7 +217,6 @@ async function loadServerFacts(
     )
     .limit(1)
   return {
-    features: state?.projection?.features ?? [],
     updateInFlight: state?.projection?.update?.status === 'updating',
     rebootRecently: reboots.length > 0,
   }
@@ -409,7 +407,6 @@ async function evaluateCluster(
     windowMs: deps.windowMs,
     markReason: candidate.markReason,
     engine,
-    primaryDaemonFeatures: facts.features,
     plannedReboot: facts.updateInFlight || facts.rebootRecently,
     orgServers: org.total,
     orgServersOffline: org.offline,

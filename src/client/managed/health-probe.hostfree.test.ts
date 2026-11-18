@@ -3,7 +3,6 @@ import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
-import { MANAGED_HEALTH_FEATURE } from '../../lib/version-wire.ts'
 import {
   createFreshStandbyProbe,
   MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
@@ -63,7 +62,6 @@ function deps(overrides: Partial<ManagedHealthProbeDeps> = {}) {
     replication: ManagedReplicationHealth
   }[] = []
   const merged: ManagedHealthProbeDeps = {
-    daemonFeatures: () => Promise.resolve([MANAGED_HEALTH_FEATURE]),
     isServerConnected: () => Promise.resolve(true),
     persist: (memberId, replication) => {
       persisted.push({ memberId, replication })
@@ -79,26 +77,6 @@ const DB = {} as Db
 function ok(member: unknown): Reply {
   return { status: 'done', result: { ok: true, member } }
 }
-
-test('sends nothing to a daemon that does not advertise managed-health-v1', async () => {
-  const { registry, sent } = fakeRegistry(ok({}))
-  const { merged, persisted } = deps({
-    daemonFeatures: () => Promise.resolve(['update-progress-v1']),
-  })
-  const outcome = await probeManagedMemberHealth(DB, registry, PARAMS, merged)
-  assertEquals(outcome, { status: 'unsupported' })
-  assertEquals(sent.length, 0)
-  assertEquals(persisted.length, 0)
-})
-
-test('a daemon with no recorded features is unsupported', async () => {
-  const { registry, sent } = fakeRegistry(ok({}))
-  const { merged } = deps({ daemonFeatures: () => Promise.resolve([]) })
-  assertEquals(await probeManagedMemberHealth(DB, registry, PARAMS, merged), {
-    status: 'unsupported',
-  })
-  assertEquals(sent.length, 0)
-})
 
 test('is unavailable, sending nothing, without a registry or an online server', async () => {
   const { merged } = deps()

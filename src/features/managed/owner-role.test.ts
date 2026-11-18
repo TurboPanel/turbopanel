@@ -2,16 +2,12 @@ import { assertEquals } from '@std/assert'
 import {
   adminAccessNotes,
   DATABASE_ADMIN_PRIVILEGE,
-  DATABASE_CONVERT_NEEDS_DAEMON_ERROR,
   databasesOwnedByLogin,
   evaluateDatabaseAdminGrant,
   evaluateOwnedDatabasesKept,
   evaluateOwnerRoleConversion,
   evaluateOwnerLogin,
   OWNER_ROLE_MAX_DATABASE_NAME,
-  OWNER_ROLE_NEEDS_DAEMON_ERROR,
-  READWRITE_NEEDS_DAEMON_ERROR,
-  refuseReadWriteOnOldDaemon,
   resolveDatabaseOwnerRole,
 } from './owner-role.ts'
 
@@ -83,61 +79,22 @@ test('a Database admin login is never read-only and is never refused over owner 
   assertEquals(evaluateDatabaseAdminGrant('postgres', grant({ privileges: ['owner'] })), null)
 })
 
-test('an old daemon gets no owner role by default and a 409 when one is asked for', () => {
-  assertEquals(resolveDatabaseOwnerRole('postgres', 'shop', undefined, false), {
-    ok: true,
-    ownerRole: false,
-  })
-  // false is refused the same on any daemon.
-  const declined = resolveDatabaseOwnerRole('postgres', 'shop', false, false)
-  assertEquals(!declined.ok && declined.error, 'managed_owner_role_required')
-  const asked = resolveDatabaseOwnerRole('postgres', 'shop', true, false)
-  assertEquals(asked.ok, false)
-  if (!asked.ok) {
-    assertEquals(asked.status, 409)
-    assertEquals(asked.error, OWNER_ROLE_NEEDS_DAEMON_ERROR)
-  }
-  // MySQL never has one, whatever the daemon.
-  assertEquals(resolveDatabaseOwnerRole('mysql', 'shop', undefined, false), {
-    ok: true,
-    ownerRole: false,
-  })
-})
-
 test('admin access notes say what a Database admin login got and never refuse', () => {
   const grant = {
     privileges: [DATABASE_ADMIN_PRIVILEGE],
     databases: ['old', 'new'],
     ownerRoleDatabases: ['new'],
   }
-  const full = { ownerRole: true, databaseOwner: true }
   // Databases made before owner roles: read and write there, said in plain words.
-  const notes = adminAccessNotes('postgres', grant, full)
+  const notes = adminAccessNotes('postgres', grant)
   assertEquals(notes.length, 1)
   assertEquals(notes[0]!.includes('old'), true)
   assertEquals(notes[0]!.includes('new'), false)
   assertEquals(notes[0]!.includes('read and write'), true)
-  // A daemon with owner roles but not the fallback: connect only, said so.
-  assertEquals(
-    adminAccessNotes('postgres', grant, { ownerRole: true, databaseOwner: false })[0]!.includes(
-      'connect only'
-    ),
-    true
-  )
-  // A daemon older than owner roles: the login is added as read/write.
-  assertEquals(
-    adminAccessNotes('postgres', grant, { ownerRole: false, databaseOwner: false })[0]!.includes(
-      'older than owner roles'
-    ),
-    true
-  )
   // Nothing to say when every database has an owner role, or it is not an admin login.
-  assertEquals(
-    adminAccessNotes('postgres', { ...grant, ownerRoleDatabases: ['old', 'new'] }, full),
-    []
-  )
-  assertEquals(adminAccessNotes('postgres', { ...grant, privileges: ['owner'] }, full), [])
-  assertEquals(adminAccessNotes('mysql', grant, full), [])
+  assertEquals(adminAccessNotes('postgres', { ...grant, ownerRoleDatabases: ['old', 'new'] }), [])
+  assertEquals(adminAccessNotes('postgres', { ...grant, privileges: ['owner'] }), [])
+  assertEquals(adminAccessNotes('mysql', grant), [])
 })
 
 test('only a login that can change things, that the panel manages, may be chosen as the owner', () => {
@@ -187,68 +144,9 @@ test('a login that owns databases has to stay able to own them', () => {
   }
 })
 
-const rw = { privileges: ['read-write'], grantMode: 'recipe' }
-
-test('a new MySQL or MariaDB read/write login needs the data-only daemon', () => {
-  for (const engine of ['mysql', 'mariadb']) {
-    const refused = refuseReadWriteOnOldDaemon(engine, rw, null, false)
-    assertEquals(refused?.error, READWRITE_NEEDS_DAEMON_ERROR)
-    assertEquals(refused?.status, 409)
-    assertEquals(refuseReadWriteOnOldDaemon(engine, rw, null, true), null)
-  }
-})
-
-test('the data-only daemon rule leaves other levels, modes, engines and held logins alone', () => {
-  assertEquals(refuseReadWriteOnOldDaemon('postgres', rw, null, false), null)
-  for (const privileges of [['read-only'], ['owner'], ['admin']]) {
-    assertEquals(
-      refuseReadWriteOnOldDaemon('mysql', { privileges, grantMode: 'recipe' }, null, false),
-      null
-    )
-  }
-  // A manage-myself login is never written by the panel.
-  assertEquals(refuseReadWriteOnOldDaemon('mysql', { ...rw, grantMode: 'self' }, null, false), null)
-  // Already panel-managed read/write: nothing new is asked of the daemon.
-  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, rw, false), null)
-  assertEquals(refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'recipe' }, false), null)
-  // A database it did not reach before is new to an older daemon.
-  assertEquals(
-    refuseReadWriteOnOldDaemon(
-      'mysql',
-      { ...rw, databases: ['a', 'b'] },
-      { ...rw, databases: ['a'] },
-      false
-    )?.error,
-    READWRITE_NEEDS_DAEMON_ERROR
-  )
-  assertEquals(
-    refuseReadWriteOnOldDaemon(
-      'mysql',
-      { ...rw, databases: ['a'] },
-      { ...rw, databases: ['a', 'b'] },
-      false
-    ),
-    null
-  )
-  // Moving a manage-myself login back to panel-set read/write, or adding the level, is new.
-  assertEquals(
-    refuseReadWriteOnOldDaemon('mysql', rw, { ...rw, grantMode: 'self' }, false)?.error,
-    READWRITE_NEEDS_DAEMON_ERROR
-  )
-  assertEquals(
-    refuseReadWriteOnOldDaemon(
-      'mysql',
-      rw,
-      { privileges: ['read-only'], grantMode: 'recipe' },
-      false
-    )?.error,
-    READWRITE_NEEDS_DAEMON_ERROR
-  )
-})
-
-test('moving an existing database onto its owner role needs a Postgres database, a confirmation and a daemon that can', () => {
-  const ask = (engine: string, name: string, confirm: unknown, daemon = true) =>
-    evaluateOwnerRoleConversion(engine, name, confirm, daemon)
+test('moving an existing database onto its owner role needs a Postgres database and a confirmation', () => {
+  const ask = (engine: string, name: string, confirm: unknown) =>
+    evaluateOwnerRoleConversion(engine, name, confirm)
   assertEquals(ask('postgres', 'defaultdb', true), null)
   assertEquals(ask('mysql', 'defaultdb', true)?.error, 'managed_owner_role_unsupported')
   assertEquals(ask('postgres', 'postgres', true)?.error, 'managed_owner_role_database_not_movable')
@@ -261,7 +159,4 @@ test('moving an existing database onto its owner role needs a Postgres database,
   assertEquals(unconfirmed?.message?.includes('tp_defaultdb_owner'), true)
   assertEquals(unconfirmed?.message?.includes('quiet window'), true)
   assertEquals(ask('postgres', 'defaultdb', 'yes')?.status, 400)
-  const old = ask('postgres', 'defaultdb', true, false)
-  assertEquals(old?.error, DATABASE_CONVERT_NEEDS_DAEMON_ERROR)
-  assertEquals(old?.status, 409)
 })

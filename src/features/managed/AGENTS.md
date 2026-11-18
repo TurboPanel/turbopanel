@@ -69,9 +69,9 @@ container name, `_CA_CERT`, `_CA_FILE` and the TLS mode. A **PHP site**
 and a **native Node app** run on the host as the site owner's Linux user, where
 the container name does not resolve, so they get `_HOST=127.0.0.1` (the DSN too)
 and the same listener port. A PHP site gets no `_CA_CERT` (a multi-line value
-breaks its web server): a daemon that lists `site-db-bindings-v1` is sent the CA
+breaks its web server): the daemon is sent the CA
 as `sites[].dbCa` and sets `<PREFIX>_CA_FILE` to a file only the owner can read
-(`deploy-site-db-bindings.ts`); an older daemon gets a deploy warning instead. A
+(`deploy-site-db-bindings.ts`). A
 native app keeps `_CA_CERT` as text (its private environment file carries
 multi-line values). The kind is decided at deploy from the merged compose
 document; any other re-materialize keeps the stored form (`inferStoredDelivery`).
@@ -328,10 +328,9 @@ stays internal.
 - **Yes**: published on `0.0.0.0`, and on `::` too when the daemon reports a
   live IPv6 address (`hostHasIpv6`: IPv6, not loopback or link-local, on an
   interface that is up and is not a mesh tunnel or Docker bridge; stored `ip`
-  rows, datacenter pins and address overrides do not count) **and** advertises
-  `managed-ingress-ipv6-v1`. On a kernel with no IPv6 stack a `[::]` publish
-  fails and takes the listener down, which is why only what the daemon read
-  from the kernel counts; an older daemon never receives `::`. The firewall (`features/firewall/`, preview
+  rows, datacenter pins and address overrides do not count). On a kernel with
+  no IPv6 stack a `[::]` publish fails and takes the listener down, which is
+  why only what the daemon read from the kernel counts. The firewall (`features/firewall/`, preview
   only so far) and the network rules decide who can reach it. Every cluster on
   the server is reachable that way, by design. With `::` the daemon also gives
   ProxySQL its own IPv6-only Docker network and an IPv6 listener, so IPv6
@@ -389,10 +388,7 @@ on with a limit, or adding a limit to a login set to it); 400
 `straight_through_login_not_allowed` for root/replication. `null` on PATCH
 clears the choice back to the default. The reconcile sends
 `straightThrough: true` on the `users[]` entry only when the effective value is
-on (omitted otherwise). It is deliberately not behind a feature flag like
-`managed-login-limits-v1`: the field only adds behaviour, so a daemon that
-predates it ignores it and keeps the shared path, and the command parser there
-does not reject unknown keys. Every PATCH already re-applies the cluster
+on (omitted otherwise). Every PATCH already re-applies the cluster
 (which re-sends the ingress), so changing the switch, the privileges or the
 source limit takes effect through the same apply; the dry run lists the change
 in plain words. `scripts/contract-field-snapshot.json` does not pin
@@ -410,10 +406,7 @@ into a `%` prefix on save only when ProxySQL can match it exactly: IPv4 /8 /16
 on `POST` and `PATCH .../managed/users` (`login-limit-fields.ts`, pure rules in
 `login-sources.ts`; an empty list is refused, `any` means clear). The reconcile
 sends `allowedSources` (+ `allowLocalSources` for `internal`) and
-`maxConnections` on the login's `users[]` entry (`loginWireLimits`) only to a
-daemon listing `managed-login-limits-v1`; for an older daemon a source-limited
-login is left out of that server's payload (fail closed) and a bare cap is
-dropped. Same behaviour as the root guard: the login signs in, every query from
+`maxConnections` on the login's `users[]` entry (`loginWireLimits`). Same behaviour as the root guard: the login signs in, every query from
 a refused address is answered with an error; anything arriving as the Docker
 gateway address counts as local.
 
@@ -521,10 +514,7 @@ updated) and
 MariaDB `SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES, SHOW CREATE ROUTINE`,
 both at global level `*.*` so a database made with plain SQL is covered; a
 daemon from before that grants them per listed database only, so such a
-database stays unreadable until the daemon is updated). A daemon without
-`managed-backup-login-v1` would drop `kind` and make a login with no rights, so
-creation refuses with 409
-`managed_backup_login_needs_daemon_update`. On the shared front door it is a
+database stays unreadable until the daemon is updated). On the shared front door it is a
 tool login (primary only, no split rules), so a dump in one transaction stays
 on one backend. Large objects on PostgreSQL 18 are not covered yet.
 Create and delete are audited (`managed.backup_login.create` with the
@@ -554,8 +544,7 @@ database gets it (`POST /managed/databases`: on Postgres every new database
 gets one; `ownerRole: false` answers 400 `managed_owner_role_required` and a
 name over 54 characters 400 `managed_owner_role_name_too_long`; `ownerRole`
 stays accepted only as `true`; 400 on MySQL/MariaDB when asked for). Existing databases keep their owner until the customer asks:
-`POST …/databases/{name}/owner-role` with `confirm: true` (`evaluateOwnerRoleConversion`;
-needs `managed-database-convert-v1`, else 409 `managed_database_convert_needs_daemon_update`)
+`POST …/databases/{name}/owner-role` with `confirm: true` (`evaluateOwnerRoleConversion`)
 sends one apply with the database flagged and `databases[].convertExisting`
 (`convertDatabases` in the apply input, never stored). The `database.is_role_owned` flag is
 set only when the primary's apply succeeds (`markConvertedDatabasesRoleOwned` in the command
@@ -570,31 +559,22 @@ pass `ownerRoleDatabases` from the parsed options (a missing flag makes the
 daemon treat the database as an ordinary one). `writeManagedRowOptions` keeps
 the key. The `tp_` login-name prefix is reserved (`isReservedManagedUsername`).
 
-Gate: the primary's daemon must list `managed-owner-role-v1`
-(`MANAGED_OWNER_ROLE_FEATURE`). Without it a new database is made without an
-owner role (`ownerRole: true` asked for answers 409
-`managed_owner_role_needs_daemon_update`). Existing owner-role databases and
-logins are untouched.
-
 **Adding a login is never refused over owner roles.** A Database admin login
 (`admin`) on Postgres is added whatever the databases' state: on a database with
 an owner role it joins the owner role; on a database made before owner roles the
-daemon (`managed-database-owner-v1`) gives it read and write access there, never
-ownership and never a platform role; a daemon older than owner roles gets it as
-a `read-write` login on the wire (`buildCredentials`), a daemon with owner roles
-but not the fallback leaves it connect-only on such databases. The POST/PATCH
+daemon gives it read and write access there, never ownership and never a
+platform role. The POST/PATCH
 answer carries plain-words `notes` saying which (`adminAccessNotes`). Only real
 invalid input refuses: a read-only admin login is 400
 `managed_admin_login_not_read_only`.
 
 **Explicit database owner (`databaseOwners`).** Every Postgres database made with
 an owner role (always, for a new database; not for databases made before owner
-roles, nor for ones a daemon without `managed-owner-role-v1` made) has an owner that is
+roles) has an owner that is
 never the root login or the platform admin: the cluster's
 first database too (made by the engine's first start for the platform admin; the
 daemon moves it onto `tp_<db>_owner` while it is empty, and cluster create records
-it as having an owner role only when the primary's daemon lists
-`managed-database-owner-v1`). `database.owner_login_id` (set null when the login
+it as having an owner role). `database.owner_login_id` (set null when the login
 is deleted, only on a database with an owner role) records a login the customer picked with
 `ownerLoginId` on `POST /managed/databases` (`database-owners.ts`,
 `evaluateOwnerLogin`: a migration or read/write login the panel manages; the
@@ -602,10 +582,7 @@ database is added to its list in the same request and put back if the apply is
 not queued). The wire carries `databases[].ownerLogin` (`buildDatabaseOps`); the
 daemon keeps `tp_<db>_owner` as the role that owns what is created, moves the
 database itself onto the login after the login exists, and the login works
-through the owner role. Gate: `managed-database-owner-v1`
-(`MANAGED_DATABASE_OWNER_FEATURE`), else 409
-`managed_database_owner_needs_daemon_update` for a chosen login (the default
-owner role needs only `managed-owner-role-v1`). GET/POST `databases` answer
+through the owner role. GET/POST `databases` answer
 `owners` per database (`describeDatabaseOwners`). MySQL and MariaDB have no
 database owner: `ownerLoginId` is 400 `managed_owner_login_unsupported` and a
 login there only gets rights on a database. Changing the owner of an existing
@@ -618,22 +595,13 @@ the entry from `databaseOwners`; dropping such a database also drops the login's
 listing of it.
 
 **MySQL and MariaDB: three jobs, data only below the migration login.** The
-daemon (`managed-data-only-readwrite-v1`, `MANAGED_DATA_ONLY_READWRITE_FEATURE`)
-grants `read-only` SELECT and SHOW VIEW; `read-write` row changes plus EXECUTE,
+daemon grants `read-only` SELECT and SHOW VIEW; `read-write` row changes plus EXECUTE,
 LOCK TABLES, CREATE TEMPORARY TABLES and SHOW VIEW (no create, alter or drop of
 anything); `owner` ALL on its database without the grant option; only `admin`
 keeps the grant option. Its next apply also takes the older wide rights back
-from existing logins (no grace period, no new-logins-only mode). An older
-daemon would keep the wide grant, so the panel fails closed: a panel-managed
-`read-write` login on MySQL or MariaDB is refused with 409
-`managed_readwrite_needs_daemon_update` (create; PATCH when it adds the level, adds a
-database to it, or moves a `self` login back to panel-set), see `refuseReadWriteOnOldDaemon`. A
-login that already holds the level is left alone, and `self` logins are never
-written. Read-only has no EXECUTE on purpose: a routine runs with its definer's
-rights and could change data. The gate is checked at create and PATCH only: a
-failover onto a member whose daemon is older re-applies the wide set until that
-daemon updates. `owner` is not gated: an older daemon still gives it the grant
-option. `TRIGGER` and `EVENT` stay on a login that still defines a trigger or a
+from existing logins (no grace period, no new-logins-only mode). `self` logins
+are never written. Read-only has no EXECUTE on purpose: a routine runs with its definer's
+rights and could change data. `TRIGGER` and `EVENT` stay on a login that still defines a trigger or a
 scheduled event (a trigger fails with error 1142 once its definer loses it,
 an event stops firing) until those move to the migration login.
 
@@ -1013,9 +981,8 @@ missing, unparseable, or stale (`isManagedReplicaObservationStale` — keyed on
 age, not on the gate's error code, because the gate answers
 `managed_replica_not_streaming` _before_ it reads `observedAt`), the route asks
 the target's daemon for a fresh reading first (`managed-health-request`, 8s,
-`src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
-lag gate only on an `observed` answer. Timeout, offline host, a daemon without
-the feature, a daemon error, a malformed reply, or a reply for another member
+`src/client/managed/health-probe.ts`) and runs the
+lag gate only on an `observed` answer. Timeout, offline host, a daemon error, a malformed reply, or a reply for another member
 refuses with **409** `managed_replica_live_check_failed` and a plain-words
 message (stored metadata is never enough without a live answer). `force` never
 probes. `GET …/managed/status?refresh=1` (the panel's
@@ -1086,8 +1053,7 @@ required: the drain AND the stop are proven (`fenced`); the operator did not
 force the switchover; Postgres only; a fresh reading taken at switchover start
 showed the target streaming with zero lag, at most 30 s old (`targetCaughtUp`,
 `switchover-evidence.ts`) — that reading predates the drain and the stop, so it
-is necessary but never sufficient; the daemons of BOTH servers list
-`managed-switchover-final-position-v1` (else `reseedNote` "daemon too old"); a
+is necessary but never sufficient; a
 **final position taken after the stop** shows the new primary at or past the old
 primary's last write (`evaluateFinalPosition`); and the primary has not moved
 since the switchover began. The two positions arrive in host results and are
@@ -1407,12 +1373,11 @@ mark>`; repeats of the same reason fold into one row), never a promotion:
 4. PostgreSQL, MySQL and MariaDB (a MySQL/MariaDB replica is proven caught up by
    its daemon's `fullyApplied` reading, `managed-replica-freshness-v1`); any
    other engine alerts only.
-5. The dead primary's daemon advertised `managed-ha-boot-hold-v1`.
-6. Every other member's server is connected and answers a fresh
+5. Every other member's server is connected and answers a fresh
    `managed-health-request`, and **none** is still receiving (`streaming`) from
    the primary. One that hears the primary vetoes (the host is alive, only its
    link to the control plane is down).
-7. The second signal (`hostLossEngineVerdict`): every other member's server must
+6. The second signal (`hostLossEngineVerdict`): every other member's server must
    fail to open a TCP connection to the primary's database port, at the address
    that member replicates from (existing `server-network-check-v1` request, no
    wire change; `client/managed/engine-port-probe.ts`). Two rounds 10 s apart,

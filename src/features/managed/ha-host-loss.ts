@@ -28,14 +28,12 @@
  * 4. Only PostgreSQL, MySQL and MariaDB. A MySQL or MariaDB replica is
  *    proven caught up by its daemon's `fullyApplied` reading
  *    (`managed-replica-freshness-v1`); anything else alerts only.
- * 5. Only when the dead primary's daemon advertised `managed-ha-boot-hold-v1`,
- *    because that is what stops it serving writes when it returns.
- * 6. Every other member's server must be connected and must answer a fresh
+ * 5. Every other member's server must be connected and must answer a fresh
  *    health read, and NONE may still be receiving from the primary. One
  *    replica that still hears the primary means the host is alive and only
  *    its link to the control plane is down.
  *
- * 7. The second signal: the other members' servers must each fail to open a
+ * 6. The second signal: the other members' servers must each fail to open a
  *    connection to the primary's database port ({@link hostLossEngineVerdict}:
  *    two rounds {@link HOST_LOSS_ENGINE_PROBE_GAP_MS} apart, each attempt
  *    bounded to 3 s on the peer, refused / timeout / no route all count as
@@ -52,7 +50,6 @@
  */
 
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
-import { MANAGED_HA_BOOT_HOLD_FEATURE } from '../../lib/version-wire.ts'
 import { isMysqlFamilyEngine, MAX_FAILURE_SPAN_MS } from './ha-fresh-standby.ts'
 
 /** PostgreSQL, MySQL and MariaDB can fail over after a lost server. */
@@ -157,7 +154,6 @@ export type HostLossAlertCode =
   | 'too_late'
   | 'fleet_outage'
   | 'engine_unsupported'
-  | 'daemon_too_old'
   | 'not_corroborated'
   | 'peer_streaming'
   | 'engine_reachable'
@@ -171,8 +167,6 @@ export const HOST_LOSS_ALERT_MESSAGES: Readonly<Record<HostLossAlertCode, string
     "The primary's server stopped answering, but so did most of the other servers. That points at the control plane's network, not one lost host, so nothing was changed. Check the servers, then promote a replica by hand if the primary is really gone.",
   engine_unsupported:
     "The primary's server stopped answering. Automatic failover for a lost server is not available for this database engine, so nothing was changed. If the server is really gone, promote a replica from the database page.",
-  daemon_too_old:
-    "The primary's server stopped answering, and its daemon is too old to hold the database back when the server returns, so nothing was changed. If the server is really gone, promote a replica from the database page.",
   not_corroborated:
     "The primary's server stopped answering, but the other servers of this database could not confirm that the primary is down (one is offline or did not answer), so nothing was changed. If the server is really gone, promote a replica from the database page.",
   peer_streaming:
@@ -191,8 +185,6 @@ export type HostLossPreflightFacts = {
   /** Why the server was marked offline; absent = a stale-sweep mark. */
   markReason?: HostLossMarkReason
   engine: string
-  /** Features the primary's daemon advertised when it last connected. */
-  primaryDaemonFeatures: readonly string[]
   /** An operator reboot of the primary's server or a daemon update is recent. */
   plannedReboot: boolean
   /** Servers of the primary's organization: how many, how many offline. */
@@ -230,9 +222,6 @@ export function hostLossPreflight(facts: Readonly<HostLossPreflightFacts>): Host
     return { action: 'alert', code: 'fleet_outage' }
   }
   if (!isHostLossEngine(facts.engine)) return { action: 'alert', code: 'engine_unsupported' }
-  if (!facts.primaryDaemonFeatures.includes(MANAGED_HA_BOOT_HOLD_FEATURE)) {
-    return { action: 'alert', code: 'daemon_too_old' }
-  }
   if (facts.peerServerOffline) return { action: 'alert', code: 'not_corroborated' }
   return { action: 'probe' }
 }

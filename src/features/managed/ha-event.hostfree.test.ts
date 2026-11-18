@@ -114,10 +114,9 @@ const mysqlRow = { id: MANAGED_ID, engine: 'mysql', organizationId: ORG }
 const inOrg = [{ organizationId: ORG }]
 const PRIMARY_DIAL = { host: '10.0.0.5', port: 3306 }
 
-/** Binding lookups without a database: the reporter's feature + current primary dial. */
-function binding(overrides: Partial<HaBindingLoaders> & { advertises?: boolean } = {}) {
+/** Binding lookups without a database: the current primary dial. */
+function binding(overrides: Partial<HaBindingLoaders> = {}) {
   return {
-    reporterBindsInstance: async () => overrides.advertises ?? false,
     primaryDial: async () => PRIMARY_DIAL,
     reporterPrivateHosts: async () => [],
     ...overrides,
@@ -429,7 +428,7 @@ test('orchestrator event naming the current primary proceeds to failover', async
       signature: 'verified',
       reporterServerId: SERVER_A,
       commandQueue: queue,
-      binding: binding({ advertises: true }),
+      binding: binding(),
     }
   )
   assertEquals(result?.id, 'rec-bound')
@@ -448,7 +447,6 @@ test("orchestrator event naming the local primary's published private listener p
       signature: 'verified',
       commandQueue: queue,
       binding: binding({
-        advertises: true,
         primaryDial: async () => ({ host: 'primary-b', port: 3306 }),
         reporterPrivateHosts: async () => ['10.0.0.6'],
       }),
@@ -480,7 +478,6 @@ test('stale remote primary with the same private port as the local primary is re
       signature: 'verified',
       commandQueue: queue,
       binding: binding({
-        advertises: true,
         primaryDial: async () => ({ host: 'primary-b', port: 3306 }),
         reporterPrivateHosts: async () => ['10.0.0.6'],
       }),
@@ -516,7 +513,7 @@ test('orchestrator event naming another instance is recorded stale and never fen
       signature: 'verified',
       reporterServerId: SERVER_A,
       commandQueue: queue,
-      binding: binding({ advertises: true }),
+      binding: binding(),
     }
   )
   assertEquals(result?.id, 'rec-stale')
@@ -599,7 +596,7 @@ test('orchestrator event with a matching host but another port is stale', async 
   assertEquals(calls, { inserts: 1, reads: 5 })
 })
 
-test('orchestrator event without an instance from a daemon that advertises the feature is stale', async () => {
+test('orchestrator event without an instance is stale', async () => {
   const calls = { inserts: 0, reads: 0 }
   await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg], [recoveryRow({ state: 'blocked' })], calls),
@@ -608,25 +605,10 @@ test('orchestrator event without an instance from a daemon that advertises the f
       signature: 'verified',
       reporterServerId: SERVER_A,
       commandQueue: queue,
-      binding: binding({ advertises: true }),
+      binding: binding(),
     }
   )
   assertEquals(calls, { inserts: 1, reads: 5 })
-})
-
-test('orchestrator event without an instance from an old daemon keeps the legacy behavior', async () => {
-  const blocked = recoveryRow({ state: 'blocked', id: 'rec-legacy' })
-  const result = await handleManagedHaEvent(
-    fakeDb([[mysqlRow], [member()], inOrg, [], [], []], [blocked]),
-    { managedId: MANAGED_ID },
-    {
-      signature: 'verified',
-      reporterServerId: SERVER_A,
-      commandQueue: queue,
-      binding: binding({ advertises: false }),
-    }
-  )
-  assertEquals(result?.id, 'rec-legacy')
 })
 
 test('a postgres-probe event is not subject to the Orchestrator binding', async () => {
@@ -638,7 +620,7 @@ test('a postgres-probe event is not subject to the Orchestrator binding', async 
       reporterServerId: SERVER_A,
       signature: 'verified',
       commandQueue: queue,
-      binding: binding({ advertises: true, primaryDial: async () => null }),
+      binding: binding({ primaryDial: async () => null }),
     }
   )
   assertEquals(result?.id, 'rec-probe')
