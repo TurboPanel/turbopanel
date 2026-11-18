@@ -216,4 +216,4 @@ attach) or removed (`clearServerDaemonState`), which clear
 new daemon registers its own key when it connects with the new key id, and the
 server is treated as one with no key until that lands. There is no
 superadmin action to clear the key, and nothing on the daemon wire can clear it.
-The `server.plaintext_secrets_at` column is no longer written or read. The `MIN_SUPPORTED_*` floors are untouched.
+The `server.plaintext_secrets_at` column is dropped by migration `0001`. The `MIN_SUPPORTED_*` floors are untouched.

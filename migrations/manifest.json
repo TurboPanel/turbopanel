@@ -8,6 +8,12 @@
       "tag": "0000_init",
       "when": 1794507698078,
       "sha256": "3596e6656d0ba7f4360474d113ecd3d33ae80a2b94a84f9700f400db9b44e393"
+    },
+    {
+      "idx": 1,
+      "tag": "0001_drop_legacy_columns",
+      "when": 1795025682784,
+      "sha256": "68e5b71a8ea6748fd731b60951550747a9d4e73e93b9c3e15e53cfd5e491f4ef"
     }
   ]
 }

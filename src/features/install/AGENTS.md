@@ -62,7 +62,7 @@ read or write it, and organization code does not read instance ACME.
 `GET/PUT /api/admin/v1/instance/public-urls` still round-trips the flat list;
 `getPublicUrls` / `setPublicUrls` read and write the hostname table with source
 `platform-ca`. The `TURBOPANEL_PUBLIC_URLS` `setting` row is no longer written
-or read (an orphan until a migration removes it).
+or read; migration `0001` deletes the orphan row.
 
 Uploaded public trust is per hostname. The install command treats an
 uploaded name as public only when the certificate the listener serves for it
