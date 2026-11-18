@@ -10,6 +10,7 @@ import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.su
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
+import { DAEMON_WIRE_FEATURES, MIN_SUPPORTED_DAEMON_VERSION } from '../../lib/version-wire.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import {
   command,
@@ -17,6 +18,7 @@ import {
   datacenter,
   environment,
   ip,
+  key,
   managed,
   network,
   organization,
@@ -320,6 +322,43 @@ test('connected flags, org counts and recent reboots come from the database', as
     // A reboot of another server is not this server's.
     const other = await DEFAULT_HOST_LOSS_LOADERS.serverFacts(c.db, c.replicaServerId, since)
     assertEquals(other.rebootRecently, false)
+  })
+})
+
+test('daemonSupported comes from the stored daemon version and feature list', async () => {
+  await withPair(async (c) => {
+    const since = new Date(Date.now() - 600_000).toISOString()
+    const supported = async () =>
+      (await DEFAULT_HOST_LOSS_LOADERS.serverFacts(c.db, c.primaryServerId, since)).daemonSupported
+    const store = (daemonBuild: { version: string }, features: readonly string[]) =>
+      c.db
+        .update(server)
+        .set({ daemon: { projection: { daemonBuild, features: [...features] } } })
+        .where(eq(server.id, c.primaryServerId))
+
+    // No enrolled key row and no stored hello: the daemon is not supported.
+    assertEquals(await supported(), false)
+
+    await c.db.insert(key).values({
+      serverId: c.primaryServerId,
+      algorithm: 'Ed25519',
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: crypto.randomUUID() },
+      fingerprint: crypto.randomUUID(),
+    })
+    assertEquals(await supported(), false)
+
+    await store({ version: MIN_SUPPORTED_DAEMON_VERSION }, DAEMON_WIRE_FEATURES)
+    assertEquals(await supported(), true)
+
+    await store({ version: MIN_SUPPORTED_DAEMON_VERSION }, DAEMON_WIRE_FEATURES.slice(1))
+    assertEquals(await supported(), false)
+
+    await store({ version: '0.0.1' }, DAEMON_WIRE_FEATURES)
+    assertEquals(await supported(), false)
+
+    // Another server with no stored hello is not supported either.
+    const other = await DEFAULT_HOST_LOSS_LOADERS.serverFacts(c.db, c.replicaServerId, since)
+    assertEquals(other.daemonSupported, false)
   })
 })
 
