@@ -6,7 +6,6 @@
 import { assertEquals } from '@std/assert'
 import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
-import { SERVER_NETWORK_CHECK_FEATURE } from '../../lib/version-wire.ts'
 import { probeServerNetworkCheck } from './network-check-probe.ts'
 
 /**
@@ -36,21 +35,10 @@ function fakeRegistry(reply: { status: string; result?: unknown } | Error) {
 }
 
 const ready = {
-  daemonFeatures: () => Promise.resolve([SERVER_NETWORK_CHECK_FEATURE]),
   isServerConnected: () => Promise.resolve(true),
 }
 
 const params = { serverId: SERVER, targets, timeoutMs: 50 }
-
-test('a host without the feature is not asked', async () => {
-  const { registry, sent } = fakeRegistry({ status: 'done' })
-  const outcome = await probeServerNetworkCheck(db, registry, params, {
-    ...ready,
-    daemonFeatures: () => Promise.resolve([]),
-  })
-  assertEquals(outcome, { status: 'not_tested', reason: 'daemon_update_required' })
-  assertEquals(sent, [])
-})
 
 test('an offline host is not asked', async () => {
   const { registry, sent } = fakeRegistry({ status: 'done' })

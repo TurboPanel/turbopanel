@@ -999,7 +999,7 @@ async function settleUnansweredCommand(
   }
   const timeoutMessage = deployWaitMessage(waiter)
   if (waiter && DEPLOY_WAIT_CANCELS_SERVER.has(waiter.verdict)) {
-    await cancelDeployOnServer(db, cell, envelope.serverId, record.id)
+    await cancelDeployOnServer(cell, record.id)
   }
   if (waiter?.verdict === 'offline') {
     // Never reached the server: take it back so it cannot be delivered later.

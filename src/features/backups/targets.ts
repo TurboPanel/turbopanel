@@ -25,7 +25,6 @@ import {
   resealSecretForDaemon,
 } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { BACKUP_S3_COPY_FEATURE } from '../../lib/version-wire.ts'
 import { resolveManagedHomeOrganizationId } from '../principals/store.ts'
 import { isDaemonKeyActive } from '../servers/daemon-state.ts'
 import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
@@ -433,13 +432,10 @@ export async function resolveEffectiveTarget(
 
 export type DaemonRecipient = { serverId: string; keyId: string }
 
-/** The recipient to seal for, or null when the host cannot take a copy target (older daemon or no active key). */
+/** The recipient to seal for, or null when the host cannot take a copy target (no active key). */
 export async function copyRecipientFor(db: Db, serverId: string): Promise<DaemonRecipient | null> {
   const state = await getServerDaemonStateByServerId(db, serverId)
-  const features = state?.projection?.features ?? []
-  if (!state || !features.includes(BACKUP_S3_COPY_FEATURE) || !isDaemonKeyActive(state.key)) {
-    return null
-  }
+  if (!state || !isDaemonKeyActive(state.key)) return null
   return { serverId, keyId: state.key.id }
 }
 

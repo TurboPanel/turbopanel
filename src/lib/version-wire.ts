@@ -547,9 +547,7 @@ export const TUNNEL_TABLE_GENERATION_FEATURE: DaemonWireFeature = 'tunnel-table-
 
 /**
  * The daemon understands `deploy-cancel` and stops an `environment.deploy`
- * before it switches over, leaving the previous version serving. Without it the
- * control plane never sends the message and answers 409 `cancel_unsupported`
- * for a deploy the daemon already acknowledged.
+ * before it switches over, leaving the previous version serving.
  */
 export const DEPLOY_CANCEL_FEATURE: DaemonWireFeature = 'deploy-cancel-v1'
 

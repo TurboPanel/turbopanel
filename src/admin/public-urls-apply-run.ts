@@ -56,8 +56,7 @@ export async function buildPublicUrlsPayload(
     deps.daemonVersion,
     deps.dataEncryptionSecrets,
     deps.env,
-    sealing,
-    { daemonFeatures: await colocatedDaemonFeatures(deps.db, deps.serverId) }
+    sealing
   )
   const modes = (await listInstanceHostnames(deps.db)).map((row) => row.mode)
   const edgeTrust = await resolveEdgeTrustForServer(deps.db, deps.serverId, modes)

@@ -113,6 +113,8 @@ const pgRow = { id: MANAGED_ID, engine: 'postgres', organizationId: ORG }
 const mysqlRow = { id: MANAGED_ID, engine: 'mysql', organizationId: ORG }
 const inOrg = [{ organizationId: ORG }]
 const PRIMARY_DIAL = { host: '10.0.0.5', port: 3306 }
+/** The instance a daemon names in its dead-primary report. */
+const NAMED_INSTANCE = { instanceHost: PRIMARY_DIAL.host, instancePort: PRIMARY_DIAL.port }
 
 /** Binding lookups without a database: the current primary dial. */
 function binding(overrides: Partial<HaBindingLoaders> = {}) {
@@ -206,7 +208,7 @@ test('handleManagedHaEvent resumes an in-flight recovery instead of opening anot
   const inflight = recoveryRow()
   const result = await handleManagedHaEvent(
     fakeDb([[mysqlRow], [member()], inOrg, [inflight]]),
-    { managedId: MANAGED_ID, sourceMemberId: 'mem-primary' },
+    { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', ...NAMED_INSTANCE },
     { signature: 'verified', reporterServerId: SERVER_A, binding: binding() }
   )
   assertEquals(result?.id, 'rec-1')
@@ -699,7 +701,7 @@ for (const signature of ['unsigned', 'invalid', 'session-unsigned'] as const) {
     let probed = 0
     const result = await handleManagedHaEvent(
       db,
-      { managedId: MANAGED_ID, evidence: { spanMs: 20_000 } },
+      { managedId: MANAGED_ID, evidence: { spanMs: 20_000 }, ...NAMED_INSTANCE },
       {
         reporterServerId: SERVER_A,
         signature,
@@ -900,7 +902,7 @@ test('repeated refusals from one server fold into its row, whatever the reason',
   })
   const result = await handleManagedHaEvent(
     db as unknown as Db,
-    { managedId: MANAGED_ID },
+    { managedId: MANAGED_ID, ...NAMED_INSTANCE },
     {
       reporterServerId: SERVER_A,
       signature: 'session-unsigned',

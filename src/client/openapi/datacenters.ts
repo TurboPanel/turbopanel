@@ -135,8 +135,7 @@ export const datacenterSchemas = {
             status: { type: 'string', enum: ['checked', 'not_tested'] },
             reason: {
               type: 'string',
-              description:
-                'Why it was not tested: `daemon_update_required`, `offline`, `timeout` or `error`.',
+              description: 'Why it was not tested: `offline`, `timeout` or `error`.',
             },
             peers: {
               type: 'array',

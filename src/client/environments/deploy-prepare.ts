@@ -5283,8 +5283,7 @@ async function compileServerEdgeDeployment(
         db,
         params.serverId,
         params.serverOrganizationId ?? params.organizationId
-      ),
-      (await getServerDaemonStateByServerId(db, params.serverId))?.projection?.features
+      )
     ),
   }
 }

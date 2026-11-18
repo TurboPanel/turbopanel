@@ -16,7 +16,6 @@ import type {
 import { dispatchDaemonInboundMessage } from '../daemon/deno-ws.ts'
 import type { Db } from '../db/connection.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../lib/secrets/secrets.ts'
-import { DEV_HOST_FEATURE } from '../lib/version-wire.ts'
 import { withDevelopmentAdminRoutes } from '../platform/deno/development-admin-routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import {
@@ -121,7 +120,6 @@ function hooksWith(overrides: DevHostRoutesHooks = {}): DevHostRoutesHooks {
     store,
     pushJobActive: () => false,
     isConnected: () => Promise.resolve(true),
-    daemonFeatures: () => Promise.resolve([DEV_HOST_FEATURE]),
     readMigratePending: () => Promise.resolve({ pending: 0, applied: 25, total: 25 }),
     runningCommit: () => Promise.resolve(HEAD),
     ...overrides,
@@ -241,11 +239,10 @@ test('a running Build and Push job answers 409 without asking', async () => {
   assertEquals(sent.length, 0)
 })
 
-test('503 daemon_unavailable when the daemon is missing, offline or lacks dev-host-v1', async () => {
+test('503 daemon_unavailable when the daemon is missing or offline', async () => {
   const cases: DevHostRoutesHooks[] = [
     hooksWith({ store: createDevHostStatusStore() }),
     hooksWith({ isConnected: () => Promise.resolve(false) }),
-    hooksWith({ daemonFeatures: () => Promise.resolve(['managed-health-v1']) }),
   ]
   for (const hooks of cases) {
     const { registry, sent } = fakeRegistry(accepted)
@@ -304,7 +301,6 @@ test('Build and Push and the host actions refuse each other', async () => {
     })
     const hostHooks: DevHostRoutesHooks = {
       isConnected: () => Promise.resolve(true),
-      daemonFeatures: () => Promise.resolve([DEV_HOST_FEATURE]),
       runningCommit: () => Promise.resolve(HEAD),
     }
     withDevelopmentAdminRoutes(

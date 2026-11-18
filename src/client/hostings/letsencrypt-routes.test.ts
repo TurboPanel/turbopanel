@@ -28,7 +28,6 @@ import {
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DeployRequestAuth } from '../environments/deploy-routes.ts'
 import type { HostingApplyDeps } from './letsencrypt-apply.ts'
-import { DEPLOY_HOSTINGS_ONLY_FEATURE } from '../../lib/version-wire.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import type { DnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { registerHostingRoutes } from './routes.ts'
@@ -572,8 +571,6 @@ test('PATCH /hostings: no DNS check is queued without a pin or for an uploaded c
   }
 })
 
-const CURRENT_DAEMON = () => Promise.resolve([DEPLOY_HOSTINGS_ONLY_FEATURE])
-
 /** A queue the apply accepts; the deploy itself is the fake below, so nothing is sent. */
 const LIVE_QUEUE = { send: () => Promise.resolve() } as unknown as CommandQueue
 
@@ -728,7 +725,6 @@ test('sweep: a certificate pinned once DNS resolves queues the hostings-only app
         secretsConfig: null,
         dataEncryptionSecrets: null,
         runDeploy: fakeDeploy(f.db, calls),
-        daemonFeatures: CURRENT_DAEMON,
       },
     })
     assertEquals(sweep.pinned, 1)
@@ -745,10 +741,7 @@ test('sweep: a certificate pinned once DNS resolves queues the hostings-only app
   }
 })
 
-async function setupWithApply(
-  calls: DeployCall[],
-  daemonFeatures: () => Promise<string[]> = CURRENT_DAEMON
-): Promise<Fixture> {
+async function setupWithApply(calls: DeployCall[]): Promise<Fixture> {
   let db: Db | null = null
   const f = await setup({
     acmeEnabled: true,
@@ -756,32 +749,11 @@ async function setupWithApply(
     applyDeps: {
       commandQueue: LIVE_QUEUE,
       runDeploy: (...args) => fakeDeploy(db!, calls)(...args),
-      daemonFeatures,
     },
   })
   db = f.db
   return f
 }
-
-test('PUT use-letsencrypt: a daemon without hostings-only support gets no run and a redeploy is asked for', async () => {
-  if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")
-  const calls: DeployCall[] = []
-  const f = await setupWithApply(calls, () => Promise.resolve(['backup-s3-copy-v1']))
-  const undeploy = await deployedOn(f, true)
-  try {
-    const res = await f.call('PUT', `/hostings/${f.hostingId}/use-letsencrypt`, {})
-    assertEquals(((await res.json()) as CertificateBody).needsDeploy, true)
-    assertEquals(calls.length, 0)
-    const [requested] = await f.db
-      .select({ context: audit.context })
-      .from(audit)
-      .where(eq(audit.organizationId, f.organizationId))
-    assertEquals(requested?.context, { outcome: 'pinned', www: 'off', apply: 'daemon_too_old' })
-  } finally {
-    await undeploy()
-    await f.cleanup()
-  }
-})
 
 test('PUT use-letsencrypt: an undeployed edit elsewhere in the environment is not published early', async () => {
   if (!dbUrl) return skipWithoutDatabase("hosting Let's Encrypt route tests")

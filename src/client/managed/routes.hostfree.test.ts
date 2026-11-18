@@ -4228,15 +4228,6 @@ test('POST promote fails closed when the daemon cannot read health', async () =>
   await expectJson(response, 409, LIVE_CHECK_FAILED)
 })
 
-test('POST promote sends no probe to a daemon without managed-health-v1', async () => {
-  const { response, sent } = await promoteVia({
-    features: ['update-progress-v1'],
-    reply: { status: 'done', result: streamingHealth() },
-  })
-  await expectJson(response, 409, LIVE_CHECK_FAILED)
-  assertEquals(sent.length, 0)
-})
-
 test('POST promote probes even when the stored observation is recent', async () => {
   const { response, sent } = await promoteVia({
     features: [HEALTH_FEATURE],

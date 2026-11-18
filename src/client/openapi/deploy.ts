@@ -893,7 +893,7 @@ export const deployPaths = {
         404: { description: 'No such deploy attempt for this environment' },
         409: {
           description:
-            "`deploy_not_cancellable` (already finished), `deploy_too_late` (the host is already switching over and will finish), or `cancel_unsupported` (the server's daemon is too old to cancel)",
+            '`deploy_not_cancellable` (already finished) or `deploy_too_late` (the host is already switching over and will finish)',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

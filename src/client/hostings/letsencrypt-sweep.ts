@@ -65,7 +65,6 @@ export type HostingLetsEncryptSweepApply = {
   secretsConfig: SecretsConfig | null
   dataEncryptionSecrets: DerivedSecretsConfig | null
   runDeploy?: NonNullable<HostingApplyDeps['runDeploy']>
-  daemonFeatures?: NonNullable<HostingApplyDeps['daemonFeatures']>
 }
 
 /**
@@ -84,7 +83,6 @@ function pinSender(
   const applyDeps: HostingApplyDeps = {
     commandQueue: apply.commandQueue,
     ...(apply.runDeploy ? { runDeploy: apply.runDeploy } : {}),
-    ...(apply.daemonFeatures ? { daemonFeatures: apply.daemonFeatures } : {}),
   }
   return async (hostingId, organizationId, editedAt) =>
     (await queueHostingCertificateApply(
