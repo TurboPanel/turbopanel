@@ -13,7 +13,10 @@ import { SEALED_INSTANCE_SECRETS_FEATURE } from '../lib/version-wire.ts'
 import { recordingRedisRegistry } from '../test-fixtures/recording-redis-registry.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { setSelfHostedAddress } from '../features/install/ingress-modes.ts'
-import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
+import {
+  PublicUrlsApplyPayloadError,
+  resolvePublicUrlsApplyPayload,
+} from './public-urls-apply-payload.ts'
 import { waitForPublicUrlsApply } from './routes-helpers.ts'
 
 /**
@@ -159,13 +162,15 @@ test('an uploaded key reaches the Redis outbox only as a tpdaemon envelope', asy
   })
 })
 
-test('a daemon without the feature still receives the legacy plaintext key', async () => {
+test('a daemon without the feature gets no uploaded key, never plaintext', async () => {
   await withRollback(async (tx) => {
-    const host = await seedUploadedHostname(tx)
-    const payload = await resolvePublicUrlsApplyPayload(tx, await dataEncryption(), {}, null)
-    const entry = payload.hostnames?.find((candidate) => candidate.host === host)
-    assertEquals(entry?.keyPem, UPLOADED_KEY)
-    assertEquals(entry?.keyEnvelope, undefined)
+    await seedUploadedHostname(tx)
+    const secrets = await dataEncryption()
+    await assertRejects(
+      () => resolvePublicUrlsApplyPayload(tx, secrets, {}, null),
+      PublicUrlsApplyPayloadError,
+      'does not open sealed instance secrets'
+    )
   })
 })
 
@@ -224,7 +229,10 @@ test('a DNS-01 name reaches the daemon as uploaded while its pair is live, else 
       { host: waiting, source: 'acme-dns-01' },
     ])
     const secrets = await dataEncryption()
-    const build = (at: number) => resolvePublicUrlsApplyPayload(tx, secrets, {}, null, { now: at })
+    const { serverId } = await seedDaemon(tx, { features: [SEALED_INSTANCE_SECRETS_FEATURE] })
+    const sealing = await resolveInstanceSecretSealing(tx, serverId, parseTestSecretsConfig())
+    const build = (at: number) =>
+      resolvePublicUrlsApplyPayload(tx, secrets, {}, sealing, { now: at })
     const sourceOf = (payload: Awaited<ReturnType<typeof build>>, host: string) =>
       payload.hostnames?.find((entry) => entry.host === host)?.source
 

@@ -4389,6 +4389,7 @@ test('POST /metrics rejects JWT after license invalidation', async () => {
 
 test('POST /secrets/decrypt rejects JWT after license invalidation', async () => {
   await withEnrollFixture(async ({ app, db, organizationId, licenseId, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const secretsConfig = createTestSecretsConfig()
     const sealed = await encryptSecretForDaemon(
       secretsConfig,
