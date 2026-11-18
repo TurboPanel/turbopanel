@@ -150,13 +150,6 @@ const answer = (externalId: string) => ({
   connectors: [{ tunnelId: externalId, status: 'connected', version: '2026.5.2', slot: 'a' }],
 })
 
-test('a server whose daemon does not advertise tunnel-status-v1 is not asked', async () => {
-  await withServer({ features: [] }, async (c) => {
-    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'skipped')
-    assertEquals(c.queued.length, 0)
-  })
-})
-
 test('one question is sent and the next waits for its answer', async () => {
   await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
     assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'asked')

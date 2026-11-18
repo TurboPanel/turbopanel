@@ -128,15 +128,10 @@ async function withServer(
   }
 }
 
-test('an offline server and an old daemon are skipped', async () => {
+test('an offline server is skipped', async () => {
   await withServer({ connected: false, features: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
     const outcome = await syncServerTunnelRoutes(c.db, c.deps, c)
     assertEquals(outcome, { status: 'skipped', reason: 'server offline' })
-  })
-  await withServer({ connected: true, features: [] }, async (c) => {
-    const outcome = await syncServerTunnelRoutes(c.db, c.deps, c)
-    assertEquals(outcome, { status: 'skipped', reason: 'daemon too old' })
-    assertEquals(c.queued.length, 0)
   })
 })
 

@@ -472,9 +472,7 @@ provider accounts.
   preparation stores nothing but the table generation counter, see Table
   generation), and a doorway already linked to another site is
   never taken. Without it the first deploy sent no lock.
-  Refused with 409: `tunnel_daemon_too_old` (the daemon lacks
-  `tunnel-forwarding-v1` and the hosting has a locked name; an all-public hosting is
-  allowed and sends nothing) and `tunnel_name_public_certificate` (a locked name
+  Refused with 409: `tunnel_name_public_certificate` (a locked name
   pinned to a public Let's Encrypt certificate while the hosting also serves
   ordinary public names; the daemon contract needs every name open in that mode).
   The names counted are those the certificate would cover
@@ -502,28 +500,16 @@ provider accounts.
   server carries it). The daemon rewrites only those names' lock and
   `trusted_proxies` lines, so a carrier added or removed by a placement change
   is let in or shut out within seconds of the nudge, with no redeploy, and a
-  later deploy takes the same peers. `inbound` is in the table hash only when
-  sent, so a daemon without the feature keeps its hash and gets no field; a
-  table that holds only `inbound` is still sent. For a daemon without the
-  feature the old rule holds (the lock follows the site's next deploy: a newly
-  added carrier's forwards are dropped, a removed one stays allowed), and the
-  tunnel's `warnings` say how many servers that run its sites are in that case
-  (`serversWithDeployOnlyLock`, `siteServersOfTunnel`). **Adding a hostname to a deployed site** (daemon
-  feature `tunnel-lock-add-v1`): the site block deployed before the name joined
-  the tunnel has no lock, and the daemon only edits locks that exist. For a
-  daemon that lists the feature, each `inbound` entry of a local-only name
-  (`isLocalOnly`) carries `lock: true` (`withLockAdd` in `buildTunnelRoutes`,
-  set from `daemonAddsLockFromTable`), and the daemon makes the block the
+  later deploy takes the same peers. `inbound` is in the table hash. **Adding a hostname to a deployed site**: the site block deployed before the name joined
+  the tunnel has no lock, and the daemon only edits locks that exist. Each
+  `inbound` entry of a local-only name (`isLocalOnly`) carries `lock: true`
+  (`withLockAdd` in `buildTunnelRoutes`), and the daemon makes the block the
   locked block a deploy renders, so the name is locked within seconds of the
-  nudge. An open name never carries it. For a daemon that follows the table
-  but cannot add a lock, the tunnel's `warnings` say how many servers that run
-  its sites lock a newly added hostname only at the site's next deploy
-  (`serversWithoutLockAdd`, `hostnameLockWarning`); until then the site block
-  is an ordinary public site, as it was before the name was added. The daemon's lock add also
+  nudge. An open name never carries it. The daemon's lock add also
   skips a site with an automatic certificate (no `tls` line) and one with
   `forceHttps` off (no HTTPS block yet), and never locks a block with no
   `reverse_proxy` (a `www` redirect) or adds a lock from a deploy, only from a
-  table apply. So a daemon that has the feature still leaves a local-only
+  table apply. So the daemon still leaves a local-only
   hostname added to such a site open until its next deploy: the tunnel's
   warnings count those servers too (`lockAddSkippedServers`,
   `lockAddSkipsSite`, `hostnameLockSkippedWarning`). Nothing else on this side
@@ -784,10 +770,7 @@ is the next testing round.
 removing the tunnel:
 
 - Refused (409) while the tunnel is being removed or not yet at the provider,
-  while a rotation is under way (`rotation_in_progress`), when a carrying
-  server's daemon lacks `tunnel-connector-token-change-v1`, `tunnel-connector-v1`
-  or `tunnel-status-v1` (`tunnel_daemon_too_old`, with `serverIds`; an older
-  daemon keeps the old token, which can no longer reconnect), and for a single
+  while a rotation is under way (`rotation_in_progress`), and for a single
   carrier without `confirmSingleServer` (`rotation_single_server`: visitors
   lose the tunnel for a few seconds). Every start warns that connectors
   briefly reconnect. The same refusals (all but the single carrier) are

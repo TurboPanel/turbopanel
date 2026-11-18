@@ -258,12 +258,9 @@ test('a locked name pinned to a library certificate stays locked and is not refu
   })
 })
 
-test('an older daemon refuses a locked name and ignores an all-public hosting', async () => {
+test('an all-public hosting needs no tunnel lock', async () => {
   await withSite({ hereFeatures: [] }, async (c) => {
     await addDoorway(c)
-    assertEquals(await resolveDeployNameLock(c.db, params(c)), {
-      refusal: { code: 'tunnel_daemon_too_old', hostnames: [NAME] },
-    })
     await c.db.update(doorway).set({ isLocalOnly: false }).where(eq(doorway.hostname, NAME))
     assertEquals(await resolveDeployNameLock(c.db, params(c)), { tunnel: undefined })
   })

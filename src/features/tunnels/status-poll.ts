@@ -18,8 +18,6 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
-import { daemonCanReportTunnelStatus } from './daemon-gate.ts'
 import { recordTunnelStatus } from './status.ts'
 
 /** The least time between two questions to one server. */
@@ -137,9 +135,7 @@ export async function pollServerTunnelStatus(
   commandQueue: CommandQueue,
   row: { id: string; metadata: unknown },
   nowMs: number = Date.now()
-): Promise<'asked' | 'recorded' | 'waiting' | 'skipped'> {
-  const state = await getServerDaemonStateByServerId(db, row.id)
-  if (!daemonCanReportTunnelStatus(state?.projection?.features)) return 'skipped'
+): Promise<'asked' | 'recorded' | 'waiting'> {
   let asked = readAskedState(row.metadata)
   let recorded = false
   if (asked && !asked.recordedAt) {
