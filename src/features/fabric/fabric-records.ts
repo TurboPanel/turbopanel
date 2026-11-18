@@ -6,7 +6,6 @@ import { and, asc, eq, inArray } from 'drizzle-orm'
 import { relayServerSwitchedOn } from './relay-filters.ts'
 import { FabricAllocationError, type FabricAllocationErrorKind } from './allocation-error.ts'
 import { ensureServerContainerPrefix, loadServerContainerPrefixes } from './container-prefix.ts'
-import { loadLanRouteServerIds } from './lan-pairs.ts'
 import type { FabricReconcileOutcome } from './reconcile-outcome.ts'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -257,25 +256,15 @@ export type EndpointAddressCaches = {
   natEndpointByPair: Map<string, string>
   /** Runtime-only demoted kinds so the planner falls through. */
   failedPathKindsByPair: Map<string, Set<RelayPathKind>>
-  /**
-   * Servers whose daemon lists `fabric-lan-routes-v1`. Two of them sharing a
-   * trusted datacenter network have no tunnel between them. Absent means none
-   * (every pair keeps its tunnel, as before).
-   */
-  lanRouteServerIds?: ReadonlySet<string>
 }
 
 /** The pair-rule inputs held by the planning caches. */
 export function lanPairInputs(
-  caches: Pick<
-    EndpointAddressCaches,
-    'datacenterMembershipsByServer' | 'policyByDatacenter' | 'lanRouteServerIds'
-  >
+  caches: Pick<EndpointAddressCaches, 'datacenterMembershipsByServer' | 'policyByDatacenter'>
 ): LanPairInputs {
   return {
     membershipsByServer: caches.datacenterMembershipsByServer,
     policiesByDatacenter: caches.policyByDatacenter,
-    lanRouteServerIds: caches.lanRouteServerIds ?? new Set(),
   }
 }
 
@@ -1932,8 +1921,7 @@ export async function loadFabricReconcileSnapshot(
   ])
   const serverIds = relays.map((row) => row.serverId)
   const relayIds = relays.map((row) => row.id)
-  // LAN partners may be switched out of the mesh, so pins and daemon features
-  // are read for every server that holds a container range too.
+  // LAN partners may be switched out of the mesh, so pins are read for every server that holds a container range too.
   const pairServerIds = [...new Set([...serverIds, ...containerPrefixByServer.keys()])]
   const [
     { caches: endpointCaches },
@@ -1941,14 +1929,12 @@ export async function loadFabricReconcileSnapshot(
     segmentsByServer,
     subnetsByServer,
     datacenterMembershipsByServer,
-    lanRouteServerIds,
   ] = await Promise.all([
     loadEndpointCaches(db, serverIds),
     loadRelayPresharedKeyRows(db, relayIds),
     listSubnetsForServers(db, serverIds),
     loadDatacenterSubnetsForServers(db, serverIds),
     loadDatacenterMembershipsForServers(db, pairServerIds),
-    loadLanRouteServerIds(db, pairServerIds),
   ])
   const publicKeyed = publicKeyedRelays(relays)
   const datacenterIds = new Set<string>()
@@ -1964,7 +1950,6 @@ export async function loadFabricReconcileSnapshot(
     ...endpointCaches,
     datacenterMembershipsByServer,
     policyByDatacenter,
-    lanRouteServerIds,
   }
   return {
     fabric,
@@ -2284,10 +2269,9 @@ export function buildLanRoutes(
 }
 
 /**
- * Whether `selfServerId`'s payload brings `tp0` up: always for a daemon that
- * does not list `fabric-lan-routes-v1` (it gets no `tunnel` field and keeps
- * the tunnel on), otherwise when some other switched-on member is not a
- * trusted LAN pair (it is reached through a tunnel). Read from membership,
+ * Whether `selfServerId`'s payload brings `tp0` up: when some other
+ * switched-on member is not a trusted LAN pair (it is reached through a
+ * tunnel). Read from membership,
  * not from the peer list, so a first enable (no keys anywhere yet) still
  * brings the tunnel up and reports a key. The payload builder and the
  * firewall (WireGuard port) both read this one answer.
@@ -2297,7 +2281,6 @@ export function serverPayloadNeedsTunnel(
   memberServerIds: Iterable<string>,
   inputs: LanPairInputs
 ): boolean {
-  if (!inputs.lanRouteServerIds.has(selfServerId)) return true
   for (const serverId of memberServerIds) {
     if (serverId !== selfServerId && !serversShareTrustedLan(selfServerId, serverId, inputs)) {
       return true
@@ -2307,14 +2290,12 @@ export function serverPayloadNeedsTunnel(
 }
 
 /**
- * The `tunnel` / `lanRoutes` fields, sent only to a daemon that lists
- * `fabric-lan-routes-v1` (an older one keeps today's payload).
+ * The `tunnel` / `lanRoutes` fields of a server's payload.
  */
 function lanRouteFields(
   snapshot: FabricReconcileSnapshot,
   selfServerId: string
 ): { tunnel?: boolean; lanRoutes?: FabricReconcileLanRoute[] } {
-  if (!snapshot.caches.lanRouteServerIds?.has(selfServerId)) return {}
   const inputs = lanPairInputs(snapshot.caches)
   return {
     tunnel: serverPayloadNeedsTunnel(
