@@ -66,7 +66,7 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
 - **Key-set statements (key rotation).** `keyset-statement.ts` builds the exact statement bytes
   (`{"type":"tp-keyset","v":1,keyset,prev,kind,rpId,current,passkeys,iat}`, passkeys sorted by id) and
   verifies an envelope `{statement, approvals}` the way servers do (`tp-host panel-identity-write
-statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpIdHash`, UP+UV,
+  statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpIdHash`, UP+UV,
   `webauthn.get`, origin under the rp id, ES256 DER only or EdDSA, `prev` = pinned key, `keyset` above
   the pinned one, removals approved by a passkey that stays, additions prove possession, an `rpId`
   move needs an old-set approval plus possession under the new id. **Passkey plus old key** (owner
@@ -104,10 +104,11 @@ statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpId
   binding's keyset; a daemon whose pin holds passkeys does not compare it.
 - **Pin report passkeys.** A newer daemon adds `passkeys` (base64url SHA-256 of its pin's `passkeys=`
   line, "" for none) with a second signature `passkeysSig` over `"tp-panel-pin-passkeys\n" + sessionId
-  - serverId + keyId + passkeys + iat`(joined by`\n`); stored in `server.trust_pin_passkeys`, and a
-non-empty hash that differs from the marked set raises `panel.pin_mismatch`(context`reportedPasskeys`/`expectedPasskeys`). Not a mismatch: a report whose key set is below the live
-    one (the server is behind and catches up on its daily read), and a report taken while the marked
-    set could not be read (unknown, never "none marked").
+  + serverId + keyId + passkeys + iat` (joined by `\n`); stored in `server.trust_pin_passkeys`, and a
+  non-empty hash that differs from the marked set raises `panel.pin_mismatch` (context
+  `reportedPasskeys` / `expectedPasskeys`). Not a mismatch: a report whose key set is below the live
+  one (the server is behind and catches up on its daily read), and a report taken while the marked
+  set could not be read (unknown, never "none marked").
 - **Sealed secrets (`hpke.ts`).** HPKE (RFC 9180) base mode, DHKEM(X25519, HKDF-SHA256),
   ChaCha20-Poly1305, via `@hpke/core` + `@hpke/chacha20poly1305` (pure JS, no I/O at load, builds
   the suite on first use). Envelope `{v:1, kid, enc, ct}`; `aad` is the recipient server id.

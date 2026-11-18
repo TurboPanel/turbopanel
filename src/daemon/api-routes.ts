@@ -2725,7 +2725,8 @@ export function registerDaemonApiRoutes<E extends Env>(
       // unsigned hello list is not consulted). With no key on file nothing is
       // decrypted: plaintext is never returned.
       const db = getDb(c)
-      const sealingKey = db ? await getDaemonSealingKey(db, daemonServerId) : null
+      if (!db) return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      const sealingKey = await getDaemonSealingKey(db, daemonServerId)
       if (!sealingKey) {
         return c.json(
           { ok: false, error: SEALING_KEY_REQUIRED_ERROR, message: SEALING_KEY_REQUIRED_MESSAGE },
