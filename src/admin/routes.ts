@@ -132,16 +132,12 @@ async function buildPublicUrlsApplyPayload(
   c: Context<AppEnv>,
   opts: { getEnv?: () => Record<string, string | undefined> },
   db: NonNullable<ReturnType<typeof getDb>>,
-  serverId: string,
-  urls: string[],
-  daemonVersion: string | undefined
+  serverId: string
 ): Promise<PublicUrlsApplyPayloadOutcome> {
   try {
     const payload = await buildPublicUrlsPayload({
       db,
       serverId,
-      urls,
-      daemonVersion,
       secretsConfig: c.get('secretsConfig'),
       dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
       env: resolvePlatformEnv(c, opts),
@@ -756,14 +752,7 @@ export function registerAdminRoutes(
     }
 
     await opts.refreshEdgeRanges?.(db).catch(() => undefined)
-    const applied = await buildPublicUrlsApplyPayload(
-      c,
-      opts,
-      db,
-      serverId,
-      urlsResult.urls,
-      snapshot.daemonBuild?.version
-    )
+    const applied = await buildPublicUrlsApplyPayload(c, opts, db, serverId)
     if (!applied.ok) {
       return c.json(applied.body, applied.status)
     }

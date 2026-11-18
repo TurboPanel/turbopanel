@@ -354,7 +354,7 @@ public-urls apply, and managed logs (`managed-logs-request` /
 
 **Public URL apply**: `POST /api/admin/v1/instance/public-urls/apply` (Deno
 only) sends a `public-urls-update` WS message to the co-located daemon with the
-current URL list. The daemon writes `TURBOPANEL_PUBLIC_URLS` to
+current hostname entries. The daemon writes `TURBOPANEL_PUBLIC_URLS` to
 **`/etc/turbopanel/instance/runtime.env`** — never the checkout (a derived
 copy for the `instance-certs` role only; the self-hosted control plane never
 reads it back as a hostname source), re-runs the
@@ -373,7 +373,7 @@ sequenceDiagram
     UI->>Instance: POST /api/admin/v1/instance/public-urls/apply
     Instance->>Instance: setPublicUrls(db, urls)
     Instance->>Cell: enqueue public-urls-update envelope
-    Cell->>Daemon: WS: { type: "public-urls-update", urls }
+    Cell->>Daemon: WS: { type: "public-urls-update", hostnames }
     Daemon->>Daemon: write runtime.env, run instance-certs, reload caddy
     Daemon->>Cell: WS: { type: "public-urls-update-result", ok }
     Cell->>Instance: PendingRequestRecord { status: "done" }

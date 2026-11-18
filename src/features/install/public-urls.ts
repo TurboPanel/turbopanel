@@ -1,8 +1,6 @@
 import type { Db } from '../../db/connection.ts'
 import { getInstanceHostnamesLegacyShim, replacePublicUrlList } from './instance-hostnames.ts'
 
-export const PUBLIC_URLS_SETTING_KEY = 'TURBOPANEL_PUBLIC_URLS'
-
 /**
  * Self-hosted control-plane listener. Managed Caddy binds `:8443` only.
  * Bare hosts and the discovered-address fallback dial this port.
@@ -199,7 +197,6 @@ export function parsePublicUrlEntries(raw: string[]): ParsePublicUrlEntriesResul
 /**
  * Flat public-URL list. Storage is the `hostname` table; a new name written
  * here is `platform-ca`, an existing one keeps its certificate source.
- * `TURBOPANEL_PUBLIC_URLS` is kept as a projection of that list.
  */
 export async function getPublicUrls(db: Db): Promise<string[]> {
   return await getInstanceHostnamesLegacyShim(db)

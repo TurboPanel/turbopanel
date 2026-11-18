@@ -212,8 +212,7 @@ export const INSTANCE_ACCESS_PATHS = {
       summary: "Read the co-located daemon's certificate capability",
       description:
         'Resolves the co-located daemon and returns `{ applicable, connected, ' +
-        'serverId, version, capabilities }`. `capabilities` is ' +
-        '`resolveDaemonCapabilities(version)`. On Workers the body is ' +
+        'serverId, version }`. On Workers the body is ' +
         '`{ applicable: false }` and no cell is woken. Not a poll.',
       security: [...cookieSecurity],
       responses: {

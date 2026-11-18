@@ -7001,8 +7001,7 @@ export const ingressAccount = pgTable(
 )
 /**
  * One public name for this control plane. Replaces the flat
- * `TURBOPANEL_PUBLIC_URLS` setting as the source of truth; that setting stays
- * as a compatibility projection. Certificate source and Let's Encrypt attempt
+ * `TURBOPANEL_PUBLIC_URLS` setting as the only source of truth. Certificate source and Let's Encrypt attempt
  * state live on the row because a single jsonb setting cannot hold them.
  */
 export const instanceHostname = pgTable(

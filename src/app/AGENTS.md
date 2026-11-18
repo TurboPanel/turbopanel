@@ -64,15 +64,11 @@
   Dispatching `instance-update` does not gate on the daemon version (the
   daemon only runs the reconcile). The downgrade guard lives on the daemon:
   it refuses a target below its own `MIN_SUPPORTED_INSTANCE_VERSION`.
-  `DAEMON_FEATURE_MIN_VERSIONS` (same map in both `version-wire.ts` files) is
-  the peer-version feature gate, distinct from the metrics capability plan.
-  A panel-visible admin feature that depends on a daemon-rendered artifact
-  adds an entry here; the UI phase calls `resolveDaemonCapabilities` and does
-  not re-implement semver comparison. An unknown peer version is **not**
-  supported for a feature (the opposite default from the floor's `unknown`).
-  The first entry is `instance-cert-sources-per-hostname` at daemon **`0.1.1`**,
-  the release that renders per-hostname certificate sources in
-  `turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2`.
+  The daemon-side semver feature map (`DAEMON_FEATURE_MIN_VERSIONS`) and
+  `resolveDaemonCapabilities` are gone: every supported daemon renders
+  per-hostname certificate sources, so nothing gates on a daemon version
+  beyond the floor. A new daemon-rendered feature is gated on the daemon's
+  advertised `features[]`.
   A release that introduces a new wire message leaves
   `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION` where
   they are. Each new message is feature-gated: the peer advertises support

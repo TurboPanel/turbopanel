@@ -2,9 +2,8 @@
  * Control-plane public hostnames.
  *
  * Each row is one entry operators publish for this instance, with a
- * certificate source and any Let's Encrypt attempt state. The legacy
- * `TURBOPANEL_PUBLIC_URLS` setting remains a flat projection of the `origin`
- * table, so existing readers keep calling `getPublicUrls` / `setPublicUrls`.
+ * certificate source and any Let's Encrypt attempt state. The table is the
+ * only store; `getPublicUrls` / `setPublicUrls` read and write it.
  *
  * Instance ACME is independent of every organization. This module must not
  * import the organization options module, must not read or write an
@@ -17,7 +16,6 @@ import {
   hostname as siteHostname,
   instanceHostname,
   instanceUploadedCertificate,
-  setting,
 } from '../../db/schema.ts'
 import { normalizeHostForCompare } from '../../lib/hostname-compare.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
@@ -36,7 +34,6 @@ import { isLoopbackOrPrivateHostname } from './install-tls.ts'
 import {
   hostFromPublicUrlEntry,
   parsePublicUrlEntries,
-  PUBLIC_URLS_SETTING_KEY,
   publicUrlEntryToInstallOrigin,
 } from './public-urls.ts'
 
@@ -311,22 +308,6 @@ async function loadHostnameRows(db: Db): Promise<StoredHostname[]> {
   return rows.map((row) => mapStored(row as HostnameRow)).sort(byCreated)
 }
 
-async function writeLegacyPublicUrls(db: Db, urls: string[]): Promise<void> {
-  await db
-    .insert(setting)
-    .values({
-      key: PUBLIC_URLS_SETTING_KEY,
-      value: urls,
-    })
-    .onConflictDoUpdate({
-      target: setting.key,
-      set: {
-        value: urls,
-        updatedAt: new Date().toISOString(),
-      },
-    })
-}
-
 function newPlatformCaRow(host: string, index: number): StoredHostname {
   const stamp = stampAt(index)
   return {
@@ -354,10 +335,6 @@ async function persistHostnameRows(db: Db, rows: StoredHostname[]): Promise<void
   await db.transaction(async (tx) => {
     await tx.delete(instanceHostname).where(isNotNull(instanceHostname.id))
     await insertHostnameRows(tx, ordered)
-    await writeLegacyPublicUrls(
-      tx,
-      ordered.map((row) => row.host)
-    )
   })
 }
 
