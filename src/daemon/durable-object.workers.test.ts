@@ -3734,6 +3734,75 @@ describe('DaemonCellObject storageByCallSite attribution', () => {
       expect(String(row?.delivery_id ?? '')).toBe(secondDeliveryId)
     })
   }, 10_000)
+
+  it('redeliver-sent swaps the delivery of a sent, unacked request and nothing else', async () => {
+    const serverId = 'test-srv-redeliver-sent'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const at = new Date().toISOString()
+    const dispatch = (requestId: string, deliveryId = generateDeliveryId()) => ({
+      kind: 'command-dispatch',
+      deliveryId,
+      requestId,
+      at,
+      commandId: requestId,
+      commandType: 'daemon.ping',
+      payload: {},
+    })
+    const redeliver = async (outbound: ReturnType<typeof dispatch>): Promise<boolean> => {
+      const res = await cellRpc(stub, serverId, '/rpc/redeliver-sent', {
+        method: 'POST',
+        body: JSON.stringify({ outbound }),
+      })
+      return ((await res.json()) as { redelivered: boolean }).redelivered
+    }
+    const readRow = (requestId: string) =>
+      runInDurableObject(stub, (_instance, state) => {
+        return [
+          ...state.storage.sql.exec(
+            'SELECT delivery_id, status, delivery_status FROM request WHERE request_id = ?',
+            requestId
+          ),
+        ][0] as { delivery_id: string; status: string; delivery_status: string } | undefined
+      })
+    const enqueue = (outbound: ReturnType<typeof dispatch>) =>
+      cellRpc(stub, serverId, '/rpc/enqueue', {
+        method: 'POST',
+        body: JSON.stringify({ outbound }),
+      })
+
+    // A sent request: delivery replaced, status stays sent, queued for the pump.
+    const sentId = generateRequestId()
+    const first = dispatch(sentId)
+    await enqueue(first)
+    await cellRpc(stub, serverId, '/rpc/mark-sent', {
+      method: 'POST',
+      body: JSON.stringify({ deliveryId: first.deliveryId, connectionId: 'conn-1' }),
+    })
+    expect((await readRow(sentId))?.status).toBe('sent')
+    const again = dispatch(sentId)
+    expect(await redeliver(again)).toBe(true)
+    const swapped = await readRow(sentId)
+    expect(swapped?.delivery_id).toBe(again.deliveryId)
+    expect(swapped?.status).toBe('sent')
+    expect(swapped?.delivery_status).toBe('queued')
+    // The same delivery id again is a no-op that still reports delivered.
+    expect(await redeliver(again)).toBe(true)
+
+    // A request that was never sent, one that is gone, and one acknowledged.
+    const queuedId = generateRequestId()
+    await enqueue(dispatch(queuedId))
+    expect(await redeliver(dispatch(queuedId))).toBe(false)
+    expect((await readRow(queuedId))?.status).toBe('queued')
+    const goneId = generateRequestId()
+    expect(await redeliver(dispatch(goneId))).toBe(false)
+    expect(await readRow(goneId)).toBeUndefined()
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec('UPDATE request SET ack_at = ? WHERE request_id = ?', at, sentId)
+    })
+    const late = dispatch(sentId)
+    expect(await redeliver(late)).toBe(false)
+    expect((await readRow(sentId))?.delivery_id).toBe(again.deliveryId)
+  }, 10_000)
 })
 
 describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {

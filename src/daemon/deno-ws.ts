@@ -520,6 +520,7 @@ async function handleDaemonPresenceInbound(params: {
       serverId,
       features: message.features,
       report: message.commands,
+      attachedAt: snapshotBefore.connectedAt,
     })
   }
   await cell.recordInbound({

@@ -2302,6 +2302,7 @@ export class DaemonCellObject {
       connectionId: string
       serverId: string
       geo?: ServerGeo
+      connectedAtMs?: number
     },
     parsed: {
       type: 'hello' | 'heartbeat'
@@ -2414,7 +2415,12 @@ export class DaemonCellObject {
       )
     }
     if (parsed.type === 'hello') {
-      await this.#redeliverLostCommands(attachment.serverId, parsed.features, reported)
+      await this.#redeliverLostCommands(
+        attachment.serverId,
+        parsed.features,
+        reported,
+        attachment.connectedAtMs
+      )
     }
   }
 
@@ -2426,7 +2432,8 @@ export class DaemonCellObject {
   async #redeliverLostCommands(
     serverId: string,
     features: string[] | undefined,
-    report: CommandRecoveryReport | undefined
+    report: CommandRecoveryReport | undefined,
+    connectedAtMs: number | undefined
   ): Promise<void> {
     await redeliverLostCommands(
       {
@@ -2436,7 +2443,12 @@ export class DaemonCellObject {
           Promise.resolve(this.#listRequests(serverId, limit ?? 50, filter?.requestKind)),
       },
       (fn) => this.#withProjectionDb('command-redelivery', serverId, fn),
-      { serverId, features, report }
+      {
+        serverId,
+        features,
+        report,
+        attachedAt: connectedAtMs === undefined ? undefined : new Date(connectedAtMs).toISOString(),
+      }
     )
   }
 
