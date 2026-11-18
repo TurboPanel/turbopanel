@@ -96,9 +96,12 @@ test('a queued deploy keeps waiting, then hands the wait back, then gives up at 
 test('the run cap counts only from when the deploy started', () => {
   const started = T0 + 2 * 60 * 60_000
   const progress = plan(iso(started))
-  const endAtMs = started + 2 * DEPLOY_RUN_CAP_MS
-  assertEquals(verdict({ progress, endAtMs, nowMs: started + DEPLOY_RUN_CAP_MS - 1 }), null)
-  assertEquals(verdict({ progress, endAtMs, nowMs: started + DEPLOY_RUN_CAP_MS }), 'run_cap')
+  const endAtMs = started + 2 * DEPLOY_DEFAULT_TIMEOUT_MS
+  assertEquals(verdict({ progress, endAtMs, nowMs: started + DEPLOY_DEFAULT_TIMEOUT_MS - 1 }), null)
+  assertEquals(
+    verdict({ progress, endAtMs, nowMs: started + DEPLOY_DEFAULT_TIMEOUT_MS }),
+    'run_cap'
+  )
 })
 
 test('a running deploy is kept past the hold but handed back before the invocation limit', () => {
@@ -159,7 +162,7 @@ function waiterHarness(
   const waiter = createDeployWaiter({
     sentAt: iso(T0),
     readCommand: () =>
-      Promise.resolve({ status: commandStatus(), progress: progress(), updatedAt: iso(T0) }),
+      Promise.resolve({ status: commandStatus(), progress: progress(), updatedAt: iso(nowMs) }),
     now: () => nowMs,
     holdMs,
     endMs: 3_600_000,
@@ -191,10 +194,10 @@ test('the waiter hands a deploy that is still queued back after the hold', async
 
 test('the waiter stops a running deploy at the run cap measured from its start', async () => {
   const started = T0 + 30_000
-  const h = waiterHarness(['acked'], () => plan(iso(started)), 60_000)
+  const h = waiterHarness(['acked'], () => plan(iso(started)), DEPLOY_DEFAULT_TIMEOUT_MS + 120_000)
   assertEquals(await h.waiter.wait(h.cell, 'r1', 0), null)
   assertEquals(h.waiter.verdict, 'run_cap')
-  assertEquals(h.now(), started + DEPLOY_RUN_CAP_MS)
+  assertEquals(h.now(), started + DEPLOY_DEFAULT_TIMEOUT_MS)
 })
 
 test('the ack deadline still fails a deploy the server never acknowledged', async () => {

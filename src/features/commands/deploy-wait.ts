@@ -9,7 +9,7 @@
  *   stays offline is the one exception ({@link DEPLOY_OFFLINE_LIMIT_MS}).
  * - **Running**: the server reports `runningSince` on its step plan
  *   (`command.progress`) when it begins the work, and `null` while it waits for
- *   another build. The run cap ({@link DEPLOY_RUN_CAP_MS}) counts from
+ *   another build. The run cap ({@link DEPLOY_DEFAULT_TIMEOUT_MS}) counts from
  *   `runningSince` only.
  *
  * A server that does not report `runningSince` (an older build) is treated as
@@ -25,7 +25,6 @@ import {
   DEPLOY_DEFAULT_TIMEOUT_MS,
   DEPLOY_MAX_TIMEOUT_MS,
   DEPLOY_RECONCILE_WINDOW_MS,
-  DEPLOY_RUN_CAP_MS,
   DEPLOY_RUN_SILENCE_MS,
 } from './deploy-limits.ts'
 import { TERMINAL_COMMAND_STATUSES } from './types.ts'
