@@ -60,20 +60,14 @@ export const NODE_APP_MODE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
  * compose service. This is the `x-turbopanel.source.buildKind` key, a different
  * key from a service's own `image:`, which names an image to pull.
  *
- * Expand phase of the rename: documents saved before it spell the same thing
- * with the old value ({@link LEGACY_IMAGE_BUILD_KIND}). Both are accepted; {@link readSourceBuildKind}
- * normalizes the old value to `image`, so everything downstream of the parse
- * sees one spelling. The wire contract carries a third value (`static`) that
+ * The wire contract carries a third value (`static`) that
  * compose never mints.
  */
-export type ComposeSourceBuildKind = 'native' | 'image' | 'railpack'
+export type ComposeSourceBuildKind = 'native' | 'image'
 
-/** The old spelling of `image`, still accepted until the contract phase. */
-export const LEGACY_IMAGE_BUILD_KIND = 'railpack' as const
-
-/** True for either spelling of the image build kind. */
+/** True for the image build kind. */
 export function isImageBuildKind(value: unknown): boolean {
-  return value === 'image' || value === LEGACY_IMAGE_BUILD_KIND
+  return value === 'image'
 }
 
 /** Max length for operator-facing service description metadata. */
@@ -573,7 +567,7 @@ const SITE_ENGINES = new Set<SiteEngine>([
   'openlitespeed',
   'nginx+apache',
 ])
-const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>(['native', 'image', 'railpack'])
+const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>(['native', 'image'])
 const NODE_PACKAGE_MANAGERS = new Set<NodePackageManager>(['npm', 'yarn', 'pnpm'])
 
 /** Where a site's content comes from. Omitted means `release`. */
@@ -647,7 +641,7 @@ function readSourceBuildKind(value: unknown): ComposeSourceBuildKind | undefined
   if (!SOURCE_BUILD_KINDS.has(trimmed as ComposeSourceBuildKind)) {
     return undefined
   }
-  return trimmed === LEGACY_IMAGE_BUILD_KIND ? 'image' : (trimmed as ComposeSourceBuildKind)
+  return trimmed as ComposeSourceBuildKind
 }
 
 function readNodeVersion(value: unknown): string | undefined {
