@@ -343,6 +343,7 @@ test('the sweep end to end on real queries: a confirmed lost host starts the fai
         // The pair has no daemon identity row; everything else is the real query.
         serverFacts: () =>
           Promise.resolve({
+            daemonSupported: true,
             updateInFlight: false,
             rebootRecently: false,
           }),
@@ -514,6 +515,7 @@ test('power cut, failover, power back: the old primary is fenced, never started,
         ...onlyThisCluster(c),
         serverFacts: () =>
           Promise.resolve({
+            daemonSupported: true,
             updateInFlight: false,
             rebootRecently: false,
           }),
@@ -710,6 +712,7 @@ test('with the switch off the loss is an alert row and nothing else', async () =
         ...onlyThisCluster(c),
         serverFacts: () =>
           Promise.resolve({
+            daemonSupported: true,
             updateInFlight: false,
             rebootRecently: false,
           }),

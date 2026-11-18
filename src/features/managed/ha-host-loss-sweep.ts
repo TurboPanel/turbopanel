@@ -55,6 +55,7 @@ import {
   type PeerReading,
   readPeer,
 } from './ha-host-loss.ts'
+import { resolveDaemonSupport } from '../../lib/version-wire.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { findInFlightRecovery, recordBlockedRecovery } from './recovery-records.ts'
 import type { RecoveryRecord } from './recovery.ts'
@@ -77,6 +78,8 @@ export type HostLossCandidate = {
 
 /** What a tick needs to know about the primary's server beyond the member row. */
 export type HostLossServerFacts = {
+  /** The stored hello passes `resolveDaemonSupport`. */
+  daemonSupported: boolean
   updateInFlight: boolean
   rebootRecently: boolean
 }
@@ -216,7 +219,12 @@ async function loadServerFacts(
       )
     )
     .limit(1)
+  const support = resolveDaemonSupport(
+    state?.projection?.daemonBuild?.version,
+    state?.projection?.features
+  )
   return {
+    daemonSupported: support.status === 'supported',
     updateInFlight: state?.projection?.update?.status === 'updating',
     rebootRecently: reboots.length > 0,
   }
@@ -407,6 +415,7 @@ async function evaluateCluster(
     windowMs: deps.windowMs,
     markReason: candidate.markReason,
     engine,
+    primaryDaemonSupported: facts.daemonSupported,
     plannedReboot: facts.updateInFlight || facts.rebootRecently,
     orgServers: org.total,
     orgServersOffline: org.offline,

@@ -120,6 +120,7 @@ async function sweep(
       Promise.resolve(new Map(ids.map((id) => [id, world.connected?.[id] ?? true]))),
     serverFacts: () =>
       Promise.resolve({
+        daemonSupported: true,
         updateInFlight: false,
         rebootRecently: false,
         ...world.facts,

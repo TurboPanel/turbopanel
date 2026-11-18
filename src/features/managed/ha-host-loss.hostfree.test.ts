@@ -42,6 +42,7 @@ function facts(overrides: Partial<HostLossPreflightFacts> = {}): HostLossPreflig
     offlineSinceMs: NOW - WINDOW - 1_000,
     windowMs: WINDOW,
     engine: 'postgres',
+    primaryDaemonSupported: true,
     plannedReboot: false,
     orgServers: 2,
     orgServersOffline: 1,
@@ -155,6 +156,13 @@ test('PostgreSQL, MySQL and MariaDB are probed on host loss; other engines alert
   })
 })
 
+test('a primary whose last hello was refused is never failed over', () => {
+  assertEquals(hostLossPreflight(facts({ primaryDaemonSupported: false })), {
+    action: 'alert',
+    code: 'daemon_update_required',
+  })
+})
+
 test('another member whose server is also offline cannot corroborate', () => {
   assertEquals(hostLossPreflight(facts({ peerServerOffline: true })), {
     action: 'alert',
@@ -165,6 +173,7 @@ test('another member whose server is also offline cannot corroborate', () => {
 test('the first matching refusal wins, in the documented order', () => {
   const everythingWrong = facts({
     engine: 'redis',
+    primaryDaemonSupported: false,
     orgServers: 3,
     orgServersOffline: 3,
     peerServerOffline: true,
