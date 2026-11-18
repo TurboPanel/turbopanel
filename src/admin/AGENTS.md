@@ -36,11 +36,11 @@
   `src/deno-dev.ts` while the developer surface is on, so they are absent (404)
   elsewhere and stay out of the admin spec; this file must never import
   `src/developer/*`. GET answers `{ ok, daemonBuild: { built: { commit,
-  buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
-  servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
-  }], job: null | { id, state: building | pushing | done | failed, startedAt,
-  endedAt, message, servers: [{ id, name, ok, skipped, error }] },
-  pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
+buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
+servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
+}], job: null | { id, state: building | pushing | done | failed, startedAt,
+endedAt, message, servers: [{ id, name, ok, skipped, error }] },
+pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
   restart forgets it). `host` is the co-located daemon's development host
   status (`dev-host-status`, feature `dev-host-v1`, kept in memory by
   `src/developer/dev-host-status.ts`) with the control plane part's

@@ -579,7 +579,6 @@ it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
     outboundEnvelopeToWireMessage({
       ...base,
       kind: 'public-urls-update',
-      urls: ['https://panel.example.com'],
       hostnames: [
         {
           host: 'https://panel.example.com',
@@ -596,7 +595,6 @@ it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
     {
       type: 'public-urls-update',
       id: 'req-1',
-      urls: ['https://panel.example.com'],
       hostnames: [
         {
           host: 'https://panel.example.com',

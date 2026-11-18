@@ -4,9 +4,10 @@
  * The daemon receives each hostname's source and, for `uploaded`, the
  * certificate plus its key: sealed to the daemon as `keyEnvelope` when
  * `sealing` is set (the daemon advertises `sealed-instance-secrets-v1`),
- * otherwise the legacy plaintext `keyPem`. It also receives `publicPort`, but only on `cloudflare-tunnel` hostnames: the
- * daemon redirects other ports to it, and on a direct, proxied or uploaded
- * name ports 80 and 443 belong to hosting and may serve a different site.
+ * otherwise the legacy plaintext `keyPem`. It also receives `publicPort`, but
+ * only on `cloudflare-tunnel` hostnames: the daemon redirects other ports to
+ * it, and on a direct, proxied or uploaded name ports 80 and 443 belong to
+ * hosting and may serve a different site.
  */
 
 import { inArray } from 'drizzle-orm'
