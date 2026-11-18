@@ -72,13 +72,12 @@ import {
   type NodePackageManager,
   readServiceTurbopanelExtension,
 } from '../../features/compose/index.ts'
-import {
-  IMAGE_BUILD_WIRE_KIND,
-  type EnvironmentDeployPrincipalMaterial,
-  type EnvironmentDeploySource,
-  type EnvironmentDeploySourceBuild,
-  type EnvironmentDeploySourceCredentialKind,
-  type EnvironmentDeploySitePrincipal,
+import type {
+  EnvironmentDeployPrincipalMaterial,
+  EnvironmentDeploySource,
+  EnvironmentDeploySourceBuild,
+  EnvironmentDeploySourceCredentialKind,
+  EnvironmentDeploySitePrincipal,
 } from '../../contracts/commands/schemas.ts'
 import { secret, repository } from '../../db/schema.ts'
 import {
@@ -337,9 +336,7 @@ function resolveSourceBuild(
   packageManager?: NodePackageManager
 ): EnvironmentDeploySourceBuild {
   const build: EnvironmentDeploySourceBuild = {
-    // A released daemon rejects `image`, so the wire keeps the old value for
-    // either spelling of the image kind until wipe day.
-    kind: isImageBuildKind(binding.buildKind) ? IMAGE_BUILD_WIRE_KIND : 'native',
+    kind: isImageBuildKind(binding.buildKind) ? 'image' : 'native',
   }
   // The owning service's package-manager choice rides the build object so the
   // daemon can derive the right install command after checkout.

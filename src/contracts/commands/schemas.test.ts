@@ -4874,33 +4874,6 @@ test('parseEnvironmentDeployResult keeps well-formed releases and drops junk row
       ],
     }
   )
-  // A daemon that has not moved yet reports the old field names; they come out
-  // under the new ones.
-  assertEquals(
-    parseEnvironmentDeployResult({
-      projectName: 'tp-demo',
-      releases: [
-        {
-          composeServiceName: 'web',
-          serviceId: 'svc-web',
-          releaseId: 'rel-1',
-          commitSha: 'abc123',
-          railpackFrontendVersion: '0.1.0',
-          railpackPlanVersion: '0.2.0',
-        },
-      ],
-    })?.releases,
-    [
-      {
-        composeServiceName: 'web',
-        serviceId: 'svc-web',
-        releaseId: 'rel-1',
-        commitSha: 'abc123',
-        builderFrontendVersion: '0.1.0',
-        builderPlanVersion: '0.2.0',
-      },
-    ]
-  )
   assertEquals(
     parseEnvironmentDeployResult({
       projectName: 'tp-demo',
@@ -6786,8 +6759,8 @@ test('parseEnvironmentDeployPayload covers nativeApp resources, limits, and mode
   )
 })
 
-test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, and command edges', () => {
-  const railpack = parseEnvironmentDeployPayload({
+test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, image, and command edges', () => {
+  const image = parseEnvironmentDeployPayload({
     ...NATIVE_APP_BASE,
     sourceMaterial: [
       {
@@ -6795,27 +6768,19 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
         provider: 'git',
         cloneUrl: 'git@gitlab.test:acme/app.git',
         build: {
-          kind: 'railpack',
+          kind: 'image',
           installCommand: 'pnpm install',
           env: { NODE_ENV: 'production', skip: 1 },
         },
       },
     ],
   })
-  assertEquals(railpack.sourceMaterial?.[0]?.cloneUrl, 'git@gitlab.test:acme/app.git')
-  assertEquals(railpack.sourceMaterial?.[0]?.build, {
-    kind: 'railpack',
+  assertEquals(image.sourceMaterial?.[0]?.cloneUrl, 'git@gitlab.test:acme/app.git')
+  assertEquals(image.sourceMaterial?.[0]?.build, {
+    kind: 'image',
     installCommand: 'pnpm install',
     env: { NODE_ENV: 'production' },
   })
-
-  // The new value parses too; the panel does not send it yet, but it must not
-  // be refused once the contract phase flips the send.
-  const image = parseEnvironmentDeployPayload({
-    ...NATIVE_APP_BASE,
-    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, build: { kind: 'image' } }],
-  })
-  assertEquals(image.sourceMaterial?.[0]?.build, { kind: 'image' })
 
   const staticBuild = parseEnvironmentDeployPayload({
     ...NATIVE_APP_BASE,
