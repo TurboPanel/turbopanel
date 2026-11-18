@@ -38,8 +38,6 @@ import {
 export type PublicUrlsPayloadDeps = {
   db: Db
   serverId: string
-  urls: string[]
-  daemonVersion: string | undefined
   secretsConfig: SecretsConfig | undefined
   dataEncryptionSecrets: DerivedSecretsConfig | undefined
   env: Record<string, string | undefined>
@@ -52,8 +50,6 @@ export async function buildPublicUrlsPayload(
   const sealing = await resolveInstanceSecretSealing(deps.db, deps.serverId, deps.secretsConfig)
   const payload = await resolvePublicUrlsApplyPayload(
     deps.db,
-    deps.urls,
-    deps.daemonVersion,
     deps.dataEncryptionSecrets,
     deps.env,
     sealing
@@ -70,21 +66,15 @@ export async function buildPublicUrlsPayload(
 export async function publicUrlsPayloadFingerprint(
   payload: PublicUrlsApplyPayload
 ): Promise<string> {
-  const hostnames =
-    payload.hostnames?.map((entry) => [
-      entry.host,
-      entry.source,
-      entry.publicPort ?? null,
-      entry.uploadedCertId ?? null,
-      entry.certPem ?? null,
-    ]) ?? null
+  const hostnames = payload.hostnames.map((entry) => [
+    entry.host,
+    entry.source,
+    entry.publicPort ?? null,
+    entry.uploadedCertId ?? null,
+    entry.certPem ?? null,
+  ])
   return sha256Hex(
-    JSON.stringify([
-      payload.urls,
-      hostnames,
-      payload.instanceAcme ?? null,
-      payload.edgeTrust?.hash ?? null,
-    ])
+    JSON.stringify([hostnames, payload.instanceAcme ?? null, payload.edgeTrust?.hash ?? null])
   )
 }
 
@@ -141,7 +131,7 @@ const REAPPLY_FEATURES: readonly string[] = [
  * daemon when the body changed since the last apply.
  */
 export async function applyStoredPublicUrls(
-  deps: Omit<PublicUrlsPayloadDeps, 'serverId' | 'urls' | 'daemonVersion'> & {
+  deps: Omit<PublicUrlsPayloadDeps, 'serverId'> & {
     registry: DaemonCellRegistry
   }
 ): Promise<void> {
@@ -162,8 +152,6 @@ export async function applyStoredPublicUrls(
   const payload = await buildPublicUrlsPayload({
     ...deps,
     serverId,
-    urls,
-    daemonVersion: snapshot.daemonBuild?.version,
   })
   await applyPublicUrlsIfChanged(deps.db, payload, (body) =>
     waitForPublicUrlsApply(deps.registry, serverId, body)

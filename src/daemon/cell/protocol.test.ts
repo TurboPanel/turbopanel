@@ -428,6 +428,11 @@ it('metrics messages are not accepted on the daemon WebSocket', () => {
   assertEquals((DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has('metrics'), false)
 })
 
+const PLATFORM_CA_HOSTNAMES = [
+  { host: 'panel.example.com', source: 'platform-ca' as const },
+  { host: 'server-a.example.lan:8443', source: 'platform-ca' as const },
+]
+
 it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
   const base = {
     deliveryId: crypto.randomUUID(),
@@ -538,12 +543,12 @@ it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
     outboundEnvelopeToWireMessage({
       ...base,
       kind: 'public-urls-update',
-      urls: ['https://panel.example.com', 'server-a.example.lan:8443'],
+      hostnames: PLATFORM_CA_HOSTNAMES,
     }),
     {
       type: 'public-urls-update',
       id: 'req-1',
-      urls: ['https://panel.example.com', 'server-a.example.lan:8443'],
+      hostnames: PLATFORM_CA_HOSTNAMES,
       at: base.at,
     }
   )
@@ -558,13 +563,13 @@ it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
     outboundEnvelopeToWireMessage({
       ...base,
       kind: 'public-urls-update',
-      urls: ['https://panel.example.com'],
+      hostnames: PLATFORM_CA_HOSTNAMES,
       edgeTrust,
     }),
     {
       type: 'public-urls-update',
       id: 'req-1',
-      urls: ['https://panel.example.com'],
+      hostnames: PLATFORM_CA_HOSTNAMES,
       edgeTrust,
       at: base.at,
     }
@@ -574,7 +579,6 @@ it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
     outboundEnvelopeToWireMessage({
       ...base,
       kind: 'public-urls-update',
-      urls: ['https://panel.example.com'],
       hostnames: [
         {
           host: 'https://panel.example.com',
@@ -591,7 +595,6 @@ it('outboundEnvelopeToWireMessage maps outbound kinds', () => {
     {
       type: 'public-urls-update',
       id: 'req-1',
-      urls: ['https://panel.example.com'],
       hostnames: [
         {
           host: 'https://panel.example.com',

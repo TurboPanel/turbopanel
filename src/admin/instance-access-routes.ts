@@ -6,7 +6,6 @@ import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
 import { DEFAULT_TRUSTED_PROXY_CIDRS, parseTrustedProxyCidrs } from '../lib/peer-address.ts'
 import { parseCertificatePem } from '../lib/tls/parse.ts'
-import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
 import { enqueuePlatformCaTrustReconcile } from './tls-trust-reconcile.ts'
@@ -19,7 +18,6 @@ function emptyDaemonCapabilities() {
     connected: false,
     serverId: null,
     version: null,
-    capabilities: resolveDaemonCapabilities(null),
   }
 }
 
@@ -54,7 +52,6 @@ export function registerInstanceAccessAdminRoutes(
       connected: snapshot?.connected === true,
       serverId,
       version,
-      capabilities: resolveDaemonCapabilities(version),
     })
   })
 
