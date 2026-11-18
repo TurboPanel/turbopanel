@@ -54,7 +54,9 @@ function assertTrimmedCommandEnvelope(
   assertEquals('organizationId' in envelope, false)
 }
 
-function createRecordingCommandQueue(): CommandQueue & { envelopes: CommandEnvelope[] } {
+function createRecordingCommandQueue(): CommandQueue & {
+  envelopes: CommandEnvelope[]
+} {
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
@@ -128,7 +130,9 @@ function createMockCell(serverId: string): DaemonCell {
   }
 }
 
-function createTrackingRegistry(): DaemonCellRegistry & { purgedIds: string[] } {
+function createTrackingRegistry(): DaemonCellRegistry & {
+  purgedIds: string[]
+} {
   const purgedIds: string[] = []
   const cells = new Map<string, DaemonCell>()
   return {
@@ -170,7 +174,11 @@ async function createCommandsRoutesTestApp(
     }
     return next()
   })
-  registerServerRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
+  registerServerRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
   return { app, secrets }
 }
 
@@ -496,7 +504,11 @@ it('POST /servers/:id/timezone queues command without persisting options.timezon
         body: JSON.stringify({ timezone: 'America/Chicago' }),
       })
       assertEquals(okRes.status, 200)
-      const okBody = (await okRes.json()) as { ok: boolean; commandId: string; status: string }
+      const okBody = (await okRes.json()) as {
+        ok: boolean
+        commandId: string
+        status: string
+      }
       assertEquals(okBody.ok, true)
       assertEquals(okBody.status, 'queued')
 
@@ -723,7 +735,7 @@ it('GET /servers/:id/commands/:commandId returns latency for terminal ping', asy
   )
 })
 
-it('GET /servers/:id/commands exposes both error and errorMessage for failures', async () => {
+it('GET /servers/:id/commands exposes errorMessage and no error alias for failures', async () => {
   await withCommandRouteFixtures(
     {},
     async ({ db, app, secrets, userId, organizationId, serverId }) => {
@@ -747,21 +759,22 @@ it('GET /servers/:id/commands exposes both error and errorMessage for failures',
       const detailRes = await app.request(`/servers/${serverId}/commands/${record.id}`, { headers })
       assertEquals(detailRes.status, 200)
       const detail = (await detailRes.json()) as {
-        error: string | null
         errorMessage: string | null
         errorCode: string | null
       }
-      assertEquals(detail.error, 'Daemon not connected')
+      assertEquals('error' in detail, false)
       assertEquals(detail.errorMessage, 'Daemon not connected')
       assertEquals(detail.errorCode, 'daemon_offline')
 
-      const listRes = await app.request(`/servers/${serverId}/commands`, { headers })
+      const listRes = await app.request(`/servers/${serverId}/commands`, {
+        headers,
+      })
       assertEquals(listRes.status, 200)
       const list = (await listRes.json()) as {
-        commands: { id: string; error: string | null; errorMessage: string | null }[]
+        commands: { id: string; errorMessage: string | null }[]
       }
       const listed = list.commands.find((entry) => entry.id === record.id)
-      assertEquals(listed?.error, 'Daemon not connected')
+      assertEquals(listed !== undefined && 'error' in listed, false)
       assertEquals(listed?.errorMessage, 'Daemon not connected')
     }
   )
@@ -981,7 +994,10 @@ it('POST /commands/status omits invisible and cross-org ids instead of 403ing th
       })
 
       assertEquals(res.status, 200)
-      const body = (await res.json()) as { ok: boolean; commands: { id: string }[] }
+      const body = (await res.json()) as {
+        ok: boolean
+        commands: { id: string }[]
+      }
       assertEquals(body.ok, true)
       assertEquals(
         body.commands.map((row) => row.id),

@@ -362,7 +362,7 @@ test('overlayRotationResults prefers live command status', () => {
         error: 'binding_ca_unavailable',
       },
     ],
-    [{ id: COMMAND_ID, status: 'succeeded', error: null }]
+    [{ id: COMMAND_ID, status: 'succeeded', errorMessage: null }]
   )
   assertEquals(overlaid[0]?.status, 'succeeded')
   assertEquals(overlaid[1]?.status, 'failed')
@@ -1035,7 +1035,10 @@ test('POST /tls/ca/retire sends the active-only bundle to every Orchestrator hos
 
     // No command queue in this context: the retire still completes, the
     // reconcile is skipped (and logged).
-    const withoutQueue = await buildTlsApp({ rotationServers: [], rotationRows: rows() })
+    const withoutQueue = await buildTlsApp({
+      rotationServers: [],
+      rotationRows: rows(),
+    })
     const skipped = await withoutQueue.app.request('/tls/ca/retire', {
       method: 'POST',
       headers: authHeaders(withoutQueue.cookie),

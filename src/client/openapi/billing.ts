@@ -65,7 +65,10 @@ export const billingSchemas = {
     type: 'object',
     required: ['tiers', 'sizeCommand'],
     properties: {
-      tiers: { type: 'array', items: { $ref: '#/components/schemas/BillingTier' } },
+      tiers: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/BillingTier' },
+      },
       sizeCommand: {
         type: 'string',
         description:
@@ -84,7 +87,6 @@ export const billingSchemas = {
       'ending',
       'endsAt',
       'available',
-      'releasing',
       'priceCents',
       'currency',
     ],
@@ -96,7 +98,10 @@ export const billingSchemas = {
         type: 'integer',
         description: 'Committed provider quantity at this tier — the licenses bought here.',
       },
-      inUse: { type: 'integer', description: 'Servers currently assigned this tier.' },
+      inUse: {
+        type: 'integer',
+        description: 'Servers currently assigned this tier.',
+      },
       ending: {
         type: 'integer',
         description:
@@ -112,12 +117,6 @@ export const billingSchemas = {
         description:
           '`purchased − ending − inUse`, floored at 0 and capped at the organization-wide `licenses.available`, so a tier never shows a license free that the mint gate refuses (an unused or provisioning key holds a license but has no tier yet).',
       },
-      releasing: {
-        type: 'integer',
-        deprecated: true,
-        description:
-          'Use `ending`. Every license leaving this tier at the boundary, a pending downgrade included.',
-      },
       priceCents: { type: ['integer', 'null'] },
       currency: { type: ['string', 'null'] },
     },
@@ -126,10 +125,8 @@ export const billingSchemas = {
     type: 'object',
     required: [
       'purchased',
-      'releasing',
       'ending',
       'endsAt',
-      'held',
       'inUse',
       'bound',
       'provisioning',
@@ -137,22 +134,15 @@ export const billingSchemas = {
       'available',
     ],
     properties: {
-      purchased: { type: 'integer', description: 'Total committed quantity across tiers.' },
-      releasing: {
+      purchased: {
         type: 'integer',
-        description:
-          'Every license leaving at the period boundary (ending licenses and pending downgrades).',
+        description: 'Total committed quantity across tiers.',
       },
       ending: {
         type: 'integer',
         description: 'Licenses ending at the period boundary, all tiers; restorable.',
       },
       endsAt: { type: ['string', 'null'], format: 'date-time' },
-      held: {
-        type: 'integer',
-        description:
-          'Active licenses: `inUse + unusedKeys`. What the mint gate subtracts; show `inUse` and `unusedKeys` instead.',
-      },
       inUse: {
         type: 'integer',
         description:
@@ -171,7 +161,8 @@ export const billingSchemas = {
       },
       available: {
         type: 'integer',
-        description: '`purchased − releasing − held`: how many more servers can be added.',
+        description:
+          'Purchased licenses not in use, not held by an unused key and not leaving at the period boundary (pending downgrades included): how many more servers can be added.',
       },
     },
   },
@@ -237,7 +228,10 @@ export const billingSchemas = {
                 type: 'string',
                 description: 'Provider status verbatim (`active`, `past_due`, …).',
               },
-              currentPeriodEnd: { type: ['string', 'null'], format: 'date-time' },
+              currentPeriodEnd: {
+                type: ['string', 'null'],
+                format: 'date-time',
+              },
               pastDueSince: { type: ['string', 'null'], format: 'date-time' },
               graceExpiresAt: {
                 type: ['string', 'null'],
@@ -255,9 +249,15 @@ export const billingSchemas = {
           { type: 'null' },
         ],
       },
-      tiers: { type: 'array', items: { $ref: '#/components/schemas/BillingTierSummary' } },
+      tiers: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/BillingTierSummary' },
+      },
       licenses: { $ref: '#/components/schemas/BillingLicenseSummary' },
-      servers: { type: 'array', items: { $ref: '#/components/schemas/BillingServerAssignment' } },
+      servers: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/BillingServerAssignment' },
+      },
       pendingChanges: {
         type: 'array',
         items: { $ref: '#/components/schemas/BillingPendingChange' },
@@ -370,7 +370,10 @@ export const billingSchemas = {
         description:
           'The immediate charge failed and Stripe parked the change; entitlement is unchanged until it applies.',
       },
-      deferred: { type: 'boolean', description: 'Parked on a schedule for the period boundary.' },
+      deferred: {
+        type: 'boolean',
+        description: 'Parked on a schedule for the period boundary.',
+      },
       intentId: { type: 'string' },
       scheduleId: { type: ['string', 'null'] },
       movedServerId: {
@@ -401,8 +404,15 @@ export const billingSchemas = {
     required: ['ok', 'restored', 'ending', 'scheduleId'],
     properties: {
       ok: { type: 'boolean', const: true },
-      restored: { type: 'integer', minimum: 1, description: 'Taken back; never charged.' },
-      ending: { type: 'integer', description: 'Still ending at this tier afterwards.' },
+      restored: {
+        type: 'integer',
+        minimum: 1,
+        description: 'Taken back; never charged.',
+      },
+      ending: {
+        type: 'integer',
+        description: 'Still ending at this tier afterwards.',
+      },
       scheduleId: {
         type: ['string', 'null'],
         description: 'The rebuilt schedule, or null when nothing is ending any more (released).',
@@ -430,8 +440,14 @@ export const billingSchemas = {
       error: { type: 'string', const: 'licenses_in_use' },
       purchasedAfter: { type: 'integer' },
       licensesHeld: { type: 'integer' },
-      inUse: { type: 'integer', description: 'Licenses bound to a server or being provisioned.' },
-      unusedKeys: { type: 'integer', description: 'Registration keys nobody has used yet.' },
+      inUse: {
+        type: 'integer',
+        description: 'Licenses bound to a server or being provisioned.',
+      },
+      unusedKeys: {
+        type: 'integer',
+        description: 'Registration keys nobody has used yet.',
+      },
     },
   },
 } as const
@@ -449,7 +465,9 @@ function mutationPath(summary: string, requestSchema: string, extraConflicts: st
       requestBody: {
         required: true,
         content: {
-          'application/json': { schema: { $ref: `#/components/schemas/${requestSchema}` } },
+          'application/json': {
+            schema: { $ref: `#/components/schemas/${requestSchema}` },
+          },
         },
       },
       responses: {
@@ -493,7 +511,9 @@ export const billingPaths: Record<string, unknown> = {
         '200': {
           description: 'Catalogue in rank order',
           content: {
-            'application/json': { schema: { $ref: '#/components/schemas/BillingCatalogResponse' } },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/BillingCatalogResponse' },
+            },
           },
         },
         '401': unauthorized,
@@ -514,7 +534,9 @@ export const billingPaths: Record<string, unknown> = {
           description: 'Summary',
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/BillingSubscriptionResponse' },
+              schema: {
+                $ref: '#/components/schemas/BillingSubscriptionResponse',
+              },
             },
           },
         },
@@ -534,7 +556,9 @@ export const billingPaths: Record<string, unknown> = {
       requestBody: {
         required: true,
         content: {
-          'application/json': { schema: { $ref: '#/components/schemas/BillingCheckoutRequest' } },
+          'application/json': {
+            schema: { $ref: '#/components/schemas/BillingCheckoutRequest' },
+          },
         },
       },
       responses: {
@@ -587,14 +611,18 @@ export const billingPaths: Record<string, unknown> = {
       requestBody: {
         required: true,
         content: {
-          'application/json': { schema: { $ref: '#/components/schemas/BillingPreviewRequest' } },
+          'application/json': {
+            schema: { $ref: '#/components/schemas/BillingPreviewRequest' },
+          },
         },
       },
       responses: {
         '200': {
           description: 'Quote',
           content: {
-            'application/json': { schema: { $ref: '#/components/schemas/BillingPreviewResponse' } },
+            'application/json': {
+              schema: { $ref: '#/components/schemas/BillingPreviewResponse' },
+            },
           },
         },
         '400': errorResponse('Invalid request or `tier_not_purchasable`'),
@@ -623,7 +651,9 @@ export const billingPaths: Record<string, unknown> = {
       requestBody: {
         required: true,
         content: {
-          'application/json': { schema: { $ref: '#/components/schemas/BillingRestoreRequest' } },
+          'application/json': {
+            schema: { $ref: '#/components/schemas/BillingRestoreRequest' },
+          },
         },
       },
       responses: {

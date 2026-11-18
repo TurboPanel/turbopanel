@@ -1474,8 +1474,7 @@ name) and an `applied_username` — the actual engine login, the system name. A
 = the typed name, `partial` = `<typed>_<11 random chars>` (the platform default),
 `random` = a fully random 12-character name with no trace of the typed name. The
 org default and optional lock live on `organization.options`
-(`principalNameScheme`, `principalNameSchemeLocked`; the legacy boolean
-`randomizedPrincipalUsernames` is the fallback: true = partial, false = plain);
+(`principalNameScheme`, `principalNameSchemeLocked`);
 the chosen scheme is stored on `login.name_scheme`. The server always
 derives the system name. Root is **never** plain
 (`postgres_<11 rand>` / `root_<11 rand>`, or random under the `random` scheme;

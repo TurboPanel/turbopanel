@@ -30,10 +30,7 @@ import {
   tlsSettingsPutRoute,
   writeOrgOptions,
 } from './settings-route.ts'
-import {
-  parseOrganizationOptions,
-  resolveRandomizedPrincipalUsernames,
-} from '../../features/organizations/organization-options.ts'
+import { parseOrganizationOptions } from '../../features/organizations/organization-options.ts'
 import type { AuditAction } from '../../features/audit/audit-records.ts'
 import { loadOrgServerCapacity } from '../../features/servers/server-capacity.ts'
 import { listTimezones } from '../../lib/timezones.ts'
@@ -129,7 +126,6 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/project-settings', createSessionMiddleware(secrets))
   router.use('/organizations/:id/server-capacity', createSessionMiddleware(secrets))
   router.use('/organizations/:id/managed-defaults', createSessionMiddleware(secrets))
-  router.use('/organizations/:id/principal-defaults', createSessionMiddleware(secrets))
   router.use('/organizations/:id/docker-networking', createSessionMiddleware(secrets))
   router.use('/organizations/:id/tls-settings', createSessionMiddleware(secrets))
   router.use('/organizations/:id/compose-privileged-fields', createSessionMiddleware(secrets))
@@ -303,12 +299,18 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
         }
       },
       audit: (patch, before, after) => {
-        const entries: { action: AuditAction; context: Record<string, unknown> }[] = []
+        const entries: {
+          action: AuditAction
+          context: Record<string, unknown>
+        }[] = []
         // The acceptance comes first: it is what allowed the switch.
         if (patch.acmeTermsAccepted) {
           entries.push({
             action: 'organization.acme_terms.accept',
-            context: { acceptedAt: after.acmeTermsAcceptedAt, termsUrl: after.acmeTermsUrl },
+            context: {
+              acceptedAt: after.acmeTermsAcceptedAt,
+              termsUrl: after.acmeTermsUrl,
+            },
           })
         }
         if (patch.acmeEnabled !== undefined) {
@@ -489,7 +491,10 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       parse: (body) => {
         const parsed = parseDefaultEnvironmentPutBody(body)
         return parsed.ok
-          ? { ok: true, patch: { defaultEnvironmentName: parsed.defaultEnvironmentName } }
+          ? {
+              ok: true,
+              patch: { defaultEnvironmentName: parsed.defaultEnvironmentName },
+            }
           : parsed
       },
       respond: defaultEnvironmentPutResponse,
@@ -598,51 +603,6 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     }
 
     return c.json(managedDefaultsPutResponse(next))
-  })
-
-  router.get(
-    '/organizations/:id/principal-defaults',
-    orgOptionsGetRoute('manage', (options) => ({
-      randomizedUsernames: options.randomizedPrincipalUsernames ?? null,
-      effectiveRandomizedUsernames: resolveRandomizedPrincipalUsernames(options),
-    }))
-  )
-
-  router.put('/organizations/:id/principal-defaults', async (c) => {
-    const scope = await openOrgSettingsScope(c, 'manage')
-    if (scope instanceof Response) return scope
-    const { db, id } = scope
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    // `null` clears the override back to the platform default (on); only
-    // affects principals created after the change — nothing is renamed.
-    const value = (body as Record<string, unknown>).randomizedUsernames
-    if (value !== null && typeof value !== 'boolean') {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const [orgRow] = await db
-      .select({ id: organization.id })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await writeOrgOptions(
-      db,
-      id,
-      value === null
-        ? removeOrgOptionSql('randomizedPrincipalUsernames')
-        : mergeOrgOptionsSql({ randomizedPrincipalUsernames: value })
-    )
-
-    return c.json({
-      ok: true as const,
-      randomizedUsernames: value,
-      effectiveRandomizedUsernames: value ?? true,
-    })
   })
 
   router.get(

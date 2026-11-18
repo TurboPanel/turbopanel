@@ -154,7 +154,12 @@ async function prepareTlsCreateMaterial(
   source: TlsSource,
   body: Record<string, unknown>
 ): Promise<
-  { name: string | null; material: CreateTlsMaterial; options: TlsOptions | null } | Response
+  | {
+      name: string | null
+      material: CreateTlsMaterial
+      options: TlsOptions | null
+    }
+  | Response
 > {
   let name: string | null
   try {
@@ -417,13 +422,17 @@ async function resolveRotatedOrganizationCa(
 
 export function overlayRotationResults(
   rows: readonly CaRotationResultRow[],
-  records: readonly { id: string; status: string; error: string | null }[]
+  records: readonly {
+    id: string
+    status: string
+    errorMessage: string | null
+  }[]
 ) {
   const byId = new Map(records.map((record) => [record.id, record]))
   return rows.map((row) => {
     const record = row.commandId ? byId.get(row.commandId) : undefined
     const effectiveStatus = row.status === 'skipped' ? 'skipped' : (record?.status ?? row.status)
-    const effectiveError = row.error ?? record?.error ?? undefined
+    const effectiveError = row.error ?? record?.errorMessage ?? undefined
     const reason = rotationResultReason({
       row,
       effectiveStatus,
@@ -643,7 +652,11 @@ async function deleteProviderOriginCertificate(
       action: 'origin_certificate.revoke',
       targetType: 'tls',
       targetId: row.id,
-      context: { carrierId: link.carrierId, zone: link.zoneName, revokedWithBadgeId },
+      context: {
+        carrierId: link.carrierId,
+        zone: link.zoneName,
+        revokedWithBadgeId,
+      },
     })
     return c.json({ ok: true as const })
   } catch (err) {
