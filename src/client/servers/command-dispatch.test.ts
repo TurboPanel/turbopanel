@@ -176,7 +176,7 @@ it('enqueueCommandOrCompensate marks the command failed when enqueue throws', as
 
   const updated = await getCommandRecord(db, record.id)
   assertEquals(updated?.status, 'failed')
-  assertEquals(updated?.error, 'Command queue unavailable')
+  assertEquals(updated?.errorMessage, 'Command queue unavailable')
 
   await db.delete(command).where(eq(command.serverId, serverId))
   await db.delete(server).where(eq(server.id, serverId))

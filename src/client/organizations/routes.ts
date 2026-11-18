@@ -32,7 +32,6 @@ import {
 } from './settings-route.ts'
 import {
   parseOrganizationOptions,
-  resolveRandomizedPrincipalUsernames,
 } from '../../features/organizations/organization-options.ts'
 import type { AuditAction } from '../../features/audit/audit-records.ts'
 import { loadOrgServerCapacity } from '../../features/servers/server-capacity.ts'
@@ -598,51 +597,6 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     }
 
     return c.json(managedDefaultsPutResponse(next))
-  })
-
-  router.get(
-    '/organizations/:id/principal-defaults',
-    orgOptionsGetRoute('manage', (options) => ({
-      randomizedUsernames: options.randomizedPrincipalUsernames ?? null,
-      effectiveRandomizedUsernames: resolveRandomizedPrincipalUsernames(options),
-    }))
-  )
-
-  router.put('/organizations/:id/principal-defaults', async (c) => {
-    const scope = await openOrgSettingsScope(c, 'manage')
-    if (scope instanceof Response) return scope
-    const { db, id } = scope
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    // `null` clears the override back to the platform default (on); only
-    // affects principals created after the change — nothing is renamed.
-    const value = (body as Record<string, unknown>).randomizedUsernames
-    if (value !== null && typeof value !== 'boolean') {
-      return c.json({ error: 'Invalid request' }, 400)
-    }
-
-    const [orgRow] = await db
-      .select({ id: organization.id })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await writeOrgOptions(
-      db,
-      id,
-      value === null
-        ? removeOrgOptionSql('randomizedPrincipalUsernames')
-        : mergeOrgOptionsSql({ randomizedPrincipalUsernames: value })
-    )
-
-    return c.json({
-      ok: true as const,
-      randomizedUsernames: value,
-      effectiveRandomizedUsernames: value ?? true,
-    })
   })
 
   router.get(

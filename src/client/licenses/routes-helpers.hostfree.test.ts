@@ -268,15 +268,13 @@ test('noLicenseAvailableBody carries the message, the counts, trimmed tier rows 
   }
   // A full `summarizeTiers` row: a variable, so the extra fields type-check
   // the way the route's rows do.
-  const fullRow = { ...tier, rank: 1, releasing: 3, priceCents: 500, currency: 'usd' }
+  const fullRow = { ...tier, rank: 1, priceCents: 500, currency: 'usd' }
   // The route hands it the full summary and full tier rows; `bound`,
-  // `granted`, `rank`, `releasing` on the row and prices are not part of the refusal.
+  // `granted`, `rank` on the row and prices are not part of the refusal.
   assertEquals(
     noLicenseAvailableBody(
       {
         purchased: 6,
-        releasing: 3,
-        held: 3,
         inUse: 3,
         provisioning: 0,
         unusedKeys: 0,
@@ -300,8 +298,6 @@ test('noLicenseAvailableBody carries the message, the counts, trimmed tier rows 
       endsAt: '2026-10-26T00:00:00.000Z',
       available: 0,
       tiers: [tier],
-      releasing: 3,
-      held: 3,
     }
   )
 })

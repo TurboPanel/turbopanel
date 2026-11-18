@@ -4,8 +4,8 @@
  *
  * Keys live on `organization.options`: `principalNameScheme` (the default
  * scheme), `principalNameSchemeLocked` (the policy lock) and the legacy
- * boolean `randomizedPrincipalUsernames`, which stays readable as a fallback
- * and is retired whenever the new scheme key is written.
+ * boolean `randomizedPrincipalUsernames`, which stays readable as a stored
+ * fallback and is retired whenever the new scheme key is written.
  */
 
 import {
@@ -16,7 +16,6 @@ import {
 import {
   type OrganizationOptions,
   resolvePrincipalNamePolicy,
-  resolveRandomizedPrincipalUsernames,
 } from './organization-options.ts'
 
 export type PrincipalDefaultsPatch = {
@@ -35,13 +34,6 @@ function parseSchemeField(body: Record<string, unknown>): PrincipalDefaultsPatch
   if ('nameScheme' in body) {
     const value = body.nameScheme
     if (value === null || isPrincipalNameScheme(value)) return { nameScheme: value }
-    return null
-  }
-  // Legacy shape: true = partial, false = plain, null = platform default.
-  if ('randomizedUsernames' in body) {
-    const value = body.randomizedUsernames
-    if (value === null) return { nameScheme: null }
-    if (typeof value === 'boolean') return { nameScheme: value ? 'partial' : 'plain' }
     return null
   }
   return {}
@@ -77,14 +69,12 @@ export function principalDefaultsOptionChanges(patch: PrincipalDefaultsPatch): {
   return { remove, set }
 }
 
-/** Response body shared by GET and PUT (legacy boolean fields kept for old clients). */
+/** Response body shared by GET and PUT. */
 export function principalDefaultsResponse(options: OrganizationOptions) {
   const policy = resolvePrincipalNamePolicy(options)
   return {
     nameScheme: options.principalNameScheme ?? null,
     effectiveNameScheme: resolveOrgPrincipalNameScheme(options),
     schemeLocked: policy.locked,
-    randomizedUsernames: options.randomizedPrincipalUsernames ?? null,
-    effectiveRandomizedUsernames: resolveRandomizedPrincipalUsernames(options),
   }
 }

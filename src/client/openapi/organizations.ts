@@ -2009,8 +2009,6 @@ export const organizationPaths: Record<string, unknown> = {
                   'nameScheme',
                   'effectiveNameScheme',
                   'schemeLocked',
-                  'randomizedUsernames',
-                  'effectiveRandomizedUsernames',
                 ],
                 properties: {
                   nameScheme: {
@@ -2020,8 +2018,6 @@ export const organizationPaths: Record<string, unknown> = {
                   },
                   effectiveNameScheme: { type: 'string', enum: ['plain', 'partial', 'random'] },
                   schemeLocked: { type: 'boolean' },
-                  randomizedUsernames: { type: 'boolean', nullable: true },
-                  effectiveRandomizedUsernames: { type: 'boolean' },
                 },
               },
             },
@@ -2049,7 +2045,7 @@ export const organizationPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: 'Update organization principal defaults',
       description:
-        'Manage-gated (owner or manager). Sets organization.options.principalNameScheme (null clears to the platform default, partial) and/or principalNameSchemeLocked. When locked, creating a principal with a different nameScheme fails with 409 principal_scheme_locked; the lock applies only at creation. The legacy randomizedUsernames boolean is still accepted (true = partial, false = plain, null = default). Only affects principals created afterwards - existing system names are never renamed.',
+        'Manage-gated (owner or manager). Sets organization.options.principalNameScheme (null clears to the platform default, partial) and/or principalNameSchemeLocked. When locked, creating a principal with a different nameScheme fails with 409 principal_scheme_locked; the lock applies only at creation. Only affects principals created afterwards - existing system names are never renamed.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -2072,7 +2068,6 @@ export const organizationPaths: Record<string, unknown> = {
                   nullable: true,
                 },
                 schemeLocked: { type: 'boolean' },
-                randomizedUsernames: { type: 'boolean', nullable: true },
               },
             },
           },

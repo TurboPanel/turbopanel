@@ -425,7 +425,6 @@ const SERVER = '55555555-5555-4555-8555-555555555551'
 type Refusal = {
   error: string
   purchased: number
-  releasing: number
   held: number
   available: number
 }
@@ -447,11 +446,10 @@ type RefusalBody = Refusal & {
 function countsOf(body: unknown): Refusal & { ending: number } {
   const refusal = body as RefusalBody
   assertEquals(typeof refusal.message, 'string')
-  // Every held license is either in use (bound or provisioning) or an unused key.
-  assertEquals(refusal.inUse + refusal.unusedKeys, refusal.held)
   assertEquals(Array.isArray(refusal.tiers), true)
-  const { error, purchased, releasing, held, available, ending } = refusal
-  return { error, purchased, releasing, held, available, ending }
+  const { error, purchased, available, ending } = refusal
+  // Every held license is either in use (bound or provisioning) or an unused key.
+  return { error, purchased, held: refusal.inUse + refusal.unusedKeys, available, ending }
 }
 
 test('T9 · every purchased license held is 409 no_license_available with the counts; the lease was taken and is released', async () => {
@@ -471,7 +469,6 @@ test('T9 · every purchased license held is 409 no_license_available with the co
   assertEquals(countsOf(full), {
     error: 'no_license_available',
     purchased: 1,
-    releasing: 0,
     held: 1,
     available: 0,
     ending: 0,
@@ -488,7 +485,6 @@ test('T9 · every purchased license held is 409 no_license_available with the co
   assertEquals(countsOf(empty), {
     error: 'no_license_available',
     purchased: 0,
-    releasing: 0,
     held: 0,
     available: 0,
     ending: 0,
@@ -508,7 +504,6 @@ test('T9 · a bound license holds a purchased license the same as an unbound one
   assertEquals(countsOf(body), {
     error: 'no_license_available',
     purchased: 2,
-    releasing: 0,
     held: 2,
     available: 0,
     ending: 0,
@@ -554,7 +549,6 @@ test('T9 · a purchase with room mints a key with no tier, once, and the lease i
   assertEquals(countsOf(await again.json()), {
     error: 'no_license_available',
     purchased: 2,
-    releasing: 0,
     held: 2,
     available: 0,
     ending: 0,
@@ -707,7 +701,6 @@ test('T9 · an outstanding release-seat intent counts against availability until
   assertEquals(countsOf(refusal), {
     error: 'no_license_available',
     purchased: 2,
-    releasing: 1,
     held: 1,
     available: 0,
     ending: 1,
@@ -749,7 +742,6 @@ test('T9 · an outstanding release-seat intent counts against availability until
   assertEquals(countsOf(moving), {
     error: 'no_license_available',
     purchased: 1,
-    releasing: 1,
     held: 0,
     available: 0,
     ending: 0,
@@ -799,9 +791,10 @@ test('POST /licenses/:id/ticket burns an unbound key and issues a one-hour ticke
   })
   const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
   assertEquals(res.status, 200)
-  const body = (await res.json()) as { joinId: string; licenseToken: string; licenseArg: string }
+  const body = (await res.json()) as { joinId: string; licenseToken: string; installCommand: string }
   assertExists(body.licenseToken)
-  assertExists(body.licenseArg)
+  assertExists(body.installCommand)
+  assertEquals('licenseArg' in body, false)
   assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token ?? null, null)
   const issued = db.rows(ticket).find((row) => row.id === body.joinId)
   assertEquals(issued?.licenseId, L_ACTIVE)
@@ -816,8 +809,8 @@ test('POST /licenses/:id/ticket returns an install command carrying the new key'
   const { app, headers } = await buildApp({ licenses: [{ id: L_ACTIVE }] })
   const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
   assertEquals(res.status, 200)
-  const body = (await res.json()) as { licenseArg: string; installCommand: string }
-  assertEquals(body.installCommand.includes(`TURBOPANEL_LICENSE=${body.licenseArg}`), true)
+  const body = (await res.json()) as { licenseToken: string; installCommand: string }
+  assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE='), true)
   assertEquals(body.installCommand.includes('https://panel.example.com'), true)
 })
 
@@ -969,11 +962,10 @@ test('re-enroll tickets: an owner issues one per server, a new one retires the o
   assertEquals(first.status, 200)
   const one = (await first.json()) as {
     ticketId: string
-    licenseArg: string
     installCommand: string
   }
-  assertExists(one.licenseArg)
-  assertEquals(one.installCommand.includes(`TURBOPANEL_LICENSE=${one.licenseArg}`), true)
+  assertEquals('licenseArg' in one, false)
+  assertEquals(one.installCommand.includes('TURBOPANEL_LICENSE='), true)
   assertEquals(db.rows(ticket).find((row) => row.id === one.ticketId)?.serverId, SERVER)
 
   const second = await app.request(url, { method: 'POST', headers })

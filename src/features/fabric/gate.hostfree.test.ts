@@ -30,7 +30,7 @@ function gateRecord(
   status: CommandStatus,
   error: string | null = null,
 ): FabricGateRecord {
-  return { id, serverId, status, error }
+  return { id, serverId, status, errorMessage: error }
 }
 
 function commandRow(

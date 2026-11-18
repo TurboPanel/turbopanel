@@ -1365,8 +1365,6 @@ test('principal-defaults: lock refuses another scheme at create, allows the lock
       nameScheme: 'plain',
       effectiveNameScheme: 'plain',
       schemeLocked: true,
-      randomizedUsernames: null,
-      effectiveRandomizedUsernames: false,
     })
 
     const refused = await create({ username: 'sneaky', nameScheme: 'random' })
@@ -1435,20 +1433,10 @@ test('principal-defaults: lock on the default scheme locks that default; invalid
       {},
       { nameScheme: 'full' },
       { schemeLocked: 'yes' },
-      { randomizedUsernames: 'yes' },
+      { randomizedUsernames: false },
     ]) {
       assertEquals((await putDefaults(bad)).status, 400)
     }
-
-    // Legacy shorthand still writes through to the new key and retires the old one.
-    await setOrgOptions(db, organizationId, { randomizedPrincipalUsernames: true })
-    const legacy = await putDefaults({ randomizedUsernames: false })
-    assertEquals(legacy.status, 200)
-    const [org] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, organizationId))
-    assertEquals(org?.options, { principalNameScheme: 'plain' })
 
     // null clears the scheme back to the platform default (partial), lock intact.
     assertEquals((await putDefaults({ schemeLocked: true })).status, 200)
@@ -1458,8 +1446,6 @@ test('principal-defaults: lock on the default scheme locks that default; invalid
       nameScheme: null,
       effectiveNameScheme: 'partial',
       schemeLocked: true,
-      randomizedUsernames: null,
-      effectiveRandomizedUsernames: true,
     })
   })
 })

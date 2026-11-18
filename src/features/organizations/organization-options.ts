@@ -468,11 +468,6 @@ function assignPhpModes(options: { phpModes?: PhpMode[] }, value: Record<string,
   if (phpModes) options.phpModes = phpModes
 }
 
-/** Effective randomized-usernames default: on unless the org opted out. */
-export function resolveRandomizedPrincipalUsernames(options: OrganizationOptions): boolean {
-  return resolveOrgPrincipalNameScheme(options) !== 'plain'
-}
-
 /** Effective org default scheme and lock for new principals. */
 export function resolvePrincipalNamePolicy(options: OrganizationOptions): PrincipalNamePolicy {
   return {

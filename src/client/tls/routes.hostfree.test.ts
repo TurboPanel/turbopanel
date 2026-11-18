@@ -362,7 +362,7 @@ test('overlayRotationResults prefers live command status', () => {
         error: 'binding_ca_unavailable',
       },
     ],
-    [{ id: COMMAND_ID, status: 'succeeded', error: null }]
+    [{ id: COMMAND_ID, status: 'succeeded', errorMessage: null }]
   )
   assertEquals(overlaid[0]?.status, 'succeeded')
   assertEquals(overlaid[1]?.status, 'failed')

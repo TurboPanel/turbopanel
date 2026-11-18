@@ -355,7 +355,7 @@ test('processCommandEnvelope fails fast when daemon is offline', async () => {
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.error, 'Daemon not connected')
+    assertEquals(updated?.errorMessage, 'Daemon not connected')
     assertEquals(updated?.attempts, 1)
     assertEquals(registry.enqueueCalled, false)
     assertEquals(registry.waitForRequestCalled, false)
@@ -415,7 +415,7 @@ test('processCommandEnvelope refuses a connected daemon that is not current, nam
       // Never reached the cell: the update envelope is the only thing such a
       // daemon should get, and that is not a command.
       assertEquals(registry.enqueueCalled, false)
-      return { errorCode: updated?.errorCode, error: updated?.error }
+      return { errorCode: updated?.errorCode, error: updated?.errorMessage }
     }
 
     // Below the version floor.
@@ -623,7 +623,7 @@ test('processCommandEnvelope dispatches the stored payload and retains it after 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.error, 'hostnamectl failed')
+    assertEquals(updated?.errorMessage, 'hostnamectl failed')
 
     // Failure keeps the payload for ~24h instead of deleting it.
     assertEquals(await getCommandDispatchPayload(db, record.id), {
@@ -663,7 +663,7 @@ test('processCommandEnvelope fails cleanly when the dispatch payload is gone', a
     assertEquals(registry.enqueueCalled, false)
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.error, 'Command dispatch payload unavailable')
+    assertEquals(updated?.errorMessage, 'Command dispatch payload unavailable')
     assertEquals(updated?.errorCode, 'dispatch_payload_missing')
   })
 })
@@ -843,7 +843,7 @@ test('processCommandEnvelope maps failed and timed out pending requests', async 
     await processCommandEnvelope(db, failedRegistry, buildEnvelope(failedRecord, serverId))
     const failedUpdated = await getCommandRecord(db, failedRecord.id)
     assertEquals(failedUpdated?.status, 'failed')
-    assertEquals(failedUpdated?.error, 'daemon rejected command')
+    assertEquals(failedUpdated?.errorMessage, 'daemon rejected command')
 
     const timeoutRecord = await createCommandRecord(db, {
       serverId,
@@ -1127,7 +1127,7 @@ test('processCommandEnvelope releases an applying managed row when the daemon is
     assertEquals(row?.status, 'failed')
     assertEquals(registry.enqueueCalled, false)
     const updated = await getCommandRecord(db, record.id)
-    assertEquals(updated?.error, 'Daemon not connected')
+    assertEquals(updated?.errorMessage, 'Daemon not connected')
   })
 })
 
@@ -3070,7 +3070,7 @@ test('processCommandEnvelope records a rolled back and a needs attention sequent
       await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
       const updated = await getCommandRecord(db, record.id)
       assertEquals(updated?.status, 'failed')
-      assertEquals(updated?.error, daemonError)
+      assertEquals(updated?.errorMessage, daemonError)
       assertEquals(updated?.errorCode ?? null, expected === null ? null : `deploy_${expected}`)
       const [row] = await db
         .select({
@@ -3137,7 +3137,7 @@ test('processCommandEnvelope records a deploy the host stopped on request as can
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'cancelled')
-    assertEquals(updated?.error, daemonError)
+    assertEquals(updated?.errorMessage, daemonError)
     assertEquals(updated?.errorCode, 'deploy_cancelled')
     const [row] = await db
       .select({
@@ -3491,7 +3491,7 @@ test('processCommandEnvelope: a rollout server whose daemon is offline fails and
       assertEquals(registry.enqueueCalled, false)
       const failed = await getCommandRecord(db, rollout.commandIds[1]!)
       assertEquals(failed?.status, 'failed')
-      assertEquals(failed?.error, 'Daemon not connected')
+      assertEquals(failed?.errorMessage, 'Daemon not connected')
       await assertRolloutHaltedAtSecondServer(db, rollout)
     } finally {
       await removeRolloutServers(db, rollout.serverIds)
@@ -4713,7 +4713,7 @@ test('processCommandEnvelope fails on unexpected pending request status', async 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.error, 'Unexpected pending request status: acked')
+    assertEquals(updated?.errorMessage, 'Unexpected pending request status: acked')
   })
 })
 
@@ -6891,7 +6891,7 @@ test('a deploy that has been running longer than the run cap times out, counted 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'timed_out')
-    assertEquals(updated?.error?.includes('30 minutes'), true)
+    assertEquals(updated?.errorMessage?.includes('30 minutes'), true)
   })
 })
 
@@ -6953,7 +6953,7 @@ test('a deploy sent to a server that stays offline fails with plain words after 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'timed_out')
-    assertEquals(updated?.error?.includes('offline'), true)
+    assertEquals(updated?.errorMessage?.includes('offline'), true)
   })
 })
 
@@ -7187,7 +7187,7 @@ test('a failure the server reports after it was quiet settles the deploy as fail
 
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'failed')
-    assertEquals(stored?.error?.includes('daemon restarted'), true)
+    assertEquals(stored?.errorMessage?.includes('daemon restarted'), true)
   })
 })
 
@@ -7218,9 +7218,9 @@ test('a deploy the server never reports on is failed only after the whole reconc
 
     const given = await quietFor(6 * 60 * MIN + MIN)
     assertEquals(given?.status, 'timed_out')
-    assertEquals(given?.error?.includes('Lost contact with the server'), true)
-    assertEquals(given?.error?.includes('Last known step: Build running'), true)
-    assertEquals(given?.error?.includes('still running after 10 minutes'), false)
+    assertEquals(given?.errorMessage?.includes('Lost contact with the server'), true)
+    assertEquals(given?.errorMessage?.includes('Last known step: Build running'), true)
+    assertEquals(given?.errorMessage?.includes('still running after 10 minutes'), false)
   })
 })
 
@@ -7248,7 +7248,7 @@ test('the deploy time limit of 30 minutes holds only while the server reports', 
     // Reporting all along and past 30 minutes: stopped, with the real reason.
     const over = await run(45 * MIN)
     assertEquals(over?.status, 'timed_out')
-    assertEquals(over?.error?.includes('30 minutes'), true)
+    assertEquals(over?.errorMessage?.includes('30 minutes'), true)
 
     // Reporting and past the old ten minute cap, inside the limit: still running.
     const allowed = await run(25 * MIN)
@@ -7358,7 +7358,7 @@ test('a result that arrives after the deploy was given up on corrects it to succ
 
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'succeeded')
-    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.errorMessage ?? null, null)
     assertEquals(
       stored?.progress?.steps.every((step) => step.state === 'done'),
       true
@@ -7452,7 +7452,7 @@ test('a late success with characters Postgres refuses stores the cleaned report'
     assertEquals(ack?.id, record.id)
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'succeeded')
-    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.errorMessage ?? null, null)
     assertEquals(stored?.result, {
       projectName: 'tp-deploy-test',
       warnings: ['build printed ', 'half \uFFFD pair'],
@@ -7495,7 +7495,7 @@ test('a late success whose report the database refuses is still confirmed, with 
 
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'succeeded')
-    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.errorMessage ?? null, null)
     assertEquals(stored?.result ?? null, null)
     const [meta] = await ctx.db
       .select({ metadata: command.metadata })
@@ -7752,7 +7752,7 @@ test('a control plane restart mid-run keeps waiting for the deploy without sendi
     assertEquals(sent.length, 1)
     const waiting = await getCommandRecord(ctx.db, record.id)
     assertEquals(waiting?.status, 'sent')
-    assertEquals(waiting?.error ?? null, null)
+    assertEquals(waiting?.errorMessage ?? null, null)
     assertEquals(typeof waiting?.progress?.contactLostAt, 'string')
   })
 })
@@ -7880,7 +7880,7 @@ test('an outcome whose result is over the cap is confirmed and fails the deploy'
     assertEquals(cells.requests.get(record.id)?.result, undefined)
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'failed')
-    assertEquals(stored?.error, "The server's report was too large to store (71 KB; limit 64 KB).")
+    assertEquals(stored?.errorMessage, "The server's report was too large to store (71 KB; limit 64 KB).")
   })
 })
 
@@ -7966,8 +7966,8 @@ test('a resumed deploy whose request has expired is given up on, never sent agai
     assertEquals(sent.length, 0)
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'timed_out')
-    assertEquals(stored?.error?.includes('Lost contact with the server'), true)
-    assertEquals(stored?.error?.includes('Last known step: Build running'), true)
+    assertEquals(stored?.errorMessage?.includes('Lost contact with the server'), true)
+    assertEquals(stored?.errorMessage?.includes('Last known step: Build running'), true)
     const [row] = await ctx.db
       .select({ status: deployment.status })
       .from(deployment)
@@ -8003,7 +8003,7 @@ test('a deploy whose request expires during the wait ends with the lost-contact 
     assertEquals(sent.length, 0)
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'timed_out')
-    assertEquals(stored?.error?.includes('Lost contact with the server'), true)
+    assertEquals(stored?.errorMessage?.includes('Lost contact with the server'), true)
   })
 })
 

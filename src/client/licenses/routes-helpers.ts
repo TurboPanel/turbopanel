@@ -110,8 +110,6 @@ export type LicenseTierCounts = {
 
 type ExhaustedSummary = {
   purchased: number
-  releasing: number
-  held: number
   inUse: number
   provisioning: number
   unusedKeys: number
@@ -135,7 +133,7 @@ export function noLicenseAvailableBody(
 ) {
   // Destructured, not spread: the route's summary also carries `granted`
   // and `bound`, which are not part of this refusal's contract.
-  const { purchased, releasing, held, inUse, provisioning, unusedKeys, ending, endsAt, available } =
+  const { purchased, inUse, provisioning, unusedKeys, ending, endsAt, available } =
     summary
   return {
     error: NO_LICENSE_AVAILABLE_ERROR,
@@ -156,10 +154,6 @@ export function noLicenseAvailableBody(
       endsAt,
       available,
     })),
-    // Deprecated aliases, kept one release for the console: `releasing`
-    // (use `ending`) and `held` (use `inUse` + `unusedKeys`).
-    releasing,
-    held,
   }
 }
 

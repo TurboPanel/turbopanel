@@ -3,7 +3,6 @@ import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
-import { encodeLicenseArg } from '../../features/install/daemon-install-command.ts'
 import { requireInstanceStepUp } from '../authn/step-up.ts'
 import { buildTicketInstallCommand, resolveInstallOrigin } from '../licenses/install-origin.ts'
 import { requireServerOwnerContext } from './owner-context.ts'
@@ -51,7 +50,6 @@ export function registerServerReenrollTicketRoutes(router: Hono<AppEnv>, opts: A
       ticketId: issued.id,
       expiresAt: issued.expiresAt,
       licenseToken: issued.plaintext,
-      licenseArg: encodeLicenseArg(issued.id, issued.plaintext),
       installCommand: await buildTicketInstallCommand(c, db, opts, resolved.origin, issued),
     })
   })

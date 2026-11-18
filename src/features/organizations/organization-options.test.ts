@@ -11,7 +11,6 @@ import {
   resolveDeployHooksEnabled,
   resolveDeployTimeoutMs,
   resolvePrincipalNamePolicy,
-  resolveRandomizedPrincipalUsernames,
   resolveTemperatureUnit,
 } from './organization-options.ts'
 
@@ -169,14 +168,6 @@ Deno.test('randomizedPrincipalUsernames parses and defaults to on', () => {
     parseOrganizationOptions({ randomizedPrincipalUsernames: 'no' }).randomizedPrincipalUsernames,
     undefined
   )
-  assertEquals(resolveRandomizedPrincipalUsernames({}), true)
-  assertEquals(
-    resolveRandomizedPrincipalUsernames({
-      randomizedPrincipalUsernames: false,
-    }),
-    false
-  )
-  assertEquals(resolveRandomizedPrincipalUsernames({ randomizedPrincipalUsernames: true }), true)
 })
 
 test('principal name scheme options parse and default to partial', () => {

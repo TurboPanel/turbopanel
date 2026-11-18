@@ -15,7 +15,7 @@ const MANAGED_INGRESS_FAILURE_TYPE = 'managed.ingress.reconcile'
 export type ManagedFailureCommand = {
   type: string
   status: string
-  error: string | null
+  errorMessage: string | null
   /** Non-secret identifier bag from the command row (`managedId`, …). */
   context: unknown
   createdAt?: string
@@ -48,7 +48,7 @@ function isFailedCommand(row: ManagedFailureCommand): boolean {
 }
 
 function hasCommandError(row: ManagedFailureCommand): boolean {
-  return typeof row.error === 'string' && row.error.trim().length > 0
+  return typeof row.errorMessage === 'string' && row.errorMessage.trim().length > 0
 }
 
 /**
@@ -74,9 +74,9 @@ export function pickManagedFailureMessage(
   )
   const ingressError =
     latestIngress && isFailedCommand(latestIngress) && hasCommandError(latestIngress)
-      ? latestIngress.error
+      ? latestIngress.errorMessage
       : null
-  return mergeManagedFailureMessages(engine?.error, ingressError)
+  return mergeManagedFailureMessages(engine?.errorMessage, ingressError)
 }
 
 export async function loadManagedStatusError(

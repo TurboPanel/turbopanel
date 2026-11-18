@@ -50,8 +50,6 @@ const ORG_PATHS = [
   ['PUT', `/organizations/${orgId}/server-capacity`],
   ['GET', `/organizations/${orgId}/managed-defaults`],
   ['PUT', `/organizations/${orgId}/managed-defaults`],
-  ['GET', `/organizations/${orgId}/principal-defaults`],
-  ['PUT', `/organizations/${orgId}/principal-defaults`],
   ['GET', `/organizations/${orgId}/docker-networking`],
   ['PUT', `/organizations/${orgId}/docker-networking`],
   ['GET', '/timezones'],
@@ -823,63 +821,6 @@ test('PUT /managed-defaults writes a valid sslMode', async () => {
     body: JSON.stringify({ sslMode: 'require' }),
   })
   assertEquals(res.status, 200)
-})
-
-test('GET /principal-defaults returns the effective username policy', async () => {
-  const { app, cookie } = await buildSessionApp({
-    manageAllowed: true,
-    executeQueue: [[{ allowed: true }]],
-  })
-  const res = await app.request(`/organizations/${orgId}/principal-defaults`, {
-    headers: { Cookie: cookie },
-  })
-  assertEquals(res.status, 200)
-  const body = (await res.json()) as {
-    randomizedUsernames: boolean | null
-    effectiveRandomizedUsernames: boolean
-  }
-  assertEquals(body.effectiveRandomizedUsernames, true)
-})
-
-test('PUT /principal-defaults writes a boolean override', async () => {
-  const { app, cookie } = await buildSessionApp({
-    manageAllowed: true,
-    executeQueue: [[{ allowed: true }]],
-  })
-  const res = await app.request(`/organizations/${orgId}/principal-defaults`, {
-    method: 'PUT',
-    headers: {
-      Cookie: cookie,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ randomizedUsernames: false }),
-  })
-  assertEquals(res.status, 200)
-  const body = (await res.json()) as {
-    ok: boolean
-    randomizedUsernames: boolean
-    effectiveRandomizedUsernames: boolean
-  }
-  assertEquals(body.ok, true)
-  assertEquals(body.randomizedUsernames, false)
-  assertEquals(body.effectiveRandomizedUsernames, false)
-})
-
-test('PUT /principal-defaults returns 400 when randomizedUsernames is not a boolean', async () => {
-  const { app, cookie } = await buildSessionApp({
-    manageAllowed: true,
-    executeQueue: [[{ allowed: true }]],
-  })
-  const res = await app.request(`/organizations/${orgId}/principal-defaults`, {
-    method: 'PUT',
-    headers: {
-      Cookie: cookie,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ randomizedUsernames: 'yes' }),
-  })
-  assertEquals(res.status, 400)
-  assertEquals(await res.json(), { error: 'Invalid request' })
 })
 
 test('GET /docker-networking returns empty pools and a null bip when unconfigured', async () => {

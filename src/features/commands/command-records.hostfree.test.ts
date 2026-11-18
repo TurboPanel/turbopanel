@@ -396,7 +396,7 @@ test('transitionCommand patches columns and returns null when missing', async ()
     result: { ok: false },
   })
   assertEquals(failed?.status, 'failed')
-  assertEquals(failed?.error, 'Command queue unavailable')
+  assertEquals(failed?.errorMessage, 'Command queue unavailable')
   assertEquals(failed?.errorMessage, 'Command queue unavailable')
   const patch = setPayload as {
     attempts: number
@@ -476,7 +476,7 @@ test('serializeCommandRecord maps the full lifecycle column set', () => {
   assertEquals(record.startedAt, '2020-01-01T00:00:00.040Z')
   assertEquals(record.finishedAt, null)
   assertEquals(record.expiresAt, '2020-01-01T00:01:00.000Z')
-  assertEquals(record.error, null)
+  assertEquals(record.errorMessage, null)
   assertEquals(record.errorMessage, null)
 })
 

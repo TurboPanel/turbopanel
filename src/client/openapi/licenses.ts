@@ -118,16 +118,11 @@ export function buildLicenseSchemas(installCommandDescription: string) {
     },
     TicketResponse: {
       type: 'object',
-      required: ['licenseToken', 'licenseArg'],
+      required: ['licenseToken', 'installCommand'],
       properties: {
         licenseToken: {
           type: 'string',
           description: 'One-hour, single-use secret; shown once, stored hashed.',
-        },
-        licenseArg: {
-          type: 'string',
-          description:
-            'The value the installer takes as TURBOPANEL_LICENSE (id and secret, base64url).',
         },
         installCommand: {
           type: 'string',
@@ -348,17 +343,6 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                               available: { type: 'integer' },
                             },
                           },
-                        },
-                        releasing: {
-                          type: 'integer',
-                          deprecated: true,
-                          description: 'Use `ending`.',
-                        },
-                        held: {
-                          type: 'integer',
-                          deprecated: true,
-                          description:
-                            'Use `inUse` and `unusedKeys` (`held = inUse + unusedKeys`).',
                         },
                       },
                     },

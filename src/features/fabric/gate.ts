@@ -19,7 +19,7 @@ export type FabricGateRecord = {
   id: string
   serverId: string
   status: CommandStatus
-  error: string | null
+  errorMessage: string | null
 }
 
 export type FabricGateOutcome =
@@ -49,7 +49,7 @@ export function classifyFabricGate(records: readonly FabricGateRecord[]): Fabric
         kind: 'failed',
         serverId: row.serverId,
         commandId: row.id,
-        error: row.error,
+        error: row.errorMessage,
       }
       continue
     }
@@ -72,7 +72,7 @@ function padMissingCommands(
       id: command.commandId,
       serverId: command.serverId,
       status: 'queued',
-      error: null,
+      errorMessage: null,
     }
   })
 }

@@ -417,13 +417,13 @@ async function resolveRotatedOrganizationCa(
 
 export function overlayRotationResults(
   rows: readonly CaRotationResultRow[],
-  records: readonly { id: string; status: string; error: string | null }[]
+  records: readonly { id: string; status: string; errorMessage: string | null }[]
 ) {
   const byId = new Map(records.map((record) => [record.id, record]))
   return rows.map((row) => {
     const record = row.commandId ? byId.get(row.commandId) : undefined
     const effectiveStatus = row.status === 'skipped' ? 'skipped' : (record?.status ?? row.status)
-    const effectiveError = row.error ?? record?.error ?? undefined
+    const effectiveError = row.error ?? record?.errorMessage ?? undefined
     const reason = rotationResultReason({
       row,
       effectiveStatus,

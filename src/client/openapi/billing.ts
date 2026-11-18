@@ -84,7 +84,6 @@ export const billingSchemas = {
       'ending',
       'endsAt',
       'available',
-      'releasing',
       'priceCents',
       'currency',
     ],
@@ -112,12 +111,6 @@ export const billingSchemas = {
         description:
           '`purchased − ending − inUse`, floored at 0 and capped at the organization-wide `licenses.available`, so a tier never shows a license free that the mint gate refuses (an unused or provisioning key holds a license but has no tier yet).',
       },
-      releasing: {
-        type: 'integer',
-        deprecated: true,
-        description:
-          'Use `ending`. Every license leaving this tier at the boundary, a pending downgrade included.',
-      },
       priceCents: { type: ['integer', 'null'] },
       currency: { type: ['string', 'null'] },
     },
@@ -126,10 +119,8 @@ export const billingSchemas = {
     type: 'object',
     required: [
       'purchased',
-      'releasing',
       'ending',
       'endsAt',
-      'held',
       'inUse',
       'bound',
       'provisioning',
@@ -138,21 +129,11 @@ export const billingSchemas = {
     ],
     properties: {
       purchased: { type: 'integer', description: 'Total committed quantity across tiers.' },
-      releasing: {
-        type: 'integer',
-        description:
-          'Every license leaving at the period boundary (ending licenses and pending downgrades).',
-      },
       ending: {
         type: 'integer',
         description: 'Licenses ending at the period boundary, all tiers; restorable.',
       },
       endsAt: { type: ['string', 'null'], format: 'date-time' },
-      held: {
-        type: 'integer',
-        description:
-          'Active licenses: `inUse + unusedKeys`. What the mint gate subtracts; show `inUse` and `unusedKeys` instead.',
-      },
       inUse: {
         type: 'integer',
         description:
@@ -171,7 +152,7 @@ export const billingSchemas = {
       },
       available: {
         type: 'integer',
-        description: '`purchased − releasing − held`: how many more servers can be added.',
+        description: 'Purchased licenses not in use, not held by an unused key and not leaving at the period boundary (pending downgrades included): how many more servers can be added.',
       },
     },
   },

@@ -426,7 +426,7 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
     ],
     ledger: withIntent(emptyLedger('sub_1'), intent),
   })
-  assertEquals(summarizeTiers(view)[0]?.releasing, 1)
+  assertEquals(summarizeTiers(view)[0]?.ending, 1)
   assertEquals(summarizeLicenses(view), {
     purchased: 3,
     granted: 0,
@@ -470,17 +470,14 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
       ending: 1,
       endsAt: PERIOD_END,
       available: 1,
-      releasing: 1,
       priceCents: 3000,
       currency: 'usd',
     },
   ])
   assertEquals(body.licenses, {
     purchased: 3,
-    releasing: 1,
     ending: 1,
     endsAt: PERIOD_END,
-    held: 1,
     inUse: 1,
     bound: 1,
     provisioning: 0,
