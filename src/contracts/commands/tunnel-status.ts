@@ -71,10 +71,7 @@ function isConnectorVersion(value: unknown): value is string {
 
 /** The id of a tunnel as the daemon names it. */
 export function isTunnelStatusId(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    (value === 'instance' || UUID_RE.test(value))
-  )
+  return typeof value === 'string' && (value === 'instance' || UUID_RE.test(value))
 }
 
 export function parseTunnelStatusPayload(value: unknown): TunnelStatusCommandPayload {
