@@ -37,6 +37,7 @@ import { type DaemonUpdateResult, fanOutDaemonUpdate } from './daemon-update-fan
 import { devHostStatusStore } from './dev-host-status.ts'
 import { type DevHostView, readDevHostView } from './dev-host-view.ts'
 import {
+  boundErrorText,
   DevOverlayRebuildError,
   type DevOverlayState,
   ensureDevOverlayCurrent,
@@ -150,9 +151,9 @@ export async function listRemoteDevelopmentServers(
 
 function errorMessage(err: unknown): string {
   if (err instanceof DevOverlayRebuildError) {
-    return err.tail ? `${err.message}\n${err.tail}` : err.message
+    return boundErrorText(err.tail ? `${err.message}\n${err.tail}` : err.message)
   }
-  return err instanceof Error ? err.message : String(err)
+  return boundErrorText(err instanceof Error ? err.message : String(err))
 }
 
 function snapshot(job: DevelopmentPushJob | null): DevelopmentPushJob | null {
@@ -206,7 +207,7 @@ async function pushToRemotes(
     name: names.get(r.serverId) ?? null,
     ok: r.ok,
     skipped: r.ok && r.skipped === true,
-    error: r.error ?? null,
+    error: r.error ? boundErrorText(r.error) : null,
   }))
   const failed = results.filter((r) => !r.ok).length
   if (failed === 0) {

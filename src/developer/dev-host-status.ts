@@ -36,6 +36,13 @@ export type DevHostStatusStore = {
   get(): StoredDevHostStatus | null
   /** Record a job the daemon accepted, until a status names it. */
   noteJobStarted(jobId: string, nowMs?: number): void
+  /**
+   * Claim the host-job slot before awaiting the daemon, so Build and Push
+   * refuses meanwhile. False when a job already runs or is claimed.
+   */
+  reserveJob(nowMs?: number): boolean
+  /** Drop a claim when the daemon refused, timed out or failed. */
+  releaseJob(): void
   /** True while the daemon runs a host job, or one was just started. */
   isJobRunning(nowMs?: number): boolean
   clear(): void
@@ -44,6 +51,9 @@ export type DevHostStatusStore = {
 export function createDevHostStatusStore(): DevHostStatusStore {
   let latest: StoredDevHostStatus | null = null
   let pending: { jobId: string; atMs: number } | null = null
+  let reservedAtMs: number | null = null
+  const reserved = (nowMs: number) =>
+    reservedAtMs !== null && nowMs - reservedAtMs < DEV_HOST_PENDING_JOB_MS
   return {
     put(serverId, status, at, nowMs = Date.now()) {
       latest = { serverId, status: structuredClone(status), at, receivedAtMs: nowMs }
@@ -54,8 +64,18 @@ export function createDevHostStatusStore(): DevHostStatusStore {
     },
     noteJobStarted(jobId, nowMs = Date.now()) {
       pending = { jobId, atMs: nowMs }
+      reservedAtMs = null
+    },
+    reserveJob(nowMs = Date.now()) {
+      if (this.isJobRunning(nowMs)) return false
+      reservedAtMs = nowMs
+      return true
+    },
+    releaseJob() {
+      reservedAtMs = null
     },
     isJobRunning(nowMs = Date.now()) {
+      if (reserved(nowMs)) return true
       if (pending && nowMs - pending.atMs < DEV_HOST_PENDING_JOB_MS) return true
       if (!latest || nowMs - latest.receivedAtMs >= DEV_HOST_STATUS_STALE_MS) return false
       return latest.status.job?.state === 'running'
@@ -63,6 +83,7 @@ export function createDevHostStatusStore(): DevHostStatusStore {
     clear() {
       latest = null
       pending = null
+      reservedAtMs = null
     },
   }
 }

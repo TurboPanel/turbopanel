@@ -1,9 +1,11 @@
 import { assertEquals, assertNotEquals, assertRejects } from '@std/assert'
 import {
+  boundErrorText,
   computeDaemonSourceFingerprint,
   type DevOverlayHooks,
   DevOverlayRebuildError,
   ensureDevOverlayCurrent,
+  ERROR_TEXT_MAX_BYTES,
   readDevOverlayIdentity,
   readDevOverlayState,
   REBUILD_TAIL_LINES,
@@ -11,6 +13,7 @@ import {
   resetDevOverlayCacheForTests,
   resolveDenoBinary,
   resolveDevTrunkManifest,
+  stripAnsi,
 } from './dev-update-overlay.ts'
 
 /**
@@ -345,4 +348,98 @@ test('resolveDenoBinary: asks this process for its own run permission by default
   // The executable path is the first choice when it may be run and the
   // fallback when nothing may be, so it is the answer with or without a grant.
   assertEquals(resolveDenoBinary(), Deno.execPath())
+})
+
+test('stripAnsi removes colour, cursor and title sequences', () => {
+  assertEquals(stripAnsi('\u001b[31merror\u001b[0m: \u001b[1;4mbad\u001b[m'), 'error: bad')
+  assertEquals(stripAnsi('\u001b]0;title\u0007plain\u001b[2K'), 'plain')
+})
+
+test('rebuildOutputTail strips colour codes from the tail', () => {
+  assertEquals(
+    rebuildOutputTail('\u001b[31merror\u001b[0m: compile failed\n'),
+    'error: compile failed'
+  )
+})
+
+test('boundErrorText keeps the end of long text within the byte cap', () => {
+  const long = `${'x'.repeat(10_000)}END`
+  const bounded = boundErrorText(long)
+  assertEquals(new TextEncoder().encode(bounded).length, ERROR_TEXT_MAX_BYTES)
+  assertEquals(bounded.endsWith('END'), true)
+  assertEquals(boundErrorText('short'), 'short')
+})
+
+test('boundErrorText never splits a multi-byte character', () => {
+  const bounded = boundErrorText('\u00e9'.repeat(100), 11)
+  assertEquals(new TextEncoder().encode(bounded).length <= 11, true)
+  assertEquals(bounded, '\u00e9'.repeat(5))
+})
+
+test('rebuildOutputTail caps a few huge lines in bytes', () => {
+  const tail = rebuildOutputTail(`${'y'.repeat(50_000)}\nlast`)
+  assertEquals(new TextEncoder().encode(tail).length <= ERROR_TEXT_MAX_BYTES, true)
+  assertEquals(tail.endsWith('last'), true)
+})
+
+test('a forced call during a non-forced build runs one more forced build', async () => {
+  resetDevOverlayCacheForTests()
+  let built = 0
+  let release: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const hooks: DevOverlayHooks = {
+    repoPath: () => '/repo',
+    runGit: CLEAN_GIT,
+    readManifestText: () => Promise.resolve(manifestText(HEAD)),
+    runRebuild: async () => {
+      built += 1
+      if (built === 1) await gate
+      return { success: true, code: 0, output: 'done' }
+    },
+  }
+  // Source drift makes the first call build; the forced one must not join it.
+  const driftHooks: DevOverlayHooks = {
+    ...hooks,
+    readManifestText: () => Promise.resolve(manifestText('stale-source')),
+  }
+  const first = ensureDevOverlayCurrent(driftHooks)
+  const forcedA = ensureDevOverlayCurrent(hooks, { force: true })
+  const forcedB = ensureDevOverlayCurrent(hooks, { force: true })
+  release!()
+  await Promise.all([first, forcedA, forcedB])
+  assertEquals(built, 2)
+})
+
+test('a forced call still runs its build when the build before it failed', async () => {
+  resetDevOverlayCacheForTests()
+  let built = 0
+  let release: (() => void) | undefined
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const hooks: DevOverlayHooks = {
+    repoPath: () => '/repo',
+    runGit: CLEAN_GIT,
+    readManifestText: () => Promise.resolve(manifestText('stale-source')),
+    runRebuild: async () => {
+      built += 1
+      if (built === 1) {
+        await gate
+        return { success: false, code: 2, output: 'boom' }
+      }
+      return { success: true, code: 0, output: 'ok' }
+    },
+  }
+  const first = ensureDevOverlayCurrent(hooks)
+  const settled = first.then(
+    () => 'ok',
+    () => 'failed'
+  )
+  const forced = ensureDevOverlayCurrent(hooks, { force: true })
+  release!()
+  assertEquals(await settled, 'failed')
+  await forced
+  assertEquals(built, 2)
 })

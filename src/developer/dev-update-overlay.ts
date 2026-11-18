@@ -64,9 +64,36 @@ export class DevOverlayRebuildError extends Error {
   }
 }
 
-/** The last {@link REBUILD_TAIL_LINES} lines of `text`, trimmed. */
+/** Most bytes of build output or per-server error text kept for a caller. */
+export const ERROR_TEXT_MAX_BYTES = 4096
+
+// ESC [ ... final byte (colour, cursor), and ESC ] ... BEL or ESC \ (titles, links).
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g
+
+/** `text` without terminal escape sequences. */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_PATTERN, '')
+}
+
+/**
+ * Terminal-free `text`, cut to its last `maxBytes` UTF-8 bytes (the end of
+ * build output is the useful part), never splitting a character.
+ */
+export function boundErrorText(text: string, maxBytes = ERROR_TEXT_MAX_BYTES): string {
+  const clean = stripAnsi(text)
+  const bytes = new TextEncoder().encode(clean)
+  if (bytes.length <= maxBytes) return clean
+  let start = bytes.length - maxBytes
+  // Skip continuation bytes so the cut lands on a character boundary.
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++
+  return new TextDecoder().decode(bytes.subarray(start))
+}
+
+/** The last {@link REBUILD_TAIL_LINES} lines of `text`, trimmed, colour-free and byte-capped. */
 export function rebuildOutputTail(text: string): string {
-  return text.trim().split('\n').slice(-REBUILD_TAIL_LINES).join('\n')
+  const lines = stripAnsi(text).trim().split('\n').slice(-REBUILD_TAIL_LINES).join('\n')
+  return boundErrorText(lines).trim()
 }
 
 export type DevOverlayHooks = {
@@ -310,23 +337,14 @@ export function resolveDevTrunkManifest(
   return inflightTarget
 }
 
-let inflightRebuild: Promise<void> | null = null
+let inflightRebuild: { promise: Promise<void>; force: boolean } | null = null
+let queuedForcedRebuild: Promise<void> | null = null
 
-/**
- * Rebuild the dev overlay when the checkout changed since the last build, or
- * always with `force`. Single-flight: concurrent callers share one build.
- * Rejects with {@link DevOverlayRebuildError} when the build fails.
- */
-export function ensureDevOverlayCurrent(
-  hooks: DevOverlayHooks = {},
-  options: { force?: boolean } = {}
-): Promise<void> {
-  if (inflightRebuild) return inflightRebuild
-
-  inflightRebuild = (async () => {
+function startRebuild(hooks: DevOverlayHooks, force: boolean): Promise<void> {
+  const promise = (async () => {
     const repo = (hooks.repoPath ?? getDaemonRepoPath)()
     const state = await readDevOverlayState(hooks)
-    if (!state.sourceChanged && options.force !== true) return
+    if (!state.sourceChanged && !force) return
 
     logInfo(LOG_COMPONENT, `rebuilding daemon overlay for source ${state.sourceFingerprint}`)
     const result = await (hooks.runRebuild ?? defaultRunRebuild)(repo)
@@ -341,7 +359,35 @@ export function ensureDevOverlayCurrent(
   })().finally(() => {
     inflightRebuild = null
   })
-  return inflightRebuild
+  inflightRebuild = { promise, force }
+  return promise
+}
+
+/**
+ * Rebuild the dev overlay when the checkout changed since the last build, or
+ * always with `force`. Single-flight: concurrent callers share one build,
+ * except that a forced caller never joins a build that was not forced: it
+ * waits for that build, then runs (or joins) one forced build of its own.
+ * Rejects with {@link DevOverlayRebuildError} when the build fails.
+ */
+export function ensureDevOverlayCurrent(
+  hooks: DevOverlayHooks = {},
+  options: { force?: boolean } = {}
+): Promise<void> {
+  const force = options.force === true
+  if (inflightRebuild) {
+    if (!force || inflightRebuild.force) return inflightRebuild.promise
+    if (queuedForcedRebuild !== null) return queuedForcedRebuild
+    const queued = inflightRebuild.promise
+      .catch(() => undefined)
+      .then(() => {
+        queuedForcedRebuild = null
+        return ensureDevOverlayCurrent(hooks, { force: true })
+      })
+    queuedForcedRebuild = queued
+    return queued
+  }
+  return startRebuild(hooks, force)
 }
 
 /**

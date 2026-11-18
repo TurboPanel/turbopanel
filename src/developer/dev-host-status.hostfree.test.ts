@@ -111,6 +111,23 @@ test('a started job counts as running until a status names it', () => {
   assertEquals(store.isJobRunning(120), false)
 })
 
+test('a reserved job counts as running until released, started or lapsed', () => {
+  const store = createDevHostStatusStore()
+  assertEquals(store.reserveJob(0), true)
+  assertEquals(store.isJobRunning(10), true)
+  // A second claim is refused while one is held.
+  assertEquals(store.reserveJob(20), false)
+  store.releaseJob()
+  assertEquals(store.isJobRunning(30), false)
+  assertEquals(store.reserveJob(40), true)
+  store.noteJobStarted('job-9', 50)
+  store.releaseJob()
+  assertEquals(store.isJobRunning(60), true)
+  const lapsing = createDevHostStatusStore()
+  assertEquals(lapsing.reserveJob(0), true)
+  assertEquals(lapsing.isJobRunning(DEV_HOST_PENDING_JOB_MS), false)
+})
+
 test('migratePendingFromState counts what migrate would apply', () => {
   assertEquals(migratePendingFromState({ status: 'current', applied: 3, shipped: 3 }), {
     pending: 0,

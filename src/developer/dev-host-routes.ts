@@ -99,10 +99,14 @@ export async function requestDevHostAction(
   hooks: DevHostRoutesHooks = {}
 ): Promise<DevHostActionOutcome> {
   const h = resolveHooks(hooks)
-  if (h.pushJobActive() || h.store.isJobRunning()) return JOB_RUNNING
+  if (h.pushJobActive()) return JOB_RUNNING
   const stored = h.store.get()
   if (!stored) return unavailable()
   const serverId = stored.serverId
+  // Claimed before any await, so a Build and Push pressed while the daemon
+  // decides is refused. Kept only once the daemon names the job.
+  if (!h.store.reserveJob()) return JOB_RUNNING
+  let started = false
   try {
     if (!(await h.isConnected(registry, serverId))) return unavailable()
     const envelope: DaemonOutboundEnvelope = {
@@ -118,6 +122,7 @@ export async function requestDevHostAction(
     const result = record.result as { ok?: unknown; jobId?: unknown; error?: unknown } | null
     if (record.status === 'done' && result?.ok === true && typeof result.jobId === 'string') {
       h.store.noteJobStarted(result.jobId)
+      started = true
       return { status: 202, body: { ok: true, job: { id: result.jobId, action } } }
     }
     const reason = typeof result?.error === 'string' ? result.error : record.error
@@ -126,6 +131,8 @@ export async function requestDevHostAction(
   } catch (err) {
     logWarn(LOG_COMPONENT, `host ${action} request failed: ${String(err)}`)
     return unavailable()
+  } finally {
+    if (!started) h.store.releaseJob()
   }
 }
 
