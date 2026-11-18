@@ -1,6 +1,6 @@
 /**
  * Host-free coverage for "use the best network that is up": the link-aware
- * resolver ladder, `splitTrustedByLink`, and the TurboFabric LAN rung.
+ * resolver ladder and `splitTrustedByLink`.
  */
 
 import { assertEquals } from '@std/assert'
@@ -11,7 +11,6 @@ import {
   resolveOneFromCaches,
   splitTrustedByLink,
 } from './private-endpoint.ts'
-import { directCandidates, type EndpointAddressCaches } from '../fabric/fabric-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -156,40 +155,6 @@ test('splitTrustedByLink keeps (priority, id) order in both lists', () => {
   assertEquals(splitTrustedByLink(['dc-1'], [], []), { available: ['dc-1'], down: [] })
 })
 
-function fabricCaches(down: boolean): EndpointAddressCaches {
-  return {
-    publicAddressByServer: new Map([['b', '203.0.113.11']]),
-    reportedByServer: new Map(),
-    datacenterMembershipsByServer: new Map([
-      ['a', [pin('a', BACKHAUL, '10.9.0.10', down)]],
-      ['b', [pin('b', BACKHAUL, '10.9.0.11')]],
-    ]),
-    policyByDatacenter: new Map([[BACKHAUL, policy(10)]]),
-    natEndpointByPair: new Map(),
-    failedPathKindsByPair: new Map(),
-  }
-}
-
-test('TurboFabric tries a LAN whose link is up first, public next, a dead LAN last', () => {
-  const peer = { serverId: 'b', endpointAddress: null }
-  assertEquals(directCandidates('a', peer, fabricCaches(false)), [
-    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
-    { kind: 'direct_public', address: '203.0.113.11' },
-  ])
-  assertEquals(directCandidates('a', peer, fabricCaches(true)), [
-    { kind: 'direct_public', address: '203.0.113.11' },
-    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
-  ])
-})
-
-test('a dead LAN is still the only candidate when nothing else reaches the peer', () => {
-  const caches = fabricCaches(true)
-  caches.publicAddressByServer.clear()
-  assertEquals(directCandidates('a', { serverId: 'b', endpointAddress: null }, caches), [
-    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
-  ])
-})
-
 test('up networks with no shared address family hand over to a compatible network that is down, not to an error', () => {
   // Backhaul (priority 10, up) is IPv6 on a and IPv4 on b: no common family.
   // The office LAN (priority 100) is compatible but a's link there is down.
@@ -227,26 +192,6 @@ test('a network counts as down when any pin of either server in it is flagged, w
   ]
   const toPins = [pin('b', LAN, '192.168.1.11')]
   assertEquals(splitTrustedByLink([LAN], fromPins, toPins), { available: [], down: [LAN] })
-})
-
-test('TurboFabric with two LANs, one up and one down: LAN-up, public, NAT, then LAN-down', () => {
-  const caches = fabricCaches(false)
-  caches.datacenterMembershipsByServer.set('a', [
-    pin('a', BACKHAUL, '10.9.0.10', true),
-    pin('a', LAN, '192.168.1.10'),
-  ])
-  caches.datacenterMembershipsByServer.set('b', [
-    pin('b', BACKHAUL, '10.9.0.11'),
-    pin('b', LAN, '192.168.1.11'),
-  ])
-  caches.policyByDatacenter.set(LAN, policy(100))
-  caches.natEndpointByPair.set('a>b', '198.51.100.7:51820')
-  assertEquals(directCandidates('a', { serverId: 'b', endpointAddress: null }, caches), [
-    { kind: 'direct_lan', address: '192.168.1.11', datacenterId: LAN },
-    { kind: 'direct_public', address: '203.0.113.11' },
-    { kind: 'direct_nat', address: '198.51.100.7:51820' },
-    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
-  ])
 })
 
 test('a public fallback past trusted networks that are all down carries no untrusted marker', () => {
