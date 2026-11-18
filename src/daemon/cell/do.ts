@@ -2624,6 +2624,23 @@ export class DaemonCellObject {
     if (!failure.ignored) ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'policy_violation')
   }
 
+  /**
+   * False when the session may not carry this frame: the first frame failed its gate, or the
+   * socket was opened unsigned by an earlier build (closed, never served).
+   */
+  async #sessionAdmitsFrame(
+    ws: WebSocket,
+    session: SocketSessionAttachment,
+    raw: string
+  ): Promise<boolean> {
+    if (session.phase === 'await-first-frame') return this.#firstFrameGate(ws, session, raw)
+    if (session.phase === 'legacy' && !unsignedSessionsAllowedForTests) {
+      ws.close(PANEL_IDENTITY_CLOSE_CODE, SIGNED_MODE_REQUIRED_REASON)
+      return false
+    }
+    return true
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -2639,14 +2656,7 @@ export class DaemonCellObject {
     const raw = typeof message === 'string' ? message : new TextDecoder().decode(message)
 
     const session = attachment as SocketSessionAttachment
-    if (session.phase === 'await-first-frame' && !(await this.#firstFrameGate(ws, session, raw))) {
-      return
-    }
-    // A socket opened unsigned by an earlier build is closed, never served.
-    if (session.phase === 'legacy' && !unsignedSessionsAllowedForTests) {
-      ws.close(PANEL_IDENTITY_CLOSE_CODE, SIGNED_MODE_REQUIRED_REASON)
-      return
-    }
+    if (!(await this.#sessionAdmitsFrame(ws, session, raw))) return
 
     const validated = await this.#acceptedInboundFrame(ws, session, raw)
     if (!validated) return
