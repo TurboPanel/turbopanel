@@ -114,10 +114,9 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
   the suite on first use). Envelope `{v:1, kid, enc, ct}`; `aad` is the recipient server id.
   `/secrets/decrypt` seals its answer to the daemon's registered sealing key
   (`src/daemon/secrets-decrypt-answer.ts`) whenever one is on file, whatever the unsigned hello
-  `features` list says; a server with no key still gets `plaintexts`, and `server.plaintext_secrets_at` records that (read by the
-  edge go-live gate through `GET /api/admin/v1/instance/identity/sealed-secrets`). The fixed vector in `src/test-fixtures/hpke-vector.ts` is the same one the
+  `features` list says; a server with no key gets a 409 `sealing_key_required` and no plaintext. The fixed vector in `src/test-fixtures/hpke-vector.ts` is the same one the
   daemon repo opens; change both together.
-- **Keys sent up.** `POST /tls/issued` takes exactly one of `privateKeyPem` (older daemons) or `privateKeyEnvelope`, sealed to the identity's `seal` key with the `current` key id as aad (`src/daemon/issued-private-key.ts`). `openFromSender` accepts the identity's native non-extractable X25519 key, so no seed is kept in memory. An envelope with no identity loaded answers 503; a body or envelope is never echoed or logged.
+- **Keys sent up.** `POST /tls/issued` takes `privateKeyEnvelope`, sealed to the identity's `seal` key with the `current` key id as aad (`src/daemon/issued-private-key.ts`); a plain `privateKeyPem` is refused 400. `openFromSender` accepts the identity's native non-extractable X25519 key, so no seed is kept in memory. An envelope with no identity loaded answers 503; a body or envelope is never echoed or logged.
 - **Signed daemon session.** The control plane sends nothing on `/ws/daemon/v1` until the daemon's
   first frame (`src/daemon/signed-session-gate.ts`, shared by `deno-ws.ts` and the cell). A
   `hello-nonce` gets a `hello` signed over `"tp-hello\n" + exact JSON`, then every frame (the

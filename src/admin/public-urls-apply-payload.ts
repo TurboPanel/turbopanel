@@ -2,9 +2,9 @@
  * Build the `public-urls-update` body for the co-located daemon.
  *
  * The daemon receives each hostname's source and, for `uploaded`, the
- * certificate plus its key: sealed to the daemon as `keyEnvelope` when
- * `sealing` is set (the daemon advertises `sealed-instance-secrets-v1`),
- * otherwise the legacy plaintext `keyPem`. It also receives `publicPort`, but
+ * certificate plus its key, sealed to the daemon as `keyEnvelope` (the daemon
+ * must advertise `sealed-instance-secrets-v1`; the key is never sent as
+ * plaintext). It also receives `publicPort`, but
  * only on `cloudflare-tunnel` hostnames: the daemon redirects other ports to
  * it, and on a direct, proxied or uploaded name ports 80 and 443 belong to
  * hosting and may serve a different site.
@@ -28,7 +28,7 @@ import {
   listInstanceHostnames,
   wireCertificateSource,
 } from '../features/install/instance-hostnames.ts'
-import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
+import { resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import type { InstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 import { getServerDaemonStateByServerId } from '../features/servers/server-identity-db.ts'
@@ -97,7 +97,7 @@ export async function resolvePublicUrlsApplyPayload(
       ...entry,
       uploadedCertId: row.uploadedCertId,
       certPem: pair.certPem,
-      ...pair.key,
+      keyEnvelope: pair.keyEnvelope,
     }
   })
   const letsEncrypt = hostnames.some((entry) => entry.source === 'lets-encrypt')
@@ -127,12 +127,12 @@ async function loadInstanceAcme(
 
 type UploadedPair = {
   certPem: string
-  key: { keyEnvelope: string } | { keyPem: string }
+  keyEnvelope: string
 }
 
 /**
- * With `sealing`, the at-rest `tpsecret` key is re-sealed straight to the
- * daemon (`keyEnvelope`) and never exists as plaintext in the payload.
+ * The at-rest `tpsecret` key is re-sealed straight to the daemon
+ * (`keyEnvelope`) and never exists as plaintext in the payload.
  */
 async function loadUploadedPairs(
   db: Db,
@@ -147,6 +147,11 @@ async function loadUploadedPairs(
       'data encryption secrets are required to apply an uploaded certificate'
     )
   }
+  if (!sealing) {
+    throw new PublicUrlsApplyPayloadError(
+      'the co-located daemon does not open sealed instance secrets; upgrade it to apply an uploaded certificate'
+    )
+  }
   const rows = await db
     .select({
       id: instanceUploadedCertificate.id,
@@ -158,17 +163,13 @@ async function loadUploadedPairs(
   // Each row is sealed/decrypted on its own; nothing is shared between them.
   const pairs = await Promise.all(
     rows.map(async (row): Promise<[string, UploadedPair]> => {
-      const key = sealing
-        ? {
-            keyEnvelope: await resealSecretForDaemon(
-              sealing.secretsConfig,
-              secrets,
-              sealing.recipient,
-              row.keyPem
-            ),
-          }
-        : { keyPem: await decryptSecret(secrets, row.keyPem) }
-      return [row.id, { certPem: row.certPem, key }]
+      const keyEnvelope = await resealSecretForDaemon(
+        sealing.secretsConfig,
+        secrets,
+        sealing.recipient,
+        row.keyPem
+      )
+      return [row.id, { certPem: row.certPem, keyEnvelope }]
     })
   )
   for (const [id, pair] of pairs) out.set(id, pair)

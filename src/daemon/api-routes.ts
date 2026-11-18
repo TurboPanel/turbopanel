@@ -35,9 +35,16 @@ import { compatLogInfo, compatLogWarn } from '../lib/log-compat.ts'
 import { storeIssuedCertificate } from '../client/tls/issued-certificate.ts'
 import { logWarn } from '../lib/logger.ts'
 import { resolveIssuedPrivateKey } from './issued-private-key.ts'
-import { buildSecretsDecryptAnswer, databaseDecryptAnswerSource } from './secrets-decrypt-answer.ts'
+import {
+  SEALING_KEY_REQUIRED_ERROR,
+  SEALING_KEY_REQUIRED_MESSAGE,
+} from './secrets-decrypt-answer.ts'
 import { registerDaemonSealingKey } from './sealing-key-registration.ts'
-import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
+import {
+  getDaemonSealingKey,
+  sealDecryptAnswers,
+  setDaemonSealingKey,
+} from '../features/servers/daemon-sealing-key.ts'
 import {
   createIdentityChainCache,
   createIdentityDocumentCache,
@@ -2732,6 +2739,19 @@ export function registerDaemonApiRoutes<E extends Env>(
         }
       }
 
+      // Every answer is sealed to the server's registered sealing key (the
+      // unsigned hello list is not consulted). With no key on file nothing is
+      // decrypted: plaintext is never returned.
+      const db = getDb(c)
+      if (!db) return c.json({ ok: false, error: 'storage unavailable' }, 503)
+      const sealingKey = await getDaemonSealingKey(db, daemonServerId)
+      if (!sealingKey) {
+        return c.json(
+          { ok: false, error: SEALING_KEY_REQUIRED_ERROR, message: SEALING_KEY_REQUIRED_MESSAGE },
+          409
+        )
+      }
+
       const recipient = { serverId: daemonServerId, keyId: daemonKeyId }
 
       // Sequential decryption — bounded work, no unbounded parallelism over the
@@ -2740,15 +2760,8 @@ export function registerDaemonApiRoutes<E extends Env>(
         decryptDaemonCiphertext(secretsConfig, recipient, ciphertext)
       )
 
-      // Sealed whenever the server has a registered sealing key; plaintext
-      // only when none is on file (the unsigned hello list is not consulted).
-      const db = getDb(c)
       return c.json(
-        await buildSecretsDecryptAnswer(
-          db && databaseDecryptAnswerSource(db),
-          daemonServerId,
-          plaintexts
-        ),
+        { sealed: await sealDecryptAnswers(plaintexts, daemonServerId, sealingKey) },
         200
       )
     }

@@ -3,6 +3,10 @@ import { assert, assertEquals, assertExists } from '@std/assert'
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url'
 import { and, eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
+import { base64urlEncode } from '../lib/encoding/base64url.ts'
+import { openFromSender, type HpkeEnvelope } from '../lib/panel-identity/hpke.ts'
+import { HPKE_TEST_RECIPIENT_SEED, hpkeTestRecipient } from '../test-fixtures/hpke-vector.ts'
+import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import type { AppEnv } from '../app/app.ts'
 import { deriveSecretsConfig } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
@@ -2495,8 +2499,36 @@ test('POST /secrets/decrypt returns 400 on malformed body', async () => {
   })
 })
 
+const DECRYPT_SERVER_AAD = (serverId: string) => serverId
+
+/** Register the HPKE test recipient as the server's sealing key, as the daemon does on connect. */
+async function registerTestSealingKey(db: EnrollFixture['db'], serverId: string): Promise<void> {
+  const recipient = await hpkeTestRecipient()
+  await setDaemonSealingKey(db, serverId, {
+    kid: recipient.kid,
+    pub: base64urlEncode(recipient.pub),
+    reportedAt: new Date().toISOString(),
+  })
+}
+
+/** Open a sealed `/secrets/decrypt` answer with the test recipient's key; `null` stays `null`. */
+async function openSealedAnswer(serverId: string, response: Response): Promise<(string | null)[]> {
+  const body = (await response.json()) as { sealed: (HpkeEnvelope | null)[]; plaintexts?: unknown }
+  assertEquals(body.plaintexts, undefined)
+  return await Promise.all(
+    body.sealed.map(async (envelope) =>
+      envelope === null
+        ? null
+        : new TextDecoder().decode(
+            await openFromSender(HPKE_TEST_RECIPIENT_SEED, DECRYPT_SERVER_AAD(serverId), envelope)
+          )
+    )
+  )
+}
+
 test('POST /secrets/decrypt round-trips batch with mixed valid/invalid', async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const secretsConfig = createTestSecretsConfig()
     const sealed = await encryptSecretForDaemon(
       secretsConfig,
@@ -2516,16 +2548,67 @@ test('POST /secrets/decrypt round-trips batch with mixed valid/invalid', async (
       }),
     })
     assertEquals(response.status, 200)
-    const body = (await response.json()) as { plaintexts: (string | null)[] }
-    assertEquals(body.plaintexts.length, 3)
-    assertEquals(body.plaintexts[0], 'daemon-secret-value')
-    assertEquals(body.plaintexts[1], null)
-    assertEquals(body.plaintexts[2], 'daemon-secret-value')
+    const plaintexts = await openSealedAnswer(serverId, response)
+    assertEquals(plaintexts, ['daemon-secret-value', null, 'daemon-secret-value'])
   })
 })
 
+test('POST /secrets/decrypt answers 409 sealing_key_required, with no plaintext, until a key is registered', async () => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    const secretsConfig = createTestSecretsConfig()
+    const sealed = await encryptSecretForDaemon(secretsConfig, { serverId, keyId }, 'never-sent')
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const ask = () =>
+      app.request('/api/daemon/v1/secrets/decrypt', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ciphertexts: [sealed] }),
+      })
+    const refused = await ask()
+    assertEquals(refused.status, 409)
+    const text = await refused.text()
+    assertEquals((JSON.parse(text) as { error?: string }).error, 'sealing_key_required')
+    assertEquals(text.includes('never-sent'), false)
+
+    await registerTestSealingKey(db, serverId)
+    const answered = await ask()
+    assertEquals(answered.status, 200)
+    assertEquals(await openSealedAnswer(serverId, answered), ['never-sent'])
+  })
+})
+
+test('POST /secrets/decrypt answers 503 storage unavailable when no database is bound', async () => {
+  const serverId = crypto.randomUUID()
+  const keyId = crypto.randomUUID()
+  const secretsConfig = createTestSecretsConfig()
+  const sealed = await encryptSecretForDaemon(secretsConfig, { serverId, keyId }, 'never-sent')
+  const app = new Hono<AppEnv>()
+  registerDaemonApiRoutes(app, {
+    secrets: await createTestSecrets(),
+    challengeSigningSecrets: await createTestChallengeSecrets(),
+    secretsConfig,
+    runtime: 'workers',
+  })
+  const response = await app.request('/api/daemon/v1/secrets/decrypt', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${await issueDaemonToken(serverId, keyId)}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ciphertexts: [sealed] }),
+  })
+  assertEquals(response.status, 503)
+  const text = await response.text()
+  assertEquals((JSON.parse(text) as { error?: string }).error, 'storage unavailable')
+  assertEquals(text.includes('never-sent'), false)
+})
+
 test('POST /secrets/decrypt rejects envelopes sealed for another daemon', async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const secretsConfig = createTestSecretsConfig()
     const sealed = await encryptSecretForDaemon(
       secretsConfig,
@@ -2543,13 +2626,13 @@ test('POST /secrets/decrypt rejects envelopes sealed for another daemon', async 
       body: JSON.stringify({ ciphertexts: [sealed] }),
     })
     assertEquals(response.status, 200)
-    const body = (await response.json()) as { plaintexts: (string | null)[] }
-    assertEquals(body.plaintexts, [null])
+    assertEquals(await openSealedAnswer(serverId, response), [null])
   })
 })
 
 test('POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped only)', async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const daemonToken = await issueDaemonToken(serverId, keyId)
     const response = await app.request('/api/daemon/v1/secrets/decrypt', {
       method: 'POST',
@@ -2560,8 +2643,7 @@ test('POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped onl
       body: JSON.stringify({ ciphertexts: ['tpsecret.v1.x'] }),
     })
     assertEquals(response.status, 200)
-    const body = (await response.json()) as { plaintexts: (string | null)[] }
-    assertEquals(body.plaintexts, [null])
+    assertEquals(await openSealedAnswer(serverId, response), [null])
   })
 })
 
@@ -2633,36 +2715,27 @@ test('POST /secrets/decrypt rejects a batch larger than the limit', async () => 
 })
 
 test('POST /secrets/decrypt decrypts a normal TLS-sized daemon envelope', async () => {
-  const app = await createDecryptTestApp()
-  const serverId = '00000000-0000-4000-8000-0000000000aa'
-  const keyId = 'key-tls-sized'
-  const secretsConfig = createTestSecretsConfig()
-  // Simulate a TLS private-key PEM (~1.8 KiB) sealed as a daemon envelope.
-  const pemBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj'.repeat(45)
-  const privateKeyPem = `-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----\n`
-  const sealed = await encryptSecretForDaemon(
-    secretsConfig,
-    {
-      serverId,
-      keyId,
-    },
-    privateKeyPem
-  )
-  assert(sealed.length <= MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS)
-  const daemonToken = await issueDaemonToken(serverId, keyId)
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
+    const secretsConfig = createTestSecretsConfig()
+    // Simulate a TLS private-key PEM (~1.8 KiB) sealed as a daemon envelope.
+    const pemBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj'.repeat(45)
+    const privateKeyPem = `-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----\n`
+    const sealed = await encryptSecretForDaemon(secretsConfig, { serverId, keyId }, privateKeyPem)
+    assert(sealed.length <= MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
 
-  const response = await app.request('/api/daemon/v1/secrets/decrypt', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${daemonToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ ciphertexts: [sealed] }),
+    const response = await app.request('/api/daemon/v1/secrets/decrypt', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ciphertexts: [sealed] }),
+    })
+    assertEquals(response.status, 200)
+    assertEquals(await openSealedAnswer(serverId, response), [privateKeyPem])
   })
-  assertEquals(response.status, 200)
-  const body = (await response.json()) as { plaintexts: (string | null)[] }
-  assertEquals(body.plaintexts.length, 1)
-  assertEquals(body.plaintexts[0], privateKeyPem)
 })
 
 test('Enrolled daemon can auto-refresh JWT', async () => {
@@ -4357,6 +4430,7 @@ test('POST /metrics rejects JWT after license invalidation', async () => {
 
 test('POST /secrets/decrypt rejects JWT after license invalidation', async () => {
   await withEnrollFixture(async ({ app, db, organizationId, licenseId, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const secretsConfig = createTestSecretsConfig()
     const sealed = await encryptSecretForDaemon(
       secretsConfig,

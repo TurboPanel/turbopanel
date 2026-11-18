@@ -123,8 +123,8 @@ Every hostname, whatever its certificate source, is reached at
 `public-urls-update`. The message carries `hostnames` (host, source and, for
 an uploaded certificate, the certificate and its key) and, when any source is
 `acme-http-01` (`lets-encrypt` on the wire), `instanceAcme`. There is no flat
-`urls` list on the wire. Uploaded `keyPem` values
-are decrypted for that one hop. Port 80 is
+`urls` list on the wire. An uploaded `keyPem` travels only as the
+sealed envelope the daemon stored; it is never sent or kept as plaintext. Port 80 is
 open only during issuance or renewal. The issuer is the short-lived
 `turbopanel-instance-acme.service`, which the daemon starts and stops for
 that window. Before an `acme-http-01` hostname is applied, the daemon

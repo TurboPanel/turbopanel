@@ -275,9 +275,9 @@ export type CommandProgressMessage = {
  * One control-plane hostname on `public-urls-update`. Twin of
  * `turbopaneld/src/contracts/cell-messages.ts`. An uploaded key travels as
  * `keyEnvelope`, a `tpdaemon` envelope the recipient daemon opens through
- * `POST /api/daemon/v1/secrets/decrypt`, when the daemon advertises
- * `sealed-instance-secrets-v1`. `keyPem` (plaintext) is the legacy field for
- * daemons that do not; it is never a stored column.
+ * `POST /api/daemon/v1/secrets/decrypt`. The control plane never sends
+ * `keyPem` (plaintext) and the daemon refuses it; the field stays on the type
+ * so the twin shapes match.
  */
 export type InstanceHostnameCertSource = 'lets-encrypt' | 'platform-ca' | 'uploaded'
 
@@ -309,9 +309,8 @@ export type InstanceEdgeTrustWire = {
 
 /**
  * Instance → co-located daemon: start (or, with an empty `token`, stop) the
- * Cloudflare tunnel. A daemon that advertises `sealed-instance-secrets-v1`
- * receives a non-empty token only as `tokenEnvelope` (`tpdaemon`); `token`
- * is the legacy plaintext field. Twin of `turbopaneld/src/contracts/cell-messages.ts`.
+ * Cloudflare tunnel. A non-empty token travels only as `tokenEnvelope`
+ * (`tpdaemon`); `token` is only ever the empty teardown value. Twin of `turbopaneld/src/contracts/cell-messages.ts`.
  */
 export type TunnelTokenMessage = {
   type: 'tunnel-token'
@@ -3229,9 +3228,9 @@ export type DaemonOutboundEnvelope =
   | (OutboundEnvelopeBase & { kind: 'dev-sync'; phase: 'end' })
   | (OutboundEnvelopeBase & {
       kind: 'tunnel-token'
-      /** Legacy plaintext; also the empty teardown token. */
+      /** Only the empty teardown token; a real token is never sent in plaintext. */
       token?: string
-      /** `tpdaemon` envelope for a non-empty token (sealed-instance-secrets-v1). */
+      /** `tpdaemon` envelope for a non-empty token. */
       tokenEnvelope?: string
     })
   | (OutboundEnvelopeBase & {
