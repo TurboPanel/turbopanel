@@ -15,7 +15,6 @@ import { isServerConnected } from '../../daemon/cell/server-status.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
-import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import {
   advanceHttpIssuance,
   deliverIssuedPair,
@@ -81,8 +80,6 @@ export function buildHttpIssuanceDeps(db: Db, wiring: HttpIssuanceSweepWiring): 
     },
     dnsLookup: wiring.dnsLookup ?? runtimeDnsLookup(),
     isOnline: (serverId) => isServerConnected(db, wiring.registry, serverId),
-    daemonFeatures: async (serverId) =>
-      (await getServerDaemonStateByServerId(db, serverId))?.projection?.features ?? [],
     contactEmail: (organizationId) => organizationAcmeContactEmail(db, organizationId),
     staging: httpIssuanceStaging(wiring.env),
   }
@@ -122,8 +119,7 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
         eq(tls.source, 'lets_encrypt'),
         eq(tls.status, 'automatic'),
         // Only a row that a site pins, with at least one name, and never a wildcard (that
-        // is the connected DNS host's). A row with several names is ordered only from a
-        // daemon that gets one certificate for all of them (`takesOrderFor`).
+        // is the connected DNS host's).
         sql`exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`,
         sql`jsonb_array_length(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) >= 1`,
         sql`not exists (

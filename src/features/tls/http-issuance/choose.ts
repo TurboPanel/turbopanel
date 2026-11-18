@@ -16,13 +16,11 @@ export type ServingServer = {
   /** The name shown to people in status lines. */
   label: string
   online: boolean
-  /** Its daemon lists `acme-issue-v1`. */
-  hasFeature: boolean
   /** Public addresses the server is known by (canonical form). */
   addresses: readonly string[]
 }
 
-export type SkipReason = 'offline' | 'not_in_dns' | 'old_daemon'
+export type SkipReason = 'offline' | 'not_in_dns'
 
 export type Participants = {
   issuer: ServingServer
@@ -63,7 +61,6 @@ export function chooseParticipants(params: {
   const ordered = [...params.servers].sort((a, b) => compareIds(a.serverId, b.serverId))
   for (const server of ordered) {
     if (!server.online) skipped.push({ server, reason: 'offline' })
-    else if (!server.hasFeature) skipped.push({ server, reason: 'old_daemon' })
     else {
       const address = addressInDns(server, dns)
       if (address !== null) eligible.push({ server, address })
