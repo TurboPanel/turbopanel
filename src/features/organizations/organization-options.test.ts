@@ -159,14 +159,11 @@ test('resolveTemperatureUnit defaults to celsius', () => {
   assertEquals(resolveTemperatureUnit({ temperatureUnit: 'fahrenheit' }), 'fahrenheit')
 })
 
-Deno.test('randomizedPrincipalUsernames parses and defaults to on', () => {
+test('a stored legacy randomizedPrincipalUsernames key is ignored', () => {
   assertEquals(
-    parseOrganizationOptions({ randomizedPrincipalUsernames: false }).randomizedPrincipalUsernames,
+    'randomizedPrincipalUsernames' in
+      parseOrganizationOptions({ randomizedPrincipalUsernames: false }),
     false
-  )
-  assertEquals(
-    parseOrganizationOptions({ randomizedPrincipalUsernames: 'no' }).randomizedPrincipalUsernames,
-    undefined
   )
 })
 
@@ -189,10 +186,6 @@ test('principal name scheme options parse and default to partial', () => {
   )
   assertEquals(resolvePrincipalNamePolicy({}), {
     defaultScheme: 'partial',
-    locked: false,
-  })
-  assertEquals(resolvePrincipalNamePolicy({ randomizedPrincipalUsernames: false }), {
-    defaultScheme: 'plain',
     locked: false,
   })
   assertEquals(

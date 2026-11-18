@@ -28,17 +28,10 @@ test('isPrincipalNameScheme accepts exactly the three schemes', () => {
   }
 })
 
-test('resolveOrgPrincipalNameScheme: new key wins, legacy boolean falls back, default partial', () => {
+test('resolveOrgPrincipalNameScheme: the key wins, default partial', () => {
   assertEquals(resolveOrgPrincipalNameScheme({}), 'partial')
-  assertEquals(resolveOrgPrincipalNameScheme({ randomizedPrincipalUsernames: true }), 'partial')
-  assertEquals(resolveOrgPrincipalNameScheme({ randomizedPrincipalUsernames: false }), 'plain')
-  assertEquals(
-    resolveOrgPrincipalNameScheme({
-      principalNameScheme: 'random',
-      randomizedPrincipalUsernames: false,
-    }),
-    'random'
-  )
+  assertEquals(resolveOrgPrincipalNameScheme({ principalNameScheme: 'random' }), 'random')
+  assertEquals(resolveOrgPrincipalNameScheme({ principalNameScheme: 'plain' }), 'plain')
 })
 
 test('resolveRequestedNameScheme: default, explicit, invalid and locked', () => {

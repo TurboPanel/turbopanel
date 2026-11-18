@@ -3,9 +3,7 @@
  * the response shape for `GET/PUT /organizations/:id/principal-defaults`.
  *
  * Keys live on `organization.options`: `principalNameScheme` (the default
- * scheme), `principalNameSchemeLocked` (the policy lock) and the legacy
- * boolean `randomizedPrincipalUsernames`, which stays readable as a stored
- * fallback and is retired whenever the new scheme key is written.
+ * scheme) and `principalNameSchemeLocked` (the policy lock).
  */
 
 import {
@@ -57,7 +55,6 @@ export function principalDefaultsOptionChanges(patch: PrincipalDefaultsPatch): {
   const remove: string[] = []
   const set: Record<string, unknown> = {}
   if (patch.nameScheme !== undefined) {
-    remove.push('randomizedPrincipalUsernames')
     if (patch.nameScheme === null) remove.push('principalNameScheme')
     else set.principalNameScheme = patch.nameScheme
   }

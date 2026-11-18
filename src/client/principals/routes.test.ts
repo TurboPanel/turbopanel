@@ -400,7 +400,7 @@ test('POST /projects/:projectId/principals accepts max-length username and rejec
     await db
       .update(organization)
       .set({
-        options: { randomizedPrincipalUsernames: false },
+        options: { principalNameScheme: 'plain' },
       })
       .where(eq(organization.id, organizationId))
 
@@ -1344,7 +1344,7 @@ test('POST principals: length limits follow the scheme (28 plain/random, 16 part
   })
 })
 
-test('POST principals: org default scheme and the legacy boolean fallback', async () => {
+test('POST principals: org default scheme; a stale legacy boolean is ignored', async () => {
   await withPrincipalFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
     const headers = {
       Cookie: await sessionCookie(db, secrets, userId),
@@ -1360,21 +1360,15 @@ test('POST principals: org default scheme and the legacy boolean fallback', asyn
         })
       ).json()) as CreatedPrincipalBody
 
-    // Legacy `false` still means plain; legacy `true` still means partial.
+    // A stale legacy boolean is ignored: the platform default applies.
     await setOrgOptions(db, organizationId, {
       randomizedPrincipalUsernames: false,
     })
-    const legacyOff = await create('legacyoff')
-    assertEquals([legacyOff.nameScheme, legacyOff.appliedUsername], ['plain', 'legacyoff'])
-    await setOrgOptions(db, organizationId, {
-      randomizedPrincipalUsernames: true,
-    })
-    assertEquals((await create('legacyon')).nameScheme, 'partial')
+    assertEquals((await create('legacyoff')).nameScheme, 'partial')
 
-    // The new key wins over the legacy boolean.
+    // The scheme key sets the org default.
     await setOrgOptions(db, organizationId, {
       principalNameScheme: 'random',
-      randomizedPrincipalUsernames: false,
     })
     const random = await create('newkey')
     assertEquals(random.nameScheme, 'random')

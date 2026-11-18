@@ -38,13 +38,13 @@ test('parsePrincipalDefaultsPatch rejects empty, mistyped and unknown values', (
   }
 })
 
-test('principalDefaultsOptionChanges retires the legacy key and toggles the lock', () => {
+test('principalDefaultsOptionChanges sets or clears the scheme and toggles the lock', () => {
   assertEquals(principalDefaultsOptionChanges({ nameScheme: 'random' }), {
-    remove: ['randomizedPrincipalUsernames'],
+    remove: [],
     set: { principalNameScheme: 'random' },
   })
   assertEquals(principalDefaultsOptionChanges({ nameScheme: null }), {
-    remove: ['randomizedPrincipalUsernames', 'principalNameScheme'],
+    remove: ['principalNameScheme'],
     set: {},
   })
   assertEquals(principalDefaultsOptionChanges({ schemeLocked: true }), {
@@ -57,7 +57,7 @@ test('principalDefaultsOptionChanges retires the legacy key and toggles the lock
   })
 })
 
-test('principalDefaultsResponse reads new keys and the stored legacy boolean fallback', () => {
+test('principalDefaultsResponse reads the stored keys and ignores a stale legacy boolean', () => {
   assertEquals(principalDefaultsResponse({}), {
     nameScheme: null,
     effectiveNameScheme: 'partial',
@@ -67,7 +67,7 @@ test('principalDefaultsResponse reads new keys and the stored legacy boolean fal
     principalDefaultsResponse(parseOrganizationOptions({ randomizedPrincipalUsernames: false })),
     {
       nameScheme: null,
-      effectiveNameScheme: 'plain',
+      effectiveNameScheme: 'partial',
       schemeLocked: false,
     }
   )
@@ -76,7 +76,6 @@ test('principalDefaultsResponse reads new keys and the stored legacy boolean fal
       parseOrganizationOptions({
         principalNameScheme: 'random',
         principalNameSchemeLocked: true,
-        randomizedPrincipalUsernames: false,
       })
     ),
     {

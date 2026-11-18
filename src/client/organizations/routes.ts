@@ -126,7 +126,6 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/project-settings', createSessionMiddleware(secrets))
   router.use('/organizations/:id/server-capacity', createSessionMiddleware(secrets))
   router.use('/organizations/:id/managed-defaults', createSessionMiddleware(secrets))
-  router.use('/organizations/:id/principal-defaults', createSessionMiddleware(secrets))
   router.use('/organizations/:id/docker-networking', createSessionMiddleware(secrets))
   router.use('/organizations/:id/tls-settings', createSessionMiddleware(secrets))
   router.use('/organizations/:id/compose-privileged-fields', createSessionMiddleware(secrets))

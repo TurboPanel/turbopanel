@@ -39,16 +39,12 @@ export function isPrincipalNameScheme(value: unknown): value is PrincipalNameSch
 }
 
 /**
- * Org default scheme. The new key wins; the legacy boolean
- * `randomizedPrincipalUsernames` is the fallback (true -> partial,
- * false -> plain); neither set means `partial`.
+ * Org default scheme: `principalNameScheme` when set, else `partial`.
  */
 export function resolveOrgPrincipalNameScheme(options: {
   principalNameScheme?: PrincipalNameScheme
-  randomizedPrincipalUsernames?: boolean
 }): PrincipalNameScheme {
   if (options.principalNameScheme) return options.principalNameScheme
-  if (options.randomizedPrincipalUsernames === false) return 'plain'
   return DEFAULT_PRINCIPAL_NAME_SCHEME
 }
 
