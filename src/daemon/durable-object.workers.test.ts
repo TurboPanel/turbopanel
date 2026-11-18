@@ -21,6 +21,7 @@ import {
   CELL_SCHEMA_VERSION,
   DaemonCellObject,
   setDaemonCellPanelIdentityBindingForTests,
+  setDaemonCellUnsignedSessionsAllowedForTests,
   setDaemonCellProjectionDbFactoryForTests,
   setDaemonJwtKeyringFactoryForTests,
   setForceAlarmErrorForTests,
@@ -383,6 +384,8 @@ function useNoopProjectionDb(): void {
 }
 
 beforeEach(() => {
+  // Most suites here drive the session with plain frames; the signed-session suite turns this off.
+  setDaemonCellUnsignedSessionsAllowedForTests(true)
   useNoopProjectionDb()
   setDaemonJwtKeyringFactoryForTests(null)
   setForceOutboxSendErrorForTests(null)
@@ -4305,6 +4308,10 @@ function wsSendCommandOutcome(ws: WebSocket, requestId: string): void {
 describe('signed daemon session', () => {
   const NONCE = 'c'.repeat(43)
 
+  beforeEach(() => {
+    setDaemonCellUnsignedSessionsAllowedForTests(false)
+  })
+
   function collectFrames(ws: WebSocket, count: number, timeoutMs = 5000): Promise<string[]> {
     return new Promise((resolve, reject) => {
       const seen: string[] = []
@@ -4388,6 +4395,21 @@ describe('signed daemon session', () => {
     expect(await closed).toEqual({ code: 4403, reason: 'panel-identity-unavailable' })
   })
 
+  it('closes an unsigned first frame with 4403 at trust level 0, and sends nothing', async () => {
+    const serverId = 'test-srv-unsigned-refused'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId, undefined, {
+      firstFrame: null,
+      trustLevel: 0,
+    })
+    const messages: string[] = []
+    ws.addEventListener('message', (event) => messages.push(String(event.data)))
+    const closed = closeEvent(ws)
+    ws.send(JSON.stringify({ type: 'hello', at: new Date().toISOString() }))
+    expect(await closed).toEqual({ code: 4403, reason: 'signed-mode-required' })
+    expect(messages).toEqual([])
+  })
+
   it('closes an unsigned first frame with 4403 once the server has used signed mode', async () => {
     const serverId = 'test-srv-signed-required'
     const stub = env.DAEMON_CELL.getByName(serverId)
@@ -4433,6 +4455,22 @@ describe('signed daemon session', () => {
     expect(await closed).toEqual({ code: 1008, reason: 'attach-proof-refused' })
   })
 
+  it('closes a missing attach proof even at trust level 0', async () => {
+    setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+    const serverId = 'test-srv-attach-missing-level-0'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+    const { ws } = await openDaemonWebSocket(stub, serverId, undefined, {
+      firstFrame: null,
+      trustLevel: 0,
+    })
+    const frames = collectFrames(ws, 2)
+    ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+    await frames
+    const closed = closeEvent(ws)
+    ws.send(presenceHello())
+    expect(await closed).toEqual({ code: 1008, reason: 'attach-proof-refused' })
+  })
+
   it('accepts a verified attach proof and lets the outbox run; without a database the socket stays below 2', async () => {
     setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
     const serverId = 'test-srv-attach-ok'
@@ -4471,6 +4509,29 @@ describe('signed daemon session', () => {
     ws.close(1000, 'test done')
   })
 
+  async function attachProofFor(
+    helloRaw: string,
+    daemonKey: Awaited<ReturnType<typeof testDaemonKey>>,
+    serverId: string,
+    keyId: string
+  ) {
+    const hello = JSON.parse(splitSignature(helloRaw)!.unsigned) as {
+      sessionId: string
+      kid: string
+    }
+    const iat = Math.floor(Date.now() / 1000)
+    const sig = await daemonKey.sign(
+      attachSigningInput({
+        sessionId: hello.sessionId,
+        panelFingerprint: hello.kid,
+        serverId,
+        keyId,
+        iat,
+      })
+    )
+    return { keyId, iat, sig }
+  }
+
   it('handles a signed result as sent and fails a command whose result is badly signed', async () => {
     setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
     const serverId = 'test-srv-signed-reports'
@@ -4485,7 +4546,8 @@ describe('signed daemon session', () => {
     ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
     const [helloRaw] = await frames
     const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
-    ws.send(presenceHello({ features: ['signed-reports-v1'] }))
+    const attach = await attachProofFor(helloRaw!, daemonKey, serverId, keyId)
+    ws.send(presenceHello({ features: ['signed-reports-v1'], attach }))
     await vi.waitFor(async () => {
       const attachment = (await readAttachment(stub)) as { signsReports?: boolean }
       expect(attachment.signsReports).toBe(true)
@@ -4530,9 +4592,10 @@ describe('signed daemon session', () => {
     })
     const frames = collectFrames(ws, 2)
     ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
-    await frames
+    const [helloRaw] = await frames
     // A proxy stripped the feature from the hello and the signature from the result.
-    ws.send(presenceHello({ features: [] }))
+    const attach = await attachProofFor(helloRaw!, daemonKey, serverId, keyId)
+    ws.send(presenceHello({ features: [], attach }))
     await vi.waitFor(async () => {
       const attachment = (await readAttachment(stub)) as { awaitingAttach?: boolean }
       expect(attachment.awaitingAttach).toBe(false)
@@ -4568,7 +4631,8 @@ describe('signed daemon session', () => {
     ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
     const [helloRaw] = await frames
     const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
-    ws.send(presenceHello({ features: ['signed-reports-v1'] }))
+    const attach = await attachProofFor(helloRaw!, daemonKey, serverId, keyId)
+    ws.send(presenceHello({ features: ['signed-reports-v1'], attach }))
     await vi.waitFor(async () => {
       const attachment = (await readAttachment(stub)) as { signsReports?: boolean }
       expect(attachment.signsReports).toBe(true)

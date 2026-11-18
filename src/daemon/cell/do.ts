@@ -82,6 +82,7 @@ import {
   type DaemonSessionPhase,
   decideFirstFrame,
   PANEL_IDENTITY_CLOSE_CODE,
+  SIGNED_MODE_REQUIRED_REASON,
   SIGNED_SEND_FAILED_REASON,
 } from '../signed-session-gate.ts'
 import {
@@ -322,6 +323,7 @@ let projectionDbFactoryForTests: ProjectionDbFactory | null = null
 let daemonJwtKeyringFactoryForTests: DaemonJwtKeyringFactory | null = null
 let forceOutboxSendErrorForTests: Error | null = null
 let panelIdentityBindingForTests: string | null = null
+let unsignedSessionsAllowedForTests = false
 let forceAlarmErrorForTests: Error | null = null
 /** When set, `#collectStaleDemotions` treats auto-response age as this many ms. */
 let forceAutoResponseAgeMsForTests: number | null = null
@@ -336,6 +338,14 @@ export function setDaemonCellProjectionDbFactoryForTests(
 /** Test-only seam: the `TURBOPANEL_IDENTITY_KEYS` value a cell reads (null = the env binding). */
 export function setDaemonCellPanelIdentityBindingForTests(raw: string | null): void {
   panelIdentityBindingForTests = raw
+}
+
+/**
+ * Test-only seam: let a cell open an unsigned session, take an attach without a proof and a
+ * report without a signature. Production never sets it: a Workers cell takes only signed sessions.
+ */
+export function setDaemonCellUnsignedSessionsAllowedForTests(allowed: boolean): void {
+  unsignedSessionsAllowedForTests = allowed
 }
 
 /** Test-only seam: override JWT keyring derivation on the WS-upgrade path. */
@@ -1845,6 +1855,8 @@ export class DaemonCellObject {
   ): Promise<boolean> {
     const decision = await decideFirstFrame(raw, {
       trustLevel: attachment.trustLevel ?? 0,
+      // The Workers runtime has no co-located daemon: only a signed session opens.
+      requireSigned: !unsignedSessionsAllowedForTests,
       panelIdentity: () => this.#getPanelIdentity(),
       binding: sessionBindingOf(attachment),
     })
@@ -1856,6 +1868,7 @@ export class DaemonCellObject {
       return false
     }
     if (decision.kind === 'legacy') {
+      // Only reachable through the test seam: `requireSigned` refuses an unsigned first frame above.
       ws.serializeAttachment({ ...attachment, phase: 'legacy' })
       this.#startSession(ws, attachment, true)
       return true
@@ -1976,7 +1989,8 @@ export class DaemonCellObject {
       keyId: attachment.daemonKey?.id,
       publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
       daemonSignsReports: current.signsReports === true,
-      serverSignsReports: current.reportsSigned === true,
+      // Every report on a Workers session is signed, whatever the row says.
+      serverSignsReports: !unsignedSessionsAllowedForTests || current.reportsSigned === true,
       nowMs: Date.now(),
     })
     if (intake.verdict === 'verified' && current.reportsSigned !== true) {
@@ -2080,6 +2094,8 @@ export class DaemonCellObject {
       keyId: attachment.daemonKey?.id,
       publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
       trustLevel,
+      // The Workers runtime has no co-located daemon: every attach proves the daemon key.
+      requireSigned: !unsignedSessionsAllowedForTests,
       nowMs: Date.now(),
     })
     if (decision.kind === 'refused') {
@@ -2608,6 +2624,23 @@ export class DaemonCellObject {
     if (!failure.ignored) ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'policy_violation')
   }
 
+  /**
+   * False when the session may not carry this frame: the first frame failed its gate, or the
+   * socket was opened unsigned by an earlier build (closed, never served).
+   */
+  async #sessionAdmitsFrame(
+    ws: WebSocket,
+    session: SocketSessionAttachment,
+    raw: string
+  ): Promise<boolean> {
+    if (session.phase === 'await-first-frame') return this.#firstFrameGate(ws, session, raw)
+    if (session.phase === 'legacy' && !unsignedSessionsAllowedForTests) {
+      ws.close(PANEL_IDENTITY_CLOSE_CODE, SIGNED_MODE_REQUIRED_REASON)
+      return false
+    }
+    return true
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -2623,9 +2656,7 @@ export class DaemonCellObject {
     const raw = typeof message === 'string' ? message : new TextDecoder().decode(message)
 
     const session = attachment as SocketSessionAttachment
-    if (session.phase === 'await-first-frame' && !(await this.#firstFrameGate(ws, session, raw))) {
-      return
-    }
+    if (!(await this.#sessionAdmitsFrame(ws, session, raw))) return
 
     const validated = await this.#acceptedInboundFrame(ws, session, raw)
     if (!validated) return

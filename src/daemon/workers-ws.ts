@@ -47,6 +47,8 @@ export type WorkersDaemonWebSocketOptions = {
   connectLimiter?: RateLimiter
   /** The control plane identity key; checks a signed upgrade. Null = feature off. */
   panelIdentity?: () => Promise<PanelIdentity | null>
+  /** Sign every upgrade, bound token or not. Default true: only tests turn it off. */
+  requireSigned?: boolean
 }
 
 export function buildWorkersDaemonCellForwardHeaders(
@@ -158,6 +160,7 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
       serverId,
       cnfJkt: payload.cnf?.jkt,
       state: daemonState,
+      requireSigned: options.requireSigned ?? true,
       panelIdentity: options.panelIdentity,
     })
     if (refused) return new Response(refused.error, { status: refused.status })

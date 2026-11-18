@@ -39,6 +39,8 @@ export async function decideFirstFrame(
   raw: string,
   ctx: {
     trustLevel: number
+    /** Refuse every first frame but a `hello-nonce`, whatever the trust level (the Workers runtime). */
+    requireSigned?: boolean
     panelIdentity?: () => Promise<PanelIdentity | null>
     /** The server and daemon key the socket's token named; the hello always signs them. */
     binding?: SignedSessionBinding
@@ -64,7 +66,8 @@ export async function decideFirstFrame(
       nonce: nonceFrame.nonce,
     }
   }
-  if (ctx.trustLevel >= 1) return { kind: 'refused', reason: SIGNED_MODE_REQUIRED_REASON }
+  if (ctx.requireSigned || ctx.trustLevel >= 1)
+    return { kind: 'refused', reason: SIGNED_MODE_REQUIRED_REASON }
   return { kind: 'legacy' }
 }
 

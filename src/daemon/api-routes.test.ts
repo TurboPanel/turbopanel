@@ -490,7 +490,8 @@ async function readDaemonState(
 async function createTestApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: 'workers' | 'deno' = 'workers',
-  panelIdentity?: PanelIdentity
+  panelIdentity?: PanelIdentity,
+  requireSigned = false
 ): Promise<Hono<AppEnv>> {
   setRevokeBoundDaemonKey(revokeDaemonKey)
   const app = new Hono<AppEnv>()
@@ -506,6 +507,7 @@ async function createTestApp(
     challengeSigningSecrets,
     secretsConfig,
     runtime,
+    requireSigned,
     ...(panelIdentity ? { panelIdentity: () => Promise.resolve(panelIdentity) } : {}),
   })
   return app
@@ -596,6 +598,7 @@ async function createTestAppWithRegistry(
     challengeSigningSecrets,
     secretsConfig,
     runtime,
+    requireSigned: false,
   })
   return app
 }
@@ -848,6 +851,7 @@ test('GET /jwks.json returns public OKP keys only', async () => {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets: keyring,
     challengeSigningSecrets,
     secretsConfig,
@@ -1177,6 +1181,7 @@ test('POST /enroll charges the per-license bucket before checking the license to
         return next()
       })
       registerDaemonApiRoutes(app, {
+        requireSigned: false,
         secrets: await createTestSecrets(),
         challengeSigningSecrets: await createTestChallengeSecrets(),
         secretsConfig: createTestSecretsConfig(),
@@ -2274,6 +2279,7 @@ test('POST /auth/challenge returns 429 when restLimiter denies', async () => {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2301,6 +2307,7 @@ test('POST /auth/challenge enrollment path returns 429 when restLimiter denies',
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2337,6 +2344,7 @@ async function createRestLimitTestApp(restLimiter: {
 }) {
   const app = new Hono<AppEnv>()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets: await createTestSecrets(),
     challengeSigningSecrets: await createTestChallengeSecrets(),
     secretsConfig: createTestSecretsConfig(),
@@ -2399,6 +2407,7 @@ test('POST /commands/lease returns 429 when restLimiter denies with valid JWT', 
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2427,6 +2436,7 @@ test('POST /commands/lease proceeds when restLimiter allows', async () => {
   const secretsConfig = createTestSecretsConfig()
   let seenKey: string | undefined
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2561,6 +2571,7 @@ async function createDecryptTestApp(): Promise<Hono<AppEnv>> {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2787,6 +2798,7 @@ async function createMetricsTestApp(
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2828,6 +2840,7 @@ async function createMetricsTestAppWithRealCloudflareStore(): Promise<{
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2882,6 +2895,7 @@ async function createMetricsTestAppWithDb(
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -3371,6 +3385,7 @@ test('POST /metrics does not await the store write before responding', async () 
     secrets: await createTestSecrets(),
     challengeSigningSecrets: await createTestChallengeSecrets(),
     secretsConfig: createTestSecretsConfig(),
+    requireSigned: false,
   })
 
   const response = await app.request('/api/daemon/v1/metrics', {
@@ -4616,6 +4631,29 @@ test('POST /auth/session refuses a v1 proof once the server has used a signed se
     )
     assertEquals(refused.status, 403)
     assertEquals(((await refused.json()) as { error: string }).error, 'Signed proof required')
+  })
+})
+
+test('on the Workers runtime a v1 proof is refused at trust level 0, at enroll and sign-in', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const strict = await createTestApp(fixture.db, 'workers', await fixtureIdentity(), true)
+    const session = await postSessionBody(strict, await signedSessionBody(strict, fixture))
+    assertEquals(session.status, 403)
+    assertEquals(((await session.json()) as { error: string }).error, 'Signed proof required')
+    const reenroll = await mintTicket(fixture.db, {
+      organizationId: fixture.organizationId,
+      serverId: fixture.serverId,
+    })
+    const enroll = await postEnroll(strict, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId: fixture.serverId,
+      machineKey: fixture.machineKey,
+      hostname: fixture.hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(enroll.status, 403)
+    assertEquals(((await enroll.json()) as { error: string }).error, 'Signed proof required')
   })
 })
 

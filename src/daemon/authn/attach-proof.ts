@@ -61,7 +61,8 @@ function readAttach(value: unknown): AttachProofFields | null {
  * What to do with the first presence `hello` of a signed session.
  * - `verified`: the proof checks; raise the server to {@link DAEMON_PROOF_TRUST_LEVEL}.
  * - `absent`: no proof, from a daemon that predates it; carry on unless the
- *   server already proved itself before (then `refused`).
+ *   server already proved itself before, or the runtime requires signed
+ *   sessions (then `refused`).
  * - `refused`: close the socket with {@link ATTACH_PROOF_CLOSE_CODE}.
  */
 export type AttachDecision =
@@ -76,11 +77,13 @@ export async function decideAttachProof(
     keyId: string | undefined
     publicJwk: JsonWebKey | undefined
     trustLevel: number
+    /** A hello without a proof is refused whatever the server's trust level. */
+    requireSigned?: boolean
     nowMs: number
   }
 ): Promise<AttachDecision> {
   if (attach === undefined) {
-    return ctx.trustLevel >= DAEMON_PROOF_TRUST_LEVEL
+    return ctx.requireSigned || ctx.trustLevel >= DAEMON_PROOF_TRUST_LEVEL
       ? { kind: 'refused', reason: ATTACH_PROOF_MISSING_REASON }
       : { kind: 'absent' }
   }

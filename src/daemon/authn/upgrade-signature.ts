@@ -40,6 +40,8 @@ export async function refuseUnsignedUpgrade(params: {
   header: string | null | undefined
   cnfJkt: string | undefined
   trustLevel: number
+  /** Sign every upgrade, bound token or not (the Workers runtime). */
+  requireSigned?: boolean
   key: { id: string; publicJwk: JsonWebKey }
   pathname: string
   panelFingerprints: () => Promise<string[] | null>
@@ -47,7 +49,9 @@ export async function refuseUnsignedUpgrade(params: {
   markNonceUsed: (nonce: string, expiresAt: Date) => Promise<boolean>
   nowMs: number
 }): Promise<UpgradeRefusal | null> {
-  if (!params.cnfJkt && params.trustLevel < DAEMON_PROOF_TRUST_LEVEL) return null
+  if (!params.requireSigned && !params.cnfJkt && params.trustLevel < DAEMON_PROOF_TRUST_LEVEL) {
+    return null
+  }
   if (params.cnfJkt && params.cnfJkt !== (await daemonKeyThumbprint(params.key.publicJwk))) {
     return { status: 401, error: 'unauthorized' }
   }
@@ -81,12 +85,14 @@ export function refuseUnsignedDaemonUpgrade(params: {
   serverId: string
   cnfJkt: string | undefined
   state: { trustLevel?: number; key: { id: string; publicJwk: JsonWebKey } }
+  requireSigned?: boolean
   panelIdentity: (() => Promise<PanelIdentity | null>) | undefined
 }): Promise<UpgradeRefusal | null> {
   return refuseUnsignedUpgrade({
     header: params.request.headers.get(DAEMON_SIGNATURE_HEADER),
     cnfJkt: params.cnfJkt,
     trustLevel: params.state.trustLevel ?? 0,
+    requireSigned: params.requireSigned,
     key: params.state.key,
     pathname: new URL(params.request.url).pathname,
     panelFingerprints: panelFingerprintSource(params.panelIdentity),
