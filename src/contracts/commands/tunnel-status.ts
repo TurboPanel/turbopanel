@@ -17,7 +17,7 @@ export type TunnelStatusLastUpdate = {
 }
 
 export type TunnelStatusConnector = {
-  /** The provider's tunnel id (a lower-case UUID), or `instance` / `default` for the instance's own tunnel. */
+  /** The provider's tunnel id (a lower-case UUID), or `instance` for the instance's own tunnel. */
   tunnelId: string
   status: TunnelStatusConnectorState
   /** Connector program version the carrying unit runs. */
