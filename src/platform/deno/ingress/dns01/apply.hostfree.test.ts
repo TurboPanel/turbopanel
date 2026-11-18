@@ -80,6 +80,7 @@ function seededDb(): MemoryDb {
           publicPort: 8443,
           isPrimary: true,
           isDaemonDial: false,
+          behindCdnProxy: false,
           ingressId: null,
           acmeState: null,
           ingressState: null,

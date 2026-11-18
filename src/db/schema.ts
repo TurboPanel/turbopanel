@@ -7054,6 +7054,8 @@ export const instanceHostname = pgTable(
     acmeState: jsonb('acme_state'),
     isPrimary: boolean('is_primary').default(false).notNull(),
     isDaemonDial: boolean('is_daemon_dial').default(true).notNull(),
+    /** True when a `direct` name actually sits behind a CDN proxy; the owner sets it. Advises the shorter heartbeat. */
+    behindCdnProxy: boolean('behind_cdn_proxy').default(false).notNull(),
   },
   (table) => [
     unique('origin_host_unique').on(table.host),

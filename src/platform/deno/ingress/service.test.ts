@@ -114,6 +114,27 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
       (await setHostnameIngress(db, hostnameId, { publicPort: 8443 }, openGate)).ok,
       true
     )
+    // The proxied flag defaults to false, is validated, and survives an unrelated edit.
+    const proxiedOf = async () =>
+      (await listInstanceHostnames(db)).find((item) => item.id === hostnameId)?.behindCdnProxy
+    assertEquals(await proxiedOf(), false)
+    const badFlag = await setHostnameIngress(db, hostnameId, { behindCdnProxy: 'yes' }, openGate)
+    assertEquals(badFlag.ok ? 0 : badFlag.status, 422)
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { behindCdnProxy: true }, openGate)).ok,
+      true
+    )
+    assertEquals(await proxiedOf(), true)
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { publicPort: 8443 }, openGate)).ok,
+      true
+    )
+    assertEquals(await proxiedOf(), true)
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { behindCdnProxy: false }, openGate)).ok,
+      true
+    )
+    assertEquals(await proxiedOf(), false)
     // A remote server that has not pinned this control plane's key: the switch is a 409 naming it.
     const held = await setHostnameIngress(
       db,

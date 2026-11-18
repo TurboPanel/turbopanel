@@ -69,6 +69,7 @@ export type InstanceHostnameRecord = {
   publicPort: number
   isPrimary: boolean
   isDaemonDial: boolean
+  behindCdnProxy: boolean
   ingressId: string | null
 }
 
@@ -94,6 +95,7 @@ type IngressFields = {
   publicPort: number
   isPrimary: boolean
   isDaemonDial: boolean
+  behindCdnProxy: boolean
   ingressId: string | null
   ingressState: unknown
 }
@@ -103,6 +105,7 @@ const DEFAULT_INGRESS_FIELDS: IngressFields = {
   publicPort: DEFAULT_PUBLIC_PORT,
   isPrimary: false,
   isDaemonDial: true,
+  behindCdnProxy: false,
   ingressId: null,
   ingressState: null,
 }
@@ -169,6 +172,7 @@ function mapStored(row: HostnameRow): StoredHostname {
     publicPort: fixedPublicPort() ?? row.publicPort,
     isPrimary: row.isPrimary,
     isDaemonDial: row.isDaemonDial,
+    behindCdnProxy: row.behindCdnProxy,
     ingressId: row.ingressId,
     ingressState: row.ingressState,
     createdAt: row.createdAt,
@@ -236,6 +240,7 @@ function toRecord(row: StoredHostname): InstanceHostnameRecord {
     publicPort: row.publicPort,
     isPrimary: row.isPrimary,
     isDaemonDial: row.isDaemonDial,
+    behindCdnProxy: row.behindCdnProxy,
     ingressId: row.ingressId,
   }
 }
@@ -710,6 +715,7 @@ function carryIngress(
     publicPort: entry.publicPort ?? previous.publicPort,
     isPrimary: entry.isPrimary ?? previous.isPrimary,
     isDaemonDial: previous.isDaemonDial,
+    behindCdnProxy: previous.behindCdnProxy,
     ingressId: previous.ingressId,
     ingressState: previous.ingressState,
   }

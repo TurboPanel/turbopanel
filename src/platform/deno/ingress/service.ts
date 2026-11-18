@@ -271,7 +271,12 @@ export async function refreshEdgeStatuses(db: Db, deps: IngressServiceDeps): Pro
   await forEachSequential(applied, (row) => ingressStatus(db, row.id, deps))
 }
 
-export type HostnameIngressInput = { mode?: unknown; ingressId?: unknown; publicPort?: unknown }
+export type HostnameIngressInput = {
+  mode?: unknown
+  ingressId?: unknown
+  publicPort?: unknown
+  behindCdnProxy?: unknown
+}
 export type HostnameIngressUpdate =
   | { ok: true; hostname: InstanceHostnameRecord }
   | {
@@ -331,6 +336,9 @@ export async function setHostnameIngress(
   if (input.publicPort !== undefined && !isAllowedPublicPort(input.publicPort)) {
     return { ok: false, status: 400, error: SELF_HOSTED_PUBLIC_PORT_ERROR }
   }
+  if (input.behindCdnProxy !== undefined && typeof input.behindCdnProxy !== 'boolean') {
+    return invalid('behindCdnProxy must be true or false')
+  }
   // A mode without a provider drops the account unless the caller names one.
   const keptAccount = capabilitiesFor(mode).provider ? current.ingressId : null
   const ingressId = input.ingressId === undefined ? keptAccount : input.ingressId
@@ -351,9 +359,13 @@ export async function setHostnameIngress(
   const nextIngressId = capabilitiesFor(mode).provider
     ? ((ingressId as string | null) ?? null)
     : null
+  const behindCdnProxy = input.behindCdnProxy ?? current.behindCdnProxy
   await db
     .update(instanceHostname)
-    .set({ mode, publicPort, ingressId: nextIngressId })
+    .set({ mode, publicPort, ingressId: nextIngressId, behindCdnProxy })
     .where(eq(instanceHostname.id, hostnameId))
-  return { ok: true, hostname: { ...current, mode, publicPort, ingressId: nextIngressId } }
+  return {
+    ok: true,
+    hostname: { ...current, mode, publicPort, ingressId: nextIngressId, behindCdnProxy },
+  }
 }
