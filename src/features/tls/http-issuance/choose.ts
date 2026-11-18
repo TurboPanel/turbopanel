@@ -1,14 +1,12 @@
 /**
  * Which serving servers take part in one certificate order, and what each one
- * is told. Pure: the caller gathers who is online, which daemons list the
- * feature, each server's known public addresses and the addresses the name's
- * DNS answers with.
+ * is told. Pure: the caller gathers who is online, each server's known public
+ * addresses and the addresses the name's DNS answers with.
  *
- * Rule: only a server that is online, runs a daemon with the feature and is in
- * the name's DNS takes part. Every other serving server is skipped for the
- * check and receives the finished certificate later. When no serving server
- * has a known public address at all, every online server with the feature
- * counts as in DNS (the strict, safe reading).
+ * Rule: only a server that is online and in the name's DNS takes part. Every
+ * other serving server is skipped for the check and receives the finished
+ * certificate later. When no serving server has a known public address at all,
+ * every online server counts as in DNS (the strict, safe reading).
  */
 
 export type ServingServer = {

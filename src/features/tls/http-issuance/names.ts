@@ -1,13 +1,10 @@
 /**
- * Which names a server-placed order asks for, and which daemons may take it.
+ * Which names a server-placed order asks for.
  *
  * A row holds the names typed for it. A site that pins the row may also answer
  * on the other spelling its www mode adds, and with a pinned certificate that
  * name is served with the same pair, so the order asks for the row's names
- * plus every www name of the sites that pin it. A daemon that lists
- * `acme-issue-one-cert-v1` gets one certificate for all of them; an older one
- * gets one certificate per name, which a row cannot hold, so it is sent only a
- * single-name order.
+ * plus every www name of the sites that pin it.
  */
 import { foldHostname, hostingCertificateNames } from '../../../contracts/commands/hostname.ts'
 import type { HostingWwwMode } from '../../../contracts/commands/hostname.ts'

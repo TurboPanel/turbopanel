@@ -35,7 +35,6 @@
  *    health read, and NONE may still be receiving from the primary. One
  *    replica that still hears the primary means the host is alive and only
  *    its link to the control plane is down.
- *
  * 7. The second signal: the other members' servers must each fail to open a
  *    connection to the primary's database port ({@link hostLossEngineVerdict}:
  *    two rounds {@link HOST_LOSS_ENGINE_PROBE_GAP_MS} apart, each attempt
