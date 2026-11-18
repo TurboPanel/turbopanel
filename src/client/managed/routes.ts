@@ -215,6 +215,8 @@ import {
   copyTargetForDelete,
   copyTargetForNewBackup,
   describeClusterBackupTarget,
+  backupNotFoundResponse,
+  refuseUnknownRestoreFields,
   refuseWrongHostRestore,
   copySourceForRestore,
   wantsRestoreFromCopy,
@@ -4344,8 +4346,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
+    const unknownField = await refuseUnknownRestoreFields(c)
+    if (unknownField) return unknownField
+
     const record = await findManagedBackupById(db, row.id, backupId)
-    if (!record) return c.json({ error: 'backup_not_found' }, 404)
+    if (!record) {
+      return await backupNotFoundResponse(c, db, auth.organizationId, row.id, backupId)
+    }
 
     // Restore must run on the host that actually owns the engine —
     // `managed.server_id`, not the (possibly drifted) environment placement.

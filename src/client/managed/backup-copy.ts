@@ -16,10 +16,13 @@ import {
   resolveEffectiveTarget,
   toWireTarget,
 } from '../../features/backups/targets.ts'
-import type { ManagedBackupRecord } from '../../features/backups/backup-records.ts'
+import {
+  type ManagedBackupRecord,
+  otherClusterEnvironmentOfBackup,
+} from '../../features/backups/backup-records.ts'
 import { copyDepsOf } from '../backup-copy-deps.ts'
 import { refuseRestoreIfBackupOnOtherServer } from './backups.ts'
-import { parseJsonBody } from '../shared.ts'
+import { assertCanReadOr403, parseJsonBody } from '../shared.ts'
 
 /** The wire target for a host, or undefined when no target applies or the host cannot take one yet. */
 async function wireFor(
@@ -102,6 +105,63 @@ export async function restoreSourceFromCopy(
     }
   }
   return { ok: true, source: { target, key: live.copy.objectKey } }
+}
+
+/**
+ * The 404 for a restore whose backup is not on this cluster. When the id
+ * belongs to another cluster of the organization that the caller may read, it
+ * says so (a restore only works in place); otherwise it is a bare
+ * `backup_not_found`, so a cluster the caller cannot see is not confirmed.
+ */
+export async function backupNotFoundResponse(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  managedId: string,
+  backupId: string
+): Promise<Response> {
+  const otherEnvironmentId = await otherClusterEnvironmentOfBackup(
+    db,
+    organizationId,
+    managedId,
+    backupId
+  )
+  if (
+    otherEnvironmentId &&
+    (await assertCanReadOr403(c, 'environment', otherEnvironmentId)) === null
+  ) {
+    return c.json(
+      {
+        error: 'backup_on_other_cluster',
+        message:
+          'This backup belongs to another database cluster. A restore only works in place: it puts a backup back on the cluster that made it. Restoring into a different cluster is not available.',
+      },
+      404
+    )
+  }
+  return c.json({ error: 'backup_not_found' }, 404)
+}
+
+const RESTORE_BODY_FIELDS = new Set(['fromCopy'])
+
+/**
+ * A restore body may only carry `fromCopy`. Any other field (for example one
+ * naming another cluster) is refused instead of being dropped, so a restore
+ * never runs in place when the caller meant something else.
+ */
+export async function refuseUnknownRestoreFields(c: Context<AppEnv>): Promise<Response | null> {
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+  const unknown = Object.keys(body).filter((key) => !RESTORE_BODY_FIELDS.has(key))
+  if (unknown.length === 0) return null
+  return c.json(
+    {
+      error: 'unknown_fields',
+      fields: unknown,
+      message: `A restore takes only fromCopy. Remove: ${unknown.join(', ')}. A restore always runs in place, on the cluster that made the backup.`,
+    },
+    400
+  )
 }
 
 /** Whether a restore request body asks for the bucket copy (`{ "fromCopy": true }`). An empty or unreadable body means no. */
