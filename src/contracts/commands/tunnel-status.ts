@@ -17,7 +17,7 @@ export type TunnelStatusLastUpdate = {
 }
 
 export type TunnelStatusConnector = {
-  /** The provider's tunnel id (a lower-case UUID), or `instance` / `default` for the instance's own tunnel. */
+  /** The provider's tunnel id (a lower-case UUID), or `instance` for the instance's own tunnel. */
   tunnelId: string
   status: TunnelStatusConnectorState
   /** Connector program version the carrying unit runs. */
@@ -71,10 +71,7 @@ function isConnectorVersion(value: unknown): value is string {
 
 /** The id of a tunnel as the daemon names it. */
 export function isTunnelStatusId(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    (value === 'instance' || value === 'default' || UUID_RE.test(value))
-  )
+  return typeof value === 'string' && (value === 'instance' || UUID_RE.test(value))
 }
 
 export function parseTunnelStatusPayload(value: unknown): TunnelStatusCommandPayload {
