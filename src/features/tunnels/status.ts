@@ -114,7 +114,7 @@ export async function recordTunnelStatus(
 ): Promise<number> {
   const stamp = now.toISOString()
   const counts = await mapSequential(result.connectors, async (connector) => {
-    if (connector.tunnelId === 'instance' || connector.tunnelId === 'default') return 0
+    if (connector.tunnelId === 'instance') return 0
     const portals = await db
       .select({ id: portal.id })
       .from(portal)

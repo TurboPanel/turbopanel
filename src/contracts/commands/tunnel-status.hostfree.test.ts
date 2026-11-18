@@ -49,6 +49,7 @@ test('server.tunnel.status refuses a malformed result', () => {
   const one = (patch: Record<string, unknown>) =>
     bad({ connectors: [{ ...(GOOD.connectors as Record<string, unknown>[])[0], ...patch }] })
   one({ tunnelId: '../x' })
+  one({ tunnelId: 'default' })
   one({ tunnelId: ID.toUpperCase() })
   one({ status: 'paused' })
   one({ version: 'v1' })

@@ -73,7 +73,7 @@ function isConnectorVersion(value: unknown): value is string {
 export function isTunnelStatusId(value: unknown): value is string {
   return (
     typeof value === 'string' &&
-    (value === 'instance' || value === 'default' || UUID_RE.test(value))
+    (value === 'instance' || UUID_RE.test(value))
   )
 }
 
