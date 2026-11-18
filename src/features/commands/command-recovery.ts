@@ -106,18 +106,35 @@ const DEFAULT_REDELIVERY_READS: RedeliveryReads = { getCommandRecord, getCommand
  */
 export function lostCommandIds(
   requests: readonly PendingRequestRecord[],
-  report: CommandRecoveryReport | undefined
+  report: CommandRecoveryReport | undefined,
+  attachedAt?: string
 ): string[] {
   const carried = new Set([...(report?.running ?? []), ...(report?.unacked ?? [])])
+  const attachedMs = attachedAt === undefined ? Number.NaN : Date.parse(attachedAt)
   return requests
     .filter(
       (request) =>
         request.requestKind === 'command-dispatch' &&
         request.status === 'sent' &&
         !request.ackAt &&
-        !carried.has(request.requestId)
+        !carried.has(request.requestId) &&
+        // The type is known from the cell, so a type that is never sent again
+        // is dropped before the database opens. A record without one is left to
+        // the database check.
+        (request.command === undefined || REDELIVERABLE_COMMAND_TYPES.has(request.command)) &&
+        !sentOnConnection(request, attachedMs)
     )
     .map((request) => request.requestId)
+}
+
+/**
+ * True when the request was written after the connection attached: the new
+ * connection already carries it, so a resend would only repeat it.
+ */
+function sentOnConnection(request: PendingRequestRecord, attachedMs: number): boolean {
+  if (Number.isNaN(attachedMs) || request.sentAt === undefined) return false
+  const sentMs = Date.parse(request.sentAt)
+  return !Number.isNaN(sentMs) && sentMs >= attachedMs
 }
 
 /**
@@ -142,6 +159,8 @@ export async function redeliverLostCommands(
     serverId: string
     features: readonly string[] | undefined
     report: CommandRecoveryReport | undefined
+    /** When the connection that sent this hello attached; commands sent since are not lost. */
+    attachedAt?: string
   },
   reads: RedeliveryReads = DEFAULT_REDELIVERY_READS
 ): Promise<string[]> {
@@ -151,7 +170,7 @@ export async function redeliverLostCommands(
     const requests = await cell.listRequests(REDELIVER_REQUEST_LIMIT, {
       requestKind: 'command-dispatch',
     })
-    const lost = lostCommandIds(requests, input.report)
+    const lost = [...new Set(lostCommandIds(requests, input.report, input.attachedAt))]
     if (lost.length === 0) return resent
     await withDb(async (db) => {
       const outcomes = await Promise.all(

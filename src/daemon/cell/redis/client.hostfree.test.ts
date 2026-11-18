@@ -485,6 +485,12 @@ test('RedisCellClient stream helpers cover maxlen, block, and empty id lists', a
     { id: '2-0', fields: { k: 'v' } },
   ])
   assertEquals(maintRedis.calls.at(-1)?.method, 'xautoclaim')
+  assertEquals(await client.xautoclaimPage('stream', 'g', 'c', 1000, '0-0', 5), {
+    next: '0-0',
+    entries: [{ id: '2-0', fields: { k: 'v' } }],
+  })
+  maintRedis.xautoclaimResult = ['9-1', [['2-0', ['k', 'v']]]]
+  assertEquals((await client.xautoclaimPage('stream', 'g', 'c', 1000, '0-0', 5)).next, '9-1')
 
   assertEquals(await client.xclaim('stream', 'g', 'c', 0), [])
   assertEquals(await client.xclaim('stream', 'g', 'c', 0, '2-0'), [
