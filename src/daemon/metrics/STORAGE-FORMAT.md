@@ -404,8 +404,8 @@ Because a self-hosted marker bump discards the metrics history of that install, 
 
 Hosted points age out after Cloudflare's roughly 3 months; Analytics Engine has no delete or update. Self-hosted:
 expired Parquet partitions and hot rows are pruned at `TURBOPANEL_SERVER_METRICS_RETENTION_DAYS`, default 90.
-A size cap on the self-hosted store (5 GiB, oldest days pruned first) is in open pull request #380 and is not on
-trunk yet.
+A size cap on the self-hosted store (5 GiB by default, `TURBOPANEL_SERVER_METRICS_MAX_BYTES`, oldest days pruned
+first) is on trunk (pull request #380, merged 2026-10-21).
 
 ## Hardware record and cache keys
 
