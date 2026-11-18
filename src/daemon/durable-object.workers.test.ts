@@ -4509,6 +4509,29 @@ describe('signed daemon session', () => {
     ws.close(1000, 'test done')
   })
 
+  async function attachProofFor(
+    helloRaw: string,
+    daemonKey: Awaited<ReturnType<typeof testDaemonKey>>,
+    serverId: string,
+    keyId: string
+  ) {
+    const hello = JSON.parse(splitSignature(helloRaw)!.unsigned) as {
+      sessionId: string
+      kid: string
+    }
+    const iat = Math.floor(Date.now() / 1000)
+    const sig = await daemonKey.sign(
+      attachSigningInput({
+        sessionId: hello.sessionId,
+        panelFingerprint: hello.kid,
+        serverId,
+        keyId,
+        iat,
+      })
+    )
+    return { keyId, iat, sig }
+  }
+
   it('handles a signed result as sent and fails a command whose result is badly signed', async () => {
     setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
     const serverId = 'test-srv-signed-reports'
@@ -4523,7 +4546,8 @@ describe('signed daemon session', () => {
     ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
     const [helloRaw] = await frames
     const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
-    ws.send(presenceHello({ features: ['signed-reports-v1'] }))
+    const attach = await attachProofFor(helloRaw!, daemonKey, serverId, keyId)
+    ws.send(presenceHello({ features: ['signed-reports-v1'], attach }))
     await vi.waitFor(async () => {
       const attachment = (await readAttachment(stub)) as { signsReports?: boolean }
       expect(attachment.signsReports).toBe(true)
@@ -4568,9 +4592,10 @@ describe('signed daemon session', () => {
     })
     const frames = collectFrames(ws, 2)
     ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
-    await frames
+    const [helloRaw] = await frames
     // A proxy stripped the feature from the hello and the signature from the result.
-    ws.send(presenceHello({ features: [] }))
+    const attach = await attachProofFor(helloRaw!, daemonKey, serverId, keyId)
+    ws.send(presenceHello({ features: [], attach }))
     await vi.waitFor(async () => {
       const attachment = (await readAttachment(stub)) as { awaitingAttach?: boolean }
       expect(attachment.awaitingAttach).toBe(false)
@@ -4606,7 +4631,8 @@ describe('signed daemon session', () => {
     ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
     const [helloRaw] = await frames
     const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as { sessionId: string }
-    ws.send(presenceHello({ features: ['signed-reports-v1'] }))
+    const attach = await attachProofFor(helloRaw!, daemonKey, serverId, keyId)
+    ws.send(presenceHello({ features: ['signed-reports-v1'], attach }))
     await vi.waitFor(async () => {
       const attachment = (await readAttachment(stub)) as { signsReports?: boolean }
       expect(attachment.signsReports).toBe(true)
