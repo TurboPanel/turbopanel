@@ -8,6 +8,12 @@
       "tag": "0000_init",
       "when": 1794507698078,
       "sha256": "3596e6656d0ba7f4360474d113ecd3d33ae80a2b94a84f9700f400db9b44e393"
+    },
+    {
+      "idx": 1,
+      "tag": "0001_delete_orphan_public_urls_setting",
+      "when": 1795028797979,
+      "sha256": "c3fb0f9c9a7d28f811e5a498aa633585339ac1b9366a9ddf73a5e88445498b49"
     }
   ]
 }
