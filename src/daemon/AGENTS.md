@@ -180,13 +180,11 @@ it is re-enrolled.
 A daemon with this feature generates an X25519 sealing key and registers it with
 `POST /api/daemon/v1/servers/self/sealing-key` `{kid, pub, sig}`; `sig` is its
 Ed25519 signature over `"tp-sealing-key\n" + pub`, checked against the key on file
-(`sealing-key-registration.ts`). `POST /secrets/decrypt` then answers `{ sealed:
-[envelope | null, ...] }` (same order as the request, `aad` = server id) and
-omits `plaintexts` whenever a sealing key is on file, whatever the hello
-`features` list says (that list is unsigned, so keying on it let a token holder
-ask for plaintext); a server with no registered key still gets `plaintexts`, and `server.plaintext_secrets_at` is stamped (at most
-hourly) so the edge go-live gate can read that nothing is still answered in
-plaintext. The answer is never both fields. Only the key id may be logged. The
+(`sealing-key-registration.ts`). `POST /secrets/decrypt` answers only
+`{ sealed: [envelope | null, ...] }` (same order as the request, `aad` = server id),
+keyed on the registered key and never on the unsigned hello `features` list. A server
+with no registered key gets 409 `sealing_key_required` and no plaintext; the daemon
+registers its key and asks once more. Only the key id may be logged. The
 Hosting Account password hash rides as `passwordHashEnvelope` (a `tpdaemon`
 envelope) to such a daemon on environment deploys and on
 `server.principals.reconcile`; every reconcile caller passes the secrets config
@@ -202,11 +200,6 @@ The key stays on file until the server's identity key is replaced (enrollment
 attach) or removed (`clearServerDaemonState`), which clear
 `sealing_key_kid`, `sealing_key_pub` and `sealing_key_reported_at` with it; the
 new daemon registers its own key when it connects with the new key id, and the
-server is treated as one with no key until that lands. Recovery for a
-host rolled back (break glass) to a build without the feature is a superadmin's
-Clear Sealing Key (`DELETE /api/admin/v1/instance/identity/sealed-secrets/:serverId/key`,
-see `src/admin/AGENTS.md`); nothing on the daemon wire can clear the key. A
-plaintext decrypt answer is how a daemon learns the key is gone, and a daemon
-that has opened a sealed answer still refuses plaintext. The superadmin read `GET
-/api/admin/v1/instance/identity/sealed-secrets` reports, per server, the
-feature, the key id and `plaintext_secrets_at`, for the edge go-live gate. The `MIN_SUPPORTED_*` floors are untouched.
+server is treated as one with no key until that lands. There is no
+superadmin action to clear the key, and nothing on the daemon wire can clear it.
+The `server.plaintext_secrets_at` column is no longer written or read. The `MIN_SUPPORTED_*` floors are untouched.

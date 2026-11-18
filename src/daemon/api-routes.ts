@@ -2741,7 +2741,10 @@ export function registerDaemonApiRoutes<E extends Env>(
         decryptDaemonCiphertext(secretsConfig, recipient, ciphertext)
       )
 
-      return c.json({ sealed: await sealDecryptAnswers(plaintexts, daemonServerId, sealingKey) }, 200)
+      return c.json(
+        { sealed: await sealDecryptAnswers(plaintexts, daemonServerId, sealingKey) },
+        200
+      )
     }
   )
 

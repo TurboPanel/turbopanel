@@ -28,7 +28,7 @@ import {
   listInstanceHostnames,
   wireCertificateSource,
 } from '../features/install/instance-hostnames.ts'
-import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
+import { resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import type { InstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 import { getServerDaemonStateByServerId } from '../features/servers/server-identity-db.ts'
@@ -97,7 +97,7 @@ export async function resolvePublicUrlsApplyPayload(
       ...entry,
       uploadedCertId: row.uploadedCertId,
       certPem: pair.certPem,
-      ...pair.key,
+      keyEnvelope: pair.keyEnvelope,
     }
   })
   const letsEncrypt = hostnames.some((entry) => entry.source === 'lets-encrypt')

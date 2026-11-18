@@ -55,15 +55,9 @@ export const authSchemas = {
   DaemonSecretsDecryptResponse: {
     type: 'object',
     description:
-      'Exactly one of plaintexts or sealed. sealed is returned whenever the server has a registered sealing key, whatever its hello features list; plaintexts only to a server with no key on file.',
+      "Always sealed: one envelope per input, sealed to the server's registered sealing key. A server with no key on file gets a 409 sealing_key_required and no plaintext.",
+    required: ['sealed'],
     properties: {
-      plaintexts: {
-        type: 'array',
-        items: {
-          oneOf: [{ type: 'string' }, { type: 'null' }],
-        },
-        description: 'Order-preserving plaintexts; null when an entry fails to decrypt',
-      },
       sealed: {
         type: 'array',
         items: {
@@ -259,6 +253,10 @@ export const authPaths: Record<string, unknown> = {
               },
             },
           },
+        },
+        '409': {
+          description:
+            'No sealing key is registered for this server (sealing_key_required); register one and ask again',
         },
       },
     },

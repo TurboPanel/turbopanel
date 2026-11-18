@@ -33,9 +33,8 @@ export async function getDaemonSealingKey(
  * Store the key and add `daemon-sealed-secrets-v1` to the stored hello
  * features when it is missing: only a daemon with the feature registers, and
  * one that connected before this control plane knew the feature had it
- * dropped from its hello. The list is informational (the sealed-secrets
- * report shows it); the decrypt route seals on the key alone, so a later
- * hello without the feature does not bring plaintext back.
+ * dropped from its hello. The list is informational; the decrypt route seals
+ * on the key alone, and a server with no key gets no plaintext at all.
  */
 export async function setDaemonSealingKey(
   db: Db,

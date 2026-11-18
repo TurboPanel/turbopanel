@@ -66,7 +66,7 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
 - **Key-set statements (key rotation).** `keyset-statement.ts` builds the exact statement bytes
   (`{"type":"tp-keyset","v":1,keyset,prev,kind,rpId,current,passkeys,iat}`, passkeys sorted by id) and
   verifies an envelope `{statement, approvals}` the way servers do (`tp-host panel-identity-write
-  statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpIdHash`, UP+UV,
+statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpIdHash`, UP+UV,
   `webauthn.get`, origin under the rp id, ES256 DER only or EdDSA, `prev` = pinned key, `keyset` above
   the pinned one, removals approved by a passkey that stays, additions prove possession, an `rpId`
   move needs an old-set approval plus possession under the new id. **Passkey plus old key** (owner
@@ -104,20 +104,18 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
   binding's keyset; a daemon whose pin holds passkeys does not compare it.
 - **Pin report passkeys.** A newer daemon adds `passkeys` (base64url SHA-256 of its pin's `passkeys=`
   line, "" for none) with a second signature `passkeysSig` over `"tp-panel-pin-passkeys\n" + sessionId
-  + serverId + keyId + passkeys + iat` (joined by `\n`); stored in `server.trust_pin_passkeys`, and a
-  non-empty hash that differs from the marked set raises `panel.pin_mismatch` (context
-  `reportedPasskeys` / `expectedPasskeys`). Not a mismatch: a report whose key set is below the live
-  one (the server is behind and catches up on its daily read), and a report taken while the marked
-  set could not be read (unknown, never "none marked").
+  - serverId + keyId + passkeys + iat`(joined by`\n`); stored in `server.trust_pin_passkeys`, and a
+non-empty hash that differs from the marked set raises `panel.pin_mismatch`(context`reportedPasskeys`/`expectedPasskeys`). Not a mismatch: a report whose key set is below the live
+    one (the server is behind and catches up on its daily read), and a report taken while the marked
+    set could not be read (unknown, never "none marked").
 - **Sealed secrets (`hpke.ts`).** HPKE (RFC 9180) base mode, DHKEM(X25519, HKDF-SHA256),
   ChaCha20-Poly1305, via `@hpke/core` + `@hpke/chacha20poly1305` (pure JS, no I/O at load, builds
   the suite on first use). Envelope `{v:1, kid, enc, ct}`; `aad` is the recipient server id.
   `/secrets/decrypt` seals its answer to the daemon's registered sealing key
   (`src/daemon/secrets-decrypt-answer.ts`) whenever one is on file, whatever the unsigned hello
-  `features` list says; a server with no key still gets `plaintexts`, and `server.plaintext_secrets_at` records that (read by the
-  edge go-live gate through `GET /api/admin/v1/instance/identity/sealed-secrets`). The fixed vector in `src/test-fixtures/hpke-vector.ts` is the same one the
+  `features` list says; a server with no key gets a 409 `sealing_key_required` and no plaintext. The fixed vector in `src/test-fixtures/hpke-vector.ts` is the same one the
   daemon repo opens; change both together.
-- **Keys sent up.** `POST /tls/issued` takes exactly one of `privateKeyPem` (older daemons) or `privateKeyEnvelope`, sealed to the identity's `seal` key with the `current` key id as aad (`src/daemon/issued-private-key.ts`). `openFromSender` accepts the identity's native non-extractable X25519 key, so no seed is kept in memory. An envelope with no identity loaded answers 503; a body or envelope is never echoed or logged.
+- **Keys sent up.** `POST /tls/issued` takes `privateKeyEnvelope`, sealed to the identity's `seal` key with the `current` key id as aad (`src/daemon/issued-private-key.ts`); a plain `privateKeyPem` is refused 400. `openFromSender` accepts the identity's native non-extractable X25519 key, so no seed is kept in memory. An envelope with no identity loaded answers 503; a body or envelope is never echoed or logged.
 - **Signed daemon session.** The control plane sends nothing on `/ws/daemon/v1` until the daemon's
   first frame (`src/daemon/signed-session-gate.ts`, shared by `deno-ws.ts` and the cell). A
   `hello-nonce` gets a `hello` signed over `"tp-hello\n" + exact JSON`, then every frame (the

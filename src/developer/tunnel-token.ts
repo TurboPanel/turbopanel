@@ -20,6 +20,8 @@ import {
 } from '../features/install/instance-secret-sealing.ts'
 
 const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
+const DAEMON_CANNOT_OPEN_SEALED_MESSAGE =
+  'the co-located daemon does not open sealed instance secrets; upgrade it'
 
 export function parseTunnelTokenBody(body: unknown): { ok: true; token: string } | { ok: false } {
   if (!body || typeof body !== 'object') {
@@ -80,7 +82,7 @@ export async function dispatchInstanceTunnelToken(params: {
     return {
       ok: false,
       status: 503,
-      error: 'the co-located daemon does not open sealed instance secrets; upgrade it',
+      error: DAEMON_CANNOT_OPEN_SEALED_MESSAGE,
     }
   }
 
@@ -95,9 +97,7 @@ async function tunnelTokenFields(
   // The empty teardown token carries no secret; every daemon reads it as-is.
   if (token === '') return { token }
   if (!sealing) {
-    throw new InstanceSecretSealingError(
-      'the co-located daemon does not open sealed instance secrets; upgrade it'
-    )
+    throw new InstanceSecretSealingError(DAEMON_CANNOT_OPEN_SEALED_MESSAGE)
   }
   return {
     tokenEnvelope: await encryptSecretForDaemon(sealing.secretsConfig, sealing.recipient, token),
