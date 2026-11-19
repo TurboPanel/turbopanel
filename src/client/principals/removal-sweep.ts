@@ -28,7 +28,8 @@
  *
  * The project delete runs it once for its own principals; the maintenance
  * tick (Deno) and the cron (Workers) run {@link runPrincipalRemovalSweep} for
- * the rest. Never throws.
+ * the rest. The note written for blocked volume folders is best effort: a
+ * failed write is logged and cannot stop the sweep.
  */
 import {
   and,

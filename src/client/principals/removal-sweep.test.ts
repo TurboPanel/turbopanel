@@ -454,11 +454,13 @@ test('the sweep leaves a service folder next to an orphan volume, and a named or
     const other = await newProject('Named')
     const { stateOf } = await orphanWorld(world, 'Mixed', [
       { kind: 'volume', slug: 'data' },
+      { kind: 'service', slug: 'leftover' },
       { kind: 'service', slug: 'named', serviceId: other.serviceId },
     ])
     const { queue, sent } = recordingQueue(serverId)
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(await stateOf('data'), 'orphan')
+    assertEquals(await stateOf('leftover'), 'orphan')
     assertEquals(await stateOf('named'), 'orphan')
     assertEquals(sent.length, 0)
   })
@@ -496,7 +498,7 @@ test('a Hosting Account used again keeps its orphans, and another account is unt
       )[0]?.note
     // While the removal is still marked, the sweep flags the volume.
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
-    assertEquals(typeof (await dataNote()), 'string')
+    assertEquals((await dataNote())?.includes('Hosting Account'), true)
     assertEquals(await stateOf('leftover'), 'orphan')
 
     // Used again: the mark and the note go, and later sweeps leave the folders alone.
