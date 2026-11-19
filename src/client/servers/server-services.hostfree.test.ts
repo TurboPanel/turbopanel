@@ -283,7 +283,13 @@ test('a shared-pool site is marked shared, and an older daemon entry is not', ()
     php: {
       series: ['8.4'],
       sites: [
-        { environmentId, composeServiceName: 'web', series: '8.4', version: '8.4.27', shared: true },
+        {
+          environmentId,
+          composeServiceName: 'web',
+          series: '8.4',
+          version: '8.4.27',
+          shared: true,
+        },
         { environmentId, composeServiceName: 'api', series: '8.4', version: '8.4.27' },
         { environmentId, composeServiceName: 'old', series: '8.4', shared: false },
       ],
