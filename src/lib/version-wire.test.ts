@@ -21,6 +21,7 @@ import {
   DAEMON_WIRE_FEATURES,
   PROJECT_CACHE_FEATURE,
   BUILD_LIMITS_FEATURE,
+  HOSTING_NAME_TLS_FEATURE,
   TUNNEL_PEER_MTLS_FEATURE,
   TUNNEL_LOCK_ADD_FEATURE,
   DAEMON_UPDATE_REQUIRED_CODE,
@@ -492,8 +493,14 @@ test('build-limits-v1 is a daemon wire feature and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
-test('tunnel-peer-mtls-v1 is the last daemon wire feature and raised no floor', () => {
+test('tunnel-peer-mtls-v1 is a daemon wire feature and raised no floor', () => {
   assertEquals(TUNNEL_PEER_MTLS_FEATURE, 'tunnel-peer-mtls-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), TUNNEL_PEER_MTLS_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(TUNNEL_PEER_MTLS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('hosting-name-tls-v1 is the last daemon wire feature and raised no floor', () => {
+  assertEquals(HOSTING_NAME_TLS_FEATURE, 'hosting-name-tls-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), HOSTING_NAME_TLS_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
