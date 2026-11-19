@@ -25,7 +25,7 @@ export const datacenterSchemas = {
       options: {
         type: ['object', 'null'],
         description:
-          'Optional `defaultServerTimezone`, `enforceServerTimezone`, `addressPreference` (`ipv4` | `ipv6`; omitted defaults to ipv6), `sshPort`, `ntp`, `priority` (integer 0–1000, lower wins; omitted defaults to 100), and `trusted` (boolean; omitted defaults to true). SSH port and NTP cascade to member servers unless a server override is set.',
+          'Optional `defaultServerTimezone`, `enforceServerTimezone`, `addressPreference` (`ipv4` | `ipv6`; omitted defaults to ipv6), `sshPort`, `ntp`, `priority` (integer 0–1000, lower wins; omitted defaults to 100), and `trusted` (boolean; omitted defaults to false, an untrusted network). SSH port and NTP cascade to member servers unless a server override is set.',
       },
       privateCidrs: {
         type: 'array',
@@ -43,7 +43,7 @@ export const datacenterSchemas = {
       trusted: {
         type: 'boolean',
         description:
-          "Effective trust flag (`options.trusted`, stored in a column, default `true`). `false` means the datacenter network's L2 is not under the operator's control.",
+          "Effective trust flag (`options.trusted`, stored in a column, default `false`). `false` (untrusted) means server-to-server traffic over this network goes over TurboFabric, with no LAN routes and no Raft group on it; `true` means the operator controls the network's L2.",
       },
       kind: {
         type: ['string', 'null'],

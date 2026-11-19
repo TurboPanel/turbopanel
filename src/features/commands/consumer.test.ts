@@ -6550,6 +6550,7 @@ async function withPromoteConsumerFixtures(
           name: 'Promote Fan-out DC',
           createdAt: now,
           updatedAt: now,
+          isTrusted: true,
         })
         .returning({ id: datacenter.id })
       const [netRow] = await db

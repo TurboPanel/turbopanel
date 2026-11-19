@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import type { FabricRecord, RelayRecord } from './fabric-records.ts'
 import { describeFabricPair } from './pair-paths.ts'
+import { defaultDatacenterPolicyRow } from '../net/datacenter-networks.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -126,4 +127,35 @@ test('a reporter that does not list the other end as a peer gives no reading', (
   const c = relayRow(3, null)
   const ctx = context([reported(a, c, '2026-10-31T10:00:00.000Z'), b])
   assertEquals('tunnel' in describeFabricPair(ctx, 'srv-1', 'srv-2'), false)
+})
+
+test('a pair sharing only a default network (untrusted) gets the TurboFabric transport over it', () => {
+  const ctx = context([relayRow(1, null), relayRow(2, null)])
+  for (const [server, address] of [
+    ['srv-1', '10.0.0.1'],
+    ['srv-2', '10.0.0.2'],
+  ] as const) {
+    ctx.caches.datacenterMembershipsByServer.set(server, [
+      {
+        ipId: `ip-${server}`,
+        serverId: server,
+        datacenterId: 'dc-default',
+        networkId: 'net-default',
+        address,
+        family: 4,
+      },
+    ])
+  }
+  // No stored choice: the policy is the documented default, which is untrusted.
+  ctx.caches.policyByDatacenter.set('dc-default', {
+    ...defaultDatacenterPolicyRow(),
+    addressPreference: 'ipv4',
+  })
+  assertEquals(describeFabricPair(ctx, 'srv-1', 'srv-2').path, 'fabric_over_untrusted_lan')
+  ctx.caches.policyByDatacenter.set('dc-default', {
+    ...defaultDatacenterPolicyRow(),
+    addressPreference: 'ipv4',
+    trusted: true,
+  })
+  assertEquals(describeFabricPair(ctx, 'srv-1', 'srv-2').path, 'lan')
 })
