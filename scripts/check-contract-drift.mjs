@@ -769,30 +769,17 @@ function parseType(text) {
 
 function collectTypeAliases(source) {
   const aliases = new Map()
-  let i = 0
-  while (i < source.length) {
-    const trivia = skipTrivia(source, i)
-    if (trivia > i) {
-      i = trivia
-      continue
-    }
-    const ch = source[i]
-    if (ch === "'" || ch === '"' || ch === '`') {
-      i = skipQuoted(source, i)
-      continue
-    }
-    if (source.startsWith('export type ', i) && boundaryBefore(source, i)) {
-      i = captureAlias(source, i + 'export type '.length, aliases)
-      continue
-    }
-    i += 1
+  // Only a declaration at the start of a line counts. Scanning every
+  // character for quotes broke on a regex literal such as /[`'"]/, which
+  // swallowed every alias declared after it.
+  const declaration = /^export type /gm
+  let match = declaration.exec(source)
+  while (match) {
+    const next = captureAlias(source, match.index + match[0].length, aliases)
+    declaration.lastIndex = Math.max(next, declaration.lastIndex)
+    match = declaration.exec(source)
   }
   return aliases
-}
-
-function boundaryBefore(source, i) {
-  if (i === 0) return true
-  return !isWordChar(source[i - 1] ?? '')
 }
 
 function captureAlias(source, i, aliases) {
@@ -862,6 +849,10 @@ function resolveAst(ast, aliases, seen) {
 function resolveAliasRef(name, aliases, seen) {
   const body = aliases.get(name)
   if (!body || seen.has(name)) return { kind: 'ref', name, args: [] }
+  // `(typeof CODES)[number]` is derived from a runtime value the parser cannot
+  // read, and the other repository keeps such an alias in another file, so both
+  // sides must pin the alias name rather than a half-parsed expansion.
+  if (/^\(?\s*typeof\b/.test(body)) return { kind: 'ref', name, args: [] }
   const next = new Set(seen)
   next.add(name)
   return resolveAst(parseType(body), aliases, next)
