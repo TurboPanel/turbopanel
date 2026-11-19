@@ -79,7 +79,7 @@ export const DATA_DICTIONARY_GROUPS = {
   },
   managed: {
     title: 'Managed databases',
-    blurb: 'Managed database servers, their replicas, backups and recovery runs.',
+    blurb: 'Managed database clusters, their replicas, backups and recovery runs.',
   },
   storage: {
     title: 'Storage and secrets',
@@ -93,7 +93,7 @@ export const DATA_DICTIONARY_GROUPS = {
   upgrades: {
     title: 'Upgrades',
     blurb:
-      'Control-plane-wide upgrade runs and the per-server daemon and control plane steps that belong to them.',
+      'Upgrade runs across all servers and the per-server daemon and control plane steps that belong to them.',
   },
   git: {
     title: 'Git and SSH',
@@ -920,7 +920,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       compose_service_name:
         'Compose service key the container was started under, as reported by the daemon; multi-replica clones carry a `-N` suffix on the base key.',
       ordinal:
-        '1-based replica index within the service, unique with `service_id` and `role`; ingress rows are always 1 and managed replicas match `replica.ordinal`.',
+        '1-based index within the service, unique with `service_id` and `role`; ingress rows are always 1 and managed replicas match `replica.ordinal`.',
     },
   },
   environment: {
@@ -1205,9 +1205,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       checksum:
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
       database:
-        'Database name for a single-database backup, kept as history; null for a whole-server backup.',
+        'Database name for a single-database backup, kept as history; null for a whole-cluster backup.',
       database_id:
-        'The `database` row the dump was of, set null if that database is dropped; null for a whole-server backup.',
+        'The `database` row the dump was of, set null if that database is dropped; null for a whole-cluster backup.',
       path: 'Artifact path relative to the backup root of the host that made it (`managed/` plus the cluster id, then the file).',
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
@@ -2440,7 +2440,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   upgrade: {
     group: 'upgrades',
     summary:
-      'One control-plane-wide upgrade run, written by the upgrade orchestrator, with at most one `pending` or `running` row.',
+      'One upgrade run across all servers, written by the upgrade orchestrator, with at most one `pending` or `running` row.',
     columns: {
       source:
         'Who started the run: `manual` from the panel, `auto` from the scheduler, or `server` for a single-host request.',
