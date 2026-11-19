@@ -28,7 +28,8 @@
  *
  * The project delete runs it once for its own principals; the maintenance
  * tick (Deno) and the cron (Workers) run {@link runPrincipalRemovalSweep} for
- * the rest. Never throws.
+ * the rest. The note written for blocked volume folders is best effort: a
+ * failed write is logged and cannot stop the sweep.
  */
 import {
   and,
@@ -175,7 +176,7 @@ function isLeftoverServiceFolder(): SQL {
 
 /** Why an orphan volume folder is flagged; shown in the folder list. */
 const VOLUME_HOLDS_ACCOUNT_NOTE =
-  "Keeps its project's deleted Hosting Account on the server. Remove this folder to let the account go."
+  "Keeps its project's deleted Hosting Account on the server until this folder is cleared from it."
 
 /**
  * Orphan volume folders of principals marked for removal get a note saying why
@@ -451,7 +452,12 @@ export async function runPrincipalRemovalSweep(
     Math.max(1, params.budget ?? PRINCIPAL_REMOVAL_SWEEP_CAP),
     PRINCIPAL_REMOVAL_SWEEP_CAP
   )
-  await noteBlockingVolumeFolders(db, null)
+  try {
+    await noteBlockingVolumeFolders(db, null)
+  } catch (err) {
+    // The note is a courtesy: the removal pass below runs without it.
+    compatLogWarn('principals', `noting folders that hold back an account failed: ${String(err)}`)
+  }
   const offlineServers = db
     .select({ id: server.id })
     .from(server)
