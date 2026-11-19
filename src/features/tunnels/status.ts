@@ -149,6 +149,7 @@ export async function recordTunnelStatus(
     return portals.length
   })
   await recordPeerClientAuth(db, serverId, result)
+  await recordStatusPortsLock(db, serverId, result)
   await requestConnectorRepair(db, serverId, result)
   return counts.reduce((sum, n) => sum + n, 0)
 }
@@ -275,6 +276,73 @@ export function toApiPeerHop(metadata: unknown): ApiPeerHop {
     downgraded: status.downgraded,
     reportedAt: typeof at === 'string' ? at : null,
   }
+}
+
+/** What a server last reported about the nftables lock on the connector status ports. */
+export type StatusPortsLock = {
+  locked: boolean
+  reason: string | null
+  checkedAt: string | null
+}
+
+/** Read the lock report from `server.metadata`, or null when the daemon never sent one (unknown). */
+export function statusPortsLockOf(metadata: unknown): StatusPortsLock | null {
+  const raw = (
+    metadata as {
+      tunnelStatusPorts?: { locked?: unknown; reason?: unknown; checkedAt?: unknown }
+    } | null
+  )?.tunnelStatusPorts
+  if (typeof raw?.locked !== 'boolean') return null
+  return {
+    locked: raw.locked,
+    reason: typeof raw.reason === 'string' ? raw.reason : null,
+    checkedAt: typeof raw.checkedAt === 'string' ? raw.checkedAt : null,
+  }
+}
+
+/**
+ * Keep the reported lock on the status ports in `server.metadata.tunnelStatusPorts`.
+ * A daemon that sends no fact (an older one, or no load tried yet) leaves nothing
+ * stored, so a missing fact reads as unknown and never as locked.
+ */
+async function recordStatusPortsLock(
+  db: Db,
+  serverId: string,
+  result: TunnelStatusCommandResult
+): Promise<void> {
+  if (result.statusPortsLocked === undefined) {
+    await db
+      .update(server)
+      .set({ metadata: sql`${server.metadata} - 'tunnelStatusPorts'` })
+      .where(
+        and(eq(server.id, serverId), sql`jsonb_exists(${server.metadata}, 'tunnelStatusPorts')`)
+      )
+    return
+  }
+  const fact = {
+    locked: result.statusPortsLocked,
+    ...(result.statusPortsLockReason === undefined ? {} : { reason: result.statusPortsLockReason }),
+    ...(result.statusPortsLockCheckedAt === undefined
+      ? {}
+      : { checkedAt: result.statusPortsLockCheckedAt }),
+  }
+  await db
+    .update(server)
+    .set({
+      metadata: sql`jsonb_set(coalesce(${server.metadata}, '{}'::jsonb), '{tunnelStatusPorts}', ${JSON.stringify(fact)}::jsonb)`,
+    })
+    .where(eq(server.id, serverId))
+}
+
+/** What the API shows of a server's status-port lock: every field null while the daemon has not said. */
+export type ApiStatusPorts = {
+  locked: boolean | null
+  reason: string | null
+  checkedAt: string | null
+}
+
+export function toApiStatusPorts(metadata: unknown): ApiStatusPorts {
+  return statusPortsLockOf(metadata) ?? { locked: null, reason: null, checkedAt: null }
 }
 
 /**

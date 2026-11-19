@@ -1150,6 +1150,38 @@ test('the tunnel response reports the peer hop mode of carrying and site servers
   })
 })
 
+test('the tunnel response reports the status-port lock per carrying server, null when unknown', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const checkedAt = '2026-11-19T10:00:00.000Z'
+    await f.db
+      .update(server)
+      .set({ metadata: { tunnelStatusPorts: { locked: true, checkedAt } } })
+      .where(eq(server.id, f.servers[0]))
+    const shown = await call(f, 'GET', `/organizations/${f.orgA}/tunnels/${id}`, f.managerCookie)
+    const rows = (
+      shown.body.tunnel as {
+        statusPorts: {
+          serverId: string
+          locked: boolean | null
+          reason: string | null
+          checkedAt: string | null
+        }[]
+      }
+    ).statusPorts
+    const row = (serverId: string) => rows.find((r) => r.serverId === serverId)
+    assertEquals(row(f.servers[0]), {
+      serverId: f.servers[0],
+      locked: true,
+      reason: null,
+      checkedAt,
+    })
+    // A carrying server that never reported is unknown, not locked.
+    const other = rows.find((r) => r.serverId !== f.servers[0])
+    assertEquals(other?.locked, null)
+  })
+})
+
 test('the placement can be changed, and the route facts carry exact datacenter addresses', async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f)

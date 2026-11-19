@@ -88,3 +88,24 @@ test('server.tunnel.status carries what the peer hop does about client certifica
   assertThrows(() => parseTunnelStatusResult({ ...GOOD, peerClientAuth: 'x' }))
   assertThrows(() => parseTunnelStatusResult({ ...GOOD, peerClientAuthDowngraded: false }))
 })
+
+test('server.tunnel.status carries the lock on the status ports, and its absence stays absent', () => {
+  assertEquals('statusPortsLocked' in parseTunnelStatusResult(GOOD), false)
+  const locked = {
+    ...GOOD,
+    statusPortsLocked: true,
+    statusPortsLockCheckedAt: '2026-11-19T10:00:00Z',
+  }
+  assertEquals(parseTunnelStatusResult(locked) as unknown, locked)
+  const failed = { ...GOOD, statusPortsLocked: false, statusPortsLockReason: 'nft could not load' }
+  assertEquals(parseTunnelStatusResult(failed) as unknown, failed)
+  const bad = (patch: Record<string, unknown>) =>
+    assertThrows(() => parseTunnelStatusResult({ ...GOOD, ...patch }))
+  bad({ statusPortsLocked: 'yes' })
+  bad({ statusPortsLockReason: 'orphan' })
+  bad({ statusPortsLockCheckedAt: '2026-11-19T10:00:00Z' })
+  bad({ statusPortsLocked: true, statusPortsLockReason: 'locked, with a reason' })
+  bad({ statusPortsLocked: false, statusPortsLockReason: 'two\nlines' })
+  bad({ statusPortsLocked: false, statusPortsLockReason: 'x'.repeat(201) })
+  bad({ statusPortsLocked: true, statusPortsLockCheckedAt: 'yesterday' })
+})
