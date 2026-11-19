@@ -9,6 +9,7 @@ import {
   compareTarget,
   migrateTargetFromUrl,
   readHyperdriveIdForEnv,
+  wranglerChildEnv,
 } from './check-deploy-env.mjs'
 
 /**
@@ -72,4 +73,46 @@ test('assertMigrateTargetMatchesEnv skips when CLOUDFLARE_ENV is unset', async (
 test("readHyperdriveIdForEnv reads env.testing's HYPERDRIVE binding", () => {
   const { id } = readHyperdriveIdForEnv('testing', wranglerPath)
   assertEquals(id, '66b1fafaa8e04850b36917078ed96b0e')
+})
+
+const devAccountId = '1ce26b585b66602feb84a68aeda5062b'
+
+test('readHyperdriveIdForEnv returns the development account for testing and staging', () => {
+  assertEquals(readHyperdriveIdForEnv('testing', wranglerPath).accountId, devAccountId)
+  assertEquals(readHyperdriveIdForEnv('staging', wranglerPath).accountId, devAccountId)
+})
+
+test('readHyperdriveIdForEnv prefers env account_id over the var and top-level values', () => {
+  const dir = Deno.makeTempDirSync()
+  try {
+    const path = join(dir, 'wrangler.jsonc')
+    Deno.writeTextFileSync(
+      path,
+      JSON.stringify({
+        account_id: 'top-account',
+        vars: { CLOUDFLARE_ACCOUNT_ID: 'top-var' },
+        env: {
+          testing: {
+            account_id: 'env-account',
+            vars: { CLOUDFLARE_ACCOUNT_ID: 'env-var' },
+            hyperdrive: [{ binding: 'HYPERDRIVE', id: '66b1fafaa8e04850b36917078ed96b0e' }],
+          },
+          other: {
+            vars: { CLOUDFLARE_ACCOUNT_ID: 'env-var' },
+            hyperdrive: [{ binding: 'HYPERDRIVE', id: '66b1fafaa8e04850b36917078ed96b0e' }],
+          },
+        },
+      })
+    )
+    assertEquals(readHyperdriveIdForEnv('testing', path).accountId, 'env-account')
+    assertEquals(readHyperdriveIdForEnv('other', path).accountId, 'env-var')
+  } finally {
+    Deno.removeSync(dir, { recursive: true })
+  }
+})
+
+test('wranglerChildEnv pins the resolved account for the wrangler child process', () => {
+  const env = wranglerChildEnv(devAccountId, { CLOUDFLARE_ACCOUNT_ID: 'old', PATH: '/bin' })
+  assertEquals(env, { CLOUDFLARE_ACCOUNT_ID: devAccountId, PATH: '/bin' })
+  assertEquals(wranglerChildEnv(undefined, { PATH: '/bin' }), { PATH: '/bin' })
 })
