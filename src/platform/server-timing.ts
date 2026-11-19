@@ -6,7 +6,7 @@ export const SERVER_TIMING_HEADER = 'Server-Timing'
 
 export type ServerTimingInput = {
   /** Isolate init time; present only on the request that ran init. */
-  initMs?: number | undefined
+  initMs?: number
   /** Statements sent on the request's database clients. */
   dbStatements: number
   /** Request time spent after init. */
@@ -19,11 +19,9 @@ function ms(value: number): string {
 }
 
 export function formatServerTiming(input: ServerTimingInput): string {
-  const parts: string[] = []
-  if (input.initMs !== undefined) parts.push(`init;dur=${ms(input.initMs)}`)
   const count =
     Number.isSafeInteger(input.dbStatements) && input.dbStatements > 0 ? input.dbStatements : 0
-  parts.push(`db;desc="${String(count)} stmts"`)
-  parts.push(`app;dur=${ms(input.appMs)}`)
+  const parts = [`db;desc="${String(count)} stmts"`, `app;dur=${ms(input.appMs)}`]
+  if (input.initMs !== undefined) parts.unshift(`init;dur=${ms(input.initMs)}`)
   return parts.join(', ')
 }
