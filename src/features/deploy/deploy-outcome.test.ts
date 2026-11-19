@@ -97,7 +97,9 @@ test('a post-deploy failure without a program or a previous release still reads 
 test('an unknown or older error text is not a post-deploy failure', () => {
   assertEquals(classifyPostDeployFailure('Docker Compose deployment failed'), null)
   assertEquals(
-    classifyPostDeployFailure('Post-deploy commands for site web failed after the new release went live.'),
+    classifyPostDeployFailure(
+      'Post-deploy commands for site web failed after the new release went live.'
+    ),
     null
   )
   assertEquals(classifyPostDeployFailure(null), null)
