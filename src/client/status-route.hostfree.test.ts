@@ -10,7 +10,7 @@ import type { Db } from '../db/connection.ts'
 import { CLIENT_API_PREFIX } from '../app/surfaces.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { deriveSecretsConfig } from '../lib/secrets/secrets.ts'
-import { registerClientRoutes } from './routes.ts'
+import { PUBLIC_STATUS_CACHE_CONTROL, registerClientRoutes, statusCacheControl } from './routes.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -55,3 +55,39 @@ for (const runtime of ['workers', 'deno'] as const) {
     })
   })
 }
+
+test('status cache header is public except in install mode', () => {
+  assertEquals(statusCacheControl({ ok: true, runtime: 'workers' }), PUBLIC_STATUS_CACHE_CONTROL)
+  assertEquals(statusCacheControl({ ok: true, needsInstall: false }), PUBLIC_STATUS_CACHE_CONTROL)
+  assertEquals(statusCacheControl({ ok: true, needsInstall: true }), 'no-store')
+  assertEquals(PUBLIC_STATUS_CACHE_CONTROL, 'public, max-age=30, stale-while-revalidate=60')
+})
+
+test('workers status sends the public cache header and no cookie; errors are uncached', async () => {
+  const secrets = await deriveSecretsConfig(parseTestSecretsConfig('workers'), 'session-signing')
+  const settingsDb = {
+    select() {
+      const builder = {
+        from: () => builder,
+        where: () => builder,
+        limit: () => Promise.resolve([]),
+      }
+      return builder
+    },
+  } as unknown as Db
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', settingsDb)
+    c.set('platformEnv', {})
+    return next()
+  })
+  registerClientRoutes(app, { secrets, runtime: 'workers', signupEnvOverride: undefined })
+  const ok = await app.request(`${CLIENT_API_PREFIX}/status`)
+  assertEquals(ok.status, 200)
+  assertEquals(ok.headers.get('Cache-Control'), PUBLIC_STATUS_CACHE_CONTROL)
+  assertEquals(ok.headers.get('Set-Cookie'), null)
+
+  const failed = await (await statusApp('workers')).request(`${CLIENT_API_PREFIX}/status`)
+  assertEquals(failed.status, 503)
+  assertEquals(failed.headers.get('Cache-Control'), null)
+})

@@ -479,17 +479,21 @@ export async function getClientPublicStatus(
   billingEnabled = false
 ): Promise<ClientPublicStatus | null> {
   if (runtime === 'workers') {
+    // Three independent setting reads: issue them together so postgres.js
+    // pipelines them on the request's one connection instead of paying a
+    // network round trip per read.
+    const [isSignupEnabled, isSignupEmailVerificationEnabled, authProviders] = await Promise.all([
+      resolveEffectiveSignupEnabled(db, runtime, envOverride),
+      // Presence-only — see the comment in getInstallStatus() above.
+      resolveEmailActivePresence(db, platformEnv, 'workers'),
+      resolveConfiguredProviders(db, platformEnv),
+    ])
     return {
       ok: true,
       runtime: 'workers',
-      isSignupEnabled: await resolveEffectiveSignupEnabled(db, runtime, envOverride),
-      // Presence-only — see the comment in getInstallStatus() above.
-      isSignupEmailVerificationEnabled: await resolveEmailActivePresence(
-        db,
-        platformEnv,
-        'workers'
-      ),
-      authProviders: await resolveConfiguredProviders(db, platformEnv),
+      isSignupEnabled,
+      isSignupEmailVerificationEnabled,
+      authProviders,
       billingEnabled,
     }
   }

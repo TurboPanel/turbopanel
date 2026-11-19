@@ -130,6 +130,46 @@ describe('workers.ts entry handlers', () => {
     await Promise.all(ctx.waitUntilPromises)
   }, 30_000)
 
+  it('fetch sets Server-Timing with init on the first request only', async () => {
+    const first = fakeExecutionContext()
+    const cold = await workers.fetch(
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      workersTestEnv(),
+      first
+    )
+    await Promise.all(first.waitUntilPromises)
+    expect(cold.headers.get('Server-Timing')).toMatch(
+      /^init;dur=\d+\.\d, db;desc="\d+ stmts", app;dur=\d+\.\d$/
+    )
+
+    const second = fakeExecutionContext()
+    const warm = await workers.fetch(
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      workersTestEnv(),
+      second
+    )
+    await Promise.all(second.waitUntilPromises)
+    expect(warm.headers.get('Server-Timing')).toMatch(/^db;desc="\d+ stmts", app;dur=\d+\.\d$/)
+  }, 30_000)
+
+  it('fetch answers /status from the edge cache before the app runs', async () => {
+    const url = `https://panel.example.com${CLIENT_API_PREFIX}/status`
+    const stored = new Response('{"ok":true,"runtime":"workers"}', {
+      headers: { 'Cache-Control': 'public, max-age=30', 'Content-Type': 'application/json' },
+    })
+    await caches.default.put(new Request(url), stored)
+    const response = await workers.fetch(
+      new Request(`${url}?probe=1`, { headers: { Cookie: 'session=ignored' } }),
+      workersTestEnv(),
+      fakeExecutionContext()
+    )
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true, runtime: 'workers' })
+    // Served before init: no route table was built.
+    expect(getWorkerAppRoutePathsForTests()).toEqual([])
+    await caches.default.delete(new Request(url))
+  }, 30_000)
+
   it('built Workers app has no self-hosted ingress or tunnel-token routes', async () => {
     const ctx = fakeExecutionContext()
     await workers.fetch(
