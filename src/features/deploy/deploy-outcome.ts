@@ -121,7 +121,7 @@ export function classifyPostDeployFailure(
   const how = match?.[3] ?? null
   const previousReleaseId = match?.[4] ?? null
   const failed = program === null ? 'A post-deploy command' : `The post-deploy command ${program}`
-  const ended = how === null ? 'failed' : how
+  const ended = how ?? 'failed'
   const rollBack =
     previousReleaseId === null
       ? ''
