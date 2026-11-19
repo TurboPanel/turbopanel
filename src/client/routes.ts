@@ -90,6 +90,25 @@ export type ClientRouteOpts = AuthRouteOpts & {
 }
 
 /**
+ * `/status` is the same for every caller (settings, platform env and billing
+ * presence only: no session, cookie or per-user field), so shared caches may
+ * hold it. A sign-up, email or sign-in provider change therefore reaches the
+ * sign-in screens after up to `max-age` (plus the revalidation window); the
+ * admin settings screens read their own admin endpoints, never this one.
+ */
+export const PUBLIC_STATUS_CACHE_CONTROL = 'public, max-age=30, stale-while-revalidate=60'
+
+/**
+ * Install mode (Deno) flips the moment the first admin is created and the
+ * console must see that at once, so it is never cached.
+ */
+export function statusCacheControl(payload: object): string {
+  return 'needsInstall' in payload && payload.needsInstall !== false
+    ? 'no-store'
+    : PUBLIC_STATUS_CACHE_CONTROL
+}
+
+/**
  * Client (end-user UI) surface. Auth routes plus org-scoped resources for the
  * signed-in user (e.g. servers assigned to their organization).
  * Mounted under {@link CLIENT_API_PREFIX} (`/api/client/v1`).
@@ -139,7 +158,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
     if (payload === null) {
       return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
-    return c.json(payload)
+    return c.json(payload, 200, { 'Cache-Control': statusCacheControl(payload) })
   })
 
   // Ahead of the generic server and organization routes, like principal defaults.
