@@ -69,6 +69,21 @@ test('extractFieldSpecs keeps fields after a brace inside a comment', () => {
   )
 })
 
+test('an alias keeps its name for a runtime-derived type and later aliases survive a regex literal', () => {
+  const source = `
+export const CODES = ['a', 'b'] as const
+export type Code = (typeof CODES)[number]
+export const SHELL_RE = /[;|&$\`()<>\\"'!*?{}]/
+export type Inner = { id: string }
+export type Holder = { code?: Code; list: Code[]; inner: Inner }
+`
+  assertEquals(extractFieldSpecs(source, 'Holder'), [
+    { name: 'code', required: false, type: 'Code' },
+    { name: 'inner', required: true, type: '{ id: string }' },
+    { name: 'list', required: true, type: 'Array<Code>' },
+  ])
+})
+
 test('a narrowed union, literal, array, or member fails the drift check', () => {
   const live = extractFieldSpecs(NARROWED, 'Sample')
   assertStringIncludes(fieldPinDrift(live, [PIN[1]], 'fixture') ?? '', 'narrowed version')
