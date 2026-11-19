@@ -483,6 +483,40 @@ describe('deploy-validation', () => {
     )
   })
 
+  it('rejects a www redirect name that picks ACME while forceHttps is false', () => {
+    const base = {
+      hostingId: 'h1',
+      serviceId: 's1',
+      composeServiceName: 'web',
+      hostnames: ['example.com'],
+      www: 'www-to-root' as const,
+      proxy: { forceHttps: false },
+    }
+    assertEquals(
+      validateDeployHostnameRouting([
+        { ...base, nameTls: [{ hostname: 'www.example.com', tlsMode: 'acme' }] },
+      ]),
+      'forceHttps:false is incompatible with ACME TLS on hostname www.example.com'
+    )
+    // A pin or internal choice on the redirect name is fine, and so is acme with HTTPS forced.
+    assertEquals(
+      validateDeployHostnameRouting([
+        { ...base, nameTls: [{ hostname: 'www.example.com', tlsMode: 'internal' }] },
+      ]),
+      null
+    )
+    assertEquals(
+      validateDeployHostnameRouting([
+        {
+          ...base,
+          proxy: { forceHttps: true },
+          nameTls: [{ hostname: 'www.example.com', tlsMode: 'acme' }],
+        },
+      ]),
+      null
+    )
+  })
+
   it('rejects a shared-hostname route that disables HTTPS next to an ACME pin', () => {
     const error = validateDeployHostnameRouting([
       {

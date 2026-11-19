@@ -112,6 +112,18 @@ function recordHostnameAcmeHttps(
 }
 
 /**
+ * A name that picks its own automatic certificate needs the HTTPS site, and a
+ * www redirect name on one sends visitors to https. Redirect names are not in
+ * `hostnames`, so the entries are checked directly.
+ */
+function nameTlsAcmeHttpsError(hosting: EnvironmentDeployHosting): string | null {
+  if (hosting.proxy?.forceHttps !== false) return null
+  const entry = hosting.nameTls?.find((item) => item.tlsMode === 'acme')
+  if (!entry) return null
+  return `forceHttps:false is incompatible with ACME TLS on hostname ${entry.hostname}`
+}
+
+/**
  * HTTP hostings that share a hostname must have unique path prefixes and at most
  * one catch-all route; bind addresses must agree when set. A hostname that
  * resolves to `tlsMode: 'acme'` cannot share a `forceHttps: false` route —
@@ -122,6 +134,8 @@ export function validateDeployHostnameRouting(hostings: EnvironmentDeployHosting
 
   for (const hosting of hostings) {
     if ((hosting.protocol ?? 'http') !== 'http') continue
+    const nameTlsError = nameTlsAcmeHttpsError(hosting)
+    if (nameTlsError) return nameTlsError
     for (const hostname of hosting.hostnames) {
       const state = getOrCreateHostnameState(byHostname, hostname)
       const pathError = recordHostnamePathPrefix(state, hostname, hosting.pathPrefix)
