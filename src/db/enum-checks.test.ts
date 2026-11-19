@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import { COMMAND_ACTOR_TYPES, COMMAND_STATUSES } from '../features/commands/types.ts'
 import { CONTAINER_STATUSES } from '../features/environments/container-records.ts'
 import { GRANT_ENTITY_TYPES, SUBJECT_TYPES } from '../client/authz/catalog.ts'
+import { HOSTNAME_CERTIFICATES } from '../features/hostings/name-certificate-vocabulary.ts'
 import { TLS_STATUS_VALUES } from '../lib/tls/metadata.ts'
 import { KNOWN_SUBSCRIPTION_STATUSES } from '../features/billing/billing-records.ts'
 import { ADMIN_ROLE, SUPERADMIN_ROLE } from '../client/authn/session-store.ts'
@@ -246,6 +247,7 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['record_kind_check', RECORD_KINDS],
   ['record_status_check', RECORD_STATUSES],
   ['record_provider_check', RECORD_PROVIDERS],
+  ['hostname_certificate_check', HOSTNAME_CERTIFICATES],
 ]
 
 for (const [constraint, values] of CASES) {

@@ -18,7 +18,7 @@
 
 import { and, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { environment, hosting, server, service, tls } from '../../db/schema.ts'
+import { environment, hostname, hosting, server, service, tls } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { loadAcmeEnabled } from '../hostings/letsencrypt-store.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
@@ -338,21 +338,21 @@ async function rowsPinnedOnServer<T extends { id: string }>(
   candidates: T[],
   serverId: string
 ): Promise<T[]> {
+  const candidateIds = candidates.map((row) => row.id)
   const pinned = await tx
     .select({ tlsId: hosting.tlsId })
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .innerJoin(environment, eq(environment.id, service.environmentId))
-    .where(
-      and(
-        eq(environment.serverId, serverId),
-        inArray(
-          hosting.tlsId,
-          candidates.map((row) => row.id)
-        )
-      )
-    )
-  const pinnedIds = new Set(pinned.map((row) => row.tlsId))
+    .where(and(eq(environment.serverId, serverId), inArray(hosting.tlsId, candidateIds)))
+  const namePinned = await tx
+    .select({ tlsId: hostname.tlsId })
+    .from(hostname)
+    .innerJoin(hosting, eq(hosting.id, hostname.hostingId))
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .innerJoin(environment, eq(environment.id, service.environmentId))
+    .where(and(eq(environment.serverId, serverId), inArray(hostname.tlsId, candidateIds)))
+  const pinnedIds = new Set([...pinned, ...namePinned].map((row) => row.tlsId))
   return candidates.filter((row) => pinnedIds.has(row.id))
 }
 

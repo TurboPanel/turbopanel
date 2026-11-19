@@ -4,7 +4,7 @@
  * mirror, not a promotion, of `hosting.options.hostnames[]`.
  */
 
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { hostname, hosting, tls } from '../../db/schema.ts'
 import {
@@ -12,18 +12,25 @@ import {
   readPendingLetsEncrypt,
   pendingLetsEncryptPatch,
 } from '../hostings/hosting-certificate.ts'
+import type { HostnameCertificate } from '../hostings/name-certificate-vocabulary.ts'
 import { readHostingWwwMode } from '../hostings/hosting-options.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { assertNotPanelHostnames } from '../hostings/panel-hostname-guard.ts'
 import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
 
+/** A name's certificate choice a save sets (names not listed keep theirs). */
+export type HostnameChoice = { certificate: HostnameCertificate; tlsId: string | null }
+
 /**
- * Full-replace sync of a hosting's `hostname` rows, mirroring
- * `options.hostnames[]`'s own replace-whole-array write semantics, plus every
- * name the hosting's www choice adds ({@link hostingRoutingNames}, read from
- * the row just written). Call inside the same transaction as the `hosting`
- * write it mirrors (panel create/patch, compose reconcile), after that write.
+ * Diff sync of a hosting's `hostname` rows against `options.hostnames[]` plus
+ * every name the hosting's www choice adds ({@link hostingRoutingNames}, read
+ * from the row just written): rows for names no longer served are deleted,
+ * new names are inserted (following the site pin until a choice is made), and
+ * names that stay keep their row, so a per-name certificate choice survives
+ * every save. `choices` sets the choice of the named rows, existing or new.
+ * Call inside the same transaction as the `hosting` write it mirrors (panel
+ * create/patch, compose reconcile), after that write.
  *
  * When the names grew while the hosting is pinned to a Let's Encrypt row that
  * does not list them all, the same request the "Use Let's Encrypt" button makes
@@ -34,7 +41,8 @@ export async function replaceHostingHostnames(
   db: Db,
   hostingId: string,
   routingOrganizationId: string,
-  hostnames: readonly string[]
+  hostnames: readonly string[],
+  choices?: ReadonlyMap<string, HostnameChoice>
 ): Promise<void> {
   const [row] = await db
     .select({
@@ -47,17 +55,42 @@ export async function replaceHostingHostnames(
     .where(eq(hosting.id, hostingId))
     .limit(1)
   const www = readHostingWwwMode(row?.options)
+  const wanted = hostingRoutingNames(hostnames, www)
   // Typed names and the www names the choice adds alike: none may be a name
   // the panel serves. Throws, so the surrounding transaction rolls back.
-  await assertNotPanelHostnames(db, hostingRoutingNames(hostnames, www))
-  await db.delete(hostname).where(eq(hostname.hostingId, hostingId))
-  await forEachSequential(hostingRoutingNames(hostnames, www), (value) =>
-    db.insert(hostname).values({
-      hostingId,
-      routingOrganizationId,
-      hostname: value,
-    })
+  await assertNotPanelHostnames(db, wanted)
+  const existing = await db
+    .select({ id: hostname.id, hostname: hostname.hostname })
+    .from(hostname)
+    .where(eq(hostname.hostingId, hostingId))
+  const keep = new Set(wanted)
+  const gone = existing.filter((r) => !keep.has(r.hostname)).map((r) => r.id)
+  if (gone.length > 0) await db.delete(hostname).where(inArray(hostname.id, gone))
+  const present = new Set(existing.map((r) => r.hostname))
+  await forEachSequential(
+    wanted.filter((value) => !present.has(value)),
+    (value) => {
+      const choice = choices?.get(value)
+      return db.insert(hostname).values({
+        hostingId,
+        routingOrganizationId,
+        hostname: value,
+        ...(choice ? { certificate: choice.certificate, tlsId: choice.tlsId } : {}),
+      })
+    }
   )
+  if (choices) {
+    await forEachSequential(
+      wanted.filter((value) => present.has(value) && choices.has(value)),
+      (value) => {
+        const choice = choices.get(value)!
+        return db
+          .update(hostname)
+          .set({ certificate: choice.certificate, tlsId: choice.tlsId })
+          .where(and(eq(hostname.hostingId, hostingId), eq(hostname.hostname, value)))
+      }
+    )
+  }
   if (row) await queueLetsEncryptRecheck(db, hostingId, row, letsEncryptNames(hostnames, www))
 }
 

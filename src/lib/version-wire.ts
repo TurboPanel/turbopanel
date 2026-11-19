@@ -269,6 +269,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tunnel-lock-add-v1',
   'build-limits-v1',
   'tunnel-peer-mtls-v1',
+  'hosting-name-tls-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -369,6 +370,16 @@ export const INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE: DaemonWireFeature =
 export const BACKUP_S3_COPY_FEATURE: DaemonWireFeature = 'backup-s3-copy-v1'
 
 export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
+
+/**
+ * The daemon reads `nameTls` on a hosting entry of `environment.deploy`: each
+ * entry gives one served name (and its www redirect) its own certificate or
+ * mode, over the row's `tlsId` and `tlsMode`. A row whose names resolve to
+ * different wire values goes only to a daemon that lists this feature; the
+ * control plane refuses the server otherwise (`name_certificates_need_update`)
+ * and never sends a mixed row to an older daemon, which would drop the field.
+ */
+export const HOSTING_NAME_TLS_FEATURE: DaemonWireFeature = 'hosting-name-tls-v1'
 
 /**
  * The daemon places the certificate order for a name set when the control plane

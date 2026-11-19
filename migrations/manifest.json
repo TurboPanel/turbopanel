@@ -20,6 +20,12 @@
       "tag": "0002_origin_behind_cdn_proxy",
       "when": 1795033537931,
       "sha256": "b1df98979f5dde56aef09eede917d1a87a9ebabc8334cc859afd49548b91bed7"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_hostname_certificate_choice",
+      "when": 1795102839976,
+      "sha256": "881ea4e38fb9ed2b5e6b2e72aa83ffffc5bf56a8e6d36c7d1bd10c926b7c80cb"
     }
   ]
 }

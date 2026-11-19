@@ -1,0 +1,124 @@
+/**
+ * Per-name certificate storage against a database: a save keeps the choices
+ * of the names that stay, names without a choice follow the site pin, and a
+ * library row counts as in use while any one name pins it. Skips without
+ * TURBOPANEL_DATABASE_URL.
+ */
+import { assertEquals } from '@std/assert'
+import { eq } from 'drizzle-orm'
+import { hostname, hosting, tls } from '../../db/schema.ts'
+import { replaceHostingHostnames } from '../servers/hostname-records.ts'
+import { certificateIdsPinnedBy } from '../tls/unused-letsencrypt.ts'
+import { withScenario, NAME } from '../tunnels/nudge-scenario.test.support.ts'
+import {
+  hostingsPinningName,
+  loadNameCertificates,
+  pinHostingNames,
+  syncHostingPin,
+} from './name-certificates.ts'
+
+/** Sonar only recognises `test()`; see the note in the other suites. */
+const test = Deno.test.bind(Deno)
+
+async function newLibraryRow(
+  s: Parameters<Parameters<typeof withScenario>[1]>[0],
+  source: string
+): Promise<string> {
+  const [row] = await s.db
+    .insert(tls)
+    .values({ organizationId: s.organizationId, source, status: 'ready', name: `${source} row` })
+    .returning({ id: tls.id })
+  return row!.id
+}
+
+test('a save keeps the choice of a name that stays, drops gone names and adds new ones without a choice', async () => {
+  await withScenario({}, async (s) => {
+    const pin = await newLibraryRow(s, 'upload')
+    try {
+      await replaceHostingHostnames(
+        s.db,
+        s.hostingAId,
+        s.organizationId,
+        [NAME, 'b.example.com'],
+        new Map([[NAME, { certificate: 'library', tlsId: pin }]])
+      )
+      await replaceHostingHostnames(s.db, s.hostingAId, s.organizationId, [NAME, 'c.example.com'])
+      const names = (await loadNameCertificates(s.db, [s.hostingAId])).get(s.hostingAId) ?? []
+      assertEquals(names.map((n) => n.hostname).toSorted(), ['c.example.com', NAME].toSorted())
+      const kept = names.find((n) => n.hostname === NAME)
+      assertEquals([kept?.certificate, kept?.tlsId], ['library', pin])
+      const added = await s.db
+        .select({ certificate: hostname.certificate, tlsId: hostname.tlsId })
+        .from(hostname)
+        .where(eq(hostname.hostname, 'c.example.com'))
+      assertEquals(added, [{ certificate: null, tlsId: null }])
+    } finally {
+      await s.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, s.hostingAId))
+      await s.db.delete(hostname).where(eq(hostname.hostingId, s.hostingAId))
+      await s.db.delete(tls).where(eq(tls.id, pin))
+    }
+  })
+})
+
+test('a name with no stored choice follows the site pin, and pinning the site sets every name', async () => {
+  await withScenario({}, async (s) => {
+    const pin = await newLibraryRow(s, 'lets_encrypt')
+    try {
+      await s.db.update(hosting).set({ tlsId: pin }).where(eq(hosting.id, s.hostingAId))
+      const before = (await loadNameCertificates(s.db, [s.hostingAId])).get(s.hostingAId)
+      assertEquals(
+        before?.map((n) => [n.certificate, n.tlsId]),
+        [['letsencrypt_http', pin]]
+      )
+      await pinHostingNames(s.db, s.hostingAId, null)
+      const after = (await loadNameCertificates(s.db, [s.hostingAId])).get(s.hostingAId)
+      assertEquals(
+        after?.map((n) => [n.certificate, n.tlsId]),
+        [['self_signed', null]]
+      )
+    } finally {
+      await s.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, s.hostingAId))
+      await s.db.delete(tls).where(eq(tls.id, pin))
+    }
+  })
+})
+
+test('a library row one name pins is in use, and the site pin follows only while every name agrees', async () => {
+  await withScenario({}, async (s) => {
+    const pin = await newLibraryRow(s, 'upload')
+    try {
+      await replaceHostingHostnames(
+        s.db,
+        s.hostingAId,
+        s.organizationId,
+        [NAME, 'b.example.com'],
+        new Map([[NAME, { certificate: 'library', tlsId: pin }]])
+      )
+      assertEquals(await certificateIdsPinnedBy(s.db, [s.hostingAId]), [pin])
+      assertEquals(await hostingsPinningName(s.db, pin), [s.hostingAId])
+      await syncHostingPin(s.db, s.hostingAId)
+      const [mixed] = await s.db
+        .select({ tlsId: hosting.tlsId })
+        .from(hosting)
+        .where(eq(hosting.id, s.hostingAId))
+      assertEquals(mixed?.tlsId, null)
+      await replaceHostingHostnames(
+        s.db,
+        s.hostingAId,
+        s.organizationId,
+        [NAME, 'b.example.com'],
+        new Map([['b.example.com', { certificate: 'library', tlsId: pin }]])
+      )
+      await syncHostingPin(s.db, s.hostingAId)
+      const [same] = await s.db
+        .select({ tlsId: hosting.tlsId })
+        .from(hosting)
+        .where(eq(hosting.id, s.hostingAId))
+      assertEquals(same?.tlsId, pin)
+    } finally {
+      await s.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, s.hostingAId))
+      await s.db.delete(hostname).where(eq(hostname.hostingId, s.hostingAId))
+      await s.db.delete(tls).where(eq(tls.id, pin))
+    }
+  })
+})

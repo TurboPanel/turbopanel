@@ -13,9 +13,17 @@ import {
   removeUnusedSiteCertificates,
 } from '../../features/tls/unused-letsencrypt.ts'
 import {
+  type HostnameChoice,
   isHostnameUniqueViolation,
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
+import { pinHostingNames, syncHostingPin } from '../../features/hostings/name-certificates.ts'
+import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
+import {
+  loadHostingNameReads,
+  parseNameChoices,
+  unservedChoice,
+} from './name-certificates-routes.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -92,6 +100,7 @@ async function commitHostingPatch(
   organizationId: string,
   patchFields: HostingPatchFields,
   hostnamesPatch: string[] | null,
+  choices: ReadonlyMap<string, HostnameChoice> | undefined,
   actor: { userId: string; email: string | null }
 ): Promise<Response | null> {
   try {
@@ -101,6 +110,9 @@ async function commitHostingPatch(
       const previousCertificates =
         patchFields.tlsId === undefined ? [] : await lockPinnedCertificates(tx, id)
       await tx.update(hosting).set(patchFields).where(eq(hosting.id, id))
+      // A pin written to the whole site gives every name that pin; per-name
+      // choices sent in the same request are applied after it and win.
+      if (patchFields.tlsId !== undefined) await pinHostingNames(tx, id, patchFields.tlsId)
       await removeUnusedSiteCertificates(tx, previousCertificates, {
         reason: 'its site now uses another certificate',
         actor,
@@ -108,7 +120,8 @@ async function commitHostingPatch(
       if (hostnamesPatch !== null) {
         // `organizationId` was already checked equal to this hosting's
         // resolved workspace-ancestry organization above.
-        await replaceHostingHostnames(tx, id, organizationId, hostnamesPatch)
+        await replaceHostingHostnames(tx, id, organizationId, hostnamesPatch, choices)
+        if (choices !== undefined) await syncHostingPin(tx, id)
       }
     })
   } catch (err) {
@@ -154,7 +167,8 @@ async function insertHostingFromCreate(
   fields: HostingCreateFields,
   serviceId: string,
   organizationId: string,
-  fks: Extract<HostingFkResult, { kind: 'ok' }>
+  fks: Extract<HostingFkResult, { kind: 'ok' }>,
+  choices: ReadonlyMap<string, HostnameChoice> | undefined
 ): Promise<string> {
   const { name, description, metadataResult, validatedOptions } = fields
   return await db.transaction(async (tx) => {
@@ -180,8 +194,11 @@ async function insertHostingFromCreate(
       tx,
       inserted.id,
       organizationId,
-      validatedOptions?.hostnames ?? []
+      validatedOptions?.hostnames ?? [],
+      choices
     )
+    if (choices !== undefined) await syncHostingPin(tx, inserted.id)
+    else if (fks.tlsId.kind === 'value') await pinHostingNames(tx, inserted.id, fks.tlsId.value)
     return inserted.id
   })
 }
@@ -223,7 +240,10 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(and(...conditions))
       .orderBy(hosting.createdAt)
 
-    return c.json({ hostings: rows })
+    const names = await loadHostingNameReads(db, organizationId, rows)
+    return c.json({
+      hostings: rows.map((row) => ({ ...row, names: names.get(row.id) ?? [] })),
+    })
   })
 
   router.get('/hostings/:id', async (c) => {
@@ -247,7 +267,8 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanReadOr403(c, 'hosting', id)
     if (denied) return denied
 
-    return c.json({ hosting: row })
+    const names = await loadHostingNameReads(db, organizationId, [row])
+    return c.json({ hosting: { ...row, names: names.get(row.id) ?? [] } })
   })
 
   router.post('/hostings', async (c) => {
@@ -284,8 +305,21 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const scopeDenied = await assertCreateHostingBindScope(c, db, fks.ipId, validatedOptions)
     if (scopeDenied) return scopeDenied
 
+    const named = await parseNameChoices(c, db, organizationId, body)
+    if (named.kind === 'error') return named.response
+    const choices = named.kind === 'value' ? named.choices : undefined
+    if (choices) {
+      const unserved = unservedChoice(
+        c,
+        choices,
+        validatedOptions?.hostnames ?? [],
+        validatedOptions?.www ?? 'off'
+      )
+      if (unserved) return unserved
+    }
+
     try {
-      const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks)
+      const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks, choices)
       nudgeTunnelRoutesAfterResponse(c, organizationId)
       return c.json({ ok: true as const, id })
     } catch (err) {
@@ -321,13 +355,28 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const scopeDenied = await assertMergedHostingBindScope(c, db, existingHosting, patchFields)
     if (scopeDenied) return scopeDenied
 
+    const named = await parseNameChoices(c, db, organizationId, body)
+    if (named.kind === 'error') return named.response
+    const choices = named.kind === 'value' ? named.choices : undefined
+    // The names the saved site serves: the new ones when options came with the
+    // request, else the ones it already has.
+    const savedOptions = patchFields.options ?? existingHosting.options
+    const hostnamesPatch =
+      hostnamesPatchFromFields(patchFields) ??
+      (choices === undefined ? null : (parseHostingOptions(savedOptions)?.hostnames ?? []))
+    if (choices && hostnamesPatch) {
+      const unserved = unservedChoice(c, choices, hostnamesPatch, readHostingWwwMode(savedOptions))
+      if (unserved) return unserved
+    }
+
     const conflict = await commitHostingPatch(
       c,
       db,
       id,
       organizationId,
       patchFields,
-      hostnamesPatchFromFields(patchFields),
+      hostnamesPatch,
+      choices,
       { userId: session.userId, email: session.email ?? null }
     )
     if (conflict) return conflict

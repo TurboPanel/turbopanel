@@ -122,7 +122,18 @@ import {
 } from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
+import { HOSTING_NAME_TLS_FEATURE } from '../../lib/version-wire.ts'
 import { resolveDeployNameLock } from '../../features/tunnels/name-lock.ts'
+import { loadNameCertificates } from '../../features/hostings/name-certificates.ts'
+import {
+  NAME_CERTIFICATES_NEED_UPDATE,
+  NAME_CERTIFICATES_NEED_UPDATE_MESSAGE,
+  type NameWire,
+  type NameWireValue,
+  nameTlsPinIds,
+  planNameTls,
+} from '../../features/hostings/name-tls-wire.ts'
+import { hostingRoutingNames } from '../../features/servers/hostname-records.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
   type NativeAppNodeVersionView,
@@ -207,6 +218,7 @@ import type {
   EnvironmentDeployCache,
   EnvironmentDeployHelperReach,
   EnvironmentDeployHosting,
+  EnvironmentDeployNameTls,
   EnvironmentDeployIngressService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySite,
@@ -4586,7 +4598,7 @@ function isTlsSource(value: string): value is TlsSource {
   return (TLS_SOURCES as readonly string[]).includes(value)
 }
 
-type OrgTlsCandidate = TlsCandidate & {
+export type OrgTlsCandidate = TlsCandidate & {
   certificatePem: string | null
   privateKeyPem: string | null
   /** The stored pair was ordered by a serving server at the panel's request (see `http-issuance`). */
@@ -4638,7 +4650,7 @@ type HostingServiceRow = {
   composeServiceName: string
 }
 
-type HostingRow = {
+export type HostingRow = {
   id: string
   options: unknown
   tlsId: string | null
@@ -4761,7 +4773,119 @@ async function resolveHostingBindAndWeb(
   return { bindResolved, web }
 }
 
-async function resolveHttpHostingEntry(
+type NameChoiceRead = {
+  hostname: string
+  typed: boolean
+  certificate: string
+  tlsId: string | null
+}
+
+/**
+ * The pin of every name the hosting answers on (typed names and the www names
+ * its choice adds). A name with no stored choice follows the site pin. A name
+ * set to Let's Encrypt via DNS that holds no ready pair deploys on the
+ * self-signed one; it never asks the server for a public certificate.
+ * `uniformPin` is set when every name has the same pin, the case that sends no
+ * per-name field.
+ */
+async function readNameChoices(
+  db: Db,
+  h: HostingRow,
+  candidates: OrgTlsCandidate[],
+  hostnames: string[],
+  www: HostingWwwMode
+): Promise<{ choices: NameChoiceRead[]; uniformPin: string | null | undefined }> {
+  const stored = (await loadNameCertificates(db, [h.id])).get(h.id) ?? []
+  const byName = new Map(stored.map((row) => [row.hostname, row]))
+  const typed = new Set(hostnames)
+  const choices = hostingRoutingNames(hostnames, www).map((name): NameChoiceRead => {
+    const row = byName.get(name)
+    const pin = row === undefined ? h.tlsId : row.tlsId
+    const certificate = row?.certificate ?? 'library'
+    const pair = pin === null ? undefined : candidates.find((candidate) => candidate.id === pin)
+    const waitingForDns =
+      certificate === 'letsencrypt_dns' &&
+      (pair === undefined || pair.metadata.status === 'automatic')
+    return {
+      hostname: name,
+      typed: typed.has(name),
+      certificate,
+      tlsId: waitingForDns ? null : pin,
+    }
+  })
+  if (choices.length === 0) return { choices, uniformPin: h.tlsId }
+  const pins = new Set(choices.map((choice) => choice.tlsId))
+  return { choices, uniformPin: pins.size === 1 ? choices[0]!.tlsId : undefined }
+}
+
+/**
+ * The wire value of each name when the names do not share one pin: the pins are
+ * resolved group by group, each against the names that use it, with the
+ * refusals a whole-site pin gets.
+ */
+function resolvePerNameWires(params: {
+  h: HostingRow
+  candidates: OrgTlsCandidate[]
+  acmeEnabled: boolean
+  choices: NameChoiceRead[]
+}): { names: NameWire[] } | { error: Response } {
+  const { h, candidates, acmeEnabled, choices } = params
+  const bindScope = resolveHostingBind(parseHostingOptions(h.options))
+  const groups = new Map<string | null, NameChoiceRead[]>()
+  for (const choice of choices) {
+    groups.set(choice.tlsId, [...(groups.get(choice.tlsId) ?? []), choice])
+  }
+  const valueByPin = new Map<string | null, NameWireValue>()
+  for (const [pinId, group] of groups) {
+    const names = group.map((choice) => choice.hostname)
+    const typedNames = group.filter((choice) => choice.typed).map((choice) => choice.hostname)
+    const pinned = pinId === null ? undefined : candidates.find((c) => c.id === pinId)
+    // A Let's Encrypt pin is issued name by name, so only the typed names are checked against it.
+    const coverage = pinned?.source === 'lets_encrypt' && typedNames.length > 0 ? typedNames : names
+    const resolved = resolveTlsForHosting({ pinId, hostnames: coverage, candidates })
+    if (!resolved.ok) {
+      return {
+        error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames: names, www: 'off' }),
+      }
+    }
+    const resolvedPin = resolved.tlsId
+      ? candidates.find((candidate) => candidate.id === resolved.tlsId)
+      : undefined
+    const wire = hostingTlsWireFromResolved({
+      tlsId: resolved.tlsId,
+      status: resolvedPin?.metadata.status,
+      bindScope,
+      acmeEnabled,
+      centralPair: takesCentralPair(resolvedPin, { hostnames: names, www: 'off' }),
+    })
+    if (!wire.ok) {
+      return { error: Response.json({ error: wire.error, hostingId: h.id }, { status: 400 }) }
+    }
+    valueByPin.set(
+      pinId,
+      wire.tlsMode === 'acme' ? { tlsId: null, tlsMode: 'acme' } : { tlsId: wire.tlsId }
+    )
+  }
+  return {
+    names: choices.map((choice) => ({
+      hostname: choice.hostname,
+      typed: choice.typed,
+      value: valueByPin.get(choice.tlsId)!,
+    })),
+  }
+}
+
+/** Does this server's daemon list the per-name certificate feature? A read that fails counts as no. */
+async function serverTakesNameTls(db: Db, serverId: string): Promise<boolean> {
+  try {
+    const state = await getServerDaemonStateByServerId(db, serverId)
+    return (state?.projection?.features ?? []).includes(HOSTING_NAME_TLS_FEATURE)
+  } catch {
+    return false
+  }
+}
+
+export async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
@@ -4784,58 +4908,106 @@ async function resolveHttpHostingEntry(
   const panelRefusal = await panelHostnameRefusal(db, svc.composeServiceName, { hostnames, www })
   if (panelRefusal) return { prepareError: panelRefusal }
 
-  // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
-  // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
-  const resolved = resolveTlsForHosting({
-    pinId: h.tlsId,
-    hostnames: pinCoverageNames(h.tlsId, candidates, { hostnames, www }),
-    candidates,
-  })
-  if (!resolved.ok) {
-    const pinned = candidates.find((candidate) => candidate.id === h.tlsId)
-    return {
-      error: tlsPinErrorResponse(resolved.error, h.id, pinned, {
-        hostnames,
-        www,
-      }),
-    }
-  }
+  // Names that share one pin take today's path and send today's payload. Names
+  // that resolve to different pins are worked out name by name further down.
+  const read = await readNameChoices(db, h, candidates, hostnames, www)
+  const sitePinId = read.uniformPin === undefined ? null : read.uniformPin
+  const perName =
+    read.uniformPin === undefined
+      ? resolvePerNameWires({ h, candidates, acmeEnabled, choices: read.choices })
+      : null
+  if (perName !== null && 'error' in perName) return perName
 
-  const bindScope = resolveHostingBind(parseHostingOptions(h.options))
-  const pinned = resolved.tlsId
-    ? candidates.find((candidate) => candidate.id === resolved.tlsId)
-    : undefined
-  const tlsWire = hostingTlsWireFromResolved({
-    tlsId: resolved.tlsId,
-    status: pinned?.metadata.status,
-    bindScope,
-    acmeEnabled,
-    centralPair: takesCentralPair(pinned, { hostnames, www }),
-  })
-  if (!tlsWire.ok) {
-    return {
-      error: Response.json(
-        { error: tlsWire.error, hostingId: h.id },
-        {
-          status: 400,
-        }
-      ),
+  let tlsWire: Extract<HostingTlsWire, { ok: true }> = { ok: true, tlsId: null }
+  if (perName === null) {
+    // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
+    // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
+    const resolved = resolveTlsForHosting({
+      pinId: sitePinId,
+      hostnames: pinCoverageNames(sitePinId, candidates, { hostnames, www }),
+      candidates,
+    })
+    if (!resolved.ok) {
+      const pinned = candidates.find((candidate) => candidate.id === sitePinId)
+      return {
+        error: tlsPinErrorResponse(resolved.error, h.id, pinned, {
+          hostnames,
+          www,
+        }),
+      }
     }
+
+    const bindScope = resolveHostingBind(parseHostingOptions(h.options))
+    const pinned = resolved.tlsId
+      ? candidates.find((candidate) => candidate.id === resolved.tlsId)
+      : undefined
+    const wire = hostingTlsWireFromResolved({
+      tlsId: resolved.tlsId,
+      status: pinned?.metadata.status,
+      bindScope,
+      acmeEnabled,
+      centralPair: takesCentralPair(pinned, { hostnames, www }),
+    })
+    if (!wire.ok) {
+      return {
+        error: Response.json(
+          { error: wire.error, hostingId: h.id },
+          {
+            status: 400,
+          }
+        ),
+      }
+    }
+    tlsWire = wire
   }
 
   const bindAndWeb = await resolveHostingBindAndWeb(db, h, serverId)
   if ('prepareError' in bindAndWeb) return bindAndWeb
   const { bindResolved, web } = bindAndWeb
 
+  // A mixed row never asks the lock for the whole-site Let's Encrypt refusal:
+  // a tunnel-only name that was given a public certificate is set aside below.
   const lock = await resolveDeployNameLock(db, {
     organizationId,
     serverId,
     hostingId: h.id,
     siteHostnames: hostnames,
     www,
-    tlsMode: tlsWire.tlsMode,
+    tlsMode: perName === null ? tlsWire.tlsMode : undefined,
   })
   if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id) }
+
+  let nameTls: EnvironmentDeployNameTls[] | undefined
+  if (perName !== null) {
+    // A name that arrives only through the tunnel never asks for a public certificate.
+    const closed = new Set(
+      (lock.tunnel?.hostnames ?? []).filter((name) => !lock.tunnel?.openHostnames?.includes(name))
+    )
+    const names = perName.names.map((name) =>
+      name.value.tlsMode === 'acme' && closed.has(name.hostname)
+        ? { ...name, value: { tlsId: null } }
+        : name
+    )
+    const plan = planNameTls(names, { avoidAcmeAtRow: closed.size > 0 })
+    if (plan.nameTls.length > 0 && !(await serverTakesNameTls(db, serverId))) {
+      return {
+        error: Response.json(
+          {
+            error: NAME_CERTIFICATES_NEED_UPDATE,
+            message: NAME_CERTIFICATES_NEED_UPDATE_MESSAGE,
+            hostingId: h.id,
+          },
+          { status: 409 }
+        ),
+      }
+    }
+    tlsWire = {
+      ok: true,
+      tlsId: plan.row.tlsId,
+      ...(plan.row.tlsMode === undefined ? {} : { tlsMode: plan.row.tlsMode }),
+    }
+    if (plan.nameTls.length > 0) nameTls = plan.nameTls
+  }
 
   // A hosting whose names are all tunnel-only never asks for a public certificate,
   // and keeps no Let's Encrypt row waiting on one.
@@ -4858,6 +5030,7 @@ async function resolveHttpHostingEntry(
       ...(www === 'off' ? {} : { www }),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
       ...(web === undefined ? {} : { web }),
+      ...(nameTls === undefined ? {} : { nameTls }),
     },
   }
 }
@@ -5007,6 +5180,8 @@ async function buildHostingsForService(
     if (result.entry.tlsId && result.entry.tlsMode !== 'acme') {
       tlsIds.push(result.entry.tlsId)
     }
+    // A name given its own pair needs that pair in `tlsMaterial` too.
+    tlsIds.push(...nameTlsPinIds(result.entry.nameTls))
   }
   return { hostings, tlsIds }
 }

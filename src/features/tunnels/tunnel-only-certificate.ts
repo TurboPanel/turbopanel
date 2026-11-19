@@ -14,6 +14,7 @@ import type { Db } from '../../db/connection.ts'
 import { environment, hosting, service, tls } from '../../db/schema.ts'
 import { pendingLetsEncryptPatch, readPendingLetsEncrypt } from '../hostings/hosting-certificate.ts'
 import { parseHostingOptions, readHostingWwwMode } from '../hostings/hosting-options.ts'
+import { pinHostingNames } from '../hostings/name-certificates.ts'
 import {
   isSiteLetsEncrypt,
   lockOrganizationLetsEncrypt,
@@ -82,6 +83,7 @@ async function releaseSitePin(db: Db, hostingId: string, organizationId: string)
         ...(pinnedId === null ? {} : { tlsId: null }),
       })
       .where(eq(hosting.id, hostingId))
+    if (pinnedId !== null) await pinHostingNames(tx, hostingId, null)
     if (pinnedId !== null) {
       await removeUnusedSiteCertificates(tx, [pinnedId], { reason: REMOVED_REASON })
     }

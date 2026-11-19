@@ -970,12 +970,16 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   hostname: {
     group: 'resources',
     summary:
-      'Uniqueness mirror of `hosting.options.hostnames`, one row per hostname, replaced on every hosting write so Postgres can enforce one hostname per organization.',
+      'One row per served hostname of a hosting: enforces one hostname per organization and carries each name’s certificate choice. Saves add and remove rows to match `hosting.options.hostnames`; surviving rows keep their choice.',
     columns: {
       routing_organization_id:
         "Organization whose routing owns the hostname, half of the unique key; today always the hosting's own organization, named for future cross-organization hosting.",
       hostname:
         'One DNS name copied verbatim from `hosting.options.hostnames` by `replaceHostingHostnames`; unique per routing organization regardless of path prefix.',
+      certificate:
+        'This name\'s certificate choice (`cloudflare_origin`, `letsencrypt_http`, `letsencrypt_dns`, `self_signed`, `library`); NULL reads as "use `hosting.tls_id`". Kept across hosting saves.',
+      tls_id:
+        'Optional pin into the organization TLS library for this name; NULL means a self-signed certificate (or a waiting pair), and the pin is cleared when the certificate row is deleted.',
     },
   },
   marker: {

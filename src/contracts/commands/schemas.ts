@@ -7,6 +7,7 @@ import {
 import {
   type HostingWwwMode,
   HOSTNAME_MAX_LENGTH,
+  hostingCertificateNames,
   isHostingWwwMode,
   isValidHostname,
 } from './hostname.ts'
@@ -2972,6 +2973,23 @@ export type EnvironmentDeployHosting = {
    * must cover it). A daemon without the field serves only the typed names.
    */
   www?: Exclude<HostingWwwMode, 'off'>
+  /**
+   * Per-name certificates (daemon feature `hosting-name-tls-v1`). Each entry
+   * gives one served name, and its www redirect, its own `tlsId` or `tlsMode`
+   * over the row's; unlisted names keep the row's. Sent only when the row's
+   * names resolve to different values, and only to a daemon that lists the
+   * feature. `internal` is a self-signed certificate (a name waiting for its
+   * pair goes as `internal`, never `acme`); `acme` has the daemon's own ACME
+   * client issue it. Every `tlsId` is in `tlsMaterial`.
+   */
+  nameTls?: EnvironmentDeployNameTls[]
+}
+
+/** One name's certificate in `EnvironmentDeployHosting.nameTls`. */
+export type EnvironmentDeployNameTls = {
+  hostname: string
+  tlsId?: string
+  tlsMode?: 'internal' | 'acme'
 }
 
 export type EnvironmentDeployContainer = {
@@ -3221,6 +3239,36 @@ function parseDeployHostingWww(value: unknown): EnvironmentDeployHosting['www'] 
   return value === 'off' ? undefined : value
 }
 
+/** Per-name certificates; absent stays absent. A name outside the row or an unknown mode is refused. */
+function parseDeployHostingNameTls(
+  value: unknown,
+  hostnames: string[]
+): EnvironmentDeployNameTls[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new TypeError('Invalid environment.deploy payload')
+  return value.map((item) => {
+    if (!isRecord(item) || !isString(item.hostname)) {
+      throw new TypeError('Invalid environment.deploy payload')
+    }
+    const hostname = item.hostname
+    if (!hostnames.includes(hostname)) {
+      throw new TypeError('Invalid environment.deploy payload')
+    }
+    const out: EnvironmentDeployNameTls = { hostname }
+    if (item.tlsId !== undefined) {
+      if (!isString(item.tlsId)) throw new TypeError('Invalid environment.deploy payload')
+      out.tlsId = item.tlsId
+    }
+    if (item.tlsMode !== undefined) {
+      if (item.tlsMode !== 'internal' && item.tlsMode !== 'acme') {
+        throw new TypeError('Invalid environment.deploy payload')
+      }
+      out.tlsMode = item.tlsMode
+    }
+    return out
+  })
+}
+
 function applyOptionalDeployHostingFields(
   hosting: EnvironmentDeployHosting,
   entry: Record<string, unknown>
@@ -3260,6 +3308,11 @@ function applyOptionalDeployHostingFields(
   if (web) hosting.web = web
   const www = parseDeployHostingWww(entry.www)
   if (www) hosting.www = www
+  const nameTls = parseDeployHostingNameTls(
+    entry.nameTls,
+    hostingCertificateNames({ hostnames: hosting.hostnames, www: hosting.www })
+  )
+  if (nameTls) hosting.nameTls = nameTls
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {

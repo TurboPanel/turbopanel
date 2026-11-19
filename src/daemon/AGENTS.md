@@ -217,3 +217,17 @@ new daemon registers its own key when it connects with the new key id, and the
 server is treated as one with no key until that lands. There is no
 superadmin action to clear the key, and nothing on the daemon wire can clear it.
 The `server.plaintext_secrets_at` column is no longer written or read. The `MIN_SUPPORTED_*` floors are untouched.
+
+## Per-name certificates (`hosting-name-tls-v1`)
+
+`EnvironmentDeployHosting.nameTls` is a list of `{ hostname, tlsId?, tlsMode? }`
+that overrides the row's `tlsId`/`tlsMode` for that name and its `www`
+redirect. The panel sends it only when the row's names resolve to different
+values, and only to a server whose stored hello lists `hosting-name-tls-v1`;
+otherwise the server is refused with `name_certificates_need_update` and never
+silently given one certificate. Entries may name only the row's served names.
+Every `tlsId` in `nameTls` is added to `resolvedTlsIds` so its material ships.
+A row whose names all share a value is byte for byte today's payload.
+The feature is also in `DAEMON_WIRE_FEATURES`, so a daemon whose hello lacks it
+is reported as needing an update. `check:contract-drift` stays red until the
+daemon release that defines the feature is on its trunk (daemon merges first).
