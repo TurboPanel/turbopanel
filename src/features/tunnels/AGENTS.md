@@ -547,6 +547,13 @@ provider accounts.
   A stored downgrade makes the next send mint the peer leaf again, once per
   report (`peerLeafRemintDue`, `markPeerLeafReminted` sets `reminted`); a repeat
   after that is only logged.
+- The daemon also reports whether the nftables lock on the connector status
+  ports (20300-20899) loaded (`statusPortsLocked`, `statusPortsLockReason`,
+  `statusPortsLockCheckedAt`, all optional, absent on older daemons).
+  `recordTunnelStatus` keeps it in `server.metadata.tunnelStatusPorts`
+  (`statusPortsLockOf`) and drops it when a report carries none; the tunnel
+  response shows it as `statusPorts` per carrying server, with `locked: null`
+  meaning unknown (never locked). It is the last load, not a live check.
 - Firewall: `peer-exposure.ts` turns the same `peerAddresses` the route builder
   sends a server into one derived rule, accept tcp 9443 (`TUNNEL_PEER_PORT`, the
   daemon's peer-facing server, checked by `check:contract-drift`) on the host

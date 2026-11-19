@@ -31,7 +31,7 @@ import {
   updatePlacement,
   type TunnelRow,
 } from '../../features/tunnels/lifecycle.ts'
-import { toApiPeerHop } from '../../features/tunnels/status.ts'
+import { toApiPeerHop, toApiStatusPorts } from '../../features/tunnels/status.ts'
 import {
   loadUnroutedReasons,
   lockAddSkippedServers,
@@ -116,7 +116,28 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   const peerHop = await peerHopOf(scope.db, scope.organizationId, [
     ...new Set([...shown.carryingServerIds, ...siteServers]),
   ])
-  return { ...shown, warnings, runTokenRotationBlock, peerHop }
+  const statusPorts = await statusPortsOf(scope.db, scope.organizationId, shown.carryingServerIds)
+  return { ...shown, warnings, runTokenRotationBlock, peerHop, statusPorts }
+}
+
+/**
+ * Whether the connector status ports are locked on each server that carries the
+ * tunnel, as the daemon last reported it, sorted by server. `locked: null` means
+ * the daemon has not said (an older one), never that the ports are open or locked.
+ */
+async function statusPortsOf(
+  db: Scope['db'],
+  organizationId: string,
+  serverIds: readonly string[]
+) {
+  if (serverIds.length === 0) return []
+  const rows = await db
+    .select({ id: server.id, metadata: server.metadata })
+    .from(server)
+    .where(and(eq(server.organizationId, organizationId), inArray(server.id, [...serverIds])))
+  return rows
+    .toSorted((a, b) => (a.id < b.id ? -1 : 1))
+    .map((r) => ({ serverId: r.id, ...toApiStatusPorts(r.metadata) }))
 }
 
 /**

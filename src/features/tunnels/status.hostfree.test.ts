@@ -9,6 +9,7 @@ import {
   portalErrorOf,
   portalStateOf,
   toApiPeerHop,
+  toApiStatusPorts,
 } from './status.ts'
 
 /**
@@ -172,5 +173,21 @@ test('the API shows the peer hop as a mode, a downgrade flag and the report time
     mode: 'require',
     downgraded: false,
     reportedAt: null,
+  })
+})
+
+test('a missing lock report reads as unknown, never as locked', () => {
+  const unknown = { locked: null, reason: null, checkedAt: null }
+  assertEquals(toApiStatusPorts(null), unknown)
+  assertEquals(toApiStatusPorts({}), unknown)
+  assertEquals(toApiStatusPorts({ tunnelStatusPorts: { locked: 'yes' } }), unknown)
+  assertEquals(
+    toApiStatusPorts({ tunnelStatusPorts: { locked: true, checkedAt: '2026-11-19T10:00:00.000Z' } }),
+    { locked: true, reason: null, checkedAt: '2026-11-19T10:00:00.000Z' }
+  )
+  assertEquals(toApiStatusPorts({ tunnelStatusPorts: { locked: false, reason: 'nft failed' } }), {
+    locked: false,
+    reason: 'nft failed',
+    checkedAt: null,
   })
 })

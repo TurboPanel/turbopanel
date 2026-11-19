@@ -331,6 +331,32 @@ export const tunnelSchemas = {
           },
         },
       },
+      statusPorts: {
+        type: 'array',
+        description:
+          'Whether the connector status ports (20300-20899) are locked on each server that carries this Tunnel, as the daemon last reported it, sorted by server. It is the outcome of the last lock load, not a live check.',
+        items: {
+          type: 'object',
+          required: ['serverId', 'locked', 'reason', 'checkedAt'],
+          properties: {
+            serverId: { type: 'string', format: 'uuid' },
+            locked: {
+              type: ['boolean', 'null'],
+              description:
+                'True when the last lock load succeeded, false when it failed, null when the daemon has not reported one (an older daemon, or none tried yet). Null is unknown, never locked.',
+            },
+            reason: {
+              type: ['string', 'null'],
+              description: 'Why the last load failed; null unless `locked` is false.',
+            },
+            checkedAt: {
+              type: ['string', 'null'],
+              format: 'date-time',
+              description: 'When the last load ran, so the age can be shown; null when unknown.',
+            },
+          },
+        },
+      },
       verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
       runTokenRotation: {
         oneOf: [{ $ref: '#/components/schemas/TunnelRunTokenRotation' }, { type: 'null' }],
