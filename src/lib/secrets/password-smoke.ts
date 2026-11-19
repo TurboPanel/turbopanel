@@ -2,6 +2,7 @@ import { argon2idAsync } from '@noble/hashes/argon2.js'
 import { constantTimeEqualBytes } from './constant-time.ts'
 
 const SMOKE_KEY_BYTES = 32
+const SMOKE_EXPECTED_HEX = '0b0ec46824f8586d7949ddb347b46699d76977dedeebfc8999b0cbc0ef764841'
 
 /**
  * Cheap load check for the isolate cold path (Workers): proves the Argon2id
@@ -23,7 +24,17 @@ export async function assertPasswordHasherLoadable(): Promise<void> {
     })
   const first = await derive()
   const second = await derive()
-  if (first.length !== SMOKE_KEY_BYTES || !constantTimeEqualBytes(first, second)) {
+  // Fixed known answer at these parameters: a build that is consistent but
+  // wrong (a broken or swapped implementation) is caught here.
+  if (
+    first.length !== SMOKE_KEY_BYTES ||
+    !constantTimeEqualBytes(first, second) ||
+    hexOf(first) !== SMOKE_EXPECTED_HEX
+  ) {
     throw new Error('Argon2id password hasher smoke test failed')
   }
+}
+
+function hexOf(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }

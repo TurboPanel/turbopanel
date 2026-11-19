@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { formatServerTiming } from './server-timing.ts'
+import { formatServerTiming, isServerTimingRoute } from './server-timing.ts'
 
 Deno.test('formatServerTiming omits init on warm requests', () => {
   assertEquals(
@@ -20,4 +20,18 @@ Deno.test('formatServerTiming clamps bad numbers', () => {
     formatServerTiming({ initMs: Number.NaN, dbStatements: -2, appMs: -5 }),
     'init;dur=0.0, db;desc="0 stmts", app;dur=0.0'
   )
+})
+
+Deno.test('only GET /api/client/v1/status may carry Server-Timing', () => {
+  assertEquals(isServerTimingRoute('GET', '/api/client/v1/status'), true)
+  assertEquals(isServerTimingRoute('POST', '/api/client/v1/status'), false)
+  for (const path of [
+    '/api/client/v1/auth/request-password-reset',
+    '/api/client/v1/auth/sign-in',
+    '/api/client/v1/auth/sign-up',
+    '/api/health',
+  ]) {
+    assertEquals(isServerTimingRoute('POST', path), false)
+    assertEquals(isServerTimingRoute('GET', path), false)
+  }
 })

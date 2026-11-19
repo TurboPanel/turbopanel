@@ -103,7 +103,11 @@ import {
   statusEdgeCacheKey,
   toEdgeCacheEntry,
 } from './platform/workers/status-edge-cache.ts'
-import { formatServerTiming, SERVER_TIMING_HEADER } from './platform/server-timing.ts'
+import {
+  formatServerTiming,
+  isServerTimingRoute,
+  SERVER_TIMING_HEADER,
+} from './platform/server-timing.ts'
 import { dbUsageLine, shouldLogDbUsage } from './query-cache/db-usage.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
@@ -560,8 +564,8 @@ export default {
         try {
           await next()
         } finally {
-          // Timings and statement counts only; skipped for upgrade responses.
-          if (c.res.status !== 101) {
+          // Allowlisted routes only (see platform/server-timing.ts): never on auth routes.
+          if (isServerTimingRoute(c.req.method, c.req.path) && c.res.status !== 101) {
             c.header(
               SERVER_TIMING_HEADER,
               formatServerTiming({

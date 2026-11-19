@@ -25,3 +25,15 @@ export function formatServerTiming(input: ServerTimingInput): string {
   if (input.initMs !== undefined) parts.unshift(`init;dur=${ms(input.initMs)}`)
   return parts.join(', ')
 }
+
+/**
+ * Routes that may carry Server-Timing. An allowlist, never a denylist: timings
+ * and statement counts on an identity-sensitive route (sign-in, password
+ * reset, sign-up) would show whether an account exists. Add a route here only
+ * with an argument that its work does not depend on who is asking.
+ */
+const SERVER_TIMING_ROUTES: ReadonlySet<string> = new Set(['GET /api/client/v1/status'])
+
+export function isServerTimingRoute(method: string, path: string): boolean {
+  return SERVER_TIMING_ROUTES.has(`${method} ${path}`)
+}
