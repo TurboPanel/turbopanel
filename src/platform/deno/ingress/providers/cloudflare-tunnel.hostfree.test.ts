@@ -61,6 +61,7 @@ function hostname(
     publicPort: 8443,
     isPrimary: false,
     isDaemonDial: true,
+    behindCdnProxy: false,
     ingressId: ACCOUNT.id,
   }
   return { ...record, providerState }

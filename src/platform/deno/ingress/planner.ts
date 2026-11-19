@@ -2,6 +2,7 @@ import {
   validateHostnameSource,
   type InstanceHostnameRecord,
 } from '../../../features/install/instance-hostnames.ts'
+import { effectiveHeartbeatMode } from '../../../features/install/heartbeat-policy.ts'
 import { capabilitiesFor } from './capabilities.ts'
 import type { PreflightCheck, PreflightResult } from './provider.ts'
 
@@ -65,9 +66,9 @@ export function planHostname(hostname: HostnameFacts, portStrict: boolean): Pref
   return { ok: checks.every((item) => item.ok), checks }
 }
 
-/** Modes of the given hostnames, for the heartbeat loader. */
+/** Modes of the given hostnames, for the heartbeat loader; a proxied direct name reads as an edge mode. */
 export function hostnameModes(
-  hostnames: readonly Pick<InstanceHostnameRecord, 'mode'>[]
+  hostnames: readonly { mode: string; behindCdnProxy?: boolean }[]
 ): string[] {
-  return hostnames.map((hostname) => hostname.mode)
+  return hostnames.map(effectiveHeartbeatMode)
 }

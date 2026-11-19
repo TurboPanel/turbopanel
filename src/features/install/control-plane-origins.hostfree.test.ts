@@ -33,6 +33,7 @@ function oneRowDb(host: string): Db {
       publicPort: 8443,
       isPrimary: true,
       isDaemonDial: true,
+      behindCdnProxy: false,
       uploadedCertId: null,
       acmeLastAttemptAt: null,
       acmeLastError: null,

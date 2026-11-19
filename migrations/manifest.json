@@ -14,6 +14,12 @@
       "tag": "0001_delete_orphan_public_urls_setting",
       "when": 1795028797979,
       "sha256": "c3fb0f9c9a7d28f811e5a498aa633585339ac1b9366a9ddf73a5e88445498b49"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_origin_behind_cdn_proxy",
+      "when": 1795033537931,
+      "sha256": "b1df98979f5dde56aef09eede917d1a87a9ebabc8334cc859afd49548b91bed7"
     }
   ]
 }

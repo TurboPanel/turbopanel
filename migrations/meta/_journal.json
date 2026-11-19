@@ -15,6 +15,13 @@
       "when": 1795028797979,
       "tag": "0001_delete_orphan_public_urls_setting",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795033537931,
+      "tag": "0002_origin_behind_cdn_proxy",
+      "breakpoints": true
     }
   ]
 }

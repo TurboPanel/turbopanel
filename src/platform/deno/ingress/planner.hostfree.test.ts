@@ -27,6 +27,7 @@ function ctx(over: Partial<HostnameFacts>): IngressContext {
       acmeLastError: null,
       isPrimary: true,
       isDaemonDial: false,
+      behindCdnProxy: false,
       ingressId: null,
     },
   }
@@ -83,4 +84,15 @@ test('hostnameModes lists the modes', () => {
     'direct',
     'passthrough',
   ])
+})
+
+test('hostnameModes reads a proxied direct name as an edge mode', () => {
+  assertEquals(
+    hostnameModes([
+      { mode: 'direct', behindCdnProxy: true },
+      { mode: 'lan-only', behindCdnProxy: true },
+      { mode: 'direct', behindCdnProxy: false },
+    ]),
+    ['cloudflare-proxy', 'lan-only', 'direct']
+  )
 })
