@@ -38,8 +38,10 @@ import { recordDeployedSiteApps } from '../environments/app-facts.ts'
 import {
   classifyDeployFailure,
   DEPLOY_CANCELLED_ERROR_CODE,
+  DEPLOY_POST_DEPLOY_FAILED_ERROR_CODE,
   deployOutcomeErrorCode,
   isCancelledDeployError,
+  isPostDeployFailedAfterSwitch,
 } from '../deploy/deploy-outcome.ts'
 import {
   advanceRollout,
@@ -3701,6 +3703,9 @@ export function failureErrorCodeField(
   }
   if (type === 'environment.deploy' && isCancelledDeployError(error)) {
     return { errorCode: DEPLOY_CANCELLED_ERROR_CODE }
+  }
+  if (type === 'environment.deploy' && isPostDeployFailedAfterSwitch(error)) {
+    return { errorCode: DEPLOY_POST_DEPLOY_FAILED_ERROR_CODE }
   }
   if (type === 'storage.restore' && BACKUP_NOT_ON_HOST_RE.test(error)) {
     return { errorCode: 'backup_not_found' }

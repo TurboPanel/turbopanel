@@ -70,3 +70,68 @@ export const DEPLOY_CANCELLED_ERROR_CODE = `${ERROR_CODE_PREFIX}cancelled`
 export function isCancelledDeployError(message: string | null | undefined): boolean {
   return typeof message === 'string' && message.startsWith(CANCELLED_ERROR_PREFIX)
 }
+
+/**
+ * A deploy whose post-deploy commands failed after the new release was already
+ * switched in. The daemon's error text starts with this code and a colon (the
+ * outcome carries no code field), so the consumer reads it back into
+ * {@link DEPLOY_POST_DEPLOY_FAILED_ERROR_CODE}. An older daemon never sends it
+ * and its text stays an ordinary failure.
+ */
+export const POST_DEPLOY_FAILED_AFTER_SWITCH = 'post_deploy_failed_after_switch'
+const POST_DEPLOY_FAILED_PREFIX = `${POST_DEPLOY_FAILED_AFTER_SWITCH}: `
+
+/** `command.error_code` of that failure. */
+export const DEPLOY_POST_DEPLOY_FAILED_ERROR_CODE = `${ERROR_CODE_PREFIX}${POST_DEPLOY_FAILED_AFTER_SWITCH}`
+
+/** Is this daemon error text the report of a post-deploy failure after the switch? */
+export function isPostDeployFailedAfterSwitch(message: string | null | undefined): boolean {
+  return typeof message === 'string' && message.startsWith(POST_DEPLOY_FAILED_PREFIX)
+}
+
+export type PostDeployFailure = {
+  /** The failed program (a path, never an argument), or `null` when the daemon could not tell. */
+  program: string | null
+  /** How it ended (`exited with exit status 1`, `timed out`, ...), or `null`. */
+  how: string | null
+  /** The release that went live and then failed, and the one to roll back to (`null` when none). */
+  failedReleaseId: string | null
+  previousReleaseId: string | null
+  /** A plain sentence for the screen; the program's own output is in the deploy log. */
+  message: string
+  /** The previous release is live-switched and can be rolled back to. */
+  rollBackAvailable: boolean
+}
+
+const POST_DEPLOY_SENTENCE_RE =
+  /after the new release (\S+) went live\.(?: (\S+) (exited with exit status \d+|timed out|was stopped by \S+|failed)\.)? Roll back to the previous release(?: (\S+))? from/
+
+/**
+ * Read the daemon's `post_deploy_failed_after_switch: ...` text. The program
+ * and release ids are optional in it; a text that does not match still gives a
+ * generic message, and a null result means the text is not this failure.
+ */
+export function classifyPostDeployFailure(
+  message: string | null | undefined
+): PostDeployFailure | null {
+  if (typeof message !== 'string' || !isPostDeployFailedAfterSwitch(message)) return null
+  const match = POST_DEPLOY_SENTENCE_RE.exec(message)
+  const failedReleaseId = match?.[1] ?? null
+  const program = match?.[2] ?? null
+  const how = match?.[3] ?? null
+  const previousReleaseId = match?.[4] ?? null
+  const failed = program === null ? 'A post-deploy command' : `The post-deploy command ${program}`
+  const ended = how === null ? 'failed' : how
+  const rollBack =
+    previousReleaseId === null
+      ? ''
+      : ' The previous release is still available: roll back to it if the site is not working.'
+  return {
+    program,
+    how,
+    failedReleaseId,
+    previousReleaseId,
+    message: `${failed} ${ended} after the new release went live.${rollBack}`,
+    rollBackAvailable: previousReleaseId !== null,
+  }
+}
