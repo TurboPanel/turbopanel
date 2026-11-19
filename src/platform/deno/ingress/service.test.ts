@@ -15,7 +15,12 @@ import {
   setSelfHostedAddress,
 } from '../../../features/install/ingress-modes.ts'
 import type { EdgeGate } from './gate.ts'
-import { applyIngress, readStoredIngress, setHostnameIngress } from './service.ts'
+import {
+  applyIngress,
+  BEHIND_CDN_PROXY_DIRECT_ONLY,
+  readStoredIngress,
+  setHostnameIngress,
+} from './service.ts'
 
 const test = Deno.test.bind(Deno)
 const dbUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')
@@ -152,6 +157,14 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
       openGate
     )
     assert(set.ok)
+    // The proxied flag only applies in direct mode: true is refused (omitted or false is fine).
+    const proxiedEdge = await setHostnameIngress(db, hostnameId, { behindCdnProxy: true }, openGate)
+    assertEquals(proxiedEdge.ok ? 0 : proxiedEdge.status, 400)
+    assertEquals(proxiedEdge.ok ? '' : proxiedEdge.error, BEHIND_CDN_PROXY_DIRECT_ONLY)
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { behindCdnProxy: false }, openGate)).ok,
+      true
+    )
     // Changing only the account on an edge row does not read the gate again.
     assertEquals(
       (await setHostnameIngress(db, hostnameId, { ingressId: accountId }, shutGate)).ok,

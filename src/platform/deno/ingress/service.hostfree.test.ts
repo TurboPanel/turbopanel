@@ -9,8 +9,16 @@ Deno.test('the proxied flag is kept or set in direct mode', () => {
 })
 
 Deno.test('the proxied flag is cleared in every mode other than direct', () => {
-  for (const mode of ['lan-only', 'cloudflare-tunnel', 'cloudflare-proxy', 'bunny-proxy', 'private-overlay', 'passthrough']) {
+  const modes = [
+    'lan-only',
+    'cloudflare-tunnel',
+    'cloudflare-proxy',
+    'bunny-proxy',
+    'private-overlay',
+    'passthrough',
+  ] as const
+  for (const mode of modes) {
     assertEquals(nextBehindCdnProxy(mode, undefined, true), false)
-    assertEquals(nextBehindCdnProxy(mode, true, true), false)
+    assertEquals(nextBehindCdnProxy(mode, false, true), false)
   }
 })
