@@ -314,7 +314,9 @@ async function recordStatusPortsLock(
     await db
       .update(server)
       .set({ metadata: sql`${server.metadata} - 'tunnelStatusPorts'` })
-      .where(and(eq(server.id, serverId), sql`jsonb_exists(${server.metadata}, 'tunnelStatusPorts')`))
+      .where(
+        and(eq(server.id, serverId), sql`jsonb_exists(${server.metadata}, 'tunnelStatusPorts')`)
+      )
     return
   }
   const fact = {

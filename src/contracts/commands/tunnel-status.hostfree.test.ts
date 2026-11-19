@@ -91,7 +91,11 @@ test('server.tunnel.status carries what the peer hop does about client certifica
 
 test('server.tunnel.status carries the lock on the status ports, and its absence stays absent', () => {
   assertEquals('statusPortsLocked' in parseTunnelStatusResult(GOOD), false)
-  const locked = { ...GOOD, statusPortsLocked: true, statusPortsLockCheckedAt: '2026-11-19T10:00:00Z' }
+  const locked = {
+    ...GOOD,
+    statusPortsLocked: true,
+    statusPortsLockCheckedAt: '2026-11-19T10:00:00Z',
+  }
   assertEquals(parseTunnelStatusResult(locked) as unknown, locked)
   const failed = { ...GOOD, statusPortsLocked: false, statusPortsLockReason: 'nft could not load' }
   assertEquals(parseTunnelStatusResult(failed) as unknown, failed)

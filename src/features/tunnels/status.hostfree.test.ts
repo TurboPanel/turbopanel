@@ -182,7 +182,9 @@ test('a missing lock report reads as unknown, never as locked', () => {
   assertEquals(toApiStatusPorts({}), unknown)
   assertEquals(toApiStatusPorts({ tunnelStatusPorts: { locked: 'yes' } }), unknown)
   assertEquals(
-    toApiStatusPorts({ tunnelStatusPorts: { locked: true, checkedAt: '2026-11-19T10:00:00.000Z' } }),
+    toApiStatusPorts({
+      tunnelStatusPorts: { locked: true, checkedAt: '2026-11-19T10:00:00.000Z' },
+    }),
     { locked: true, reason: null, checkedAt: '2026-11-19T10:00:00.000Z' }
   )
   assertEquals(toApiStatusPorts({ tunnelStatusPorts: { locked: false, reason: 'nft failed' } }), {
