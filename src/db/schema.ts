@@ -559,7 +559,7 @@ export const datacenter = pgTable(
     /** Address family tried first among a server's pins here: `ipv6` or `ipv4`. */
     addressPreference: text('address_preference').default('ipv6').notNull(),
     /** Whether the operator controls the datacenter's L2; `false` keeps server-to-server traffic off it. */
-    isTrusted: boolean('is_trusted').default(true).notNull(),
+    isTrusted: boolean('is_trusted').default(false).notNull(),
   },
   (table) => [
     index('idx_datacenter_organization_id').using(
