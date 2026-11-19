@@ -316,6 +316,15 @@ async function edgeGateRefusal(
 }
 
 /**
+ * The stored proxied flag after an edit. It only means something in direct
+ * mode, so any other mode clears it in the same write.
+ */
+export function nextBehindCdnProxy(mode: string, requested: unknown, current: boolean): boolean {
+  if (mode !== 'direct') return false
+  return typeof requested === 'boolean' ? requested : current
+}
+
+/**
  * Change how visitors reach one name. A name whose provider setup is still
  * in place must be disconnected before its mode or account changes, so a
  * tunnel is never left behind without a row that knows about it.
@@ -359,7 +368,7 @@ export async function setHostnameIngress(
   const nextIngressId = capabilitiesFor(mode).provider
     ? ((ingressId as string | null) ?? null)
     : null
-  const behindCdnProxy = input.behindCdnProxy ?? current.behindCdnProxy
+  const behindCdnProxy = nextBehindCdnProxy(mode, input.behindCdnProxy, current.behindCdnProxy)
   await db
     .update(instanceHostname)
     .set({ mode, publicPort, ingressId: nextIngressId, behindCdnProxy })

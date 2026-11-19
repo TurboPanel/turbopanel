@@ -2440,7 +2440,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   upgrade: {
     group: 'upgrades',
     summary:
-      'One upgrade run across all servers, written by the upgrade orchestrator, with at most one `pending` or `running` row.',
+      'One upgrade run, across all servers or one server when source is `server`, with at most one `pending` or `running` row.',
     columns: {
       source:
         'Who started the run: `manual` from the panel, `auto` from the scheduler, or `server` for a single-host request.',
