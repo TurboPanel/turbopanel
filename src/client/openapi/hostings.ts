@@ -282,6 +282,46 @@ export const hostingSchemas = {
       },
     },
   },
+  HostingNameCertificateChoice: {
+    type: 'object',
+    required: ['hostname', 'certificate'],
+    properties: {
+      hostname: { type: 'string' },
+      certificate: {
+        type: 'string',
+        enum: [
+          'cloudflare_origin',
+          'letsencrypt_http',
+          'letsencrypt_dns',
+          'self_signed',
+          'library',
+        ],
+        description:
+          'The certificate this name uses. `self_signed` carries no `tlsId`; `library` needs one that covers the name.',
+      },
+      tlsId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'The organization certificate this name pins; null for self-signed.',
+      },
+    },
+  },
+  HostingNameCertificate: {
+    allOf: [
+      { $ref: '#/components/schemas/HostingNameCertificateChoice' },
+      {
+        type: 'object',
+        required: ['certificateOptions'],
+        properties: {
+          certificateOptions: {
+            type: 'object',
+            description:
+              'Every choice for this name with its availability and the default. Library options list each organization certificate that covers the name, wildcards included.',
+          },
+        },
+      },
+    ],
+  },
   HostingRow: {
     type: 'object',
     required: ['id', 'serviceId', 'createdAt', 'updatedAt'],
@@ -292,7 +332,14 @@ export const hostingSchemas = {
       serviceId: { type: 'string' },
       tlsId: {
         type: ['string', 'null'],
-        description: 'Pinned org TLS certificate id; null = basic self-signed (Caddy tls internal)',
+        description:
+          'Whole-site pinned org TLS certificate id; null = basic self-signed (Caddy tls internal). Each name also has its own choice in `names`, which decides when they differ.',
+      },
+      names: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/HostingNameCertificate' },
+        description:
+          'The certificate choice of every name the site answers on, www names included.',
       },
       ipId: {
         type: ['string', 'null'],
@@ -396,6 +443,12 @@ export const hostingSchemas = {
       serviceId: { type: 'string' },
       tlsId: { type: ['string', 'null'], format: 'uuid' },
       ipId: { type: ['string', 'null'], format: 'uuid' },
+      names: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/HostingNameCertificateChoice' },
+        description:
+          'One certificate choice per served name. Names left out keep their choice. Names that get different certificates need a server whose agent supports it; otherwise the deploy is refused with `name_certificates_need_update`.',
+      },
       metadata: { type: 'object' },
       options: { $ref: '#/components/schemas/HostingOptions' },
     },
@@ -407,6 +460,12 @@ export const hostingSchemas = {
       description: { type: 'string' },
       tlsId: { type: ['string', 'null'], format: 'uuid' },
       ipId: { type: ['string', 'null'], format: 'uuid' },
+      names: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/HostingNameCertificateChoice' },
+        description:
+          'One certificate choice per served name. Names left out keep their choice. Names that get different certificates need a server whose agent supports it; otherwise the deploy is refused with `name_certificates_need_update`.',
+      },
       metadata: { type: 'object' },
       options: { $ref: '#/components/schemas/HostingOptions' },
     },

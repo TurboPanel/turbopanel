@@ -4356,10 +4356,13 @@ export const hosting = pgTable(
  * `UNIQUE (routing_organization_id, hostname)`, an invariant a jsonb array
  * element cannot express across rows. Every write to `options.hostnames`
  * (panel `POST`/`PATCH /hostings` and compose's `reconcileHostingsFromCompose`)
- * does a full delete-then-insert replace of this hosting's rows in the same
- * transaction as the `hosting` write, mirroring `hostnames[]`'s own
- * replace-whole-array semantics — see `replaceHostingHostnames` in
- * `features/servers/hostname-records.ts`.
+ * syncs this hosting's rows in the same transaction as the `hosting` write:
+ * rows for names that left are deleted, new names are inserted, names that
+ * stay keep their row (and so their certificate choice) — see
+ * `replaceHostingHostnames` in `features/servers/hostname-records.ts`.
+ *
+ * `certificate` and `tls_id` are the name's own certificate choice; NULL
+ * `certificate` reads as "use `hosting.tls_id`".
  *
  * `routing_organization_id` is named for the future cross-org-hosting feature
  * (hosting onto another organization's servers), where it would diverge from
@@ -4398,6 +4401,8 @@ export const hostname = pgTable(
     hostingId: uuid('hosting_id').notNull(),
     routingOrganizationId: uuid('routing_organization_id').notNull(),
     hostname: text().notNull(),
+    certificate: text(),
+    tlsId: uuid('tls_id'),
   },
   (table) => [
     index('idx_hostname_hosting_id').using(
@@ -4418,6 +4423,16 @@ export const hostname = pgTable(
       foreignColumns: [organization.id],
       name: 'hostname_routing_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+    index('idx_hostname_tls_id').using('btree', table.tlsId.asc().nullsLast().op('uuid_ops')),
+    foreignKey({
+      columns: [table.tlsId],
+      foreignColumns: [tls.id],
+      name: 'hostname_tls_id_tls_id_fk',
+    }).onDelete('set null'),
+    check(
+      'hostname_certificate_check',
+      sql`certificate IS NULL OR certificate IN ('cloudflare_origin', 'letsencrypt_http', 'letsencrypt_dns', 'self_signed', 'library')`
+    ),
   ]
 )
 /**
@@ -8888,8 +8903,8 @@ export const portal = pgTable(
 /**
  * One hostname a tunnel carries. It keeps the name as text and the site it
  * serves; it does not point at a `hostname` row, because
- * `replaceHostingHostnames` deletes and reinserts a hosting's hostname rows on
- * every save. A name is unique per routing organization here too, and the
+ * `replaceHostingHostnames` adds and removes a hosting's hostname rows as its
+ * names change. A name is unique per routing organization here too, and the
  * doorway code path surfaces the same 409 `hostname_in_use` when either this
  * table or `hostname` already holds it.
  * `routing_organization_id` is named as on `hostname`.

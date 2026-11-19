@@ -28,7 +28,7 @@
 
 import { and, eq, inArray, isNotNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { hosting, tls } from '../../db/schema.ts'
+import { hostname, hosting, tls } from '../../db/schema.ts'
 import { type AuditEntry, recordAudit } from '../audit/audit-records.ts'
 import { logWarn } from '../../lib/logger.ts'
 import { readHttpIssuanceState } from './http-issuance/state.ts'
@@ -93,9 +93,9 @@ export function neverIssuedSiteCondition() {
   return sql`coalesce(${createdForColumn} = ${LETS_ENCRYPT_CREATED_FOR_SITES} and ${tls.privateKeyPem} is null and ${tls.certificatePem} is null and ${tls.metadata} -> 'acme' ->> 'lastIssuedAt' is null, false)`
 }
 
-/** No site pins the row, as a query condition. */
+/** No site pins the row, as a query condition: neither as its whole-site pin nor for any one name. */
 export function notPinnedBySiteCondition() {
-  return sql`not exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`
+  return sql`not exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) and not exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id})`
 }
 
 /**
@@ -126,7 +126,11 @@ export async function certificateIdsPinnedBy(
     .select({ tlsId: hosting.tlsId })
     .from(hosting)
     .where(and(inArray(hosting.id, [...hostingIds]), isNotNull(hosting.tlsId)))
-  return [...new Set(rows.flatMap((row) => (row.tlsId === null ? [] : [row.tlsId])))]
+  const named = await db
+    .select({ tlsId: hostname.tlsId })
+    .from(hostname)
+    .where(and(inArray(hostname.hostingId, [...hostingIds]), isNotNull(hostname.tlsId)))
+  return [...new Set([...rows, ...named].flatMap((row) => (row.tlsId === null ? [] : [row.tlsId])))]
 }
 
 /**
@@ -169,9 +173,18 @@ async function countPinningSites(
     .select({ id: hosting.id, tlsId: hosting.tlsId })
     .from(hosting)
     .where(inArray(hosting.tlsId, [...tlsIds]))
+  const named = await db
+    .select({ id: hostname.hostingId, tlsId: hostname.tlsId })
+    .from(hostname)
+    .where(inArray(hostname.tlsId, [...tlsIds]))
   const except = new Set(exceptHostingIds)
-  for (const row of rows) {
+  // A site that pins a row for the whole site and for a name counts once.
+  const seen = new Set<string>()
+  for (const row of [...rows, ...named]) {
     if (row.tlsId === null || except.has(row.id)) continue
+    const key = `${row.tlsId}:${row.id}`
+    if (seen.has(key)) continue
+    seen.add(key)
     counts.set(row.tlsId, (counts.get(row.tlsId) ?? 0) + 1)
   }
   return counts

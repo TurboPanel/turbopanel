@@ -794,6 +794,79 @@ test('PATCH /hostings: turning www off frees the added name for a hosting that a
   })
 })
 
+async function nameChoices(db: ReturnType<typeof createDenoDb>, hostingId: string) {
+  const rows = await db
+    .select({ hostname: hostname.hostname, certificate: hostname.certificate })
+    .from(hostname)
+    .where(eq(hostname.hostingId, hostingId))
+  return rows.sort((a, b) => a.hostname.localeCompare(b.hostname))
+}
+
+test('hosting names carry their own certificate choice, redirect-only names included', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const created = await call('POST', '/hostings', {
+      serviceId,
+      name: 'Site',
+      options: { hostnames: ['shop.example.net'], www: 'www-to-root' },
+      names: [{ hostname: 'WWW.shop.example.net', certificate: 'self_signed' }],
+    })
+    assertEquals(created.status, 200)
+    const id = ((await created.json()) as { id: string }).id
+    // The redirect-only name kept its own choice; the typed name got a concrete default.
+    const stored = await nameChoices(db, id)
+    assertEquals(
+      stored.map((r) => r.hostname),
+      ['shop.example.net', 'www.shop.example.net']
+    )
+    assertEquals(stored[1]!.certificate, 'self_signed')
+    assertEquals(stored[0]!.certificate !== null, true)
+
+    const read = await call('GET', `/hostings/${id}`, undefined)
+    const body = (await read.json()) as {
+      hosting: { names: Array<{ hostname: string; certificate: string }> }
+    }
+    assertEquals(body.hosting.names.length, 2)
+
+    // Changing one name through names alone (no options in the request).
+    const patched = await call('PATCH', `/hostings/${id}`, {
+      names: [{ hostname: 'shop.example.net', certificate: 'self_signed' }],
+    })
+    assertEquals(patched.status, 200)
+    assertEquals(
+      (await nameChoices(db, id)).map((r) => r.certificate),
+      ['self_signed', 'self_signed']
+    )
+
+    const listed = await call('GET', '/hostings', undefined)
+    assertEquals(listed.status, 200)
+  })
+})
+
+test('hosting names refuse a name the site does not serve, on create and on patch', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const elsewhere = [{ hostname: 'elsewhere.example.net', certificate: 'self_signed' }]
+    const refusedCreate = await call('POST', '/hostings', {
+      serviceId,
+      name: 'Site',
+      options: { hostnames: ['one.example.net'] },
+      names: elsewhere,
+    })
+    assertEquals(refusedCreate.status, 400)
+    assertEquals(((await refusedCreate.json()) as { error: string }).error, 'name_not_served')
+
+    const id = await createHostingId(call, serviceId, { hostnames: ['one.example.net'] })
+    const refusedPatch = await call('PATCH', `/hostings/${id}`, { names: elsewhere })
+    assertEquals(refusedPatch.status, 400)
+    assertEquals(((await refusedPatch.json()) as { error: string }).error, 'name_not_served')
+
+    const malformed = await call('PATCH', `/hostings/${id}`, { names: 'nope' })
+    assertEquals(malformed.status, 400)
+    assertEquals(((await malformed.json()) as { error: string }).error, 'invalid_name_certificates')
+  })
+})
+
 test('POST /hostings accepts tcp protocol with port mappings', async () => {
   await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)

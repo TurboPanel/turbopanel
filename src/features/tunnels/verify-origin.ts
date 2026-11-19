@@ -14,6 +14,7 @@ import type { Db } from '../../db/connection.ts'
 import { hostname, hosting, tunnel } from '../../db/schema.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { readHostingWwwMode } from '../hostings/hosting-options.ts'
+import { pinHostingNames } from '../hostings/name-certificates.ts'
 import type { TunnelAdapter } from './adapter.ts'
 import {
   type TunnelRow,
@@ -178,8 +179,10 @@ async function certifyHosting(
     .where(eq(hosting.id, hostingId))
     .limit(1)
   const changed = current?.tlsId !== ensured.row.id
-  if (changed)
+  if (changed) {
     await deps.db.update(hosting).set({ tlsId: ensured.row.id }).where(eq(hosting.id, hostingId))
+    await pinHostingNames(deps.db, hostingId, ensured.row.id)
+  }
   return { tlsId: ensured.row.id, reused: ensured.reused, changed }
 }
 

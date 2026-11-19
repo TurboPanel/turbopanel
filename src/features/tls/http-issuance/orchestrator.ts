@@ -11,11 +11,12 @@
  * stored state and the clock, writes, and only then sends. A send that fails
  * after the write is caught by the silence timeouts, so nothing waits forever.
  */
-import { and, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../../db/connection.ts'
 import {
   deployment,
   environment,
+  hostname,
   hosting,
   organization,
   server,
@@ -93,12 +94,17 @@ function hostnamesOf(options: unknown): string[] {
     : []
 }
 
+/** A site pins the row for the whole site or for any one of its names. */
+function pinsRow(tlsId: string) {
+  return or(
+    eq(hosting.tlsId, tlsId),
+    sql`exists (select 1 from ${hostname} where ${hostname.hostingId} = ${hosting.id} and ${hostname.tlsId} = ${tlsId})`
+  )
+}
+
 /** The typed names and www mode of every site that pins the row. */
 async function loadPinningSites(db: Db, tlsId: string): Promise<PinningSite[]> {
-  const rows = await db
-    .select({ options: hosting.options })
-    .from(hosting)
-    .where(eq(hosting.tlsId, tlsId))
+  const rows = await db.select({ options: hosting.options }).from(hosting).where(pinsRow(tlsId))
   return rows.map((row) => ({
     hostnames: hostnamesOf(row.options),
     www: readHostingWwwMode(row.options),
@@ -181,13 +187,13 @@ async function loadServingServers(db: Db, tlsId: string): Promise<ServingRow[]> 
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .innerJoin(environment, eq(environment.id, service.environmentId))
-    .where(eq(hosting.tlsId, tlsId))
+    .where(pinsRow(tlsId))
   const deployed = await db
     .select({ serverId: deployment.serverId })
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .innerJoin(deployment, eq(deployment.environmentId, service.environmentId))
-    .where(and(eq(hosting.tlsId, tlsId), ne(deployment.status, 'draining')))
+    .where(and(pinsRow(tlsId), ne(deployment.status, 'draining')))
   const ids = [...new Set([...own, ...deployed].flatMap((r) => r.serverId ?? []))]
   if (ids.length === 0) return []
   const names = await db

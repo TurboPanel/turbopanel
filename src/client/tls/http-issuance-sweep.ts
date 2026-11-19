@@ -10,7 +10,7 @@
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import { hosting, tls } from '../../db/schema.ts'
+import { hostname, hosting, tls } from '../../db/schema.ts'
 import { isServerConnected } from '../../daemon/cell/server-status.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
@@ -120,7 +120,7 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
         eq(tls.status, 'automatic'),
         // Only a row that a site pins, with at least one name, and never a wildcard (that
         // is the connected DNS host's).
-        sql`exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`,
+        sql`(exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) or exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id}))`,
         sql`jsonb_array_length(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) >= 1`,
         sql`not exists (
           select 1 from jsonb_array_elements_text(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) as n

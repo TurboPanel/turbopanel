@@ -26,6 +26,12 @@
       "tag": "0003_datacenter_untrusted_by_default",
       "when": 1795101169925,
       "sha256": "80ddf67020677282759dfe57e21115b3431254dd82b4d77b1499b478b10ee6ed"
+    },
+    {
+      "idx": 4,
+      "tag": "0004_hostname_certificate_choice",
+      "when": 1795105891479,
+      "sha256": "881ea4e38fb9ed2b5e6b2e72aa83ffffc5bf56a8e6d36c7d1bd10c926b7c80cb"
     }
   ]
 }
