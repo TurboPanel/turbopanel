@@ -5,8 +5,9 @@
  * TURBOPANEL_DATABASE_URL.
  */
 import { assertEquals } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { hostname, hosting, tls } from '../../db/schema.ts'
+import { loadHostingNameReads } from '../../client/hostings/name-certificates-routes.ts'
 import { replaceHostingHostnames } from '../servers/hostname-records.ts'
 import { certificateIdsPinnedBy } from '../tls/unused-letsencrypt.ts'
 import { withScenario, NAME } from '../tunnels/nudge-scenario.test.support.ts'
@@ -120,5 +121,55 @@ test('a library row one name pins is in use, and the site pin follows only while
       await s.db.delete(hostname).where(eq(hostname.hostingId, s.hostingAId))
       await s.db.delete(tls).where(eq(tls.id, pin))
     }
+  })
+})
+
+test('the per-name read lists each name with options, the doorway reach and covering library rows', async () => {
+  await withScenario({}, async (s) => {
+    const covering = await newLibraryRow(s, 'upload')
+    const staging = await newLibraryRow(s, 'upload')
+    const empty = await newLibraryRow(s, 'upload')
+    try {
+      await s.db
+        .update(tls)
+        .set({ metadata: { dnsNames: [NAME, 'b.example.com'] } })
+        .where(eq(tls.id, covering))
+      await s.db
+        .update(tls)
+        .set({ metadata: { dnsNames: [NAME], acme: { staging: true } } })
+        .where(eq(tls.id, staging))
+      await s.db
+        .update(tls)
+        .set({ metadata: { dnsNames: [] } })
+        .where(eq(tls.id, empty))
+      await replaceHostingHostnames(s.db, s.hostingAId, s.organizationId, [NAME, 'b.example.com'])
+      const reads = await loadHostingNameReads(s.db, s.organizationId, [
+        { id: s.hostingAId, options: null },
+        { id: s.hostingBId, options: null },
+      ])
+      const names = reads.get(s.hostingAId) ?? []
+      assertEquals(
+        names.map((n) => n.hostname),
+        ['b.example.com', NAME].toSorted()
+      )
+      assertEquals(reads.get(s.hostingBId), [])
+      for (const name of names) {
+        assertEquals(
+          name.certificateOptions.options
+            .filter((o) => o.certificate === 'library')
+            .map((o) => o.tlsId),
+          [covering]
+        )
+      }
+    } finally {
+      await s.db.delete(hostname).where(eq(hostname.hostingId, s.hostingAId))
+      await s.db.delete(tls).where(inArray(tls.id, [covering, staging, empty]))
+    }
+  })
+})
+
+test('the per-name read of no hostings is empty', async () => {
+  await withScenario({}, async (s) => {
+    assertEquals((await loadHostingNameReads(s.db, s.organizationId, [])).size, 0)
   })
 })
