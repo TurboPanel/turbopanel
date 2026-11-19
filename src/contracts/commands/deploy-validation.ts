@@ -123,6 +123,23 @@ function nameTlsAcmeHttpsError(hosting: EnvironmentDeployHosting): string | null
   return `forceHttps:false is incompatible with ACME TLS on hostname ${entry.hostname}`
 }
 
+function recordHostingHostnames(
+  byHostname: Map<string, HostnameRoutingState>,
+  hosting: EnvironmentDeployHosting
+): string | null {
+  const nameTlsError = nameTlsAcmeHttpsError(hosting)
+  if (nameTlsError) return nameTlsError
+  for (const hostname of hosting.hostnames) {
+    const state = getOrCreateHostnameState(byHostname, hostname)
+    const error =
+      recordHostnamePathPrefix(state, hostname, hosting.pathPrefix) ??
+      recordHostnameBindAddress(state, hostname, hosting.bindAddress) ??
+      recordHostnameAcmeHttps(state, hostname, hosting)
+    if (error) return error
+  }
+  return null
+}
+
 /**
  * HTTP hostings that share a hostname must have unique path prefixes and at most
  * one catch-all route; bind addresses must agree when set. A hostname that
@@ -134,17 +151,8 @@ export function validateDeployHostnameRouting(hostings: EnvironmentDeployHosting
 
   for (const hosting of hostings) {
     if ((hosting.protocol ?? 'http') !== 'http') continue
-    const nameTlsError = nameTlsAcmeHttpsError(hosting)
-    if (nameTlsError) return nameTlsError
-    for (const hostname of hosting.hostnames) {
-      const state = getOrCreateHostnameState(byHostname, hostname)
-      const pathError = recordHostnamePathPrefix(state, hostname, hosting.pathPrefix)
-      if (pathError) return pathError
-      const bindError = recordHostnameBindAddress(state, hostname, hosting.bindAddress)
-      if (bindError) return bindError
-      const acmeError = recordHostnameAcmeHttps(state, hostname, hosting)
-      if (acmeError) return acmeError
-    }
+    const error = recordHostingHostnames(byHostname, hosting)
+    if (error) return error
   }
 
   return findDuplicateCatchAllHostname(byHostname)
