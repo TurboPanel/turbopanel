@@ -6,6 +6,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../../app/app.ts'
 import { listIngressCapabilities } from './capabilities.ts'
+import type { InstanceHostnameRecord } from '../../../features/install/instance-hostnames.ts'
 import { IngressRemoveRefused } from './provider.ts'
 import { auditInstance, type IngressAdminDeps, notFound, routeServices } from './route-context.ts'
 import {
@@ -21,6 +22,18 @@ import {
 async function readBody(c: Context<AppEnv>): Promise<Record<string, unknown>> {
   const body: unknown = await c.req.json().catch(() => null)
   return typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {}
+}
+
+/** The audit metadata for one hostname change: the resulting mode, port and proxied flag. */
+export function hostnameChangeAudit(
+  hostname: Pick<InstanceHostnameRecord, 'host' | 'mode' | 'publicPort' | 'behindCdnProxy'>
+): Record<string, unknown> {
+  return {
+    host: hostname.host,
+    mode: hostname.mode,
+    publicPort: hostname.publicPort,
+    behindCdnProxy: hostname.behindCdnProxy,
+  }
 }
 
 function registerGateRoutes(admin: Hono<AppEnv>, deps: IngressAdminDeps): void {
@@ -47,11 +60,13 @@ function registerHostnameWriteRoutes(admin: Hono<AppEnv>, deps: IngressAdminDeps
       const { ok: _ok, status, ...body } = updated
       return c.json({ ok: false, ...body }, status)
     }
-    await auditInstance(c, ready.db, 'instance.hostname_ingress.changed', updated.hostname.id, {
-      host: updated.hostname.host,
-      mode: updated.hostname.mode,
-      publicPort: updated.hostname.publicPort,
-    })
+    await auditInstance(
+      c,
+      ready.db,
+      'instance.hostname_ingress.changed',
+      updated.hostname.id,
+      hostnameChangeAudit(updated.hostname)
+    )
     return c.json({ ok: true, hostname: updated.hostname })
   })
 
