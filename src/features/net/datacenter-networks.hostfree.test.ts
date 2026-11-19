@@ -126,12 +126,12 @@ test('loadDatacenterAddressPreferences returns empty map for empty id list', asy
 test('loadDatacenterPolicies seeds defaults for missing rows and reads the columns', async () => {
   const db = createQueuedDb([
     [
-      { id: 'dc-default', priority: 100, isTrusted: true, addressPreference: 'ipv6' },
+      { id: 'dc-default', priority: 100, isTrusted: false, addressPreference: 'ipv6' },
       { id: 'dc-set', priority: 7, isTrusted: false, addressPreference: 'ipv4' },
     ],
   ])
   const map = await loadDatacenterPolicies(db, ['dc-missing', 'dc-default', 'dc-set'])
-  const defaults = { addressPreference: 'ipv6', priority: 100, trusted: true }
+  const defaults = { addressPreference: 'ipv6', priority: 100, trusted: false }
   assertEquals(map.get('dc-missing'), defaults)
   assertEquals(map.get('dc-default'), defaults)
   assertEquals(map.get('dc-set'), {

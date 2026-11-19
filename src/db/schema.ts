@@ -521,7 +521,7 @@ export const rotation = pgTable(
  * `defaultServerTimezone` / `enforceServerTimezone` (parsed by
  * `src/features/datacenters/datacenter-options.ts`); the routing policy lives in
  * real columns: `priority` (integer, lower wins, default 100), `trusted`
- * (default true; false when the L2 is not under the operator's control) and
+ * (default false: untrusted, TurboFabric secures traffic; true only when the operator marks the L2 trusted) and
  * `address_preference`, plus the optional `kind` of network. Must stay declared before `server` (same
  * rule as `license`).
  */

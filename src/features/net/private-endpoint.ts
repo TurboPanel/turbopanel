@@ -302,7 +302,7 @@ function policyFor(
  * each ordered by `(priority asc, datacenterId asc)`. The id tiebreak keeps
  * the order deterministic when two datacenters carry the same priority.
  * Absent policy entries fall back to the documented defaults
- * (`priority` 100, `trusted` true, `addressPreference` ipv6).
+ * (`priority` 100, `trusted` false, `addressPreference` ipv6).
  *
  * Shared with TurboFabric path planning (`planRelayPath`) so the managed
  * ladder and WireGuard endpoint selection can never disagree on which LAN

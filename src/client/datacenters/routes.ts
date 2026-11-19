@@ -239,7 +239,7 @@ function parseDatacenterPatchFields(
   }
 
   // `options` is replace-all: `null` clears the stored blob so GET falls back
-  // to the documented defaults (`priority` 100, `trusted` true, ...).
+  // to the documented defaults (`priority` 100, `trusted` false, ...).
   if (body.options === null) {
     patchFields.options = null
     return patchFields

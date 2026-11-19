@@ -25,7 +25,7 @@ export const datacenterSchemas = {
       options: {
         type: ['object', 'null'],
         description:
-          'Optional `defaultServerTimezone`, `enforceServerTimezone`, `addressPreference` (`ipv4` | `ipv6`; omitted defaults to ipv6), `sshPort`, `ntp`, `priority` (integer 0–1000, lower wins; omitted defaults to 100), and `trusted` (boolean; omitted defaults to true). SSH port and NTP cascade to member servers unless a server override is set.',
+          'Optional `defaultServerTimezone`, `enforceServerTimezone`, `addressPreference` (`ipv4` | `ipv6`; omitted defaults to ipv6), `sshPort`, `ntp`, `priority` (integer 0–1000, lower wins; omitted defaults to 100), and `trusted` (boolean; omitted defaults to false, an untrusted network). SSH port and NTP cascade to member servers unless a server override is set.',
       },
       privateCidrs: {
         type: 'array',
