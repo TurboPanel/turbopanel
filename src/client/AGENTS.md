@@ -669,9 +669,10 @@ sourceServerId? }`
     (`DEFAULT_DATACENTER_PRIORITY`). A request (`POST` / `PATCH`) carrying an
     out-of-range or non-integer value is **400** `invalid_priority`
     (`hasInvalidPriority`); the column CHECK backs it.
-  - `trusted` — boolean; absent = **`true`** (`DEFAULT_DATACENTER_TRUSTED`).
-    `false` marks a datacenter whose L2 is **not** under the operator's control
-    (shared or provider-owned segments).
+  - `trusted` — boolean; absent = **`false`** (`DEFAULT_DATACENTER_TRUSTED`).
+    `false` (untrusted) marks a datacenter whose L2 is **not** under the
+    operator's control: server-to-server traffic goes over TurboFabric, with no
+    LAN routes and no Raft group on it. `true` is set only by an admin.
 
   `PATCH /datacenters/:id` accepts both under the same **replace-all `options`**
   semantics as `addressPreference` (send the merged object; a key left out resets

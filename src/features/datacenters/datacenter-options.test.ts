@@ -136,7 +136,7 @@ test('parseDatacenterOptions keeps policy alongside the other fields', () => {
 })
 
 test('resolveDatacenterPolicy reads the priority and trusted columns', () => {
-  assertEquals(DEFAULT_DATACENTER_TRUSTED, true)
+  assertEquals(DEFAULT_DATACENTER_TRUSTED, false)
   assertEquals(resolveDatacenterPolicy({ priority: 100, isTrusted: true }), {
     priority: 100,
     trusted: true,
@@ -147,8 +147,14 @@ test('resolveDatacenterPolicy reads the priority and trusted columns', () => {
   })
 })
 
+test('a request with no trusted field starts the network untrusted, and an explicit true is kept', () => {
+  assertEquals(policyColumnsFromOptions(undefined).isTrusted, false)
+  assertEquals(policyColumnsFromOptions({ priority: 5 }).isTrusted, false)
+  assertEquals(policyColumnsFromOptions({ trusted: true }).isTrusted, true)
+})
+
 test('policyColumnsFromOptions applies the defaults to keys the request left out', () => {
-  const defaults = { priority: 100, isTrusted: true, addressPreference: 'ipv6' }
+  const defaults = { priority: 100, isTrusted: false, addressPreference: 'ipv6' }
   assertEquals(policyColumnsFromOptions(null), defaults)
   assertEquals(policyColumnsFromOptions({}), defaults)
   assertEquals(

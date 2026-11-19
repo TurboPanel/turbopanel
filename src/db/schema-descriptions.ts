@@ -687,7 +687,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       priority:
         "Routing-ladder rank among a server's datacenters, 0 to 1000, lower wins, default 100 (API field `priority`).",
       is_trusted:
-        "True when the operator controls the datacenter's L2 (default); false keeps server-to-server traffic off it (API field `trusted`).",
+        'True when the operator marked the network trusted, so traffic may cross it unencrypted; false (default) uses TurboFabric, encrypted (API field `trusted`).',
       address_preference:
         "Address family tried first among a server's pins here, `ipv6` (default) or `ipv4` (API field `options.addressPreference`).",
       kind: 'What the network is: `lan`, `backplane` or `provider_private`; NULL means the operator never said.',

@@ -26,8 +26,15 @@
     {
       "idx": 3,
       "version": "7",
-      "when": 1795102839976,
-      "tag": "0003_hostname_certificate_choice",
+      "when": 1795101169925,
+      "tag": "0003_datacenter_untrusted_by_default",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795105891479,
+      "tag": "0004_hostname_certificate_choice",
       "breakpoints": true
     }
   ]

@@ -1,5 +1,5 @@
 /**
- * Migration 0003 backfill: replays the migration's own UPDATE statements over
+ * Migration 0004 backfill: replays the migration's own UPDATE statements over
  * rows that carry no per-name choice (the state an upgrade finds) and checks
  * the choice each `tls.source` maps to, plus the locked-doorway case.
  * Skips without TURBOPANEL_DATABASE_URL.
@@ -13,7 +13,7 @@ import { replaceHostingHostnames } from '../features/servers/hostname-records.ts
 /** Sonar only recognises `test()`; see the note in the other suites. */
 const test = Deno.test.bind(Deno)
 
-const MIGRATION = new URL('../../migrations/0003_hostname_certificate_choice.sql', import.meta.url)
+const MIGRATION = new URL('../../migrations/0004_hostname_certificate_choice.sql', import.meta.url)
 
 async function backfillStatements(): Promise<string[]> {
   const text = await Deno.readTextFile(MIGRATION)

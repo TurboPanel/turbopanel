@@ -88,7 +88,7 @@ async function insertServer(db: TestDb, organizationId: string, name: string): P
 async function seedLan(db: TestDb, organizationId: string, a: string, b: string): Promise<string> {
   const [dc] = await db
     .insert(datacenter)
-    .values({ organizationId, name: 'rack-a', addressPreference: 'ipv4' })
+    .values({ organizationId, name: 'rack-a', addressPreference: 'ipv4', isTrusted: true })
     .returning({ id: datacenter.id })
   const datacenterId = dc!.id
   const [lan] = await db

@@ -225,7 +225,11 @@ test('selectHaRaftMembers keeps the raft group inside this server datacenter', (
     ['vpc-b', [{ datacenterId: 'dc-vpc', address: '10.100.0.5', family: 4 as const }]],
   ])
   const all = ['lan-a', 'lan-b', 'vpc-a', 'vpc-b']
-  assertEquals(selectHaRaftMembers('vpc-a', all, pins), {
+  const trusted = new Map([
+    ['dc-lan', { priority: 100, trusted: true }],
+    ['dc-vpc', { priority: 100, trusted: true }],
+  ])
+  assertEquals(selectHaRaftMembers('vpc-a', all, pins, trusted), {
     advertiseAddress: '10.100.0.4',
     peers: [
       { serverId: 'vpc-a', address: '10.100.0.4' },
@@ -233,7 +237,7 @@ test('selectHaRaftMembers keeps the raft group inside this server datacenter', (
     ],
   })
   assertEquals(
-    selectHaRaftMembers('lan-b', all, pins)?.peers.map((peer) => peer.serverId),
+    selectHaRaftMembers('lan-b', all, pins, trusted)?.peers.map((peer) => peer.serverId),
     ['lan-a', 'lan-b']
   )
 })
@@ -249,11 +253,12 @@ test('selectHaRaftMembers dials a multi-datacenter peer on its shared-datacenter
       ],
     ],
   ])
-  assertEquals(selectHaRaftMembers('a', ['a', 'b'], pins)?.peers, [
+  const trusted = new Map([['dc-1', { priority: 100, trusted: true }]])
+  assertEquals(selectHaRaftMembers('a', ['a', 'b'], pins, trusted)?.peers, [
     { serverId: 'a', address: '10.0.0.1' },
     { serverId: 'b', address: '10.0.0.2' },
   ])
-  assertEquals(selectHaRaftMembers('c', ['a', 'b', 'c'], pins), null)
+  assertEquals(selectHaRaftMembers('c', ['a', 'b', 'c'], pins, trusted), null)
 })
 
 test('pickHaAdvertiseAddress does not depend on row order', () => {
@@ -338,7 +343,13 @@ test('assignHaRaftDatacenters breaks a priority tie by datacenter id and default
       ],
     ],
   ])
-  assertEquals(assignHaRaftDatacenters(['a'], pins, new Map()).get('a'), 'dc-a')
+  // A datacenter with no policy entry is untrusted: Raft takes no group there.
+  assertEquals(assignHaRaftDatacenters(['a'], pins, new Map()).get('a'), undefined)
+  const trusted = new Map([
+    ['dc-a', { priority: 100, trusted: true }],
+    ['dc-b', { priority: 100, trusted: true }],
+  ])
+  assertEquals(assignHaRaftDatacenters(['a'], pins, trusted).get('a'), 'dc-a')
   assertEquals(
     assignHaRaftDatacenters(['a'], pins, new Map([['dc-b', { priority: 5, trusted: true }]])).get(
       'a'

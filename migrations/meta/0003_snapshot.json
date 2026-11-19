@@ -1,5 +1,5 @@
 {
-  "id": "c9718e4c-c98f-4c18-bd35-d5093c5d579b",
+  "id": "442db74b-a050-4b9f-bae4-ed048017af0a",
   "prevId": "ba43856a-9f8c-4b8c-8542-b442378142f3",
   "version": "7",
   "dialect": "postgresql",
@@ -3325,7 +3325,7 @@
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
-          "default": true
+          "default": false
         }
       },
       "indexes": {
@@ -5677,18 +5677,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "certificate": {
-          "name": "certificate",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "tls_id": {
-          "name": "tls_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -5697,22 +5685,6 @@
           "columns": [
             {
               "expression": "hosting_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last",
-              "opclass": "uuid_ops"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_hostname_tls_id": {
-          "name": "idx_hostname_tls_id",
-          "columns": [
-            {
-              "expression": "tls_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last",
@@ -5751,19 +5723,6 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
-        },
-        "hostname_tls_id_tls_id_fk": {
-          "name": "hostname_tls_id_tls_id_fk",
-          "tableFrom": "hostname",
-          "tableTo": "tls",
-          "columnsFrom": [
-            "tls_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -5778,12 +5737,7 @@
         }
       },
       "policies": {},
-      "checkConstraints": {
-        "hostname_certificate_check": {
-          "name": "hostname_certificate_check",
-          "value": "certificate IS NULL OR certificate IN ('cloudflare_origin', 'letsencrypt_http', 'letsencrypt_dns', 'self_signed', 'library')"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.ingress": {

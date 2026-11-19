@@ -285,7 +285,12 @@ async function seedLanNetworks(
   const partner = await addServer(rig, 'partner', '10.193.0.0/16', '10.250.0.2')
   const [dc] = await rig.db
     .insert(datacenter)
-    .values({ organizationId: rig.organizationId, name: 'rack-a', addressPreference: 'ipv4' })
+    .values({
+      organizationId: rig.organizationId,
+      name: 'rack-a',
+      addressPreference: 'ipv4',
+      isTrusted: true,
+    })
     .returning({ id: datacenter.id })
   const [lan] = await rig.db
     .insert(network)

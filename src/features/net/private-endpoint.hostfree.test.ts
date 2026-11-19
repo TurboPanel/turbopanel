@@ -63,6 +63,13 @@ type Fixture = {
   /** Single-row result for loadServerDatacenterAddress / loadServerPublicAddress. */
   singleAddress?: string | null
   datacenterOptions?: Array<{ id: string; options: unknown }>
+  /**
+   * Leave `trusted` unset where an entry (or a whole entry) does not give it,
+   * so it resolves to the table default (untrusted). Without this flag a
+   * datacenter that does not say is a trusted network (`trusted: true`), the
+   * common case in these tests.
+   */
+  leaveTrustUnset?: boolean
   /** Servers whose daemon is offline (every other server reads connected). */
   disconnected?: string[]
 }
@@ -73,6 +80,24 @@ function thenable<T>(value: T) {
       return Promise.resolve(value).then(resolve, reject)
     },
   }
+}
+
+/** The policy entries a fixture stands for: unlisted shared datacenters are trusted unless left unset. */
+function withTrustedDefaults(
+  fixture: Fixture,
+  memberships: readonly MembershipPinRow[]
+): Array<{ id: string; options: unknown }> {
+  const stored = fixture.datacenterOptions ?? []
+  if (fixture.leaveTrustUnset) return stored
+  const listed = stored.map(({ id, options }) => ({
+    id,
+    options: { trusted: true, ...((options ?? {}) as Record<string, unknown>) },
+  }))
+  const seen = new Set(listed.map(({ id }) => id))
+  const trusted = [...new Set(memberships.map((m) => m.datacenterId))]
+    .filter((id) => !seen.has(id))
+    .map((id) => ({ id, options: { trusted: true } }))
+  return [...listed, ...trusted]
 }
 
 function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndpoint>[0] {
@@ -198,12 +223,12 @@ function createFixtureDb(fixture: Fixture): Parameters<typeof resolvePrivateEndp
               where() {
                 // Fixtures keep the short options shape; the columns default like the table.
                 return thenable(
-                  (fixture.datacenterOptions ?? []).map(({ id, options }) => {
+                  withTrustedDefaults(fixture, memberships).map(({ id, options }) => {
                     const o = (options ?? {}) as Record<string, unknown>
                     return {
                       id,
                       priority: o.priority ?? 100,
-                      isTrusted: o.trusted ?? true,
+                      isTrusted: o.trusted ?? false,
                       addressPreference: o.addressPreference ?? 'ipv6',
                     }
                   })
@@ -1006,6 +1031,22 @@ test('failover-replication over an untrusted-only shared datacenter rides fabric
   )
 })
 
+test('a shared datacenter with no stored policy is untrusted, so failover-replication rides fabric', async () => {
+  const db = createFixtureDb({
+    ...UNTRUSTED_ONLY_FIXTURE,
+    datacenterOptions: [],
+    leaveTrustUnset: true,
+  })
+  assertEquals(
+    await resolvePrivateEndpoint(db, {
+      fromServerId: 's1',
+      purpose: 'failover-replication',
+      toServerId: 's2',
+    }),
+    { address: '10.250.0.2', transport: 'fabric', fabricId: 'fabric-1' }
+  )
+})
+
 test('failover-replication keeps the fabric address when the other daemon is offline, marked tunnelDown', async () => {
   const db = createFixtureDb({
     ...UNTRUSTED_ONLY_FIXTURE,
@@ -1230,10 +1271,10 @@ test('partitionSharedDatacenters sorts by (priority, id) and defaults absent pol
     ['dc-u2', { addressPreference: 'ipv6' as const, priority: 50, trusted: false }],
     ['dc-u1', { addressPreference: 'ipv6' as const, priority: 50, trusted: false }],
   ])
-  // dc-m has no policy row → defaults (priority 100, trusted) → ties with dc-a, id order.
+  // dc-m has no policy row → defaults (priority 100, untrusted) → ties with dc-u*, id order after priority 50.
   assertEquals(partitionSharedDatacenters(fromPins, toPins, policies), {
-    trusted: ['dc-z', 'dc-a', 'dc-m'],
-    untrusted: ['dc-u1', 'dc-u2'],
+    trusted: ['dc-z', 'dc-a'],
+    untrusted: ['dc-u1', 'dc-u2', 'dc-m'],
   })
   assertEquals(partitionSharedDatacenters([], toPins, policies), {
     trusted: [],

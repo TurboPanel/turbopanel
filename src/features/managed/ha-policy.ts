@@ -163,7 +163,7 @@ export type HaDatacenterPolicy = { priority: number; trusted: boolean }
  */
 export const HA_DEFAULT_DATACENTER_POLICY: Readonly<HaDatacenterPolicy> = {
   priority: 100,
-  trusted: true,
+  trusted: false,
 }
 
 /**
