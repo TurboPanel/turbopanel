@@ -5,6 +5,7 @@ import {
 } from '../../features/servers/server-metadata.ts'
 import {
   capServerServicesList,
+  phpFieldsForApp,
   SERVER_SERVICES_LIST_CAP,
   serverServicesRemovalMessage,
   serverServicesRemovalNames,
@@ -274,6 +275,27 @@ test('php runtime keeps patch versions and the restart error, and never returns 
   assertEquals(runtimes[0]?.patches, { '8.4': '8.4.27' })
   assertEquals(runtimes[0]?.restartError?.message.length, 500)
   assertEquals('sites' in (runtimes[0] ?? {}), false)
+})
+
+test('a shared-pool site is marked shared, and an older daemon entry is not', () => {
+  const environmentId = '11111111-1111-4111-8111-111111111111'
+  const parsed = parseServerRuntimeMetadata({
+    php: {
+      series: ['8.4'],
+      sites: [
+        { environmentId, composeServiceName: 'web', series: '8.4', version: '8.4.27', shared: true },
+        { environmentId, composeServiceName: 'api', series: '8.4', version: '8.4.27' },
+        { environmentId, composeServiceName: 'old', series: '8.4', shared: false },
+      ],
+    },
+  })
+  const sites = parsed?.php?.sites ?? []
+  assertEquals(phpFieldsForApp(sites, environmentId, 'web'), {
+    phpVersion: '8.4.27',
+    phpShared: true,
+  })
+  assertEquals(phpFieldsForApp(sites, environmentId, 'api'), { phpVersion: '8.4.27' })
+  assertEquals(phpFieldsForApp(sites, environmentId, 'old'), {})
 })
 
 test('the client runtimes block never carries the per-site list', () => {
