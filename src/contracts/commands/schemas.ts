@@ -3269,6 +3269,19 @@ function parseDeployHostingNameTls(
   })
 }
 
+/** A name that only arrives through a tunnel must never ask for a public certificate. */
+function assertTunnelNamesOpenForAcme(
+  tunnel: EnvironmentDeployHosting['tunnel'],
+  tlsMode: EnvironmentDeployHosting['tlsMode']
+): void {
+  if (!tunnel || tlsMode !== 'acme') return
+  if (tunnel.hostnames.some((name) => !tunnel.openHostnames?.includes(name))) {
+    throw new TypeError(
+      'Invalid environment.deploy tunnel: tlsMode acme needs every tunnel name open'
+    )
+  }
+}
+
 function applyOptionalDeployHostingFields(
   hosting: EnvironmentDeployHosting,
   entry: Record<string, unknown>
@@ -3290,16 +3303,7 @@ function applyOptionalDeployHostingFields(
   if (bindAddress) hosting.bindAddress = bindAddress
   const tunnel = parseDeployHostingTunnel(entry.tunnel, hosting.hostnames)
   if (tunnel) hosting.tunnel = tunnel
-  if (
-    tunnel &&
-    hosting.tlsMode === 'acme' &&
-    tunnel.hostnames.some((name) => !tunnel.openHostnames?.includes(name))
-  ) {
-    // A name that only arrives through a tunnel must never ask for a public certificate.
-    throw new TypeError(
-      'Invalid environment.deploy tunnel: tlsMode acme needs every tunnel name open'
-    )
-  }
+  assertTunnelNamesOpenForAcme(tunnel, hosting.tlsMode)
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)

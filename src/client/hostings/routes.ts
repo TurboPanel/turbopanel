@@ -93,16 +93,21 @@ function hostnamesPatchFromFields(patchFields: HostingPatchFields): string[] | n
   return (patchFields.options as { hostnames?: string[] }).hostnames ?? []
 }
 
+type HostingPatchCommit = {
+  id: string
+  organizationId: string
+  patchFields: HostingPatchFields
+  hostnamesPatch: string[] | null
+  choices: ReadonlyMap<string, HostnameChoice> | undefined
+  actor: { userId: string; email: string | null }
+}
+
 async function commitHostingPatch(
   c: Context<AppEnv>,
   db: Db,
-  id: string,
-  organizationId: string,
-  patchFields: HostingPatchFields,
-  hostnamesPatch: string[] | null,
-  choices: ReadonlyMap<string, HostnameChoice> | undefined,
-  actor: { userId: string; email: string | null }
+  commit: HostingPatchCommit
 ): Promise<Response | null> {
+  const { id, organizationId, patchFields, hostnamesPatch, choices, actor } = commit
   try {
     await db.transaction(async (tx) => {
       // Changing the pin can leave a managed Let's Encrypt entry unused. Lock in
@@ -161,6 +166,29 @@ function parseHostingCreatePayload(c: Context<AppEnv>, body: Record<string, unkn
 }
 
 type HostingCreateFields = Exclude<ReturnType<typeof parseHostingCreatePayload>, Response>
+
+/** The `names` of a create request, checked against the names the new site serves. */
+async function parseCreateNameChoices(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+  validatedOptions: HostingCreateFields['validatedOptions']
+): Promise<Response | { choices: ReadonlyMap<string, HostnameChoice> | undefined }> {
+  const named = await parseNameChoices(c, db, organizationId, body)
+  if (named.kind === 'error') return named.response
+  const choices = named.kind === 'value' ? named.choices : undefined
+  if (choices) {
+    const unserved = unservedChoice(
+      c,
+      choices,
+      validatedOptions?.hostnames ?? [],
+      validatedOptions?.www ?? 'off'
+    )
+    if (unserved) return unserved
+  }
+  return { choices }
+}
 
 async function insertHostingFromCreate(
   db: Db,
@@ -305,18 +333,9 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const scopeDenied = await assertCreateHostingBindScope(c, db, fks.ipId, validatedOptions)
     if (scopeDenied) return scopeDenied
 
-    const named = await parseNameChoices(c, db, organizationId, body)
-    if (named.kind === 'error') return named.response
-    const choices = named.kind === 'value' ? named.choices : undefined
-    if (choices) {
-      const unserved = unservedChoice(
-        c,
-        choices,
-        validatedOptions?.hostnames ?? [],
-        validatedOptions?.www ?? 'off'
-      )
-      if (unserved) return unserved
-    }
+    const created = await parseCreateNameChoices(c, db, organizationId, body, validatedOptions)
+    if (created instanceof Response) return created
+    const { choices } = created
 
     try {
       const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks, choices)
@@ -369,16 +388,14 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       if (unserved) return unserved
     }
 
-    const conflict = await commitHostingPatch(
-      c,
-      db,
+    const conflict = await commitHostingPatch(c, db, {
       id,
       organizationId,
       patchFields,
       hostnamesPatch,
       choices,
-      { userId: session.userId, email: session.email ?? null }
-    )
+      actor: { userId: session.userId, email: session.email ?? null },
+    })
     if (conflict) return conflict
 
     nudgeTunnelRoutesAfterResponse(c, organizationId)

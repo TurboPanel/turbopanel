@@ -4887,6 +4887,101 @@ async function serverTakesNameTls(db: Db, serverId: string): Promise<boolean> {
   }
 }
 
+/** The one certificate wire for a row whose names all share a pin. */
+function resolveUniformTlsWire(
+  h: HostingRow,
+  params: {
+    sitePinId: string | null
+    candidates: OrgTlsCandidate[]
+    acmeEnabled: boolean
+    hostnames: string[]
+    www: HostingWwwMode
+  }
+): { tlsWire: Extract<HostingTlsWire, { ok: true }> } | { error: Response } {
+  const { sitePinId, candidates, acmeEnabled, hostnames, www } = params
+  // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
+  // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
+  const resolved = resolveTlsForHosting({
+    pinId: sitePinId,
+    hostnames: pinCoverageNames(sitePinId, candidates, { hostnames, www }),
+    candidates,
+  })
+  if (!resolved.ok) {
+    const pinned = candidates.find((candidate) => candidate.id === sitePinId)
+    return {
+      error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames, www }),
+    }
+  }
+
+  const bindScope = resolveHostingBind(parseHostingOptions(h.options))
+  const pinned = resolved.tlsId
+    ? candidates.find((candidate) => candidate.id === resolved.tlsId)
+    : undefined
+  const wire = hostingTlsWireFromResolved({
+    tlsId: resolved.tlsId,
+    status: pinned?.metadata.status,
+    bindScope,
+    acmeEnabled,
+    centralPair: takesCentralPair(pinned, { hostnames, www }),
+  })
+  if (!wire.ok) {
+    return { error: Response.json({ error: wire.error, hostingId: h.id }, { status: 400 }) }
+  }
+  return { tlsWire: wire }
+}
+
+/** The row-level wire and `nameTls` entries for a row whose names resolve to different pins. */
+async function resolveMixedNameTls(
+  db: Db,
+  h: HostingRow,
+  serverId: string,
+  params: {
+    perName: { names: NameWire[] }
+    lock: Exclude<Awaited<ReturnType<typeof resolveDeployNameLock>>, { refusal: unknown }>
+    hostnames: string[]
+    www: HostingWwwMode
+  }
+): Promise<
+  | {
+      tlsWire: Extract<HostingTlsWire, { ok: true }>
+      nameTls: EnvironmentDeployNameTls[] | undefined
+    }
+  | { error: Response }
+> {
+  const { perName, lock, hostnames, www } = params
+  // A name that arrives only through the tunnel never asks for a public certificate.
+  const closed = new Set(
+    (lock.tunnel?.hostnames ?? []).filter((name) => !lock.tunnel?.openHostnames?.includes(name))
+  )
+  const names = perName.names.map((name) =>
+    name.value.tlsMode === 'acme' && closed.has(name.hostname)
+      ? { ...name, value: { tlsId: null } }
+      : name
+  )
+  const send = planNameTlsForServer(names, {
+    avoidAcmeAtRow: closed.size > 0,
+    redirects: new Map(hostingWwwRedirects({ hostnames, www }).map((r) => [r.from, r.to])),
+    serverTakesNameTls: await serverTakesNameTls(db, serverId),
+  })
+  if (!send.ok) {
+    return {
+      error: Response.json(
+        { error: send.error, message: send.message, hostingId: h.id },
+        { status: 409 }
+      ),
+    }
+  }
+  const { plan } = send
+  return {
+    tlsWire: {
+      ok: true,
+      tlsId: plan.row.tlsId,
+      ...(plan.row.tlsMode === undefined ? {} : { tlsMode: plan.row.tlsMode }),
+    },
+    nameTls: plan.nameTls.length > 0 ? plan.nameTls : undefined,
+  }
+}
+
 export async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
@@ -4922,45 +5017,9 @@ export async function resolveHttpHostingEntry(
 
   let tlsWire: Extract<HostingTlsWire, { ok: true }> = { ok: true, tlsId: null }
   if (perName === null) {
-    // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
-    // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
-    const resolved = resolveTlsForHosting({
-      pinId: sitePinId,
-      hostnames: pinCoverageNames(sitePinId, candidates, { hostnames, www }),
-      candidates,
-    })
-    if (!resolved.ok) {
-      const pinned = candidates.find((candidate) => candidate.id === sitePinId)
-      return {
-        error: tlsPinErrorResponse(resolved.error, h.id, pinned, {
-          hostnames,
-          www,
-        }),
-      }
-    }
-
-    const bindScope = resolveHostingBind(parseHostingOptions(h.options))
-    const pinned = resolved.tlsId
-      ? candidates.find((candidate) => candidate.id === resolved.tlsId)
-      : undefined
-    const wire = hostingTlsWireFromResolved({
-      tlsId: resolved.tlsId,
-      status: pinned?.metadata.status,
-      bindScope,
-      acmeEnabled,
-      centralPair: takesCentralPair(pinned, { hostnames, www }),
-    })
-    if (!wire.ok) {
-      return {
-        error: Response.json(
-          { error: wire.error, hostingId: h.id },
-          {
-            status: 400,
-          }
-        ),
-      }
-    }
-    tlsWire = wire
+    const uniform = resolveUniformTlsWire(h, { sitePinId, candidates, acmeEnabled, hostnames, www })
+    if ('error' in uniform) return uniform
+    tlsWire = uniform.tlsWire
   }
 
   const bindAndWeb = await resolveHostingBindAndWeb(db, h, serverId)
@@ -4981,35 +5040,10 @@ export async function resolveHttpHostingEntry(
 
   let nameTls: EnvironmentDeployNameTls[] | undefined
   if (perName !== null) {
-    // A name that arrives only through the tunnel never asks for a public certificate.
-    const closed = new Set(
-      (lock.tunnel?.hostnames ?? []).filter((name) => !lock.tunnel?.openHostnames?.includes(name))
-    )
-    const names = perName.names.map((name) =>
-      name.value.tlsMode === 'acme' && closed.has(name.hostname)
-        ? { ...name, value: { tlsId: null } }
-        : name
-    )
-    const send = planNameTlsForServer(names, {
-      avoidAcmeAtRow: closed.size > 0,
-      redirects: new Map(hostingWwwRedirects({ hostnames, www }).map((r) => [r.from, r.to])),
-      serverTakesNameTls: await serverTakesNameTls(db, serverId),
-    })
-    if (!send.ok) {
-      return {
-        error: Response.json(
-          { error: send.error, message: send.message, hostingId: h.id },
-          { status: 409 }
-        ),
-      }
-    }
-    const { plan } = send
-    tlsWire = {
-      ok: true,
-      tlsId: plan.row.tlsId,
-      ...(plan.row.tlsMode === undefined ? {} : { tlsMode: plan.row.tlsMode }),
-    }
-    if (plan.nameTls.length > 0) nameTls = plan.nameTls
+    const mixed = await resolveMixedNameTls(db, h, serverId, { perName, lock, hostnames, www })
+    if ('error' in mixed) return mixed
+    tlsWire = mixed.tlsWire
+    nameTls = mixed.nameTls
   }
 
   // A hosting whose names are all tunnel-only never asks for a public certificate,

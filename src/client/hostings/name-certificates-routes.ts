@@ -54,6 +54,40 @@ function invalidNames(c: Context, message: string): NameChoicesResult {
   }
 }
 
+function compareHostnames(a: string, b: string): number {
+  if (a < b) return -1
+  return a > b ? 1 : 0
+}
+
+/** One `names` entry: the normalized name and its choice, or the response that refuses it. */
+async function parseNameChoiceEntry(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  item: unknown,
+  seen: ReadonlyMap<string, HostnameChoice>
+): Promise<{ name: string; choice: HostnameChoice } | { response: NameChoicesResult }> {
+  if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+    return { response: invalidNames(c, 'each name choice must be an object') }
+  }
+  const entry = item as Record<string, unknown>
+  if (typeof entry.hostname !== 'string' || entry.hostname.trim() === '') {
+    return { response: invalidNames(c, 'each name choice needs a hostname') }
+  }
+  if (!isHostnameCertificate(entry.certificate)) {
+    return { response: invalidNames(c, `${entry.hostname}: unknown certificate choice`) }
+  }
+  const name = normalizeHostname(entry.hostname)
+  if (seen.has(name)) return { response: invalidNames(c, `${name} is listed twice`) }
+  const pin = await parseOptionalTlsId(c, db, organizationId, entry.tlsId)
+  if (pin.kind === 'error') return { response: pin }
+  const tlsId = pin.kind === 'value' ? pin.value : null
+  const problem =
+    pinProblem(entry.certificate, tlsId) ?? (await sourceProblem(db, entry.certificate, tlsId))
+  if (problem !== null) return { response: invalidNames(c, `${name}: ${problem}`) }
+  return { name, choice: { certificate: entry.certificate, tlsId } }
+}
+
 /**
  * Read `names: [{ hostname, certificate, tlsId? }]` from a request body.
  * `self_signed` carries no pin; the others may carry one (a pair that is still
@@ -73,25 +107,9 @@ export async function parseNameChoices(
   }
   const choices = new Map<string, HostnameChoice>()
   for (const item of raw as unknown[]) {
-    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
-      return invalidNames(c, 'each name choice must be an object')
-    }
-    const entry = item as Record<string, unknown>
-    if (typeof entry.hostname !== 'string' || entry.hostname.trim() === '') {
-      return invalidNames(c, 'each name choice needs a hostname')
-    }
-    if (!isHostnameCertificate(entry.certificate)) {
-      return invalidNames(c, `${entry.hostname}: unknown certificate choice`)
-    }
-    const name = normalizeHostname(entry.hostname)
-    if (choices.has(name)) return invalidNames(c, `${name} is listed twice`)
-    const pin = await parseOptionalTlsId(c, db, organizationId, entry.tlsId)
-    if (pin.kind === 'error') return pin
-    const tlsId = pin.kind === 'value' ? pin.value : null
-    const problem =
-      pinProblem(entry.certificate, tlsId) ?? (await sourceProblem(db, entry.certificate, tlsId))
-    if (problem !== null) return invalidNames(c, `${name}: ${problem}`)
-    choices.set(name, { certificate: entry.certificate, tlsId })
+    const parsed = await parseNameChoiceEntry(c, db, organizationId, item, choices)
+    if ('response' in parsed) return parsed.response
+    choices.set(parsed.name, parsed.choice)
   }
   return { kind: 'value', choices }
 }
@@ -236,7 +254,7 @@ export async function loadHostingNameReads(
     const isHttp = resolveHostingProtocol(options) === 'http'
     const doorwayReach = reach.get(row.id)
     const names = [...(stored.get(row.id) ?? [])].toSorted((a, b) =>
-      a.hostname < b.hostname ? -1 : a.hostname > b.hostname ? 1 : 0
+      compareHostnames(a.hostname, b.hostname)
     )
     out.set(
       row.id,

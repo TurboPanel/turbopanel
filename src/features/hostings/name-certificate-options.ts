@@ -63,8 +63,7 @@ function httpReason(facts: NameOptionFacts): string | null {
   if (!facts.acmeEnabled) return "Let's Encrypt is not turned on for this organization"
   if (!facts.isHttp) return 'only web sites can use a public certificate'
   if (facts.bind !== 'public') return 'the site is not on a public address'
-  const unsupported = hostnameUnsupportedReason(facts.hostname)
-  return unsupported === null ? null : unsupported
+  return hostnameUnsupportedReason(facts.hostname)
 }
 
 function originReason(facts: NameOptionFacts): string | null {
