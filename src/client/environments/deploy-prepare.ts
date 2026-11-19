@@ -5053,22 +5053,50 @@ export async function resolveHttpHostingEntry(
   }
   const tlsMode = lock.dropPublicCertificate === true ? undefined : tlsWire.tlsMode
   return {
-    entry: {
-      hostingId: h.id,
-      serviceId: svc.id,
-      composeServiceName: svc.composeServiceName,
+    entry: buildHttpHostingEntry(h, svc, {
       hostnames,
-      ...(lock.tunnel === undefined ? {} : { tunnel: lock.tunnel }),
-      pathPrefix: readPathPrefix(h.options),
-      targetPort: readTargetPort(h.options),
+      www,
+      tunnel: lock.tunnel,
       tlsId: tlsWire.tlsId,
-      ...(tlsMode === undefined ? {} : { tlsMode }),
-      proxy: readHostingProxyFromOptions(h.options),
-      ...(www === 'off' ? {} : { www }),
-      ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
-      ...(web === undefined ? {} : { web }),
-      ...(nameTls === undefined ? {} : { nameTls }),
-    },
+      tlsMode,
+      bindAddress: bindResolved,
+      web,
+      nameTls,
+    }),
+  }
+}
+
+/** The deploy row of an HTTP hosting; the optional parts are left out when unset. */
+function buildHttpHostingEntry(
+  h: HostingRow,
+  svc: Readonly<{ id: string; composeServiceName: string }>,
+  parts: {
+    hostnames: string[]
+    www: HostingWwwMode
+    tunnel: DeployHostingPayload['tunnel']
+    tlsId: string | null
+    tlsMode: DeployHostingPayload['tlsMode']
+    bindAddress: DeployHostingPayload['bindAddress']
+    web: DeployHostingPayload['web']
+    nameTls: EnvironmentDeployNameTls[] | undefined
+  }
+): DeployHostingPayload {
+  const { hostnames, www, tunnel, tlsId, tlsMode, bindAddress, web, nameTls } = parts
+  return {
+    hostingId: h.id,
+    serviceId: svc.id,
+    composeServiceName: svc.composeServiceName,
+    hostnames,
+    ...(tunnel === undefined ? {} : { tunnel }),
+    pathPrefix: readPathPrefix(h.options),
+    targetPort: readTargetPort(h.options),
+    tlsId,
+    ...(tlsMode === undefined ? {} : { tlsMode }),
+    proxy: readHostingProxyFromOptions(h.options),
+    ...(www === 'off' ? {} : { www }),
+    ...(bindAddress === undefined ? {} : { bindAddress }),
+    ...(web === undefined ? {} : { web }),
+    ...(nameTls === undefined ? {} : { nameTls }),
   }
 }
 
