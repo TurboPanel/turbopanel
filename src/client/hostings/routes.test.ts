@@ -822,7 +822,7 @@ test('hosting names carry their own certificate choice, redirect-only names incl
     assertEquals(stored[1]!.certificate, 'self_signed')
     assertEquals(stored[0]!.certificate !== null, true)
 
-    const read = await call('GET', `/hostings/${id}`)
+    const read = await call('GET', `/hostings/${id}`, undefined)
     const body = (await read.json()) as {
       hosting: { names: Array<{ hostname: string; certificate: string }> }
     }
@@ -838,7 +838,7 @@ test('hosting names carry their own certificate choice, redirect-only names incl
       ['self_signed', 'self_signed']
     )
 
-    const listed = await call('GET', '/hostings')
+    const listed = await call('GET', '/hostings', undefined)
     assertEquals(listed.status, 200)
   })
 })
