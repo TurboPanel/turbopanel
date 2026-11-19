@@ -43,7 +43,7 @@ export const datacenterSchemas = {
       trusted: {
         type: 'boolean',
         description:
-          "Effective trust flag (`options.trusted`, stored in a column, default `true`). `false` means the datacenter network's L2 is not under the operator's control.",
+          "Effective trust flag (`options.trusted`, stored in a column, default `false`). `false` (untrusted) means server-to-server traffic over this network goes over TurboFabric, with no LAN routes and no Raft group on it; `true` means the operator controls the network's L2.",
       },
       kind: {
         type: ['string', 'null'],

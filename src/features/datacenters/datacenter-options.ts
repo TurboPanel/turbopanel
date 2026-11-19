@@ -40,9 +40,10 @@ export type DatacenterOptions = {
   priority?: number
   /**
    * Whether the datacenter's L2 is under the operator's control. Absence
-   * implies `DEFAULT_DATACENTER_TRUSTED` (`false`, untrusted); a trusted datacenter is
-   * one the operator marked trusted (a private switch they control); untrusted
-   * networks carry server-to-server traffic over TurboFabric. The parser only returns the field when it was explicitly set.
+   * implies `DEFAULT_DATACENTER_TRUSTED` (`false`, untrusted); a trusted
+   * datacenter is one the operator marked trusted (a private switch they
+   * control); untrusted networks carry server-to-server traffic over
+   * TurboFabric. The parser only returns the field when it was explicitly set.
    */
   trusted?: boolean
   /**

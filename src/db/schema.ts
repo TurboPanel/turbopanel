@@ -558,7 +558,7 @@ export const datacenter = pgTable(
     priority: integer().default(100).notNull(),
     /** Address family tried first among a server's pins here: `ipv6` or `ipv4`. */
     addressPreference: text('address_preference').default('ipv6').notNull(),
-    /** Whether the operator controls the datacenter's L2; `false` keeps server-to-server traffic off it. */
+    /** Whether the operator controls the datacenter's L2; `false` sends server-to-server traffic over TurboFabric. */
     isTrusted: boolean('is_trusted').default(false).notNull(),
   },
   (table) => [
