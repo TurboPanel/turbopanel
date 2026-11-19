@@ -4982,6 +4982,42 @@ async function resolveMixedNameTls(
   }
 }
 
+/**
+ * The certificate wire of a row. Names that share one pin take today's path
+ * and send today's payload; names that resolve to different pins come back as
+ * `perName` and are worked out name by name once the tunnel lock is known.
+ */
+async function resolveRowTls(
+  db: Db,
+  h: HostingRow,
+  params: {
+    candidates: OrgTlsCandidate[]
+    acmeEnabled: boolean
+    hostnames: string[]
+    www: HostingWwwMode
+  }
+): Promise<
+  | { perName: { names: NameWire[] } | null; tlsWire: Extract<HostingTlsWire, { ok: true }> }
+  | { error: Response }
+> {
+  const { candidates, acmeEnabled, hostnames, www } = params
+  const read = await readNameChoices(db, h, candidates, hostnames, www)
+  if (read.uniformPin === undefined) {
+    const perName = resolvePerNameWires({ h, candidates, acmeEnabled, choices: read.choices })
+    if ('error' in perName) return perName
+    return { perName, tlsWire: { ok: true, tlsId: null } }
+  }
+  const uniform = resolveUniformTlsWire(h, {
+    sitePinId: read.uniformPin,
+    candidates,
+    acmeEnabled,
+    hostnames,
+    www,
+  })
+  if ('error' in uniform) return uniform
+  return { perName: null, tlsWire: uniform.tlsWire }
+}
+
 export async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
@@ -5005,22 +5041,10 @@ export async function resolveHttpHostingEntry(
   const panelRefusal = await panelHostnameRefusal(db, svc.composeServiceName, { hostnames, www })
   if (panelRefusal) return { prepareError: panelRefusal }
 
-  // Names that share one pin take today's path and send today's payload. Names
-  // that resolve to different pins are worked out name by name further down.
-  const read = await readNameChoices(db, h, candidates, hostnames, www)
-  const sitePinId = read.uniformPin === undefined ? null : read.uniformPin
-  const perName =
-    read.uniformPin === undefined
-      ? resolvePerNameWires({ h, candidates, acmeEnabled, choices: read.choices })
-      : null
-  if (perName !== null && 'error' in perName) return perName
-
-  let tlsWire: Extract<HostingTlsWire, { ok: true }> = { ok: true, tlsId: null }
-  if (perName === null) {
-    const uniform = resolveUniformTlsWire(h, { sitePinId, candidates, acmeEnabled, hostnames, www })
-    if ('error' in uniform) return uniform
-    tlsWire = uniform.tlsWire
-  }
+  const rowTls = await resolveRowTls(db, h, { candidates, acmeEnabled, hostnames, www })
+  if ('error' in rowTls) return rowTls
+  const { perName } = rowTls
+  let { tlsWire } = rowTls
 
   const bindAndWeb = await resolveHostingBindAndWeb(db, h, serverId)
   if ('prepareError' in bindAndWeb) return bindAndWeb
@@ -5048,10 +5072,11 @@ export async function resolveHttpHostingEntry(
 
   // A hosting whose names are all tunnel-only never asks for a public certificate,
   // and keeps no Let's Encrypt row waiting on one.
-  if (lock.dropPublicCertificate === true) {
+  const dropCertificate = lock.dropPublicCertificate === true
+  if (dropCertificate) {
     await settleTunnelOnlyHosting(db, { organizationId, hostingId: h.id })
   }
-  const tlsMode = lock.dropPublicCertificate === true ? undefined : tlsWire.tlsMode
+  const tlsMode = dropCertificate ? undefined : tlsWire.tlsMode
   return {
     entry: buildHttpHostingEntry(h, svc, {
       hostnames,
