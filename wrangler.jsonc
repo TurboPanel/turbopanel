@@ -207,6 +207,8 @@
   "env": {
     "testing": {
       "name": "testing-instance",
+      // Testing and staging run on the development Cloudflare account; live stays on its own.
+      "account_id": "1ce26b585b66602feb84a68aeda5062b",
       "queues": {
         "producers": [
           { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "testing-daemon-commands" },
@@ -311,13 +313,13 @@
       "hyperdrive": [
         {
           "binding": "HYPERDRIVE",
-          "id": "3fcb0ba1b38143508e8fe60c3b45b3e6"
+          "id": "66b1fafaa8e04850b36917078ed96b0e"
         },
         {
           // Create via scripts/ensure-testing-hyperdrive-cached.sh — must be a dedicated
           // cached config for the testing Postgres origin (not the primary HYPERDRIVE id).
           "binding": "HYPERDRIVE_CACHED",
-          "id": "c7f506e96d1644c18d6f7fb4cd0f35ac"
+          "id": "6cdeb44904b84cadb23bac3c48808735"
         }
       ],
       "routes": [
@@ -342,7 +344,7 @@
         "TURBOPANEL_BASE_URL": "https://testing.turbopanel.dev",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://testing.turbopanel.io",
         "TURBOPANEL_IS_SIGNUP_ENABLED": "1",
-        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+        "CLOUDFLARE_ACCOUNT_ID": "1ce26b585b66602feb84a68aeda5062b",
         "TURBOPANEL_UPDATE_CHANNEL": "canary",
         // Read by scripts/migrate-locked.mjs at build time (not by the Worker): this
         // database is behind a pooling proxy that refuses the migration advisory lock.
@@ -385,6 +387,8 @@
     // sign-up is opened from the dashboard or the admin console.
     "staging": {
       "name": "staging-instance",
+      // Testing and staging run on the development Cloudflare account; live stays on its own.
+      "account_id": "1ce26b585b66602feb84a68aeda5062b",
       "queues": {
         "producers": [
           { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" },
@@ -489,13 +493,13 @@
       "hyperdrive": [
         {
           "binding": "HYPERDRIVE",
-          "id": "b1147c2f45c04f85a09131c586dc8e4b"
+          "id": "c311fa22ea2f4dd6b341cac49da482f3"
         },
         {
           // A dedicated cached config for the staging Postgres origin (not the
           // primary HYPERDRIVE id).
           "binding": "HYPERDRIVE_CACHED",
-          "id": "0d759561de73482ab13ea79f416f99f7"
+          "id": "c167111c25934dc9887058fab6a5b953"
         }
       ],
       "routes": [
@@ -519,7 +523,7 @@
       "vars": {
         "TURBOPANEL_BASE_URL": "https://staging.turbopanel.dev",
         "TURBOPANEL_UI_CORS_ORIGINS": "https://staging.turbopanel.io",
-        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+        "CLOUDFLARE_ACCOUNT_ID": "1ce26b585b66602feb84a68aeda5062b",
         "TURBOPANEL_UPDATE_CHANNEL": "rc",
         // Read by scripts/migrate-locked.mjs at build time (not by the Worker): this
         // database is behind a pooling proxy that refuses the migration advisory lock.

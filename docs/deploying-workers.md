@@ -82,6 +82,12 @@
   container), and `TURBOPANEL_DEPLOY_CHECK_API_TOKEN` — secret, a token with
   Hyperdrive Read so `check-deploy-env.mjs` can confirm the URL is testing's
   Hyperdrive origin (it fails closed without it).
+- **Cloudflare accounts.** Testing and staging run on the development
+  Cloudflare account (`account_id` in `env.testing` and `env.staging` of
+  `wrangler.jsonc`); live stays on its own account. The build token must belong
+  to the account of the environment it deploys. The zone `turbopanel.dev`
+  routes, queues, the R2 bucket and the Hyperdrive configs must exist in that
+  account before a deploy.
   Testing applies pending migrations on top of the existing database; any reset
   is a named testing-only script that refuses on staging and live.
   `/api/client/v1/status` answers **503**
