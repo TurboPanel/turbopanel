@@ -1249,6 +1249,8 @@ export type ServerPhpPatchSite = {
   series: string
   version?: string
   outdated?: true
+  /** The site's PHP runs in the shared php-fpm master, not a per-site runtime (daemon 0.1.19+). */
+  shared?: true
 }
 
 export type ServerPhpRestartError = {
@@ -1323,7 +1325,7 @@ function parsePhpPatchVersions(value: unknown): Record<string, string> {
 
 function parsePhpPatchSite(raw: unknown): ServerPhpPatchSite | null {
   if (!isRecord(raw)) return null
-  const { environmentId, composeServiceName, series, version, outdated } = raw
+  const { environmentId, composeServiceName, series, version, outdated, shared } = raw
   if (
     typeof environmentId !== 'string' ||
     !UUID_TOKEN.test(environmentId) ||
@@ -1340,6 +1342,7 @@ function parsePhpPatchSite(raw: unknown): ServerPhpPatchSite | null {
     series,
     ...(typeof version === 'string' && PHP_PATCH_VERSION.test(version) ? { version } : {}),
     ...(outdated === true ? { outdated: true as const } : {}),
+    ...(shared === true ? { shared: true as const } : {}),
   }
 }
 

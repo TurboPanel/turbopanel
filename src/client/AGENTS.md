@@ -49,7 +49,8 @@ changes.
   site are not sent (no release); workers are. A retried deploy can run commands
   again, so say "should be safe to run more than once" wherever they are described.
   The server services response carries the PHP patch versions (`patches`),
-  `restartError` and per-service `phpVersion` / `phpRestartPending`, never the
+  `restartError` and per-service `phpVersion` / `phpRestartPending` / `phpShared` (the daemon's
+  `runtimes.php.sites[].shared`, absent from an older daemon), never the
   raw site list. Keep `RESERVED_BUILD_ENV_KEYS` in `features/compose/build-env.ts`
   in step with the daemon's.
 - **Tunnel provider accounts (client surface):** `GET|POST /organizations/:id/carriers`,

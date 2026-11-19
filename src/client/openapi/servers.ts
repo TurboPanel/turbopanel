@@ -1579,6 +1579,11 @@ export const serverSchemas = {
             description:
               'True when the service runs an older PHP than is installed and is waiting for a restart.',
           },
+          phpShared: {
+            type: 'boolean',
+            description:
+              "True when the service's PHP runs in the shared pool, so a PHP patch update restarts its workers with the pool. Absent when the daemon did not say (an older daemon).",
+          },
           containers: cappedListSchema({
             type: 'object',
             required: ['name', 'status', 'role'],
