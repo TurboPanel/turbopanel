@@ -37,8 +37,6 @@ function smallBox(): ServerHostResources {
 
 function snapshotWithDrives(count: number): TopologySnapshot {
   return {
-    generation: 1,
-    bootGeneration: 1,
     networks: [],
     filesystems: [],
     blockDevices: Array.from({ length: count }, (_, index) => ({

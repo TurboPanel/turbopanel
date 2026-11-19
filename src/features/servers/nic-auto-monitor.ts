@@ -22,7 +22,7 @@ import { server } from '../../db/schema.ts'
 import { normalizeIpAddress } from '../../lib/ip-address.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { parseServerHostResources } from './server-metadata.ts'
-import { getLatestTopologyGeneration } from './server-topology-records.ts'
+import { getLatestServerTopology } from './server-topology-records.ts'
 import type { NetworkDeviceTopology, TopologySnapshot } from '../../contracts/topology-types.ts'
 import { EMPTY_TOPOLOGY_OVERRIDES } from '../../contracts/topology-types.ts'
 import { computeSlotMapping } from '../../contracts/topology-slot-mapping.ts'
@@ -126,7 +126,7 @@ export async function autoMonitorNicForDatacenterAttach(
     const interfaceName = await resolveReportedInterface(db, serverId, address)
     if (!interfaceName) return
 
-    const latest = await getLatestTopologyGeneration(db, serverId)
+    const latest = await getLatestServerTopology(db, serverId)
     if (!latest) return
     const snapshot = latest.snapshot as TopologySnapshot
     const deviceId = resolveUplinkDeviceIdByInterface(snapshot.networks, interfaceName)

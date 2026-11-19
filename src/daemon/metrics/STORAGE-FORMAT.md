@@ -416,10 +416,10 @@ in `server.metadata`, which only carries the alert stamp `topologyChurnLimitedAt
 - The snapshot is at most 64 KiB and the generation numbers fit a Postgres integer.
 - A resend of the stored generation is rewritten at most once per 30 seconds per server
   (`TOPOLOGY_REWRITE_COOLDOWN_SECONDS`).
-- At most 12 generation changes per rolling hour and 24 per rolling day
-  (`MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR` / `_PER_DAY`); further changes are dropped and
+- At most 12 topology changes per rolling hour and 24 per rolling day
+  (`MAX_TOPOLOGY_CHANGES_PER_HOUR` / `_PER_DAY`); further changes are dropped and
   `server.metadata.topologyChurnLimitedAt` is stamped.
-- "Latest" is by write time, never by the daemon's own number.
+- "Latest" is by write time.
 - No history of older generations exists, and sizes are not stored here (they ride every sample).
 
 The chart cache key is `tp:metrics:chart:<kind>:<serverId>:<fromBucketMs>:<toBucketMs>:<sorted metrics>:<resolution>:<backend>:v<schemaVersion>`

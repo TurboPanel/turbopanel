@@ -5,13 +5,12 @@ import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import { organization, server } from '../../db/schema.ts'
 import {
-  getLatestTopologyGeneration,
-  getLatestTopologyGenerations,
-  getTopologyGeneration,
+  getLatestServerTopology,
+  getLatestServerTopologies,
   layoutPathsFromSnapshot,
-  MAX_NEW_TOPOLOGY_GENERATIONS_PER_DAY,
-  MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR,
-  recordTopologyGeneration,
+  MAX_TOPOLOGY_CHANGES_PER_DAY,
+  MAX_TOPOLOGY_CHANGES_PER_HOUR,
+  recordTopologyReport,
   resetTopologyChurnLogForTests,
 } from './server-topology-records.ts'
 import { isMachineKeyInUse, touchServerMetadata } from './server-registry.ts'
@@ -64,16 +63,20 @@ async function withServerFixture(
   }
 }
 
+/** A snapshot that names its uplinks, so two lists of ids are two topologies. */
+function nicSnapshot(nics: string[]) {
+  return { networks: nics.map((deviceId) => ({ deviceId, kind: 'uplink' })) }
+}
+
 test('layoutPathsFromSnapshot reads a v6 snapshot and answers null for older or malformed ones', () => {
   assertEquals(
     layoutPathsFromSnapshot({
-      generation: 3,
       paths: { backup: '/mnt/nas/backups', logs: '/var/log/turbopanel' },
     }),
     { backup: '/mnt/nas/backups', logs: '/var/log/turbopanel' }
   )
   // Pre-v6 daemon: no `paths` at all.
-  assertEquals(layoutPathsFromSnapshot({ generation: 3, hardwareSignals: [] }), null)
+  assertEquals(layoutPathsFromSnapshot({ hardwareSignals: [] }), null)
   // Half a record is no record.
   assertEquals(layoutPathsFromSnapshot({ paths: { backup: '/backup' } }), null)
   assertEquals(
@@ -84,26 +87,20 @@ test('layoutPathsFromSnapshot reads a v6 snapshot and answers null for older or 
   assertEquals(layoutPathsFromSnapshot([]), null)
 })
 
-test('getLatestTopologyGeneration returns the last recorded generation', async () => {
+test('getLatestServerTopology returns the last recorded topology', async () => {
   await withServerFixture(async ({ db, serverId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 1,
-      bootGeneration: 1,
-      snapshot: { devices: ['nic-a'] },
+    await recordTopologyReport(db, serverId, {
+      snapshot: nicSnapshot(['nic-a']),
       appliedAt: '2026-01-01T00:00:00.000Z',
     })
-    await recordTopologyGeneration(db, serverId, {
-      generation: 2,
-      bootGeneration: 1,
-      snapshot: { devices: ['nic-a', 'nic-b'] },
+    await recordTopologyReport(db, serverId, {
+      snapshot: nicSnapshot(['nic-a', 'nic-b']),
       appliedAt: '2026-01-01T00:05:00.000Z',
     })
 
-    const latest = await getLatestTopologyGeneration(db, serverId)
-    assertEquals(latest?.generation, 2)
-    assertEquals(latest?.bootGeneration, 1)
+    const latest = await getLatestServerTopology(db, serverId)
     // The daemon-reported object is stored directly — never wrapped.
-    assertEquals(latest?.snapshot, { devices: ['nic-a', 'nic-b'] })
+    assertEquals(latest?.snapshot, nicSnapshot(['nic-a', 'nic-b']))
     // The daemon's own report timestamp is preserved, not a receipt time.
     assertEquals(Date.parse(latest?.appliedAt ?? ''), Date.parse('2026-01-01T00:05:00.000Z'))
   })
@@ -161,88 +158,51 @@ async function withTwoServerFixture(
   }
 }
 
-test('getLatestTopologyGenerations returns the last generation per server in one query, omitting servers with none recorded', async () => {
+test('getLatestServerTopologies returns the last topology per server in one query, omitting servers with none recorded', async () => {
   await withTwoServerFixture(async ({ db, serverIdA, serverIdB, serverIdC }) => {
-    await recordTopologyGeneration(db, serverIdA, {
-      generation: 1,
-      bootGeneration: 1,
-      snapshot: { devices: ['a-gen1'] },
+    await recordTopologyReport(db, serverIdA, {
+      snapshot: nicSnapshot(['a-gen1']),
       appliedAt: '2026-01-01T00:00:00.000Z',
     })
-    await recordTopologyGeneration(db, serverIdA, {
-      generation: 2,
-      bootGeneration: 1,
-      snapshot: { devices: ['a-gen2'] },
+    await recordTopologyReport(db, serverIdA, {
+      snapshot: nicSnapshot(['a-gen2']),
       appliedAt: '2026-01-01T00:05:00.000Z',
     })
-    await recordTopologyGeneration(db, serverIdB, {
-      generation: 1,
-      bootGeneration: 1,
-      snapshot: { devices: ['b-gen1'] },
+    await recordTopologyReport(db, serverIdB, {
+      snapshot: nicSnapshot(['b-gen1']),
       appliedAt: '2026-01-01T00:00:00.000Z',
     })
     // serverIdC deliberately has no recorded generation.
 
-    const byServer = await getLatestTopologyGenerations(db, [serverIdA, serverIdB, serverIdC])
+    const byServer = await getLatestServerTopologies(db, [serverIdA, serverIdB, serverIdC])
     assertEquals(byServer.size, 2)
-    assertEquals(byServer.get(serverIdA)?.generation, 2)
-    assertEquals(byServer.get(serverIdA)?.snapshot, { devices: ['a-gen2'] })
-    assertEquals(byServer.get(serverIdB)?.generation, 1)
+    assertEquals(byServer.get(serverIdA)?.snapshot, nicSnapshot(['a-gen2']))
+    assertEquals(byServer.get(serverIdB)?.snapshot, nicSnapshot(['b-gen1']))
     assertEquals(byServer.has(serverIdC), false)
   })
 })
 
-test('getLatestTopologyGenerations returns an empty map for an empty serverIds list without querying', async () => {
+test('getLatestServerTopologies returns an empty map for an empty serverIds list without querying', async () => {
   await withTwoServerFixture(async ({ db }) => {
-    const byServer = await getLatestTopologyGenerations(db, [])
+    const byServer = await getLatestServerTopologies(db, [])
     assertEquals(byServer.size, 0)
   })
 })
 
-test('getTopologyGeneration answers only for the stored generation: older ones are not kept', async () => {
+test('recordTopologyReport is idempotent for a repeated topology', async () => {
   await withServerFixture(async ({ db, serverId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 1,
-      bootGeneration: 1,
-      snapshot: { devices: ['nic-a'] },
+    await recordTopologyReport(db, serverId, {
+      snapshot: nicSnapshot(['nic-a']),
       appliedAt: '2026-01-01T00:00:00.000Z',
     })
-    await recordTopologyGeneration(db, serverId, {
-      generation: 2,
-      bootGeneration: 1,
-      snapshot: { devices: ['nic-a', 'nic-b'] },
-      appliedAt: '2026-01-01T00:05:00.000Z',
-    })
-
-    const current = await getTopologyGeneration(db, serverId, 2)
-    assertEquals(current?.generation, 2)
-    assertEquals(current?.snapshot, { devices: ['nic-a', 'nic-b'] })
-    assertEquals(Date.parse(current?.appliedAt ?? ''), Date.parse('2026-01-01T00:05:00.000Z'))
-
-    // The first generation was overwritten; a sample naming it reads as unknown.
-    assertEquals(await getTopologyGeneration(db, serverId, 1), undefined)
-    assertEquals(await getTopologyGeneration(db, serverId, 99), undefined)
-  })
-})
-
-test('recordTopologyGeneration is idempotent for a repeated generation number', async () => {
-  await withServerFixture(async ({ db, serverId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 1,
-      bootGeneration: 1,
-      snapshot: { devices: ['nic-a'] },
-      appliedAt: '2026-01-01T00:00:00.000Z',
-    })
-    // Simulates the daemon resending an unchanged generation on reconnect.
-    await recordTopologyGeneration(db, serverId, {
-      generation: 1,
-      bootGeneration: 1,
-      snapshot: { devices: ['nic-a', 'nic-b-should-not-be-recorded'] },
+    // Simulates the daemon resending an unchanged topology on reconnect.
+    await recordTopologyReport(db, serverId, {
+      snapshot: { ...nicSnapshot(['nic-a']), pad: 'should-not-be-recorded' },
       appliedAt: '2026-01-01T00:10:00.000Z',
     })
 
-    const record = await getTopologyGeneration(db, serverId, 1)
-    assertEquals(record?.snapshot, { devices: ['nic-a'] })
+    const record = await getLatestServerTopology(db, serverId)
+    assertEquals(record?.snapshot, nicSnapshot(['nic-a']))
     // The second call's appliedAt is dropped along with the rest of its report.
     assertEquals(Date.parse(record?.appliedAt ?? ''), Date.parse('2026-01-01T00:00:00.000Z'))
   })
@@ -289,35 +249,31 @@ async function ageRows(db: TestDb, serverId: string, hours: number): Promise<voi
   `)
 }
 
-function report(generation: number, extra: { snapshot?: unknown; bootGeneration?: number } = {}) {
+/** A report whose topology differs with `n`: one uplink named after it. */
+function report(n: number, extra: { snapshot?: unknown } = {}) {
   return {
-    generation,
-    bootGeneration: extra.bootGeneration ?? 0,
-    snapshot: extra.snapshot ?? { generation },
+    snapshot: extra.snapshot ?? nicSnapshot([`nic-${n}`]),
     appliedAt: REPORT_AT,
   }
 }
 
-test('a flood of fake generation numbers cannot change the stored generation past the hourly limit', async () => {
+test('a flood of different topologies cannot change the stored topology past the hourly limit', async () => {
   await withServerFixture(async ({ db, serverId }) => {
     resetTopologyChurnLogForTests()
     const outcomes: string[] = []
     for (let i = 0; i < 200; i++) {
       outcomes.push(
-        await recordTopologyGeneration(db, serverId, {
-          // Distinct, scattered numbers and a fat snapshot each: the worst a daemon can send.
-          ...report(1000 + i * 7919, { snapshot: { pad: 'x'.repeat(2000), i }, bootGeneration: i }),
+        await recordTopologyReport(db, serverId, {
+          // A distinct topology and a fat snapshot each: the worst a daemon can send.
+          ...report(i, { snapshot: { ...nicSnapshot([`nic-${i}`]), pad: 'x'.repeat(2000) } }),
         })
       )
     }
-    assertEquals(await topologyRowCount(db, serverId), MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR)
-    assertEquals(
-      outcomes.filter((o) => o === 'recorded').length,
-      MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR
-    )
+    assertEquals(await topologyRowCount(db, serverId), MAX_TOPOLOGY_CHANGES_PER_HOUR)
+    assertEquals(outcomes.filter((o) => o === 'recorded').length, MAX_TOPOLOGY_CHANGES_PER_HOUR)
     assertEquals(
       outcomes.filter((o) => o === 'rate_limited').length,
-      200 - MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR
+      200 - MAX_TOPOLOGY_CHANGES_PER_HOUR
     )
     assert(
       typeof (await serverMetadata(db, serverId)).topologyChurnLimitedAt === 'string',
@@ -330,13 +286,10 @@ test('parallel reports cannot slip past the hourly limit together', async () => 
   await withServerFixture(async ({ db, serverId }) => {
     resetTopologyChurnLogForTests()
     const outcomes = await Promise.all(
-      Array.from({ length: 60 }, (_, i) => recordTopologyGeneration(db, serverId, report(10 + i)))
+      Array.from({ length: 60 }, (_, i) => recordTopologyReport(db, serverId, report(10 + i)))
     )
-    assertEquals(await topologyRowCount(db, serverId), MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR)
-    assertEquals(
-      outcomes.filter((o) => o === 'recorded').length,
-      MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR
-    )
+    assertEquals(await topologyRowCount(db, serverId), MAX_TOPOLOGY_CHANGES_PER_HOUR)
+    assertEquals(outcomes.filter((o) => o === 'recorded').length, MAX_TOPOLOGY_CHANGES_PER_HOUR)
   })
 })
 
@@ -346,105 +299,60 @@ test('the daily limit holds even when the hourly window keeps freeing up', async
     let recorded = 0
     for (let hour = 0; hour < 10; hour++) {
       for (let i = 0; i < 12; i++) {
-        const outcome = await recordTopologyGeneration(db, serverId, report(hour * 100 + i))
+        const outcome = await recordTopologyReport(db, serverId, report(hour * 100 + i))
         if (outcome === 'recorded') recorded++
       }
       // An hour passes: the hourly window is clear again, the daily one is not.
       await ageRows(db, serverId, 1)
     }
-    assertEquals(recorded, MAX_NEW_TOPOLOGY_GENERATIONS_PER_DAY)
-  })
-})
-
-test('generation numbers the table cannot hold are rejected and write nothing', async () => {
-  await withServerFixture(async ({ db, serverId }) => {
-    resetTopologyChurnLogForTests()
-    for (const generation of [2_147_483_648, 1e300, -1, 1.5, Number.NaN]) {
-      assertEquals(await recordTopologyGeneration(db, serverId, report(generation)), 'rejected')
-    }
-    assertEquals(
-      await recordTopologyGeneration(db, serverId, report(1, { bootGeneration: 2_147_483_648 })),
-      'rejected'
-    )
-    assertEquals(await topologyRowCount(db, serverId), 0)
+    assertEquals(recorded, MAX_TOPOLOGY_CHANGES_PER_DAY)
   })
 })
 
 test('an identical resend writes nothing, and a rewrite inside the cooldown is ignored', async () => {
   await withServerFixture(async ({ db, serverId }) => {
     assertEquals(
-      await recordTopologyGeneration(db, serverId, report(4, { snapshot: { memory: 1 } })),
+      await recordTopologyReport(db, serverId, report(4, { snapshot: { memory: 1 } })),
       'recorded'
     )
     assertEquals(
-      await recordTopologyGeneration(db, serverId, report(4, { snapshot: { memory: 1 } })),
+      await recordTopologyReport(db, serverId, report(4, { snapshot: { memory: 1 } })),
       'unchanged'
     )
     // A different snapshot straight away is inside the cooldown: no write.
     assertEquals(
-      await recordTopologyGeneration(db, serverId, report(4, { snapshot: { memory: 2 } })),
+      await recordTopologyReport(db, serverId, report(4, { snapshot: { memory: 2 } })),
       'unchanged'
     )
-    assertEquals((await getTopologyGeneration(db, serverId, 4))?.snapshot, { memory: 1 })
+    assertEquals((await getLatestServerTopology(db, serverId))?.snapshot, { memory: 1 })
     assertEquals(await topologyRowCount(db, serverId), 1)
   })
 })
 
-test('after the cooldown, a resend of the newest generation refreshes its snapshot in place', async () => {
+test('after the cooldown, a resend of the stored topology refreshes its snapshot in place', async () => {
   await withServerFixture(async ({ db, serverId }) => {
-    await recordTopologyGeneration(db, serverId, report(4, { snapshot: { paths: 'old' } }))
+    await recordTopologyReport(db, serverId, report(4, { snapshot: { paths: 'old' } }))
     await ageRows(db, serverId, 1)
     assertEquals(
-      await recordTopologyGeneration(db, serverId, report(4, { snapshot: { paths: 'new' } })),
+      await recordTopologyReport(db, serverId, report(4, { snapshot: { paths: 'new' } })),
       'refreshed'
     )
-    assertEquals((await getTopologyGeneration(db, serverId, 4))?.snapshot, { paths: 'new' })
+    assertEquals((await getLatestServerTopology(db, serverId))?.snapshot, { paths: 'new' })
     assertEquals(await topologyRowCount(db, serverId), 1)
-  })
-})
-
-test('an honest daemon reporting its own generation replaces a forged huge one', async () => {
-  await withServerFixture(async ({ db, serverId }) => {
-    await recordTopologyGeneration(db, serverId, report(3, { snapshot: { honest: true } }))
-    await recordTopologyGeneration(
-      db,
-      serverId,
-      report(2_000_000_000, { snapshot: { forged: true } })
-    )
-    await ageRows(db, serverId, 1)
-    assertEquals(
-      await recordTopologyGeneration(db, serverId, report(3, { snapshot: { honest: true } })),
-      'recorded'
-    )
-    assertEquals((await getLatestTopologyGeneration(db, serverId))?.generation, 3)
-    assertEquals((await getLatestTopologyGeneration(db, serverId))?.snapshot, { honest: true })
-    assertEquals(await topologyRowCount(db, serverId), 3)
-  })
-})
-
-test('the latest topology is the newest recorded row, so a forged huge number cannot pin itself', async () => {
-  await withServerFixture(async ({ db, serverId }) => {
-    await recordTopologyGeneration(
-      db,
-      serverId,
-      report(2_000_000_000, { snapshot: { forged: true } })
-    )
-    await recordTopologyGeneration(db, serverId, report(3, { snapshot: { honest: true } }))
-    assertEquals((await getLatestTopologyGeneration(db, serverId))?.snapshot, { honest: true })
   })
 })
 
 test('the stored value never keeps more than a day of change times, so it stays small', async () => {
   await withServerFixture(async ({ db, serverId }) => {
-    for (let i = 0; i < MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR; i++) {
-      await recordTopologyGeneration(
+    for (let i = 0; i < MAX_TOPOLOGY_CHANGES_PER_HOUR; i++) {
+      await recordTopologyReport(
         db,
         serverId,
         report(10 + i, { snapshot: { pad: 'x'.repeat(100) } })
       )
     }
     await ageRows(db, serverId, 25)
-    assertEquals(await recordTopologyGeneration(db, serverId, report(500)), 'recorded')
+    assertEquals(await recordTopologyReport(db, serverId, report(500)), 'recorded')
     assertEquals(await topologyRowCount(db, serverId), 1)
   })
 })
@@ -452,26 +360,26 @@ test('the stored value never keeps more than a day of change times, so it stays 
 test('honest recovery: once the limit has room again the next report is recorded and the alert clears', async () => {
   await withServerFixture(async ({ db, serverId }) => {
     resetTopologyChurnLogForTests()
-    for (let i = 0; i < 14; i++) await recordTopologyGeneration(db, serverId, report(100 + i))
+    for (let i = 0; i < 14; i++) await recordTopologyReport(db, serverId, report(100 + i))
     assert('topologyChurnLimitedAt' in (await serverMetadata(db, serverId)))
-    assertEquals(await recordTopologyGeneration(db, serverId, report(500)), 'rate_limited')
+    assertEquals(await recordTopologyReport(db, serverId, report(500)), 'rate_limited')
 
     // A day later the hourly and daily windows are both clear.
     await ageRows(db, serverId, 25)
-    assertEquals(await recordTopologyGeneration(db, serverId, report(500)), 'recorded')
+    assertEquals(await recordTopologyReport(db, serverId, report(500)), 'recorded')
     assertEquals('topologyChurnLimitedAt' in (await serverMetadata(db, serverId)), false)
-    assertEquals((await getLatestTopologyGeneration(db, serverId))?.generation, 500)
+    assertEquals((await getLatestServerTopology(db, serverId))?.snapshot, report(500).snapshot)
   })
 })
 
 test('the churn alert stamp is not rewritten on every refused report', async () => {
   await withServerFixture(async ({ db, serverId }) => {
     resetTopologyChurnLogForTests()
-    for (let i = 0; i < 13; i++) await recordTopologyGeneration(db, serverId, report(100 + i))
+    for (let i = 0; i < 13; i++) await recordTopologyReport(db, serverId, report(100 + i))
     const first = (await serverMetadata(db, serverId)).topologyChurnLimitedAt
     assert(typeof first === 'string')
     await new Promise((resolve) => setTimeout(resolve, 20))
-    await recordTopologyGeneration(db, serverId, report(999))
+    await recordTopologyReport(db, serverId, report(999))
     assertEquals((await serverMetadata(db, serverId)).topologyChurnLimitedAt, first)
   })
 })
@@ -484,72 +392,54 @@ function numberlessReport(nics: string[], extra: Record<string, unknown> = {}) {
   }
 }
 
-test('without generation numbers, the same topology is a resend and a different one is a change', async () => {
+test('the same topology is a resend and a different one is a change', async () => {
   await withServerFixture(async ({ db, serverId }) => {
-    assertEquals(
-      await recordTopologyGeneration(db, serverId, numberlessReport(['eth0'])),
-      'recorded'
-    )
-    assertEquals(
-      await recordTopologyGeneration(db, serverId, numberlessReport(['eth0'])),
-      'unchanged'
-    )
+    assertEquals(await recordTopologyReport(db, serverId, numberlessReport(['eth0'])), 'recorded')
+    assertEquals(await recordTopologyReport(db, serverId, numberlessReport(['eth0'])), 'unchanged')
     // Sizes and labels are not topology: after the cooldown they refresh in place.
     await ageRows(db, serverId, 1)
     assertEquals(
-      await recordTopologyGeneration(
-        db,
-        serverId,
-        numberlessReport(['eth0'], { memoryTotalBytes: 1 })
-      ),
+      await recordTopologyReport(db, serverId, numberlessReport(['eth0'], { memoryTotalBytes: 1 })),
       'refreshed'
     )
     assertEquals(await topologyRowCount(db, serverId), 1)
     // A new NIC is a new topology and counts against the limits.
     assertEquals(
-      await recordTopologyGeneration(db, serverId, numberlessReport(['eth0', 'eth1'])),
+      await recordTopologyReport(db, serverId, numberlessReport(['eth0', 'eth1'])),
       'recorded'
     )
     assertEquals(await topologyRowCount(db, serverId), 2)
-    const latest = await getLatestTopologyGeneration(db, serverId)
-    assertEquals(latest?.generation, undefined)
-    assertEquals(latest?.bootGeneration, undefined)
+    const latest = await getLatestServerTopology(db, serverId)
     assertEquals(latest?.snapshot, numberlessReport(['eth0', 'eth1']).snapshot)
   })
 })
 
-test('without generation numbers, a flood of different topologies still stops at the hourly limit', async () => {
+test('a flood of different topologies still stops at the hourly limit', async () => {
   await withServerFixture(async ({ db, serverId }) => {
     resetTopologyChurnLogForTests()
     const outcomes: string[] = []
     for (let i = 0; i < 40; i++) {
-      outcomes.push(await recordTopologyGeneration(db, serverId, numberlessReport([`nic-${i}`])))
+      outcomes.push(await recordTopologyReport(db, serverId, numberlessReport([`nic-${i}`])))
     }
-    assertEquals(
-      outcomes.filter((o) => o === 'recorded').length,
-      MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR
-    )
-    assertEquals(await topologyRowCount(db, serverId), MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR)
+    assertEquals(outcomes.filter((o) => o === 'recorded').length, MAX_TOPOLOGY_CHANGES_PER_HOUR)
+    assertEquals(await topologyRowCount(db, serverId), MAX_TOPOLOGY_CHANGES_PER_HOUR)
   })
 })
 
-test('a daemon that stops sending generation numbers clears them from the stored value', async () => {
+test('generation numbers an older daemon still sends are ignored and never stored', async () => {
   await withServerFixture(async ({ db, serverId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 4,
-      bootGeneration: 2,
-      ...numberlessReport(['eth0']),
-    })
-    assertEquals((await getLatestTopologyGeneration(db, serverId))?.generation, 4)
-    await ageRows(db, serverId, 1)
-    // Same topology, no numbers: a refresh, not a change.
-    assertEquals(
-      await recordTopologyGeneration(db, serverId, numberlessReport(['eth0'])),
-      'refreshed'
-    )
-    const latest = await getLatestTopologyGeneration(db, serverId)
-    assertEquals(latest?.generation, undefined)
-    assertEquals(latest?.bootGeneration, undefined)
+    const withNumbers = { ...numberlessReport(['eth0']), generation: 4, bootGeneration: 2 }
+    assertEquals(await recordTopologyReport(db, serverId, withNumbers), 'recorded')
+    const [row] = await db
+      .select({ hardware: server.hardware })
+      .from(server)
+      .where(eq(server.id, serverId))
+    const stored = row?.hardware as Record<string, unknown>
+    assertEquals('generation' in stored, false)
+    assertEquals('bootGeneration' in stored, false)
+    // The same topology resent with different numbers is a resend, not a change.
+    const renumbered = { ...numberlessReport(['eth0']), generation: 9, bootGeneration: 3 }
+    assertEquals(await recordTopologyReport(db, serverId, renumbered), 'unchanged')
     assertEquals(await topologyRowCount(db, serverId), 1)
   })
 })

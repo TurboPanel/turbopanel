@@ -88,7 +88,7 @@ export const DATA_DICTIONARY_GROUPS = {
   runtime: {
     title: 'Servers, runtime and metrics',
     blurb:
-      'Enrolled servers and their daemon keys, the command / dispatch pipeline, deployments, slots, tasks, labels, and the metrics topology generations.',
+      'Enrolled servers and their daemon keys, the command / dispatch pipeline, deployments, slots, tasks, labels, and the latest reported topology.',
   },
   upgrades: {
     title: 'Upgrades',
