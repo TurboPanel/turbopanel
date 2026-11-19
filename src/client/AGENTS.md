@@ -466,7 +466,13 @@ deploy_options_invalid` on environments; the reason string on projects) and a
   (`deploy_rolled_back` / `deploy_needs_attention`) and `deployment.metadata`
   (`deployment.outcome` stays `failed`: its check allows only applied/failed/timed_out),
   and deployment history entries expose `strategy`, `strategyOutcome`,
-  `strategyOutcomeReason`. A multi-server `sequential` deploy
+  `strategyOutcomeReason`. A site whose post-deploy commands fail after the new
+  release is live fails with `post_deploy_failed_after_switch: ...` (a text prefix, like
+  the above); it is kept as `command.error_code`
+  `deploy_post_deploy_failed_after_switch`, and history entries expose
+  `postDeployFailure` (program, plain message, `rollBackAvailable`). The program's
+  output is already in the deploy log. An older daemon's text stays an ordinary
+  failure. A multi-server `sequential` deploy
   is a rolling deploy: `deploy.update_config.parallelism` (default 1, `0` = all at once)
   that many servers update at once. Only the first batch's commands are queued; the rest are
   recorded (deployment target `pending`, `options.rollout = { batch, batches }`, command

@@ -344,3 +344,19 @@ test('a certificate-only run is told apart from a full deploy', async () => {
     ['hostings', null, null]
   )
 })
+
+test('listEnvironmentDeploymentHistory shows a post-deploy failure after the switch and nothing for others', async () => {
+  const failed = {
+    ...deployRow,
+    id: '00000000-0000-4000-8000-000000000104',
+    status: 'failed',
+    errorCode: 'deploy_post_deploy_failed_after_switch',
+    errorMessage:
+      'post_deploy_failed_after_switch: Post-deploy commands for site web failed after the new release rel-2 went live. /usr/bin/php exited with exit status 1. Roll back to the previous release rel-1 from the deploy page if the site is not working.',
+  }
+  const db = createHistoryDb({ commandRows: [failed, deployRow] })
+  const { deployments } = await listEnvironmentDeploymentHistory(db, envId)
+  assertEquals(deployments[0]?.postDeployFailure?.program, '/usr/bin/php')
+  assertEquals(deployments[0]?.postDeployFailure?.rollBackAvailable, true)
+  assertEquals(deployments[1]?.postDeployFailure, null)
+})

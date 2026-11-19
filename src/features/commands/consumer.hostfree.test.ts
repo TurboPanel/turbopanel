@@ -50,6 +50,19 @@ setResolveFleetPresence(resolveFleetPresence)
  */
 const test = Deno.test.bind(Deno)
 
+test('failureErrorCodeField names a deploy that failed its post-deploy commands after the switch', () => {
+  const text = 'post_deploy_failed_after_switch: Post-deploy commands for site web failed.'
+  assertEquals(failureErrorCodeField('environment.deploy', null, text), {
+    errorCode: 'deploy_post_deploy_failed_after_switch',
+  })
+  // Another command type, or an older daemon's plain sentence, gets no code.
+  assertEquals(failureErrorCodeField('storage.backup', null, text), {})
+  assertEquals(
+    failureErrorCodeField('environment.deploy', null, 'Post-deploy commands for site web failed'),
+    {}
+  )
+})
+
 test('failureErrorCodeField names a restore whose backup is gone', () => {
   const gone = 'backup bk_01 is not on this host'
   assertEquals(failureErrorCodeField('storage.restore', null, gone), {

@@ -30,8 +30,11 @@ import type { ExecutionLogStore } from '../execution-logs/types.ts'
  */
 export type ExecutionLogPresence = Pick<ExecutionLogStore, 'exists'>
 import {
+  classifyPostDeployFailure,
+  DEPLOY_POST_DEPLOY_FAILED_ERROR_CODE,
   type DeployStrategyOutcome,
   deployOutcomeReason,
+  type PostDeployFailure,
   outcomeFromErrorCode,
 } from './deploy-outcome.ts'
 import { deploymentDurationMs } from './deployment-records.ts'
@@ -137,6 +140,14 @@ export type DeploymentHistoryEntry = {
   strategyOutcome: DeployStrategyOutcome | null
   /** Why a `rolled_back` / `needs_attention` deploy ended that way. */
   strategyOutcomeReason: string | null
+  /**
+   * Set when the post-deploy commands failed after the new release was already
+   * live (`errorCode` `deploy_post_deploy_failed_after_switch`): which program,
+   * a plain message, and whether Roll Back to the previous release is offered.
+   * The program's own output is in the deploy log. `null` otherwise, and for
+   * every daemon that does not send the code.
+   */
+  postDeployFailure: PostDeployFailure | null
   /**
    * When someone asked for this attempt to be cancelled (`command.metadata`).
    * With a live `status` it reads as "Cancelling"; with `succeeded` the cancel
@@ -337,6 +348,10 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
     action: contextAction(context),
     strategyOutcome,
     strategyOutcomeReason: deployOutcomeReason(strategyOutcome, row.errorMessage ?? null),
+    postDeployFailure:
+      row.errorCode === DEPLOY_POST_DEPLOY_FAILED_ERROR_CODE
+        ? classifyPostDeployFailure(row.errorMessage)
+        : null,
     cancelRequestedAt: contextString(contextBag(row.metadata), CANCEL_REQUESTED_FLAG),
     hasLog,
     trigger: readDeploymentTrigger(row),

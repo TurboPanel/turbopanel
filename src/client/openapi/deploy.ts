@@ -581,6 +581,44 @@ export const deploySchemas = {
         type: ['string', 'null'],
         description: 'Why the deploy rolled back or needs attention.',
       },
+      postDeployFailure: {
+        description:
+          "Set when the post-deploy commands of a site failed after the new release was already live (`errorCode` `deploy_post_deploy_failed_after_switch`). The program's own output is in the deploy log. Null otherwise, and for a daemon that does not send the code.",
+        oneOf: [
+          { type: 'null' },
+          {
+            type: 'object',
+            required: [
+              'program',
+              'how',
+              'failedReleaseId',
+              'previousReleaseId',
+              'message',
+              'rollBackAvailable',
+            ],
+            properties: {
+              program: {
+                type: ['string', 'null'],
+                description:
+                  'The failed program (a path, never an argument); null when the daemon could not tell.',
+              },
+              how: {
+                type: ['string', 'null'],
+                description:
+                  'How it ended, for example `exited with exit status 1` or `timed out`.',
+              },
+              failedReleaseId: { type: ['string', 'null'] },
+              previousReleaseId: { type: ['string', 'null'] },
+              message: { type: 'string', description: 'A plain sentence naming the program.' },
+              rollBackAvailable: {
+                type: 'boolean',
+                description:
+                  'True when the daemon named a previous release to roll back to, so Roll Back is offered.',
+              },
+            },
+          },
+        ],
+      },
       cancelRequestedAt: {
         type: ['string', 'null'],
         format: 'date-time',
