@@ -26,6 +26,7 @@ import { FENCE_DEADLINE_REPEATED_MESSAGE, FENCE_TIMED_OUT_MESSAGE } from './ha-f
 import {
   command,
   container,
+  datacenter,
   environment,
   ip,
   managed,
@@ -333,6 +334,17 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
           return thenableRows([{ connected: next !== false }])
         }
         if (table === ip) return thenableRows(pins)
+        // The shared datacenters are trusted networks (a new network starts untrusted).
+        if (table === datacenter) {
+          return thenableRows(
+            [DC_A, DC_B].map((id) => ({
+              id,
+              priority: 100,
+              isTrusted: true,
+              addressPreference: 'ipv6',
+            }))
+          )
+        }
         if (table === environment) return thenableRows(haHierarchy)
         if (table === container) {
           const name = containerNames.shift()

@@ -1711,11 +1711,11 @@ test('PATCH /datacenters/:id with options null clears the stored blob', async ()
     }
     assertEquals(body.datacenter.options, {
       priority: 100,
-      trusted: true,
+      trusted: false,
       addressPreference: 'ipv6',
     })
     assertEquals(body.datacenter.priority, 100)
-    assertEquals(body.datacenter.trusted, true)
+    assertEquals(body.datacenter.trusted, false)
   })
 })
 
