@@ -97,14 +97,14 @@ function validatePgIdent(value, label) {
 }
 
 const ACCOUNT_ID = validateAccountId(
-  process.env.CLOUDFLARE_ACCOUNT_ID ?? 'a574c2793baa3e2276ac16e96097bc8c',
+  process.env.CLOUDFLARE_ACCOUNT_ID ?? '1ce26b585b66602feb84a68aeda5062b'
 )
 const CONFIG_NAME = validateConfigName(
-  process.env.TURBOPANEL_TESTING_HYPERDRIVE_CACHED_NAME ?? 'testing-cached',
+  process.env.TURBOPANEL_TESTING_HYPERDRIVE_CACHED_NAME ?? 'testing-cached'
 )
 const PRIMARY_ID = validateHyperdriveId(
   process.env.TURBOPANEL_TESTING_HYPERDRIVE_PRIMARY_ID ?? '3fcb0ba1b38143508e8fe60c3b45b3e6',
-  'primary',
+  'primary'
 )
 
 const writeWrangler = process.argv.includes('--write-wrangler')
@@ -175,9 +175,9 @@ function parseWranglerListOutput(text) {
 }
 
 async function listConfigs() {
-  const apiResult = await cfFetch(
-    `/accounts/${ACCOUNT_ID}/hyperdrive/configs?per_page=100`,
-  ).catch(() => null)
+  const apiResult = await cfFetch(`/accounts/${ACCOUNT_ID}/hyperdrive/configs?per_page=100`).catch(
+    () => null
+  )
   if (Array.isArray(apiResult)) {
     return apiResult.map((row) => ({ id: row.id, name: row.name }))
   }
@@ -186,9 +186,9 @@ async function listConfigs() {
 
 async function getConfig(id) {
   const safeId = validateHyperdriveId(id, 'get')
-  const apiResult = await cfFetch(
-    `/accounts/${ACCOUNT_ID}/hyperdrive/configs/${safeId}`,
-  ).catch(() => null)
+  const apiResult = await cfFetch(`/accounts/${ACCOUNT_ID}/hyperdrive/configs/${safeId}`).catch(
+    () => null
+  )
   if (apiResult) return apiResult
   const output = wranglerHyperdriveGet(safeId)
   const match = /"id"\s*:\s*"([0-9a-f]{32})"/.exec(output)
@@ -202,7 +202,7 @@ async function createCachedConfig(primary) {
   const origin = primary.origin
   if (!origin?.host || !origin?.database || !origin?.user) {
     throw new Error(
-      `Primary Hyperdrive is missing origin fields; create ${CONFIG_NAME} manually with wrangler hyperdrive create`,
+      `Primary Hyperdrive is missing origin fields; create ${CONFIG_NAME} manually with wrangler hyperdrive create`
     )
   }
 
@@ -227,14 +227,12 @@ async function createCachedConfig(primary) {
   // Create only via Cloudflare API — never pass origin host/user/database on
   // wrangler argv (jssecurity:S6350 argument injection; passwords off argv too).
   if (!process.env.CLOUDFLARE_API_TOKEN?.trim()) {
-    throw new Error(
-      `Set CLOUDFLARE_API_TOKEN to create ${CONFIG_NAME}; create is API-only`,
-    )
+    throw new Error(`Set CLOUDFLARE_API_TOKEN to create ${CONFIG_NAME}; create is API-only`)
   }
-  const apiResult = await cfFetch(
-    `/accounts/${ACCOUNT_ID}/hyperdrive/configs`,
-    { method: 'POST', body: JSON.stringify(apiPayload) },
-  )
+  const apiResult = await cfFetch(`/accounts/${ACCOUNT_ID}/hyperdrive/configs`, {
+    method: 'POST',
+    body: JSON.stringify(apiPayload),
+  })
   if (!apiResult?.id) {
     throw new Error(`Cloudflare API did not return an id for ${CONFIG_NAME}`)
   }
