@@ -126,12 +126,10 @@ import { HOSTING_NAME_TLS_FEATURE } from '../../lib/version-wire.ts'
 import { resolveDeployNameLock } from '../../features/tunnels/name-lock.ts'
 import { loadNameCertificates } from '../../features/hostings/name-certificates.ts'
 import {
-  NAME_CERTIFICATES_NEED_UPDATE,
-  NAME_CERTIFICATES_NEED_UPDATE_MESSAGE,
   type NameWire,
   type NameWireValue,
   nameTlsPinIds,
-  planNameTls,
+  planNameTlsForServer,
 } from '../../features/hostings/name-tls-wire.ts'
 import { hostingRoutingNames } from '../../features/servers/hostname-records.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
@@ -4988,19 +4986,19 @@ export async function resolveHttpHostingEntry(
         ? { ...name, value: { tlsId: null } }
         : name
     )
-    const plan = planNameTls(names, { avoidAcmeAtRow: closed.size > 0 })
-    if (plan.nameTls.length > 0 && !(await serverTakesNameTls(db, serverId))) {
+    const send = planNameTlsForServer(names, {
+      avoidAcmeAtRow: closed.size > 0,
+      serverTakesNameTls: await serverTakesNameTls(db, serverId),
+    })
+    if (!send.ok) {
       return {
         error: Response.json(
-          {
-            error: NAME_CERTIFICATES_NEED_UPDATE,
-            message: NAME_CERTIFICATES_NEED_UPDATE_MESSAGE,
-            hostingId: h.id,
-          },
+          { error: send.error, message: send.message, hostingId: h.id },
           { status: 409 }
         ),
       }
     }
+    const { plan } = send
     tlsWire = {
       ok: true,
       tlsId: plan.row.tlsId,

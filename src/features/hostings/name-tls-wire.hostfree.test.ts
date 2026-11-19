@@ -3,7 +3,15 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { isUniform, nameTlsPinIds, planNameTls, type NameWire } from './name-tls-wire.ts'
+import {
+  isUniform,
+  NAME_CERTIFICATES_NEED_UPDATE,
+  nameTlsPinIds,
+  planNameTls,
+  planNameTlsForServer,
+  type NameWire,
+} from './name-tls-wire.ts'
+import { DAEMON_WIRE_FEATURES } from '../../lib/version-wire.ts'
 
 /** Jest/Mocha-shaped alias for {@link Deno.test} (Sonar only sees `test()`). */
 const test = Deno.test.bind(Deno)
@@ -97,4 +105,43 @@ test('pins in entries are listed for the sealed material', () => {
     ['t1']
   )
   assertEquals(nameTlsPinIds(undefined), [])
+})
+
+const MIXED = [
+  name('a.example.net', pin('t1')),
+  name('b.example.net', pin('t1')),
+  name('c.example.net', SELF),
+]
+
+test('names that share a value send no entries, with or without the daemon feature', () => {
+  const same = [name('a.example.net', pin('t1')), name('www.a.example.net', pin('t1'), false)]
+  for (const serverTakesNameTls of [true, false]) {
+    assertEquals(planNameTlsForServer(same, { serverTakesNameTls }), {
+      ok: true,
+      plan: { row: pin('t1'), nameTls: [] },
+    })
+  }
+})
+
+test('mixed names on a daemon with the feature send the common value plus entries', () => {
+  assertEquals(planNameTlsForServer(MIXED, { serverTakesNameTls: true }), {
+    ok: true,
+    plan: { row: pin('t1'), nameTls: [{ hostname: 'c.example.net', tlsMode: 'internal' }] },
+  })
+})
+
+test('mixed names on a daemon without the feature are refused, never sent as one certificate', () => {
+  const result = planNameTlsForServer(MIXED, { serverTakesNameTls: false })
+  assertEquals(result.ok, false)
+  if (!result.ok) {
+    assertEquals(result.error, NAME_CERTIFICATES_NEED_UPDATE)
+    assertEquals(
+      result.message,
+      "This server's agent is too old to give names in one row different certificates. Update it, or give them the same certificate."
+    )
+  }
+})
+
+test('the shipped feature list names the per-name certificate feature', () => {
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('hosting-name-tls-v1'), true)
 })

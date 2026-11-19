@@ -105,6 +105,31 @@ export function planNameTls(
   return { row, nameTls }
 }
 
+export type NameTlsSend =
+  | { ok: true; plan: NameTlsPlan }
+  | { ok: false; error: typeof NAME_CERTIFICATES_NEED_UPDATE; message: string }
+
+/**
+ * {@link planNameTls} for one server. Names that share one value always plan
+ * with no entries, the same payload as before the feature. Different values
+ * need a daemon that lists `hosting-name-tls-v1`; otherwise the row is refused,
+ * never sent with one certificate for all.
+ */
+export function planNameTlsForServer(
+  names: readonly NameWire[],
+  options: { avoidAcmeAtRow?: boolean; serverTakesNameTls: boolean }
+): NameTlsSend {
+  const plan = planNameTls(names, options)
+  if (plan.nameTls.length > 0 && !options.serverTakesNameTls) {
+    return {
+      ok: false,
+      error: NAME_CERTIFICATES_NEED_UPDATE,
+      message: NAME_CERTIFICATES_NEED_UPDATE_MESSAGE,
+    }
+  }
+  return { ok: true, plan }
+}
+
 /** Every pin an entry set puts in `tlsMaterial`. */
 export function nameTlsPinIds(nameTls: readonly EnvironmentDeployNameTls[] | undefined): string[] {
   return (nameTls ?? []).flatMap((entry) => (entry.tlsId ? [entry.tlsId] : []))
