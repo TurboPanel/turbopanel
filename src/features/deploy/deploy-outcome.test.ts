@@ -74,7 +74,7 @@ test('a post-deploy failure after the switch names the program and offers Roll B
   assertEquals(failure?.rollBackAvailable, true)
   assertEquals(
     failure?.message,
-    'The post-deploy command /usr/bin/php exited with exit status 1 after the new release went live. The previous release is still available: roll back to it if the site is not working.'
+    'The post-deploy command /usr/bin/php exited with exit status 1 after the new release went live. Roll back to the previous release if the site is not working.'
   )
   const timedOut = classifyPostDeployFailure(
     AFTER_SWITCH.replace('exited with exit status 1', 'timed out')
@@ -83,6 +83,26 @@ test('a post-deploy failure after the switch names the program and offers Roll B
     timedOut?.message.startsWith('The post-deploy command /usr/bin/php timed out after'),
     true
   )
+})
+
+test('a signal stop and an unnamed program still keep the release ids', () => {
+  const signal = classifyPostDeployFailure(
+    AFTER_SWITCH.replace('exited with exit status 1', 'was stopped by SEGV')
+  )
+  assertEquals(signal?.program, '/usr/bin/php')
+  assertEquals(signal?.how, 'was stopped by SEGV')
+  assertEquals(signal?.failedReleaseId, 'rel-2')
+  assertEquals(signal?.previousReleaseId, 'rel-1')
+  assertEquals(signal?.rollBackAvailable, true)
+  for (const how of ['exited with exit status 1', 'timed out', 'was stopped by SEGV', 'failed']) {
+    const unnamed = classifyPostDeployFailure(
+      AFTER_SWITCH.replace('/usr/bin/php exited with exit status 1', `a command ${how}`)
+    )
+    assertEquals(unnamed?.program, null)
+    assertEquals(unnamed?.how, how)
+    assertEquals(unnamed?.previousReleaseId, 'rel-1')
+    assertEquals(unnamed?.rollBackAvailable, true)
+  }
 })
 
 test('a post-deploy failure without a program or a previous release still reads clearly', () => {

@@ -613,7 +613,7 @@ export const deploySchemas = {
               rollBackAvailable: {
                 type: 'boolean',
                 description:
-                  'True when the previous release is still available, so Roll Back is offered.',
+                  'True when the daemon named a previous release to roll back to, so Roll Back is offered.',
               },
             },
           },

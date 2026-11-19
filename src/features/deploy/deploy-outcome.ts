@@ -99,12 +99,16 @@ export type PostDeployFailure = {
   previousReleaseId: string | null
   /** A plain sentence for the screen; the program's own output is in the deploy log. */
   message: string
-  /** The previous release is live-switched and can be rolled back to. */
+  /** The daemon named a previous release to roll back to; the release list decides if it still exists. */
   rollBackAvailable: boolean
 }
 
-const POST_DEPLOY_SENTENCE_RE =
-  /after the new release (\S+) went live\.(?: (\S+) (exited with exit status \d+|timed out|was stopped by \S+|failed)\.)? Roll back to the previous release(?: (\S+))? from/
+const FAILED_RELEASE_RE = /after the new release (\S+) went live\./
+const FAILURE_SENTENCE_RE = /went live\.(?: (.+?)\.)? Roll back to the previous release/
+const FAILURE_PARTS_RE = /^(.+?) (exited with exit status \S+|timed out|was stopped by .+|failed)$/
+const PREVIOUS_RELEASE_RE = /Roll back to the previous release(?: (\S+))? from/
+/** The daemon's wording when it could not tell which program failed. */
+const UNKNOWN_PROGRAM = 'a command'
 
 /**
  * Read the daemon's `post_deploy_failed_after_switch: ...` text. The program
@@ -115,17 +119,17 @@ export function classifyPostDeployFailure(
   message: string | null | undefined
 ): PostDeployFailure | null {
   if (typeof message !== 'string' || !isPostDeployFailedAfterSwitch(message)) return null
-  const match = POST_DEPLOY_SENTENCE_RE.exec(message)
-  const failedReleaseId = match?.[1] ?? null
-  const program = match?.[2] ?? null
-  const how = match?.[3] ?? null
-  const previousReleaseId = match?.[4] ?? null
+  const failedReleaseId = FAILED_RELEASE_RE.exec(message)?.[1] ?? null
+  const previousReleaseId = PREVIOUS_RELEASE_RE.exec(message)?.[1] ?? null
+  const parts = FAILURE_PARTS_RE.exec(FAILURE_SENTENCE_RE.exec(message)?.[1] ?? '')
+  const program = parts === null || parts[1] === UNKNOWN_PROGRAM ? null : parts[1]
+  const how = parts?.[2] ?? null
   const failed = program === null ? 'A post-deploy command' : `The post-deploy command ${program}`
   const ended = how ?? 'failed'
   const rollBack =
     previousReleaseId === null
       ? ''
-      : ' The previous release is still available: roll back to it if the site is not working.'
+      : ' Roll back to the previous release if the site is not working.'
   return {
     program,
     how,
