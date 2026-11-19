@@ -101,7 +101,8 @@ High Availability (Workers) must not contain any of it.
   the step in every provider error (`Creating the tunnel failed: …`).
 - **Cloudflare tunnel** (`providers/cloudflare-tunnel.ts`,
   `cloudflare/tunnel-config.ts`). One remotely managed tunnel per account,
-  named `turbopanel-control-plane-<INSTANCE_ID prefix>`, adopted by stored id or
+  named `turbopanel-control-plane-<id>` (first 12 `INSTANCE_ID` characters with
+  hyphens removed), adopted by stored id or
   name before one is created. Before writing routes, Connect reads the
   tunnel (`config_src`, falling back to the deprecated `remote_config`) and
   refuses a locally managed one (`config_src: local`: routes live in a file on

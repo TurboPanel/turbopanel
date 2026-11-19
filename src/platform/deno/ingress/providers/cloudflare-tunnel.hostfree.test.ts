@@ -566,3 +566,17 @@ test('the panel route lets the visitor Host through, so the edge-port redirect c
   assertEquals(rule?.originRequest?.httpHostHeader, undefined)
   assertEquals(rule?.originRequest?.originServerName, 'panel.example.com')
 })
+
+test('tunnelName drops a leading hyphen from the instance id', () => {
+  assertEquals(tunnelName('-EDjEDb_sQMKabcdef'), 'turbopanel-control-plane-EDjEDb_sQMKa')
+})
+
+test('tunnelName keeps twelve characters and none of them a hyphen', () => {
+  const name = tunnelName('ab-cd-ef-gh-ij-kl-mn')
+  assertEquals(name, 'turbopanel-control-plane-abcdefghijkl')
+  assert(!name.slice('turbopanel-control-plane-'.length).includes('-'))
+})
+
+test('tunnelName leaves a plain instance id unchanged', () => {
+  assertEquals(tunnelName('abcdefghijklmnop'), 'turbopanel-control-plane-abcdefghijkl')
+})
