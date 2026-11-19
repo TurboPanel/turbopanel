@@ -43,13 +43,18 @@ type World = {
   newPrincipal: (username: string, projectId: string) => Promise<string>
 }
 
-function recordingQueue(): { queue: CommandQueue; sent: CommandEnvelope[] } {
+/**
+ * Records what is queued for one server. The sweep looks at every marked
+ * principal in the database, so commands for another test's server (parallel
+ * shards share the database) are not this test's to count.
+ */
+function recordingQueue(serverId: string): { queue: CommandQueue; sent: CommandEnvelope[] } {
   const sent: CommandEnvelope[] = []
   return {
     sent,
     queue: {
       enqueue: (envelope) => {
-        sent.push(envelope)
+        if (envelope.serverId === serverId) sent.push(envelope)
         return Promise.resolve()
       },
     },
@@ -221,7 +226,7 @@ test('the removal waits for the folders, the server and the stop, retries an unc
 
     const result = await deleteProjectCascade(db, doomed.projectId)
     assertEquals(result.ok, true)
-    const { queue, sent } = recordingQueue()
+    const { queue, sent } = recordingQueue(serverId)
 
     // The folder is still on the server: nothing happens yet.
     assertEquals(await removeRequestedPrincipal(db, queue, undefined, owner), 'waiting')
@@ -302,7 +307,7 @@ test('the removal sweep leaves out an account still placed on an offline server'
       source: 'manual',
     })
     assertEquals((await deleteProjectCascade(db, doomed.projectId)).ok, true)
-    const { queue, sent } = recordingQueue()
+    const { queue, sent } = recordingQueue(serverId)
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(sent.length, 0)
     assertEquals(await placementState(db, owner), 'present')
@@ -388,7 +393,7 @@ test('a leftover service folder no service names goes through the folder removal
     const { owner, stateOf } = await orphanWorld(world, 'Stray', [
       { kind: 'service', slug: 'leftover' },
     ])
-    const { queue, sent } = recordingQueue()
+    const { queue, sent } = recordingQueue(serverId)
 
     // The sweep marks the folder `removing`, asks the host through the normal folder
     // removal and waits for its confirmation.
@@ -423,9 +428,9 @@ test('a leftover service folder no service names goes through the folder removal
 
 test('an orphan volume folder is never removed by the sweep and says why the account stays', async () => {
   await withWorld(async (world) => {
-    const { db } = world
+    const { db, serverId } = world
     const { owner, stateOf } = await orphanWorld(world, 'Holds', [{ kind: 'volume', slug: 'data' }])
-    const { queue, sent } = recordingQueue()
+    const { queue, sent } = recordingQueue(serverId)
 
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(await stateOf('data'), 'orphan')
@@ -443,15 +448,15 @@ test('an orphan volume folder is never removed by the sweep and says why the acc
   })
 })
 
-test('a service folder next to an orphan volume waits with it; a named orphan is left alone', async () => {
+test('the sweep leaves a service folder next to an orphan volume, and a named orphan, alone', async () => {
   await withWorld(async (world) => {
-    const { db, newProject } = world
+    const { db, serverId, newProject } = world
     const other = await newProject('Named')
     const { stateOf } = await orphanWorld(world, 'Mixed', [
       { kind: 'volume', slug: 'data' },
       { kind: 'service', slug: 'named', serviceId: other.serviceId },
     ])
-    const { queue, sent } = recordingQueue()
+    const { queue, sent } = recordingQueue(serverId)
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(await stateOf('data'), 'orphan')
     assertEquals(await stateOf('named'), 'orphan')
@@ -461,7 +466,7 @@ test('a service folder next to an orphan volume waits with it; a named orphan is
 
 test('a Hosting Account used again keeps its orphans, and another account is untouched', async () => {
   await withWorld(async (world) => {
-    const { db, newProject, newPrincipal } = world
+    const { db, serverId, newProject, newPrincipal } = world
     const { owner, stateOf } = await orphanWorld(world, 'Kept', [
       { kind: 'service', slug: 'leftover' },
       { kind: 'volume', slug: 'data' },
@@ -480,18 +485,28 @@ test('a Hosting Account used again keeps its orphans, and another account is unt
     })
     const keeper = await newProject('Keeper')
     await db.insert(tenancy).values({ principalId: owner, serviceId: keeper.serviceId })
-    const { queue, sent } = recordingQueue()
+    const { queue, sent } = recordingQueue(serverId)
 
+    const dataNote = async () =>
+      (
+        await db
+          .select({ note: folder.removalNote })
+          .from(folder)
+          .where(and(eq(folder.principalId, owner), eq(folder.slug, 'data')))
+      )[0]?.note
+    // While the removal is still marked, the sweep flags the volume.
+    assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
+    assertEquals(typeof (await dataNote()), 'string')
+    assertEquals(await stateOf('leftover'), 'orphan')
+
+    // Used again: the mark and the note go, and later sweeps leave the folders alone.
     assertEquals(await removeRequestedPrincipal(db, queue, undefined, owner), 'kept')
     assertEquals((await readPrincipal(db, owner))?.removalRequestedAt, null)
+    assertEquals(await dataNote(), null)
     assertEquals(await runPrincipalRemovalSweep(db, queue, undefined), { removed: 0 })
     assertEquals(await stateOf('leftover'), 'orphan')
     assertEquals(await stateOf('data'), 'orphan')
-    const [note] = await db
-      .select({ note: folder.removalNote })
-      .from(folder)
-      .where(and(eq(folder.principalId, owner), eq(folder.slug, 'data')))
-    assertEquals(note?.note, null)
+    assertEquals(await dataNote(), null)
     const [theirs] = await db
       .select({ state: folder.state })
       .from(folder)
