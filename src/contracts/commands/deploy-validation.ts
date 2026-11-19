@@ -1,5 +1,10 @@
 import { DOCKER_RESOURCE_NAME_RE } from '../../lib/naming.ts'
-import { isValidHostname } from './hostname.ts'
+import {
+  hostingServedNames,
+  hostingTlsForName,
+  hostingWwwRedirects,
+  isValidHostname,
+} from './hostname.ts'
 import type { EnvironmentDeployHosting, EnvironmentDeployStorageMaterial } from './schemas.ts'
 
 const STORAGE_KINDS = new Set(['volume', 'directory', 'file'])
@@ -99,7 +104,16 @@ function recordHostnameAcmeHttps(
   hostname: string,
   hosting: EnvironmentDeployHosting
 ): string | null {
-  if (hosting.tlsMode === 'acme') {
+  // A name a `www` mode expands answers on its served spellings too, and each
+  // may pick its own certificate: any one on acme needs the HTTPS site (a redirect
+  // name on acme sends visitors to https).
+  const own = { hostnames: [hostname], www: hosting.www }
+  const names = [
+    hostname,
+    ...hostingServedNames(own),
+    ...hostingWwwRedirects(own).map((redirect) => redirect.from),
+  ]
+  if (names.some((name) => hostingTlsForName(hosting, name).tlsMode === 'acme')) {
     state.hasAcme = true
   }
   if (hosting.proxy?.forceHttps === false) {
@@ -111,24 +125,10 @@ function recordHostnameAcmeHttps(
   return null
 }
 
-/**
- * A name that picks its own automatic certificate needs the HTTPS site, and a
- * www redirect name on one sends visitors to https. Redirect names are not in
- * `hostnames`, so the entries are checked directly.
- */
-function nameTlsAcmeHttpsError(hosting: EnvironmentDeployHosting): string | null {
-  if (hosting.proxy?.forceHttps !== false) return null
-  const entry = hosting.nameTls?.find((item) => item.tlsMode === 'acme')
-  if (!entry) return null
-  return `forceHttps:false is incompatible with ACME TLS on hostname ${entry.hostname}`
-}
-
 function recordHostingHostnames(
   byHostname: Map<string, HostnameRoutingState>,
   hosting: EnvironmentDeployHosting
 ): string | null {
-  const nameTlsError = nameTlsAcmeHttpsError(hosting)
-  if (nameTlsError) return nameTlsError
   for (const hostname of hosting.hostnames) {
     const state = getOrCreateHostnameState(byHostname, hostname)
     const error =

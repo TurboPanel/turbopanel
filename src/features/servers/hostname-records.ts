@@ -87,7 +87,7 @@ export async function replaceHostingHostnames(
   const fallback =
     added.length === 0
       ? null
-      : await newNameFallback(db, hostingId, routingOrganizationId, row, keepExisting(existing))
+      : await newNameFallback(db, added[0]!, routingOrganizationId, row, keepExisting(existing))
   const typed = new Set(hostnames.map((value) => value.toLowerCase()))
   const resolved = new Map<string, HostnameChoice>()
   for (const r of existing) {
@@ -144,7 +144,7 @@ function keepExisting(rows: readonly ExistingName[]): ExistingName[] {
  */
 async function newNameFallback(
   db: Db,
-  hostingId: string,
+  newName: string,
   organizationId: string,
   row: { tlsId: string | null; options: unknown } | undefined,
   existing: readonly ExistingName[]
@@ -177,7 +177,7 @@ async function newNameFallback(
     .limit(1)
   const options = parseHostingOptions(row?.options)
   const { default: certificate } = nameCertificateOptions({
-    hostname: hostingId,
+    hostname: newName,
     reach: 'direct',
     bind: resolveHostingBind(options),
     isHttp: resolveHostingProtocol(options) === 'http',

@@ -27,6 +27,7 @@ function payload(hosting: Record<string, unknown>): unknown {
         ...hosting,
       },
     ],
+    tlsMaterial: [{ tlsId: 't1', certificatePem: 'pem', privateKeyEnvelope: 'envelope' }],
   }
 }
 
@@ -85,7 +86,24 @@ test('a malformed entry is refused', () => {
     [{ tlsId: 't1' }],
     [{ hostname: 'a.example.net', tlsId: 5 }],
     [{ hostname: 'a.example.net', tlsMode: 'dns' }],
+    [{ hostname: 'a.example.net', tlsId: '' }],
+    [{ hostname: 'a.example.net', tlsId: 't1', tlsMode: 'acme' }],
   ]) {
     assertThrows(() => nameTlsOf({ nameTls }), TypeError)
   }
+})
+
+test('a name listed twice, too many entries, or a pin outside tlsMaterial is refused', () => {
+  const twice = [
+    { hostname: 'a.example.net', tlsMode: 'internal' },
+    { hostname: 'a.example.net', tlsMode: 'acme' },
+  ]
+  assertThrows(() => nameTlsOf({ nameTls: twice }), TypeError, 'names a hostname twice')
+  const many = Array.from({ length: 1001 }, () => ({ hostname: 'a.example.net' }))
+  assertThrows(() => nameTlsOf({ nameTls: many }), TypeError, 'must be an array')
+  assertThrows(
+    () => nameTlsOf({ nameTls: [{ hostname: 'a.example.net', tlsId: 'missing' }] }),
+    TypeError,
+    'not in tlsMaterial'
+  )
 })

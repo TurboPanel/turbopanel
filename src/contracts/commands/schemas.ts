@@ -3239,34 +3239,76 @@ function parseDeployHostingWww(value: unknown): EnvironmentDeployHosting['www'] 
   return value === 'off' ? undefined : value
 }
 
-/** Per-name certificates; absent stays absent. A name outside the row or an unknown mode is refused. */
+const MAX_DEPLOY_NAME_TLS_ENTRIES = 1000
+
+function parseDeployNameTlsEntry(
+  item: unknown,
+  served: ReadonlySet<string>
+): EnvironmentDeployNameTls {
+  if (!isRecord(item)) throw new TypeError('hostings[].nameTls entries must be objects')
+  const hostname = item.hostname
+  if (!isString(hostname) || !served.has(hostname)) {
+    throw new TypeError(
+      "hostings[].nameTls hostname must be one of the row's served or www redirect names"
+    )
+  }
+  const out: EnvironmentDeployNameTls = { hostname }
+  if (item.tlsId !== undefined) {
+    if (!isString(item.tlsId) || item.tlsId === '') {
+      throw new TypeError('hostings[].nameTls tlsId must be a non-empty string')
+    }
+    out.tlsId = item.tlsId
+  }
+  if (item.tlsMode !== undefined) {
+    if (item.tlsMode !== 'internal' && item.tlsMode !== 'acme') {
+      throw new TypeError('hostings[].nameTls tlsMode must be internal or acme')
+    }
+    out.tlsMode = item.tlsMode
+  }
+  if (out.tlsMode === 'acme' && out.tlsId !== undefined) {
+    throw new TypeError('hostings[].nameTls cannot pin a certificate on an acme name')
+  }
+  return out
+}
+
+/**
+ * Per-name certificates; absent stays absent. The checks match the daemon's:
+ * a name outside the row, a duplicate name, an empty or misplaced pin, an
+ * unknown mode or more than 1000 entries is refused.
+ */
 function parseDeployHostingNameTls(
   value: unknown,
   hostnames: string[]
 ): EnvironmentDeployNameTls[] | undefined {
   if (value === undefined) return undefined
-  if (!Array.isArray(value)) throw new TypeError('Invalid environment.deploy payload')
+  if (!Array.isArray(value) || value.length > MAX_DEPLOY_NAME_TLS_ENTRIES) {
+    throw new TypeError('hostings[].nameTls must be an array')
+  }
+  const served = new Set(hostnames)
+  const seen = new Set<string>()
   return value.map((item) => {
-    if (!isRecord(item) || !isString(item.hostname)) {
-      throw new TypeError('Invalid environment.deploy payload')
+    const entry = parseDeployNameTlsEntry(item, served)
+    if (seen.has(entry.hostname)) {
+      throw new TypeError('hostings[].nameTls names a hostname twice')
     }
-    const hostname = item.hostname
-    if (!hostnames.includes(hostname)) {
-      throw new TypeError('Invalid environment.deploy payload')
-    }
-    const out: EnvironmentDeployNameTls = { hostname }
-    if (item.tlsId !== undefined) {
-      if (!isString(item.tlsId)) throw new TypeError('Invalid environment.deploy payload')
-      out.tlsId = item.tlsId
-    }
-    if (item.tlsMode !== undefined) {
-      if (item.tlsMode !== 'internal' && item.tlsMode !== 'acme') {
-        throw new TypeError('Invalid environment.deploy payload')
-      }
-      out.tlsMode = item.tlsMode
-    }
-    return out
+    seen.add(entry.hostname)
+    return entry
   })
+}
+
+/** Every certificate a `nameTls` entry pins must ride in the same deploy's `tlsMaterial`. */
+function assertNameTlsPinsInMaterial(
+  hostings: readonly EnvironmentDeployHosting[],
+  material: readonly EnvironmentDeployTlsMaterial[] | undefined
+): void {
+  const known = new Set((material ?? []).map((entry) => entry.tlsId))
+  for (const hosting of hostings) {
+    for (const entry of hosting.nameTls ?? []) {
+      if (entry.tlsId !== undefined && !known.has(entry.tlsId)) {
+        throw new TypeError('hostings[].nameTls tlsId is not in tlsMaterial')
+      }
+    }
+  }
 }
 
 /** A name that only arrives through a tunnel must never ask for a public certificate. */
@@ -5218,6 +5260,8 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
   const strings = requireDeployPayloadStrings(value)
   const managedNetworkServices = parseDeployManagedNetworkServices(value.managedNetworkServices)
   const hostings = parseDeployHostings(value.hostings)
+  const tlsMaterial = parseDeployTlsMaterial(value.tlsMaterial)
+  assertNameTlsPinsInMaterial(hostings, tlsMaterial)
   const hostingIngress = parseDeployHostingIngress(value.hostingIngress)
   const dockerExternalNetworks = parseDeployDockerExternalNetworks(value.dockerExternalNetworks)
   return {
@@ -5253,7 +5297,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       keepRunningServices: parseKeepRunningField(value.keepRunningServices),
       hostLevelApproved: parseOptionalDeployBoolean(value.hostLevelApproved),
       remoteBuildSourcesApproved: parseOptionalDeployBoolean(value.remoteBuildSourcesApproved),
-      tlsMaterial: parseDeployTlsMaterial(value.tlsMaterial),
+      tlsMaterial,
       variableMaterial: parseDeployVariableMaterial(value.variableMaterial),
       envFile: parseDeployEnvFile(value.envFile),
       secretPlan: parseDeploySecretPlan(value.secretPlan),
