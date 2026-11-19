@@ -7,7 +7,11 @@ import {
 import { panelHostnameRefusal } from '../../features/hostings/panel-hostname-guard.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
-import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
+import {
+  hostingCertificateNames,
+  hostingWwwRedirects,
+  type HostingWwwMode,
+} from '../../contracts/commands/hostname.ts'
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -4988,6 +4992,7 @@ export async function resolveHttpHostingEntry(
     )
     const send = planNameTlsForServer(names, {
       avoidAcmeAtRow: closed.size > 0,
+      redirects: new Map(hostingWwwRedirects({ hostnames, www }).map((r) => [r.from, r.to])),
       serverTakesNameTls: await serverTakesNameTls(db, serverId),
     })
     if (!send.ok) {

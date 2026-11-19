@@ -28,6 +28,7 @@ import {
 } from '../../features/hostings/name-certificate-options.ts'
 import {
   type NameCertificate,
+  certificateForPinSource,
   loadNameCertificates,
 } from '../../features/hostings/name-certificates.ts'
 import {
@@ -87,7 +88,8 @@ export async function parseNameChoices(
     const pin = await parseOptionalTlsId(c, db, organizationId, entry.tlsId)
     if (pin.kind === 'error') return pin
     const tlsId = pin.kind === 'value' ? pin.value : null
-    const problem = pinProblem(entry.certificate, tlsId)
+    const problem =
+      pinProblem(entry.certificate, tlsId) ?? (await sourceProblem(db, entry.certificate, tlsId))
     if (problem !== null) return invalidNames(c, `${name}: ${problem}`)
     choices.set(name, { certificate: entry.certificate, tlsId })
   }
@@ -100,6 +102,20 @@ function pinProblem(certificate: HostnameCertificate, tlsId: string | null): str
   }
   if (certificate === 'library' && tlsId === null) return 'pick a certificate from the library'
   return null
+}
+
+/** A pinned certificate must be of the kind the choice names (an origin pair for the origin choice, and so on). */
+async function sourceProblem(
+  db: Db,
+  certificate: HostnameCertificate,
+  tlsId: string | null
+): Promise<string | null> {
+  if (tlsId === null) return null
+  const [row] = await db.select({ source: tls.source }).from(tls).where(eq(tls.id, tlsId)).limit(1)
+  const expected = certificateForPinSource(row?.source)
+  if (certificate === expected) return null
+  if (certificate === 'letsencrypt_dns' && row?.source === 'lets_encrypt') return null
+  return `that certificate cannot be used for ${certificate}`
 }
 
 /** The choices that name something this hosting does not serve, or null when all are served. */

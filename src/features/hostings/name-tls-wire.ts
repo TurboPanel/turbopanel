@@ -10,7 +10,6 @@
  */
 
 import type { EnvironmentDeployNameTls } from '../../contracts/commands/schemas.ts'
-import { wwwSiblingHostname } from '../../contracts/commands/hostname.ts'
 
 /** The code a mixed row is refused with when the server's agent cannot take `nameTls`. */
 export const NAME_CERTIFICATES_NEED_UPDATE = 'name_certificates_need_update'
@@ -75,32 +74,25 @@ function mostCommon(names: readonly NameWire[], avoidAcme: boolean): NameWireVal
 }
 
 /**
- * Row-level value plus the entries for the names that differ. The daemon
- * applies an entry to its name and that name's www spelling, so an untyped www
- * name that has the same value as its typed name needs no entry of its own; one
- * whose value differs gets an explicit entry.
+ * Row-level value plus the entries for the names that differ. Every name,
+ * served or redirect-only, keeps its own value: it gets an entry whenever that
+ * value differs from the row's, whatever its www partner has. The daemon
+ * resolves a redirect name by its own entry, then its target's entry, then the
+ * row; so a redirect name that matches the row still gets an explicit entry
+ * when its target has an entry that would otherwise be used for it. Names that
+ * all match the row add nothing.
  */
 export function planNameTls(
   names: readonly NameWire[],
-  options: { avoidAcmeAtRow?: boolean } = {}
+  options: { avoidAcmeAtRow?: boolean; redirects?: ReadonlyMap<string, string> } = {}
 ): NameTlsPlan {
   const row = mostCommon(names, options.avoidAcmeAtRow === true)
-  const typed = new Map(names.filter((n) => n.typed).map((n) => [n.hostname, n]))
-  const valueOfEntry = new Map<string, NameWireValue>()
+  const emitted = new Set(names.filter((n) => keyOf(n.value) !== keyOf(row)).map((n) => n.hostname))
   const nameTls: EnvironmentDeployNameTls[] = []
-  const emit = (name: NameWire) => {
-    nameTls.push(entryFor(name.hostname, name.value))
-    valueOfEntry.set(name.hostname, name.value)
-  }
-  // Typed names first, so a partner is judged against its typed name's entry.
-  for (const name of names.filter((n) => n.typed)) {
-    if (keyOf(name.value) !== keyOf(row)) emit(name)
-  }
-  for (const name of names.filter((n) => !n.typed)) {
-    const sibling = wwwSiblingHostname(name.hostname)
-    const partnerOf = sibling !== null && typed.has(sibling) ? sibling : null
-    const effective = (partnerOf !== null ? valueOfEntry.get(partnerOf) : undefined) ?? row
-    if (keyOf(name.value) !== keyOf(effective)) emit(name)
+  for (const name of names) {
+    const target = options.redirects?.get(name.hostname)
+    const overridden = target !== undefined && emitted.has(target)
+    if (emitted.has(name.hostname) || overridden) nameTls.push(entryFor(name.hostname, name.value))
   }
   return { row, nameTls }
 }
@@ -117,7 +109,11 @@ export type NameTlsSend =
  */
 export function planNameTlsForServer(
   names: readonly NameWire[],
-  options: { avoidAcmeAtRow?: boolean; serverTakesNameTls: boolean }
+  options: {
+    avoidAcmeAtRow?: boolean
+    redirects?: ReadonlyMap<string, string>
+    serverTakesNameTls: boolean
+  }
 ): NameTlsSend {
   const plan = planNameTls(names, options)
   if (plan.nameTls.length > 0 && !options.serverTakesNameTls) {

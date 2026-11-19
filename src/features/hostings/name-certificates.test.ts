@@ -32,7 +32,7 @@ async function newLibraryRow(
   return row!.id
 }
 
-test('a save keeps the choice of a name that stays, drops gone names and adds new ones without a choice', async () => {
+test('a save keeps the choice of a name that stays, drops gone names and gives new ones the default', async () => {
   await withScenario({}, async (s) => {
     const pin = await newLibraryRow(s, 'upload')
     try {
@@ -52,7 +52,8 @@ test('a save keeps the choice of a name that stays, drops gone names and adds ne
         .select({ certificate: hostname.certificate, tlsId: hostname.tlsId })
         .from(hostname)
         .where(eq(hostname.hostname, 'c.example.com'))
-      assertEquals(added, [{ certificate: null, tlsId: null }])
+      // A new name always gets a concrete choice (the default), never none.
+      assertEquals(added, [{ certificate: 'self_signed', tlsId: null }])
     } finally {
       await s.db.update(hosting).set({ tlsId: null }).where(eq(hosting.id, s.hostingAId))
       await s.db.delete(hostname).where(eq(hostname.hostingId, s.hostingAId))
@@ -66,6 +67,11 @@ test('a name with no stored choice follows the site pin, and pinning the site se
     const pin = await newLibraryRow(s, 'lets_encrypt')
     try {
       await s.db.update(hosting).set({ tlsId: pin }).where(eq(hosting.id, s.hostingAId))
+      // Rows from before the choice existed carry none.
+      await s.db
+        .update(hostname)
+        .set({ certificate: null, tlsId: null })
+        .where(eq(hostname.hostingId, s.hostingAId))
       const before = (await loadNameCertificates(s.db, [s.hostingAId])).get(s.hostingAId)
       assertEquals(
         before?.map((n) => [n.certificate, n.tlsId]),

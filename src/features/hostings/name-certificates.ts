@@ -106,7 +106,7 @@ export async function hostingsPinningName(db: Db, tlsId: string): Promise<string
   const rows = await db
     .selectDistinct({ id: hostname.hostingId })
     .from(hostname)
-    .where(and(eq(hostname.tlsId, tlsId)))
+    .where(eq(hostname.tlsId, tlsId))
   return rows.map((r) => r.id)
 }
 

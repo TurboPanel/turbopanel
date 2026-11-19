@@ -39,7 +39,11 @@ Each served name has its own certificate choice, stored on its `hostname` row:
 the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
 
 - `replaceHostingHostnames` is a diff, so a save keeps the choice of every name
-  that stays; a new name gets none. A `www` name defaults to its typed name's
+  that stays. A new name that the request gives no choice for is never stored
+  as NULL: it gets what the site pin stands for when the existing names all
+  follow that pin, otherwise the default of the choice table for a name no
+  tunnel carries yet. A new `www` name that is not typed gets its typed name's
+  choice. Every routing name, a `www` redirect-only name included, keeps its own
   choice.
 - `hosting.tls_id` stays as the whole-site pin that older flows write
   (`pinHostingNames` copies it onto the names; `syncHostingPin` writes it back
@@ -53,7 +57,9 @@ the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
 - Deploy preparation (`src/client/environments/deploy-prepare.ts`) judges the
   names against each other (`name-tls-wire.ts`). Names that all resolve to one
   value send today's payload with no `nameTls`. Mixed names send the most common
-  value at row level (first in names order on a tie) plus `nameTls` entries. A
+  value at row level (first in names order on a tie) plus an entry for every name
+  (served or `www` redirect) whose value differs from it; a name is never
+  compared with its `www` partner. A
   mixed row needs the daemon feature `hosting-name-tls-v1`; a server without it
   is refused with 409 `name_certificates_need_update`, on the hostings-only
   apply path too. A name waiting for its Let's Encrypt via DNS pair goes as

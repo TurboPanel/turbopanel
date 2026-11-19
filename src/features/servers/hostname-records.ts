@@ -6,18 +6,29 @@
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { hostname, hosting, tls } from '../../db/schema.ts'
+import { hostname, hosting, organization, tls } from '../../db/schema.ts'
 import {
   letsEncryptNames,
   readPendingLetsEncrypt,
   pendingLetsEncryptPatch,
 } from '../hostings/hosting-certificate.ts'
 import type { HostnameCertificate } from '../hostings/name-certificate-vocabulary.ts'
-import { readHostingWwwMode } from '../hostings/hosting-options.ts'
+import {
+  parseHostingOptions,
+  readHostingWwwMode,
+  resolveHostingBind,
+  resolveHostingProtocol,
+} from '../hostings/hosting-options.ts'
+import { certificateForPinSource } from '../hostings/name-certificates.ts'
+import { nameCertificateOptions } from '../hostings/name-certificate-options.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { assertNotPanelHostnames } from '../hostings/panel-hostname-guard.ts'
-import { type HostingWwwMode, hostingCertificateNames } from '../../contracts/commands/hostname.ts'
+import {
+  type HostingWwwMode,
+  hostingCertificateNames,
+  wwwSiblingHostname,
+} from '../../contracts/commands/hostname.ts'
 
 /** A name's certificate choice a save sets (names not listed keep theirs). */
 export type HostnameChoice = { certificate: HostnameCertificate; tlsId: string | null }
@@ -60,25 +71,49 @@ export async function replaceHostingHostnames(
   // the panel serves. Throws, so the surrounding transaction rolls back.
   await assertNotPanelHostnames(db, wanted)
   const existing = await db
-    .select({ id: hostname.id, hostname: hostname.hostname })
+    .select({
+      id: hostname.id,
+      hostname: hostname.hostname,
+      certificate: hostname.certificate,
+      tlsId: hostname.tlsId,
+    })
     .from(hostname)
     .where(eq(hostname.hostingId, hostingId))
   const keep = new Set(wanted)
   const gone = existing.filter((r) => !keep.has(r.hostname)).map((r) => r.id)
   if (gone.length > 0) await db.delete(hostname).where(inArray(hostname.id, gone))
   const present = new Set(existing.map((r) => r.hostname))
-  await forEachSequential(
-    wanted.filter((value) => !present.has(value)),
-    (value) => {
-      const choice = choices?.get(value)
-      return db.insert(hostname).values({
-        hostingId,
-        routingOrganizationId,
-        hostname: value,
-        ...(choice ? { certificate: choice.certificate, tlsId: choice.tlsId } : {}),
+  const added = wanted.filter((value) => !present.has(value))
+  const fallback =
+    added.length === 0
+      ? null
+      : await newNameFallback(db, hostingId, routingOrganizationId, row, keepExisting(existing))
+  const typed = new Set(hostnames.map((value) => value.toLowerCase()))
+  const resolved = new Map<string, HostnameChoice>()
+  for (const r of existing) {
+    if (r.certificate !== null) {
+      resolved.set(r.hostname, {
+        certificate: r.certificate as HostnameCertificate,
+        tlsId: r.tlsId,
       })
     }
-  )
+  }
+  for (const [value, choice] of choices ?? []) resolved.set(value, choice)
+  await forEachSequential(added, (value) => {
+    const partner = wwwSiblingHostname(value)
+    const own = choices?.get(value)
+    const follows =
+      !own && !typed.has(value) && partner !== null ? resolved.get(partner) : undefined
+    const choice = own ?? follows ?? fallback!
+    resolved.set(value, choice)
+    return db.insert(hostname).values({
+      hostingId,
+      routingOrganizationId,
+      hostname: value,
+      certificate: choice.certificate,
+      tlsId: choice.tlsId,
+    })
+  })
   if (choices) {
     await forEachSequential(
       wanted.filter((value) => present.has(value) && choices.has(value)),
@@ -92,6 +127,65 @@ export async function replaceHostingHostnames(
     )
   }
   if (row) await queueLetsEncryptRecheck(db, hostingId, row, letsEncryptNames(hostnames, www))
+}
+
+type ExistingName = { certificate: string | null; tlsId: string | null }
+
+function keepExisting(rows: readonly ExistingName[]): ExistingName[] {
+  return rows.map((r) => ({ certificate: r.certificate, tlsId: r.tlsId }))
+}
+
+/**
+ * The choice a new name gets when the request names none: never NULL. A site
+ * whose names all follow its pin (or that has no names yet) gives the new name
+ * what that pin stands for; a site whose names already differ has no single
+ * pin to follow, so the new name gets the default of the choice table for a
+ * name nothing carries yet.
+ */
+async function newNameFallback(
+  db: Db,
+  hostingId: string,
+  organizationId: string,
+  row: { tlsId: string | null; options: unknown } | undefined,
+  existing: readonly ExistingName[]
+): Promise<HostnameChoice> {
+  const pinId = row?.tlsId ?? null
+  let pinSource: string | null = null
+  if (pinId !== null) {
+    const [pin] = await db
+      .select({ source: tls.source })
+      .from(tls)
+      .where(eq(tls.id, pinId))
+      .limit(1)
+    pinSource = pin?.source ?? null
+  }
+  const sitePin = pinSource === null ? null : pinId
+  const sitePinChoice: HostnameChoice = {
+    certificate: certificateForPinSource(pinSource),
+    tlsId: sitePin,
+  }
+  const mixed = existing.some(
+    (r) =>
+      r.certificate !== null &&
+      (r.certificate !== sitePinChoice.certificate || r.tlsId !== sitePinChoice.tlsId)
+  )
+  if (sitePin !== null && !mixed) return sitePinChoice
+  const [org] = await db
+    .select({ isAcmeEnabled: organization.isAcmeEnabled })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1)
+  const options = parseHostingOptions(row?.options)
+  const { default: certificate } = nameCertificateOptions({
+    hostname: hostingId,
+    reach: 'direct',
+    bind: resolveHostingBind(options),
+    isHttp: resolveHostingProtocol(options) === 'http',
+    acmeEnabled: org?.isAcmeEnabled === true,
+    dnsIssuance: false,
+    covering: [],
+  })
+  return { certificate, tlsId: null }
 }
 
 /**

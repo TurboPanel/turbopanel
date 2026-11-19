@@ -55,37 +55,79 @@ test('an acme entry carries the mode and no pin', () => {
   assertEquals(plan.nameTls, [{ hostname: 'c.example.net', tlsMode: 'acme' }])
 })
 
-test('a www name that matches its typed name rides on the typed name entry', () => {
+const ROOT_TO_WWW = new Map([['a.example.net', 'www.a.example.net']])
+const WWW_TO_ROOT = new Map([['www.a.example.net', 'a.example.net']])
+
+test('both: each name keeps its own value and is never compared with its partner', () => {
+  const plan = planNameTls([
+    name('a.example.net', pin('t1')),
+    name('www.a.example.net', SELF, false),
+    name('b.example.net', pin('t1')),
+    name('www.b.example.net', pin('t1'), false),
+  ])
+  assertEquals(plan.row, pin('t1'))
+  assertEquals(plan.nameTls, [{ hostname: 'www.a.example.net', tlsMode: 'internal' }])
+})
+
+test('both: a typed name and its www name that both differ from the row each get an entry', () => {
   const plan = planNameTls([
     name('a.example.net', pin('t1')),
     name('b.example.net', pin('t1')),
     name('c.example.net', SELF),
     name('www.c.example.net', SELF, false),
   ])
-  assertEquals(plan.nameTls, [{ hostname: 'c.example.net', tlsMode: 'internal' }])
-})
-
-test('a www name that differs from its typed name gets its own entry', () => {
-  const plan = planNameTls([
-    name('a.example.net', pin('t1')),
-    name('www.a.example.net', pin('t1'), false),
-    name('b.example.net', SELF),
-    name('www.b.example.net', pin('t1'), false),
-  ])
-  assertEquals(plan.row, pin('t1'))
   assertEquals(plan.nameTls, [
-    { hostname: 'b.example.net', tlsMode: 'internal' },
-    { hostname: 'www.b.example.net', tlsId: 't1' },
+    { hostname: 'c.example.net', tlsMode: 'internal' },
+    { hostname: 'www.c.example.net', tlsMode: 'internal' },
   ])
 })
 
-test('a www name that differs only from the row gets an entry when its typed name has none', () => {
-  const plan = planNameTls([
-    name('a.example.net', pin('t1')),
-    name('b.example.net', pin('t1')),
-    name('www.a.example.net', SELF, false),
-  ])
+test('www-to-root: the redirect-only www name has its own certificate', () => {
+  const plan = planNameTls(
+    [
+      name('a.example.net', pin('t1')),
+      name('www.a.example.net', SELF, false),
+      name('b.example.net', pin('t1')),
+    ],
+    { redirects: WWW_TO_ROOT }
+  )
+  assertEquals(plan.row, pin('t1'))
   assertEquals(plan.nameTls, [{ hostname: 'www.a.example.net', tlsMode: 'internal' }])
+})
+
+test('root-to-www: the redirect-only bare name has its own certificate', () => {
+  const plan = planNameTls(
+    [
+      name('www.a.example.net', pin('t1')),
+      name('a.example.net', SELF, false),
+      name('www.b.example.net', pin('t1')),
+    ],
+    { redirects: ROOT_TO_WWW }
+  )
+  assertEquals(plan.nameTls, [{ hostname: 'a.example.net', tlsMode: 'internal' }])
+})
+
+test('a redirect name that matches the row still gets an entry when its target has a different one', () => {
+  const plan = planNameTls(
+    [
+      name('a.example.net', SELF),
+      name('www.a.example.net', pin('t1'), false),
+      name('b.example.net', pin('t1')),
+      name('c.example.net', pin('t1')),
+    ],
+    { redirects: WWW_TO_ROOT }
+  )
+  assertEquals(plan.nameTls, [
+    { hostname: 'a.example.net', tlsMode: 'internal' },
+    { hostname: 'www.a.example.net', tlsId: 't1' },
+  ])
+})
+
+test('names that all match the row add nothing in any www mode', () => {
+  const all = [name('a.example.net', pin('t1')), name('www.a.example.net', pin('t1'), false)]
+  for (const redirects of [undefined, WWW_TO_ROOT, ROOT_TO_WWW]) {
+    assertEquals(planNameTls(all, { redirects }), { row: pin('t1'), nameTls: [] })
+  }
 })
 
 test('the row never asks for acme when the caller says a tunnel name is closed', () => {
@@ -144,4 +186,25 @@ test('mixed names on a daemon without the feature are refused, never sent as one
 
 test('the shipped feature list names the per-name certificate feature', () => {
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes('hosting-name-tls-v1'), true)
+})
+
+test('no per-name entry carries an ACME challenge, and the preparer never sets one', async () => {
+  // This change sends no ACME: a dns-01 order must never reach a daemon that
+  // lacks `acme-issue-dns-v1`, so nothing here may emit a `challenge`.
+  const plan = planNameTls([
+    name('a.example.net', pin('t1')),
+    name('b.example.net', SELF),
+    name('c.example.net', ACME),
+  ])
+  for (const entry of plan.nameTls) assertEquals('challenge' in entry, false)
+  assertEquals(JSON.stringify(plan).includes('challenge'), false)
+  for (const file of ['./name-tls-wire.ts', '../../client/environments/deploy-prepare.ts']) {
+    const source = await Deno.readTextFile(new URL(file, import.meta.url))
+    const lines = source.split('\n').filter((line) => /\bnameTls\b/.test(line))
+    assertEquals(
+      lines.filter((line) => /challenge|dns-?01/i.test(line)),
+      []
+    )
+  }
+  assertEquals(DAEMON_WIRE_FEATURES.includes('acme-issue-dns-v1' as never), false)
 })
