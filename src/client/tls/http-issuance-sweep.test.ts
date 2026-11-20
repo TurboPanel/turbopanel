@@ -12,6 +12,7 @@ import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import {
   environment,
+  hostname,
   hosting,
   organization,
   project,
@@ -22,12 +23,16 @@ import {
 import {
   type HttpIssuanceState,
   newHttpIssuanceState,
+  readHttpIssuanceState,
   withHttpIssuanceState,
 } from '../../features/tls/http-issuance/state.ts'
+import { removeUnusedSiteCertificates } from '../../features/tls/unused-letsencrypt.ts'
+import { ensureNameHttpOrders } from '../hostings/name-http-orders.ts'
 import {
   httpIssuanceStaging,
   httpIssuanceEnabled,
   markUnpinnedLibraryOrders,
+  runHttpIssuanceSweepTick,
   selectHttpIssuanceCandidates,
 } from './http-issuance-sweep.ts'
 
@@ -320,6 +325,109 @@ test('an unpinned DNS library order is told to wait for a site, once; a pinned o
     }
     assertEquals(await warning(loose), 'Waiting for a site to use this certificate.')
     assertEquals(await warning(pinned), undefined)
+  } finally {
+    await w.cleanup()
+  }
+})
+
+test('a row made for one name by its HTTP choice is picked up by the sweep; once unpinned, its open order is skipped', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance sweep tests')
+  const w = await sweepWorld()
+  const { db } = w
+  const stamp = new Date().toISOString()
+  try {
+    // The world's own hosting is not used: a site with two names is made here.
+    const anchor = await w.make('anchor', {})
+    const [anchorRow] = await db.select().from(tls).where(eq(tls.id, anchor))
+    const organizationId = anchorRow!.organizationId
+    const [pinnedSite] = await db.select().from(hosting).where(eq(hosting.tlsId, anchor))
+    const [site] = await db
+      .insert(hosting)
+      .values({
+        serviceId: pinnedSite!.serviceId,
+        name: 'two-names',
+        options: { hostnames: ['one.example.net', 'two.example.net'] },
+        createdAt: stamp,
+        updatedAt: stamp,
+      })
+      .returning({ id: hosting.id })
+    await db.insert(hostname).values(
+      ['one.example.net', 'two.example.net'].map((name) => ({
+        hostingId: site!.id,
+        routingOrganizationId: organizationId,
+        hostname: name,
+        certificate: 'letsencrypt_http',
+      }))
+    )
+    assertEquals((await ensureNameHttpOrders(db, site!.id, organizationId)).length, 2)
+    const candidates = async () =>
+      (await selectHttpIssuanceCandidates(db, NOW, 25)).map((r) => r.id)
+    const pins = await db
+      .select({ name: hostname.hostname, tlsId: hostname.tlsId })
+      .from(hostname)
+      .where(eq(hostname.hostingId, site!.id))
+    const rowOf = (name: string) => pins.find((p) => p.name === name)!.tlsId!
+    const ids = await candidates()
+    assertEquals(ids.includes(rowOf('one.example.net')), true)
+    assertEquals(ids.includes(rowOf('two.example.net')), true)
+    // A tick scans both new rows (the anchor is pinned too).
+    const tick = await runHttpIssuanceSweepTick(
+      db,
+      {
+        registry: {} as never,
+        secrets: {} as never,
+        env: {},
+        now: () => NOW,
+        dnsLookup: async () => [],
+      },
+      { budgetMs: 5_000 }
+    )
+    assertEquals(tick.scanned >= 3, true)
+    // One order is open; the name then moves to another choice and drops its pin.
+    const [one] = await db
+      .select()
+      .from(tls)
+      .where(eq(tls.id, rowOf('one.example.net')))
+    await db
+      .update(tls)
+      .set({
+        metadata: withHttpIssuanceState(
+          one!.metadata as Record<string, unknown>,
+          newHttpIssuanceState({
+            issuingServerId: 'a',
+            requestId: 'req_one',
+            startedAt: iso(-60_000),
+            startByAt: iso(60_000),
+          })
+        ),
+      })
+      .where(eq(tls.id, one!.id))
+    await db
+      .update(hostname)
+      .set({ certificate: 'self_signed', tlsId: null })
+      .where(eq(hostname.tlsId, one!.id))
+    // The abandoned open order is still picked up, so the sweep can end it.
+    const wiring = {
+      registry: {} as never,
+      secrets: {} as never,
+      env: {},
+      now: () => NOW,
+      dnsLookup: async () => [],
+    }
+    assertEquals((await candidates()).includes(one!.id), true)
+    await runHttpIssuanceSweepTick(db, wiring, { budgetMs: 5_000 })
+    const [ended] = await db.select().from(tls).where(eq(tls.id, one!.id))
+    assertEquals(readHttpIssuanceState(ended!.metadata)?.endedAt === null, false)
+    // Ended and unpinned: nothing left to do, so it is no candidate, holds no issuer and can be removed.
+    const after = await candidates()
+    assertEquals(after.includes(one!.id), false)
+    assertEquals(after.includes(rowOf('two.example.net')), true)
+    await db.transaction((tx) =>
+      removeUnusedSiteCertificates(tx as never, [one!.id], { reason: 'test' })
+    )
+    assertEquals((await db.select().from(tls).where(eq(tls.id, one!.id))).length, 0)
+    await db.delete(hostname).where(eq(hostname.hostingId, site!.id))
+    await db.delete(hosting).where(eq(hosting.id, site!.id))
   } finally {
     await w.cleanup()
   }

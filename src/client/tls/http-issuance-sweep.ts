@@ -19,6 +19,7 @@ import { organizationAcmeContactEmail } from '../../features/organizations/acme-
 import {
   advanceHttpIssuance,
   deliverIssuedPair,
+  failOpenRequest,
   sendPendingEnds,
   type HttpIssuanceDeps,
   startHttpIssuance,
@@ -113,12 +114,21 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
     or (${h} ->> 'endedAt' is not null and ${h} ->> 'endsSentAt' is null
         and jsonb_array_length(coalesce(${h} -> 'forwards', '[]'::jsonb)) > 0)
   ))`
+  const pinnedBySite = sql`(exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) or exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id}))`
+  // An order a site stopped using (its name moved to another choice) is still picked up
+  // while it is open or has end notices to send, so it is ended and cannot hold its
+  // issuing server. DNS orders keep their own wait notice.
+  const abandonedHttp = sql`(${h} is not null and coalesce(${tls.metadata} #>> '{acme,challengeType}', '') <> 'dns-01' and (
+    ${h} ->> 'endedAt' is null
+    or (${h} ->> 'endsSentAt' is null and jsonb_array_length(coalesce(${h} -> 'forwards', '[]'::jsonb)) > 0)
+  ))`
   return db
     .select({
       id: tls.id,
       metadata: tls.metadata,
       organizationId: tls.organizationId,
       hasPair: sql<boolean>`${tls.privateKeyPem} is not null`,
+      pinned: sql<boolean>`${pinnedBySite}`,
     })
     .from(tls)
     .where(
@@ -127,7 +137,7 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
         eq(tls.status, 'automatic'),
         // Only a row that a site pins, with at least one name. A wildcard name needs the DNS
         // proof, so a row with one is picked only when it was made for that proof.
-        sql`(exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) or exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id}))`,
+        sql`(${pinnedBySite} or ${abandonedHttp})`,
         sql`jsonb_array_length(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) >= 1`,
         sql`(${tls.metadata} #>> '{acme,challengeType}' = 'dns-01' or not exists (
           select 1 from jsonb_array_elements_text(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) as n
@@ -196,6 +206,25 @@ export const HTTP_ISSUANCE_STARTS_PER_TICK = 3
 /** Of those, renewals (a row that already has a pair) begun in one tick. */
 export const HTTP_ISSUANCE_RENEWALS_PER_TICK = 2
 
+/** Nothing uses this row any more: end an open order and tell the helpers. */
+async function endAbandonedOrder(
+  deps: HttpIssuanceDeps,
+  tlsId: string,
+  state: ReturnType<typeof readHttpIssuanceState>
+): Promise<void> {
+  if (state?.endedAt === null) {
+    await failOpenRequest(
+      deps,
+      tlsId,
+      state.requestId,
+      'Its name no longer uses this certificate.',
+      false,
+      { onlyIfUnpinned: true }
+    )
+  }
+  await sendPendingEnds(deps, tlsId)
+}
+
 async function stepRow(
   deps: HttpIssuanceDeps,
   row: Candidate,
@@ -209,6 +238,10 @@ async function stepRow(
 ): Promise<void> {
   const { out, now } = step
   const state = readHttpIssuanceState(row.metadata)
+  if (!row.pinned) {
+    await endAbandonedOrder(deps, row.id, state)
+    return
+  }
   if (state?.endedAt === null) {
     await advanceHttpIssuance(deps, row.id)
     out.advanced += 1

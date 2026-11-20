@@ -52,6 +52,21 @@ the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
   (`src/client/hostings/name-certificates-routes.ts`). Reads return each name's
   choice and `certificateOptions` (`name-certificate-options.ts`): every library
   certificate that covers the name, wildcards included.
+- A name saved as `letsencrypt_http` with no pin gets its own managed Let's
+  Encrypt row (`ensureNameHttpOrders`, `src/client/hostings/name-http-orders.ts`,
+  run after `POST`/`PATCH /hostings` write the names): one row per name, found
+  or created under the organization's Let's Encrypt lock with the same
+  `managedCertificateFor` the whole-site button uses, then pinned with
+  `hostname.tls_id`. The HTTP sweep picks up every automatic row a name pins, so
+  the order, the daily cap and the rate-limit pause are the sweep's. It only
+  runs for names that pass `httpReason`, never touches other names, and is a
+  no-op for a name that already has a pin (a library pick, a Let's Encrypt row
+  included, keeps renewing through that row). Moving a name to another choice
+  drops its pin; the row is removed when its order never began, and an open
+  order is ended by the sweep (it still picks up an unpinned open order, only to
+  end it and tell the helpers), after which the row is cleaned up as usual. A
+  per-name row never becomes `hosting.tls_id` (`syncHostingPin` skips it), so
+  names added later and the whole-site flow never reach it.
 - The library "in use" read and the delete guard look at `hostname.tls_id`
   (`certificateIdsPinnedBy`, `notPinnedBySiteCondition`).
 - Deploy preparation (`src/client/environments/deploy-prepare.ts`) judges the

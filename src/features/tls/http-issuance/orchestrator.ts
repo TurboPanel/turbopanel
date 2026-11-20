@@ -12,6 +12,7 @@
  * after the write is caught by the silence timeouts, so nothing waits forever.
  */
 import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
+import { notPinnedBySiteCondition } from '../unused-letsencrypt.ts'
 import type { Db } from '../../../db/connection.ts'
 import {
   deployment,
@@ -854,7 +855,8 @@ export async function failOpenRequest(
   tlsId: string,
   requestId: string,
   reason: string,
-  blameIssuer: boolean
+  blameIssuer: boolean,
+  options: { onlyIfUnpinned?: boolean } = {}
 ): Promise<void> {
   const now = clock(deps)
   await deps.db.transaction(async (tx0) => {
@@ -862,6 +864,14 @@ export async function failOpenRequest(
     const row = await lockRow(tx, tlsId)
     const state = row ? readHttpIssuanceState(row.metadata) : null
     if (!row || state?.requestId !== requestId || state.endedAt !== null) return
+    // Read under the row lock: a name pinned again since the sweep looked keeps its order.
+    if (options.onlyIfUnpinned) {
+      const [pin] = await tx
+        .select({ one: sql<number>`1` })
+        .from(tls)
+        .where(and(eq(tls.id, tlsId), sql`not (${notPinnedBySiteCondition()})`))
+      if (pin) return
+    }
     await writeState(tx, row, failedState(state, now, reason, blameIssuer), now)
   })
 }

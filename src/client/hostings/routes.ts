@@ -17,6 +17,7 @@ import {
   isHostnameUniqueViolation,
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
+import { ensureNameHttpOrders } from './name-http-orders.ts'
 import { pinHostingNames, syncHostingPin } from '../../features/hostings/name-certificates.ts'
 import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
 import {
@@ -111,24 +112,33 @@ async function commitHostingPatch(
   const { id, organizationId, patchFields, hostnamesPatch, choices, actor } = commit
   try {
     await db.transaction(async (tx) => {
-      // Changing the pin can leave a managed Let's Encrypt entry unused. Lock in
-      // the order a deploy does (environment, then the organization lock).
+      // Changing the pin, or the choice of a name, can leave a managed Let's
+      // Encrypt entry unused. Lock in the order a deploy does (environment,
+      // then the organization lock).
       const previousCertificates =
-        patchFields.tlsId === undefined ? [] : await lockPinnedCertificates(tx, id)
+        patchFields.tlsId === undefined && hostnamesPatch === null
+          ? []
+          : await lockPinnedCertificates(tx, id)
       await tx.update(hosting).set(patchFields).where(eq(hosting.id, id))
       // A pin written to the whole site gives every name that pin; per-name
       // choices sent in the same request are applied after it and win.
       if (patchFields.tlsId !== undefined) await pinHostingNames(tx, id, patchFields.tlsId)
-      await removeUnusedSiteCertificates(tx, previousCertificates, {
-        reason: 'its site now uses another certificate',
-        actor,
-      })
       if (hostnamesPatch !== null) {
         // `organizationId` was already checked equal to this hosting's
         // resolved workspace-ancestry organization above.
         await replaceHostingHostnames(tx, id, organizationId, hostnamesPatch, choices)
+      }
+      // A name set to Let's Encrypt via HTTP gets its own order (a no-op for a
+      // name that already has one). Only when the names were saved: the
+      // environment lock is then already held, the order a deploy takes.
+      if (hostnamesPatch !== null) {
+        await ensureNameHttpOrders(tx, id, organizationId)
         if (choices !== undefined) await syncHostingPin(tx, id)
       }
+      await removeUnusedSiteCertificates(tx, previousCertificates, {
+        reason: 'its site now uses another certificate',
+        actor,
+      })
     })
   } catch (err) {
     if (isHostnameUniqueViolation(err)) {
@@ -238,6 +248,7 @@ async function insertHostingFromCreate(
       validatedOptions?.hostnames ?? [],
       choices
     )
+    await ensureNameHttpOrders(tx, inserted.id, organizationId)
     if (choices !== undefined) await syncHostingPin(tx, inserted.id)
     else if (fks.tlsId.kind === 'value') await pinHostingNames(tx, inserted.id, fks.tlsId.value)
     return inserted.id

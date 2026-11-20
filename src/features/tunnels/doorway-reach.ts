@@ -12,7 +12,7 @@
  */
 import { and, eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { doorway, hostname, hosting, organization } from '../../db/schema.ts'
+import { doorway, hostname, hosting } from '../../db/schema.ts'
 import { wwwSiblingHostname } from '../../contracts/commands/hostname.ts'
 import {
   parseHostingOptions,
@@ -54,19 +54,14 @@ async function moveUntouchedNames(
   row: DoorwayRow,
   site: { id: string; serviceId: string; options: unknown }
 ): Promise<string[]> {
-  const [org] = await db
-    .select({ isAcmeEnabled: organization.isAcmeEnabled })
-    .from(organization)
-    .where(eq(organization.id, organizationId))
-    .limit(1)
+  const dnsGate = await loadDnsIssuance(db, organizationId, [site.serviceId])
   const options = parseHostingOptions(site.options)
   const common = {
     bind: resolveHostingBind(options),
     isHttp: resolveHostingProtocol(options) === 'http',
-    acmeEnabled: org?.isAcmeEnabled === true,
+    acmeEnabled: dnsGate.acmeEnabled,
     covering: [],
   }
-  const dnsGate = await loadDnsIssuance(db, organizationId, [site.serviceId])
   const stored = (await loadNameCertificates(db, [site.id])).get(site.id) ?? []
   const sibling = wwwSiblingHostname(row.hostname)
   // A www sibling that is its own doorway and still tunnel-only keeps its choice:

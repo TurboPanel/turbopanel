@@ -29,8 +29,8 @@ export type DnsIssuanceInputs = {
   acmeEnabled: boolean
   /** The organization's DNS tokens. */
   badges: readonly BadgeRow[]
-  /** How many servers serve the site, and how many of them list the DNS order feature. */
-  servers: { total: number; capable: number }
+  /** How many of the servers that serve the site list the DNS order feature. */
+  servers: { capable: number }
 }
 
 /** The gate for one name. Pure. */
@@ -50,7 +50,10 @@ export function dnsIssuanceFor(hostname: string, inputs: DnsIssuanceInputs): Dns
 }
 
 /** The gate for a name of a site, by the site's service. */
-export type DnsIssuanceLookup = (serviceId: string, hostname: string) => DnsIssuanceFacts
+export type DnsIssuanceLookup = ((serviceId: string, hostname: string) => DnsIssuanceFacts) & {
+  /** The organization's Let's Encrypt switch, read once with the gate. */
+  acmeEnabled: boolean
+}
 
 /** Servers that run each service: its environment's server and its live deployments. */
 async function loadServerIdsByService(
@@ -123,12 +126,13 @@ export async function loadDnsIssuance(
   ])
   const badges = carriers.flatMap((c) => c.badges)
   const acmeEnabled = org?.isAcmeEnabled === true
-  return (serviceId, hostname) => {
+  const gate = (serviceId: string, hostname: string) => {
     const ids = [...(byService.get(serviceId) ?? [])]
     return dnsIssuanceFor(hostname, {
       acmeEnabled,
       badges,
-      servers: { total: ids.length, capable: ids.filter((id) => capable.has(id)).length },
+      servers: { capable: ids.filter((id) => capable.has(id)).length },
     })
   }
+  return Object.assign(gate, { acmeEnabled })
 }

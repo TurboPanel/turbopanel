@@ -21,7 +21,7 @@ function inputs(over: Partial<DnsIssuanceInputs> = {}): DnsIssuanceInputs {
   return {
     acmeEnabled: true,
     badges: [token()],
-    servers: { total: 2, capable: 1 },
+    servers: { capable: 1 },
     ...over,
   }
 }
@@ -55,7 +55,7 @@ test('a name that only ends like the zone is not covered', () => {
 })
 
 test('a token that is not active covers nothing', () => {
-  const badges = [token({ status: 'revoked' })]
+  const badges = [token({ status: 'attention' })]
   assertEquals(dnsIssuanceFor('app.example.net', inputs({ badges })).dnsIssuance, false)
 })
 
@@ -69,12 +69,10 @@ test('no serving server that lists the feature says so', () => {
     dnsIssuance: false,
     dnsUnavailableReason: 'No server serving this name can order over DNS yet',
   }
-  assertEquals(
-    dnsIssuanceFor('app.example.net', inputs({ servers: { total: 2, capable: 0 } })),
-    expected
-  )
-  assertEquals(
-    dnsIssuanceFor('app.example.net', inputs({ servers: { total: 0, capable: 0 } })),
-    expected
-  )
+  assertEquals(dnsIssuanceFor('app.example.net', inputs({ servers: { capable: 0 } })), expected)
+  // A token that does not cover the name is told first, whatever the servers can do.
+  assertEquals(dnsIssuanceFor('app.example.org', inputs({ servers: { capable: 0 } })), {
+    dnsIssuance: false,
+    dnsUnavailableReason: 'No DNS token covers app.example.org',
+  })
 })
