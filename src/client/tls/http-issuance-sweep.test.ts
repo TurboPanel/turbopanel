@@ -27,6 +27,7 @@ import {
 import {
   httpIssuanceStaging,
   httpIssuanceEnabled,
+  markUnpinnedLibraryOrders,
   selectHttpIssuanceCandidates,
 } from './http-issuance-sweep.ts'
 
@@ -293,4 +294,33 @@ test('the whole flow can be switched off for the platform', () => {
   assertEquals(httpIssuanceEnabled({}), true)
   assertEquals(httpIssuanceEnabled({ TURBOPANEL_SHARED_CERTIFICATES: 'on' }), true)
   assertEquals(httpIssuanceEnabled({ TURBOPANEL_SHARED_CERTIFICATES: ' OFF ' }), false)
+})
+
+test('an unpinned DNS library order is told to wait for a site, once; a pinned one is left alone', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance sweep tests')
+  const w = await sweepWorld()
+  try {
+    const dnsAcme = { managedBy: 'caddy', challengeType: 'dns-01', createdFor: 'library' }
+    const mark = async (label: string, pinned: boolean) => {
+      const id = await w.make(label, { pinned })
+      const [row] = await w.db.select().from(tls).where(eq(tls.id, id))
+      await w.db
+        .update(tls)
+        .set({ metadata: { ...(row!.metadata as object), acme: dnsAcme } })
+        .where(eq(tls.id, id))
+      return id
+    }
+    const loose = await mark('loose', false)
+    const pinned = await mark('pinnedone', true)
+    assertEquals(await markUnpinnedLibraryOrders(w.db, NOW), 1)
+    assertEquals(await markUnpinnedLibraryOrders(w.db, NOW), 0)
+    const warning = async (id: string) => {
+      const [row] = await w.db.select().from(tls).where(eq(tls.id, id))
+      return (row!.metadata as { acme?: { warning?: string } }).acme?.warning
+    }
+    assertEquals(await warning(loose), 'Waiting for a site to use this certificate.')
+    assertEquals(await warning(pinned), undefined)
+  } finally {
+    await w.cleanup()
+  }
 })

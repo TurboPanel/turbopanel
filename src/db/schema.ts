@@ -937,8 +937,8 @@ export const server = pgTable(
      */
     containerPrefix: cidr('container_prefix'),
     /**
-     * Latest hardware layout the daemon reported (`generation`,
-     * `bootGeneration`, `snapshot`, `appliedAt`, `updatedAt`, `changes`), at
+     * Latest hardware layout the daemon reported (`snapshot`,
+     * `appliedAt`, `updatedAt`, `changes`), at
      * most 64 KiB, rewritten at most once per cooldown. Overwritten in
      * place: there is no history. Never selected by list, detail or auth reads.
      */

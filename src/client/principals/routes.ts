@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -726,18 +726,12 @@ export function registerOrganizationLimitsRoutes(router: Hono<AppEnv>, opts: Aut
     const limits = parseResourceLimits(body.resourceLimits)
     if (limits === null) return c.json({ error: 'Invalid request' }, 400)
 
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-
-    const prevOptions = optionsRecordFromJsonb(orgRow?.options)
-
+    // One jsonb expression that sets only this key, so a concurrent change to another
+    // option (the certificate start times, a default) is never overwritten.
     await db
       .update(organization)
       .set({
-        options: { ...prevOptions, resourceLimits: limits },
+        options: sql`coalesce(${organization.options}, '{}'::jsonb) || ${JSON.stringify({ resourceLimits: limits })}::jsonb`,
         updatedAt: new Date().toISOString(),
       })
       .where(eq(organization.id, id))

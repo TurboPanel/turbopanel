@@ -280,8 +280,9 @@ export function parseExpiry(value: string): string {
 
 export function buildIngress(
   hostnames: readonly string[],
-  verifyOrigin = false
+  verifiedNames: readonly string[] = []
 ): CloudflareIngressRule[] {
+  const verified = new Set(verifiedNames.map((n) => n.trim().toLowerCase()))
   const seen = new Set<string>()
   const rules: CloudflareIngressRule[] = []
   for (const raw of hostnames) {
@@ -294,7 +295,7 @@ export function buildIngress(
       originRequest: {
         httpHostHeader: hostname,
         originServerName: hostname,
-        noTLSVerify: !verifyOrigin,
+        noTLSVerify: !verified.has(hostname),
       },
     })
   }
@@ -468,7 +469,7 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       await client(token).putConfiguration(
         requireAccount(input.accountId),
         input.externalId,
-        buildIngress(input.hostnames, input.verifyOrigin)
+        buildIngress(input.hostnames, input.verifiedNames)
       )
     },
 

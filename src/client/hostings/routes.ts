@@ -22,6 +22,7 @@ import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings
 import {
   loadHostingNameReads,
   parseNameChoices,
+  refuseUnavailableDnsChoices,
   unservedChoice,
 } from './name-certificates-routes.ts'
 import {
@@ -173,7 +174,8 @@ async function parseCreateNameChoices(
   db: Db,
   organizationId: string,
   body: Record<string, unknown>,
-  validatedOptions: HostingCreateFields['validatedOptions']
+  validatedOptions: HostingCreateFields['validatedOptions'],
+  serviceId: string
 ): Promise<Response | { choices: ReadonlyMap<string, HostnameChoice> | undefined }> {
   const named = await parseNameChoices(c, db, organizationId, body)
   if (named.kind === 'error') return named.response
@@ -186,6 +188,17 @@ async function parseCreateNameChoices(
       validatedOptions?.www ?? 'off'
     )
     if (unserved) return unserved
+    const unavailable = await refuseUnavailableDnsChoices(
+      c,
+      db,
+      organizationId,
+      {
+        serviceId,
+        hostingId: null,
+      },
+      choices
+    )
+    if (unavailable) return unavailable
   }
   return { choices }
 }
@@ -229,6 +242,33 @@ async function insertHostingFromCreate(
     else if (fks.tlsId.kind === 'value') await pinHostingNames(tx, inserted.id, fks.tlsId.value)
     return inserted.id
   })
+}
+
+/** The refusal for a patch's certificate choices, or null: a name the site does not serve, or DNS ordering that is not available. */
+async function refusePatchChoices(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  input: {
+    choices: ReadonlyMap<string, HostnameChoice> | undefined
+    hostnamesPatch: string[] | null
+    savedOptions: unknown
+    site: { id: string; serviceId: string }
+  }
+): Promise<Response | null> {
+  const { choices, hostnamesPatch, savedOptions, site } = input
+  if (!choices) return null
+  if (hostnamesPatch) {
+    const unserved = unservedChoice(c, choices, hostnamesPatch, readHostingWwwMode(savedOptions))
+    if (unserved) return unserved
+  }
+  return refuseUnavailableDnsChoices(
+    c,
+    db,
+    organizationId,
+    { serviceId: site.serviceId, hostingId: site.id },
+    choices
+  )
 }
 
 export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -333,7 +373,14 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const scopeDenied = await assertCreateHostingBindScope(c, db, fks.ipId, validatedOptions)
     if (scopeDenied) return scopeDenied
 
-    const created = await parseCreateNameChoices(c, db, organizationId, body, validatedOptions)
+    const created = await parseCreateNameChoices(
+      c,
+      db,
+      organizationId,
+      body,
+      validatedOptions,
+      serviceId
+    )
     if (created instanceof Response) return created
     const { choices } = created
 
@@ -362,7 +409,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (body instanceof Response) return body
 
     const [existingHosting] = await db
-      .select({ ipId: hosting.ipId, options: hosting.options })
+      .select({ ipId: hosting.ipId, options: hosting.options, serviceId: hosting.serviceId })
       .from(hosting)
       .where(eq(hosting.id, id))
       .limit(1)
@@ -383,10 +430,13 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const hostnamesPatch =
       hostnamesPatchFromFields(patchFields) ??
       (choices === undefined ? null : (parseHostingOptions(savedOptions)?.hostnames ?? []))
-    if (choices && hostnamesPatch) {
-      const unserved = unservedChoice(c, choices, hostnamesPatch, readHostingWwwMode(savedOptions))
-      if (unserved) return unserved
-    }
+    const badChoice = await refusePatchChoices(c, db, organizationId, {
+      choices,
+      hostnamesPatch,
+      savedOptions,
+      site: { id, serviceId: existingHosting.serviceId },
+    })
+    if (badChoice) return badChoice
 
     const conflict = await commitHostingPatch(c, db, {
       id,

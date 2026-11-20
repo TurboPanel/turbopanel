@@ -80,6 +80,7 @@ function thenableWhere(rows: unknown[]) {
     catch: promise.catch.bind(promise),
     finally: promise.finally.bind(promise),
     limit: () => Promise.resolve(rows),
+    for: () => Promise.resolve(rows),
     orderBy: () => afterOrderBy,
   }
   return {
@@ -653,11 +654,15 @@ test('POST /tls rejects invalid source, name, and missing encryption', async () 
     headers: authHeaders(cookie, json),
     body: JSON.stringify({
       source: 'lets_encrypt',
-      hostnames: ['app.example.com'],
+      hostnames: ['*.*.example.com'],
       challengeType: 'dns-01',
     }),
   })
-  await expectJson(dns01, 400, { error: 'dns_01_unsupported' })
+  // dns-01 is accepted now; a name that is not valid is still refused.
+  await expectJson(dns01, 400, {
+    error: 'Invalid request',
+    detail: '*.*.example.com may have only one * at the start',
+  })
 
   const noKey = await buildTlsApp({ encryption: false })
   const missing = await noKey.app.request('/tls', {

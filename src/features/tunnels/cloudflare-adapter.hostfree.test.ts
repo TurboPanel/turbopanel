@@ -753,14 +753,15 @@ test("expiry times are read in Cloudflare's form and in ISO form, and nothing el
   }
 })
 
-test('with verification on, routes stop skipping verification and add no certificate file', () => {
-  const rules = buildIngress(['a.example.com'], true)
+test('verification is per name: only the verified names stop skipping it, the rest keep skipping', () => {
+  const rules = buildIngress(['a.example.com', 'b.example.com'], ['A.example.com'])
   assertEquals(rules[0]!.originRequest, {
     httpHostHeader: 'a.example.com',
     originServerName: 'a.example.com',
     noTLSVerify: false,
   })
-  // Left out, the default stays as before.
+  assertEquals(rules[1]!.originRequest?.noTLSVerify, true)
+  // Left out, every name keeps skipping verification.
   assertEquals(buildIngress(['a.example.com'])[0]!.originRequest?.noTLSVerify, true)
 })
 

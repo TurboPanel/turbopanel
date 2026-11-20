@@ -623,14 +623,14 @@ test('the existing certificates view lists what the provider holds and marks wha
   })
 })
 
-test('the verified connection option needs a tunnel of this organization and a yes or no', async () => {
+test('the removed verified connection option answers 410 with a plain sentence', async () => {
   await withFixture(async (f) => {
     const path = (id: string) => `/organizations/${f.orgA}/tunnels/${id}/verify-origin`
-    const missing = await call(f, 'PUT', path(crypto.randomUUID()), f.managerCookie, {
+    const gone = await call(f, 'PUT', path(crypto.randomUUID()), f.managerCookie, {
       enabled: true,
     })
-    assertEquals(missing.status, 404)
-    const notUuid = await call(f, 'PUT', path('nope'), f.managerCookie, { enabled: true })
-    assertEquals(notUuid.status, 404)
+    assertEquals(gone.status, 410)
+    assertEquals(gone.body.error, 'verify_origin_removed')
+    assert(String(gone.body.message).includes('verified by itself'))
   })
 })

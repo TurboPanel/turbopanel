@@ -45,6 +45,14 @@ import {
   handleHttpIssuanceInbound,
   isHttpIssuanceMessage,
 } from '../../features/tls/http-issuance/events.ts'
+import {
+  confirmThroughProvider,
+  handleDnsRelayInbound,
+  unavailableDnsAnswer,
+  isDnsRelayMessage,
+} from '../../features/tls/http-issuance/dns-relay.ts'
+import { createCloudflareDnsChallenge } from '../../features/tunnels/cloudflare-dns-challenge.ts'
+import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
 import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
   FabricPeerReportThrottle,
@@ -74,7 +82,7 @@ import {
   persistUpgradeProgress,
 } from '../../features/upgrades/persist.ts'
 import { enqueueLatestRecordedCapabilityPlan } from '../../client/servers/capability-plan-push.ts'
-import { recordTopologyGeneration } from '../../features/servers/server-topology-records.ts'
+import { recordTopologyReport } from '../../features/servers/server-topology-records.ts'
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
@@ -142,6 +150,8 @@ import type {
   PendingRequestStatus,
 } from '../../contracts/cell.ts'
 import type {
+  AcmeDnsPublishMessage,
+  AcmeDnsRemoveMessage,
   CommandRecoveryReport,
   CommandStateReport,
   DaemonBuildInfo,
@@ -180,6 +190,12 @@ export { classifyDaemonCellSqlStorageOp }
  * this guard was added for (billing-audit follow-up, Jul 2026).
  */
 const BACKGROUND_TASK_TIMEOUT_MS = 5_000
+
+/** How long the DNS relay waits for a record to read back; an invocation cannot wait long. */
+const DNS_RELAY_READBACK_MS = 18_000
+const DNS_RELAY_POLL_MS = 2_000
+/** The whole relay call, records and read-back, stays under the invocation's ceiling. */
+const DNS_RELAY_TIMEOUT_MS = 27_000
 
 /**
  * Hard client-side deadline for daemon JWT keyring derivation on the
@@ -2548,6 +2564,61 @@ export class DaemonCellObject {
    * (`managed-health-report`, `fabric-peers-report`, `repo-key-changed`, `topology-report`).
    * Returns true when handled.
    */
+  /**
+   * The DNS relay. A Durable Object invocation has a short wall-time ceiling, so the
+   * read-back waits only {@link DNS_RELAY_READBACK_MS}; the DNS provider shows a new
+   * record within seconds. The work runs under `waitUntil` and answers the daemon on
+   * the socket it arrived on once it is done.
+   */
+  async #handleDnsRelayFrame(
+    ws: WebSocket,
+    attachment: { connectionId: string; serverId: string },
+    parsed: AcmeDnsPublishMessage | AcmeDnsRemoveMessage
+  ): Promise<void> {
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
+    const secrets = await this.#dataEncryptionSecrets()
+    const db = this.#newProjectionDb()
+    if (!db) {
+      if (parsed.type === 'acme-dns-publish') {
+        await this.#sendToDaemon(ws, unavailableDnsAnswer(parsed)).catch(() => undefined)
+      }
+      return
+    }
+    const work = (async () => {
+      try {
+        await runWithDbTimeout(
+          db,
+          (open) =>
+            handleDnsRelayInbound(
+              {
+                db: open,
+                secrets,
+                dns: (_provider, token) => createCloudflareDnsChallenge({ token }),
+                adapters: createTunnelAdapterRegistry(),
+                // Workers cannot ask a nameserver directly: the provider's own read is the check.
+                confirm: confirmThroughProvider,
+                reply: (answer) => this.#sendToDaemon(ws, answer),
+                readbackTimeoutMs: DNS_RELAY_READBACK_MS,
+                readbackPollMs: DNS_RELAY_POLL_MS,
+              },
+              attachment.serverId,
+              parsed
+            ),
+          DNS_RELAY_TIMEOUT_MS
+        )
+      } catch (err) {
+        console.error(
+          `daemon cell dns-relay failed (${attachment.serverId}): ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      } finally {
+        await endDbConnection(db).catch(() => {})
+      }
+    })()
+    this.#ctx.waitUntil(work)
+  }
+
   async #handleReportInbound(
     attachment: { connectionId: string; serverId: string },
     parsed: DaemonMessage
@@ -2603,9 +2674,7 @@ export class DaemonCellObject {
     if (parsed.type === 'topology-report') {
       await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
-        await recordTopologyGeneration(db, attachment.serverId, {
-          generation: parsed.generation,
-          bootGeneration: parsed.bootGeneration,
+        await recordTopologyReport(db, attachment.serverId, {
           snapshot: parsed.snapshot,
           appliedAt: parsed.at,
         })
@@ -2701,6 +2770,11 @@ export class DaemonCellObject {
           parsed,
           haEventSignature(validated.signature, session.phase === 'signed')
         )
+        return
+      }
+
+      if (isDnsRelayMessage(parsed)) {
+        await this.#handleDnsRelayFrame(ws, attachment, parsed)
         return
       }
 

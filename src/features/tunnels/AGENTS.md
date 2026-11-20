@@ -612,15 +612,49 @@ generation of a deploy come from one unchanged read of the routing facts
 
 ## Origin certificates
 
-Optional, per tunnel. The default hop from the connector to the local web server
-skips certificate verification (`noTLSVerify: true`; the connector still sends
-the hostname as the origin server name). With the choice "verify the
-connection" (`tunnel.options.verifyOrigin`) the sites that serve the tunnel's
-names present an origin certificate and the connector verifies it
-(`setRoutes` with `verifyOrigin: true`, which sets `noTLSVerify: false` and
-nothing else; no certificate file or path is needed, the connector's origin pool
-includes the provider's origin roots, proved on a real connector, see the end of
-this section.)
+Per name, no tunnel-wide switch. The default hop from the connector to the local
+web server skips certificate verification (`noTLSVerify: true`; the connector
+still sends the hostname as the origin server name). A name is verified
+(`noTLSVerify: false`, set by `buildIngress(hostnames, verifiedNames)`) only when
+all of these hold (`verified-names.ts`, pure rule `nameIsVerified`): its pin is a
+provider origin certificate or a ready public Let's Encrypt pair, the certificate
+covers the name, and a successful deploy carried it (every deployment of the
+site's environment is `applied` and was queued after the pin last changed). Every
+other name keeps skipping verification, so one site that is not ready never makes
+its neighbours unreachable. The pin of a name is `hostname.tlsId` when its
+`hostname.certificate` is set, else `hosting.tlsId`.
+
+A name the site does not store (no `hostname` row) is never verified, and a pair
+from the authority's test directory (`metadata.acme.staging`) never verifies a name.
+A library pair counts as public only when this panel ordered it (`acme.managedBy
+= 'panel'`).
+
+Pushing routes goes through `pushTunnelRoutes` (`route-push.ts`). One writer per
+tunnel: the names are read, the provider written and `tunnel.metadata.routes`
+(`{ verifiedNames, hostnames }`) stored inside one transaction that holds the
+tunnel row `for update`, so no writer can overwrite a newer name list with an
+older one. Every route write (add, remove, restore, sweep, nudge) takes that lock
+and reads its names inside it. `route-sync.ts` writes a tunnel only when its
+routed names or verified names differ from the last write; failures back off per
+tunnel (`metadata.routesRetry`: a minute, doubling to an hour, or the provider's
+`Retry-After`). `runVerifiedNamesSweepTick` (`verified-names-sweep.ts`, in
+`TUNNEL_SWEEPS`) handles at most 50 tunnels per tick in a minute-rotated order and
+stops starting new ones after 20 seconds. `nudgeTunnelRoutes` (after a deploy
+applied, a pin change or a reach change) runs the same sync for the organization,
+so a name is verified within seconds, not at the next tick.
+The old Verified Connection switch and `tunnel.options.verifyOrigin` are gone;
+`PUT .../verify-origin` answers 410 `verify_origin_removed`, and keys left in old
+rows are ignored.
+
+**Also directly** (`doorway-reach.ts`, `PATCH /organizations/:id/tunnels/:tunnelId/hostnames/:doorwayId`
+`{ isLocalOnly }`, owners and managers): `isLocalOnly: false` puts the name in the
+deploy's `openHostnames` so the site's datacenter address answers it as well as the
+tunnel. Refused with 409 `doorway_bind_not_datacenter` unless the site's bind is a
+datacenter network (never public or local), `doorway_no_site` without a site,
+`doorway_removing`; closing (`true`) is always allowed. Opening moves a name whose
+stored certificate is still the default of a tunnel-only name to the default of a
+name reached both ways (a picked certificate is never changed) and answers
+`certificateChangedNames` and `needsDeploy`. Audit action `doorway.update`.
 
 **The default is a certificate for EXACT hostnames, not a wildcard.** One
 certificate per site (a site pins one `tlsId`), listing exactly the names that
@@ -693,11 +727,11 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
   with a plain sentence, and a row without a provider link is never touched.
 - **Compose-owned sites keep the pin.** The compose reconcile re-asserts a
   site's `tls_id` from its declaration on every deploy, which used to hand a site
-  pinned by the verified connection back to the declared mode (internal or
+  pinned to an origin certificate back to the declared mode (internal or
   Let's Encrypt) and left the connector with no matching certificate (502). The
   reconcile now keeps a pin on an unretired `provider_origin` row unless the
   declaration names a certificate itself; once the certificate is retired
-  (verified connection off) the next deploy returns the site to its declaration
+  (no name needs it) the next deploy returns the site to its declaration
   and the sweep can revoke the certificate. Removing a tunnel also retires the
   certificates nothing needs.
 - If storing fails after the provider issued the certificate, it is revoked
@@ -714,7 +748,7 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
   so none is always last (a pass also stops starting organizations after 20
   seconds), and only rows
   that need it (retired, or close to expiry); a pinned certificate close to expiry
-  is renewed even when retired (verification turned off), so a server never keeps
+  is renewed even when retired, so a server never keeps
   an expired one. Sites re-pinned by a renewal get their hostings-only apply. It
   needs the data-encryption secrets and does nothing without them.
 - **Back-off** (`origin-certificate-retry.ts`): a row whose renewal or revoke
@@ -728,46 +762,16 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
 - Deleting an organization removes the rows without revoking them at the
   provider.
 
-**Turning it on** (`verify-origin.ts`, `PUT /organizations/:id/tunnels/:tunnelId/verify-origin`
-`{ enabled, wildcard? }`): each site that serves the tunnel's names gets the
-certificate for exactly the names it serves (`hostingCertificateNames`, so the
-`www` sibling counts) and `hosting.tlsId` is pointed at it. The daemon already
-renders a pinned pair for a locked tunnel name instead of `tls internal`, so no
-daemon change is needed; the server gets the new pair with the site's next
-deploy (`needsDeploy`). Refused (409) when the site also serves a name that is
-not a verified tunnel name (`verify_origin_public_names`: browsers do not trust
-an origin certificate), when its names span more than one zone
-(`verify_origin_zones`), or when a chosen wildcard does not cover a deeper name
-(`verify_origin_names`). Safe to repeat: run it again when a site was missing or
-names were added. One request asks the provider for at most 10 certificates
-(`MAX_CERTIFICATES_PER_VERIFY`); the other sites come back as
-`deferredHostingIds` and the next apply continues without issuing anything twice.
-A wildcard request is checked against every site's names before anything is issued.
-
-**The connector only verifies while every name is covered.** `tunnelVerifyState`
-(`verify-state.ts`) is `active` only when every non-removing name of the tunnel
-belongs to a site that pins a ready, unexpired origin certificate covering it;
-the routes sent to the provider use `active`, never the bare choice, so a site
-that does not exist yet can never make a verified tunnel unreachable. `pendingNames`
-(in the tunnel's `verifyOrigin`) says which names still wait.
-
 Routes (`client/organizations/origin-certificate-routes.ts`, `organization:manage`):
 `GET|POST /organizations/:id/carriers/:carrierId/origin-certificates`,
-`GET .../origin-certificates/existing?zone=`, `DELETE .../origin-certificates/:tlsId`
-and the tunnel route above. Tunnel-only names never get an automatic public
+`GET .../origin-certificates/existing?zone=` and `DELETE .../origin-certificates/:tlsId`. Tunnel-only names never get an automatic public
 certificate request; nothing here touches that path.
 
-**Proved on a real connector (2026-10-28, testing server w, connector 2026.5.2):**
-a throwaway tunnel routed one hostname to a small TLS server on the same machine
-that presented an origin certificate issued for exactly that name, with the
-route set to `originServerName` = the hostname and `noTLSVerify: false`. A request
-through Cloudflare returned the page (200), so the connector verifies the origin
-certificate against its built-in roots with no file or path configured. The same
-server presenting a self-signed certificate answered 502 and the connector log
-said `x509: certificate signed by unknown authority`, so verification really was
-on. The tunnel, DNS name and certificate were removed afterwards. Not yet tried
-through the full panel flow (turning the option on for a tunnel with a site): that
-is the next testing round.
+**Proved on a real connector (2026-10-28, connector 2026.5.2):** a route with
+`originServerName` = the hostname and `noTLSVerify: false` to a local TLS server
+presenting an origin certificate for exactly that name returned the page (200),
+so the connector verifies against its built-in roots with no file configured; a
+self-signed certificate answered 502 (`x509: certificate signed by unknown authority`).
 
 ## Run-token rotation
 

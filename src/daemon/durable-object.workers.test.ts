@@ -1847,16 +1847,12 @@ describe.sequential('DaemonCellObject', () => {
     const { ws } = await openDaemonWebSocket(stub, serverId)
 
     const daemonSnapshot = {
-      generation: 3,
-      bootGeneration: 1,
       networks: [{ deviceId: 'mac:aa:bb:cc:dd:ee:ff', kind: 'uplink' }],
     }
     const reportedAt = '2026-01-01T00:05:00.000Z'
     ws.send(
       JSON.stringify({
         type: 'topology-report',
-        generation: 3,
-        bootGeneration: 1,
         snapshot: daemonSnapshot,
         at: reportedAt,
       })
@@ -1866,12 +1862,10 @@ describe.sequential('DaemonCellObject', () => {
       expect(inserted.length).toBeGreaterThan(0)
     })
 
-    // Stored directly — never re-wrapped as `{ generation, bootGeneration, snapshot }`.
+    // Stored directly — never re-wrapped.
     expect(inserted[0]?.snapshot).toEqual(daemonSnapshot)
     // The daemon's own report time, not a control-plane receipt timestamp.
     expect(inserted[0]?.appliedAt).toBe(reportedAt)
-    expect(inserted[0]?.generation).toBe(3)
-    expect(inserted[0]?.bootGeneration).toBe(1)
     expect(inserted[0]?.serverId).toBe(serverId)
 
     ws.close(1000, 'test done')
@@ -3849,10 +3843,7 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
 
   it.each([
     ['heartbeat', { type: 'heartbeat', daemonBuild: { commit: 'same', buildId: '1' } }],
-    [
-      'topology-report',
-      { type: 'topology-report', generation: 1, bootGeneration: 1, snapshot: { networks: [] } },
-    ],
+    ['topology-report', { type: 'topology-report', snapshot: { networks: [] } }],
   ])(
     '%s after a stale sweep restores the Postgres online projection',
     async (name, frame) => {

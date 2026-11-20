@@ -2,9 +2,9 @@
  * How visitors reach a hosting through a tunnel, for the hosting reads. Each
  * entry is one of the hosting's names that a tunnel carries: which tunnel,
  * whether the name is tunnel-only (no public path) and whether the connector
- * checks the server's certificate. The connector checks it only while the
- * tunnel's verified connection is in effect (`VerifyState.active`, the same
- * value the routes sent to the provider use); otherwise it reaches the server
+ * checks the server's certificate. The connector checks it per name, for
+ * the names in the tunnel's last pushed verified set (`readRoutedVerified`, the
+ * same value the routes sent to the provider use); otherwise it reaches the server
  * over HTTPS and accepts the server's own certificate on purpose.
  *
  * Doorways are matched the way a deploy matches them: linked to the hosting,
@@ -16,7 +16,7 @@ import { doorway, tunnel } from '../../db/schema.ts'
 import { parseHostingOptions } from '../hostings/hosting-options.ts'
 import { unlinkedDoorwayNamed } from './name-lock.ts'
 import { compareText } from './order.ts'
-import { tunnelVerifyState } from './verify-state.ts'
+import { readRoutedVerified } from './route-push.ts'
 
 export type HostingTunnelPath = {
   hostname: string
@@ -51,7 +51,7 @@ type HostingNames = { id: string; hostnames: readonly string[] }
 export function matchHostingTunnelPaths(
   hostings: readonly HostingNames[],
   doorways: readonly HostingTunnelDoorway[],
-  verifiedTunnels: ReadonlySet<string>
+  verifiedNames: ReadonlyMap<string, ReadonlySet<string>>
 ): Map<string, HostingTunnelPath[]> {
   const result = new Map<string, HostingTunnelPath[]>()
   for (const row of hostings) {
@@ -66,7 +66,7 @@ export function matchHostingTunnelPaths(
         tunnelName: d.tunnelName,
         provider: d.provider,
         tunnelOnly: d.isLocalOnly,
-        originVerified: verifiedTunnels.has(d.tunnelId),
+        originVerified: verifiedNames.get(d.tunnelId)?.has(d.hostname.toLowerCase()) ?? false,
         status: d.status,
       }))
       .toSorted((a, b) => compareText(a.hostname, b.hostname))
@@ -79,8 +79,7 @@ export function matchHostingTunnelPaths(
 export async function loadHostingTunnelPaths(
   db: Db,
   organizationId: string,
-  rows: readonly { id: string; options: unknown }[],
-  now: Date = new Date()
+  rows: readonly { id: string; options: unknown }[]
 ): Promise<Map<string, HostingTunnelPath[]>> {
   if (rows.length === 0) return new Map()
   const hostings = rows.map((row) => ({
@@ -94,7 +93,7 @@ export async function loadHostingTunnelPaths(
       tunnelId: doorway.tunnelId,
       tunnelName: tunnel.name,
       provider: tunnel.provider,
-      tunnelOptions: tunnel.options,
+      tunnelMetadata: tunnel.metadata,
       isLocalOnly: doorway.isLocalOnly,
       status: doorway.status,
     })
@@ -114,13 +113,8 @@ export async function loadHostingTunnelPaths(
       )
     )
   if (doorways.length === 0) return new Map()
-  const tunnels = new Map(doorways.map((d) => [d.tunnelId, d.tunnelOptions]))
-  const states = await Promise.all(
-    [...tunnels].map(async ([id, options]) => ({
-      id,
-      state: await tunnelVerifyState(db, { id, options }, now),
-    }))
+  const verified = new Map(
+    doorways.map((d) => [d.tunnelId, new Set(readRoutedVerified(d.tunnelMetadata))])
   )
-  const verified = new Set(states.filter((s) => s.state.active).map((s) => s.id))
   return matchHostingTunnelPaths(hostings, doorways, verified)
 }

@@ -31,6 +31,7 @@ import type { Db } from '../../db/connection.ts'
 import { hostname, hosting, tls } from '../../db/schema.ts'
 import { type AuditEntry, recordAudit } from '../audit/audit-records.ts'
 import { logWarn } from '../../lib/logger.ts'
+import { readDnsCertState } from './dns-certificates/order-state.ts'
 import { readHttpIssuanceState } from './http-issuance/state.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
@@ -261,7 +262,13 @@ async function loadCandidates(
   const rows = lock ? await query.for('update') : await query
   const accept = scope === 'swept' ? isSweptLetsEncrypt : isSiteLetsEncrypt
   // A row with a server-placed order under way is never removed, even when no site pins it for a moment.
-  return rows.filter((row) => accept(row) && readHttpIssuanceState(row.metadata)?.endedAt !== null)
+  // Nor is a row whose challenge records are not removed yet: the cleanup tick removes them first.
+  return rows.filter(
+    (row) =>
+      accept(row) &&
+      readHttpIssuanceState(row.metadata)?.endedAt !== null &&
+      (readDnsCertState(row.metadata)?.records.length ?? 0) === 0
+  )
 }
 
 /**

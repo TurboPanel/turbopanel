@@ -149,10 +149,15 @@ test('the per-name read lists each name with options, the doorway reach and cove
         .set({ metadata: { dnsNames: [] } })
         .where(eq(tls.id, empty))
       await replaceHostingHostnames(s.db, s.hostingAId, s.organizationId, [NAME, 'b.example.com'])
-      const reads = await loadHostingNameReads(s.db, s.organizationId, [
-        { id: s.hostingAId, options: null },
-        { id: s.hostingBId, options: null },
-      ])
+      const sites = await s.db
+        .select({ id: hosting.id, serviceId: hosting.serviceId })
+        .from(hosting)
+        .where(inArray(hosting.id, [s.hostingAId, s.hostingBId]))
+      const reads = await loadHostingNameReads(
+        s.db,
+        s.organizationId,
+        sites.map((site) => ({ ...site, options: null }))
+      )
       const names = reads.get(s.hostingAId) ?? []
       assertEquals(
         names.map((n) => n.hostname),

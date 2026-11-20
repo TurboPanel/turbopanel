@@ -4,7 +4,7 @@ import { desc, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { createDenoDb, type Db } from '../../db/connection.ts'
+import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
@@ -183,6 +183,8 @@ async function setup(options: {
       await db.delete(grant).where(eq(grant.actorId, userId))
       await db.delete(user).where(eq(user.id, userId))
       await db.delete(organization).where(eq(organization.id, organizationId))
+      // Each fixture owns a pool; end it so the shard's connections do not pile up.
+      await endDbConnection(db)
     },
   }
 }

@@ -238,8 +238,8 @@ per extra filesystem; `extended.gpuSizes` per GPU memory), and both stores keep
 them beside the readings (`ext_*` columns and per-entity `total_bytes` /
 `total_inodes` / `memory_total_bytes` columns on DuckDB; slots on the hosted
 rows, see `V12-LAYOUT.md`). A resize or a balloon therefore changes the size on
-the next sample and nothing else: no new topology generation, no history to
-restate. Topology generations now track only the entity set (a NIC, filesystem,
+the next sample and nothing else: no new topology, no history to
+restate. A topology change is only a change of the entity set (a NIC, filesystem,
 drive or GPU added or removed, a slot override); see
 `features/servers/server-topology-records.ts` for the limits that bound them.
 
@@ -356,19 +356,14 @@ sample order). No matching topology yet (first sample, resync pending) degrades
 gracefully to pre-topology positional packing — never a dropped sample.
 
 **Matching a sample to its topology** (`features/servers/topology-identity.ts`):
-Metrics samples carry no topology generation (the field is gone from the wire
-contract, which has the one version 8). A sample matches when every
+Neither metrics samples nor topology reports carry a topology generation (the
+field is gone from the wire contract, which has the one version 8). A sample matches when every
 network device, filesystem, block device and GPU it names is in the stored
 snapshot (hardware signals are left out: an unknown one only moves to the end
-of its page). A daemon stops sending the `topology-report`
-`generation`/`bootGeneration` and the `topology_generation_changed` event once
-the control plane lists the `topology-generation-optional-v1` wire feature.
-`recordTopologyGeneration` tells a new topology from a resend the same way:
-the generation numbers when both sides carry one, else `topologyIdentityKey`
-(entity ids plus the attributes `computeSlotMapping` reads), so the hourly and
-daily change limits count topology changes, not size or label changes. The
-event kind stays in the catalog and the stored keys stay readable until no
-supported daemon sends them.
+of its page). `recordTopologyReport` tells a new topology from a resend by
+`topologyIdentityKey` (entity ids plus the attributes `computeSlotMapping`
+reads), so the hourly and daily change limits count topology changes, not size
+or label changes.
 
 **Missing metrics:** same `-1e308` sentinel idiom as v3
 (`AE_MISSING_METRIC_SENTINEL`), never coerced to `0`; all host metrics are ≥ 0
@@ -382,7 +377,7 @@ A closed catalog of discrete state-change/fault signals distinct from the
 continuous numeric families — `METRIC_EVENT_KINDS` in `contract.ts` (OOM kills,
 hung tasks, conntrack exhaustion, filesystem state changes, SMART/NVMe/RAID
 faults, NIC link state, TurboFabric mesh state, fan/thermal/ PSU/voltage/ECC
-faults, GPU faults, clock-sync state, topology/boot generation bumps).
+faults, GPU faults, clock-sync state, boot generation bumps).
 `isHardwareHealthEventKind` classifies each kind as a physical-hardware-health
 signal or not (`HARDWARE_HEALTH_EVENT_KIND`, a `Record` so an unclassified new
 kind fails to compile rather than silently defaulting);

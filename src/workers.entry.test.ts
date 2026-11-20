@@ -220,10 +220,9 @@ describe('workers.ts entry handlers', () => {
     const paths = getWorkerAppRoutePathsForTests().filter((path) =>
       path.includes('/dns-certificates')
     )
-    // The list stays; start, check and retry answer `certificate_ordering_off`
-    // (dns-certificate-routes.hostfree.test.ts), and no Workers code can reach
-    // the ordering modules (ordering-off.hostfree.test.ts).
-    // Exactly these three: no other ordering route under `/dns-certificates`.
+    // The list, the order and its check and retry only write the row; the
+    // order itself is placed by a server's daemon (dns-certificate-routes.hostfree.test.ts),
+    // and no Workers code can reach the ordering modules (ordering-off.hostfree.test.ts).
     expect([...new Set(paths)].sort((a, b) => a.localeCompare(b))).toEqual([
       `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates`,
       `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/check`,

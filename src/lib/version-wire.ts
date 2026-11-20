@@ -252,7 +252,6 @@ export const DAEMON_WIRE_FEATURES = [
   'signin-v2',
   'hosting-via-header-v1',
   'dev-host-v1',
-  'topology-generation-optional-v1',
   'signed-reports-v1',
   'panel-bound-session-v1',
   'panel-keyset-statements-v1',
@@ -271,21 +270,10 @@ export const DAEMON_WIRE_FEATURES = [
   'build-limits-v1',
   'tunnel-peer-mtls-v1',
   'hosting-name-tls-v1',
+  'acme-issue-dns-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
-
-/**
- * The control plane no longer needs the daemon's topology generation numbers:
- * it matches a metrics sample to the stored topology by the entity ids the
- * sample names, and tells topology reports apart by their content
- * (`src/features/servers/topology-identity.ts`). A daemon attached to a
- * control plane that lists this leaves `generation` and `bootGeneration` off
- * its `topology-report` and stops sending the `topology_generation_changed`
- * event. Both are still accepted from older daemons.
- */
-export const TOPOLOGY_GENERATION_OPTIONAL_FEATURE: DaemonWireFeature =
-  'topology-generation-optional-v1'
 
 /**
  * This daemon honours `hostingsOnly` on `environment.deploy`: it rewrites only
@@ -381,6 +369,15 @@ export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
  * and never sends a mixed row to an older daemon, which would drop the field.
  */
 export const HOSTING_NAME_TLS_FEATURE: DaemonWireFeature = 'hosting-name-tls-v1'
+
+/**
+ * The daemon can place a certificate order over the DNS proof (`challenge:
+ * 'dns-01'` on `acme-issue-request`), asking the control plane to publish and
+ * remove the TXT records (`acme-dns-publish`, `acme-dns-remove`). A daemon
+ * without this feature drops `challenge` and would run the HTTP proof, so the
+ * control plane never sends `dns-01` to one.
+ */
+export const ACME_ISSUE_DNS_FEATURE: DaemonWireFeature = 'acme-issue-dns-v1'
 
 /**
  * The daemon places the certificate order for a name set when the control plane

@@ -32,6 +32,7 @@ test('the tunnel sweep list holds every hosted tunnel sweep, in order', () => {
     TUNNEL_SWEEPS.map((sweep) => sweep.failureLabel),
     [
       'tunnel-routes-sweep-failed',
+      'tunnel-verified-names-sweep-failed',
       'tunnel-connectors-sweep-failed',
       'tunnel-run-token-rotation-failed',
       'tunnel-removal-sweep-failed',
@@ -82,12 +83,15 @@ test('no single tunnel sweep is wired into one scheduler only', () => {
 test('every sweep the hosted cron runs on its queue also runs on a self-hosted control plane', () => {
   const offline = readSource('../../daemon/cell/offline-sweep.ts')
   const start = offline.indexOf('async function runQueuedCronSweeps(')
-  const end = offline.indexOf('\n}\n', start)
+  const end = offline.indexOf('\nfunction capDbTimeout(', start)
   assert(start >= 0 && end > start, 'runQueuedCronSweeps is not where this test looks for it')
+  // The queued sweeps and the helpers split out of it, up to the next function.
+  const region = offline.slice(start, end)
+  const helpers = new Set([...region.matchAll(/function (run\w+)\(/g)].map((match) => match[1]))
   const hosted = new Set(
-    [...offline.slice(start, end).matchAll(/\b(run\w+)\(/g)]
+    [...region.matchAll(/\b(run\w+)\(/g)]
       .map((match) => match[1])
-      .filter((name) => name !== 'runIsolatedSweep' && name !== 'runQueuedCronSweeps')
+      .filter((name) => name !== 'runIsolatedSweep' && !helpers.has(name))
   )
   // The same work under the name the self-hosted side calls it by.
   const selfHostedName: Record<string, string> = { runTunnelSweeps: 'runSelfHostedTunnelSweeps' }

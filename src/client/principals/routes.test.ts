@@ -1094,6 +1094,12 @@ test('GET and PUT /organizations/:id/resource-limits round-trip limits', async (
     assertEquals(getEmpty.status, 200)
     assertEquals(await getEmpty.json(), { resourceLimits: {} })
 
+    // Another key kept on the organization (the certificate start times) survives the write.
+    await db
+      .update(organization)
+      .set({ options: { acmeNewStarts: ['2026-11-01T12:00:00.000Z'] } })
+      .where(eq(organization.id, organizationId))
+
     const put = await app.request(`/organizations/${organizationId}/resource-limits`, {
       method: 'PUT',
       headers,
@@ -1118,6 +1124,13 @@ test('GET and PUT /organizations/:id/resource-limits round-trip limits', async (
     }
     assertEquals(getBody.resourceLimits.maxCpus, 4)
     assertEquals(getBody.resourceLimits.maxMemoryBytes, 8192)
+    const [kept] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, organizationId))
+    assertEquals((kept!.options as { acmeNewStarts?: string[] }).acmeNewStarts, [
+      '2026-11-01T12:00:00.000Z',
+    ])
 
     await db
       .delete(grant)

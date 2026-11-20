@@ -1,32 +1,21 @@
 import { clientErrorJson, resourceErrorResponses } from './shared.ts'
 
 /**
- * OpenAPI for certificates the panel ordered itself and proved by a DNS
- * challenge (`client/organizations/dns-certificate-routes.ts`). The control
- * plane no longer orders them: the three order routes answer 422
- * `certificate_ordering_off`. The list stays, for owners and managers.
+ * OpenAPI for certificates ordered through a DNS proof
+ * (`client/organizations/dns-certificate-routes.ts`): one name, several names
+ * or a wildcard. A server that serves the organization places the order; the
+ * control plane publishes and removes the challenge records with the
+ * organization's DNS token and never talks to the certificate authority.
  */
 
-const ORDERING_OFF = {
+const ORDER_REFUSED = {
+  '400': {
+    description: 'The names are not valid (`Invalid request`, with a plain `message`).',
+    content: { 'application/json': { schema: clientErrorJson } },
+  },
   '401': {
     description: 'Unauthorized: no session.',
     content: { 'application/json': { schema: clientErrorJson } },
-  },
-  '422': {
-    description:
-      'Ordering certificates from the control plane is turned off (`certificate_ordering_off`, with a plain `message`). Certificates will be ordered by the server that runs the site in a coming release.',
-    content: {
-      'application/json': {
-        schema: {
-          type: 'object',
-          required: ['error', 'message'],
-          properties: {
-            error: { type: 'string', enum: ['certificate_ordering_off'] },
-            message: { type: 'string' },
-          },
-        },
-      },
-    },
   },
 } as const
 
@@ -97,24 +86,17 @@ export const dnsCertificateSchemas = {
   DnsCertificateCreate: {
     type: 'object',
     title: 'Order A Certificate',
-    required: ['carrierId', 'names'],
+    required: ['names'],
     properties: {
-      carrierId: {
-        type: 'string',
-        format: 'uuid',
-        description: 'The connected account that hosts the DNS.',
-      },
       names: {
         type: 'array',
+        minItems: 1,
         maxItems: 10,
         items: { type: 'string' },
-        description: 'Exact names. A wildcard (`*.example.com`) only when it is asked for by name.',
+        description:
+          'Exact names and wildcards (`*.example.com`). A wildcard is proved over DNS only. The organization needs a connected account whose token can edit DNS for each name.',
       },
-      staging: {
-        type: 'boolean',
-        default: false,
-        description: 'Use the authority’s test directory (tests only).',
-      },
+      autoRenew: { type: 'boolean', default: true },
     },
   },
 } as const
@@ -146,37 +128,61 @@ export const dnsCertificatePaths: Record<string, unknown> = {
     },
     post: {
       tags: ['Organizations'],
-      summary: 'Order a certificate by DNS challenge (turned off)',
-      description: 'Always refused: the control plane no longer orders certificates.',
+      summary: 'Order a certificate through a DNS proof',
+      description:
+        'Starts an order for one name, several names or a wildcard. A server that serves the organization places it; the certificate appears in the list while it is ordered.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM],
       requestBody: {
-        required: false,
+        required: true,
         content: {
           'application/json': { schema: { $ref: '#/components/schemas/DnsCertificateCreate' } },
         },
       },
-      responses: { ...ORDERING_OFF },
+      responses: {
+        ...ok('The certificate being ordered', {
+          type: 'object',
+          properties: { certificate: { $ref: '#/components/schemas/DnsCertificate' } },
+        }),
+        ...ORDER_REFUSED,
+        ...errors(),
+      },
     },
   },
   '/api/client/v1/organizations/{id}/dns-certificates/{tlsId}/check': {
     post: {
       tags: ['Organizations'],
-      summary: 'Move an order on now (turned off)',
-      description: 'Always refused: the control plane no longer orders certificates.',
+      summary: 'Read the state of an order',
+      description: 'The certificate as it stands now; the sweep moves an order on every minute.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TLS_ID_PARAM],
-      responses: { ...ORDERING_OFF },
+      responses: {
+        ...ok('The certificate', {
+          type: 'object',
+          properties: { certificate: { $ref: '#/components/schemas/DnsCertificate' } },
+        }),
+        ...errors(),
+      },
     },
   },
   '/api/client/v1/organizations/{id}/dns-certificates/{tlsId}/retry': {
     post: {
       tags: ['Organizations'],
-      summary: 'Try a failed order again (turned off)',
-      description: 'Always refused: the control plane no longer orders certificates.',
+      summary: 'Try a failed order again',
+      description:
+        'Lifts the wait after a failed order so the next sweep places it again. While the certificate authority is rate limiting the organization the wait stays and the call answers 409 `rate_limited` with the time to try again (`retryAt`).',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TLS_ID_PARAM],
-      responses: { ...ORDERING_OFF },
+      responses: {
+        ...ok('The certificate', {
+          type: 'object',
+          properties: { certificate: { $ref: '#/components/schemas/DnsCertificate' } },
+        }),
+        ...errors(),
+        409: {
+          description: 'rate_limited: the certificate authority asked for a wait; see `retryAt`.',
+        },
+      },
     },
   },
 }

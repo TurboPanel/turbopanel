@@ -121,6 +121,29 @@ plane). Their shapes and validators are in `src/contracts/cell-protocol.ts`.
   rate-limit answer should keep the words `rateLimited`, so the panel waits an
   hour); answer every `acme-proof-forward` with `-ready` or `-failed`.
 
+### The DNS proof (`acme-issue-dns-v1`)
+
+A daemon that also lists `acme-issue-dns-v1` can be asked for an order over the
+DNS proof: `acme-issue-request` carries `challenge: 'dns-01'` (absent means the
+HTTP proof) and its names may be wildcards. The panel never sends `dns-01` to a
+daemon without the feature, because an older daemon drops the field and would run
+the HTTP proof. The daemon publishes its challenge records through the panel,
+which holds the DNS token:
+
+- `acme-dns-publish` (daemon to control plane): `requestId` and up to
+  `MAX_ACME_DNS_RECORDS` records of `{name, value}`; a name is
+  `_acme-challenge.` plus a name of the order, a value is the digest text.
+- `acme-dns-published` (control plane to daemon, a direct wire reply): `ok`, or
+  `ok: false` with a plain `error` sentence (no token, no provider detail). It is
+  sent only once the TXT record reads back.
+- `acme-dns-remove` (daemon to control plane): remove what was published, by id.
+  The cleanup tick is the net under this one ask.
+
+Publish and remove are in `DAEMON_INBOUND_ALLOWED`, handled on both runtimes by
+`src/features/tls/http-issuance/dns-relay.ts`, and only the issuing server of an
+open request may use them. On Workers the read-back waits a short bounded time
+and uses the provider's own read.
+
 ## Advised heartbeat
 
 The attach `version` frame carries an optional `heartbeatSeconds` (the idle-ping

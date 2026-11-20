@@ -5,6 +5,8 @@
  * handlers must never read or write the **Platform CA** files under
  * `<stateDir>/tls/` (see `src/lib/tls/AGENTS.md`).
  */
+import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
+import { readDnsCertState } from '../../features/tls/dns-certificates/order-state.ts'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -1051,9 +1053,47 @@ export function registerTlsRoutes(
       )
     }
 
+    // Challenge records the panel made for an order are removed first, by the cleanup
+    // tick, and a certificate with an order open is not deleted under it. Both are read
+    // under a lock on the row, so a record made meanwhile is either seen here or finds
+    // the row gone and is taken away again.
+    const refusal: { why: 'records' | 'order_open' | null } = { why: null }
     const result = await runHierarchyDelete(db, async (tx) => {
+      const [locked] = await tx
+        .select({ metadata: tls.metadata })
+        .from(tls)
+        .where(eq(tls.id, id))
+        .for('update')
+      if (locked) {
+        if (readHttpIssuanceState(locked.metadata)?.endedAt === null) {
+          refusal.why = 'order_open'
+          return
+        }
+        if ((readDnsCertState(locked.metadata)?.records.length ?? 0) > 0) {
+          refusal.why = 'records'
+          return
+        }
+      }
       await tx.delete(tls).where(eq(tls.id, id))
     })
+    if (refusal.why === 'order_open') {
+      return c.json(
+        {
+          error: 'tls_order_open',
+          message: 'A certificate is being ordered for this entry. Try again when it has finished.',
+        },
+        409
+      )
+    }
+    if (refusal.why === 'records') {
+      return c.json(
+        {
+          error: 'tls_dns_records_outstanding',
+          message: 'This certificate still has DNS records to remove. Try again in a few minutes.',
+        },
+        409
+      )
+    }
     if (result === 'has_children') {
       return hierarchyDeleteHasChildrenResponse(c)
     }
