@@ -22,9 +22,7 @@ import {
   badge,
   changeover,
   command,
-  container,
   datacenter,
-  environment,
   hosting,
   ip,
   leaf,
@@ -35,10 +33,10 @@ import {
   principal,
   recovery,
   server,
-  service,
   tls,
   tunnel,
 } from '../../db/schema.ts'
+import { systemReconcileRepairableExists } from '../../features/system/reconcile.ts'
 
 /** True on every `everyMinutes`th UTC minute, shifted by `offset` minutes. */
 export function onDivisor(scheduledTimeMs: number, everyMinutes: number, offset = 0): boolean {
@@ -179,11 +177,7 @@ export async function loadCronGates(
         exists (select 1 from ${server} where ${server.isConnected}) as "connectedServer",
         exists (select 1 from ${server} srv where srv.is_connected
           and (srv.status_changed_at >= ${reconnectedSince}::timestamptz
-            or exists (select 1 from ${container} c
-              join ${service} s on s.id = c.service_id
-              join ${environment} e on e.id = s.environment_id
-              where e.server_id = srv.id and c.role in ('ingress', 'turbopanel')
-                and (c.status <> 'running' or c.container_id is null)))) as "reconcileUrgent",
+            or ${systemReconcileRepairableExists(sql`srv.id`, sql`srv.organization_id`)})) as "reconcileUrgent",
         exists (select 1 from ${hosting} where ${hosting.pendingAt} is not null) as "hostingPending",
         exists (select 1 from ${ip} where ${ip.repinPendingFanoutAt} is not null) as "repinPending",
         exists (select 1 from ${principal} where ${principal.removalRequestedAt} is not null) as "principalRemoval",

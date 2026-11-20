@@ -598,6 +598,98 @@ export async function enqueueSystemReconcileIfConnected(
 }
 
 /**
+ * The rows `runSystemReconcileSweep` acts on, for a joined server `srv`, project
+ * `p`, service `s` and container `c` (ordinal 1): the hosting ingress proxy,
+ * the self-host turbopanel services and the ProxySQL frontend, each with its
+ * own demand test. A row that has no demand (a pending per-service ingress
+ * row, a ProxySQL row left exited by orphan teardown) is not a target.
+ *
+ * `reconnectCutoff` adds the "server reconnected since" arm the sweep uses for
+ * the proxies; pass null for the repair-only test (not running, or no id).
+ */
+export function systemReconcileTargetPredicate(
+  serverIdExpr: SQL,
+  organizationIdExpr: SQL,
+  reconnectCutoff: SQL | null
+): SQL {
+  const selfHostComposeServiceNameList = sql.join(
+    SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES.map((name) => sql`${name}`),
+    sql.raw(', ')
+  )
+  // Consumer-only servers host no `replica` rows; the same bound-consumer test
+  // `buildSystemReconcilePayload` uses keeps them sweep candidates.
+  const boundConsumers = boundManagedConsumersExists(serverIdExpr, organizationIdExpr)
+  const reconnected = reconnectCutoff ? sql`OR srv.status_changed_at >= ${reconnectCutoff}` : sql``
+  return sql`(
+        (
+          p.component = ${SYSTEM_HOSTING_INGRESS_COMPONENT}
+          AND s.name = ${SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME}
+          AND c.role = 'ingress'
+          AND srv.is_hosting_enabled = true
+          AND (
+            -- First demand, crash recovery (already observed), or reconnect.
+            EXISTS (
+              SELECT 1
+              FROM hosting h
+              JOIN service hs ON hs.id = h.service_id
+              JOIN environment he ON he.id = hs.environment_id
+              WHERE he.server_id = ${serverIdExpr}
+                AND COALESCE(h.protocol, 'http') = 'http'
+                AND jsonb_typeof(h.options->'hostnames') = 'array'
+                AND jsonb_array_length(h.options->'hostnames') > 0
+            )
+            OR c.container_id IS NOT NULL
+            OR c.status = 'running'
+          )
+          AND (
+            c.status <> 'running'
+            OR c.container_id IS NULL
+            ${reconnected}
+          )
+        )
+        OR (
+          p.component = ${SYSTEM_SELF_HOST_COMPONENT}
+          AND s.name IN (${selfHostComposeServiceNameList})
+          AND c.role = 'turbopanel'
+          AND (c.status <> 'running' OR c.container_id IS NULL)
+        )
+        OR (
+          p.component = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
+          AND s.name = ${SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME}
+          AND c.role = 'ingress'
+          AND (
+            ${managedMembersExists(serverIdExpr)}
+            OR ${boundConsumers}
+          )
+          AND (
+            c.status <> 'running'
+            OR c.container_id IS NULL
+            ${reconnected}
+          )
+        )
+      )`
+}
+
+/**
+ * True when a server has a container the system reconcile sweep could repair
+ * (a target that is not running or has no container id). The cron gate uses
+ * it so a row that stays idle for good never wakes the sweep.
+ */
+export function systemReconcileRepairableExists(serverIdExpr: SQL, organizationIdExpr: SQL): SQL {
+  return sql`EXISTS (
+    SELECT 1
+    FROM environment e
+    JOIN project p ON p.id = e.project_id
+    JOIN workspace w ON w.id = p.workspace_id
+    JOIN service s ON s.environment_id = e.id
+    JOIN container c ON c.service_id = s.id AND c.ordinal = 1
+    WHERE e.server_id = ${serverIdExpr}
+      AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
+      AND ${systemReconcileTargetPredicate(serverIdExpr, organizationIdExpr, null)}
+  )`
+}
+
+/**
  * Drift trigger: enqueue `system.reconcile` for connected servers whose
  * system-managed containers need observation and have no recent
  * system.reconcile command (5-minute throttle via the command table itself,
@@ -636,15 +728,6 @@ export async function runSystemReconcileSweep(
     SYSTEM_RECONCILE_SWEEP_CAP
   )
   const throttleCutoff = new Date(Date.now() - SYSTEM_RECONCILE_MIN_INTERVAL_MS).toISOString()
-  const selfHostComposeServiceNameList = sql.join(
-    SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES.map((name) => sql`${name}`),
-    sql.raw(', ')
-  )
-
-  // Consumer-only servers host no `replica` rows; the same bound-consumer test
-  // `buildSystemReconcilePayload` uses keeps them sweep candidates.
-  const sweepBoundConsumers = boundManagedConsumersExists(sql`srv.id`, sql`srv.organization_id`)
-
   const candidates = await db.execute<{ server_id: string }>(sql`
     SELECT DISTINCT srv.id AS server_id
     FROM server srv
@@ -655,54 +738,7 @@ export async function runSystemReconcileSweep(
     JOIN container c ON c.service_id = s.id AND c.ordinal = 1
     WHERE w.kind = ${WORKSPACE_KIND_TURBOPANEL}
       AND srv.is_connected = true
-      AND (
-        (
-          p.component = ${SYSTEM_HOSTING_INGRESS_COMPONENT}
-          AND s.name = ${SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME}
-          AND c.role = 'ingress'
-          AND srv.is_hosting_enabled = true
-          AND (
-            -- First demand, crash recovery (already observed), or reconnect.
-            EXISTS (
-              SELECT 1
-              FROM hosting h
-              JOIN service hs ON hs.id = h.service_id
-              JOIN environment he ON he.id = hs.environment_id
-              WHERE he.server_id = srv.id
-                AND COALESCE(h.protocol, 'http') = 'http'
-                AND jsonb_typeof(h.options->'hostnames') = 'array'
-                AND jsonb_array_length(h.options->'hostnames') > 0
-            )
-            OR c.container_id IS NOT NULL
-            OR c.status = 'running'
-          )
-          AND (
-            c.status <> 'running'
-            OR c.container_id IS NULL
-            OR srv.status_changed_at >= ${throttleCutoff}::timestamptz
-          )
-        )
-        OR (
-          p.component = ${SYSTEM_SELF_HOST_COMPONENT}
-          AND s.name IN (${selfHostComposeServiceNameList})
-          AND c.role = 'turbopanel'
-          AND (c.status <> 'running' OR c.container_id IS NULL)
-        )
-        OR (
-          p.component = ${SYSTEM_MANAGED_INGRESS_COMPONENT}
-          AND s.name = ${SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME}
-          AND c.role = 'ingress'
-          AND (
-            ${managedMembersExists(sql`srv.id`)}
-            OR ${sweepBoundConsumers}
-          )
-          AND (
-            c.status <> 'running'
-            OR c.container_id IS NULL
-            OR srv.status_changed_at >= ${throttleCutoff}::timestamptz
-          )
-        )
-      )
+      AND ${systemReconcileTargetPredicate(sql`srv.id`, sql`srv.organization_id`, sql`${throttleCutoff}::timestamptz`)}
       AND NOT EXISTS (
         SELECT 1
         FROM command cmd
