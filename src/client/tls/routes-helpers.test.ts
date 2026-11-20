@@ -105,6 +105,18 @@ test('materialFromLetsEncrypt builds managed metadata', () => {
   assertEquals(material.options?.autoRenew, false)
 })
 
+test('materialFromLetsEncrypt keeps the lowercased names of a DNS order', () => {
+  const material = materialFromLetsEncrypt({
+    hostnames: ['Example.COM', '*.Example.com'],
+    challengeType: 'dns-01',
+  })
+  if (isCreateTlsFailure(material)) {
+    throw new TypeError('expected success material')
+  }
+  assertEquals(material.metadata.dnsNames, ['example.com', '*.example.com'])
+  assertEquals(material.metadata.hasWildcard, true)
+})
+
 test('materialFromLetsEncrypt rejects wildcard hostnames', () => {
   const material = materialFromLetsEncrypt({
     hostnames: ['*.example.com'],
@@ -127,16 +139,18 @@ test('materialFromLetsEncrypt rejects loopback and private hostnames', () => {
   }
 })
 
-test('materialFromLetsEncrypt rejects dns-01', () => {
+test('materialFromLetsEncrypt accepts dns-01, with a single name, several or a wildcard', () => {
   const material = materialFromLetsEncrypt({
-    hostnames: ['app.example.com'],
+    hostnames: ['example.com', '*.example.com'],
     challengeType: 'dns-01',
   })
-  assertEquals(isCreateTlsFailure(material), true)
-  if (!isCreateTlsFailure(material)) {
-    throw new TypeError('expected failure material')
-  }
-  assertEquals(material.error, 'dns_01_unsupported')
+  assertEquals(isCreateTlsFailure(material), false)
+  if (isCreateTlsFailure(material)) throw new TypeError('expected material')
+  assertEquals(material.metadata.dnsNames, ['example.com', '*.example.com'])
+  assertEquals(material.metadata.hasWildcard, true)
+  assertEquals(material.metadata.acme?.challengeType, 'dns-01')
+  const bad = materialFromLetsEncrypt({ hostnames: ['*.localhost'], challengeType: 'dns-01' })
+  assertEquals(isCreateTlsFailure(bad), true)
 })
 
 test('materialFromLetsEncrypt defaults challengeType and autoRenew', () => {

@@ -7,7 +7,7 @@ The wire side is in `src/daemon/AGENTS.md`.
 
 - `state.ts`: the private request state in `tls.metadata.httpCert` (no table, no
   migration), `canAcceptCapture`, `afterCapture`. The public row never copies it.
-- `choose.ts`: who takes part. Only a server that is online, lists the feature and
+- `choose.ts`: who takes part over the HTTP proof (for the DNS proof see `chooseDnsIssuer` below). Only a server that is online, lists the feature and
   is in the name's DNS (the A and AAAA answers against the server's public
   addresses). Others are skipped and get the certificate later. With no known
   public address anywhere, every online server with the feature counts.
@@ -88,3 +88,28 @@ message is not switched off either, so an `issued` or `failed` event can still e
 request (an `issued` event closes it when the pair is already stored for every name). A row's own web server is unaffected. When the switch goes back on,
 the close rule runs before the start-by check: a request with a stored pair for every
 name closes as issued, and the rest fail and back off.
+
+## The DNS proof (`acme-issue-dns-v1`)
+
+A name list with a wildcard is proved over DNS, and so may any other order
+(`acme.challengeType: 'dns-01'`; the request state records `challenge`). The
+panel publishes the TXT records for the daemon.
+
+- `choose.ts` `chooseDnsIssuer`: any online serving server whose daemon lists
+  `acme-issue-dns-v1`, with no address or port-80 check and no helpers. With
+  none able, the request waits. An older daemon would drop `challenge` and run
+  the HTTP proof for names meant for DNS, so `orchestrator.ts` `sendAll` never
+  sends `challenge: 'dns-01'` to a server that does not list the feature now
+  (pinned in `dns-orders.hostfree.test.ts`).
+- `progress.ts`: a DNS request fails after the daemon's 10 minute order
+  deadline plus a minute of grace, and lives 15 minutes in all.
+- `dns-relay.ts`: handles `acme-dns-publish` (replied to with
+  `acme-dns-published` once the record reads back) and `acme-dns-remove`, on
+  both runtimes. The record is written to `metadata.dnsCert.records` as soon as
+  it exists and removed only by id. See `../dns-certificates/AGENTS.md`.
+- `caps.ts`: at most 10 new certificates per organization per day, and a pause
+  for every new start while an authority rate limit is in force. New starts are
+  kept in `organization.options.acmeNewStarts` (ISO times, pruned to a day), so
+  deleting a row does not free the cap. A retry is subject to the pause only.
+- The sweep starts at most 2 renewals per tick.
+- A name still waiting for its pair goes to the daemon as an internal name.

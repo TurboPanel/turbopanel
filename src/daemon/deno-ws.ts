@@ -7,6 +7,7 @@ import type {
   PendingRequestRecord,
 } from '../contracts/cell.ts'
 import type {
+  AcmeDnsPublishedMessage,
   BackupCopyReportResultMessage,
   BackupRunReportResultMessage,
   CommandOutcomeAckMessage,
@@ -119,6 +120,14 @@ import { enqueueLatestRecordedCapabilityPlan } from '../client/servers/capabilit
 import { recordTopologyReport } from '../features/servers/server-topology-records.ts'
 import { createInboundWindowGate } from './rate-limit/inbound-window.ts'
 import { daemonConnectRateLimitKey } from './rate-limit/keys.ts'
+import {
+  confirmThroughProvider,
+  type DnsConfirm,
+  handleDnsRelayInbound,
+  unavailableDnsAnswer,
+} from '../features/tls/http-issuance/dns-relay.ts'
+import { createCloudflareDnsChallenge } from '../features/tunnels/cloudflare-dns-challenge.ts'
+import { createTunnelAdapterRegistry } from '../features/tunnels/registry.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolveSession } from '../client/authn/middleware.ts'
 import { isSuperadminRole } from '../client/authn/session-store.ts'
@@ -767,8 +776,14 @@ type DaemonInboundDispatch = {
   handleManagedHaEvent?: typeof handleManagedHaEvent
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
   reply: (
-    message: BackupRunReportResultMessage | CommandOutcomeAckMessage | BackupCopyReportResultMessage
+    message:
+      | BackupRunReportResultMessage
+      | CommandOutcomeAckMessage
+      | BackupCopyReportResultMessage
+      | AcmeDnsPublishedMessage
   ) => void
+  /** How the DNS relay reads a challenge record back; default is the provider's own read. */
+  confirmDnsRecord?: DnsConfirm
 }
 
 /**
@@ -937,6 +952,34 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
       await cell.recordInbound({ connectionId, at: message.at })
       await handleHttpIssuanceInbound(db, serverId, message)
       return
+    case 'acme-dns-publish':
+    case 'acme-dns-remove': {
+      await cell.recordInbound({ connectionId, at: message.at })
+      const secrets = params.dataEncryptionSecrets
+      if (!secrets) {
+        // Say no instead of leaving the daemon to wait out its deadline.
+        if (message.type === 'acme-dns-publish') {
+          params.reply(unavailableDnsAnswer(message))
+        }
+        return
+      }
+      // A publish waits for the records to show, so it runs apart from the socket's
+      // frame loop and answers when it is done.
+      const work = handleDnsRelayInbound(
+        {
+          db,
+          secrets,
+          dns: (_provider, token) => createCloudflareDnsChallenge({ token }),
+          adapters: createTunnelAdapterRegistry(),
+          confirm: params.confirmDnsRecord ?? confirmThroughProvider,
+          reply: (answer) => Promise.resolve(params.reply(answer)),
+        },
+        serverId,
+        message
+      ).catch((err) => console.warn(`daemon-ws event=dns-relay-failed ${String(err)}`))
+      void work
+      return
+    }
     case 'instance-acme-issuance-event':
       await handleInstanceAcmeIssuanceInbound({
         cell,
@@ -1014,6 +1057,8 @@ export type DaemonWebSocketOptions = {
   sessionSecrets?: DerivedSecretsConfig
   /** Reads and seals notification channel addresses for alerts the daemon's events raise. */
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** Reads a challenge record back for the DNS relay; the Deno panel asks the nameservers. */
+  confirmDnsRecord?: DnsConfirm
   daemonCellRegistry?: DaemonCellRegistry
   connectLimiter?: RateLimiter
   inboundMessageLimit?: number
@@ -1474,6 +1519,7 @@ export function registerDaemonWebSocket<E extends Env>(
           signature: validated.signature,
           signedSession: phase === 'signed',
           dataEncryptionSecrets: options.dataEncryptionSecrets,
+          confirmDnsRecord: options.confirmDnsRecord,
           colocated: remoteAddress === undefined,
           onDevHostStatus: options.onDevHostStatus,
           handleManagedHaEvent: options.handleManagedHaEvent,

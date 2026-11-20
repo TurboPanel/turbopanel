@@ -6,7 +6,7 @@
  */
 import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { createDenoDb } from '../../../db/connection.ts'
 import type { Db } from '../../../db/connection.ts'
 import { getDatabaseUrl } from '../../../db/url.ts'
@@ -32,6 +32,8 @@ import {
   startHttpIssuance,
 } from './orchestrator.ts'
 import { newHttpIssuanceState, readHttpIssuanceState } from './state.ts'
+import { loadOrgOrderFacts, NEW_CERTIFICATES_PER_DAY } from './caps.ts'
+import { waitingText } from './status-text.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -615,7 +617,7 @@ test('a daemon of another organization cannot move or read a request', async () 
   }
 })
 
-test('a wildcard name is never ordered over the HTTP proof', async () => {
+test('a wildcard name waits for the DNS proof and is never ordered over the HTTP proof', async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance tests')
   const f = await setup({ servers: 1 })
   try {
@@ -624,7 +626,7 @@ test('a wildcard name is never ordered over the HTTP proof', async () => {
       .update(tls)
       .set({ metadata: { ...(row.metadata as object), dnsNames: ['*.example.com'] } })
       .where(eq(tls.id, f.tlsId))
-    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'waiting')
     assertEquals(f.sent.length, 0)
   } finally {
     await f.cleanup()
@@ -1042,6 +1044,98 @@ test('an issuing server takes one order at a time; the next waits its turn', asy
       await startHttpIssuance(f.deps({ now: () => at(2000) }), f.tlsId, always),
       'ordering'
     )
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("a new start is kept on the organization, so deleting the row does not free the day's cap", async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'ordering')
+    await f.db.delete(hosting).where(eq(hosting.tlsId, f.tlsId))
+    await f.db.delete(tls).where(eq(tls.id, f.tlsId))
+    const facts = await loadOrgOrderFacts(f.db, f.organizationId, T0)
+    assertEquals(facts.newStarts.length, 1)
+    // Once the day is full the next new certificate is held back.
+    const [org] = await f.db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, f.organizationId))
+    const full = Array.from({ length: NEW_CERTIFICATES_PER_DAY }, () => T0.toISOString())
+    await f.db
+      .update(organization)
+      .set({ options: { ...(org!.options as object), acmeNewStarts: full } })
+      .where(eq(organization.id, f.organizationId))
+    const [again] = await f.db
+      .insert(tls)
+      .values({
+        organizationId: f.organizationId,
+        name: 'Second',
+        source: 'lets_encrypt',
+        status: 'automatic',
+        metadata: { dnsNames: [HOST], acme: { managedBy: 'caddy' } },
+      })
+      .returning({ id: tls.id })
+    assertEquals(await startHttpIssuance(f.deps(), again!.id, always), 'backoff')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('the day cap is checked again under the organization lock, so a start that raced past it is held back', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    let filled = false
+    const deps = f.deps({
+      // Called after the first look at the cap and before the start transaction.
+      isOnline: async () => {
+        if (!filled) {
+          filled = true
+          const full = Array.from({ length: NEW_CERTIFICATES_PER_DAY }, () => T0.toISOString())
+          await f.db
+            .update(organization)
+            .set({ options: { acmeNewStarts: full } })
+            .where(eq(organization.id, f.organizationId))
+        }
+        return true
+      },
+    })
+    assertEquals(await startHttpIssuance(deps, f.tlsId, always), 'backoff')
+    assertEquals(f.sent.length, 0)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a "waiting for a site" row whose name has a site but no serving server says so', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    await f.db
+      .update(environment)
+      .set({ serverId: null })
+      .where(sql`true`)
+    await f.db
+      .update(tls)
+      .set({
+        metadata: {
+          dnsNames: [HOST],
+          acme: {
+            managedBy: 'caddy',
+            challengeType: 'dns-01',
+            stage: 'waiting',
+            warning: waitingText('no_site'),
+          },
+        },
+      })
+      .where(eq(tls.id, f.tlsId))
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
+    const [row] = await f.db.select({ metadata: tls.metadata }).from(tls).where(eq(tls.id, f.tlsId))
+    const acme = (row!.metadata as { acme: { warning: string } }).acme
+    assertEquals(acme.warning, waitingText('no_servers'))
   } finally {
     await f.cleanup()
   }

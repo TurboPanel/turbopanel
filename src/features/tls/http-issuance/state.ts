@@ -13,6 +13,10 @@
 /** Public marker values written to `metadata.acme` for a certificate ordered this way. */
 export const HTTP_ISSUANCE_MANAGED_BY = 'server' as const
 export const HTTP_ISSUANCE_CHALLENGE_TYPE = 'http-01' as const
+export const DNS_ISSUANCE_CHALLENGE_TYPE = 'dns-01' as const
+
+/** The proof an order uses: the HTTP proof from the serving servers, or TXT records the panel publishes. */
+export type IssuanceChallenge = 'http-01' | 'dns-01'
 
 export const HTTP_CERT_KEY = 'httpCert'
 
@@ -38,7 +42,7 @@ export type RosterEntry = {
   label: string
   role: 'issuer' | 'helper' | 'skipped'
   /** Why a `skipped` server did not take part. */
-  skip?: 'offline' | 'not_in_dns'
+  skip?: 'offline' | 'not_in_dns' | 'no_dns_orders'
 }
 
 export type HttpIssuanceState = {
@@ -58,6 +62,8 @@ export type HttpIssuanceState = {
   attemptTimes: string[]
   /** Do not start another attempt before this time (back-off). */
   nextAttemptAt: string | null
+  /** The proof this request uses; a request stored before DNS orders existed reads as `http-01`. */
+  challenge: IssuanceChallenge
   /** The authority's directory this request uses. */
   directory: 'production' | 'staging'
   phase: HttpIssuancePhase
@@ -118,7 +124,7 @@ function text(value: unknown): string | null {
 }
 
 const ROSTER_ROLES: ReadonlySet<string> = new Set(['issuer', 'helper', 'skipped'])
-const SKIP_REASONS: ReadonlySet<string> = new Set(['offline', 'not_in_dns'])
+const SKIP_REASONS: ReadonlySet<string> = new Set(['offline', 'not_in_dns', 'no_dns_orders'])
 
 function readRoster(value: unknown): RosterEntry[] {
   if (!Array.isArray(value)) return []
@@ -181,6 +187,7 @@ export function newHttpIssuanceState(
     helperAddresses: [],
     attemptTimes: [base.startedAt],
     nextAttemptAt: null,
+    challenge: 'http-01',
     directory: 'production',
     phase: 'forwarding',
     orderSentAt: null,
@@ -223,6 +230,7 @@ export function readHttpIssuanceState(metadata: unknown): HttpIssuanceState | nu
       ? r.attemptTimes.filter((t): t is string => typeof t === 'string' && t.length > 0)
       : [],
     nextAttemptAt: text(r.nextAttemptAt),
+    challenge: r.challenge === 'dns-01' ? 'dns-01' : 'http-01',
     directory: r.directory === 'staging' ? 'staging' : 'production',
     phase:
       typeof r.phase === 'string' && PHASES.has(r.phase)
