@@ -658,19 +658,25 @@ async function keepStoredProjectDeployOptions(
 }
 
 /**
- * A project that follows its repository's compose file keeps that source
- * through an options write: the mode and the last-read record belong to the
- * deploy and to \`PATCH /projects/:id/compose-source\`, not to a settings edit.
+ * An options write never changes how a project follows its repository: the
+ * mode belongs to `PATCH /projects/:id/compose-source` and the last-read
+ * record to the deploy. Whatever a client sends for them is replaced by the
+ * stored values, for a seeded project as much as a tracking one.
  */
 function keepTrackedComposeSource(stored: unknown, options: Record<string, unknown>): void {
-  const source = parseProjectOptions(stored).composeSource
-  if (!isTrackingComposeSource(source)) return
+  const kept = parseProjectOptions(stored).composeSource
   const sent = parseProjectOptions({ composeSource: options.composeSource }).composeSource
+  const source = sent ?? (isTrackingComposeSource(kept) ? kept : undefined)
+  if (!source) return
+  const rest = { ...source }
+  delete rest.mode
+  delete rest.lastReadCommitSha
+  delete rest.lastReadDigest
   options.composeSource = {
-    ...(sent ?? source),
-    mode: source.mode,
-    lastReadCommitSha: source.lastReadCommitSha,
-    lastReadDigest: source.lastReadDigest,
+    ...rest,
+    ...(kept?.mode === undefined ? {} : { mode: kept.mode }),
+    ...(kept?.lastReadCommitSha === undefined ? {} : { lastReadCommitSha: kept.lastReadCommitSha }),
+    ...(kept?.lastReadDigest === undefined ? {} : { lastReadDigest: kept.lastReadDigest }),
   }
 }
 

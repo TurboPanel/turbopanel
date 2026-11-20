@@ -192,6 +192,7 @@ import {
 } from '../../features/projects/project-options.ts'
 import {
   resolveDeployProjectOptions,
+  storeTrackedBase,
   previewBaseFallbackMessage,
   type DeployProjectOptionsMode,
 } from './deploy-tracked-base.ts'
@@ -1861,6 +1862,8 @@ async function resolveSuccessfulPlan(
   tracked: {
     mode: DeployProjectOptionsMode
     skipRead?: boolean
+    /** A rollback: the Base recorded on the deployment being rolled back to. */
+    atBase?: ComposeBaseRecord
     selection?: DeploySourceSelection
   }
 ): Promise<SuccessfulPlannedDeploy | Response> {
@@ -1875,8 +1878,11 @@ async function resolveSuccessfulPlan(
         organizationId,
         projectId: row.id,
         projectOptions: row.options,
+        environmentId: row.environmentId,
+        environmentOptions: row.environmentOptions,
         mode: tracked.mode,
         ...(tracked.skipRead ? { skipRead: true } : {}),
+        ...(tracked.atBase ? { atBase: tracked.atBase } : {}),
         ...(tracked.selection ? { selection: tracked.selection } : {}),
       }),
   })
@@ -2399,11 +2405,28 @@ async function runEnvironmentDeploy(
     ),
     {
       mode: 'deploy',
-      skipRead: auth.rollback !== undefined || auth.hostingsOnly === true,
+      // A hostings-only run builds nothing and keeps the stored Base. A rollback
+      // reads the Base recorded on the release it returns to, at that commit.
+      skipRead:
+        auth.hostingsOnly === true ||
+        (auth.rollback !== undefined && auth.rollback.composeBase === undefined),
+      ...(auth.rollback?.composeBase ? { atBase: auth.rollback.composeBase } : {}),
       selection: auth.selection,
     }
   )
   if (planned instanceof Response) return planned
+  // Rolling back to a deployment that recorded no Base of a file the project
+  // now follows: the stored Base is the latest read, not that deployment's.
+  if (auth.rollback && !auth.rollback.composeBase && planned.composeBase !== null) {
+    return c.json(
+      {
+        error: 'rollback_base_unrecorded',
+        message:
+          'The project follows its repository compose file, and that release was deployed before the file it used was recorded. Deploy the current file instead of rolling back.',
+      },
+      409
+    )
+  }
 
   const priorNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   let spanningCommitted = false
@@ -2436,11 +2459,12 @@ async function runEnvironmentDeploy(
       dataEncryptionSecrets,
     })
 
+    const selection = selectionPinnedToTrackedBase(auth.selection, planned.composeBasePin)
     const preparedByServer = await prepareAllServerDeploys(c, db, {
       planned,
       environmentId,
       auth,
-      selection: selectionPinnedToTrackedBase(auth.selection, planned.composeBasePin),
+      selection,
       dataEncryptionSecrets,
       ...spanningCtx,
     })
@@ -2481,13 +2505,22 @@ async function runEnvironmentDeploy(
       engine,
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
-      selection: auth.selection,
+      selection,
       composeBase: planned.composeBase,
       removedServices: removedServiceRows(planned.serviceRows, servicesMapping(planned.merged)),
     })
     if (persisted instanceof Response) return persisted
     const created = persisted
     spanningCommitted = true
+    // The deploy is accepted: only now does what it read become the stored Base.
+    if (planned.composeBaseRead) {
+      await storeTrackedBase(
+        db,
+        planned.projectId,
+        planned.composeBaseRead.document,
+        planned.composeBaseRead.record
+      )
+    }
     await recordHostAccessUse(db, planned, auth, environmentId)
     const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
       created,

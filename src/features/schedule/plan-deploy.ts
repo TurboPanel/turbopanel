@@ -218,7 +218,17 @@ export type PlannedDeploy = {
   composeBasePin?: { sourceId: string; ref: string; commitSha: string }
   /** Set by a preview that fell back to the stored Base because the file could not be read. */
   composeBaseUnreadable?: TrackedBaseError
+  /** A fresh read of the tracked file, to store once the deploy is accepted. */
+  composeBaseRead?: { document: unknown; record: ComposeBaseRecord }
 }
+
+/** Swaps in the tracked Base for a project that follows its repository's compose file. */
+export type ResolveProjectOptions = (row: {
+  id: string
+  options: unknown
+  environmentId: string
+  environmentOptions: unknown
+}) => Promise<DeployProjectOptions>
 
 export type PlanDeployError =
   | { kind: 'not_found' }
@@ -385,7 +395,7 @@ async function loadPlanContext(
   db: Db,
   params: {
     environmentId: string
-    resolveProjectOptions?: (row: { id: string; options: unknown }) => Promise<DeployProjectOptions>
+    resolveProjectOptions?: ResolveProjectOptions
   }
 ): Promise<PlanContext | PlanDeployError> {
   const [envRow] = await db
@@ -415,7 +425,12 @@ async function loadPlanContext(
 
   const filename = environmentComposeFilename({ id: envRow.id, name: envRow.name })
   const resolvedOptions: DeployProjectOptions = params.resolveProjectOptions
-    ? await params.resolveProjectOptions(projectRow)
+    ? await params.resolveProjectOptions({
+        id: projectRow.id,
+        options: projectRow.options,
+        environmentId: envRow.id,
+        environmentOptions: envRow.options,
+      })
     : { ok: true, options: projectRow.options, base: null }
   if (!resolvedOptions.ok) return { kind: 'tracked_base_failed', error: resolvedOptions.error }
   const merged = resolveMergedCompose(resolvedOptions.options, envRow.options, filename)
@@ -453,7 +468,7 @@ export async function planEnvironmentDeploy(
      * Swaps in the repository's compose file as the Base when the project
      * follows one. Omitted by callers that do not read repositories.
      */
-    resolveProjectOptions?: (row: { id: string; options: unknown }) => Promise<DeployProjectOptions>
+    resolveProjectOptions?: ResolveProjectOptions
   },
   deps: PlanEnvironmentDeployDeps = {}
 ): Promise<PlannedDeploy | PlanDeployError> {
@@ -589,5 +604,6 @@ export async function planEnvironmentDeploy(
     composeBase: resolvedOptions.base,
     ...(resolvedOptions.pin ? { composeBasePin: resolvedOptions.pin } : {}),
     ...(resolvedOptions.unreadable ? { composeBaseUnreadable: resolvedOptions.unreadable } : {}),
+    ...(resolvedOptions.read ? { composeBaseRead: resolvedOptions.read } : {}),
   }
 }

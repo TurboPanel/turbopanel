@@ -42,7 +42,11 @@ import {
   type ProjectComposeSource,
   type TrackedBaseError,
 } from '../../features/projects/project-options.ts'
-import { normalizeBranchName } from '../../features/git/environment-branch-tracking.ts'
+import {
+  environmentBranchBindings,
+  normalizeBranchName,
+  trackedBranches,
+} from '../../features/git/environment-branch-tracking.ts'
 import { inspectRepository, type InspectOutcome } from '../repositories/inspect.ts'
 import { requestedCommitShaForSource } from './deploy-sources.ts'
 
@@ -140,6 +144,14 @@ type ResolveArgs = {
    * nothing: neither reads the repository, both keep the stored Base.
    */
   skipRead?: boolean
+  /**
+   * A rollback: the Base recorded on the deployment being rolled back to.
+   * That file is read again at that commit, never the latest read.
+   */
+  atBase?: ComposeBaseRecord
+  /** The environment being deployed: the branch it builds decides which commit is read. */
+  environmentId?: string
+  environmentOptions?: unknown
   selection?: {
     ref: string | null
     commitSha: string | null
@@ -192,10 +204,10 @@ function withBase(options: unknown, document: ComposeDocument): unknown {
  * Written under the project row lock, re-reading the row so a concurrent edit
  * of something else is never overwritten.
  */
-async function storeLastRead(
+export async function storeTrackedBase(
   db: Db,
   projectId: string,
-  document: ComposeDocument,
+  document: unknown,
   record: ComposeBaseRecord
 ): Promise<void> {
   await db.transaction(async (tx) => {
@@ -217,6 +229,13 @@ async function storeLastRead(
     ) {
       return
     }
+    if (
+      source.lastReadDigest === record.digest &&
+      source.lastReadCommitSha === record.commitSha &&
+      options.compose !== undefined
+    ) {
+      return
+    }
     await tx
       .update(project)
       .set({
@@ -235,6 +254,34 @@ async function storeLastRead(
   })
 }
 
+/**
+ * The branch this environment deploys the repository from. An environment that
+ * binds the repository on its own branch (staging on `staging`) reads the
+ * file there; otherwise the project's `composeSource.ref`. A push names the
+ * branch it was for, which wins when the environment follows it.
+ */
+function environmentRef(
+  args: ResolveArgs,
+  composeSource: ProjectComposeSource,
+  defaultBranch: string | null
+): string | null {
+  const own = normalizeBranchName(composeSource.ref ?? defaultBranch)
+  if (args.environmentOptions === undefined) return composeSource.ref ?? null
+  const branches = trackedBranches(
+    environmentBranchBindings({
+      projectOptions: args.projectOptions,
+      environmentOptions: args.environmentOptions,
+      sourceId: composeSource.sourceId,
+      repositoryDefaultBranch: defaultBranch,
+    })
+  )
+  if (branches.length === 0) return composeSource.ref ?? null
+  const pushed = normalizeBranchName(args.selection?.ref)
+  if (pushed !== null && branches.includes(pushed)) return pushed
+  if (own !== null && branches.includes(own)) return own
+  return branches[0] ?? null
+}
+
 async function resolveUncached(
   c: Context<AppEnv>,
   db: Db,
@@ -242,8 +289,14 @@ async function resolveUncached(
   composeSource: ProjectComposeSource,
   inspect: typeof inspectRepository
 ): Promise<DeployProjectOptions> {
+  const source = args.atBase ? { ...composeSource, path: args.atBase.path } : composeSource
   const row = await sourceRow(db, args.organizationId, composeSource.sourceId)
-  const ref = (composeSource.ref ?? row?.defaultBranch ?? '').trim()
+  const ref = (
+    args.atBase?.ref ??
+    environmentRef(args, composeSource, row?.defaultBranch ?? null) ??
+    row?.defaultBranch ??
+    ''
+  ).trim()
   const failure = (message: string): DeployProjectOptions => ({
     ok: false,
     error: {
@@ -255,6 +308,9 @@ async function resolveUncached(
     },
   })
   if (!row) return failure('the repository is no longer connected to this organization.')
+  if (args.atBase && args.atBase.sourceId !== composeSource.sourceId) {
+    return failure('the project now follows a different repository than that release was built from.')
+  }
   if (ref.length === 0) return failure('the repository records no default branch to follow.')
 
   const serverIds = (
@@ -272,7 +328,7 @@ async function resolveUncached(
       organizationId: args.organizationId,
       row: { ...row, defaultBranch: ref },
       ref: readRef,
-      paths: [composeSource.path],
+      paths: [source.path],
       serverIds,
       daemonOnRateLimit: true,
     })
@@ -280,16 +336,17 @@ async function resolveUncached(
     return {
       ok: true,
       commitSha: outcome.commitSha,
-      file: outcome.files.find((entry) => entry.path === composeSource.path),
+      file: outcome.files.find((entry) => entry.path === source.path),
     }
   }
 
-  const pinned = requestedCommitShaForSource(
-    args.selection ?? undefined,
-    composeSource.sourceId,
-    ref
+  const pinned =
+    args.atBase?.commitSha ??
+    requestedCommitShaForSource(args.selection ?? undefined, composeSource.sourceId, ref)
+  const result = await readTrackedComposeBase(source, ref,
+    pinned,
+    read
   )
-  const result = await readTrackedComposeBase(composeSource, ref, pinned, read)
   if (!result.ok) {
     if (args.mode === 'preview') {
       return {
@@ -301,17 +358,26 @@ async function resolveUncached(
     }
     return { ok: false, error: result.error }
   }
-  if (args.mode === 'deploy' && composeSource.lastReadDigest !== result.record.digest) {
-    await storeLastRead(db, args.projectId, result.document, result.record)
-  }
   return {
     ok: true,
     options: withBase(args.projectOptions, result.document),
     base: result.record,
+    // A deploy stores what it read only once it is accepted (`storeTrackedBase`);
+    // a rollback re-reads an old commit and never changes the stored Base.
+    ...(args.mode === 'deploy' && args.atBase === undefined
+      ? { read: { document: result.document, record: result.record } }
+      : {}),
     ...(pinned === undefined && normalizeBranchName(ref) !== null
       ? { pin: { sourceId: composeSource.sourceId, ref, commitSha: result.record.commitSha } }
       : {}),
   }
+}
+
+let inspectOverride: typeof inspectRepository | null = null
+
+/** Test seam: the repository read a route-level test serves instead of a provider. */
+export function setTrackedInspectForTests(inspect: typeof inspectRepository | null): void {
+  inspectOverride = inspect
 }
 
 /**
@@ -323,7 +389,7 @@ export function resolveDeployProjectOptions(
   c: Context<AppEnv>,
   db: Db,
   args: ResolveArgs,
-  inspect: typeof inspectRepository = inspectRepository
+  inspect: typeof inspectRepository = inspectOverride ?? inspectRepository
 ): Promise<DeployProjectOptions> {
   const composeSource = parseProjectOptions(args.projectOptions).composeSource
   if (!isTrackingComposeSource(composeSource)) {
@@ -344,6 +410,8 @@ export function resolveDeployProjectOptions(
   const key = [
     args.projectId,
     args.mode,
+    args.environmentId ?? '',
+    args.atBase ? `${args.atBase.commitSha}:${args.atBase.path}` : '',
     args.selection?.sourceId ?? '',
     args.selection?.commitSha ?? '',
     args.selection?.ref ?? '',

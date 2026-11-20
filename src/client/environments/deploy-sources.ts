@@ -58,6 +58,7 @@ import {
 } from '../../features/servers/server-identity-db.ts'
 import { isGitProviderFailure, resolveGitProvider } from '../../features/git/git-provider.ts'
 import type { ResolvedSourceCommit } from '../../features/git/git-provider.ts'
+import type { ComposeBaseRecord } from '../../features/projects/project-options.ts'
 import { isSshCloneUrl } from '../../features/git/clone-url.ts'
 import { normalizeBranchName } from '../../features/git/environment-branch-tracking.ts'
 import { newCorrelationId } from '../../features/commands/ids.ts'
@@ -129,6 +130,12 @@ export type DeployRollbackRequest = {
    * that release. Every entry is verified by the route before it reaches here.
    */
   releaseByService: Record<string, DeployRollbackReleasePin>
+  /**
+   * The compose Base the deployment being returned to recorded, when it
+   * followed a repository file. The route reads that file again at that
+   * commit, never the latest read.
+   */
+  composeBase?: ComposeBaseRecord
 }
 
 /**

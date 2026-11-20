@@ -161,8 +161,9 @@ function withTrackingDefaults(source: ProjectComposeSource): ProjectComposeSourc
   return {
     ...source,
     mode: source.mode ?? 'track',
-    lastReadCommitSha: source.lastReadCommitSha ?? source.seededCommitSha,
-    lastReadDigest: source.lastReadDigest ?? source.seededDigest,
+    // Never client-writable: only a deploy records a read.
+    lastReadCommitSha: source.seededCommitSha,
+    lastReadDigest: source.seededDigest,
   }
 }
 

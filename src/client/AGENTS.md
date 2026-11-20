@@ -356,17 +356,25 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   `lastReadDigest` start as the seeded values). In `track` mode every deploy
   reads `composeSource.path` at the commit it deploys through the repository
   inspect path (`environments/deploy-tracked-base.ts`, no second clone; a
-  push's commit, else the head of `composeSource.ref` or the default branch,
-  and the same commit pins the builds), uses it as the Base, and layers the
+  push's commit, else the head of the branch the environment builds for that
+  repository (its own `x-turbopanel.source.branch`, e.g. staging on `staging`),
+  else `composeSource.ref` or the default branch; the same commit pins the
+  builds and is what the command records), uses it as the Base, and layers the
   environment's changes on top. The deploy command's `context.composeBase`
   (`{sourceId, ref, path, commitSha, digest}`) is returned as `composeBase` on
   deployment history and on the preview. A missing or unusable file fails the
   deploy, with no fallback: 422 `compose_file_missing` /
   `compose_file_unparseable`, 502 `compose_source_unavailable`, each with
-  `message`, `sourceId`, `ref`, `path`, `commitSha`. Rollbacks and
-  hostings-only runs keep the stored Base. A successful deploy stores what it
-  read as the Base, so listings, lint and a switch to `seed` see the last-read
-  content; the environment-layer lint therefore uses the last-deployed Base.
+  `message`, `sourceId`, `ref`, `path`, `commitSha`. A hostings-only run keeps
+  the stored Base. A rollback reads the file again at the commit its release's
+  deployment recorded in `composeBase` (never the latest read, and it stores
+  nothing); a release deployed without a record is refused (**409**
+  `rollback_base_unrecorded`). The deploy stores what it read as the Base only
+  once it is accepted (a refused deploy leaves it unchanged), so listings, lint
+  and a switch to `seed` see the last-read content; the environment-layer lint
+  therefore uses the last-deployed Base. `mode` and `lastRead*` are never
+  writable through `PATCH /projects/:id` or create, for a `seed` project as
+  much as a `track` one.
   Preview reads the branch head and, when that fails, uses the stored Base with
   a `compose_base_unreadable` warning. Known limit: the read passes no daemon
   credential, so a private repository the provider cannot read may need its

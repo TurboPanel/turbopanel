@@ -93,6 +93,11 @@ export type DeployProjectOptions =
       pin?: { sourceId: string; ref: string; commitSha: string }
       /** Set when a preview used the stored Base because the file could not be read. */
       unreadable?: TrackedBaseError
+      /**
+       * Set when a deploy read the file fresh. The caller stores it as the
+       * project's last-read Base once the deploy is accepted, never before.
+       */
+      read?: { document: unknown; record: ComposeBaseRecord }
     }
   | { ok: false; error: TrackedBaseError }
 

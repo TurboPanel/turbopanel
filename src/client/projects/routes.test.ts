@@ -31,7 +31,10 @@ import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from '../authz/http.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerProjectRoutes } from './routes.ts'
-import { resolveDeployProjectOptions } from '../environments/deploy-tracked-base.ts'
+import {
+  resolveDeployProjectOptions,
+  storeTrackedBase,
+} from '../environments/deploy-tracked-base.ts'
 import type { InspectOutcome } from '../repositories/inspect.ts'
 import { registerEnvironmentRoutes } from '../environments/routes.ts'
 import { registerEnvironmentDeployRoutes } from '../environments/deploy-routes.ts'
@@ -2382,6 +2385,77 @@ test('a settings edit cannot change the mode or the last read of a followed file
   })
 })
 
+test('a settings edit cannot switch a seeded project to track or forge a last read', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const seeded = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}/compose-source`, {
+      mode: 'seed',
+    })
+    assertEquals(seeded.status, 200)
+    const { composeSource } = (await projectOptions(ctx, id)) as {
+      composeSource: Record<string, unknown>
+    }
+    const res = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: {
+        composeSource: {
+          ...composeSource,
+          mode: 'track',
+          lastReadCommitSha: 'd'.repeat(40),
+          lastReadDigest: 'c'.repeat(64),
+        },
+      },
+    })
+    assertEquals(res.status, 200)
+    const after = (await projectOptions(ctx, id)) as { composeSource: Record<string, unknown> }
+    assertEquals(after.composeSource.mode, 'seed')
+    assertEquals(after.composeSource.lastReadCommitSha, TRACKED_SHA)
+    assertEquals(after.composeSource.lastReadDigest, TRACKED_DIGEST)
+  })
+})
+
+test('a create request cannot forge a last read', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const [repo] = await ctx.db
+      .insert(repository)
+      .values({
+        organizationId: ctx.organizationId,
+        provider: 'github',
+        repositoryUrl: `https://github.com/example/${crypto.randomUUID()}`,
+      })
+      .returning({ id: repository.id })
+    try {
+      const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', {
+        type: 'docker-compose',
+        workspaceId: ctx.workspaceId,
+        name: 'Forged Read',
+        options: {
+          compose: WEB_COMPOSE,
+          composeSource: {
+            sourceId: repo!.id,
+            path: 'compose.yaml',
+            seededCommitSha: TRACKED_SHA,
+            seededDigest: TRACKED_DIGEST,
+            lastReadCommitSha: 'd'.repeat(40),
+            lastReadDigest: 'c'.repeat(64),
+          },
+        },
+      })
+      assertEquals(res.status, 200)
+      const id = ((await res.json()) as { id: string }).id
+      const stored = (await projectOptions(ctx, id)) as { composeSource: Record<string, unknown> }
+      assertEquals(stored.composeSource.lastReadCommitSha, TRACKED_SHA)
+      assertEquals(stored.composeSource.lastReadDigest, TRACKED_DIGEST)
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM watch WHERE repository_id = ${repo!.id}::uuid`)
+      await ctx.db
+        .update(project)
+        .set({ repositoryId: null })
+        .where(eq(project.organizationId, ctx.organizationId))
+      await ctx.db.delete(repository).where(eq(repository.id, repo!.id))
+    }
+  })
+})
+
 const READ_SHA = 'ab'.repeat(20)
 const READ_YAML = 'services:\n  web:\n    image: nginx:2\n'
 
@@ -2443,6 +2517,12 @@ test('a deploy reads the repository file as the Base, pins the commit and stores
     // The same request reads once.
     await resolveDeployProjectOptions(c, ctx.db, args, inspect)
     assertEquals(calls.length, 1)
+    // Reading stores nothing: a refused deploy must leave the Base as it was.
+    const untouched = (await projectOptions(ctx, id)) as { composeSource: Record<string, unknown> }
+    assertEquals(untouched.composeSource.lastReadDigest, TRACKED_DIGEST)
+    if (!first.read) throw new Error('expected the read to be handed back')
+    // The route stores it once the deploy is accepted.
+    await storeTrackedBase(ctx.db, id, first.read.document, first.read.record)
     const stored = (await projectOptions(ctx, id)) as {
       compose: { data: { services: { web: { image: string } } } }
       composeSource: Record<string, unknown>
@@ -2498,5 +2578,74 @@ test('a deploy fails when the repository is no longer connected', async () => {
     )
     assertEquals(result.ok, false)
     if (!result.ok) assertEquals(result.error.code, 'compose_source_unavailable')
+  })
+})
+
+test('an environment that builds its own branch reads the file on that branch', async () => {
+  await withTrackedProject(async (ctx, _cookie, id) => {
+    const options = await trackedOptions(ctx, id)
+    const sourceId = (options.composeSource as unknown as { sourceId: string }).sourceId
+    const staging = {
+      compose: {
+        version: 1,
+        data: {
+          services: {
+            web: { image: 'node:24', 'x-turbopanel': { source: { sourceId, branch: 'staging' } } },
+          },
+        },
+        presentation: { keyOrder: [], comments: {} },
+      },
+    }
+    const { inspect, calls } = inspectStub(readOutcome(READ_YAML))
+    const result = await resolveDeployProjectOptions(
+      { get: () => undefined } as unknown as Context<AppEnv>,
+      ctx.db,
+      {
+        ...resolveArgs(ctx, id, options, 'deploy'),
+        environmentId: crypto.randomUUID(),
+        environmentOptions: staging,
+      },
+      inspect
+    )
+    if (!result.ok) throw new Error('expected a read')
+    assertEquals((calls[0] as { ref: string }).ref, 'staging')
+    assertEquals(result.base?.ref, 'staging')
+    assertEquals(result.pin?.ref, 'staging')
+  })
+})
+
+test('a rollback reads the recorded file at the recorded commit and stores nothing', async () => {
+  await withTrackedProject(async (ctx, _cookie, id) => {
+    const options = await trackedOptions(ctx, id)
+    const sourceId = (options.composeSource as unknown as { sourceId: string }).sourceId
+    const atBase = {
+      sourceId,
+      ref: 'main',
+      path: 'compose.yaml',
+      commitSha: 'cd'.repeat(20),
+      digest: 'e'.repeat(64),
+    }
+    const { inspect, calls } = inspectStub(readOutcome(READ_YAML))
+    const result = await resolveDeployProjectOptions(
+      { get: () => undefined } as unknown as Context<AppEnv>,
+      ctx.db,
+      { ...resolveArgs(ctx, id, options, 'deploy'), atBase },
+      inspect
+    )
+    if (!result.ok) throw new Error('expected a read')
+    assertEquals((calls[0] as { ref: string }).ref, atBase.commitSha)
+    assertEquals(result.pin, undefined)
+    assertEquals(result.read, undefined)
+
+    const elsewhere = await resolveDeployProjectOptions(
+      { get: () => undefined } as unknown as Context<AppEnv>,
+      ctx.db,
+      {
+        ...resolveArgs(ctx, id, options, 'deploy'),
+        atBase: { ...atBase, sourceId: crypto.randomUUID() },
+      },
+      inspect
+    )
+    assertEquals(elsewhere.ok, false)
   })
 })
