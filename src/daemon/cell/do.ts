@@ -143,6 +143,7 @@ import type {
 } from '../../contracts/cell.ts'
 import type {
   CommandRecoveryReport,
+  CommandStateReport,
   DaemonBuildInfo,
   DaemonInboundEnvelope,
   DaemonInboundFrameResult,
@@ -2319,6 +2320,7 @@ export class DaemonCellObject {
       services?: unknown
       features?: string[]
       commands?: CommandRecoveryReport
+      commandState?: CommandStateReport
       panelPin?: { pinnedBy: string }
     }
   ): Promise<void> {
@@ -2419,6 +2421,7 @@ export class DaemonCellObject {
         attachment.serverId,
         parsed.features,
         reported,
+        parsed.commandState,
         attachment.connectedAtMs
       )
     }
@@ -2433,6 +2436,7 @@ export class DaemonCellObject {
     serverId: string,
     features: string[] | undefined,
     report: CommandRecoveryReport | undefined,
+    commandState: CommandStateReport | undefined,
     connectedAtMs: number | undefined
   ): Promise<void> {
     await redeliverLostCommands(
@@ -2447,6 +2451,7 @@ export class DaemonCellObject {
         serverId,
         features,
         report,
+        commandState,
         attachedAt: connectedAtMs === undefined ? undefined : new Date(connectedAtMs).toISOString(),
       }
     )

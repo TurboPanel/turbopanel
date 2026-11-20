@@ -254,3 +254,25 @@ test('two consumers checking the same server at the same instant start only one 
     assertEquals(results.filter((result) => result === 'busy').length, 1)
   })
 })
+
+test('a reconcile never holds up a user command, and reconciles stay one at a time', async () => {
+  await withServers(async ({ db, serverId }) => {
+    const first = await newCommand(db, serverId, 'system.reconcile')
+    assertEquals(await claim(db, first), 'claimed')
+    const second = await newCommand(db, serverId, 'server.firewall.reconcile')
+    assertEquals(await claim(db, second), 'busy')
+    const user = await newCommand(db, serverId, 'server.hostname.set')
+    assertEquals(await claim(db, user), 'claimed')
+  })
+})
+
+test('a running user command does not hold up a reconcile', async () => {
+  await withServers(async ({ db, serverId }) => {
+    const user = await newCommand(db, serverId, 'server.hostname.set')
+    assertEquals(await claim(db, user), 'claimed')
+    const reconcile = await newCommand(db, serverId, 'system.reconcile')
+    assertEquals(await claim(db, reconcile), 'claimed')
+    const next = await newCommand(db, serverId, 'server.ntp.set')
+    assertEquals(await claim(db, next), 'busy')
+  })
+})

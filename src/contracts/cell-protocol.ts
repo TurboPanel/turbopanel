@@ -679,6 +679,21 @@ export type CommandRecoveryReport = {
   unacked: string[]
 }
 
+/**
+ * What a daemon process remembers about commands (feature
+ * `command-recovery-v2`), sent on every `hello` and never on a `heartbeat`.
+ * `processStartId` is made once per daemon process (a UUID). `known` holds the
+ * ids it accepted and still holds state for, including entries left in its
+ * on-disk journal. `complete` is `false` when the list was cut or the journal
+ * could not be read; then a missing id proves nothing. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type CommandStateReport = {
+  processStartId: string
+  known: string[]
+  complete: boolean
+}
+
 /** Control plane -> daemon: the final outcome of command `id` is stored; drop the held copy. */
 export type CommandOutcomeAckMessage = {
   type: 'command-outcome-ack'
@@ -804,6 +819,8 @@ export type DaemonMessage =
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       /** Commands in flight and results awaiting an ack (feature `command-recovery-v1`). */
       commands?: CommandRecoveryReport
+      /** Commands the daemon process and its journal know (feature `command-recovery-v2`). */
+      commandState?: CommandStateReport
       /**
        * How this server pinned the panel key (the pin file the installer
        * wrote). Hello only; omitted by a daemon without a pin file.
@@ -1365,6 +1382,12 @@ export const MAX_DAEMON_WS_ERROR_CODE_CHARS = 64
 /** Max ids in each list of a `commands` report on `hello` / `heartbeat`. */
 export const MAX_DAEMON_WS_COMMAND_REPORT_IDS = 64
 
+/** Max ids in `hello.commandState.known`. */
+export const MAX_DAEMON_WS_COMMAND_STATE_IDS = 256
+
+/** Max characters for one id in `hello.commandState.known`. */
+export const MAX_DAEMON_WS_COMMAND_STATE_ID_CHARS = 64
+
 /** Max steps in one `command-progress.progress.steps`. */
 export const MAX_DAEMON_WS_PROGRESS_STEPS = 24
 
@@ -1646,7 +1669,31 @@ function validateHelloFields(record: Record<string, unknown>): string | null {
   if (!parseDaemonBuildInfo(record.daemonBuild)) return 'invalid daemonBuild'
   const presence = validatePresenceFields(record)
   if (presence) return presence
-  return validateHelloFeatures(record.features) ?? validateHelloAttach(record.attach)
+  return (
+    validateHelloFeatures(record.features) ??
+    validateHelloAttach(record.attach) ??
+    validateCommandState(record.commandState)
+  )
+}
+
+const COMMAND_STATE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Shape of `hello.commandState`; absent is fine (a daemon without the feature). */
+function validateCommandState(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isRecord(value)) return 'invalid commandState'
+  const { processStartId, known, complete } = value
+  const valid =
+    typeof processStartId === 'string' &&
+    COMMAND_STATE_UUID_RE.test(processStartId) &&
+    typeof complete === 'boolean' &&
+    Array.isArray(known) &&
+    known.length <= MAX_DAEMON_WS_COMMAND_STATE_IDS &&
+    known.every(
+      (id) =>
+        typeof id === 'string' && id.length > 0 && id.length <= MAX_DAEMON_WS_COMMAND_STATE_ID_CHARS
+    )
+  return valid ? null : 'invalid commandState'
 }
 
 /** Shape only; the signature is checked by the transport (`attach-proof.ts`). */

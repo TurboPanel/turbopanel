@@ -520,6 +520,7 @@ async function handleDaemonPresenceInbound(params: {
       serverId,
       features: message.features,
       report: message.commands,
+      commandState: message.commandState,
       attachedAt: snapshotBefore.connectedAt,
     })
   }

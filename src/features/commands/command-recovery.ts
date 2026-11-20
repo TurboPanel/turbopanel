@@ -17,6 +17,7 @@ import type { DaemonCell, PendingRequestRecord } from '../../contracts/cell.ts'
 import {
   type CommandOutcomeAckMessage,
   type CommandRecoveryReport,
+  type CommandStateReport,
   type DaemonInboundEnvelope,
   generateDeliveryId,
 } from '../../contracts/cell-protocol.ts'
@@ -24,7 +25,7 @@ import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
 import { describeErrorCauses } from '../../lib/describe-error.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { COMMAND_RECOVERY_FEATURE } from '../../lib/version-wire.ts'
+import { COMMAND_RECOVERY_FEATURE, COMMAND_RECOVERY_V2_FEATURE } from '../../lib/version-wire.ts'
 import { markDeploymentApplied } from '../deploy/deployment-records.ts'
 import { readDeployContext } from '../deploy/rollout.ts'
 import { noteCommandAlive, parseStoredCommandProgress } from './command-progress.ts'
@@ -69,8 +70,9 @@ export async function noteReportedCommands(
  * a resend could run the command a second time. Every type here is a
  * reconcile (state converges to the same result) or a read-only probe. Deploy,
  * destroy, delete, rollback, rotation, restore and failover stay on their
- * current paths. Widening this needs a daemon feature that reports journal ids
- * or a process start id in the hello.
+ * current paths. This allowlist is the rule for a hello without a complete
+ * `commandState` (`command-recovery-v2`); with one, every type is resent when
+ * its id is not in `known` ({@link completeKnownIds}).
  */
 export const REDELIVERABLE_COMMAND_TYPES: ReadonlySet<string> = new Set([
   'daemon.ping',
@@ -107,9 +109,14 @@ const DEFAULT_REDELIVERY_READS: RedeliveryReads = { getCommandRecord, getCommand
 export function lostCommandIds(
   requests: readonly PendingRequestRecord[],
   report: CommandRecoveryReport | undefined,
-  attachedAt?: string
+  attachedAt?: string,
+  knownIds?: ReadonlySet<string>
 ): string[] {
-  const carried = new Set([...(report?.running ?? []), ...(report?.unacked ?? [])])
+  const carried = new Set([
+    ...(report?.running ?? []),
+    ...(report?.unacked ?? []),
+    ...(knownIds ?? []),
+  ])
   const attachedMs = attachedAt === undefined ? Number.NaN : Date.parse(attachedAt)
   return requests
     .filter(
@@ -121,10 +128,25 @@ export function lostCommandIds(
         // The type is known from the cell, so a type that is never sent again
         // is dropped before the database opens. A record without one is left to
         // the database check.
-        (request.command === undefined || REDELIVERABLE_COMMAND_TYPES.has(request.command)) &&
+        (knownIds !== undefined ||
+          request.command === undefined ||
+          REDELIVERABLE_COMMAND_TYPES.has(request.command)) &&
         !sentOnConnection(request, attachedMs)
     )
     .map((request) => request.requestId)
+}
+
+/**
+ * The ids a daemon holds when it says its list is complete (`commandState`,
+ * feature `command-recovery-v2`), or `undefined` when it does not: a missing id
+ * then proves nothing and the allowlist applies.
+ */
+export function completeKnownIds(
+  features: readonly string[] | undefined,
+  state: CommandStateReport | undefined
+): ReadonlySet<string> | undefined {
+  if (features?.includes(COMMAND_RECOVERY_V2_FEATURE) !== true) return undefined
+  return state?.complete === true ? new Set(state.known) : undefined
 }
 
 /**
@@ -159,6 +181,8 @@ export async function redeliverLostCommands(
     serverId: string
     features: readonly string[] | undefined
     report: CommandRecoveryReport | undefined
+    /** `hello.commandState` (`command-recovery-v2`); only a complete one widens what is resent. */
+    commandState?: CommandStateReport
     /** When the connection that sent this hello attached; commands sent since are not lost. */
     attachedAt?: string
   },
@@ -170,11 +194,14 @@ export async function redeliverLostCommands(
     const requests = await cell.listRequests(REDELIVER_REQUEST_LIMIT, {
       requestKind: 'command-dispatch',
     })
-    const lost = [...new Set(lostCommandIds(requests, input.report, input.attachedAt))]
+    const knownIds = completeKnownIds(input.features, input.commandState)
+    const lost = [...new Set(lostCommandIds(requests, input.report, input.attachedAt, knownIds))]
     if (lost.length === 0) return resent
     await withDb(async (db) => {
       const outcomes = await Promise.all(
-        lost.map((commandId) => redeliverOne(db, cell, reads, input.serverId, commandId))
+        lost.map((commandId) =>
+          redeliverOne(db, cell, reads, input.serverId, commandId, knownIds !== undefined)
+        )
       )
       lost.forEach((commandId, i) => {
         if (outcomes[i]) resent.push(commandId)
@@ -189,17 +216,31 @@ export async function redeliverLostCommands(
   return resent
 }
 
+/**
+ * How long a daemon keeps a command's journal entry before it drops it
+ * (`UNACKED_RETENTION_MS` in the daemon). A command older than this may have
+ * run and been forgotten, so it is never sent again on the strength of a list.
+ */
+export const DAEMON_UNCONFIRMED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+
+/** True when the command was sent longer ago than the daemon keeps its journal. */
+function olderThanRetention(row: CommandRecord): boolean {
+  const sentMs = Date.parse(row.sentAt ?? row.createdAt)
+  return !Number.isFinite(sentMs) || Date.now() - sentMs >= DAEMON_UNCONFIRMED_RETENTION_MS
+}
+
 async function redeliverOne(
   db: Db,
   cell: RedeliveryCell,
   reads: RedeliveryReads,
   serverId: string,
-  commandId: string
+  commandId: string,
+  anyType: boolean
 ): Promise<boolean> {
   try {
     const row = await reads.getCommandRecord(db, commandId)
     if (row?.serverId !== serverId || row.status !== 'sent' || row.ackedAt !== null) return false
-    if (!REDELIVERABLE_COMMAND_TYPES.has(row.type)) return false
+    if (anyType ? olderThanRetention(row) : !REDELIVERABLE_COMMAND_TYPES.has(row.type)) return false
     const payload = await reads.getCommandDispatchPayload(db, commandId)
     if (payload === null) return false
     // The database reads are done; the cell checks the request again, in one

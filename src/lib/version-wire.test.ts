@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   CLIENT_VERSION_HEADER,
+  COMMAND_RECOVERY_V2_FEATURE,
   compareSemver,
   CUSTOM_NODE_APP_MODE_FEATURE,
   TUNNEL_CONNECTOR_FEATURE,
@@ -295,6 +296,12 @@ test('acme-issue-v1 is an advertised wire feature and raised no floor', () => {
 test('command-recovery-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(COMMAND_RECOVERY_FEATURE, 'command-recovery-v1')
   assertEquals(DAEMON_WIRE_FEATURES.includes(COMMAND_RECOVERY_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('command-recovery-v2 is an advertised wire feature and raised no floor', () => {
+  assertEquals(COMMAND_RECOVERY_V2_FEATURE, 'command-recovery-v2')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(COMMAND_RECOVERY_V2_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
