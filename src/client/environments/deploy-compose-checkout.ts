@@ -38,7 +38,7 @@ export type DeployComposeCheckoutParams = {
   organizationId: string
   serverId: string
   /** The Base this deploy used; `null` when the project does not follow a file. */
-  composeBase?: ComposeBaseRecord | null | undefined
+  composeBase?: ComposeBaseRecord | null
 }
 
 /**

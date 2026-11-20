@@ -2954,7 +2954,7 @@ function deployHashInputs(parts: {
   nativeAppNodeVersions?: NativeAppNodeVersionView[]
   nativeAppDenoVersions?: NativeAppDenoVersionView[]
   sourceMaterial: EnvironmentDeploySource[]
-  composeCheckout?: EnvironmentDeployComposeCheckout | undefined
+  composeCheckout?: EnvironmentDeployComposeCheckout
   dockerExternalNetworks: string[]
   dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
   fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -3024,7 +3024,7 @@ async function toPreparedDeployResult(
     nativeAppNodeVersions?: NativeAppNodeVersionView[]
     nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
-    composeCheckout?: EnvironmentDeployComposeCheckout | undefined
+    composeCheckout?: EnvironmentDeployComposeCheckout
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
     fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -3494,18 +3494,36 @@ async function resolveManagedNetworkHostName(
 }
 
 /**
- * The local source material with its build environment and build limits set.
- * The commit hash never includes build limits, so changing a limit does not
- * make a deploy look new.
+ * What the host needs from the repository: the local source material with its
+ * build environment and build limits set, and the checkout of a followed
+ * compose file. The commit hash never includes build limits, so changing a
+ * limit does not make a deploy look new.
  */
-function sourceMaterialWithBuildSettings(
-  localSourceMaterial: readonly EnvironmentDeploySource[],
-  buildAssignments: Parameters<typeof withBuildEnv>[1],
-  levels: Parameters<typeof attachBuildLimits>[1]
-): EnvironmentDeploySource[] | DeployPrepareError {
-  const built = withBuildEnv(localSourceMaterial, buildAssignments)
+async function prepareSourceMaterial(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: 'deploy' | 'preview'
+    organizationId: string
+    serverId: string
+    composeBase: ComposeBaseRecord | null | undefined
+    localSourceMaterial: readonly EnvironmentDeploySource[]
+    buildAssignments: Parameters<typeof withBuildEnv>[1]
+    levels: Parameters<typeof attachBuildLimits>[1]
+  }
+): Promise<
+  | { sourceMaterial: EnvironmentDeploySource[]; composeCheckout?: EnvironmentDeployComposeCheckout }
+  | DeployPrepareError
+  | Response
+> {
+  const built = withBuildEnv(args.localSourceMaterial, args.buildAssignments)
   if (!Array.isArray(built)) return toApplyVariablesPrepareError(built)
-  return attachBuildLimits(built, levels)
+  const composeCheckout = await resolveDeployComposeCheckout(c, db, args)
+  if (isPrepareStop(composeCheckout)) return composeCheckout
+  return {
+    sourceMaterial: attachBuildLimits(built, args.levels),
+    ...(composeCheckout === undefined ? {} : { composeCheckout }),
+  }
 }
 
 /** A prepare step answered with a refusal (a `Response` or a `DeployPrepareError`) instead of its value. */
@@ -4205,24 +4223,21 @@ export async function prepareDeployCompose(
   })
   if (isPrepareStop(edge)) return edge
 
-  const sourceMaterial = sourceMaterialWithBuildSettings(
-    localSourceMaterial,
-    withVariables.buildAssignments,
-    {
-      organizationOptions: orgRow?.options,
-      serverOptions: serverRow?.options,
-      serviceOptionsByComposeName: pipeline.optionsByComposeName,
-    }
-  )
-  if (isPrepareStop(sourceMaterial)) return sourceMaterial
-
-  const composeCheckout = await resolveDeployComposeCheckout(c, db, {
+  const sources = await prepareSourceMaterial(c, db, {
     mode,
     organizationId: params.organizationId,
     serverId: params.serverId,
     composeBase: params.composeBase,
+    localSourceMaterial,
+    buildAssignments: withVariables.buildAssignments,
+    levels: {
+      organizationOptions: orgRow?.options,
+      serverOptions: serverRow?.options,
+      serviceOptionsByComposeName: pipeline.optionsByComposeName,
+    },
   })
-  if (isPrepareStop(composeCheckout)) return composeCheckout
+  if (isPrepareStop(sources)) return sources
+  const { sourceMaterial, composeCheckout } = sources
 
   const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
     c,
