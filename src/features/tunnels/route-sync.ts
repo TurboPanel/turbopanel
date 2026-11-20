@@ -48,13 +48,14 @@ export function nextRoutesRetry(previous: RoutesRetry, err: unknown, now: Date):
 }
 
 async function saveRetry(db: Db, id: string, retry: RoutesRetry | null): Promise<void> {
+  const retryPath = '{' + RETRY_KEY + '}'
   await db
     .update(tunnel)
     .set({
       metadata:
         retry === null
           ? sql`coalesce(${tunnel.metadata}, '{}'::jsonb) - ${RETRY_KEY}::text`
-          : sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), ${`{${RETRY_KEY}}`}::text[], ${JSON.stringify(retry)}::jsonb)`,
+          : sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), ${retryPath}::text[], ${JSON.stringify(retry)}::jsonb)`,
     })
     .where(eq(tunnel.id, id))
 }
