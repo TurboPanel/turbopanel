@@ -270,6 +270,7 @@ export const DAEMON_WIRE_FEATURES = [
   'build-limits-v1',
   'tunnel-peer-mtls-v1',
   'hosting-name-tls-v1',
+  'acme-issue-dns-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -380,6 +381,15 @@ export const TLS_CAPTURE_FEATURE: DaemonWireFeature = 'tls-capture-v1'
  * and never sends a mixed row to an older daemon, which would drop the field.
  */
 export const HOSTING_NAME_TLS_FEATURE: DaemonWireFeature = 'hosting-name-tls-v1'
+
+/**
+ * The daemon can place a certificate order over the DNS proof (`challenge:
+ * 'dns-01'` on `acme-issue-request`), asking the control plane to publish and
+ * remove the TXT records (`acme-dns-publish`, `acme-dns-remove`). A daemon
+ * without this feature drops `challenge` and would run the HTTP proof, so the
+ * control plane never sends `dns-01` to one.
+ */
+export const ACME_ISSUE_DNS_FEATURE: DaemonWireFeature = 'acme-issue-dns-v1'
 
 /**
  * The daemon places the certificate order for a name set when the control plane

@@ -16,9 +16,11 @@ export type ServingServer = {
   online: boolean
   /** Public addresses the server is known by (canonical form). */
   addresses: readonly string[]
+  /** Its daemon lists `acme-issue-dns-v1`: it may place an order over the DNS proof. Absent reads as no. */
+  takesDnsOrders?: boolean
 }
 
-export type SkipReason = 'offline' | 'not_in_dns'
+export type SkipReason = 'offline' | 'not_in_dns' | 'no_dns_orders'
 
 export type Participants = {
   issuer: ServingServer
@@ -83,4 +85,38 @@ export function chooseParticipants(params: {
     helpers: rest.map((r) => ({ server: r.server, address: r.address })),
     skipped,
   }
+}
+
+export type DnsChoice =
+  | { ok: true; issuer: ServingServer; skipped: Participants['skipped'] }
+  | { ok: false; reason: 'no_servers' | 'none_take_dns'; skipped: Participants['skipped'] }
+
+/**
+ * The server that places an order over the DNS proof. The proof is TXT records
+ * the panel publishes, so no address or port-80 check applies: any serving server
+ * that is online and whose daemon lists `acme-issue-dns-v1` may issue. A daemon
+ * without the feature would drop the DNS request and run the HTTP proof, so it is
+ * never chosen. With none able, the request waits.
+ */
+export function chooseDnsIssuer(params: {
+  servers: readonly ServingServer[]
+  previousIssuerId?: string | null
+  avoidServerId?: string | null
+}): DnsChoice {
+  const skipped: Participants['skipped'] = []
+  const eligible: ServingServer[] = []
+  const ordered = [...params.servers].sort((a, b) => compareIds(a.serverId, b.serverId))
+  for (const server of ordered) {
+    if (!server.online) skipped.push({ server, reason: 'offline' })
+    else if (server.takesDnsOrders !== true) skipped.push({ server, reason: 'no_dns_orders' })
+    else eligible.push(server)
+  }
+  if (params.servers.length === 0) return { ok: false, reason: 'no_servers', skipped }
+  if (eligible.length === 0) return { ok: false, reason: 'none_take_dns', skipped }
+  const rank = (id: string): number => {
+    if (id === params.avoidServerId && eligible.length > 1) return 2
+    return id === params.previousIssuerId ? 0 : 1
+  }
+  const [issuer] = [...eligible].sort((a, b) => rank(a.serverId) - rank(b.serverId))
+  return { ok: true, issuer, skipped }
 }

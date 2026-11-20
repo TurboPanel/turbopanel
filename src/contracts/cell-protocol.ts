@@ -707,10 +707,39 @@ export type AcmeIssueRequestMessage = {
   names: string[]
   directory: 'production' | 'staging'
   contactEmail: string
+  /** The proof to use. Absent means `http-01`; `dns-01` goes only to a daemon with `acme-issue-dns-v1`. */
+  challenge?: 'http-01' | 'dns-01'
   /** The request is open until this time (ISO 8601). */
   startByIso: string
   /** Other servers that pass the proof path on; the issuer checks each before asking the authority. */
   helpers: AcmeProofHelper[]
+  at: string
+}
+
+/** One TXT record the daemon needs published for the DNS proof. */
+export type AcmeDnsRecord = { name: string; value: string }
+
+/** Daemon → control plane: publish these TXT records for the order. Twin of the daemon's message. */
+export type AcmeDnsPublishMessage = {
+  type: 'acme-dns-publish'
+  requestId: string
+  records: AcmeDnsRecord[]
+  at: string
+}
+
+/** Control plane → daemon: the records are published (`ok`), or a plain reason they could not be. */
+export type AcmeDnsPublishedMessage = {
+  type: 'acme-dns-published'
+  requestId: string
+  ok: boolean
+  error?: string
+  at: string
+}
+
+/** Daemon → control plane: the order is done with its records; remove them. */
+export type AcmeDnsRemoveMessage = {
+  type: 'acme-dns-remove'
+  requestId: string
   at: string
 }
 
@@ -909,6 +938,9 @@ export type DaemonMessage =
   | AcmeProofForwardEndMessage
   | AcmeIssueEventMessage
   | AcmeProofForwardReportMessage
+  | AcmeDnsPublishMessage
+  | AcmeDnsPublishedMessage
+  | AcmeDnsRemoveMessage
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -1326,6 +1358,8 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'acme-issue-event',
   'acme-proof-forward-ready',
   'acme-proof-forward-failed',
+  'acme-dns-publish',
+  'acme-dns-remove',
   'backup-run-report',
   'backup-copy-report',
   'fabric-paths-result',
@@ -2013,11 +2047,15 @@ function validateAcmeRequestId(value: unknown): string | null {
   return typeof value === 'string' && ACME_REQUEST_ID_RE.test(value) ? null : 'invalid requestId'
 }
 
-function validateAcmeNames(value: unknown): string | null {
+/** A wildcard (`*.example.com`) is a name only for an order proved over DNS. */
+function validateAcmeNames(value: unknown, dns = false): string | null {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ACME_ISSUE_NAMES) {
     return 'invalid names'
   }
-  const ok = value.every((n) => typeof n === 'string' && n.length <= 253 && ACME_NAME_RE.test(n))
+  const bare = (n: string) => (dns && n.startsWith('*.') ? n.slice(2) : n)
+  const ok = value.every(
+    (n) => typeof n === 'string' && n.length <= 253 && ACME_NAME_RE.test(bare(n))
+  )
   return ok ? null : 'invalid names'
 }
 
@@ -2052,7 +2090,7 @@ export function validateAcmeIssueRequestFields(record: Record<string, unknown>):
   return firstProblem(
     validateAcmeRequestId(record.requestId),
     isBoundedId(record.tlsId) ? null : 'invalid tlsId',
-    validateAcmeNames(record.names),
+    validateAcmeNames(record.names, record.challenge === 'dns-01'),
     record.directory === 'production' || record.directory === 'staging'
       ? null
       : 'invalid directory',
@@ -2061,6 +2099,11 @@ export function validateAcmeIssueRequestFields(record: Record<string, unknown>):
       record.contactEmail.length <= 254
       ? null
       : 'invalid contactEmail',
+    record.challenge === undefined ||
+      record.challenge === 'http-01' ||
+      record.challenge === 'dns-01'
+      ? null
+      : 'invalid challenge',
     isIsoTimestamp(record.startByIso) ? null : 'invalid startByIso',
     validateAcmeHelpers(record.helpers),
     isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
@@ -2112,6 +2155,56 @@ export function validateAcmeProofForwardReportFields(
   return firstProblem(
     validateAcmeRequestId(record.requestId),
     validateOptionalError(record.reason),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Most records one order asks for: one per name. */
+export const MAX_ACME_DNS_RECORDS = MAX_ACME_ISSUE_NAMES
+export const ACME_DNS_RECORD_NAME_RE = /^_acme-challenge\.[a-z0-9.-]+$/
+export const ACME_DNS_RECORD_VALUE_RE = /^[A-Za-z0-9_-]{1,128}$/
+
+function validateAcmeDnsRecords(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ACME_DNS_RECORDS) {
+    return 'invalid records'
+  }
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) return 'invalid records'
+    const { name, value: text } = item as Record<string, unknown>
+    if (typeof name !== 'string' || name.length > 253 || !ACME_DNS_RECORD_NAME_RE.test(name)) {
+      return 'invalid records'
+    }
+    if (typeof text !== 'string' || !ACME_DNS_RECORD_VALUE_RE.test(text)) return 'invalid records'
+  }
+  return null
+}
+
+/** Shape check for `acme-dns-publish` (daemon to control plane). */
+export function validateAcmeDnsPublishFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    validateAcmeDnsRecords(record.records),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-dns-remove` (daemon to control plane). */
+export function validateAcmeDnsRemoveFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-dns-published` (control plane to daemon). */
+export function validateAcmeDnsPublishedFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    typeof record.ok === 'boolean' ? null : 'invalid ok',
+    validateOptionalError(record.error),
     isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
     acmeForbiddenKey(record)
   )
@@ -2949,6 +3042,10 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
     case 'acme-proof-forward-ready':
     case 'acme-proof-forward-failed':
       return validateAcmeProofForwardReportFields(record)
+    case 'acme-dns-publish':
+      return validateAcmeDnsPublishFields(record)
+    case 'acme-dns-remove':
+      return validateAcmeDnsRemoveFields(record)
     case 'backup-run-report':
       return validateBackupRunReportFields(record)
     case 'backup-copy-report':
@@ -3284,6 +3381,7 @@ export type DaemonOutboundEnvelope =
       names: string[]
       directory: 'production' | 'staging'
       contactEmail: string
+      challenge?: 'http-01' | 'dns-01'
       startByIso: string
       helpers: AcmeProofHelper[]
     })
@@ -3518,6 +3616,8 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'acme-issue-event':
     case 'acme-proof-forward-ready':
     case 'acme-proof-forward-failed':
+    case 'acme-dns-publish':
+    case 'acme-dns-remove':
     case 'update-progress':
     case 'command-progress':
       // Fire-and-forget (or session setup). Not a correlated request.
@@ -3834,6 +3934,7 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         names: env.names,
         directory: env.directory,
         contactEmail: env.contactEmail,
+        ...(env.challenge === undefined ? {} : { challenge: env.challenge }),
         startByIso: env.startByIso,
         helpers: env.helpers,
         at: env.at,

@@ -5,6 +5,7 @@
  * depend on one particular token: the order keeps only the account. A call
  * the provider refuses with one token is tried with the next (`withDnsToken`).
  */
+import { firstSequential } from '../../../lib/sequential.ts'
 import {
   BadgeRefused,
   BadgeUnavailable,
@@ -12,6 +13,7 @@ import {
   useBadges,
 } from '../../tunnels/badge-use.ts'
 import { TunnelProviderError } from '../../tunnels/errors.ts'
+import { type BadgeRow, listBadges, openBadgeToken, toApiBadge } from '../../tunnels/records.ts'
 import type { DnsCertContext } from './context.ts'
 
 export type DnsTokenNeed = { zone: { id: string; name?: string } }
@@ -59,4 +61,51 @@ export async function withDnsToken<T>(
     }
     throw err
   }
+}
+
+/** Active tokens that reach some DNS zone, the most recently checked first. */
+async function dnsCapableBadges(
+  ctx: Pick<DnsCertContext, 'db'>,
+  carrierId: string
+): Promise<BadgeRow[]> {
+  const rows = (await listBadges(ctx.db, carrierId)).filter(
+    (row) => row.status === 'active' && toApiBadge(row).capabilities.dns.length > 0
+  )
+  return rows.sort((a, b) => (b.lastCheckedAt ?? '').localeCompare(a.lastCheckedAt ?? ''))
+}
+
+function refusedToken(err: unknown): boolean {
+  return (
+    err instanceof TunnelProviderError && (err.code === 'unauthorized' || err.code === 'forbidden')
+  )
+}
+
+/**
+ * Do a zone lookup with any DNS token of the account, the most recently
+ * checked first, and try the next when the provider refuses one. A refusal
+ * here says nothing about one zone, so no token's stored rights change.
+ * Null when the account has no such token; the last refusal is thrown when
+ * every one was refused.
+ */
+export async function withAnyDnsToken<T>(
+  ctx: Pick<DnsCertContext, 'db' | 'secrets'>,
+  carrierId: string,
+  run: (token: string) => Promise<T>
+): Promise<{ value: T } | null> {
+  const rows = await dnsCapableBadges(ctx, carrierId)
+  let refusal: unknown = null
+  const done = await firstSequential(rows, async (row) => {
+    const token = await openBadgeToken(ctx.db, ctx.secrets, row)
+    if (token === null) return undefined
+    try {
+      return { value: await run(token) }
+    } catch (err) {
+      if (!refusedToken(err)) throw err
+      refusal = err
+      return undefined
+    }
+  })
+  if (done) return done
+  if (refusal !== null) throw refusal
+  return null
 }

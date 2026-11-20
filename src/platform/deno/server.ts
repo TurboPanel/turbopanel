@@ -116,6 +116,7 @@ import { setPublicTlsProbe } from '../../features/install/install-trust.ts'
 import { createPublicTlsProbe } from './public-tls-probe.ts'
 import { serverDialOrigins } from '../../lib/panel-identity/urls.ts'
 import { type DevHostStatusSink, registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+import { confirmOnNameservers } from './dns-confirm.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
   parseMetricsRetentionDays,
@@ -770,6 +771,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secrets: daemonJwtKeyring,
     sessionSecrets,
     dataEncryptionSecrets,
+    confirmDnsRecord: confirmOnNameservers,
     daemonCellRegistry,
     connectLimiter: daemonConnectLimiter,
     inboundMessageLimit: inboundLimits.limit,

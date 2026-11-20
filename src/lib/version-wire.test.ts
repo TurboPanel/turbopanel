@@ -53,6 +53,7 @@ import {
   BACKUP_S3_COPY_FEATURE,
   DEPLOY_HOSTINGS_ONLY_FEATURE,
   TLS_CAPTURE_FEATURE,
+  ACME_ISSUE_DNS_FEATURE,
   ACME_ISSUE_FEATURE,
   COMMAND_RECOVERY_FEATURE,
   INSTANCE_HOSTNAME_PUBLIC_PORT_FEATURE,
@@ -499,8 +500,14 @@ test('tunnel-peer-mtls-v1 is a daemon wire feature and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
-test('hosting-name-tls-v1 is the last daemon wire feature and raised no floor', () => {
+test('hosting-name-tls-v1 is an advertised daemon wire feature and raised no floor', () => {
   assertEquals(HOSTING_NAME_TLS_FEATURE, 'hosting-name-tls-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), HOSTING_NAME_TLS_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(HOSTING_NAME_TLS_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('acme-issue-dns-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(ACME_ISSUE_DNS_FEATURE, 'acme-issue-dns-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.at(-1), ACME_ISSUE_DNS_FEATURE)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })

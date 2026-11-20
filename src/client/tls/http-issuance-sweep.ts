@@ -12,6 +12,7 @@ import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { hostname, hosting, tls } from '../../db/schema.ts'
 import { isServerConnected } from '../../daemon/cell/server-status.ts'
+import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
@@ -51,6 +52,8 @@ export type HttpIssuanceSweepResult = {
   advanced: number
   started: number
   delivered: number
+  /** Of `started`, the renewals. */
+  renewalsStarted: number
 }
 
 /**
@@ -80,6 +83,8 @@ export function buildHttpIssuanceDeps(db: Db, wiring: HttpIssuanceSweepWiring): 
     },
     dnsLookup: wiring.dnsLookup ?? runtimeDnsLookup(),
     isOnline: (serverId) => isServerConnected(db, wiring.registry, serverId),
+    serverFeatures: async (serverId) =>
+      (await getServerDaemonStateByServerId(db, serverId))?.projection?.features ?? [],
     contactEmail: (organizationId) => organizationAcmeContactEmail(db, organizationId),
     staging: httpIssuanceStaging(wiring.env),
   }
@@ -112,20 +117,21 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
       id: tls.id,
       metadata: tls.metadata,
       organizationId: tls.organizationId,
+      hasPair: sql<boolean>`${tls.privateKeyPem} is not null`,
     })
     .from(tls)
     .where(
       and(
         eq(tls.source, 'lets_encrypt'),
         eq(tls.status, 'automatic'),
-        // Only a row that a site pins, with at least one name, and never a wildcard (that
-        // is the connected DNS host's).
+        // Only a row that a site pins, with at least one name. A wildcard name needs the DNS
+        // proof, so a row with one is picked only when it was made for that proof.
         sql`(exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) or exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id}))`,
         sql`jsonb_array_length(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) >= 1`,
-        sql`not exists (
+        sql`(${tls.metadata} #>> '{acme,challengeType}' = 'dns-01' or not exists (
           select 1 from jsonb_array_elements_text(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) as n
           where n like '*%'
-        )`,
+        ))`,
         sql`(
           (${h} is null and ${tls.privateKeyPem} is null)
           or (${h} is not null and ${h} ->> 'endedAt' is null)
@@ -148,6 +154,8 @@ type Candidate = Awaited<ReturnType<typeof selectHttpIssuanceCandidates>>[number
 
 /** New orders begun in one tick, so a first run after a rollout is gradual. */
 export const HTTP_ISSUANCE_STARTS_PER_TICK = 3
+/** Of those, renewals (a row that already has a pair) begun in one tick. */
+export const HTTP_ISSUANCE_RENEWALS_PER_TICK = 2
 
 async function stepRow(
   deps: HttpIssuanceDeps,
@@ -157,6 +165,7 @@ async function stepRow(
     now: Date
     out: HttpIssuanceSweepResult
     startsLeft: number
+    renewalsLeft: number
   }
 ): Promise<void> {
   const { out, now } = step
@@ -174,10 +183,17 @@ async function stepRow(
     await sendPendingEnds(deps, row.id)
   }
   if (step.startsLeft <= 0) return
+  // Renewals are slow to matter and cheap to postpone: at most two begin per tick, so
+  // a day when many certificates come due does not start them all in one minute.
+  const renewing = row.hasPair
+  if (renewing && step.renewalsLeft <= 0) return
   const outcome = await startHttpIssuance(deps, row.id, (facts) =>
     facts.hasPair ? renewalDue(state, now) : true
   )
-  if (outcome === 'started' || outcome === 'ordering') out.started += 1
+  if (outcome === 'started' || outcome === 'ordering') {
+    out.started += 1
+    if (renewing) out.renewalsStarted += 1
+  }
 }
 
 export async function runHttpIssuanceSweepTick(
@@ -185,7 +201,8 @@ export async function runHttpIssuanceSweepTick(
   wiring: HttpIssuanceSweepWiring,
   options: { batch?: number; budgetMs?: number } = {}
 ): Promise<HttpIssuanceSweepResult> {
-  if (!httpIssuanceEnabled(wiring.env)) return { scanned: 0, advanced: 0, started: 0, delivered: 0 }
+  if (!httpIssuanceEnabled(wiring.env))
+    return { scanned: 0, advanced: 0, started: 0, delivered: 0, renewalsStarted: 0 }
   const startedAt = Date.now()
   const now = (wiring.now ?? (() => new Date()))()
   const deps = buildHttpIssuanceDeps(db, wiring)
@@ -202,6 +219,7 @@ export async function runHttpIssuanceSweepTick(
     advanced: 0,
     started: 0,
     delivered: 0,
+    renewalsStarted: 0,
   }
   const budgetMs = options.budgetMs ?? HTTP_ISSUANCE_SWEEP_BUDGET_MS
   // Rows not started inside the budget simply wait for the next minute.
@@ -209,7 +227,13 @@ export async function runHttpIssuanceSweepTick(
     if (Date.now() - startedAt > budgetMs) return
     try {
       const startsLeft = HTTP_ISSUANCE_STARTS_PER_TICK - out.started
-      await stepRow(deps, row, { push, now, out, startsLeft })
+      await stepRow(deps, row, {
+        push,
+        now,
+        out,
+        startsLeft,
+        renewalsLeft: HTTP_ISSUANCE_RENEWALS_PER_TICK - out.renewalsStarted,
+      })
     } catch (err) {
       logWarn('tls', `server-placed certificate step failed for ${row.id}: ${String(err)}`)
     }
