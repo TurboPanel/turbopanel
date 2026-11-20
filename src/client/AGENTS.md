@@ -105,6 +105,34 @@ changes.
   `server.timezone` column). Commands: `POST /servers/:id/timezone`
   (`server.timezone.set`, also persists the server override) and
   `POST /servers/:id/ntp` (`server.ntp.set`) — manage-gated, create-then-poll.
+  Org delete: `DELETE /organizations/:id?confirmName=<exact name>`
+  (`organizations/delete-routes.ts`) — the owner or a platform admin
+  (`organization:own`); a manager who is not the owner gets 403. Always asks
+  for step-up (`requireInstanceStepUp`, `organization.delete`, whatever the
+  organization's switch says). Order: 401, 404 (unknown, or one the caller
+  cannot see: a stranger gets 404 as on GET), 403, 403 `reauth_required`,
+  400 `confirm_name_required`, then 409 `root_organization` (the id pinned in
+  the `setting` row `INSTANCE_ROOT_ORGANIZATION`, written by the install and
+  backfilled on first lookup; `findDefaultInstalledOrganizationId`, never the
+  display name),
+  `organization_has_servers` (`serverCount`), `organization_has_tunnels`
+  (`tunnelCount`) and `organization_has_dns_records` (`dnsRecordCount`); each
+  409 carries `error`, `code` and `message`. Servers are never moved, shared or
+  disconnected: they are purged or removed one by one first (a server can never
+  change organization). Tunnels and DNS records live at a provider the cascade
+  cannot reach, so they are removed first too. The blockers are counted
+  under a `FOR UPDATE` lock on the organization row inside the delete
+  transaction (`deleteOrganizationIfClear`), including rows on its carriers, so
+  a racing insert still gets the 409. On success it removes the rows, the
+  `permission` grants on the organization, its teams, workspaces and projects,
+  and writes the audit (`organization.delete`, null organization id: the
+  organization's own audit rows cascade away) in that one transaction
+  (`{ ok: true, id }`). A person whose last organization was deleted has none:
+  `GET /organizations` answers `{ organizations: [] }`, the UI lands on the
+  organization switcher, and `POST /organizations` creates the next. Left behind on purpose: people's accounts, ACME and
+  uploaded certificates are database rows only (nothing is revoked at the
+  authority), and Git provider applications or installations registered at
+  GitHub or GitLab stay registered there.
   Org record: `GET`/`PATCH /organizations/:id` — GET is access-gated (same
   visibility as the org list: team membership, owner/manager grant, or platform
   admin; missing or inaccessible → **404**); PATCH is manage-gated and takes any

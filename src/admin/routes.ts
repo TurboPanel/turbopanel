@@ -19,6 +19,7 @@ import {
 } from '../features/alerts/alert-webhook-settings.ts'
 import { registerNotificationAdminRoutes } from './notification-routes.ts'
 import { registerMailDeadLetterAdminRoutes } from './mail-dead-letter-routes.ts'
+import { registerOrganizationAdminRoutes } from './organization-routes.ts'
 import type { MailDeadLetterStore } from '../features/email/smtp/dead-letter-replay.ts'
 import { type EmailDeliveryStatus, emailDeliveryState } from '../features/email/delivery-status.ts'
 import { isNoopEmailQueue } from '../features/email/noop-queue.ts'
@@ -244,6 +245,7 @@ export function registerAdminRoutes(
   opts.registerTiers?.(admin)
   registerNotificationAdminRoutes(admin)
   registerMailDeadLetterAdminRoutes(admin, { store: opts.mailDeadLetters })
+  registerOrganizationAdminRoutes(admin)
 
   admin.get('/daemon/connections', async (c) => {
     const registry = getDaemonCellRegistry(c)

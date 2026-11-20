@@ -999,6 +999,95 @@ export const organizationPaths: Record<string, unknown> = {
         },
       },
     },
+    delete: {
+      tags: ['Organizations'],
+      summary: 'Delete an organization',
+      description:
+        'Owner of the organization or a platform admin. A person who cannot see the organization at all gets 404, as on GET; one who can but is not the owner (a manager, a member) gets 403. Always asks for a recent re-authentication, whatever the organization setting says (403 `reauth_required`, action `organization.delete`). `confirmName` must be the exact organization name (400 `confirm_name_required`). Refused with 409 `root_organization` for the platform root organization (a pinned id, so renaming it changes nothing), `organization_has_servers` (with `serverCount`) while any server remains, `organization_has_tunnels` (with `tunnelCount`) and `organization_has_dns_records` (with `dnsRecordCount`); remove those first. Servers are never moved to another organization. The blockers are checked again under a row lock inside the delete, so a server added meanwhile also answers 409. On success everything the organization owns, including its permission grants, is deleted in one transaction together with its audit row (`organization.delete`, no organization id). The caller may now belong to no organization: `GET /organizations` then answers `{ organizations: [] }` and `POST /organizations` creates the next one (the session stays valid).',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+        {
+          name: 'confirmName',
+          in: 'query',
+          required: true,
+          schema: { type: 'string' },
+          description: 'The exact organization name (a nameless one goes by its id).',
+        },
+      ],
+      responses: {
+        '200': {
+          description: 'Deleted',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'id'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  id: { type: 'string', format: 'uuid' },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: '`confirm_name_required`, with a `message` to show',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '403': {
+          description:
+            'Forbidden (not the owner or a platform admin), or `reauth_required` with `action`, `methods` and `windowSeconds`',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '404': {
+          description: 'Organization not found',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '409': {
+          description:
+            '`error` and `code` are one of `root_organization`, `organization_has_servers` (`serverCount`), `organization_has_tunnels` (`tunnelCount`), `organization_has_dns_records` (`dnsRecordCount`), with a `message` to show',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+      },
+    },
   },
   '/api/client/v1/organizations/{id}/default-timezone': {
     get: {

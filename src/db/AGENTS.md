@@ -895,6 +895,12 @@ This reuses the existing `setting` table (no schema migration) — only one
 superadmin/organization bootstrap can ever be created, even under concurrent
 requests across isolates.
 
+**Root organization marker:** the same transaction writes the `setting` row
+`INSTANCE_ROOT_ORGANIZATION` (`{ organizationId }`, `ROOT_ORGANIZATION_SETTING_KEY`).
+`findDefaultInstalledOrganizationId` reads it, so the root never depends on the
+organization's display name; an install that predates the row is pinned on its
+first lookup (by name, then superadmin's team, then oldest). No migration.
+
 ## Client API (authz integration)
 
 The client REST endpoint inventory — access/permission endpoints and the full

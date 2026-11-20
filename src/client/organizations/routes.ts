@@ -90,6 +90,7 @@ import {
   validateManagedDefaults,
 } from './routes-helpers.ts'
 import { registerOrganizationFabricRoutes } from './fabric-routes.ts'
+import { registerOrganizationDeleteRoutes } from './delete-routes.ts'
 import { EMOJI_ICONS_OFF_BODY } from '../../lib/icons.ts'
 
 async function loadOrganizationRecord(db: Db, id: string) {
@@ -132,6 +133,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/build-limits', createSessionMiddleware(secrets))
   router.use('/timezones', createSessionMiddleware(secrets))
   registerOrganizationFabricRoutes(router, opts)
+  registerOrganizationDeleteRoutes(router, opts)
 
   router.get('/organizations', async (c) => {
     const db = getDb(c)

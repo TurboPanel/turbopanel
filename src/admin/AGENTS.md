@@ -1,5 +1,13 @@
 # Admin Surface (`src/admin/`)
 
+- `GET /organizations` (`organization-routes.ts`, `features/organizations/admin-list.ts`):
+  every organization, oldest first, in one statement with grouped counts:
+  `{ ok, organizations: [{ id, name, createdAt, owner: { id, name, email } | null,
+memberCount, serverCount, projectCount, isRoot }] }`. Admin or superadmin (the
+  admin gate). Deleting one is the client route `DELETE /organizations/:id`
+  (see `src/client/AGENTS.md`), which holds the same rules for a platform admin
+  (step-up, exact-name confirm, 409 while servers, tunnels or DNS records
+  remain, never the root); it is audited `organization.delete`.
 - `src/admin/routes.ts` — admin surface (`/api/admin/v1`); **now mounted** on
   both runtimes; gated to `superadmin` or `admin` via
   `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar;
