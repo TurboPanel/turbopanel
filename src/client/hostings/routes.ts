@@ -244,6 +244,33 @@ async function insertHostingFromCreate(
   })
 }
 
+/** The refusal for a patch's certificate choices, or null: a name the site does not serve, or DNS ordering that is not available. */
+async function refusePatchChoices(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  input: {
+    choices: ReadonlyMap<string, HostnameChoice> | undefined
+    hostnamesPatch: string[] | null
+    savedOptions: unknown
+    site: { id: string; serviceId: string }
+  }
+): Promise<Response | null> {
+  const { choices, hostnamesPatch, savedOptions, site } = input
+  if (!choices) return null
+  if (hostnamesPatch) {
+    const unserved = unservedChoice(c, choices, hostnamesPatch, readHostingWwwMode(savedOptions))
+    if (unserved) return unserved
+  }
+  return refuseUnavailableDnsChoices(
+    c,
+    db,
+    organizationId,
+    { serviceId: site.serviceId, hostingId: site.id },
+    choices
+  )
+}
+
 export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for hosting routes')
@@ -403,20 +430,13 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const hostnamesPatch =
       hostnamesPatchFromFields(patchFields) ??
       (choices === undefined ? null : (parseHostingOptions(savedOptions)?.hostnames ?? []))
-    if (choices && hostnamesPatch) {
-      const unserved = unservedChoice(c, choices, hostnamesPatch, readHostingWwwMode(savedOptions))
-      if (unserved) return unserved
-    }
-    if (choices) {
-      const unavailable = await refuseUnavailableDnsChoices(
-        c,
-        db,
-        organizationId,
-        { serviceId: existingHosting.serviceId, hostingId: id },
-        choices
-      )
-      if (unavailable) return unavailable
-    }
+    const badChoice = await refusePatchChoices(c, db, organizationId, {
+      choices,
+      hostnamesPatch,
+      savedOptions,
+      site: { id, serviceId: existingHosting.serviceId },
+    })
+    if (badChoice) return badChoice
 
     const conflict = await commitHostingPatch(c, db, {
       id,
