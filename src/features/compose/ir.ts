@@ -80,6 +80,7 @@ import type {
   EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySite,
+  EnvironmentDeployComposeCheckout,
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
@@ -541,6 +542,8 @@ export type ServerDeployment = {
   nativeAppServices: PreparedNativeAppService[]
   /** Git-backed releases resolved from `x-turbopanel.source`. */
   sourceMaterial: EnvironmentDeploySource[]
+  /** The repository a followed compose file came from, checked out on the host. */
+  composeCheckout?: EnvironmentDeployComposeCheckout
   /** Operator-registered external Docker networks this document names. */
   dockerExternalNetworks: string[]
   /**

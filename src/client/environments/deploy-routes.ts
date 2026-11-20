@@ -46,6 +46,7 @@ import type {
   EnvironmentDeployConfigFile,
   EnvironmentDeployHelperReach,
   EnvironmentDeploySecretPlanEntry,
+  EnvironmentDeployComposeCheckout,
   EnvironmentDeploySource,
   EnvironmentDeployServiceFolder,
   EnvironmentDeployStorageMaterial,
@@ -619,6 +620,8 @@ type DeployCommandCreateParams = DeployActor & {
   sites: EnvironmentDeploySite[]
   nativeAppServices: EnvironmentDeployNativeAppService[]
   sourceMaterial: EnvironmentDeploySource[]
+  /** The repository a followed compose file came from (absent: nothing to check out). */
+  composeCheckout?: EnvironmentDeployComposeCheckout
   ingressServices: EnvironmentDeployIngressService[]
   hostingIngress?: EnvironmentDeployIngressService
   /** Set only when `hostings` is non-empty (see prepare). */
@@ -832,6 +835,7 @@ async function createDeployCommand(
         sites: params.sites,
         nativeAppServices: params.nativeAppServices,
         sourceMaterial: params.sourceMaterial,
+        composeCheckout: params.composeCheckout,
         ingressServices: params.ingressServices,
         hostingIngress: params.hostingIngress,
         hostingIngressNetwork: params.hostingIngressNetwork,
@@ -1007,6 +1011,10 @@ function createParamsForPreparedServer(
       params.environmentId
     ),
     sourceMaterial: row.prepared.sourceMaterial,
+    // A hostings-only run builds and starts nothing, so it carries no clone credential.
+    ...(row.prepared.composeCheckout && !params.hostingsOnly
+      ? { composeCheckout: row.prepared.composeCheckout }
+      : {}),
     ingressServices: row.prepared.ingressServices,
     ...(row.prepared.hostingIngress ? { hostingIngress: row.prepared.hostingIngress } : {}),
     ...(row.prepared.hostingIngressNetwork
@@ -1461,6 +1469,7 @@ async function preparePreviewByServer(
       organizationId: args.organizationId,
       mode: 'preview',
       projectOptions: planned.projectOptions,
+      composeBase: planned.composeBase,
       composeValidated: planned.composeValidated,
       releaseIds,
       schedule: scheduleSliceForServer(
@@ -2130,6 +2139,7 @@ async function prepareOneServerDeploy(
     organizationId: params.auth.organizationId,
     acknowledgeHealthCheckWarnings: params.auth.acknowledgeHealthCheckWarnings,
     projectOptions: params.planned.projectOptions,
+    composeBase: params.planned.composeBase,
     composeValidated: params.planned.composeValidated,
     schedule: scheduleSliceForPreparedServer(params),
     sourceSelection: params.selection,

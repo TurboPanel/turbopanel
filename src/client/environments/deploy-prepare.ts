@@ -226,6 +226,7 @@ import type {
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySite,
   EnvironmentDeploySitePrincipal,
+  EnvironmentDeployComposeCheckout,
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployStorageMount,
@@ -239,6 +240,8 @@ import {
   resolveDeploySourceMaterial,
   withBuildEnv,
 } from './deploy-sources.ts'
+import { resolveDeployComposeCheckout } from './deploy-compose-checkout.ts'
+import type { ComposeBaseRecord } from '../../features/projects/project-options.ts'
 import {
   binding,
   environment,
@@ -2951,6 +2954,7 @@ function deployHashInputs(parts: {
   nativeAppNodeVersions?: NativeAppNodeVersionView[]
   nativeAppDenoVersions?: NativeAppDenoVersionView[]
   sourceMaterial: EnvironmentDeploySource[]
+  composeCheckout?: EnvironmentDeployComposeCheckout
   dockerExternalNetworks: string[]
   dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
   fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -2972,6 +2976,11 @@ function deployHashInputs(parts: {
     nativeAppNodeVersions: parts.nativeAppNodeVersions,
     nativeAppDenoVersions: parts.nativeAppDenoVersions,
     sourceMaterial: parts.sourceMaterial,
+    // The repository tree, commit and compose path decide what a relative path
+    // in the compose file means, so a moved commit is a different deploy even
+    // when the compiled YAML is byte-identical. The sealed credential never
+    // counts (`deploy-inputs-digest.ts`); absent, the hash is what it was.
+    composeCheckout: parts.composeCheckout,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing,
     fabricNetworks: parts.fabricNetworks,
@@ -3015,6 +3024,7 @@ async function toPreparedDeployResult(
     nativeAppNodeVersions?: NativeAppNodeVersionView[]
     nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
+    composeCheckout?: EnvironmentDeployComposeCheckout
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
     fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -3074,6 +3084,7 @@ async function toPreparedDeployResult(
     nativeAppNodeVersions: parts.nativeAppNodeVersions ?? [],
     nativeAppDenoVersions: parts.nativeAppDenoVersions ?? [],
     sourceMaterial: parts.sourceMaterial,
+    ...(parts.composeCheckout === undefined ? {} : { composeCheckout: parts.composeCheckout }),
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing
       ? [...parts.dockerNetworkAddressing]
@@ -3939,6 +3950,13 @@ export async function prepareDeployCompose(
      * the stored row, so the plan and every server read one Base.
      */
     projectOptions?: unknown
+    /**
+     * The Base this deploy used when the project follows its repository's
+     * compose file (`PlannedDeploy.composeBase`). Its repository, commit and
+     * path become the payload's `composeCheckout`, so the host has the files
+     * the compose file's relative paths mean.
+     */
+    composeBase?: ComposeBaseRecord | null
   }
 ): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
   const mode = params.mode ?? 'deploy'
@@ -4182,6 +4200,15 @@ export async function prepareDeployCompose(
     serviceOptionsByComposeName: pipeline.optionsByComposeName,
   })
 
+  const composeCheckout = await resolveDeployComposeCheckout(c, db, {
+    mode,
+    organizationId: params.organizationId,
+    serverId: params.serverId,
+    composeBase: params.composeBase ?? null,
+  })
+  if (composeCheckout instanceof Response) return composeCheckout
+  if (composeCheckout !== undefined && 'kind' in composeCheckout) return composeCheckout
+
   const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
     c,
     db,
@@ -4229,6 +4256,7 @@ export async function prepareDeployCompose(
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial,
+    ...(composeCheckout === undefined ? {} : { composeCheckout }),
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),

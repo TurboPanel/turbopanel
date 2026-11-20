@@ -4367,6 +4367,7 @@ type Served = { commitSha: string; content: string | null } | { message: string 
 
 type TrackedCtx = Parameters<Parameters<typeof withDeployFixtures>[0]>[0] & {
   sourceId: string
+  repositoryUrl: string
   /** What the stub repository answers per ref (a branch or a commit). */
   served: Map<string, Served>
   reads: Array<{ ref: string; paths: readonly string[] }>
@@ -4398,16 +4399,31 @@ function stubRepository(ctx: TrackedCtx) {
 
 async function withTrackedDeploy(fn: (ctx: TrackedCtx) => Promise<void>): Promise<void> {
   await withDeployFixtures(async (base) => {
+    const repositoryUrl = `https://git.example.net/example/${crypto.randomUUID()}.git`
     const [repo] = await base.db
       .insert(repository)
       .values({
         organizationId: base.organizationId,
-        provider: 'github',
-        repositoryUrl: `https://github.com/example/${crypto.randomUUID()}`,
+        provider: 'git',
+        repositoryUrl,
         defaultBranch: 'main',
       })
       .returning({ id: repository.id })
-    const ctx: TrackedCtx = { ...base, sourceId: repo!.id, served: new Map(), reads: [] }
+    const ctx: TrackedCtx = {
+      ...base,
+      sourceId: repo!.id,
+      repositoryUrl,
+      served: new Map(),
+      reads: [],
+    }
+    // A server that runs a daemon has a signing key; the checkout's clone
+    // credential is sealed to it, so a followed file needs one on the target.
+    await base.db.insert(key).values({
+      serverId: base.serverId,
+      algorithm: 'Ed25519',
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'A'.repeat(43) },
+      fingerprint: `fp-${crypto.randomUUID()}`,
+    })
     await useBaseCompose(ctx.db, ctx, composeWithNamedWebService())
     await ctx.db
       .update(project)
@@ -4467,6 +4483,10 @@ async function storedLastRead(ctx: TrackedCtx): Promise<Record<string, unknown>>
   return (row!.options as { composeSource: Record<string, unknown> }).composeSource
 }
 
+function checkoutOf(payload: Record<string, unknown>): Record<string, unknown> | undefined {
+  return payload.composeCheckout as Record<string, unknown> | undefined
+}
+
 function runtimeImage(payload: Record<string, unknown>): string {
   const files = payload.composeFiles as Array<{ content: string }>
   return /image: (\S+)/.exec(files[0]?.content ?? '')?.[1] ?? ''
@@ -4482,6 +4502,15 @@ test('a deploy of a tracking project reads the file at the branch head, records 
     assertEquals(ctx.reads[0], { ref: 'main', paths: ['compose.yaml'] })
     // The prepared compose is the repository file's, not the stored Base.
     assertEquals(runtimeImage(await dispatchedPayload(ctx.db, commandId)), 'nginx:new')
+    // The repository tree comes from the same commit the file was read at.
+    assertEquals(checkoutOf(await dispatchedPayload(ctx.db, commandId)), {
+      sourceId: ctx.sourceId,
+      provider: 'git',
+      cloneUrl: ctx.repositoryUrl,
+      ref: 'main',
+      commitSha: SHA_NEW,
+      composePath: 'compose.yaml',
+    })
 
     const [row] = await ctx.db
       .select({ context: command.context })
@@ -4581,6 +4610,7 @@ test('a deploy that names a commit reads the file at that commit and records it'
       [SHA_OLD]
     )
     assertEquals(runtimeImage(await dispatchedPayload(ctx.db, commandId)), 'nginx:old')
+    assertEquals(checkoutOf(await dispatchedPayload(ctx.db, commandId))?.commitSha, SHA_OLD)
     const [row] = await ctx.db
       .select({ context: command.context })
       .from(command)

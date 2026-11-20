@@ -4374,6 +4374,56 @@ const GITLAB_SOURCE_ENTRY = {
   build: { kind: 'native' },
 } as const
 
+const COMPOSE_CHECKOUT_ENTRY = {
+  sourceId: 'src-1',
+  provider: 'github',
+  cloneUrl: 'https://git.example.net/acme/stack.git',
+  ref: 'main',
+  commitSha: 'a'.repeat(40),
+  composePath: 'deploy/compose.yaml',
+} as const
+
+test('composeCheckout round-trips and is absent when the project follows no file', () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    composeCheckout: {
+      ...COMPOSE_CHECKOUT_ENTRY,
+      credential: 'tpdaemon.sealed',
+      credentialKind: 'token',
+      credentialUsername: 'oauth2',
+    },
+  })
+  assertEquals(parsed.composeCheckout?.composePath, 'deploy/compose.yaml')
+  assertEquals(parsed.composeCheckout?.credentialUsername, 'oauth2')
+  assertEquals(parseEnvironmentDeployPayload(NATIVE_APP_BASE).composeCheckout, undefined)
+})
+
+test('composeCheckout refuses a path that leaves the repository and a clone URL with a secret', () => {
+  const bad: Array<Record<string, unknown>> = [
+    { composePath: '../compose.yaml' },
+    { composePath: '/etc/compose.yaml' },
+    { composePath: 'a//compose.yaml' },
+    { composePath: 'a/./compose.yaml' },
+    { composePath: 'a\\compose.yaml' },
+    { composePath: '' },
+    { cloneUrl: 'https://user:pass@git.example.net/acme/stack.git' },
+    { provider: 'bitbucket' },
+    { credentialKind: 'password' },
+    { credential: '' },
+  ]
+  for (const override of bad) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          composeCheckout: { ...COMPOSE_CHECKOUT_ENTRY, ...override },
+        }),
+      Error,
+      'Invalid composeCheckout'
+    )
+  }
+})
+
 test('sourceMaterial carries the HTTPS credential username opaquely', () => {
   const parsed = parseEnvironmentDeployPayload({
     ...NATIVE_APP_BASE,

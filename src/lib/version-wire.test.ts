@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   CLIENT_VERSION_HEADER,
+  COMPOSE_CHECKOUT_FEATURE,
   COMMAND_RECOVERY_V2_FEATURE,
   compareSemver,
   CUSTOM_NODE_APP_MODE_FEATURE,
@@ -385,6 +386,12 @@ test('deploy-hostings-only-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
+test('compose-checkout-v1 is advertised and raised no floor', () => {
+  assertEquals(COMPOSE_CHECKOUT_FEATURE, 'compose-checkout-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(COMPOSE_CHECKOUT_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
 test('custom-node-app-mode-v1 is advertised and raised no floor', () => {
   assertEquals(CUSTOM_NODE_APP_MODE_FEATURE, 'custom-node-app-mode-v1')
   assertEquals(
@@ -515,6 +522,6 @@ test('hosting-name-tls-v1 is an advertised daemon wire feature and raised no flo
 
 test('acme-issue-dns-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(ACME_ISSUE_DNS_FEATURE, 'acme-issue-dns-v1')
-  assertEquals(DAEMON_WIRE_FEATURES.at(-1), ACME_ISSUE_DNS_FEATURE)
+  assertEquals(DAEMON_WIRE_FEATURES.includes(ACME_ISSUE_DNS_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })

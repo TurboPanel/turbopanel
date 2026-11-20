@@ -272,6 +272,22 @@ one cell outbox enqueue; UI polls Postgres command rows only — never Durable
 Object reads for deploy status. Hosting Caddy (`:80`/`:443`) is distinct from
 control-plane Caddy (`:8443`).
 
+**`composeCheckout` (Git Compose projects):** a project that follows its
+repository's compose file (`options.composeSource.mode: 'track'`) sends the
+repository, the exact commit the file was read from (`composeBase.commitSha`,
+never a fresh branch read) and the file's repo-relative path
+(`src/client/environments/deploy-compose-checkout.ts`). The daemon checks that
+commit out into `<deploymentDir>/repo` before anything builds or starts and runs
+Compose with the folder of the compose file as its project directory, so
+`build: ./vpn`, relative binds and `env_file` resolve as they do in the
+repository. The clone credential is sealed to that daemon on the lane
+`sourceMaterial[]` uses (`tpdaemon.…`) and is never hashed or logged. The
+commit, path and clone URL are part of `desiredHash`, so a moved commit is a
+new deploy. A preview and a hostings-only run send none of it; a rollback sends
+the commit its recorded Base names. Every daemon must list `compose-checkout-v1`
+(the control plane holds back one that does not), and the wire rules in
+`src/lib/version-wire.ts` apply: the daemon merges first.
+
 **`composeFiles[]` (compiled runtime file):** `environment.deploy` carries
 `EnvironmentDeployComposeFile[]`. Deploys send a **single**
 `{ filename: 'compose.yaml', role: 'runtime', source: 'inline', content }` entry

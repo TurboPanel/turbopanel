@@ -2502,6 +2502,36 @@ export type BuildLimits = {
   swap?: { allowed: boolean; source: BuildLimitSource }
 }
 
+/**
+ * The repository a Git Compose project's Base was read from, checked out on the
+ * server so the compose file's relative paths (`build: ./vpn`, `./conf:/etc/x`,
+ * `env_file: ./app.env`) resolve against real files.
+ *
+ * Distinct from {@link EnvironmentDeploySource}: that row builds one service's
+ * release from `x-turbopanel.source`; this one carries the whole project tree
+ * the compose file came from. The daemon checks `commitSha` out into
+ * `<deploymentDir>/repo` before anything builds or starts, and runs Compose with
+ * the folder of `composePath` as its project directory. The clone credential
+ * rides the same sealed lane as `sourceMaterial[]` and is never logged. Gated
+ * by the `compose-checkout-v1` wire feature.
+ */
+export type EnvironmentDeployComposeCheckout = {
+  sourceId: string
+  /** Informational, as on {@link EnvironmentDeploySource}. */
+  provider: 'github' | 'gitlab' | 'git'
+  /** Credential-free clone URL. */
+  cloneUrl: string
+  ref: string
+  /** The resolved commit the compose file was read from. */
+  commitSha: string
+  /** Repo-relative path of the compose file (`deploy/compose.yaml`). */
+  composePath: string
+  /** Daemon-recipient sealed clone credential (`tpdaemon.…`). */
+  credential?: string
+  credentialKind?: EnvironmentDeploySourceCredentialKind
+  credentialUsername?: string
+}
+
 export type EnvironmentDeploySource = {
   sourceId: string
   composeServiceName: string
@@ -2756,6 +2786,12 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    * carrying `x-turbopanel.source`.
    */
   sourceMaterial?: EnvironmentDeploySource[]
+  /**
+   * The repository a Git Compose project's compose file came from, to check out
+   * before the build and start (see {@link EnvironmentDeployComposeCheckout}).
+   * Absent for a project whose compose is not read from a repository.
+   */
+  composeCheckout?: EnvironmentDeployComposeCheckout
   /**
    * Per-service Traefik projects for services that publish at least one
    * `tcp`/`udp` port. One entry per service (not per hosting) — that Traefik
@@ -4556,6 +4592,66 @@ function parseDeploySourceEntry(entry: unknown): EnvironmentDeploySource {
   return source
 }
 
+/** Repo-relative path of the compose file: safe, no `..`, not absolute. */
+function parseComposeCheckoutPath(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 512 ||
+    value.startsWith('/') ||
+    /[\\\0\s]/.test(value) ||
+    value.split('/').some((part) => part === '..' || part === '' || part === '.')
+  ) {
+    throw new Error('Invalid composeCheckout composePath')
+  }
+  return value
+}
+
+/** `composeCheckout`: optional, strict, the same clone rules as `sourceMaterial[]`. */
+function parseDeployComposeCheckout(value: unknown): EnvironmentDeployComposeCheckout | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value)) throw new Error('Invalid composeCheckout')
+  if (
+    !isString(value.sourceId) ||
+    value.sourceId.length === 0 ||
+    !isString(value.provider) ||
+    !SOURCE_PROVIDERS.has(value.provider as EnvironmentDeploySource['provider'])
+  ) {
+    throw new Error('Invalid composeCheckout identity')
+  }
+  if (!isValidSourceCloneUrl(value.cloneUrl)) throw new Error('Invalid composeCheckout cloneUrl')
+  if (!isValidSourceRef(value.ref) || !isValidSourceRef(value.commitSha)) {
+    throw new Error('Invalid composeCheckout ref/commitSha')
+  }
+  const checkout: EnvironmentDeployComposeCheckout = {
+    sourceId: value.sourceId,
+    provider: value.provider as EnvironmentDeployComposeCheckout['provider'],
+    cloneUrl: value.cloneUrl,
+    ref: value.ref,
+    commitSha: value.commitSha,
+    composePath: parseComposeCheckoutPath(value.composePath),
+  }
+  if (value.credential !== undefined) {
+    if (!isString(value.credential) || value.credential.length === 0) {
+      throw new Error('Invalid composeCheckout credential')
+    }
+    checkout.credential = value.credential
+  }
+  if (value.credentialKind !== undefined) {
+    if (value.credentialKind !== 'token' && value.credentialKind !== 'ssh_key') {
+      throw new Error('Invalid composeCheckout credentialKind')
+    }
+    checkout.credentialKind = value.credentialKind
+  }
+  if (value.credentialUsername !== undefined) {
+    if (!isValidCredentialUsername(value.credentialUsername)) {
+      throw new Error('Invalid composeCheckout credentialUsername')
+    }
+    checkout.credentialUsername = value.credentialUsername
+  }
+  return checkout
+}
+
 function parseDeploySourceMaterial(value: unknown): EnvironmentDeploySource[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
@@ -5272,6 +5368,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       sites: parseDeploySites(value.sites),
       nativeAppServices: parseDeployNativeAppServices(value.nativeAppServices),
       sourceMaterial: parseDeploySourceMaterial(value.sourceMaterial),
+      composeCheckout: parseDeployComposeCheckout(value.composeCheckout),
       ingressServices: parseDeployIngressServices(value.ingressServices),
       hostingIngress,
       hostingIngressNetwork: parseDeployHostingIngressNetwork(
