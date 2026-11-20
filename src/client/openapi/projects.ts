@@ -243,7 +243,8 @@ export const projectPaths = {
       },
       responses: {
         '200': {
-          description: 'The stored composeSource (sourceId, ref, path, mode, lastReadCommitSha, lastReadDigest).',
+          description:
+            'The stored composeSource (sourceId, ref, path, mode, lastReadCommitSha, lastReadDigest).',
         },
         '400': { description: 'Invalid mode.' },
         '409': { description: '`compose_source_missing`.' },

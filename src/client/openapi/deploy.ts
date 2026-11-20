@@ -688,7 +688,10 @@ export const deploySchemas = {
     properties: {
       id: { type: 'string' },
       environmentId: { type: 'string' },
-      composeBase: { type: ['object', 'null'], description: 'See DeploymentHistoryEntry.composeBase.' },
+      composeBase: {
+        type: ['object', 'null'],
+        description: 'See DeploymentHistoryEntry.composeBase.',
+      },
       generation: { type: ['integer', 'null'] },
       desiredHash: { type: ['string', 'null'] },
       replicaCounts: {
@@ -1133,7 +1136,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Preview the exact compose document that deploy would send',
       description:
-        'When the project follows its repository\'s compose file, the preview reads the branch head and returns `composeBase`; if that read fails it uses the Base from the last deploy and adds a `compose_base_unreadable` warning. Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeFiles` is the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.',
+        "When the project follows its repository's compose file, the preview reads the branch head and returns `composeBase`; if that read fails it uses the Base from the last deploy and adds a `compose_base_unreadable` warning. Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeFiles` is the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.",
       parameters: [
         {
           name: 'id',

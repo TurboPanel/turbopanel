@@ -393,10 +393,7 @@ export async function planEnvironmentDeploy(
      * Swaps in the repository's compose file as the Base when the project
      * follows one. Omitted by callers that do not read repositories.
      */
-    resolveProjectOptions?: (row: {
-      id: string
-      options: unknown
-    }) => Promise<DeployProjectOptions>
+    resolveProjectOptions?: (row: { id: string; options: unknown }) => Promise<DeployProjectOptions>
   },
   deps: PlanEnvironmentDeployDeps = {}
 ): Promise<PlannedDeploy | PlanDeployError> {

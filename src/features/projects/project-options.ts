@@ -66,9 +66,7 @@ export type ComposeBaseRecord = {
 
 /** Error codes a tracked read answers with (stable; the UI keys on them). */
 export type TrackedBaseErrorCode =
-  | 'compose_source_unavailable'
-  | 'compose_file_missing'
-  | 'compose_file_unparseable'
+  'compose_source_unavailable' | 'compose_file_missing' | 'compose_file_unparseable'
 
 export type TrackedBaseError = {
   code: TrackedBaseErrorCode
@@ -168,8 +166,16 @@ export function parseComposeSourceInput(
 ): { ok: true; value: ProjectComposeSource | null } | { ok: false; reason: string } {
   if (value === null) return { ok: true, value: null }
   if (!isRecord(value)) return { ok: false, reason: 'composeSource must be an object' }
-  const { sourceId, path, seededCommitSha, seededDigest, ref, mode, lastReadCommitSha, lastReadDigest } =
-    value
+  const {
+    sourceId,
+    path,
+    seededCommitSha,
+    seededDigest,
+    ref,
+    mode,
+    lastReadCommitSha,
+    lastReadDigest,
+  } = value
   if (typeof sourceId !== 'string' || sourceId.length === 0) {
     return { ok: false, reason: 'composeSource.sourceId is required' }
   }
