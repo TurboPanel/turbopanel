@@ -3512,7 +3512,10 @@ async function prepareSourceMaterial(
     levels: Parameters<typeof attachBuildLimits>[1]
   }
 ): Promise<
-  | { sourceMaterial: EnvironmentDeploySource[]; composeCheckout?: EnvironmentDeployComposeCheckout }
+  | {
+      sourceMaterial: EnvironmentDeploySource[]
+      composeCheckout?: EnvironmentDeployComposeCheckout
+    }
   | DeployPrepareError
   | Response
 > {
