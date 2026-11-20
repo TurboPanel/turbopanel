@@ -23,7 +23,7 @@
  * cannot leak a field Docker would act on into runtime YAML.
  */
 
-import { parseNetworkMode } from './network-mode.ts'
+import { parseNetworkMode, resolveNetworkModeOwner } from './network-mode.ts'
 import { serviceDnsName } from '../../lib/naming.ts'
 import { pruneUnreferencedComposeNetworks } from './docker-external-networks.ts'
 import { DEPLOY_KEYS_STRIPPED_FROM_RUNTIME } from './field-policy.ts'
@@ -426,11 +426,12 @@ function managedHostsWithSharedNetworkRedirects(
   const merged = new Map(byService)
   for (const [name, raw] of Object.entries(services)) {
     if (!isPlainObject(raw)) continue
-    const share = parseNetworkMode(raw.network_mode)
-    if (share?.kind !== 'service' || !(share.target in services)) continue
+    if (parseNetworkMode(raw.network_mode)?.kind !== 'service') continue
+    const owner = resolveNetworkModeOwner(name, services)
+    if (owner === undefined || owner === name) continue
     const hosts = byService.get(logicalNameByCompiled.get(name) ?? name)
     if (!hosts || hosts.length === 0) continue
-    const targetLogical = logicalNameByCompiled.get(share.target) ?? share.target
+    const targetLogical = logicalNameByCompiled.get(owner) ?? owner
     const seen = new Set((merged.get(targetLogical) ?? []).map((host) => host.name))
     merged.set(targetLogical, [
       ...(merged.get(targetLogical) ?? []),

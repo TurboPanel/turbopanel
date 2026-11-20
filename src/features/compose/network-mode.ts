@@ -19,10 +19,39 @@ export function parseNetworkMode(value: unknown): NetworkModeShare | undefined {
 }
 
 /**
+ * The service that owns the network `name` ends up on, following `service:`
+ * chains (a loop stops at the first repeat). `name` itself when it sets no
+ * `network_mode`; undefined when the chain ends at `container:`, `host` or
+ * `none`, or loops.
+ */
+export function resolveNetworkModeOwner(
+  name: string,
+  services: Record<string, unknown>
+): string | undefined {
+  const seen = new Set<string>()
+  let current = name
+  while (!seen.has(current)) {
+    seen.add(current)
+    const body = services[current]
+    const share =
+      typeof body === 'object' && body !== null
+        ? parseNetworkMode((body as Record<string, unknown>).network_mode)
+        : undefined
+    if (share === undefined) return current
+    if (share.kind !== 'service' || !(share.target in services)) {
+      // Names the file does not define are kept as they are.
+      return share.kind === 'service' && !(share.target in services) ? current : undefined
+    }
+    current = share.target
+  }
+  return undefined
+}
+
+/**
  * Move per-service attachments (managed network, `extra_hosts`) off services
- * that cannot hold them. A `service:x` service hands its entry to `x` when `x`
- * is a service in the file; `container:x`, `host` and `none` services drop it.
- * Names the file does not define are kept as they are.
+ * that cannot hold them. A `service:x` service hands its entry to the owner of
+ * its network when that is a service in the file; `container:x`, `host` and
+ * `none` services drop it.
  */
 export function redirectNetworkModeNames(
   names: readonly string[],
@@ -30,16 +59,8 @@ export function redirectNetworkModeNames(
 ): string[] {
   const out = new Set<string>()
   for (const name of names) {
-    const body = services[name]
-    const share =
-      typeof body === 'object' && body !== null
-        ? parseNetworkMode((body as Record<string, unknown>).network_mode)
-        : undefined
-    if (share === undefined) {
-      out.add(name)
-    } else if (share.kind === 'service' && share.target in services) {
-      out.add(share.target)
-    }
+    const owner = resolveNetworkModeOwner(name, services)
+    if (owner !== undefined) out.add(owner)
   }
   return [...out]
 }

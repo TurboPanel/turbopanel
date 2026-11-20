@@ -1,5 +1,9 @@
 import { assertEquals } from '@std/assert'
-import { parseNetworkMode, redirectNetworkModeNames } from './network-mode.ts'
+import {
+  parseNetworkMode,
+  redirectNetworkModeNames,
+  resolveNetworkModeOwner,
+} from './network-mode.ts'
 import { compileRuntimeComposeDocument } from './compile-runtime.ts'
 import type { ComposeDocument } from './types.ts'
 
@@ -52,4 +56,17 @@ test('managed ingress extra_hosts go to the target of a service:x service', () =
   assertEquals(services.qbittorrent?.extra_hosts, undefined)
   assertEquals(services.tools?.extra_hosts, undefined)
   assertEquals(services.vpn?.extra_hosts, ['db.example.net:192.0.2.10'])
+})
+
+test('a service:x chain resolves to its final owner and a loop stops', () => {
+  const chain = {
+    a: { image: 'a' },
+    b: { image: 'b', network_mode: 'service:a' },
+    c: { image: 'c', network_mode: 'service:b' },
+    loop1: { image: 'l', network_mode: 'service:loop2' },
+    loop2: { image: 'l', network_mode: 'service:loop1' },
+  }
+  assertEquals(resolveNetworkModeOwner('c', chain), 'a')
+  assertEquals(resolveNetworkModeOwner('loop1', chain), undefined)
+  assertEquals(redirectNetworkModeNames(['b', 'c'], chain), ['a'])
 })

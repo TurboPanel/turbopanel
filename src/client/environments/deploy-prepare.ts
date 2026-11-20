@@ -2204,6 +2204,26 @@ function localManagedNetworkServiceNames(
 }
 
 /**
+ * Managed-network services for the daemon: the local/remote sort runs on the
+ * original service names (the hosts and co-resident sets are keyed by them),
+ * then a service with `network_mode` hands its attachment to the service that
+ * owns its network, since it has no network of its own to join.
+ */
+export function managedNetworkNamesForDeploy(
+  boundNames: readonly string[],
+  remoteHostsByService: ReadonlyMap<string, unknown> | undefined,
+  coResidentNames: ReadonlySet<string> | undefined,
+  composeServices: Record<string, unknown>
+): string[] {
+  const local = localManagedNetworkServiceNames(
+    [...boundNames].sort((a, b) => a.localeCompare(b)),
+    remoteHostsByService,
+    coResidentNames
+  )
+  return redirectNetworkModeNames(local, composeServices).sort((a, b) => a.localeCompare(b))
+}
+
+/**
  * Attach per-app and per-account resource ceilings to the split native apps.
  *
  * Per-app values are read off {@link ResolvedApplication.services} — the stage
@@ -4096,16 +4116,11 @@ export async function prepareDeployCompose(
     pipeline.expansion,
     params.serverId
   )
-  // A service with `network_mode` has no network to attach; a `service:x` one
-  // hands its binding to x, whose network it shares.
-  const boundNames = redirectNetworkModeNames(
+  const managedLogicalNames = managedNetworkNamesForDeploy(
     managedBindings.bound.filter((name) => !hostNativeNames.has(name)),
-    composeServicesRecord(split.containerDocument)
-  ).sort((a, b) => a.localeCompare(b))
-  const managedLogicalNames = localManagedNetworkServiceNames(
-    boundNames,
     params.schedule?.managedIngressHostsByService,
-    managedBindings.coResident
+    managedBindings.coResident,
+    composeServicesRecord(split.containerDocument)
   )
 
   // Effective document = the same post-split container document serialized as

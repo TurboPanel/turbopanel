@@ -39,6 +39,7 @@ import {
   detachMountsOfRemovedServices,
   loadStorageMaterial,
   localManagedNetworkServiceNames,
+  managedNetworkNamesForDeploy,
   mergeProjectEnvironmentCompose,
   nativeAppServicesForDeploy,
   readHostingProxyFromOptions,
@@ -195,6 +196,37 @@ describe('deploy-prepare helpers', () => {
     ])
     // Without a co-resident binding the service still stays off the network.
     assertEquals(localManagedNetworkServiceNames(['api', 'worker'], remote, new Set()), [])
+  })
+
+  it('hands a service:x binding to x after the local and remote sort', () => {
+    const services = {
+      vpn: { image: 'vpn' },
+      qbittorrent: { image: 'qbt', network_mode: 'service:vpn' },
+      tools: { image: 'tools', network_mode: 'container:other' },
+    }
+    const hosts = [{ name: 'svc-in', address: '203.0.113.254' }]
+    // vpn is remote-only, qbittorrent is local: vpn still joins the local network.
+    assertEquals(
+      managedNetworkNamesForDeploy(
+        ['vpn', 'qbittorrent'],
+        new Map([['vpn', hosts]]),
+        new Set(),
+        services
+      ),
+      ['vpn']
+    )
+    // qbittorrent is remote-only and vpn has no binding: nothing joins.
+    assertEquals(
+      managedNetworkNamesForDeploy(
+        ['qbittorrent'],
+        new Map([['qbittorrent', hosts]]),
+        new Set(),
+        services
+      ),
+      []
+    )
+    // container:x has no service to hand it to.
+    assertEquals(managedNetworkNamesForDeploy(['tools'], undefined, undefined, services), [])
   })
 
   it('warns only when the operator sets healthCheck.policy to warn', () => {
