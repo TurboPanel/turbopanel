@@ -1653,6 +1653,7 @@ const IDLE_GATES_ROW = {
   commandRecoveryWork: false,
   notificationWork: false,
   connectedServer: false,
+  reconcileUrgent: false,
   hostingPending: false,
   repinPending: false,
   principalRemoval: false,
@@ -1768,7 +1769,7 @@ it('gates: a connected server wakes one repair sweep per minute, none without on
     await runTickCapturingTrace(commandQueueEnv(), closed.db, null, at)
     const open = countingIdleDb({ connectedServer: true })
     await runTickCapturingTrace(commandQueueEnv(), open.db, null, at)
-    // The five repair sweeps sit on five different minutes, so each tick has exactly one.
+    // Each of the five minutes has at least one repair sweep due.
     assertEquals(open.statementCount() > closed.statementCount(), true, `minute ${minute}`)
   }
 })
@@ -2139,4 +2140,30 @@ it('no isolated sweep starts once the reconcile phase is out of budget', async (
     return Promise.resolve()
   })
   assertEquals(ran, false)
+})
+
+it('gates: an urgent reconcile (reconnect or a container not running) runs every minute, not only on its slot', async () => {
+  const tlsRenewal = await testTlsRenewal()
+  // Minute 1 of the window: neither system reconcile (minute 0) nor the ingress pass (minute 2) is due.
+  const at = CATCH_UP_MINUTE + 60_000
+  const routine = countingIdleDb({ connectedServer: true })
+  await runTickCapturingTrace(commandQueueEnv(), routine.db, tlsRenewal, at)
+  const urgent = countingIdleDb({ connectedServer: true, reconcileUrgent: true })
+  await runTickCapturingTrace(commandQueueEnv(), urgent.db, tlsRenewal, at)
+  assertEquals(urgent.statementCount() > routine.statementCount(), true)
+})
+
+it('gates: an unreadable gate is traced and opens every family', async () => {
+  const { db } = countingIdleDb()
+  Object.assign(db, {
+    execute: (query: SQL) =>
+      new PgDialect().sqlToQuery(query).sql.includes('"commandRecoveryWork"')
+        ? Promise.reject(new Error('connection reset'))
+        : Promise.resolve([]),
+  })
+  const traces = await runTickCapturingTrace(commandQueueEnv(), db, null, MID_HOUR)
+  assertEquals(
+    traces.some((line) => line.includes('gates-unreadable')),
+    true
+  )
 })

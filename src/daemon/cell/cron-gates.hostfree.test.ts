@@ -65,7 +65,7 @@ test('the retention deletes sit on distinct minutes and off the 15 minute prune 
   assertEquals(offsets.includes(0), false)
 })
 
-test('the repair sweeps behind the connected-server gate sit on five different minutes', () => {
+test('the five repair sweeps behind the connected-server gate sit on five distinct minutes of the window', () => {
   const repair: CronJob[] = [
     'systemReconcile',
     'backupsReconcile',
@@ -73,7 +73,15 @@ test('the repair sweeps behind the connected-server gate sit on five different m
     'folderReconcile',
     'firewallPreview',
   ]
-  assertEquals(new Set(repair.map((job) => CRON_CADENCES[job].offset)).size, repair.length)
+  // Over one 5 minute window each minute has exactly one of the five due.
+  const dueIn = (minute: number) => repair.filter((job) => isDue(job, minuteAt(minute)))
+  for (const minute of [0, 1, 2, 3, 4]) assertEquals(dueIn(minute).length, 1, `minute ${minute}`)
+  assertEquals(new Set(repair.flatMap((_, i) => dueIn(i))).size, repair.length)
+})
+
+test('the ingress orphan pass has its own key, apart from system reconcile', () => {
+  assertEquals('managedIngressOrphan' in CRON_CADENCES, true)
+  assertEquals(CRON_CADENCES.managedIngressOrphan.everyMinutes, 5)
 })
 
 test('a tick with no scheduled time runs every job, as before', () => {
@@ -117,6 +125,7 @@ const IDLE_ROW = {
   commandRecoveryWork: false,
   notificationWork: false,
   connectedServer: false,
+  reconcileUrgent: false,
   hostingPending: false,
   repinPending: false,
   principalRemoval: false,

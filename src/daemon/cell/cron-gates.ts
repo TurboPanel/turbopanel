@@ -22,7 +22,9 @@ import {
   badge,
   changeover,
   command,
+  container,
   datacenter,
+  environment,
   hosting,
   ip,
   leaf,
@@ -33,6 +35,7 @@ import {
   principal,
   recovery,
   server,
+  service,
   tls,
   tunnel,
 } from '../../db/schema.ts'
@@ -78,6 +81,7 @@ export const CRON_CADENCES = {
   folderRemoval: { everyMinutes: 5, offset: 2 },
   folderReconcile: { everyMinutes: 5, offset: 3 },
   firewallPreview: { everyMinutes: 5, offset: 4 },
+  managedIngressOrphan: { everyMinutes: 5, offset: 2 },
   leafRenewal: { everyMinutes: 5, offset: 0 },
   dnsCertificates: { everyMinutes: 5, offset: 1 },
   httpCertificates: { everyMinutes: 5, offset: 2 },
@@ -107,6 +111,14 @@ export type CronGates = {
   notificationWork: boolean
   /** A connected server: the reconnect-repair sweeps start from one. */
   connectedServer: boolean
+  /**
+   * A connected server that reconnected in the last few minutes, or runs a
+   * system ingress or panel container that is not running. System reconcile and
+   * the managed-ingress orphan pass run every minute while this is true (each
+   * keeps its own 5 minute throttle on its last command) and otherwise only on
+   * their routine 5 minute slot.
+   */
+  reconcileUrgent: boolean
   /** A site waiting on DNS for a Let's Encrypt order. */
   hostingPending: boolean
   /** A membership repin waiting for its fan-out. */
@@ -117,7 +129,7 @@ export type CronGates = {
   certificates: boolean
   /** An automatic Let's Encrypt certificate row. */
   httpCertificates: boolean
-  /** One of them with an order open, a pair to deliver or ends to send. */
+  /** One of them with a first order to start, a retry due, an order open, a pair to deliver or ends to send. */
   httpCertificatesActive: boolean
   /** A tunnel, portal or badge, or a server still carrying tunnel routes or connectors. */
   tunnels: boolean
@@ -129,6 +141,7 @@ export const ALL_GATES_OPEN: CronGates = {
   commandRecoveryWork: true,
   notificationWork: true,
   connectedServer: true,
+  reconcileUrgent: true,
   hostingPending: true,
   repinPending: true,
   principalRemoval: true,
@@ -142,27 +155,51 @@ export const ALL_GATES_OPEN: CronGates = {
 const GATE_KEYS = Object.keys(ALL_GATES_OPEN) as (keyof CronGates)[]
 
 /** One statement: every gate of the tick. Column names are the `CronGates` keys. */
-export async function loadCronGates(db: Db): Promise<CronGates> {
+export async function loadCronGates(
+  db: Db,
+  options: { now?: Date; onError?: (err: unknown) => void } = {}
+): Promise<CronGates> {
+  const at = (options.now ?? new Date()).toISOString()
+  // Longer than the 5 minute window the reconcile sweep itself uses for a reconnect,
+  // so a late tick still sees the reconnect while the sweep can act on it.
+  const reconnectedSince = new Date(
+    (options.now ?? new Date()).getTime() - 6 * 60_000
+  ).toISOString()
   try {
     const rows = (await db.execute(sql`
       select
         (exists (select 1 from ${command} where ${command.status} in ('queued', 'dispatching', 'sent', 'acked', 'running'))
           or exists (select 1 from ${recovery} where ${recovery.state} not in ('completed', 'failed', 'blocked'))
+          or exists (select 1 from ${recovery} where ${recovery.state} = 'blocked'
+            and coalesce(${recovery.metadata} -> 'abortRestartTodo', '[]'::jsonb) <> '[]'::jsonb)
           or exists (select 1 from ${managed} where ${managed.status} = 'applying')) as "commandRecoveryWork",
         (exists (select 1 from ${notificationDelivery} where ${notificationDelivery.status} in ('pending', 'failed', 'held'))
           or exists (select 1 from ${notificationEvent} where ${notificationEvent.fannedOutAt} is null)) as "notificationWork",
         (exists (select 1 from ${tls}) or exists (select 1 from ${leaf}) or exists (select 1 from ${changeover})) as "certificates",
         exists (select 1 from ${server} where ${server.isConnected}) as "connectedServer",
+        exists (select 1 from ${server} srv where srv.is_connected
+          and (srv.status_changed_at >= ${reconnectedSince}::timestamptz
+            or exists (select 1 from ${container} c
+              join ${service} s on s.id = c.service_id
+              join ${environment} e on e.id = s.environment_id
+              where e.server_id = srv.id and c.role in ('ingress', 'turbopanel')
+                and (c.status <> 'running' or c.container_id is null)))) as "reconcileUrgent",
         exists (select 1 from ${hosting} where ${hosting.pendingAt} is not null) as "hostingPending",
         exists (select 1 from ${ip} where ${ip.repinPendingFanoutAt} is not null) as "repinPending",
         exists (select 1 from ${principal} where ${principal.removalRequestedAt} is not null) as "principalRemoval",
         exists (select 1 from ${tls} where ${tls.source} = 'lets_encrypt' and ${tls.status} = 'automatic') as "httpCertificates",
         exists (select 1 from ${tls} where ${tls.source} = 'lets_encrypt' and ${tls.status} = 'automatic'
-          and ${tls.metadata} -> 'httpCert' is not null
-          and (${tls.metadata} -> 'httpCert' ->> 'endedAt' is null
+          and (
+            -- A first order waiting to start (the sweep is the only thing that starts it).
+            (${tls.metadata} -> 'httpCert' is null and ${tls.privateKeyPem} is null)
+            -- A failed order whose retry time has come.
+            or (${tls.metadata} -> 'httpCert' ->> 'phase' = 'failed'
+              and (${tls.metadata} -> 'httpCert' ->> 'nextAttemptAt' is null
+                or ${tls.metadata} -> 'httpCert' ->> 'nextAttemptAt' <= ${at}))
+            or (${tls.metadata} -> 'httpCert' is not null and (${tls.metadata} -> 'httpCert' ->> 'endedAt' is null
             or (${tls.metadata} -> 'httpCert' ->> 'phase' = 'issued' and ${tls.metadata} -> 'httpCert' ->> 'deliveredAt' is null)
             or (${tls.metadata} -> 'httpCert' ->> 'endsSentAt' is null
-              and jsonb_array_length(coalesce(${tls.metadata} -> 'httpCert' -> 'forwards', '[]'::jsonb)) > 0))) as "httpCertificatesActive",
+              and jsonb_array_length(coalesce(${tls.metadata} -> 'httpCert' -> 'forwards', '[]'::jsonb)) > 0))))) as "httpCertificatesActive",
         (exists (select 1 from ${tunnel})
           or exists (select 1 from ${portal})
           or exists (select 1 from ${badge})
@@ -177,7 +214,8 @@ export async function loadCronGates(db: Db): Promise<CronGates> {
       gates[key] = row[key] !== false
     }
     return gates
-  } catch {
+  } catch (err) {
+    options.onError?.(err)
     return ALL_GATES_OPEN
   }
 }

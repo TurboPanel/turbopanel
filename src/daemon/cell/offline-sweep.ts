@@ -1198,11 +1198,17 @@ async function runQueuedCronSweeps(
   const cadences = CRON_CADENCES
   const repair = (job: CronJob): boolean =>
     gates.connectedServer && isDue(job, scheduledTime, cadences)
+  // System reconcile and the ingress orphan pass keep a 5 minute throttle on their
+  // own last command, so on a 5 minute cadence alone a down container would be
+  // retried about every 10 minutes and a reconnect could fall between two slots.
+  // While the gate shows a candidate they run every minute; otherwise on their slot.
+  const reconcileDue = (job: CronJob): boolean =>
+    gates.connectedServer && (gates.reconcileUrgent || isDue(job, scheduledTime, cadences))
   try {
     const commandQueue = createWorkersCommandQueue(queue)
     // Note: host-loss tick now runs first in runOfflineSweep (P1-5) before optional phases,
     // so it is not called here anymore.
-    if (repair('systemReconcile')) await runSystemReconcileSweep(db, commandQueue)
+    if (reconcileDue('systemReconcile')) await runSystemReconcileSweep(db, commandQueue)
     // Each sweep below is isolated: a failure never aborts the others.
     // Backup policy sets after a reconnect.
     if (repair('backupsReconcile'))
@@ -1297,7 +1303,7 @@ async function runQueuedCronSweeps(
       // Orphaned ProxySQL frontends: teardown needs a full
       // `managed.ingress.reconcile`, so it can only run when the cron has the
       // secrets bundle (same gate as leaf renewal).
-      if (repair('systemReconcile'))
+      if (reconcileDue('managedIngressOrphan'))
         await runIsolatedSweep(signal, 'managed-ingress-orphan-sweep-failed', () =>
           runManagedIngressOrphanSweep(db, commandQueue, tlsRenewal)
         )
@@ -1827,8 +1833,16 @@ async function runOptionalCronPhases(
 /** The tick's gates; a gate that cannot be read opens every family. */
 async function loadGatesForTick(db: Db, deadlineMs: number): Promise<CronGates> {
   try {
-    return await runWithDbTimeout(db, loadCronGates, capDbTimeout(deadlineMs))
-  } catch {
+    return await runWithDbTimeout(
+      db,
+      (gateDb) =>
+        loadCronGates(gateDb, {
+          onError: (err) => sweepTrace('gates-unreadable', { error: sweepErrorMessage(err) }),
+        }),
+      capDbTimeout(deadlineMs)
+    )
+  } catch (err) {
+    sweepTrace('gates-unreadable', { error: sweepErrorMessage(err) })
     return ALL_GATES_OPEN
   }
 }
