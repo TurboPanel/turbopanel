@@ -7,7 +7,7 @@
  * through its life, gets a new request. No timer of its own: it runs inside
  * the Workers cron and the Deno interval that already exist.
  */
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { hostname, hosting, tls } from '../../db/schema.ts'
@@ -23,7 +23,9 @@ import {
   type HttpIssuanceDeps,
   startHttpIssuance,
 } from '../../features/tls/http-issuance/orchestrator.ts'
-import { renewalDue } from '../../features/tls/http-issuance/progress.ts'
+import { renewalDue, waitingMarker } from '../../features/tls/http-issuance/progress.ts'
+import { waitingText } from '../../features/tls/http-issuance/status-text.ts'
+import type { TlsAcmeMetadata } from '../../lib/tls/types.ts'
 import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import { logWarn } from '../../lib/logger.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -150,6 +152,41 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
     .limit(limit)
 }
 
+/** A library order nothing pins yet says so, once, instead of showing nothing. */
+const UNPINNED_BATCH = 50
+
+export async function markUnpinnedLibraryOrders(db: Db, now: Date): Promise<number> {
+  const rows = await db
+    .select({ id: tls.id, metadata: tls.metadata })
+    .from(tls)
+    .where(
+      and(
+        eq(tls.source, 'lets_encrypt'),
+        eq(tls.status, 'automatic'),
+        isNull(tls.privateKeyPem),
+        sql`${tls.metadata} #>> '{acme,challengeType}' = 'dns-01'`,
+        sql`${tls.metadata} -> 'httpCert' is null`,
+        sql`coalesce(${tls.metadata} #>> '{acme,warning}', '') <> ${waitingText('no_site')}`,
+        sql`not exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`,
+        sql`not exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id})`
+      )
+    )
+    .limit(UNPINNED_BATCH)
+  for (const row of rows) {
+    const metadata = (row.metadata ?? {}) as Record<string, unknown>
+    const acme = waitingMarker(
+      metadata.acme as TlsAcmeMetadata | undefined,
+      waitingText('no_site'),
+      'dns-01'
+    )
+    await db
+      .update(tls)
+      .set({ metadata: { ...metadata, acme }, updatedAt: now.toISOString() })
+      .where(eq(tls.id, row.id))
+  }
+  return rows.length
+}
+
 type Candidate = Awaited<ReturnType<typeof selectHttpIssuanceCandidates>>[number]
 
 /** New orders begun in one tick, so a first run after a rollout is gradual. */
@@ -213,6 +250,9 @@ export async function runHttpIssuanceSweepTick(
     db,
     now,
     options.batch ?? HTTP_ISSUANCE_SWEEP_BATCH
+  )
+  await markUnpinnedLibraryOrders(db, now).catch((err) =>
+    logWarn('tls', `marking unpinned certificate orders failed: ${String(err)}`)
   )
   const out: HttpIssuanceSweepResult = {
     scanned: rows.length,

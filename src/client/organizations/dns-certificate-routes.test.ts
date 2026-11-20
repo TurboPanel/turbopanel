@@ -13,6 +13,10 @@ import type { AppEnv } from '../../app/app.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { audit, carrier, grant, organization, tls, user } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
+import {
+  newHttpIssuanceState,
+  withHttpIssuanceState,
+} from '../../features/tls/http-issuance/state.ts'
 import { DNS_CERT_KEY } from '../../features/tls/dns-certificates/order-state.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -251,6 +255,35 @@ test('a manager orders a wildcard and a name; a member and another organization 
     )
     const rows = await f.db.select().from(tls).where(eq(tls.organizationId, f.orgA))
     assertEquals(rows.length, 2)
+  }))
+
+test('a retry is refused while the authority has the organization on a rate limit', () =>
+  withFixture(async (f) => {
+    const [row] = await f.db.select().from(tls).where(eq(tls.id, f.certificateId))
+    const later = new Date(Date.now() + 3_600_000).toISOString()
+    await f.db
+      .update(tls)
+      .set({
+        metadata: withHttpIssuanceState(
+          row!.metadata,
+          newHttpIssuanceState({
+            issuingServerId: 'a',
+            requestId: 'req_limited',
+            startedAt: new Date().toISOString(),
+            startByAt: later,
+            challenge: 'dns-01',
+            phase: 'failed',
+            lastError: 'too many certificates already issued',
+            nextAttemptAt: later,
+            endedAt: new Date().toISOString(),
+          })
+        ),
+      })
+      .where(eq(tls.id, f.certificateId))
+    const path = `/organizations/${f.orgA}/dns-certificates/${f.certificateId}/retry`
+    const refused = await call(f, 'POST', path, f.managerCookie, {})
+    assertEquals([refused.status, refused.body.error], [409, 'rate_limited'])
+    assertEquals(refused.body.retryAt, later)
   }))
 
 test('the list still shows a certificate made earlier and shows nothing private', () =>

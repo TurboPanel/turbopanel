@@ -6,7 +6,7 @@
  */
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../../db/connection.ts'
-import { tls } from '../../../db/schema.ts'
+import { organization, tls } from '../../../db/schema.ts'
 import { isRateLimitReason } from './attempts.ts'
 import { readHttpIssuanceState } from './state.ts'
 
@@ -19,7 +19,7 @@ export type CapVerdict = { ok: true } | { ok: false; reason: 'daily_cap' | 'rate
 
 /** What the organization's server-placed rows say, reduced to the two rules. */
 export type OrgOrderFacts = {
-  /** Start time of each row's current request that is still a first certificate. */
+  /** When each new certificate (not a renewal) of the last day was started. */
   newStarts: readonly string[]
   /** Failed rows still waiting out a wait, with the reason they failed. */
   waiting: ReadonlyArray<{ nextAttemptAt: string; reason: string }>
@@ -39,23 +39,57 @@ export function mayStartNewCertificate(facts: OrgOrderFacts, now: Date): CapVerd
     : { ok: true }
 }
 
+/** Where the organization keeps the times it started new certificates (in `organization.options`). */
+const NEW_STARTS_KEY = 'acmeNewStarts'
+
+/** Keep only well-formed times of the last day. */
+function recentStarts(value: unknown, now: Date): string[] {
+  if (!Array.isArray(value)) return []
+  const floor = now.getTime() - DAY_MS
+  return value.filter((v): v is string => typeof v === 'string' && Date.parse(v) > floor)
+}
+
 /**
- * Read the facts for one organization. A row counts as a new certificate while
- * it has no stored pair, or has had only its first issue; a row renewing an
- * older pair does not count. The row being started is left out, so its own
- * earlier tries do not count against it.
+ * Note that a new certificate was started, in the organization's own record: the
+ * count then survives the certificate being unpinned or deleted. Run inside the
+ * transaction that starts the order; the update is one statement, so two
+ * starts at once both land.
+ */
+export async function recordNewCertificateStart(
+  tx: Db,
+  organizationId: string,
+  now: Date
+): Promise<void> {
+  const cutoff = new Date(now.getTime() - DAY_MS).toISOString()
+  const at = now.toISOString()
+  await tx
+    .update(organization)
+    .set({
+      options: sql`jsonb_set(coalesce(${organization.options}, '{}'::jsonb), ${sql.raw(`'{${NEW_STARTS_KEY}}'`)}, coalesce((select jsonb_agg(v) from jsonb_array_elements(coalesce(${organization.options} -> ${NEW_STARTS_KEY}::text, '[]'::jsonb)) as v where (v #>> '{}') > ${cutoff}), '[]'::jsonb) || to_jsonb(${at}::text))`,
+    })
+    .where(eq(organization.id, organizationId))
+}
+
+/**
+ * Read the facts for one organization: the new starts the organization noted in
+ * the last day, and the rows still waiting out a failed order.
  */
 export async function loadOrgOrderFacts(
   db: Db,
   organizationId: string,
-  exceptTlsId: string
+  now: Date
 ): Promise<OrgOrderFacts> {
+  const [org] = await db
+    .select({ options: organization.options })
+    .from(organization)
+    .where(eq(organization.id, organizationId))
+    .limit(1)
+  const newStarts = recentStarts(
+    (org?.options as Record<string, unknown> | null)?.[NEW_STARTS_KEY],
+    now
+  )
   const rows = await db
-    .select({
-      id: tls.id,
-      metadata: tls.metadata,
-      hasKey: sql<boolean>`${tls.privateKeyPem} is not null`,
-    })
+    .select({ metadata: tls.metadata })
     .from(tls)
     .where(
       and(
@@ -64,14 +98,10 @@ export async function loadOrgOrderFacts(
         sql`${tls.metadata} -> 'httpCert' is not null`
       )
     )
-  const newStarts: string[] = []
   const waiting: Array<{ nextAttemptAt: string; reason: string }> = []
   for (const row of rows) {
     const state = readHttpIssuanceState(row.metadata)
-    if (!state) continue
-    if (row.id !== exceptTlsId && (!row.hasKey || state.issueTimes.length <= 1))
-      newStarts.push(state.startedAt)
-    if (state.phase === 'failed' && state.nextAttemptAt !== null && state.lastError !== null) {
+    if (state?.phase === 'failed' && state.nextAttemptAt !== null && state.lastError !== null) {
       waiting.push({ nextAttemptAt: state.nextAttemptAt, reason: state.lastError })
     }
   }

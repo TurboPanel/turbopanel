@@ -48,6 +48,7 @@ import {
 import {
   confirmThroughProvider,
   handleDnsRelayInbound,
+  unavailableDnsAnswer,
   isDnsRelayMessage,
 } from '../../features/tls/http-issuance/dns-relay.ts'
 import { createCloudflareDnsChallenge } from '../../features/tunnels/cloudflare-dns-challenge.ts'
@@ -2572,7 +2573,12 @@ export class DaemonCellObject {
     await this.#recordInboundRepairingPresence(attachment, parsed.at)
     const secrets = await this.#dataEncryptionSecrets()
     const db = this.#newProjectionDb()
-    if (!db) return
+    if (!db) {
+      if (parsed.type === 'acme-dns-publish') {
+        await this.#sendToDaemon(ws, unavailableDnsAnswer(parsed)).catch(() => undefined)
+      }
+      return
+    }
     const work = (async () => {
       try {
         await runWithDbTimeout(

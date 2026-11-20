@@ -62,6 +62,7 @@ function fakeHost(visible: () => boolean) {
       records.delete(ref.recordId)
       return Promise.resolve()
     },
+    nameservers: () => Promise.resolve(['ns-a.example.net', 'ns-b.example.net']),
     txtValues: ({ name }) =>
       Promise.resolve(
         visible() ? [...records.values()].filter((r) => r.name === name).map((r) => r.value) : []
@@ -280,5 +281,71 @@ test('remove takes away the records the panel made; another server cannot', asyn
     assertEquals(w.host.records.size, 0)
     const [row] = await w.db.select().from(tls).where(eq(tls.id, w.rowId))
     assertEquals(readDnsCertState(row!.metadata)?.records.length, 0)
+  })
+})
+
+test('the read-back gets the zone nameservers from the provider', async () => {
+  const seen: string[][] = []
+  await withWorld({}, async (w) => {
+    const deps: DnsRelayDeps = {
+      ...w.deps,
+      confirm: (input) => {
+        return input.dns.nameservers!(input.zoneId).then((ns) => {
+          seen.push(ns)
+          return true
+        })
+      },
+    }
+    await handleDnsPublish(
+      deps,
+      w.serverId,
+      publishMessage([{ name: '_acme-challenge.example.com', value: 'tok1' }])
+    )
+    assertEquals(w.replies.map((r) => r.ok), [true])
+    assertEquals(seen.at(-1), ['ns-a.example.net', 'ns-b.example.net'])
+  })
+})
+
+test('one deadline covers every record: a slow second read-back cannot start a new wait', async () => {
+  let reads = 0
+  await withWorld({}, async (w) => {
+    const deps: DnsRelayDeps = {
+      ...w.deps,
+      readbackTimeoutMs: 10_000,
+      readbackPollMs: 4_000,
+      confirm: () => {
+        reads += 1
+        return Promise.resolve(false)
+      },
+    }
+    await handleDnsPublish(
+      deps,
+      w.serverId,
+      publishMessage([
+        { name: '_acme-challenge.example.com', value: 'tok1' },
+        { name: '_acme-challenge.example.com', value: 'tok2' },
+      ])
+    )
+    assertEquals(w.replies.map((r) => r.ok), [false])
+    // 10s of budget at a 4s poll is three reads in all, not three per record.
+    assert(reads <= 3, `reads ${reads}`)
+    assertEquals(w.host.records.size, 0)
+  })
+})
+
+test('both values of an apex plus wildcard order are listed on the row', async () => {
+  await withWorld({}, async (w) => {
+    await handleDnsPublish(
+      w.deps,
+      w.serverId,
+      publishMessage([
+        { name: '_acme-challenge.example.com', value: 'tok1' },
+        { name: '_acme-challenge.example.com', value: 'tok2' },
+      ])
+    )
+    assertEquals(w.replies.map((r) => r.ok), [true])
+    assertEquals([...w.host.records.values()].map((r) => r.value).sort(), ['tok1', 'tok2'])
+    const [row] = await w.db.select().from(tls).where(eq(tls.id, w.rowId))
+    assertEquals(readDnsCertState(row!.metadata)?.records.length, 2)
   })
 })

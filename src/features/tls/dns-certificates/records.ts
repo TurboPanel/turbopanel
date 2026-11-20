@@ -44,6 +44,11 @@ export async function dnsFor(
     ...(shape.checkZone
       ? { checkZone: (id: string) => call(async (dns) => await dns.checkZone?.(id)) }
       : {}),
+    ...(shape.nameservers
+      ? {
+          nameservers: (id: string) => call(async (dns) => (await dns.nameservers?.(id)) ?? []),
+        }
+      : {}),
     ...(shape.txtValues
       ? {
           txtValues: (input: { zoneId: string; name: string }) =>

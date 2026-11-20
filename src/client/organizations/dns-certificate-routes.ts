@@ -12,7 +12,8 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { tls } from '../../db/schema.ts'
 import { parseCertificateNames } from '../../features/tls/dns-certificates/names.ts'
-import { HTTP_CERT_KEY } from '../../features/tls/http-issuance/state.ts'
+import { isRateLimitReason } from '../../features/tls/http-issuance/attempts.ts'
+import { HTTP_CERT_KEY, readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import { splitTlsMetadata } from '../../lib/tls/index.ts'
 import { isPanelManagedAcme } from '../../features/tls/dns-certificates/order-state.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -177,6 +178,25 @@ async function createOrder(c: Context<AppEnv>, scope: Scope): Promise<Response> 
 async function retryOrder(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const row = await ownRow(scope, c.req.param('tlsId') as string)
   if (!row) return c.json({ error: 'Not found' }, 404)
+  // The authority's rate limit holds for the whole organization: lifting this row's wait
+  // would also lift the pause every new order is under.
+  const held = readHttpIssuanceState(row.metadata)
+  if (
+    held?.phase === 'failed' &&
+    held.lastError !== null &&
+    isRateLimitReason(held.lastError) &&
+    held.nextAttemptAt !== null &&
+    Date.parse(held.nextAttemptAt) > Date.now()
+  ) {
+    return c.json(
+      {
+        error: 'rate_limited',
+        message: 'The certificate authority is rate limiting this organization. Try again later.',
+        retryAt: held.nextAttemptAt,
+      },
+      409
+    )
+  }
   const [updated] = await scope.db
     .update(tls)
     .set({

@@ -105,6 +105,18 @@ test('materialFromLetsEncrypt builds managed metadata', () => {
   assertEquals(material.options?.autoRenew, false)
 })
 
+test('materialFromLetsEncrypt keeps the lowercased names of a DNS order', () => {
+  const material = materialFromLetsEncrypt({
+    hostnames: ['Example.COM', '*.Example.com'],
+    challengeType: 'dns-01',
+  })
+  if (isCreateTlsFailure(material)) {
+    throw new TypeError('expected success material')
+  }
+  assertEquals(material.metadata.dnsNames, ['example.com', '*.example.com'])
+  assertEquals(material.metadata.hasWildcard, true)
+})
+
 test('materialFromLetsEncrypt rejects wildcard hostnames', () => {
   const material = materialFromLetsEncrypt({
     hostnames: ['*.example.com'],

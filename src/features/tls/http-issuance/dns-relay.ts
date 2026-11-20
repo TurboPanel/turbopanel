@@ -125,13 +125,12 @@ async function locate(db: Db, serverId: string, requestId: string): Promise<Loca
 
 /** A sentence for the daemon: the provider's own words when it gave any, otherwise a fixed one. */
 function sentence(err: unknown): string {
+  let text = 'The DNS records could not be published.'
   if (err instanceof ChallengeTargetError) {
-    return `The challenge name for ${err.name_} is an alias for ${err.target}. ${err.message}`
+    text = `The challenge name for ${err.name_} is an alias for ${err.target}. ${err.message}`
+  } else if (err instanceof TunnelProviderError && err.message) {
+    text = err.message
   }
-  const text =
-    err instanceof TunnelProviderError && err.message
-      ? err.message
-      : 'The DNS records could not be published.'
   return text.replace(/\s+/g, ' ').trim().slice(0, MAX_ERROR_CHARS)
 }
 
@@ -220,18 +219,19 @@ async function removeListed(deps: DnsRelayDeps, located: Located): Promise<void>
 async function waitVisible(
   deps: DnsRelayDeps,
   dns: DnsChallengeProvider,
-  made: { zoneId: string; name: string; value: string }
+  made: { zoneId: string; name: string; value: string },
+  until: number
 ): Promise<boolean> {
   const now = deps.now ?? (() => new Date())
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)))
-  const until = now().getTime() + (deps.readbackTimeoutMs ?? DNS_READBACK_TIMEOUT_MS)
   const attempt = async (): Promise<boolean> => {
     const seen = await Promise.resolve()
       .then(() => deps.confirm({ dns, ...made }))
       .catch(() => false)
     if (seen) return true
-    if (now().getTime() >= until) return false
-    await sleep(deps.readbackPollMs ?? DNS_READBACK_POLL_MS)
+    const left = until - now().getTime()
+    if (left <= 0) return false
+    await sleep(Math.min(deps.readbackPollMs ?? DNS_READBACK_POLL_MS, left))
     return attempt()
   }
   return attempt()
@@ -245,7 +245,8 @@ function inOrder<T>(items: readonly T[], step: (item: T) => Promise<void>): Prom
 async function publish(
   deps: DnsRelayDeps,
   located: Located,
-  records: readonly { name: string; value: string }[]
+  records: readonly { name: string; value: string }[],
+  until: number
 ): Promise<void> {
   const ctx: ZoneContext = {
     db: deps.db,
@@ -254,6 +255,10 @@ async function publish(
     adapters: deps.adapters,
   }
   const now = deps.now ?? (() => new Date())
+  // One deadline for the whole call: no record is written after it, and every read-back shares it.
+  const checkTime = () => {
+    if (now().getTime() >= until) throw timeUp()
+  }
   // The zone of every record, on one carrier of the organization (a certificate
   // is made through one account).
   const first = await findZoneInOrganization(
@@ -283,49 +288,60 @@ async function publish(
     zones.push(found.zone)
     return found.zone
   }
-  try {
-    await inOrder(records, async (record) => {
-      const base = record.name.slice('_acme-challenge.'.length)
-      const known = zoneFor(zones, base)
-      const zone = known ?? (await findOtherZone(base))
-      const where = await writeTarget(ctx, located.organizationId, carrier, {
-        name: record.name,
-        zoneId: zone.id,
-      })
-      const dns = await dnsFor(
-        ctx,
-        { organizationId: located.organizationId },
-        { carrierId: carrier.id },
-        where.zoneId
-      )
-      const ref = await dns.present({ zoneId: where.zoneId, name: where.name, value: record.value })
+  await inOrder(records, async (record) => {
+    checkTime()
+    const base = record.name.slice('_acme-challenge.'.length)
+    const known = zoneFor(zones, base)
+    const zone = known ?? (await findOtherZone(base))
+    const where = await writeTarget(ctx, located.organizationId, carrier, {
+      name: record.name,
+      zoneId: zone.id,
+    })
+    const dns = await dnsFor(
+      ctx,
+      { organizationId: located.organizationId },
+      { carrierId: carrier.id },
+      where.zoneId
+    )
+    const ref = await dns.present({ zoneId: where.zoneId, name: where.name, value: record.value })
+    try {
       await rememberRecord(deps.db, located.rowId, {
         zoneId: where.zoneId,
         recordId: ref.recordId,
         name: where.name,
         createdAt: now().toISOString(),
       })
-      placed.push({ zoneId: where.zoneId, name: where.name, value: record.value })
-    })
-    await inOrder(placed, async (made) => {
-      const dns = await dnsFor(
-        ctx,
-        { organizationId: located.organizationId },
-        { carrierId: carrier.id },
-        made.zoneId
+    } catch (err) {
+      // A record the row does not list could never be found again: take it away here.
+      await dns.remove({ zoneId: where.zoneId, recordId: ref.recordId }).catch(() => undefined)
+      throw err
+    }
+    placed.push({ zoneId: where.zoneId, name: where.name, value: record.value })
+  })
+  await inOrder(placed, async (made) => {
+    checkTime()
+    const dns = await dnsFor(
+      ctx,
+      { organizationId: located.organizationId },
+      { carrierId: carrier.id },
+      made.zoneId
+    )
+    if (!(await waitVisible(deps, dns, made, until))) {
+      throw new TunnelProviderError(
+        'unreachable',
+        'The challenge record was created but is not visible on the nameservers yet.',
+        null
       )
-      if (!(await waitVisible(deps, dns, made))) {
-        throw new TunnelProviderError(
-          'unreachable',
-          'The challenge record was created but is not visible on the nameservers yet.',
-          null
-        )
-      }
-    })
-  } catch (err) {
-    await removeListed(deps, located).catch(() => undefined)
-    throw err
-  }
+    }
+  })
+}
+
+function timeUp(): TunnelProviderError {
+  return new TunnelProviderError(
+    'unreachable',
+    'The challenge records were not visible on the nameservers in time.',
+    null
+  )
 }
 
 const inFlight = new Set<string>()
@@ -359,10 +375,16 @@ export async function handleDnsPublish(
     if (refused || !located) return await answer(false, refused ?? undefined)
     const unfit = checkRecords(message.records, located.orderNames)
     if (unfit) return await answer(false, unfit)
+    // One deadline for the call, counted from here, whatever the number of records.
+    const until = now().getTime() + (deps.readbackTimeoutMs ?? DNS_READBACK_TIMEOUT_MS)
     try {
-      await publish(deps, located, message.records)
+      await publish(deps, located, message.records, until)
     } catch (err) {
-      return await answer(false, sentence(err))
+      // Answer first: the daemon is waiting. The records made so far are listed on the
+      // row, so the removal after it, or the cleanup tick, finds them.
+      await answer(false, sentence(err))
+      await removeListed(deps, located).catch(() => undefined)
+      return
     }
     await answer(true)
   } finally {
@@ -390,6 +412,20 @@ export function isDnsRelayMessage(message: {
   type: string
 }): message is AcmeDnsPublishMessage | AcmeDnsRemoveMessage {
   return message.type === 'acme-dns-publish' || message.type === 'acme-dns-remove'
+}
+
+/** The answer for a publish the panel cannot take up (no key or no database), so the daemon is not left waiting. */
+export function unavailableDnsAnswer(
+  message: AcmeDnsPublishMessage,
+  at: Date = new Date()
+): AcmeDnsPublishedMessage {
+  return {
+    type: 'acme-dns-published',
+    requestId: message.requestId,
+    ok: false,
+    error: 'The panel cannot publish DNS records right now.',
+    at: at.toISOString(),
+  }
 }
 
 /** Route one validated inbound frame to its handler. */

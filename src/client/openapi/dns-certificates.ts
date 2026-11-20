@@ -169,7 +169,8 @@ export const dnsCertificatePaths: Record<string, unknown> = {
     post: {
       tags: ['Organizations'],
       summary: 'Try a failed order again',
-      description: 'Lifts the wait after a failed order so the next sweep places it again.',
+      description:
+        'Lifts the wait after a failed order so the next sweep places it again. While the certificate authority is rate limiting the organization the wait stays and the call answers 409 `rate_limited` with the time to try again (`retryAt`).',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TLS_ID_PARAM],
       responses: {
@@ -178,6 +179,9 @@ export const dnsCertificatePaths: Record<string, unknown> = {
           properties: { certificate: { $ref: '#/components/schemas/DnsCertificate' } },
         }),
         ...errors(),
+        409: {
+          description: 'rate_limited: the certificate authority asked for a wait; see `retryAt`.',
+        },
       },
     },
   },

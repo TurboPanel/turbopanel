@@ -32,7 +32,7 @@ import { type DnsLookup, resolveNameAddresses } from '../../hostings/hosting-dns
 import type { TlsAcmeMetadata } from '../../../lib/tls/types.ts'
 import { mayStartAttempt, pruneAttempts } from './attempts.ts'
 import { ACME_ISSUE_DNS_FEATURE } from '../../../lib/version-wire.ts'
-import { loadOrgOrderFacts, mayStartNewCertificate } from './caps.ts'
+import { loadOrgOrderFacts, mayStartNewCertificate, recordNewCertificateStart } from './caps.ts'
 import {
   type Choice,
   chooseDnsIssuer,
@@ -613,6 +613,7 @@ async function startInTransaction(
       orderNames: row.orderNames,
     })
     await writeState(tx, row, state, now)
+    if (previous === null && !row.hasPair) await recordNewCertificateStart(tx, row.organizationId, now)
     return {
       outcome: 'ordering',
       send: [
@@ -638,6 +639,7 @@ async function startInTransaction(
     ? { ...fresh, phase: 'ordering', orderSentAt: fresh.startedAt }
     : fresh
   await writeState(tx, row, state, now)
+  if (previous === null && !row.hasPair) await recordNewCertificateStart(tx, row.organizationId, now)
   return {
     outcome: direct ? 'ordering' : 'started',
     send: openingMessages(now, row, state, choice, contactEmail),
@@ -691,8 +693,10 @@ export async function startHttpIssuance(
   // Organization limits: a day's worth of new certificates, and a pause for everyone
   // once the authority said it is rate limiting. A renewal is not a new certificate.
   if (peek.hasKey !== true) {
-    const facts = await loadOrgOrderFacts(deps.db, peek.organizationId, tlsId)
-    if (!mayStartNewCertificate(facts, now).ok) return 'backoff'
+    const facts = await loadOrgOrderFacts(deps.db, peek.organizationId, now)
+    // A row trying again was counted when it first started; only the pause applies to it.
+    const applied = previous === null ? facts : { ...facts, newStarts: [] }
+    if (!mayStartNewCertificate(applied, now).ok) return 'backoff'
   }
   const gathered =
     challenge === 'dns-01'

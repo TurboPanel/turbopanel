@@ -124,6 +124,7 @@ import {
   confirmThroughProvider,
   type DnsConfirm,
   handleDnsRelayInbound,
+  unavailableDnsAnswer,
 } from '../features/tls/http-issuance/dns-relay.ts'
 import { createCloudflareDnsChallenge } from '../features/tunnels/cloudflare-dns-challenge.ts'
 import { createTunnelAdapterRegistry } from '../features/tunnels/registry.ts'
@@ -957,7 +958,13 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
     case 'acme-dns-remove': {
       await cell.recordInbound({ connectionId, at: message.at })
       const secrets = params.dataEncryptionSecrets
-      if (!secrets) return
+      if (!secrets) {
+        // Say no instead of leaving the daemon to wait out its deadline.
+        if (message.type === 'acme-dns-publish') {
+          await params.reply(unavailableDnsAnswer(message))
+        }
+        return
+      }
       // A publish waits for the records to show, so it runs apart from the socket's
       // frame loop and answers when it is done.
       const work = handleDnsRelayInbound(

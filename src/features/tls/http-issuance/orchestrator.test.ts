@@ -32,6 +32,7 @@ import {
   startHttpIssuance,
 } from './orchestrator.ts'
 import { newHttpIssuanceState, readHttpIssuanceState } from './state.ts'
+import { loadOrgOrderFacts, NEW_CERTIFICATES_PER_DAY } from './caps.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -1042,6 +1043,41 @@ test('an issuing server takes one order at a time; the next waits its turn', asy
       await startHttpIssuance(f.deps({ now: () => at(2000) }), f.tlsId, always),
       'ordering'
     )
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('a new start is kept on the organization, so deleting the row does not free the day\'s cap', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance tests')
+  const f = await setup({ servers: 1 })
+  try {
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'started')
+    await f.db.delete(hosting).where(eq(hosting.tlsId, f.tlsId))
+    await f.db.delete(tls).where(eq(tls.id, f.tlsId))
+    const facts = await loadOrgOrderFacts(f.db, f.organizationId, T0)
+    assertEquals(facts.newStarts.length, 1)
+    // Once the day is full the next new certificate is held back.
+    const [org] = await f.db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, f.organizationId))
+    const full = Array.from({ length: NEW_CERTIFICATES_PER_DAY }, () => T0.toISOString())
+    await f.db
+      .update(organization)
+      .set({ options: { ...(org!.options as object), acmeNewStarts: full } })
+      .where(eq(organization.id, f.organizationId))
+    const [again] = await f.db
+      .insert(tls)
+      .values({
+        organizationId: f.organizationId,
+        name: 'Second',
+        source: 'lets_encrypt',
+        status: 'automatic',
+        metadata: { dnsNames: [HOST], acme: { managedBy: 'caddy' } },
+      })
+      .returning({ id: tls.id })
+    assertEquals(await startHttpIssuance(f.deps(), again!.id, always), 'backoff')
   } finally {
     await f.cleanup()
   }

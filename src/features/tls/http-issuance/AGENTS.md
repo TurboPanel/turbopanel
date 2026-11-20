@@ -108,6 +108,8 @@ panel publishes the TXT records for the daemon.
   both runtimes. The record is written to `metadata.dnsCert.records` as soon as
   it exists and removed only by id. See `../dns-certificates/AGENTS.md`.
 - `caps.ts`: at most 10 new certificates per organization per day, and a pause
-  for every new start while an authority rate limit is in force.
+  for every new start while an authority rate limit is in force. New starts are
+  kept in `organization.options.acmeNewStarts` (ISO times, pruned to a day), so
+  deleting a row does not free the cap. A retry is subject to the pause only.
 - The sweep starts at most 2 renewals per tick.
 - A name still waiting for its pair goes to the daemon as an internal name.

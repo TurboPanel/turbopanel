@@ -26,7 +26,8 @@ Routes (`client/organizations/dns-certificate-routes.ts`):
   inserts a `lets_encrypt` row with `acme.challengeType: 'dns-01'`. The sweep
   hands it to a serving server; nothing is sent to the authority from here.
 - `…/:tlsId/check` returns the row. `…/:tlsId/retry` lifts the wait after a
-  failed order so the next sweep places it.
+  failed order so the next sweep places it. It answers 409 `rate_limited` (with
+  `retryAt`) while the authority's rate-limit pause is in force.
 - The list shows uploaded panel-managed rows and the `lets_encrypt` dns-01
   rows; an ordered row shows `renewAt` and `nextAttemptAt`.
 
@@ -50,7 +51,9 @@ held an hour. `ordering-off.hostfree.test.ts` pins that no panel-side ordering
 module exists and that `cleanup.ts` reaches nothing in `src/lib/acme/`.
 
 Certificates already issued stay in the library and serve until they expire;
-they are deleted like any library certificate.
+they are deleted like any library certificate. Deleting a row is refused (409
+`tls_dns_records_outstanding`) while it lists challenge records not removed yet,
+and the unused-certificate cleanup keeps such rows.
 
 ## What the row is
 

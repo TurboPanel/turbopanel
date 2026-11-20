@@ -813,6 +813,43 @@ test('a certificate a tunnel provider issued cannot be revoked, deleted or creat
   })
 })
 
+test('DELETE /tls/:id is refused while the order still has DNS challenge records to remove', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { cookie, [ORG_ID_HEADER]: organizationId }
+    const [row] = await db
+      .insert(tls)
+      .values({
+        organizationId,
+        source: 'lets_encrypt',
+        status: 'automatic',
+        metadata: {
+          dnsNames: ['example.com'],
+          dnsCert: {
+            carrierId: 'carrier-1',
+            records: [
+              {
+                zoneId: 'zone-1',
+                recordId: 'rec-1',
+                name: '_acme-challenge.example.com',
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        },
+      })
+      .returning({ id: tls.id })
+    const refused = await app.request(`/tls/${row!.id}`, { method: 'DELETE', headers })
+    assertEquals(refused.status, 409)
+    assertEquals(
+      ((await refused.json()) as { error: string }).error,
+      'tls_dns_records_outstanding'
+    )
+    const [still] = await db.select({ id: tls.id }).from(tls).where(eq(tls.id, row!.id))
+    assertEquals(still?.id, row!.id)
+  })
+})
+
 test('GET /tls/ca/download returns the Organization CA trust-bundle PEM', async () => {
   await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)

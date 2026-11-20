@@ -62,11 +62,12 @@ export function serverStatusLines(state: HttpIssuanceState): ServerStatusLine[] 
 
 /** What the Certificate panel says when no server can take the order yet. */
 export function waitingText(
-  reason: 'no_servers' | 'none_in_dns' | 'no_contact' | 'none_take_dns'
+  reason: 'no_servers' | 'none_in_dns' | 'no_contact' | 'none_take_dns' | 'no_site'
 ): string {
   if (reason === 'none_take_dns') {
     return 'Waiting for an online server with a version that can order this kind of certificate.'
   }
+  if (reason === 'no_site') return 'Waiting for a site to use this certificate.'
   if (reason === 'no_servers') return 'Waiting for a server to serve this name.'
   if (reason === 'no_contact') {
     return 'Waiting for a contact email address for certificates to be set for this organization.'

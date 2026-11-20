@@ -5,6 +5,7 @@
  * handlers must never read or write the **Platform CA** files under
  * `<stateDir>/tls/` (see `src/lib/tls/AGENTS.md`).
  */
+import { readDnsCertState } from '../../features/tls/dns-certificates/order-state.ts'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -1046,6 +1047,18 @@ export function registerTlsRoutes(
           error: 'tls_organization_ca',
           message:
             "The Organization CA can't be deleted. Use Rotate on the Organization CA panel to replace it.",
+        },
+        409
+      )
+    }
+
+    // Challenge records the panel made for an order are removed first, by the cleanup tick.
+    if (existing && (readDnsCertState(existing.metadata)?.records.length ?? 0) > 0) {
+      return c.json(
+        {
+          error: 'tls_dns_records_outstanding',
+          message:
+            'This certificate still has DNS records to remove. Try again in a few minutes.',
         },
         409
       )

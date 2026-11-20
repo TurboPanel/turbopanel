@@ -339,15 +339,17 @@ export function materialFromLetsEncrypt(
   if (hostnames.some((n) => isLoopbackOrPrivateHostname(n.replace(/^\*\./, '')))) {
     return createFailure('private_hostname_unsupported')
   }
+  let names = hostnames
   if (dns) {
     const parsed = parseCertificateNames(hostnames)
     if (!parsed.ok) return createFailure('Invalid request', parsed.detail)
+    names = parsed.names
   }
   return {
     certificatePem: null,
     privateKeyPemSealed: null,
     metadata: {
-      dnsNames: hostnames,
+      dnsNames: names,
       hasWildcard: wildcard,
       notBefore: new Date(0).toISOString(),
       notAfter: new Date(0).toISOString(),
@@ -363,7 +365,7 @@ export function materialFromLetsEncrypt(
     },
     options: {
       autoRenew: body.autoRenew !== false,
-      requestedHostnames: hostnames,
+      requestedHostnames: names,
     },
   }
 }
