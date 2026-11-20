@@ -455,8 +455,8 @@ export type TopologyIdValidationSnapshot = Pick<TopologySnapshot, 'networks' | '
 
 /**
  * Find the first assigned topology-id override in `update` that does not
- * match a device/filesystem id in `snapshot` — the last topology generation
- * this server reported (`getLatestTopologyGeneration`,
+ * match a device/filesystem id in `snapshot` — the last topology
+ * this server reported (`getLatestServerTopology`,
  * `server-topology-records.ts`). Returns `null` when every assigned id is
  * valid, or when nothing was assigned.
  */

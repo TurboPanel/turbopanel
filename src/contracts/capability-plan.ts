@@ -153,7 +153,7 @@ export function countHostLevelSignals(signals: readonly unknown[]): number {
 /**
  * Infer a machine class from whichever topology snapshot is on hand (the
  * daemon's `topology-report.snapshot`, stored verbatim by
- * `recordTopologyGeneration`). A v6 daemon states its own verdict in
+ * `recordTopologyReport`). A v6 daemon states its own verdict in
  * `snapshot.machineClass` (DMI-based, `physical-classifier.ts`), and that
  * wins: a bare-metal host with nothing discoverable is still physical.
  * Without it, the sensor proxy: a physical host is the only kind that ever

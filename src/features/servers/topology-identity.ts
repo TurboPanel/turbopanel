@@ -1,10 +1,9 @@
 /**
  * Telling topologies apart without the daemon's topology generation number.
  *
- * Older daemons number every topology they report (`topology-report.generation`).
- * Newer daemons leave it out once the control plane lists the
- * `topology-generation-optional-v1` wire feature, so the control plane works
- * out the same two answers from content it already receives:
+ * The control plane no longer reads or stores the number older daemons send
+ * (`topology-report.generation`); it works out the same two answers from
+ * content it already receives:
  *
  * - **Is this report a new topology or a resend?** Two snapshots are the same
  *   topology when {@link topologyIdentityKey} matches: the entity ids and the
@@ -107,7 +106,7 @@ export function sampleFitsTopology(
 }
 
 /** The part of a stored topology record the checks below read. */
-export type RecordedTopology = { generation?: number; snapshot: unknown }
+export type RecordedTopology = { snapshot: unknown }
 
 /**
  * Whether a sample was collected under the stored topology: the sample's
@@ -131,15 +130,11 @@ export function recordedTopologyForSample<T extends RecordedTopology>(
 
 /**
  * Whether a topology report describes the stored topology (a resend or a
- * refresh) rather than a new one. Generation numbers decide when both sides
- * carry one; otherwise {@link topologyIdentityKey} does.
+ * refresh) rather than a new one: {@link topologyIdentityKey} decides.
  */
 export function reportIsSameTopology(
   record: RecordedTopology,
-  report: { generation?: number; snapshot: unknown }
+  report: { snapshot: unknown }
 ): boolean {
-  if (report.generation !== undefined && record.generation !== undefined) {
-    return record.generation === report.generation
-  }
   return topologyIdentityKey(record.snapshot) === topologyIdentityKey(report.snapshot)
 }

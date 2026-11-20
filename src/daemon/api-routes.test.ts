@@ -66,7 +66,7 @@ import type {
   ServerMetricsStore,
   SlotMapping,
 } from './metrics/types.ts'
-import { recordTopologyGeneration } from '../features/servers/server-topology-records.ts'
+import { recordTopologyReport } from '../features/servers/server-topology-records.ts'
 import {
   consumeChallenge,
   createStatelessChallengeStore,
@@ -3539,9 +3539,7 @@ test('POST /metrics: a sample sent too soon after the last gets 429 with Retry-A
 
 test('POST /metrics accepts a known topology generation without requesting a resync', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [] },
       appliedAt: new Date().toISOString(),
     })
@@ -3570,9 +3568,7 @@ test('POST /metrics accepts a known topology generation without requesting a res
 
 test('POST /metrics resolves a SlotMapping from a full recorded topology snapshot', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: {
         networks: [
           { deviceId: 'eth0', kind: 'uplink', name: 'eth0', identity: {} },
@@ -3660,10 +3656,10 @@ function numberlessMetricsFrame(nicIds: string[]): Record<string, unknown> {
 }
 
 async function recordNumberlessTopology(
-  db: Parameters<typeof recordTopologyGeneration>[0],
+  db: Parameters<typeof recordTopologyReport>[0],
   serverId: string
 ): Promise<void> {
-  await recordTopologyGeneration(db, serverId, {
+  await recordTopologyReport(db, serverId, {
     snapshot: {
       networks: [{ deviceId: 'eth0', kind: 'uplink', name: 'eth0', identity: {} }],
       filesystems: [],
@@ -3725,9 +3721,7 @@ test('POST /metrics without a topology generation naming an unknown device reque
 
 test('POST /metrics retains hardwareSignals for a server classified physical from its topology', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       // Non-empty hardwareSignals is what infers the server physical while
       // `server.machine_class` is NULL — see `resolveServerMachineClass`.
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
@@ -3757,7 +3751,7 @@ test('POST /metrics retains hardwareSignals for a server classified physical fro
 
 /** The `machine_class` write-back is fire-and-forget; poll briefly for it. */
 async function readMachineClassSettled(
-  db: Parameters<typeof recordTopologyGeneration>[0],
+  db: Parameters<typeof recordTopologyReport>[0],
   serverId: string,
   expected: string | null
 ): Promise<string | null> {
@@ -3777,9 +3771,7 @@ async function readMachineClassSettled(
 
 test('POST /metrics writes machine_class=physical back once topology proves it, only while undeclared', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -3816,9 +3808,7 @@ test('POST /metrics writes machine_class=physical back once topology proves it, 
 
 test('POST /metrics never writes machine_class=virtual back — absence of sensors is not proof', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [] },
       appliedAt: new Date().toISOString(),
     })
@@ -3847,9 +3837,7 @@ test('POST /metrics never writes machine_class=virtual back — absence of senso
 
 test('POST /metrics: a declared machine_class=virtual beats a topology that carries sensors', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'bogus-thermal-zone' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -3877,9 +3865,7 @@ test('POST /metrics: a declared machine_class=virtual beats a topology that carr
 
 test('POST /metrics never overwrites a machine class an operator pinned', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -4037,9 +4023,7 @@ test('POST /metrics keeps the sample and flags the server while its highest RAM 
 
 test('POST /metrics does not cut hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -4072,9 +4056,7 @@ test('POST /metrics does not cut hardwareSignals when the org overrides physical
 
 test('POST /metrics does not cut hardwareSignals when a server overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })

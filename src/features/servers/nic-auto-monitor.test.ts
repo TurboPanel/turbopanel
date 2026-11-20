@@ -39,8 +39,6 @@ const BOND_MEMBER: NetworkDeviceTopology = {
 
 function snapshot(networks: NetworkDeviceTopology[]): TopologySnapshot {
   return {
-    generation: 0,
-    bootGeneration: 0,
     networks,
     filesystems: [],
     blockDevices: [],
