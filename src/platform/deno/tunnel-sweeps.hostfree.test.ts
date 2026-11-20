@@ -32,6 +32,7 @@ test('the tunnel sweep list holds every hosted tunnel sweep, in order', () => {
     TUNNEL_SWEEPS.map((sweep) => sweep.failureLabel),
     [
       'tunnel-routes-sweep-failed',
+      'tunnel-verified-names-sweep-failed',
       'tunnel-connectors-sweep-failed',
       'tunnel-run-token-rotation-failed',
       'tunnel-removal-sweep-failed',

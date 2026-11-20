@@ -31,7 +31,6 @@ import {
 import {
   type BadgeRow,
   type CarrierRow,
-  findCarrier,
   listBadges,
   pickBadges,
   openBadgeToken,

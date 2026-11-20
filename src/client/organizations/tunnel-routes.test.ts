@@ -1645,7 +1645,7 @@ test('rotating a run token starts with a 202, is refused to others and audits wi
 
 /** A tunnel name linked to a site whose bind is set, for the reach tests. */
 async function reachFixture(f: Fixture, bind: string, name = 'reach.example.com') {
-  const id = await makeTunnel(f)
+  const id = await makeTunnel(f, { name: `Reach ${bind}` })
   const site = await insertHosting(f, f.orgA, f.servers[2])
   await f.db.update(hosting).set({ options: { bind } }).where(eq(hosting.id, site))
   await f.db
@@ -1733,11 +1733,11 @@ test('opening a name moves only an untouched default certificate to the direct d
       f.db.update(hostname).set({ certificate }).where(eq(hostname.hostingId, r.site))
     const read = async () =>
       (await f.db.select().from(hostname).where(eq(hostname.hostingId, r.site)))[0]!.certificate
-    await set('provider_origin')
+    await set('cloudflare_origin')
     const picked = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
     assertEquals(picked.status, 200, picked.text)
     // A certificate the person picked stays as it is.
-    assertEquals(await read(), 'provider_origin')
+    assertEquals(await read(), 'cloudflare_origin')
     assertEquals(picked.body.certificateChangedNames, [])
   })
 })
