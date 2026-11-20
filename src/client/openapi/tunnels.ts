@@ -256,20 +256,6 @@ export const tunnelSchemas = {
       },
     },
   },
-  VerifyOrigin: {
-    type: 'object',
-    description:
-      'The verified connection to your web server: asked for, in effect, and which names still wait for a site or a certificate.',
-    properties: {
-      enabled: { type: 'boolean' },
-      active: {
-        type: 'boolean',
-        description:
-          'Every name is served with a covering origin certificate, so the connector verifies.',
-      },
-      pendingNames: { type: 'array', items: { type: 'string' } },
-    },
-  },
   Tunnel: {
     type: 'object',
     description:
@@ -357,7 +343,12 @@ export const tunnelSchemas = {
           },
         },
       },
-      verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
+      verifiedNames: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          "Names whose hop to your web server the connector verifies, as last written to the provider. A name is verified by itself when its certificate is a provider origin certificate or a ready public Let's Encrypt pair that covers it and a successful deploy carried it; every other name skips verification.",
+      },
       runTokenRotation: {
         oneOf: [{ $ref: '#/components/schemas/TunnelRunTokenRotation' }, { type: 'null' }],
       },
@@ -683,40 +674,14 @@ export const tunnelPaths: Record<string, unknown> = {
   '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/verify-origin': {
     put: {
       tags: ['Organizations'],
-      summary: 'Verify the connection between a tunnel and your web server',
+      summary: 'Verify the connection between a tunnel and your web server (removed)',
       description:
-        "Owners and managers only. On: every site that serves the tunnel names gets an origin certificate for exactly the names it serves (a certificate TurboPanel already issued that covers them is reused; `wildcard` asks for one wildcard instead), is pointed at it, and the connector is told to verify. A site that does not exist yet keeps its names `pending`, and the connector keeps skipping verification for the whole tunnel until this is applied again (it is safe to repeat). Servers pick up a new certificate with the site's next deploy (`needsDeploy`). Off: the connector skips verification again. 409 `verify_origin_public_names` (the site also serves a name that is not a verified tunnel name), `verify_origin_zones` (names in more than one zone), `verify_origin_names` (a wildcard does not cover a deeper name), `badge_cannot_certify`, `badge_cannot_dns`, `badge_cannot_tunnel`.",
+        "Removed. Always answers 410 `verify_origin_removed`: verification is per name now and follows each name's certificate (see `verifiedNames` on a tunnel).",
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, TUNNEL_ID_PARAM],
-      requestBody: {
-        required: true,
-        content: {
-          'application/json': {
-            schema: {
-              type: 'object',
-              required: ['enabled'],
-              properties: { enabled: { type: 'boolean' }, wildcard: { type: 'boolean' } },
-            },
-          },
-        },
-      },
       responses: {
-        ...jsonOk('Updated', {
-          type: 'object',
-          properties: {
-            tunnel: { $ref: '#/components/schemas/Tunnel' },
-            verifyOrigin: { $ref: '#/components/schemas/VerifyOrigin' },
-            pinnedHostingIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
-            deferredHostingIds: {
-              type: 'array',
-              items: { type: 'string', format: 'uuid' },
-              description:
-                'Sites left for the next request: one request asks the provider for at most 10 certificates. Apply again to continue; it is idempotent.',
-            },
-            needsDeploy: { type: 'boolean' },
-          },
-        }),
-        ...errors({ badRequest: true }),
+        '410': { description: 'Removed' },
+        ...errors(),
       },
     },
   },
@@ -1011,6 +976,46 @@ Object.assign(tunnelPaths, {
     },
   },
   '/api/client/v1/organizations/{id}/tunnels/{tunnelId}/hostnames/{doorwayId}': {
+    patch: {
+      tags: ['Organizations'],
+      summary: 'Open or close a Tunnel hostname for direct visitors',
+      description:
+        "Owners and managers only. `isLocalOnly: false` also lets the hostname be reached directly on the site's datacenter address (the daemon opens the site's address and loopback for it); `true` closes it again and is always allowed. Opening is refused with 409 `doorway_bind_not_datacenter` unless the site is on a datacenter network (never a public or local-only one), 409 `doorway_no_site` when no site serves the name yet, and 409 `doorway_removing`. A name whose certificate is still the default of a tunnel-only name moves to the default of a name that is also reached directly (`certificateChangedNames`); a certificate the person picked is never changed. Servers pick the change up with the site's next deploy (`needsDeploy`).",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        ORG_ID_PARAM,
+        TUNNEL_ID_PARAM,
+        {
+          name: 'doorwayId',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['isLocalOnly'],
+              properties: { isLocalOnly: { type: 'boolean' } },
+            },
+          },
+        },
+      },
+      responses: {
+        ...jsonOk('Updated', {
+          type: 'object',
+          properties: {
+            hostname: { $ref: '#/components/schemas/TunnelHostname' },
+            certificateChangedNames: { type: 'array', items: { type: 'string' } },
+            needsDeploy: { type: 'boolean' },
+          },
+        }),
+        ...errors({ badRequest: true }),
+      },
+    },
     delete: {
       tags: ['Organizations'],
       summary: 'Remove a hostname from a Tunnel',

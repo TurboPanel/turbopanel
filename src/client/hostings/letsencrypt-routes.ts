@@ -134,7 +134,7 @@ function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
         rows.map((row) => ({ ...row, pendingAt: pendingById.get(row.id) ?? null })),
         at
       ),
-      loadHostingTunnelPaths(db, orgResult, rows, at),
+      loadHostingTunnelPaths(db, orgResult, rows),
     ])
     const withCertificate = (row: HostingReadRow) => ({
       ...row,

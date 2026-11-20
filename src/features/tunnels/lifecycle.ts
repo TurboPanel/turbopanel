@@ -23,7 +23,8 @@ import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { compareText } from './order.ts'
-import { type VerifyState, tunnelVerifyState, verifyOriginHostnames } from './verify-state.ts'
+import { tunnelDoorwayHostnames } from './verified-names.ts'
+import { pushTunnelRoutes, readRoutedVerified } from './route-push.ts'
 import { retireUnusedOriginCertificates } from './origin-certificate.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import {
@@ -140,8 +141,8 @@ export type ApiTunnel = {
   carryingServerIds: string[]
   warnings: string[]
   doorwayCount: number
-  /** The verified connection to the web server: asked for, in effect, and which names still wait. */
-  verifyOrigin: VerifyState
+  /** Names whose hop to the web server the connector verifies now, as last written to the provider. */
+  verifiedNames: string[]
   /** The last or current run-token rotation (never the token), or null when there was none. */
   runTokenRotation: ApiRotation | null
 }
@@ -231,11 +232,10 @@ export async function carryingServers(db: Db, row: TunnelRow): Promise<string[]>
 }
 
 export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
-  const [portals, carrying, doorways, verify] = await Promise.all([
+  const [portals, carrying, doorways] = await Promise.all([
     listPortals(db, row.id),
     carryingServers(db, row),
     db.select({ id: doorway.id }).from(doorway).where(eq(doorway.tunnelId, row.id)),
-    tunnelVerifyState(db, row),
   ])
   return {
     id: row.id,
@@ -257,7 +257,7 @@ export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
     carryingServerIds: carrying,
     warnings: [...removalWarnings(row), ...placementWarnings(carrying)],
     doorwayCount: doorways.length,
-    verifyOrigin: verify,
+    verifiedNames: readRoutedVerified(row.metadata),
     runTokenRotation: toApiRotation(readRotation(row.metadata)),
   }
 }
@@ -1072,15 +1072,7 @@ async function publishDoorway(
 ): Promise<DoorwayRow> {
   const { row, owner, account, zone } = plan
   const hostnames = await routeNames(db, row.id, null)
-  const verifyOrigin = (await tunnelVerifyState(db, row)).active
-  await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
-    deps.adapter.setRoutes(token, {
-      accountId: account,
-      externalId: row.externalId!,
-      hostnames,
-      verifyOrigin,
-    })
-  )
+  await pushTunnelRoutes(db, deps, owner, row, { accountId: account, hostnames })
   const dns = zone
     ? await useBadges(db, deps.secrets, owner.id, { capability: 'dns', zone }, (token) =>
         deps.adapter.createDnsName(token, {
@@ -1202,15 +1194,10 @@ async function restoreRoutesQuietly(
 ): Promise<void> {
   try {
     const hostnames = await routeNames(db, row.id, null)
-    const verifyOrigin = (await tunnelVerifyState(db, row)).active
-    await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
-      deps.adapter.setRoutes(token, {
-        accountId: owner.externalAccountId,
-        externalId: row.externalId!,
-        hostnames,
-        verifyOrigin,
-      })
-    )
+    await pushTunnelRoutes(db, deps, owner, row, {
+      accountId: owner.externalAccountId,
+      hostnames,
+    })
   } catch {
     // The next successful change writes the whole set again.
   }
@@ -1248,15 +1235,10 @@ export async function removeDoorway(
     // The route goes first, so a failed DNS removal leaves a name that answers nothing,
     // never a route to a name that is gone; a retry rewrites the same route.
     const remaining = (await routeNames(db, row.id, null)).filter((n) => n !== current.hostname)
-    const verifyOrigin = remaining.length > 0 && (await tunnelVerifyState(db, row)).active
-    await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
-      deps.adapter.setRoutes(token, {
-        accountId: owner.externalAccountId,
-        externalId: row.externalId!,
-        hostnames: remaining,
-        verifyOrigin,
-      })
-    )
+    await pushTunnelRoutes(db, deps, owner, row, {
+      accountId: owner.externalAccountId,
+      hostnames: remaining,
+    })
   } catch (err) {
     throw refuse(err, 'edit Tunnels')
   }
@@ -1274,7 +1256,7 @@ async function retireUnusedCertificatesQuietly(db: Db, organizationId: string): 
     await retireUnusedOriginCertificates(
       db,
       organizationId,
-      await verifyOriginHostnames(db, organizationId)
+      await tunnelDoorwayHostnames(db, organizationId)
     )
   } catch {
     // The sweep retires it on its next pass.

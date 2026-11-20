@@ -22,7 +22,7 @@ import {
 } from '../../lib/throttle-counters.ts'
 import { ORIGIN_SWEEP_BATCH, sweepOriginCertificates } from './origin-certificate.ts'
 import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
-import { verifyOriginHostnames } from './verify-state.ts'
+import { tunnelDoorwayHostnames } from './verified-names.ts'
 
 /** Wall-clock time after which a pass starts no further organization. */
 export const ORIGIN_SWEEP_BUDGET_MS = 20_000
@@ -84,7 +84,7 @@ export async function runOriginCertificateSweepTick(
         secrets,
         registry,
         organizationId,
-        usedHostnames: await verifyOriginHostnames(db, organizationId),
+        usedHostnames: await tunnelDoorwayHostnames(db, organizationId),
         limit: share,
         ...(deps.now ? { now: deps.now } : {}),
       })

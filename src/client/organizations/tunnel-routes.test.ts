@@ -397,6 +397,7 @@ test('every tunnel route refuses a request without a session', async () => {
       ['GET', `/organizations/${f.orgA}/tunnels/${id}/hostnames`],
       ['POST', `/organizations/${f.orgA}/tunnels/${id}/hostnames`],
       ['DELETE', `/organizations/${f.orgA}/tunnels/${id}/hostnames/${id}`],
+      ['PATCH', `/organizations/${f.orgA}/tunnels/${id}/hostnames/${id}`],
       ['PUT', `/organizations/${f.orgA}/servers/${id}/tunnel-carrying`],
     ]) {
       assertEquals((await call(f, method!, path!, null, {})).status, 401, `${method} ${path}`)
@@ -1639,5 +1640,104 @@ test('rotating a run token starts with a 202, is refused to others and audits wi
     const again = await call(f, 'POST', path, f.managerCookie, {})
     assertEquals(again.status, 409)
     assertEquals(again.body.error, 'rotation_in_progress')
+  })
+})
+
+/** A tunnel name linked to a site whose bind is set, for the reach tests. */
+async function reachFixture(f: Fixture, bind: string, name = 'reach.example.com') {
+  const id = await makeTunnel(f)
+  const site = await insertHosting(f, f.orgA, f.servers[2])
+  await f.db.update(hosting).set({ options: { bind } }).where(eq(hosting.id, site))
+  await f.db
+    .insert(hostname)
+    .values({ hostingId: site, routingOrganizationId: f.orgA, hostname: name })
+  const added = await call(
+    f,
+    'POST',
+    `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+    f.managerCookie,
+    { hostname: name }
+  )
+  assertEquals(added.status, 201, added.text)
+  const doorwayId = (added.body.hostname as { id: string }).id
+  return {
+    id,
+    site,
+    doorwayId,
+    path: `/organizations/${f.orgA}/tunnels/${id}/hostnames/${doorwayId}`,
+  }
+}
+
+test('a name on a datacenter site can also be reached directly, and closed again', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    await f.db
+      .update(hostname)
+      .set({ certificate: 'self_signed' })
+      .where(eq(hostname.hostingId, r.site))
+    const opened = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(opened.status, 200, opened.text)
+    assertEquals((opened.body.hostname as { isLocalOnly: boolean }).isLocalOnly, false)
+    assertEquals(opened.body.needsDeploy, true)
+    const [row] = await f.db.select().from(doorway).where(eq(doorway.id, r.doorwayId))
+    assertEquals(row!.isLocalOnly, false)
+    const closed = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: true })
+    assertEquals(closed.status, 200, closed.text)
+    assertEquals((closed.body.hostname as { isLocalOnly: boolean }).isLocalOnly, true)
+    const again = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: true })
+    assertEquals(again.body.needsDeploy, false)
+  })
+})
+
+test('a name on a public site cannot be opened for direct visitors, and a local one is refused too', async () => {
+  await withFixture(async (f) => {
+    for (const bind of ['public', 'local']) {
+      const r = await reachFixture(f, bind, `${bind}.example.com`)
+      const res = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+      assertEquals(res.status, 409, res.text)
+      assertEquals(res.body.error, 'doorway_bind_not_datacenter')
+      const [row] = await f.db.select().from(doorway).where(eq(doorway.id, r.doorwayId))
+      assertEquals(row!.isLocalOnly, true)
+    }
+  })
+})
+
+test('the reach of a name needs a yes or no, a manager, and a tunnel of this organization', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const bad = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: 'no' })
+    assertEquals(bad.status, 400)
+    assertEquals(
+      (await call(f, 'PATCH', r.path, f.memberCookie, { isLocalOnly: false })).status,
+      403
+    )
+    const other = await call(f, 'PATCH', r.path, f.otherManagerCookie, { isLocalOnly: false })
+    assert(other.status === 403 || other.status === 404, `other org: ${other.status}`)
+    const missing = await call(
+      f,
+      'PATCH',
+      `/organizations/${f.orgA}/tunnels/${r.id}/hostnames/${crypto.randomUUID()}`,
+      f.managerCookie,
+      { isLocalOnly: false }
+    )
+    assertEquals(missing.status, 404)
+    const [row] = await f.db.select().from(doorway).where(eq(doorway.id, r.doorwayId))
+    assertEquals(row!.isLocalOnly, true)
+  })
+})
+
+test('opening a name moves only an untouched default certificate to the direct default', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const set = (certificate: string | null) =>
+      f.db.update(hostname).set({ certificate }).where(eq(hostname.hostingId, r.site))
+    const read = async () =>
+      (await f.db.select().from(hostname).where(eq(hostname.hostingId, r.site)))[0]!.certificate
+    await set('provider_origin')
+    const picked = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(picked.status, 200, picked.text)
+    // A certificate the person picked stays as it is.
+    assertEquals(await read(), 'provider_origin')
+    assertEquals(picked.body.certificateChangedNames, [])
   })
 })
