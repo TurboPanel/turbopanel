@@ -24,7 +24,6 @@ import {
   type NameCertificateOptions,
   type NameReach,
   type CoveringCertificate,
-  DNS_ISSUANCE_FACTS,
   nameCertificateOptions,
 } from '../../features/hostings/name-certificate-options.ts'
 import {
@@ -37,6 +36,7 @@ import {
   isHostnameCertificate,
 } from '../../features/hostings/name-certificate-vocabulary.ts'
 import type { HostnameChoice } from '../../features/servers/hostname-records.ts'
+import { loadDnsIssuance } from '../../features/hostings/dns-issuance.ts'
 import { loadAcmeEnabled } from './letsencrypt-store.ts'
 import { parseOptionalTlsId } from './routes-helpers.ts'
 
@@ -84,7 +84,8 @@ async function parseNameChoiceEntry(
   if (pin.kind === 'error') return { response: pin }
   const tlsId = pin.kind === 'value' ? pin.value : null
   const problem =
-    pinProblem(entry.certificate, tlsId) ?? (await sourceProblem(db, entry.certificate, tlsId))
+    pinProblem(entry.certificate, tlsId) ??
+    (await sourceProblem(db, entry.certificate, tlsId, name))
   if (problem !== null) return { response: invalidNames(c, `${name}: ${problem}`) }
   return { name, choice: { certificate: entry.certificate, tlsId } }
 }
@@ -127,13 +128,27 @@ function pinProblem(certificate: HostnameCertificate, tlsId: string | null): str
 async function sourceProblem(
   db: Db,
   certificate: HostnameCertificate,
-  tlsId: string | null
+  tlsId: string | null,
+  name: string
 ): Promise<string | null> {
   if (tlsId === null) return null
-  const [row] = await db.select({ source: tls.source }).from(tls).where(eq(tls.id, tlsId)).limit(1)
+  const [row] = await db
+    .select({ source: tls.source, metadata: tls.metadata })
+    .from(tls)
+    .where(eq(tls.id, tlsId))
+    .limit(1)
   const expected = certificateForPinSource(row?.source)
   if (certificate === expected) return null
   if (certificate === 'letsencrypt_dns' && row?.source === 'lets_encrypt') return null
+  // A library pick may be a Let's Encrypt row, as the library lists it, when it covers the name.
+  if (certificate === 'library' && row?.source === 'lets_encrypt') {
+    const covered = (row.metadata as { dnsNames?: unknown } | null)?.dnsNames
+    const names = Array.isArray(covered)
+      ? covered.filter((n): n is string => typeof n === 'string')
+      : []
+    if (coversHostname(names, name)) return null
+    return `that certificate does not cover ${name}`
+  }
   return `that certificate cannot be used for ${certificate}`
 }
 
@@ -159,12 +174,55 @@ export function unservedChoice(
   return null
 }
 
+/**
+ * Refuse a request that picks Let's Encrypt via DNS for a name the gate does
+ * not offer it for (the same gate the choice list reads), so a client cannot
+ * pick what the list shows as disabled. A name already stored with that choice
+ * on this site is left alone, and so is a choice that pins an existing
+ * certificate (nothing is ordered). `hostingId` is null on create.
+ */
+export async function refuseUnavailableDnsChoices(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  site: { serviceId: string; hostingId: string | null },
+  choices: ReadonlyMap<string, HostnameChoice>
+): Promise<Response | null> {
+  const picked = [...choices].filter(
+    ([, choice]) => choice.certificate === 'letsencrypt_dns' && choice.tlsId === null
+  )
+  if (picked.length === 0) return null
+  const stored =
+    site.hostingId === null
+      ? []
+      : ((await loadNameCertificates(db, [site.hostingId])).get(site.hostingId) ?? [])
+  const already = new Set(
+    stored.filter((row) => row.certificate === 'letsencrypt_dns').map((row) => row.hostname)
+  )
+  const asked = picked.filter(([name]) => !already.has(name))
+  if (asked.length === 0) return null
+  const gate = await loadDnsIssuance(db, organizationId, [site.serviceId])
+  for (const [name] of asked) {
+    const facts = gate(site.serviceId, name)
+    if (!facts.dnsIssuance) {
+      return c.json(
+        {
+          error: 'dns_issuance_unavailable',
+          message: `${name}: ${facts.dnsUnavailableReason ?? 'ordering over DNS is not available'}`,
+        },
+        409
+      )
+    }
+  }
+  return null
+}
+
 /** One served name as the hosting read shows it. */
 export type HostingNameRead = NameCertificate & {
   certificateOptions: NameCertificateOptions
 }
 
-type HostingForNames = { id: string; options: unknown }
+type HostingForNames = { id: string; serviceId: string; options: unknown }
 
 type DoorwayReach = Map<string, boolean>
 
@@ -242,11 +300,16 @@ export async function loadHostingNameReads(
   hostings: readonly HostingForNames[]
 ): Promise<Map<string, HostingNameRead[]>> {
   const ids = hostings.map((h) => h.id)
-  const [stored, reach, library, acmeEnabled] = await Promise.all([
+  const [stored, reach, library, acmeEnabled, dnsGate] = await Promise.all([
     loadNameCertificates(db, ids),
     loadReach(db, organizationId, ids),
     loadLibraryRows(db, organizationId),
     loadAcmeEnabled(db, organizationId),
+    loadDnsIssuance(
+      db,
+      organizationId,
+      hostings.map((h) => h.serviceId)
+    ),
   ])
   const out = new Map<string, HostingNameRead[]>()
   for (const row of hostings) {
@@ -276,7 +339,7 @@ export async function loadHostingNameReads(
             bind,
             isHttp,
             acmeEnabled,
-            ...DNS_ISSUANCE_FACTS,
+            ...dnsGate(row.serviceId, name.hostname),
             covering,
           }),
         }

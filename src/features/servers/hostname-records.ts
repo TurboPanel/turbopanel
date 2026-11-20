@@ -20,7 +20,8 @@ import {
   resolveHostingProtocol,
 } from '../hostings/hosting-options.ts'
 import { certificateForPinSource } from '../hostings/name-certificates.ts'
-import { DNS_ISSUANCE_FACTS, nameCertificateOptions } from '../hostings/name-certificate-options.ts'
+import { loadDnsIssuance } from '../hostings/dns-issuance.ts'
+import { nameCertificateOptions } from '../hostings/name-certificate-options.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { assertNotPanelHostnames } from '../hostings/panel-hostname-guard.ts'
@@ -58,6 +59,7 @@ export async function replaceHostingHostnames(
   const [row] = await db
     .select({
       tlsId: hosting.tlsId,
+      serviceId: hosting.serviceId,
       options: hosting.options,
       metadata: hosting.metadata,
       pendingAt: hosting.pendingAt,
@@ -87,7 +89,7 @@ export async function replaceHostingHostnames(
   const fallback =
     added.length === 0
       ? null
-      : await newNameFallback(db, added[0]!, routingOrganizationId, row, keepExisting(existing))
+      : await newNameFallback(db, added, routingOrganizationId, row, keepExisting(existing))
   const typed = new Set(hostnames.map((value) => value.toLowerCase()))
   const resolved = new Map<string, HostnameChoice>()
   for (const r of existing) {
@@ -104,7 +106,7 @@ export async function replaceHostingHostnames(
     const own = choices?.get(value)
     const follows =
       !own && !typed.has(value) && partner !== null ? resolved.get(partner) : undefined
-    const choice = own ?? follows ?? fallback!
+    const choice = own ?? follows ?? fallback!(value)
     resolved.set(value, choice)
     return db.insert(hostname).values({
       hostingId,
@@ -144,11 +146,11 @@ function keepExisting(rows: readonly ExistingName[]): ExistingName[] {
  */
 async function newNameFallback(
   db: Db,
-  newName: string,
+  newNames: readonly string[],
   organizationId: string,
-  row: { tlsId: string | null; options: unknown } | undefined,
+  row: { tlsId: string | null; serviceId: string; options: unknown } | undefined,
   existing: readonly ExistingName[]
-): Promise<HostnameChoice> {
+): Promise<(name: string) => HostnameChoice> {
   const pinId = row?.tlsId ?? null
   let pinSource: string | null = null
   if (pinId !== null) {
@@ -169,23 +171,38 @@ async function newNameFallback(
       r.certificate !== null &&
       (r.certificate !== sitePinChoice.certificate || r.tlsId !== sitePinChoice.tlsId)
   )
-  if (sitePin !== null && !mixed) return sitePinChoice
+  if (sitePin !== null && !mixed) return () => sitePinChoice
   const [org] = await db
     .select({ isAcmeEnabled: organization.isAcmeEnabled })
     .from(organization)
     .where(eq(organization.id, organizationId))
     .limit(1)
   const options = parseHostingOptions(row?.options)
-  const { default: certificate } = nameCertificateOptions({
-    hostname: newName,
-    reach: 'direct',
+  // One read for every new name: the gate decides each name's DNS option.
+  const dnsGate = await loadDnsIssuance(db, organizationId, row ? [row.serviceId] : [])
+  const common = {
+    reach: 'direct' as const,
     bind: resolveHostingBind(options),
     isHttp: resolveHostingProtocol(options) === 'http',
     acmeEnabled: org?.isAcmeEnabled === true,
-    ...DNS_ISSUANCE_FACTS,
     covering: [],
-  })
-  return { certificate, tlsId: null }
+  }
+  const byName = new Map(
+    newNames.map((name) => [
+      name,
+      {
+        certificate: nameCertificateOptions({
+          ...common,
+          hostname: name,
+          ...(row
+            ? dnsGate(row.serviceId, name)
+            : { dnsIssuance: false, dnsUnavailableReason: 'No server serves this name yet' }),
+        }).default,
+        tlsId: null,
+      } satisfies HostnameChoice,
+    ])
+  )
+  return (name) => byName.get(name)!
 }
 
 /**
