@@ -25,6 +25,7 @@ import {
   tls,
   tunnel,
 } from '../../db/schema.ts'
+import { compareText } from './order.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
 import {
   certificateCoversAll,
@@ -208,7 +209,7 @@ export async function loadVerifiedNames(
   return facts
     .filter((f) => nameIsVerified(f, now))
     .map((f) => f.hostname)
-    .toSorted()
+    .toSorted(compareText)
 }
 
 /** Hostnames of every tunnel of the organization (any name an origin certificate may be kept for). */

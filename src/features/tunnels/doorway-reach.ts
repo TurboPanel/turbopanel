@@ -77,18 +77,23 @@ async function moveUntouchedNames(
   const stored = (await loadNameCertificates(db, [site.id])).get(site.id) ?? []
   const sibling = wwwSiblingHostname(row.hostname)
   const names = stored.filter((n) => n.hostname === row.hostname || n.hostname === sibling)
-  const moved: string[] = []
-  for (const name of names) {
+  const moves = names.flatMap((name) => {
     const facts = { ...common, hostname: name.hostname }
     const before = defaultFor(facts, 'tunnel')
     const after = defaultFor(facts, 'tunnel_and_direct')
-    if (name.certificate !== before || before === after) continue
-    await db
-      .update(hostname)
-      .set({ certificate: after, tlsId: null })
-      .where(and(eq(hostname.hostingId, site.id), eq(hostname.hostname, name.hostname)))
-    moved.push(name.hostname)
-  }
+    return name.certificate === before && before !== after
+      ? [{ hostname: name.hostname, certificate: after }]
+      : []
+  })
+  await Promise.all(
+    moves.map((move) =>
+      db
+        .update(hostname)
+        .set({ certificate: move.certificate, tlsId: null })
+        .where(and(eq(hostname.hostingId, site.id), eq(hostname.hostname, move.hostname)))
+    )
+  )
+  const moved = moves.map((move) => move.hostname)
   if (moved.length > 0) await syncHostingPin(db, site.id)
   return moved
 }
