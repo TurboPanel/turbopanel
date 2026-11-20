@@ -38,7 +38,7 @@ import {
   resetDenoMetricsChartCacheForTests,
 } from '../../daemon/metrics/query/cache.ts'
 import { MAX_METRICS_POINTS } from '../../daemon/metrics/query/resolution.ts'
-import { recordTopologyGeneration } from '../../features/servers/server-topology-records.ts'
+import { recordTopologyReport } from '../../features/servers/server-topology-records.ts'
 import {
   cacheLiveSample,
   isServerLiveSessionActive,
@@ -720,9 +720,7 @@ it('GET /servers/:id/metrics/series does not serve a stale cache entry across a 
       // Record a new topology generation directly (a sensor/NIC
       // reassignment) — not via the PUT route, which needs a connected
       // daemon for identity validation; this is purely about cache scoping.
-      await recordTopologyGeneration(db, serverId, {
-        generation: 1,
-        bootGeneration: 1,
+      await recordTopologyReport(db, serverId, {
         snapshot: {
           networks: [],
           filesystems: [],
@@ -788,9 +786,7 @@ it('GET /servers/:id/metrics/series does not serve a stale cache entry after the
     async ({ db, app, serverId, cookie }) => {
       const url = `/servers/${serverId}/metrics/series?from=${FROM}&to=${TO}&metrics=host.cpu.busyPercent`
       const record = (memoryTotalBytes: number) =>
-        recordTopologyGeneration(db, serverId, {
-          generation: 1,
-          bootGeneration: 1,
+        recordTopologyReport(db, serverId, {
           snapshot: emptyTopologySnapshot(memoryTotalBytes),
           appliedAt: new Date().toISOString(),
         })
@@ -901,9 +897,7 @@ it('GET /servers/metrics/latest requests only the v5 fleet host metric set', asy
       // Topology capacity join: memoryUsedPercent/swapUsedPercent need the
       // recorded totals — the fleet route batches this in one query
       // regardless of visible-server count (see AGENTS.md's O(1) invariant).
-      await recordTopologyGeneration(db, serverId, {
-        generation: 1,
-        bootGeneration: 1,
+      await recordTopologyReport(db, serverId, {
         snapshot: {
           networks: [],
           filesystems: [],
@@ -1175,9 +1169,7 @@ it('GET /servers/:id/metrics/series fans out per-entity-family selectors and att
 
   await withMetricsFixtures(
     async ({ db, app, serverId, cookie }) => {
-      await recordTopologyGeneration(db, serverId, {
-        generation: 1,
-        bootGeneration: 1,
+      await recordTopologyReport(db, serverId, {
         snapshot: {
           // Two uplinks: eth0/eth1 claim the two normal-NIC slots, eth2 pages
           // as a standalone `network` entity — see `topology-slot-mapping.ts`.
@@ -1244,9 +1236,7 @@ it('GET /servers/:id/metrics/series allows a slot-mapped NIC as a standalone net
       // eth0 is the sole uplink, so it resolves to NIC slot 1 — no longer
       // rejected: Cloudflare reconstructs its rx/tx from host.io, and DuckDB
       // already stored the full row (see EntitySeriesQuery's doc comment).
-      await recordTopologyGeneration(db, serverId, {
-        generation: 1,
-        bootGeneration: 1,
+      await recordTopologyReport(db, serverId, {
         snapshot: {
           networks: [
             {
@@ -1290,9 +1280,7 @@ it('GET /servers/:id/metrics/series still rejects a TurboFabric mesh device as a
   await withMetricsFixtures(async ({ db, app, serverId, cookie }) => {
     // Two uplinks fill the normal NIC slots, so the third device is
     // classified fabric — no reconstruction path on either backend.
-    await recordTopologyGeneration(db, serverId, {
-      generation: 1,
-      bootGeneration: 1,
+    await recordTopologyReport(db, serverId, {
       snapshot: {
         networks: [
           { deviceId: 'eth0', kind: 'uplink', name: 'eth0', identity: {} },
@@ -2485,9 +2473,7 @@ it('PUT /servers/:id/metrics/hardware-profile persists an explicit unassigned di
 it('PUT /servers/:id/metrics/hardware-profile rejects a topology-id pin not present in the recorded topology, without needing the daemon online', async () => {
   await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
     // No markServerConnected — topology-id validation never requires a live round trip.
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: {
         networks: [
           { deviceId: 'mac:aa:bb:cc:dd:ee:ff', kind: 'uplink' },
@@ -2524,9 +2510,7 @@ it('PUT /servers/:id/metrics/hardware-profile rejects a topology-id pin not pres
 
 it('PUT /servers/:id/metrics/hardware-profile persists a topology-id pin that matches the recorded topology, without needing the daemon online', async () => {
   await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: {
         networks: [{ deviceId: 'mac:aa:bb:cc:dd:ee:ff', kind: 'uplink' }],
         filesystems: [{ filesystemId: 'fs:dev:/dev/sda1' }],

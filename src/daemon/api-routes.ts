@@ -113,7 +113,7 @@ import {
 } from '../features/tiers/self-hosted-grant-records.ts'
 import { loadServerLicenseTierJoin } from '../features/tiers/tier-enforcement.ts'
 import {
-  getLatestTopologyGeneration,
+  getLatestServerTopology,
   markTopologyResyncRequested,
   topologyChurnLimitedRecently,
 } from '../features/servers/server-topology-records.ts'
@@ -1229,7 +1229,7 @@ async function flagOverPlan(
  * `POST /api/daemon/v1/metrics`. Resolves the effective v5 metrics
  * capability plan from persisted server/org state (replacing the
  * conservative default-only resolution) and, alongside it, checks whether
- * the sample matches the topology recorded via `recordTopologyGeneration`
+ * the sample matches the topology recorded via `recordTopologyReport`
  * (`sampleMatchesRecordedTopology`) — a sample that does not stamps
  * `markTopologyResyncRequested` (awaited, because on Workers the request's
  * client is closed once the handler returns; a failure logs and never blocks
@@ -1259,7 +1259,7 @@ export async function resolveIngestPlanAndReconcileTopology(
   const durable = isDurableSample(sample)
   try {
     const [latestTopology, planRow] = await Promise.all([
-      getLatestTopologyGeneration(db, serverId),
+      getLatestServerTopology(db, serverId),
       loadIngestServerPlanRow(db, serverId, deployment),
     ])
 

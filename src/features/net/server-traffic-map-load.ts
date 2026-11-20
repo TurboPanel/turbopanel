@@ -25,7 +25,7 @@ import {
 } from './server-traffic-map.ts'
 import { computeSlotMapping } from '../../contracts/topology-slot-mapping.ts'
 import { EMPTY_TOPOLOGY_OVERRIDES, type TopologySnapshot } from '../../contracts/topology-types.ts'
-import { getLatestTopologyGeneration } from '../servers/server-topology-records.ts'
+import { getLatestServerTopology } from '../servers/server-topology-records.ts'
 import { loadServerHardwareProfile } from '../servers/hardware-profile.ts'
 
 /** Peers shown per server; keeps the response and the queries bounded. */
@@ -76,7 +76,7 @@ async function loadNicMetrics(
 ): Promise<Map<string, TrafficMapNicMetrics>> {
   const out = new Map<string, TrafficMapNicMetrics>()
   try {
-    const latest = await getLatestTopologyGeneration(db, serverId)
+    const latest = await getLatestServerTopology(db, serverId)
     if (!latest) return out
     const snapshot = latest.snapshot as TopologySnapshot
     const { hardwareProfile } = await loadServerHardwareProfile(db, serverId)

@@ -98,8 +98,8 @@ import {
   type TopologyIdValidationSnapshot,
 } from './metrics-routes-helpers.ts'
 import {
-  getLatestTopologyGeneration,
-  getLatestTopologyGenerations,
+  getLatestServerTopology,
+  getLatestServerTopologies,
 } from '../../features/servers/server-topology-records.ts'
 
 /** Fixed lookback for the org servers overview usage strip/bars (~1 sample/min). */
@@ -406,7 +406,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
     // Batched — one query for every visible server's latest topology
     // generation, never N — keeps this route O(1) in server count (see
     // AGENTS.md's fleet-read invariant).
-    const topologyByServer = await getLatestTopologyGenerations(db, visibleIds)
+    const topologyByServer = await getLatestServerTopologies(db, visibleIds)
     const capacitiesByServer = new Map(
       [...topologyByServer].map(([serverId, record]) => [
         serverId,
@@ -463,7 +463,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
 
     const { hardwareProfile, organizationId, serverOptions, machineClass } =
       await loadServerHardwareProfile(db, serverId)
-    const latestGeneration = await getLatestTopologyGeneration(db, serverId)
+    const latestGeneration = await getLatestServerTopology(db, serverId)
     const context = buildTopologyContext(latestGeneration, hardwareProfile)
 
     const fabricError = fabricNetworkSelectionError(selectors, context.inventory)
@@ -590,7 +590,7 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
 
     const { hardwareProfile, organizationId, serverOptions, machineClass } =
       await loadServerHardwareProfile(db, serverId)
-    const latestGeneration = await getLatestTopologyGeneration(db, serverId)
+    const latestGeneration = await getLatestServerTopology(db, serverId)
 
     const cacheKey = metricsChartCacheKey({
       serverId,
@@ -1195,7 +1195,7 @@ async function validateHardwareProfileTopologyIds(
   update: ServerHardwareProfileUpdate,
   deployment: MetricsDeploymentKind
 ): Promise<HardwareProfileValidationError | null> {
-  const latest = await getLatestTopologyGeneration(db, serverId)
+  const latest = await getLatestServerTopology(db, serverId)
   const snapshot = latest?.snapshot as TopologyIdValidationSnapshot | undefined
   const invalidField = findInvalidTopologyIdField(update, snapshot)
   if (invalidField === 'nicSlotDeviceIds') {

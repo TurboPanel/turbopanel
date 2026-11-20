@@ -2166,25 +2166,29 @@ it('validateDaemonInboundFrame accepts a topology-report', () => {
     JSON.stringify({
       type: 'topology-report',
       at: VALID_AT,
-      generation: 1,
-      bootGeneration: 0,
       snapshot: { devices: [] },
     })
   )
   assertEquals(result.ok, true)
 })
 
-it('validateDaemonInboundFrame accepts a topology-report without the deprecated generation numbers', () => {
+it('validateDaemonInboundFrame accepts a topology-report and ignores generation numbers an older daemon still sends', () => {
   const result = validateDaemonInboundFrame(
     JSON.stringify({ type: 'topology-report', at: VALID_AT, snapshot: { networks: [] } })
   )
   assertEquals(result.ok, true)
-  // A number that is sent still has to fit.
+  // The retired numbers are dropped, whatever they hold.
   assertEquals(
     validateDaemonInboundFrame(
-      JSON.stringify({ type: 'topology-report', at: VALID_AT, generation: 'one', snapshot: {} })
+      JSON.stringify({
+        type: 'topology-report',
+        at: VALID_AT,
+        generation: 'one',
+        bootGeneration: -1,
+        snapshot: {},
+      })
     ).ok,
-    false
+    true
   )
 })
 
@@ -2192,32 +2196,10 @@ it('validateDaemonInboundFrame rejects topology-report field shapes', () => {
   const base = {
     type: 'topology-report',
     at: VALID_AT,
-    generation: 1,
-    bootGeneration: 0,
     snapshot: {},
   }
   assertEquals(
     validateDaemonInboundFrame(JSON.stringify({ ...base, at: 'not-a-timestamp' })).ok,
-    false
-  )
-  assertEquals(validateDaemonInboundFrame(JSON.stringify({ ...base, generation: -1 })).ok, false)
-  // A generation the table cannot store (a Postgres integer) is refused, not sent to the database.
-  for (const huge of [2_147_483_648, 1e300, Number.MAX_SAFE_INTEGER]) {
-    assertEquals(
-      validateDaemonInboundFrame(JSON.stringify({ ...base, generation: huge })).ok,
-      false
-    )
-    assertEquals(
-      validateDaemonInboundFrame(JSON.stringify({ ...base, bootGeneration: huge })).ok,
-      false
-    )
-  }
-  assertEquals(
-    validateDaemonInboundFrame(JSON.stringify({ ...base, generation: 2_147_483_647 })).ok,
-    true
-  )
-  assertEquals(
-    validateDaemonInboundFrame(JSON.stringify({ ...base, bootGeneration: 1.5 })).ok,
     false
   )
   assertEquals(
