@@ -2190,14 +2190,8 @@ export function validateAcmeDnsPublishFields(record: Record<string, unknown>): s
   )
 }
 
-/** Shape check for `acme-dns-remove` (daemon to control plane). */
-export function validateAcmeDnsRemoveFields(record: Record<string, unknown>): string | null {
-  return firstProblem(
-    validateAcmeRequestId(record.requestId),
-    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
-    acmeForbiddenKey(record)
-  )
-}
+/** Shape check for `acme-dns-remove`: the same request id and time as the end of a forward. */
+export const validateAcmeDnsRemoveFields = validateAcmeProofForwardEndFields
 
 /** Shape check for `acme-dns-published` (control plane to daemon). */
 export function validateAcmeDnsPublishedFields(record: Record<string, unknown>): string | null {
@@ -3034,18 +3028,6 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateRepoKeyChangedFields(record)
     case 'topology-report':
       return validateTopologyReportFields(record)
-    case 'acme-issuance-event':
-    case 'instance-acme-issuance-event':
-      return validateAcmeIssuanceEventFields(record)
-    case 'acme-issue-event':
-      return validateAcmeIssueEventFields(record)
-    case 'acme-proof-forward-ready':
-    case 'acme-proof-forward-failed':
-      return validateAcmeProofForwardReportFields(record)
-    case 'acme-dns-publish':
-      return validateAcmeDnsPublishFields(record)
-    case 'acme-dns-remove':
-      return validateAcmeDnsRemoveFields(record)
     case 'backup-run-report':
       return validateBackupRunReportFields(record)
     case 'backup-copy-report':
@@ -3076,8 +3058,30 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateUpdateProgressFields(record)
     case 'command-progress':
       return validateCommandProgressFields(record)
+    default: {
+      const acme = validateAcmeInboundFields(record)
+      return acme === undefined ? `disallowed type ${String(record.type)}` : acme
+    }
+  }
+}
+
+/** The certificate frames a daemon sends; `undefined` when the type is not one of them. */
+function validateAcmeInboundFields(record: Record<string, unknown>): string | null | undefined {
+  switch (record.type) {
+    case 'acme-issuance-event':
+    case 'instance-acme-issuance-event':
+      return validateAcmeIssuanceEventFields(record)
+    case 'acme-issue-event':
+      return validateAcmeIssueEventFields(record)
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
+      return validateAcmeProofForwardReportFields(record)
+    case 'acme-dns-publish':
+      return validateAcmeDnsPublishFields(record)
+    case 'acme-dns-remove':
+      return validateAcmeDnsRemoveFields(record)
     default:
-      return `disallowed type ${String(record.type)}`
+      return undefined
   }
 }
 

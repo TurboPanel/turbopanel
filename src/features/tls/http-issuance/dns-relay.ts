@@ -136,7 +136,7 @@ function sentence(err: unknown): string {
 }
 
 function refusal(located: Located | null, serverId: string): string | null {
-  if (!located || located.issuingServerId !== serverId) return 'This order is not known here.'
+  if (located?.issuingServerId !== serverId) return 'This order is not known here.'
   if (!located.open) return 'This order is no longer open.'
   if (!located.dns) return 'This order does not use DNS records.'
   return null
@@ -225,15 +225,21 @@ async function waitVisible(
   const now = deps.now ?? (() => new Date())
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)))
   const until = now().getTime() + (deps.readbackTimeoutMs ?? DNS_READBACK_TIMEOUT_MS)
-  for (;;) {
-    try {
-      if (await deps.confirm({ dns, ...made })) return true
-    } catch {
-      // A failed read is the same as not visible yet.
-    }
+  const attempt = async (): Promise<boolean> => {
+    const seen = await Promise.resolve()
+      .then(() => deps.confirm({ dns, ...made }))
+      .catch(() => false)
+    if (seen) return true
     if (now().getTime() >= until) return false
     await sleep(deps.readbackPollMs ?? DNS_READBACK_POLL_MS)
+    return attempt()
   }
+  return attempt()
+}
+
+/** Run the steps one after another; each one needs the one before it to be done. */
+function inOrder<T>(items: readonly T[], step: (item: T) => Promise<void>): Promise<void> {
+  return items.reduce((chain, item) => chain.then(() => step(item)), Promise.resolve())
 }
 
 async function publish(
@@ -265,24 +271,23 @@ async function publish(
   const zones = [first.zone]
   await rememberAccount(deps.db, located.rowId, { carrierId: carrier.id, zones })
   const placed: { zoneId: string; name: string; value: string }[] = []
+  const findOtherZone = async (base: string) => {
+    const found = await findZoneInOrganization(ctx, located.organizationId, base)
+    if (!found || found.carrier.id !== carrier.id) {
+      throw new TunnelProviderError(
+        'forbidden',
+        'No token on this account can edit DNS records for the zone',
+        null
+      )
+    }
+    zones.push(found.zone)
+    return found.zone
+  }
   try {
-    for (const record of records) {
+    await inOrder(records, async (record) => {
       const base = record.name.slice('_acme-challenge.'.length)
       const known = zoneFor(zones, base)
-      const zone =
-        known ??
-        (await (async () => {
-          const found = await findZoneInOrganization(ctx, located.organizationId, base)
-          if (!found || found.carrier.id !== carrier.id) {
-            throw new TunnelProviderError(
-              'forbidden',
-              'No token on this account can edit DNS records for the zone',
-              null
-            )
-          }
-          zones.push(found.zone)
-          return found.zone
-        })())
+      const zone = known ?? (await findOtherZone(base))
       const where = await writeTarget(ctx, located.organizationId, carrier, {
         name: record.name,
         zoneId: zone.id,
@@ -301,8 +306,8 @@ async function publish(
         createdAt: now().toISOString(),
       })
       placed.push({ zoneId: where.zoneId, name: where.name, value: record.value })
-    }
-    for (const made of placed) {
+    })
+    await inOrder(placed, async (made) => {
       const dns = await dnsFor(
         ctx,
         { organizationId: located.organizationId },
@@ -316,7 +321,7 @@ async function publish(
           null
         )
       }
-    }
+    })
   } catch (err) {
     await removeListed(deps, located).catch(() => undefined)
     throw err
@@ -377,7 +382,7 @@ export async function handleDnsRemove(
   message: AcmeDnsRemoveMessage
 ): Promise<void> {
   const located = await locate(deps.db, serverId, message.requestId)
-  if (!located || located.issuingServerId !== serverId) return
+  if (located?.issuingServerId !== serverId) return
   await removeListed(deps, located)
 }
 
