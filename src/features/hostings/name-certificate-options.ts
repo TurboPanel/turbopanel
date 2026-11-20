@@ -59,7 +59,13 @@ export type NameCertificateOptions = {
   options: NameCertificateOption[]
 }
 
-function httpReason(facts: NameOptionFacts): string | null {
+/**
+ * Why a name cannot be ordered over HTTP, or null when it can. The save of a
+ * name set to Let's Encrypt via HTTP asks the same question before it orders.
+ */
+export function httpReason(
+  facts: Pick<NameOptionFacts, 'hostname' | 'acmeEnabled' | 'isHttp' | 'bind'>
+): string | null {
   if (!facts.acmeEnabled) return "Let's Encrypt is not turned on for this organization"
   if (!facts.isHttp) return 'only web sites can use a public certificate'
   if (facts.bind !== 'public') return 'the site is not on a public address'

@@ -6,7 +6,7 @@
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { hostname, hosting, organization, tls } from '../../db/schema.ts'
+import { hostname, hosting, tls } from '../../db/schema.ts'
 import {
   letsEncryptNames,
   readPendingLetsEncrypt,
@@ -172,11 +172,6 @@ async function newNameFallback(
       (r.certificate !== sitePinChoice.certificate || r.tlsId !== sitePinChoice.tlsId)
   )
   if (sitePin !== null && !mixed) return () => sitePinChoice
-  const [org] = await db
-    .select({ isAcmeEnabled: organization.isAcmeEnabled })
-    .from(organization)
-    .where(eq(organization.id, organizationId))
-    .limit(1)
   const options = parseHostingOptions(row?.options)
   // One read for every new name: the gate decides each name's DNS option.
   const dnsGate = await loadDnsIssuance(db, organizationId, row ? [row.serviceId] : [])
@@ -184,7 +179,7 @@ async function newNameFallback(
     reach: 'direct' as const,
     bind: resolveHostingBind(options),
     isHttp: resolveHostingProtocol(options) === 'http',
-    acmeEnabled: org?.isAcmeEnabled === true,
+    acmeEnabled: dnsGate.acmeEnabled,
     covering: [],
   }
   const byName = new Map(

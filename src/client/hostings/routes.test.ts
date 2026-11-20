@@ -28,6 +28,11 @@ import {
 } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerHostingRoutes } from './routes.ts'
+import { selectHttpIssuanceCandidates } from '../tls/http-issuance-sweep.ts'
+import {
+  withHttpIssuanceState,
+  newHttpIssuanceState,
+} from '../../features/tls/http-issuance/state.ts'
 import { registerHostingComposeReleaseRoute } from './compose-release-route.ts'
 import {
   removeInstanceHostname,
@@ -1420,3 +1425,178 @@ test('hostings cannot use a panel hostname: create, update, spellings, and the r
     }
   })
 })
+
+async function organizationCertificates(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string
+) {
+  return await db
+    .select({ id: tls.id, metadata: tls.metadata })
+    .from(tls)
+    .where(eq(tls.organizationId, organizationId))
+}
+
+async function nameRows(db: ReturnType<typeof createDenoDb>, hostingId: string) {
+  const rows = await db
+    .select({
+      hostname: hostname.hostname,
+      certificate: hostname.certificate,
+      tlsId: hostname.tlsId,
+    })
+    .from(hostname)
+    .where(eq(hostname.hostingId, hostingId))
+  return new Map(rows.map((row) => [row.hostname, row]))
+}
+
+test("PATCH /hostings orders Let's Encrypt for a name set to HTTP, once, and leaves other names alone", async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    await db
+      .update(organization)
+      .set({ isAcmeEnabled: true })
+      .where(eq(organization.id, organizationId))
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const [library] = await db
+      .insert(tls)
+      .values({
+        organizationId,
+        source: 'lets_encrypt',
+        status: 'ready',
+        name: 'kept',
+        metadata: { dnsNames: ['c.example.com'] },
+      })
+      .returning({ id: tls.id })
+    try {
+      const hostingId = await createHostingWithNames(
+        call,
+        serviceId,
+        ['a', 'b', 'c'].map((label) => ({
+          hostname: `${label}.example.com`,
+          certificate: 'self_signed',
+        }))
+      )
+      const choose = (a: string, c: 'library' | 'letsencrypt_http') =>
+        call('PATCH', `/hostings/${hostingId}`, {
+          names: [
+            { hostname: 'a.example.com', certificate: a },
+            { hostname: 'b.example.com', certificate: 'self_signed' },
+            c === 'library'
+              ? { hostname: 'c.example.com', certificate: 'library', tlsId: library!.id }
+              : { hostname: 'c.example.com', certificate: c },
+          ],
+        })
+      assertEquals((await choose('self_signed', 'library')).status, 200)
+      assertEquals(
+        (await organizationCertificates(db, organizationId)).map((row) => row.id),
+        [library!.id],
+        'a pinned library row and self-signed names order nothing'
+      )
+
+      assertEquals((await choose('letsencrypt_http', 'library')).status, 200)
+      const [order, ...others] = (await organizationCertificates(db, organizationId)).filter(
+        (row) => row.id !== library!.id
+      )
+      assertEquals(others, [])
+      assertEquals((order!.metadata as { dnsNames: string[] }).dnsNames, ['a.example.com'])
+      const names = await nameRows(db, hostingId)
+      assertEquals(names.get('a.example.com')?.tlsId, order!.id)
+      assertEquals(names.get('b.example.com')?.tlsId, null)
+      assertEquals(names.get('b.example.com')?.certificate, 'self_signed')
+      assertEquals(names.get('c.example.com')?.tlsId, library!.id)
+
+      // The sweep picks the new order up.
+      const now = new Date()
+      const picked = await selectHttpIssuanceCandidates(db, now, 1000)
+      assertEquals(
+        picked.some((row) => row.id === order!.id),
+        true
+      )
+
+      // A second save of the same choice orders nothing more.
+      assertEquals((await choose('letsencrypt_http', 'library')).status, 200)
+      assertEquals(
+        (await organizationCertificates(db, organizationId)).length,
+        2,
+        'one library row and one order'
+      )
+      assertEquals((await nameRows(db, hostingId)).get('a.example.com')?.tlsId, order!.id)
+
+      // Moving away while the order is open keeps the row but the sweep stops picking it up.
+      await db
+        .update(tls)
+        .set({
+          metadata: withHttpIssuanceState(
+            order!.metadata,
+            newHttpIssuanceState({
+              issuingServerId: 'a',
+              requestId: 'req_open',
+              startedAt: now.toISOString(),
+              startByAt: new Date(now.getTime() + 60_000).toISOString(),
+            })
+          ),
+        })
+        .where(eq(tls.id, order!.id))
+      assertEquals((await choose('self_signed', 'library')).status, 200)
+      assertEquals((await nameRows(db, hostingId)).get('a.example.com')?.tlsId, null)
+      const after = await selectHttpIssuanceCandidates(db, now, 1000)
+      assertEquals(
+        after.some((row) => row.id === order!.id),
+        false
+      )
+
+      // Moving away before the order began removes the row.
+      assertEquals((await choose('letsencrypt_http', 'library')).status, 200)
+      const [again] = (await organizationCertificates(db, organizationId)).filter(
+        (row) => row.id !== library!.id
+      )
+      assertEquals(again!.id, order!.id, 'choosing it again finds the same row')
+      await db.update(tls).set({ metadata: order!.metadata }).where(eq(tls.id, order!.id))
+      assertEquals((await choose('self_signed', 'library')).status, 200)
+      assertEquals(
+        (await organizationCertificates(db, organizationId)).map((row) => row.id),
+        [library!.id]
+      )
+    } finally {
+      await db.delete(hosting).where(eq(hosting.serviceId, serviceId))
+      await db.delete(audit).where(eq(audit.organizationId, organizationId))
+      await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    }
+  })
+})
+
+test('POST /hostings orders a name created with the HTTP choice, and not when the check refuses it', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    try {
+      const names = [{ hostname: 'a.example.com', certificate: 'letsencrypt_http' }]
+      const off = await createHostingWithNames(call, serviceId, names)
+      assertEquals(await organizationCertificates(db, organizationId), [], "Let's Encrypt is off")
+      assertEquals((await nameRows(db, off)).get('a.example.com')?.tlsId, null)
+
+      await db
+        .update(organization)
+        .set({ isAcmeEnabled: true })
+        .where(eq(organization.id, organizationId))
+      const on = await createHostingWithNames(call, serviceId, [
+        { hostname: 'b.example.com', certificate: 'letsencrypt_http' },
+      ])
+      const rows = await organizationCertificates(db, organizationId)
+      assertEquals(rows.length, 1)
+      assertEquals((await nameRows(db, on)).get('b.example.com')?.tlsId, rows[0]!.id)
+    } finally {
+      await db.delete(hosting).where(eq(hosting.serviceId, serviceId))
+      await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    }
+  })
+})
+
+async function createHostingWithNames(call: HostingCall, serviceId: string, names: unknown[]) {
+  const hostnames = names.map((entry) => (entry as { hostname: string }).hostname)
+  const res = await call('POST', '/hostings', {
+    serviceId,
+    name: 'Site',
+    options: { hostnames },
+    names,
+  })
+  assertEquals(res.status, 200)
+  return ((await res.json()) as { id: string }).id
+}

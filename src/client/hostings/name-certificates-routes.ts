@@ -124,6 +124,12 @@ function pinProblem(certificate: HostnameCertificate, tlsId: string | null): str
   return null
 }
 
+/** The names a Let's Encrypt row covers (empty when it lists none). */
+function coveredNames(metadata: unknown): string[] {
+  const covered = (metadata as { dnsNames?: unknown } | null)?.dnsNames
+  return Array.isArray(covered) ? covered.filter((n): n is string => typeof n === 'string') : []
+}
+
 /** A pinned certificate must be of the kind the choice names (an origin pair for the origin choice, and so on). */
 async function sourceProblem(
   db: Db,
@@ -133,20 +139,22 @@ async function sourceProblem(
 ): Promise<string | null> {
   if (tlsId === null) return null
   const [row] = await db
-    .select({ source: tls.source, metadata: tls.metadata })
+    .select({ source: tls.source, status: tls.status, metadata: tls.metadata })
     .from(tls)
     .where(eq(tls.id, tlsId))
     .limit(1)
   const expected = certificateForPinSource(row?.source)
   if (certificate === expected) return null
-  if (certificate === 'letsencrypt_dns' && row?.source === 'lets_encrypt') return null
-  // A library pick may be a Let's Encrypt row, as the library lists it, when it covers the name.
-  if (certificate === 'library' && row?.source === 'lets_encrypt') {
-    const covered = (row.metadata as { dnsNames?: unknown } | null)?.dnsNames
-    const names = Array.isArray(covered)
-      ? covered.filter((n): n is string => typeof n === 'string')
-      : []
-    if (coversHostname(names, name)) return null
+  // A Let's Encrypt row is picked as a library certificate or as the DNS choice's pair: it must
+  // be one the library lists (ready or automatic) and must cover the name.
+  const pickedLetsEncrypt =
+    row?.source === 'lets_encrypt' &&
+    (certificate === 'library' || certificate === 'letsencrypt_dns')
+  if (pickedLetsEncrypt) {
+    if (row.status !== 'ready' && row.status !== 'automatic') {
+      return 'that certificate is not ready to use'
+    }
+    if (coversHostname(coveredNames(row.metadata), name)) return null
     return `that certificate does not cover ${name}`
   }
   return `that certificate cannot be used for ${certificate}`

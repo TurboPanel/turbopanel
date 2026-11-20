@@ -219,7 +219,7 @@ test('a new name gets DNS as its default only when the gate allows it, name by n
   })
 })
 
-test('the gate reads the services it was asked about in one pass', async () => {
+test('the gate answers each service it was asked about on its own servers', async () => {
   await withGate(async (s) => {
     await s.db
       .update(organization)
