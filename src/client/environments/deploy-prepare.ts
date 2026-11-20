@@ -2954,7 +2954,7 @@ function deployHashInputs(parts: {
   nativeAppNodeVersions?: NativeAppNodeVersionView[]
   nativeAppDenoVersions?: NativeAppDenoVersionView[]
   sourceMaterial: EnvironmentDeploySource[]
-  composeCheckout?: EnvironmentDeployComposeCheckout
+  composeCheckout?: EnvironmentDeployComposeCheckout | undefined
   dockerExternalNetworks: string[]
   dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
   fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -3024,7 +3024,7 @@ async function toPreparedDeployResult(
     nativeAppNodeVersions?: NativeAppNodeVersionView[]
     nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
-    composeCheckout?: EnvironmentDeployComposeCheckout
+    composeCheckout?: EnvironmentDeployComposeCheckout | undefined
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
     fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -3491,6 +3491,21 @@ async function resolveManagedNetworkHostName(
     organizationId,
   })
   return network.hostName
+}
+
+/**
+ * The local source material with its build environment and build limits set.
+ * The commit hash never includes build limits, so changing a limit does not
+ * make a deploy look new.
+ */
+function sourceMaterialWithBuildSettings(
+  localSourceMaterial: readonly EnvironmentDeploySource[],
+  buildAssignments: Parameters<typeof withBuildEnv>[1],
+  levels: Parameters<typeof attachBuildLimits>[1]
+): EnvironmentDeploySource[] | DeployPrepareError {
+  const built = withBuildEnv(localSourceMaterial, buildAssignments)
+  if (!Array.isArray(built)) return toApplyVariablesPrepareError(built)
+  return attachBuildLimits(built, levels)
 }
 
 /** A prepare step answered with a refusal (a `Response` or a `DeployPrepareError`) instead of its value. */
@@ -4190,24 +4205,24 @@ export async function prepareDeployCompose(
   })
   if (isPrepareStop(edge)) return edge
 
-  const builtSources = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
-  if (!Array.isArray(builtSources)) return toApplyVariablesPrepareError(builtSources)
-  // The commit hash never includes build limits, so changing a limit does not
-  // make a deploy look new.
-  const sourceMaterial = attachBuildLimits(builtSources, {
-    organizationOptions: orgRow?.options,
-    serverOptions: serverRow?.options,
-    serviceOptionsByComposeName: pipeline.optionsByComposeName,
-  })
+  const sourceMaterial = sourceMaterialWithBuildSettings(
+    localSourceMaterial,
+    withVariables.buildAssignments,
+    {
+      organizationOptions: orgRow?.options,
+      serverOptions: serverRow?.options,
+      serviceOptionsByComposeName: pipeline.optionsByComposeName,
+    }
+  )
+  if (isPrepareStop(sourceMaterial)) return sourceMaterial
 
   const composeCheckout = await resolveDeployComposeCheckout(c, db, {
     mode,
     organizationId: params.organizationId,
     serverId: params.serverId,
-    composeBase: params.composeBase ?? null,
+    composeBase: params.composeBase,
   })
-  if (composeCheckout instanceof Response) return composeCheckout
-  if (composeCheckout !== undefined && 'kind' in composeCheckout) return composeCheckout
+  if (isPrepareStop(composeCheckout)) return composeCheckout
 
   const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
     c,
@@ -4256,7 +4271,7 @@ export async function prepareDeployCompose(
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial,
-    ...(composeCheckout === undefined ? {} : { composeCheckout }),
+    composeCheckout,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),

@@ -38,7 +38,7 @@ export type DeployComposeCheckoutParams = {
   organizationId: string
   serverId: string
   /** The Base this deploy used; `null` when the project does not follow a file. */
-  composeBase: ComposeBaseRecord | null
+  composeBase?: ComposeBaseRecord | null | undefined
 }
 
 /**
@@ -51,7 +51,7 @@ export async function resolveDeployComposeCheckout(
   params: DeployComposeCheckoutParams
 ): Promise<EnvironmentDeployComposeCheckout | DeploySourcePrepareError | Response | undefined> {
   const { composeBase } = params
-  if (composeBase === null || params.mode === 'preview') return undefined
+  if (!composeBase || params.mode === 'preview') return undefined
 
   const [row] = await db
     .select({

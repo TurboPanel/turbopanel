@@ -950,6 +950,17 @@ async function deliverDeployCommand(
   }
 }
 
+/**
+ * The repository checkout for a command, as a field to spread. A hostings-only
+ * run builds and starts nothing, so it carries no clone credential.
+ */
+function composeCheckoutField(
+  checkout: EnvironmentDeployComposeCheckout | undefined,
+  hostingsOnly: boolean | undefined
+): { composeCheckout?: EnvironmentDeployComposeCheckout } {
+  return checkout && !hostingsOnly ? { composeCheckout: checkout } : {}
+}
+
 function createParamsForPreparedServer(
   row: PreparedServerDeploy,
   params: DeployActor & {
@@ -1011,10 +1022,7 @@ function createParamsForPreparedServer(
       params.environmentId
     ),
     sourceMaterial: row.prepared.sourceMaterial,
-    // A hostings-only run builds and starts nothing, so it carries no clone credential.
-    ...(row.prepared.composeCheckout && !params.hostingsOnly
-      ? { composeCheckout: row.prepared.composeCheckout }
-      : {}),
+    ...composeCheckoutField(row.prepared.composeCheckout, params.hostingsOnly),
     ingressServices: row.prepared.ingressServices,
     ...(row.prepared.hostingIngress ? { hostingIngress: row.prepared.hostingIngress } : {}),
     ...(row.prepared.hostingIngressNetwork
