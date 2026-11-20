@@ -218,7 +218,8 @@ async function endAbandonedOrder(
       tlsId,
       state.requestId,
       'Its name no longer uses this certificate.',
-      false
+      false,
+      { onlyIfUnpinned: true }
     )
   }
   await sendPendingEnds(deps, tlsId)

@@ -137,7 +137,17 @@ export async function syncHostingPin(db: Db, hostingId: string): Promise<void> {
       .innerJoin(hosting, eq(hosting.id, hostingId))
       .where(eq(tls.id, only))
       .limit(1)
-    if (row && isSiteLetsEncrypt(row) && row.sitePin !== only) return
+    if (row && isSiteLetsEncrypt(row) && row.sitePin !== only) {
+      // The old whole-site pin no longer describes the names: drop it, so it stops
+      // being held, renewed and reached by the whole-site flow.
+      if (row.sitePin !== null) {
+        await db
+          .update(hosting)
+          .set({ tlsId: null, updatedAt: sql`${hosting.updatedAt}` })
+          .where(eq(hosting.id, hostingId))
+      }
+      return
+    }
   }
   await db
     .update(hosting)

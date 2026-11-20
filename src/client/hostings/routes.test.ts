@@ -1626,6 +1626,52 @@ test("a name's own HTTP order never becomes the site pin, so later names and the
   })
 })
 
+test('switching the only name from a library pin to HTTP clears the site pin, frees the old certificate and orders one', async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    await db
+      .update(organization)
+      .set({ isAcmeEnabled: true })
+      .where(eq(organization.id, organizationId))
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    const [library] = await db
+      .insert(tls)
+      .values({
+        organizationId,
+        source: 'lets_encrypt',
+        status: 'ready',
+        name: 'old',
+        metadata: { dnsNames: ['a.example.com'] },
+      })
+      .returning({ id: tls.id })
+    try {
+      const hostingId = await createHostingWithNames(call, serviceId, [
+        { hostname: 'a.example.com', certificate: 'library', tlsId: library!.id },
+      ])
+      const pin = async () =>
+        (
+          await db.select({ tlsId: hosting.tlsId }).from(hosting).where(eq(hosting.id, hostingId))
+        )[0]?.tlsId
+      assertEquals(await pin(), library!.id)
+      const res = await call('PATCH', `/hostings/${hostingId}`, {
+        names: [{ hostname: 'a.example.com', certificate: 'letsencrypt_http' }],
+      })
+      assertEquals(res.status, 200)
+      assertEquals(await pin(), null)
+      const order = (await nameRows(db, hostingId)).get('a.example.com')?.tlsId
+      assertEquals(order !== null && order !== library!.id, true)
+      const pinners = await db
+        .select({ id: hosting.id })
+        .from(hosting)
+        .where(eq(hosting.tlsId, library!.id))
+      assertEquals(pinners.length, 0, 'the old certificate is no longer used by the site')
+    } finally {
+      await db.delete(hosting).where(eq(hosting.serviceId, serviceId))
+      await db.delete(audit).where(eq(audit.organizationId, organizationId))
+      await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    }
+  })
+})
+
 async function createHostingWithNames(call: HostingCall, serviceId: string, names: unknown[]) {
   const hostnames = names.map((entry) => (entry as { hostname: string }).hostname)
   const res = await call('POST', '/hostings', {
