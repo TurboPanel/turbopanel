@@ -54,6 +54,7 @@ export const AUDIT_ACTIONS = [
   'organization.acme_terms.accept',
   'organization.deploy_timeout.set',
   'organization.reauth_for_destructive.set',
+  'organization.delete',
   'organization.icon.set',
   'organization.emoji_icons.set',
   'server.firewall_mode.set',

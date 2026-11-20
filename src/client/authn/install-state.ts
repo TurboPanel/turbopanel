@@ -593,12 +593,48 @@ export async function readLocalMachineKey(): Promise<string | undefined> {
   }
 }
 
+/**
+ * `setting` key holding `{ organizationId }`: the root organization's id. It is
+ * written when the install creates the organization, so the root stays the root
+ * whatever anyone renames or names an organization. An install that predates the
+ * key gets it on first lookup ({@link findDefaultInstalledOrganizationId}).
+ */
+export const ROOT_ORGANIZATION_SETTING_KEY = 'INSTANCE_ROOT_ORGANIZATION'
+
 /** Default org created by the self-hosted install wizard (superadmin's org). */
 export async function findDefaultInstalledOrganizationId(db: Db): Promise<string | null> {
+  const marked = await db
+    .select({ id: organization.id })
+    .from(setting)
+    .innerJoin(organization, sql`${organization.id}::text = ${setting.value}->>'organizationId'`)
+    .where(eq(setting.key, ROOT_ORGANIZATION_SETTING_KEY))
+    .limit(1)
+  if (marked[0]?.id) return marked[0].id
+
+  const resolved = await resolveLegacyRootOrganizationId(db)
+  if (resolved) {
+    // Pin it, so later renames and look-alike names cannot move the root.
+    // An installed instance has a root; before the install nothing is pinned.
+    if (await isInstanceInstalled(db)) await pinRootOrganization(db, resolved)
+  }
+  return resolved
+}
+
+/** Record `organizationId` as the root organization, replacing a stale pointer. */
+async function pinRootOrganization(db: Db, organizationId: string): Promise<void> {
+  await db
+    .insert(setting)
+    .values({ key: ROOT_ORGANIZATION_SETTING_KEY, value: { organizationId } })
+    .onConflictDoUpdate({ target: setting.key, set: { value: { organizationId } } })
+}
+
+/** The root of an install that has no marker yet: by name, then by superadmin, then oldest. */
+async function resolveLegacyRootOrganizationId(db: Db): Promise<string | null> {
   const byName = await db
     .select({ id: organization.id })
     .from(organization)
     .where(eq(organization.name, ROOT_ORGANIZATION_NAME))
+    .orderBy(organization.createdAt, organization.id)
     .limit(1)
   if (byName[0]?.id) return byName[0].id
 
@@ -608,6 +644,7 @@ export async function findDefaultInstalledOrganizationId(db: Db): Promise<string
     .innerJoin(team, eq(teammate.teamId, team.id))
     .innerJoin(user, eq(teammate.userId, user.id))
     .where(eq(user.role, SUPERADMIN_ROLE))
+    .orderBy(team.createdAt, team.id)
     .limit(1)
   if (withSuperadmin[0]?.organizationId) {
     return withSuperadmin[0].organizationId
@@ -617,6 +654,7 @@ export async function findDefaultInstalledOrganizationId(db: Db): Promise<string
     .select({ id: organization.id })
     .from(organization)
     .where(isNotNull(organization.name))
+    .orderBy(organization.createdAt, organization.id)
     .limit(1)
 
   return rows[0]?.id ?? null
@@ -1335,6 +1373,7 @@ export async function completeInstanceInstall(
     if (!organizationId) {
       throw new Error('Organization creation failed')
     }
+    await pinRootOrganization(tx, organizationId)
 
     // System workspace first so uuidv7 / created_at ordering puts it ahead of
     // Default Workspace in GET /workspaces.
