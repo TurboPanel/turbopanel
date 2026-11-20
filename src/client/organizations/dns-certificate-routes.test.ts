@@ -259,7 +259,11 @@ test('a manager orders a wildcard and a name; a member and another organization 
 
 test('a retry is refused while the authority has the organization on a rate limit', () =>
   withFixture(async (f) => {
-    const [row] = await f.db.select().from(tls).where(eq(tls.id, f.certificateId))
+    const base = `/organizations/${f.orgA}/dns-certificates`
+    const made = await call(f, 'POST', base, f.managerCookie, { names: ['limited.example.com'] })
+    assertEquals(made.status, 201, made.text)
+    const id = (made.body.certificate as { id: string }).id
+    const [row] = await f.db.select().from(tls).where(eq(tls.id, id))
     const later = new Date(Date.now() + 3_600_000).toISOString()
     await f.db
       .update(tls)
@@ -279,9 +283,8 @@ test('a retry is refused while the authority has the organization on a rate limi
           })
         ),
       })
-      .where(eq(tls.id, f.certificateId))
-    const path = `/organizations/${f.orgA}/dns-certificates/${f.certificateId}/retry`
-    const refused = await call(f, 'POST', path, f.managerCookie, {})
+      .where(eq(tls.id, id))
+    const refused = await call(f, 'POST', `${base}/${id}/retry`, f.managerCookie, {})
     assertEquals([refused.status, refused.body.error], [409, 'rate_limited'])
     assertEquals(refused.body.retryAt, later)
   }))

@@ -1057,8 +1057,7 @@ export function registerTlsRoutes(
       return c.json(
         {
           error: 'tls_dns_records_outstanding',
-          message:
-            'This certificate still has DNS records to remove. Try again in a few minutes.',
+          message: 'This certificate still has DNS records to remove. Try again in a few minutes.',
         },
         409
       )

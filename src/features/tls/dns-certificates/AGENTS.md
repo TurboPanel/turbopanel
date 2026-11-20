@@ -11,14 +11,14 @@ the Deno socket (`daemon/deno-ws.ts`) and the Cloudflare cell
 (`daemon/cell/do.ts`). The token never leaves the panel. What lives in this
 folder is the part the relay, the cleanup and the library routes use:
 
-| File | What it is for |
-| --- | --- |
-| `dns-provider.ts` | The DNS host port (`DnsChallengeProvider`) and the challenge record name. |
-| `order-state.ts` | Reads the private state under `metadata.dnsCert` (`carrierId`, `zones`, `records`, `claimUntil`) and the public marker `metadata.acme`. |
-| `records.ts`, `token.ts`, `context.ts`, `sql-time.ts` | Records removed by id through the account's DNS token (`withDnsToken`, `openDnsToken`, `withAnyDnsToken`). |
-| `zones.ts` | Which zone a name belongs to among the zones the organization's tokens cover, and where a record goes when `_acme-challenge` is a CNAME. |
-| `names.ts` | `parseCertificateNames`: one to ten names, exact or `*.` wildcards. |
-| `cleanup.ts` | `runDnsCertificateCleanupTick` (see below). |
+| File                                                  | What it is for                                                                                                                           |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `dns-provider.ts`                                     | The DNS host port (`DnsChallengeProvider`) and the challenge record name.                                                                |
+| `order-state.ts`                                      | Reads the private state under `metadata.dnsCert` (`carrierId`, `zones`, `records`, `claimUntil`) and the public marker `metadata.acme`.  |
+| `records.ts`, `token.ts`, `context.ts`, `sql-time.ts` | Records removed by id through the account's DNS token (`withDnsToken`, `openDnsToken`, `withAnyDnsToken`).                               |
+| `zones.ts`                                            | Which zone a name belongs to among the zones the organization's tokens cover, and where a record goes when `_acme-challenge` is a CNAME. |
+| `names.ts`                                            | `parseCertificateNames`: one to ten names, exact or `*.` wildcards.                                                                      |
+| `cleanup.ts`                                          | `runDnsCertificateCleanupTick` (see below).                                                                                              |
 
 Routes (`client/organizations/dns-certificate-routes.ts`):
 

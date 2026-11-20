@@ -267,6 +267,34 @@ test('an unknown request, another server and a closed request are all refused', 
   })
 })
 
+test('a server of another organization cannot publish for this request', async () => {
+  await withWorld({}, async (w) => {
+    const [foreignOrg] = await w.db
+      .insert(organization)
+      .values({ name: `Foreign Org ${crypto.randomUUID()}` })
+      .returning({ id: organization.id })
+    try {
+      const [foreign] = await w.db
+        .insert(server)
+        .values({ organizationId: foreignOrg!.id, name: 'foreign' })
+        .returning({ id: server.id })
+      await handleDnsPublish(
+        w.deps,
+        foreign!.id,
+        publishMessage([{ name: '_acme-challenge.example.com', value: 'tok1' }])
+      )
+      assertEquals(
+        w.replies.map((r) => r.ok),
+        [false]
+      )
+      assertEquals(w.host.records.size, 0)
+    } finally {
+      await w.db.delete(server).where(eq(server.organizationId, foreignOrg!.id))
+      await w.db.delete(organization).where(eq(organization.id, foreignOrg!.id))
+    }
+  })
+})
+
 test('remove takes away the records the panel made; another server cannot', async () => {
   await withWorld({}, async (w) => {
     await handleDnsPublish(
@@ -301,7 +329,10 @@ test('the read-back gets the zone nameservers from the provider', async () => {
       w.serverId,
       publishMessage([{ name: '_acme-challenge.example.com', value: 'tok1' }])
     )
-    assertEquals(w.replies.map((r) => r.ok), [true])
+    assertEquals(
+      w.replies.map((r) => r.ok),
+      [true]
+    )
     assertEquals(seen.at(-1), ['ns-a.example.net', 'ns-b.example.net'])
   })
 })
@@ -326,9 +357,12 @@ test('one deadline covers every record: a slow second read-back cannot start a n
         { name: '_acme-challenge.example.com', value: 'tok2' },
       ])
     )
-    assertEquals(w.replies.map((r) => r.ok), [false])
-    // 10s of budget at a 4s poll is three reads in all, not three per record.
-    assert(reads <= 3, `reads ${reads}`)
+    assertEquals(
+      w.replies.map((r) => r.ok),
+      [false]
+    )
+    // 10s of budget at a 4s poll is four reads in all (0, 4, 8, 10s), not four per record.
+    assert(reads <= 4, `reads ${reads}`)
     assertEquals(w.host.records.size, 0)
   })
 })
@@ -343,7 +377,10 @@ test('both values of an apex plus wildcard order are listed on the row', async (
         { name: '_acme-challenge.example.com', value: 'tok2' },
       ])
     )
-    assertEquals(w.replies.map((r) => r.ok), [true])
+    assertEquals(
+      w.replies.map((r) => r.ok),
+      [true]
+    )
     assertEquals([...w.host.records.values()].map((r) => r.value).sort(), ['tok1', 'tok2'])
     const [row] = await w.db.select().from(tls).where(eq(tls.id, w.rowId))
     assertEquals(readDnsCertState(row!.metadata)?.records.length, 2)

@@ -841,10 +841,7 @@ test('DELETE /tls/:id is refused while the order still has DNS challenge records
       .returning({ id: tls.id })
     const refused = await app.request(`/tls/${row!.id}`, { method: 'DELETE', headers })
     assertEquals(refused.status, 409)
-    assertEquals(
-      ((await refused.json()) as { error: string }).error,
-      'tls_dns_records_outstanding'
-    )
+    assertEquals(((await refused.json()) as { error: string }).error, 'tls_dns_records_outstanding')
     const [still] = await db.select({ id: tls.id }).from(tls).where(eq(tls.id, row!.id))
     assertEquals(still?.id, row!.id)
   })

@@ -613,7 +613,8 @@ async function startInTransaction(
       orderNames: row.orderNames,
     })
     await writeState(tx, row, state, now)
-    if (previous === null && !row.hasPair) await recordNewCertificateStart(tx, row.organizationId, now)
+    if (previous === null && !row.hasPair)
+      await recordNewCertificateStart(tx, row.organizationId, now)
     return {
       outcome: 'ordering',
       send: [
@@ -639,7 +640,8 @@ async function startInTransaction(
     ? { ...fresh, phase: 'ordering', orderSentAt: fresh.startedAt }
     : fresh
   await writeState(tx, row, state, now)
-  if (previous === null && !row.hasPair) await recordNewCertificateStart(tx, row.organizationId, now)
+  if (previous === null && !row.hasPair)
+    await recordNewCertificateStart(tx, row.organizationId, now)
   return {
     outcome: direct ? 'ordering' : 'started',
     send: openingMessages(now, row, state, choice, contactEmail),
