@@ -15,6 +15,7 @@
 
 import { and, desc, eq, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
+import { readComposeBaseRecord, type ComposeBaseRecord } from '../projects/project-options.ts'
 import { normalizeReplicaCounts } from '../commands/context.ts'
 import { lastErrorLine } from '../commands/error-line.ts'
 import { normalizeBranchName } from '../git/environment-branch-tracking.ts'
@@ -100,6 +101,12 @@ export type DeploymentHistoryEntry = {
   generation: number | null
   /** sha256 of the compiled runtime compose sent to this server. */
   desiredHash: string | null
+  /**
+   * The Base this attempt deployed when the project follows its repository's
+   * compose file: file, commit and content hash. `null` otherwise, and for
+   * rows queued before it was recorded.
+   */
+  composeBase: ComposeBaseRecord | null
   /**
    * Per-service replica counts this attempt asked the host to run, captured on
    * `command.context` at enqueue time. `null` for legacy rows queued before the
@@ -225,6 +232,8 @@ export type DeploymentHistoryDetail = {
   environmentId: string
   generation: number | null
   desiredHash: string | null
+  /** The Base the fan-out deployed (the anchor attempt's), or `null`. */
+  composeBase: ComposeBaseRecord | null
   /**
    * Per-service replica counts for the whole fan-out — summed across every
    * participating host, from the historical `command.context` of each attempt.
@@ -325,6 +334,7 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
     commandId: row.id,
     generation: contextNumber(context, 'generation'),
     desiredHash: contextString(context, 'desiredHash'),
+    composeBase: readComposeBaseRecord(context.composeBase),
     replicaCounts: contextReplicaCounts(context),
     serverId: row.serverId,
     serverName: row.serverName ?? null,
@@ -522,6 +532,7 @@ export async function getEnvironmentDeploymentDetail(
     environmentId,
     generation,
     desiredHash: contextString(anchorContext, 'desiredHash'),
+    composeBase: readComposeBaseRecord(anchorContext.composeBase),
     replicaCounts,
     totalReplicas: sumReplicaCounts(replicaCounts) ?? 0,
     commands,

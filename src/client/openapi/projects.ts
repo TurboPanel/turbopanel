@@ -161,7 +161,7 @@ export const projectSchemas = {
       target: {
         type: 'string',
         description:
-          "Where an `options.compose` / `options.composeOverlays` edit lands: `base` (the project's own compose, inherited by every environment) or an environment id of the project. With exactly one environment and no target the edit goes to that environment, never the Base. With several and no target: **400** `edit_target_required`. Anything else: **400** `edit_target_invalid`. For an environment target `options` may carry only `compose` and `composeOverlays`: **400** `edit_target_mixed` otherwise (send project settings separately with target `base`). Ignored when the request carries no compose. Compatibility: a project whose Base already holds content (older single-environment projects keep it there) cannot take a compose edit without a target, because layering a full document on top of the Base would double lists such as ports and volumes: that answers **400** `edit_target_required` even with one environment. Send `base` to edit the Base.",
+          "Where an `options.compose` / `options.composeOverlays` edit lands: `base` (the project's own compose, inherited by every environment) or an environment id of the project. With exactly one environment and no target the edit goes to that environment, never the Base. With several and no target: **400** `edit_target_required`. Anything else: **400** `edit_target_invalid`. For an environment target `options` may carry only `compose` and `composeOverlays`: **400** `edit_target_mixed` otherwise (send project settings separately with target `base`). Ignored when the request carries no compose. Compatibility: a project whose Base already holds content (older single-environment projects keep it there) cannot take a compose edit without a target, because layering a full document on top of the Base would double lists such as ports and volumes: that answers **400** `edit_target_required` even with one environment. Send `base` to edit the Base. While the project follows its repository's compose file (`composeSource.mode` `track`) a Base edit is **409** `base_tracks_repository`; switch with `PATCH /projects/{id}/compose-source`.",
       },
     },
   },
@@ -221,6 +221,36 @@ export const projectPaths = {
     'project',
     'What `DELETE /projects/{id}` would remove and keep, and why it would be refused. Reads only.'
   ),
+  '/api/client/v1/projects/{id}/compose-source': {
+    patch: {
+      tags: ['Projects'],
+      summary: 'Follow or stop following the repository compose file',
+      description:
+        'For a project created from a Git repository (`options.composeSource`). `track` (the default for new projects): each deploy reads the compose file at the commit it deploys and uses it as the Base; the Base cannot be edited (**409** `base_tracks_repository`). `seed`: the last-read content stays as an editable Base. Switching back to `track` is allowed. **409** `compose_source_missing` when the project has no source; **400** for any other mode.',
+      security: [{ cookieAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['mode'],
+              properties: { mode: { type: 'string', enum: ['seed', 'track'] } },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description:
+            'The stored composeSource (sourceId, ref, path, mode, lastReadCommitSha, lastReadDigest).',
+        },
+        '400': { description: 'Invalid mode.' },
+        '409': { description: '`compose_source_missing`.' },
+      },
+    },
+  },
   '/api/client/v1/projects/{id}/configure': {
     post: {
       tags: ['Projects'],

@@ -53,10 +53,55 @@ async function baseHasContent(db: Db, projectId: string): Promise<boolean> {
   return !isBlankComposeData(data) || overlays.length > 0
 }
 
+function mixedProjectSettings(options: Record<string, unknown>): EditTarget | null {
+  const carriesSettings = Object.keys(options).some(
+    (key) => !(CONFIGURATION_OPTION_KEYS as readonly string[]).includes(key)
+  )
+  if (!carriesSettings) return null
+  return {
+    ok: false,
+    error: EDIT_TARGET_MIXED_ERROR,
+    message:
+      "Compose edits to an environment cannot carry project settings in the same request. Send the project settings separately with target 'base'.",
+  }
+}
+
+async function resolveUntargetedEdit(
+  db: Db,
+  projectId: string,
+  rows: { id: string }[],
+  baseFollowsRepository: boolean
+): Promise<EditTarget> {
+  if (rows.length === 0) return { ok: true, kind: 'base' }
+  if (rows.length > 1) {
+    return {
+      ok: false,
+      error: EDIT_TARGET_REQUIRED_ERROR,
+      message:
+        "This project has more than one environment. Send target: an environment id, or 'base' to change what every environment inherits.",
+    }
+  }
+  if (!baseFollowsRepository && (await baseHasContent(db, projectId))) {
+    return {
+      ok: false,
+      error: EDIT_TARGET_REQUIRED_ERROR,
+      message:
+        "This project's content still lives in the Base, so a compose edit would be layered on top of it. Send target: 'base' to edit the Base, or an environment id to add changes to that environment.",
+    }
+  }
+  return { ok: true, kind: 'environment', environmentId: rows[0]!.id }
+}
+
 export async function resolveEditTarget(
   db: Db,
   projectId: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  /**
+   * The Base is the repository's compose file, which no edit may change. Its
+   * content then says nothing about where an untargeted edit should go, so the
+   * edit lands on the one environment instead of being refused for it.
+   */
+  baseFollowsRepository = false
 ): Promise<EditTarget> {
   if (!carriesConfiguration(body)) return { ok: true, kind: 'none' }
 
@@ -70,24 +115,9 @@ export async function resolveEditTarget(
 
   let environmentId: string
   if (requested === undefined || requested === null) {
-    if (rows.length === 0) return { ok: true, kind: 'base' }
-    if (rows.length > 1) {
-      return {
-        ok: false,
-        error: EDIT_TARGET_REQUIRED_ERROR,
-        message:
-          "This project has more than one environment. Send target: an environment id, or 'base' to change what every environment inherits.",
-      }
-    }
-    if (await baseHasContent(db, projectId)) {
-      return {
-        ok: false,
-        error: EDIT_TARGET_REQUIRED_ERROR,
-        message:
-          "This project's content still lives in the Base, so a compose edit would be layered on top of it. Send target: 'base' to edit the Base, or an environment id to add changes to that environment.",
-      }
-    }
-    environmentId = rows[0]!.id
+    const untargeted = await resolveUntargetedEdit(db, projectId, rows, baseFollowsRepository)
+    if (!untargeted.ok || untargeted.kind !== 'environment') return untargeted
+    environmentId = untargeted.environmentId
   } else if (typeof requested === 'string' && UUID_RE.test(requested)) {
     if (!rows.some((row) => row.id === requested)) {
       return {
@@ -105,18 +135,7 @@ export async function resolveEditTarget(
     }
   }
 
-  const options = body.options as Record<string, unknown>
-  if (
-    Object.keys(options).some(
-      (key) => !(CONFIGURATION_OPTION_KEYS as readonly string[]).includes(key)
-    )
-  ) {
-    return {
-      ok: false,
-      error: EDIT_TARGET_MIXED_ERROR,
-      message:
-        "Compose edits to an environment cannot carry project settings in the same request. Send the project settings separately with target 'base'.",
-    }
-  }
+  const mixed = mixedProjectSettings(body.options as Record<string, unknown>)
+  if (mixed) return mixed
   return { ok: true, kind: 'environment', environmentId }
 }

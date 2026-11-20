@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   composeSourceDigest,
+  isTrackingComposeSource,
   parseComposeSourceInput,
   parseContainerNamingInput,
   parseDefaultServerIdInput,
@@ -134,4 +135,43 @@ test('parseComposeSourceInput rejects an empty sourceId and an oversized ref', a
   }
   assertEquals(parseComposeSourceInput({ ...base, sourceId: '' }).ok, false)
   assertEquals(parseComposeSourceInput({ ...base, ref: 'x'.repeat(256) }).ok, false)
+})
+
+test('parseComposeSourceInput keeps the mode and the last read, and refuses a bad hash', () => {
+  const base = {
+    sourceId: 'src-1',
+    path: 'compose.yaml',
+    seededCommitSha: 'a'.repeat(40),
+    seededDigest: 'b'.repeat(64),
+  }
+  const parsed = parseComposeSourceInput({
+    ...base,
+    mode: 'track',
+    lastReadCommitSha: 'c'.repeat(40),
+    lastReadDigest: 'd'.repeat(64),
+  })
+  assertEquals(parsed, {
+    ok: true,
+    value: {
+      ...base,
+      mode: 'track',
+      lastReadCommitSha: 'c'.repeat(40),
+      lastReadDigest: 'd'.repeat(64),
+    },
+  })
+  assertEquals(parseComposeSourceInput({ ...base, lastReadDigest: 'nope' }).ok, false)
+  assertEquals(parseComposeSourceInput({ ...base, lastReadCommitSha: 'zz' }).ok, false)
+})
+
+test('isTrackingComposeSource is true only for mode track', () => {
+  const source = {
+    sourceId: 's',
+    path: 'compose.yaml',
+    seededCommitSha: 'a'.repeat(40),
+    seededDigest: 'b'.repeat(64),
+  }
+  assertEquals(isTrackingComposeSource({ ...source, mode: 'track' }), true)
+  assertEquals(isTrackingComposeSource({ ...source, mode: 'seed' }), false)
+  assertEquals(isTrackingComposeSource(source), false)
+  assertEquals(isTrackingComposeSource(undefined), false)
 })

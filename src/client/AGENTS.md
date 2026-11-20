@@ -377,7 +377,42 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   compose (a catalog entry's shared compose merged with each environment's own,
   `catalog-compose.ts`) into the environment's own changes, so a deploy sees the
   same merged compose as before. A compose that names a repository
-  (`composeSource`) or has project overlays stays in the Base for now.
+  (`composeSource`) or has project overlays stays in the Base.
+- **A project from a Git repository follows its compose file:** the wizard
+  seeds the file into the Base (never the environment layer) and
+  `composeSource.mode` defaults to `track` (`lastReadCommitSha` and
+  `lastReadDigest` start as the seeded values). In `track` mode every deploy
+  reads `composeSource.path` at the commit it deploys through the repository
+  inspect path (`environments/deploy-tracked-base.ts`, no second clone; a
+  push's commit, else the head of the branch the environment builds for that
+  repository (its own `x-turbopanel.source.branch`, e.g. staging on `staging`),
+  else `composeSource.ref` or the default branch; the same commit pins the
+  builds and is what the command records), uses it as the Base, and layers the
+  environment's changes on top. The deploy command's `context.composeBase`
+  (`{sourceId, ref, path, commitSha, digest}`) is returned as `composeBase` on
+  deployment history and on the preview. A missing or unusable file fails the
+  deploy, with no fallback: 422 `compose_file_missing` /
+  `compose_file_unparseable`, 502 `compose_source_unavailable`, each with
+  `message`, `sourceId`, `ref`, `path`, `commitSha`. A hostings-only run keeps
+  the stored Base. A rollback reads the file again at the commit its release's
+  deployment recorded in `composeBase` (never the latest read, and it stores
+  nothing); a release deployed without a record is refused (**409**
+  `rollback_base_unrecorded`; switch to `seed` to roll back). The deploy stores
+  what it read as the Base only once it is accepted (a refused deploy leaves it
+  unchanged) and only when it read the project's own branch (`composeSource.ref`,
+  else the repository default): an environment building another branch such as
+  `staging` is built from that branch's file but never changes the shared Base
+  or the last read. Listings, lint
+  and a switch to `seed` see the last-read content; the environment-layer lint
+  therefore uses the last-deployed Base. `mode` and `lastRead*` are never
+  writable through `PATCH /projects/:id` or create, for a `seed` project as
+  much as a `track` one.
+  Preview reads the branch head and, when that fails, uses the stored Base with
+  a `compose_base_unreadable` warning. Known limit: the read passes no daemon
+  credential, so a private repository the provider cannot read may need its
+  connection fixed. Base edits in `track` mode are **409** `base_tracks_repository`;
+  `PATCH /projects/:id/compose-source {mode}` switches between `track` and
+  `seed` (seed keeps the last-read Base editable).
 - **A new environment is a copy of the primary one:** `POST /environments`
   without `options` copies the primary's `compose` and `composeOverlays`
   (`start: 'copy'`, the default; `features/projects/primary-environment-copy.ts`)

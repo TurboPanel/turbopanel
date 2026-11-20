@@ -387,6 +387,7 @@ export type DeployPrepareWarningCode =
   | 'cache_other_account'
   | 'cache_other_server'
   | 'cache_variable_overrides'
+  | 'compose_base_unreadable'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -3226,6 +3227,7 @@ async function loadDeployComposeContext(
     serverId: string
     organizationId: string
     composeValidated?: boolean
+    projectOptions?: unknown
   }
 ): Promise<
   | {
@@ -3245,7 +3247,11 @@ async function loadDeployComposeContext(
 > {
   const loaded = await loadDeployEnvAndProject(db, params.environmentId)
   if (loaded instanceof Response) return { ok: false, failure: loaded }
-  const { envRow, projectRow } = loaded
+  const { envRow } = loaded
+  const projectRow =
+    params.projectOptions === undefined
+      ? loaded.projectRow
+      : { id: loaded.projectRow.id, options: params.projectOptions }
 
   const [orgRow] = await db
     .select({ options: organization.options })
@@ -3927,6 +3933,12 @@ export async function prepareDeployCompose(
      * which is what keeps every path that reaches the compiler gated.
      */
     composeValidated?: boolean
+    /**
+     * The project options the scheduler merged, with a followed repository's
+     * compose file already swapped in as the Base. Prepare uses these instead of
+     * the stored row, so the plan and every server read one Base.
+     */
+    projectOptions?: unknown
   }
 ): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
   const mode = params.mode ?? 'deploy'
