@@ -173,12 +173,16 @@ export function checkRecords(
 }
 
 async function rememberRecord(db: Db, rowId: string, record: PublishedRecord): Promise<void> {
-  await db
+  const updated = await db
     .update(tls)
     .set({
       metadata: sql`jsonb_set(${tls.metadata}, '{dnsCert,records}', coalesce(${tls.metadata} #> '{dnsCert,records}', '[]'::jsonb) || ${JSON.stringify([record])}::jsonb)`,
     })
     .where(and(eq(tls.id, rowId), eq(tls.source, 'lets_encrypt')))
+    .returning({ id: tls.id })
+  // A row deleted meanwhile takes the update with it: say so, so the caller takes the record away.
+  if (updated.length === 0)
+    throw new Error('The certificate was removed while its records were made.')
 }
 
 async function rememberAccount(

@@ -221,6 +221,25 @@ test('a record that never reads back is answered as an error and removed again',
   })
 })
 
+test('a row deleted while its record is being made takes the record away again', async () => {
+  await withWorld({}, async (w) => {
+    const present = w.host.dns.present
+    w.host.dns.present = async (input) => {
+      const ref = await present(input)
+      await w.db.delete(tls).where(eq(tls.id, w.rowId))
+      return ref
+    }
+    await handleDnsPublish(
+      w.deps,
+      w.serverId,
+      publishMessage([{ name: '_acme-challenge.example.com', value: 'tok1' }])
+    )
+    assertEquals(w.replies.length, 1)
+    assertEquals(w.replies[0]!.ok, false)
+    assertEquals(w.host.records.size, 0)
+  })
+})
+
 test('a name outside every zone the token covers is refused and nothing is written', async () => {
   await withWorld({ names: ['example.org'] }, async (w) => {
     const none = {

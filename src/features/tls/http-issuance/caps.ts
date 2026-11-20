@@ -65,7 +65,7 @@ export async function recordNewCertificateStart(
   await tx
     .update(organization)
     .set({
-      options: sql`jsonb_set(coalesce(${organization.options}, '{}'::jsonb), ${sql.raw(`'{${NEW_STARTS_KEY}}'`)}, coalesce((select jsonb_agg(v) from jsonb_array_elements(coalesce(${organization.options} -> ${NEW_STARTS_KEY}::text, '[]'::jsonb)) as v where (v #>> '{}') > ${cutoff}), '[]'::jsonb) || to_jsonb(${at}::text))`,
+      options: sql`jsonb_set(coalesce(${organization.options}, '{}'::jsonb), '{acmeNewStarts}', coalesce((select jsonb_agg(v) from jsonb_array_elements(coalesce(${organization.options} -> ${NEW_STARTS_KEY}::text, '[]'::jsonb)) as v where (v #>> '{}') > ${cutoff}), '[]'::jsonb) || to_jsonb(${at}::text))`,
     })
     .where(eq(organization.id, organizationId))
 }

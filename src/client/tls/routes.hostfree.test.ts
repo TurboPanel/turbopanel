@@ -80,6 +80,7 @@ function thenableWhere(rows: unknown[]) {
     catch: promise.catch.bind(promise),
     finally: promise.finally.bind(promise),
     limit: () => Promise.resolve(rows),
+    for: () => Promise.resolve(rows),
     orderBy: () => afterOrderBy,
   }
   return {

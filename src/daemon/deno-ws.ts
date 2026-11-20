@@ -959,7 +959,7 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
       if (!secrets) {
         // Say no instead of leaving the daemon to wait out its deadline.
         if (message.type === 'acme-dns-publish') {
-          await params.reply(unavailableDnsAnswer(message))
+          params.reply(unavailableDnsAnswer(message))
         }
         return
       }

@@ -595,6 +595,18 @@ async function startInTransaction(
     await writeWaiting(tx, row, waitingText(plan.choice.reason), now, plan.challenge)
     return { outcome: 'waiting', send: [] }
   }
+  // The organization's day count is read again under a lock on its row, so two
+  // starts at once cannot both pass the cap that only one of them fits under.
+  if (!row.hasPair) {
+    await tx
+      .select({ id: organization.id })
+      .from(organization)
+      .where(eq(organization.id, row.organizationId))
+      .for('update')
+    const facts = await loadOrgOrderFacts(tx, row.organizationId, now)
+    const applied = previous === null ? facts : { ...facts, newStarts: [] }
+    if (!mayStartNewCertificate(applied, now).ok) return { outcome: 'backoff', send: [] }
+  }
   const issuerId = plan.choice.issuer.serverId
   // One order at a time per issuing server: the daemon runs one window at a time, so a
   // second order would only wait behind the first and could pass the silence limit.
@@ -647,6 +659,27 @@ async function startInTransaction(
     send: openingMessages(now, row, state, choice, contactEmail),
     state,
   }
+}
+
+/**
+ * A row marked "waiting for a site" whose name now has one, with no server serving
+ * it yet: say that instead, so the text matches the real reason.
+ */
+async function restateNoSiteMarker(db: Db, tlsId: string, now: Date): Promise<void> {
+  const noSite = waitingText('no_site')
+  await db
+    .update(tls)
+    .set({
+      metadata: sql`jsonb_set(${tls.metadata}, '{acme,warning}', to_jsonb(${waitingText('no_servers')}::text))`,
+      updatedAt: now.toISOString(),
+    })
+    .where(
+      and(
+        eq(tls.id, tlsId),
+        sql`${tls.metadata} #>> '{acme,warning}' = ${noSite}`,
+        sql`(exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) or exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id}))`
+      )
+    )
 }
 
 /**
@@ -705,7 +738,10 @@ export async function startHttpIssuance(
       ? await gatherDns(deps, { id: tlsId }, previous)
       : await gather(deps, { id: tlsId, orderNames: names }, previous)
   // No serving server: the row is left alone.
-  if (gathered.servers.length === 0) return 'not_eligible'
+  if (gathered.servers.length === 0) {
+    await restateNoSiteMarker(deps.db, tlsId, now)
+    return 'not_eligible'
+  }
   const plan =
     challenge === 'dns-01'
       ? { challenge, choice: gathered.choice as DnsChoice }
