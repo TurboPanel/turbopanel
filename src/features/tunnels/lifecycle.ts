@@ -898,7 +898,10 @@ export async function routeNames(
 ): Promise<string[]> {
   const rows = await listDoorways(db, tunnelId)
   // A hostname waiting in attention for its DNS token has had its route taken down; it stays down.
-  const names = rows.filter((r) => !routeTakenDown(r)).map((r) => r.hostname)
+  // A name being removed is out of the set from the moment the removal starts, so a sync never puts it back.
+  const names = rows
+    .filter((r) => r.status !== 'removing' && !routeTakenDown(r))
+    .map((r) => r.hostname)
   if (extra && !names.includes(extra)) names.push(extra)
   return names.toSorted(compareText)
 }
@@ -1232,15 +1235,18 @@ export async function removeDoorway(
   }
   const zoneId = (current.metadata as { zoneId?: string } | null)?.zoneId
   const hasDnsName = Boolean(current.externalDnsRecordId && zoneId)
+  // Marked first, in its own write, so no sync that runs during the removal routes the name again.
+  await db.update(doorway).set({ status: 'removing' }).where(eq(doorway.id, current.id))
   try {
     // The route goes first, so a failed DNS removal leaves a name that answers nothing,
     // never a route to a name that is gone; a retry rewrites the same route.
     await pushTunnelRoutes(db, deps, owner, row, {
       accountId: owner.externalAccountId,
-      hostnames: async (tx) =>
-        (await routeNames(tx, row.id, null)).filter((n) => n !== current.hostname),
+      hostnames: (conn) => routeNames(conn, row.id, null),
     })
   } catch (err) {
+    // Nothing was taken down: the name goes back to what it was.
+    await db.update(doorway).set({ status: current.status }).where(eq(doorway.id, current.id))
     throw refuse(err, 'edit Tunnels')
   }
   if (hasDnsName) await removeDnsNameOrKeep(db, deps, owner, current, zoneId!)

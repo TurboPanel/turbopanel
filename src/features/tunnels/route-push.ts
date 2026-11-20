@@ -5,11 +5,14 @@
  * tell when a deploy, a certificate change or a lost route made the provider's
  * set stale and write it again (`route-sync.ts`).
  *
- * One writer per tunnel at a time: the whole read (names, verified names), the
- * provider call and the metadata write run inside a transaction that holds the
- * tunnel's row `for update`. A name added while another writer was reading is
- * therefore either in that writer's read or written by the next one; the
- * background pass can never push an older name list over a newer one.
+ * No lock or transaction is held across the provider call (a Worker has one
+ * connection per request, and a row lock would wait on a slow HTTP call). The
+ * names are read and the provider is called first; the metadata is then written
+ * in a short transaction that is a compare-and-set: it holds the tunnel's row
+ * `for update`, reads the names again and writes only when the stored routes
+ * are what this writer started from and the names are still the ones pushed.
+ * Otherwise another writer got in between, and this one reads and pushes again
+ * (a few times at most), so an older name list is never left as the record.
  */
 import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -43,15 +46,38 @@ export function sameList(a: readonly string[] | null, b: readonly string[]): boo
   return a !== null && a.length === b.length && a.every((n, i) => n === b[i])
 }
 
+function sameRouted(a: RoutedSet, b: RoutedSet): boolean {
+  const names =
+    a.hostnames === null || b.hostnames === null
+      ? a.hostnames === b.hostnames
+      : sameList(a.hostnames, b.hostnames)
+  return names && sameList(a.verifiedNames, b.verifiedNames)
+}
+
 export type PushInput = {
   accountId: string | null
-  /** Every name to route, read inside the lock so it is never older than the write. */
+  /** Every name to route, read fresh on each attempt. */
   hostnames: (db: Db) => Promise<string[]>
   /** Write only when the names or the verified names differ from the last write. */
   onlyIfChanged?: boolean
 }
 
 export type PushResult = { pushed: boolean; verifiedNames: string[] }
+
+/** Passes at most; a tunnel whose names keep changing under the writer is left for the next pass. */
+export const PUSH_ATTEMPTS = 3
+
+async function readNames(
+  db: Db,
+  rowId: string,
+  input: PushInput,
+  now: Date
+): Promise<{ hostnames: string[]; verifiedNames: string[] }> {
+  const hostnames = (await input.hostnames(db)).map((n) => n.toLowerCase())
+  const wanted = new Set(hostnames)
+  const verifiedNames = (await loadVerifiedNames(db, rowId, now)).filter((n) => wanted.has(n))
+  return { hostnames, verifiedNames }
+}
 
 /** Write the full route set of a tunnel with its verified names. */
 export async function pushTunnelRoutes(
@@ -62,23 +88,20 @@ export async function pushTunnelRoutes(
   input: PushInput,
   now: Date = new Date()
 ): Promise<PushResult> {
-  return await db.transaction(async (tx) => {
-    const [locked] = await tx
-      .select({ metadata: tunnel.metadata })
+  for (let attempt = 0; attempt < PUSH_ATTEMPTS; attempt++) {
+    const [current] = await db
+      .select({ metadata: tunnel.metadata, status: tunnel.status })
       .from(tunnel)
       .where(eq(tunnel.id, row.id))
-      .for('update')
-    if (!locked) return { pushed: false, verifiedNames: [] }
-    const hostnames = (await input.hostnames(tx as unknown as Db)).map((n) => n.toLowerCase())
-    const wanted = new Set(hostnames)
-    const verifiedNames = (await loadVerifiedNames(tx as unknown as Db, row.id, now)).filter((n) =>
-      wanted.has(n)
-    )
-    if (input.onlyIfChanged) {
-      const last = readRouted(locked.metadata)
-      if (sameList(last.hostnames, hostnames) && sameList(last.verifiedNames, verifiedNames)) {
-        return { pushed: false, verifiedNames }
-      }
+    if (!current) return { pushed: false, verifiedNames: [] }
+    const { hostnames, verifiedNames } = await readNames(db, row.id, input, now)
+    const started = readRouted(current.metadata)
+    if (
+      input.onlyIfChanged &&
+      sameList(started.hostnames, hostnames) &&
+      sameList(started.verifiedNames, verifiedNames)
+    ) {
+      return { pushed: false, verifiedNames }
     }
     await useBadges(db, deps.secrets, owner.id, { capability: 'tunnels' }, (token) =>
       deps.adapter.setRoutes(token, {
@@ -88,12 +111,31 @@ export async function pushTunnelRoutes(
         verifiedNames,
       })
     )
-    await tx
-      .update(tunnel)
-      .set({
-        metadata: sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), '{routes}', ${JSON.stringify({ verifiedNames, hostnames })}::jsonb)`,
-      })
-      .where(eq(tunnel.id, row.id))
-    return { pushed: true, verifiedNames }
-  })
+    const recorded = await db.transaction(async (tx) => {
+      const [locked] = await tx
+        .select({ metadata: tunnel.metadata, status: tunnel.status })
+        .from(tunnel)
+        .where(eq(tunnel.id, row.id))
+        .for('update')
+      // A tunnel that is gone or being removed has nothing left to record.
+      if (!locked || locked.status === 'removing') return true
+      const last = readRouted(locked.metadata)
+      if (!sameRouted(last, started)) return false
+      const again = await readNames(tx as unknown as Db, row.id, input, now)
+      if (!sameList(again.hostnames, hostnames) || !sameList(again.verifiedNames, verifiedNames)) {
+        return false
+      }
+      await tx
+        .update(tunnel)
+        .set({
+          metadata: sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), '{routes}', ${JSON.stringify({ verifiedNames, hostnames })}::jsonb)`,
+        })
+        .where(eq(tunnel.id, row.id))
+      return true
+    })
+    if (recorded) return { pushed: true, verifiedNames }
+  }
+  throw new Error(
+    'The tunnel routes kept changing while they were written; the next pass writes them again'
+  )
 }

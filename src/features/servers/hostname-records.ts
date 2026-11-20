@@ -20,7 +20,7 @@ import {
   resolveHostingProtocol,
 } from '../hostings/hosting-options.ts'
 import { certificateForPinSource } from '../hostings/name-certificates.ts'
-import { nameCertificateOptions } from '../hostings/name-certificate-options.ts'
+import { DNS_ISSUANCE_FACTS, nameCertificateOptions } from '../hostings/name-certificate-options.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { assertNotPanelHostnames } from '../hostings/panel-hostname-guard.ts'
@@ -182,7 +182,7 @@ async function newNameFallback(
     bind: resolveHostingBind(options),
     isHttp: resolveHostingProtocol(options) === 'http',
     acmeEnabled: org?.isAcmeEnabled === true,
-    dnsIssuance: false,
+    ...DNS_ISSUANCE_FACTS,
     covering: [],
   })
   return { certificate, tlsId: null }

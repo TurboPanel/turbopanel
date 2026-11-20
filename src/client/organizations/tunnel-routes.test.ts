@@ -52,6 +52,7 @@ import { carryingServers, listTunnels } from '../../features/tunnels/lifecycle.t
 import { loadVerifiedNames } from '../../features/tunnels/verified-names.ts'
 import { runVerifiedNamesSweepTick } from '../../features/tunnels/verified-names-sweep.ts'
 import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
+import { syncTunnelRoutes } from '../../features/tunnels/route-sync.ts'
 import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
 import { recordTunnelStatus } from '../../features/tunnels/status.ts'
 import { registerOrganizationTunnelRoutes } from './tunnel-routes.ts'
@@ -1483,6 +1484,21 @@ test('a hostname that fails to lose its DNS name stays, and the removal can be r
     // The route was rewritten first, so the name answers nothing while the DNS name is still there.
     const lastRoutes = JSON.stringify(provider.routeBodies.at(-1))
     assert(!lastRoutes.includes('shop.example.com'))
+    // The name is marked removing, so a sync during the removal does not route it again.
+    const [marked] = await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))
+    assertEquals(marked?.status, 'removing')
+    await f.db
+      .update(tunnel)
+      .set({ metadata: { routes: { verifiedNames: [], hostnames: ['shop.example.com'] } } })
+      .where(eq(tunnel.id, id))
+    const [tunnelRow] = await f.db.select().from(tunnel).where(eq(tunnel.id, id))
+    const synced = await syncTunnelRoutes(
+      f.db,
+      { secrets: f.secrets, registry: createTunnelAdapterRegistry(fakeProvider) },
+      tunnelRow!
+    )
+    assertEquals(synced, 'pushed')
+    assert(!JSON.stringify(provider.routeBodies.at(-1)).includes('shop.example.com'))
     provider.failDnsDelete = false
     const again = await call(
       f,
@@ -1849,13 +1865,24 @@ async function applyDeploy(f: Fixture, siteId: string, status: 'applied' | 'fail
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .where(eq(hosting.id, siteId))
-  await f.db.insert(deployment).values({
-    environmentId: site!.environmentId,
-    serverId: f.servers[2],
+  const values = {
     status,
     finishedAt: new Date(Date.now() + 60_000).toISOString(),
     durationMs: 1000,
-  })
+  }
+  // One deployment per environment and server: a later outcome updates it.
+  const updated = await f.db
+    .update(deployment)
+    .set(values)
+    .where(
+      and(eq(deployment.environmentId, site!.environmentId), eq(deployment.serverId, f.servers[2]))
+    )
+    .returning({ id: deployment.id })
+  if (updated.length === 0) {
+    await f.db
+      .insert(deployment)
+      .values({ environmentId: site!.environmentId, serverId: f.servers[2], ...values })
+  }
 }
 
 test('a name is verified only with a pinned public pair that covers it and a deploy applied after the pin', async () => {
@@ -1872,11 +1899,6 @@ test('a name is verified only with a pinned public pair that covers it and a dep
     await applyDeploy(f, r.site, 'failed')
     assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
     await applyDeploy(f, r.site, 'applied')
-    // The failed deploy still counts against it: every deploy of the site must be applied.
-    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
-    await f.db
-      .delete(deployment)
-      .where(and(eq(deployment.status, 'failed'), eq(deployment.serverId, f.servers[2])))
     assertEquals(await loadVerifiedNames(f.db, r.id, now), [name])
     // A name the site does not store is not verified.
     await f.db.delete(hostname).where(eq(hostname.hostingId, r.site))
