@@ -73,7 +73,7 @@ async function loadServerIdsByService(
       .where(and(inArray(service.id, ids), ne(deployment.status, 'draining'))),
   ])
   for (const row of [...own, ...deployed]) {
-    if (row.serverId === null) continue
+    if (!row.serverId) continue
     const set = out.get(row.serviceId) ?? new Set<string>()
     set.add(row.serverId)
     out.set(row.serviceId, set)
