@@ -1405,3 +1405,19 @@ test('deploy.labels stays out of container labels even when identity labels merg
   })
   assertEquals(web?.scale, 2)
 })
+
+test('a spanning default network is not attached to a service with network_mode', () => {
+  const compiled = compileRuntimeComposeDocument(
+    doc({
+      services: {
+        vpn: { image: 'vpn' },
+        qbittorrent: { image: 'qbt', network_mode: 'service:vpn' },
+      },
+    }),
+    { spanningNetworks: new Map([['default', 'tpn_net_default']]) }
+  )
+  const services = compiled.data.services as Record<string, Record<string, unknown>>
+  assertEquals(services.vpn?.networks, ['default'])
+  assertEquals(services.qbittorrent?.networks, undefined)
+  assertEquals(services.qbittorrent?.network_mode, 'service:vpn')
+})

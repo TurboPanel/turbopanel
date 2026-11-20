@@ -23,6 +23,7 @@
  * cannot leak a field Docker would act on into runtime YAML.
  */
 
+import { parseNetworkMode, resolveNetworkModeOwner } from './network-mode.ts'
 import { serviceDnsName } from '../../lib/naming.ts'
 import { pruneUnreferencedComposeNetworks } from './docker-external-networks.ts'
 import { DEPLOY_KEYS_STRIPPED_FROM_RUNTIME } from './field-policy.ts'
@@ -211,6 +212,11 @@ function rewriteSpanningNetworks(
   return next
 }
 
+/** A service with `network_mode` has no network of its own to join or alias. */
+function usesNetworkMode(body: Record<string, unknown>): boolean {
+  return typeof body.network_mode === 'string' && body.network_mode.trim().length > 0
+}
+
 function attachDefaultNetworkIfNeeded(
   services: Record<string, unknown>,
   spanning: ReadonlyMap<string, string>
@@ -218,7 +224,7 @@ function attachDefaultNetworkIfNeeded(
   if (!spanning.has('default')) return services
   const next: Record<string, unknown> = {}
   for (const [name, raw] of Object.entries(services)) {
-    if (!isPlainObject(raw) || raw.networks !== undefined) {
+    if (!isPlainObject(raw) || raw.networks !== undefined || usesNetworkMode(raw)) {
       next[name] = raw
       continue
     }
@@ -239,6 +245,7 @@ function spanningKeysForService(
   body: Record<string, unknown>,
   spanning: ReadonlyMap<string, string>
 ): string[] {
+  if (usesNetworkMode(body)) return []
   const keys =
     body.networks === undefined && spanning.has('default')
       ? ['default']
@@ -397,6 +404,7 @@ function managedIngressHostsForCompiledService(
   const logicalName = logicalNameByCompiled.get(compiledName) ?? compiledName
   const hosts = byService.get(logicalName)
   if (!hosts || hosts.length === 0) return []
+  if (parseNetworkMode(body.network_mode) !== undefined) return []
   const spanning = options.spanningNetworks
   if (spanning && spanning.size > 0 && spanningKeysForService(body, spanning).length === 0) {
     return []
@@ -404,12 +412,46 @@ function managedIngressHostsForCompiledService(
   return hosts
 }
 
-function attachSpanningServiceNetworking(
+/**
+ * A `service:x` service shares x's `/etc/hosts`, and Docker refuses
+ * `extra_hosts` on it, so its managed ingress hosts go to x instead.
+ */
+function managedHostsWithSharedNetworkRedirects(
   services: Record<string, unknown>,
   options: CompileRuntimeOptions,
+  logicalNameByCompiled: ReadonlyMap<string, string>
+): CompileRuntimeOptions {
+  const byService = options.managedIngressHostsByService
+  if (!byService || byService.size === 0) return options
+  const merged = new Map(byService)
+  for (const [name, raw] of Object.entries(services)) {
+    if (!isPlainObject(raw)) continue
+    if (parseNetworkMode(raw.network_mode)?.kind !== 'service') continue
+    const owner = resolveNetworkModeOwner(name, services)
+    if (owner === undefined || owner === name) continue
+    const hosts = byService.get(logicalNameByCompiled.get(name) ?? name)
+    if (!hosts || hosts.length === 0) continue
+    const targetLogical = logicalNameByCompiled.get(owner) ?? owner
+    const seen = new Set((merged.get(targetLogical) ?? []).map((host) => host.name))
+    merged.set(targetLogical, [
+      ...(merged.get(targetLogical) ?? []),
+      ...hosts.filter((host) => !seen.has(host.name)),
+    ])
+  }
+  return { ...options, managedIngressHostsByService: merged }
+}
+
+function attachSpanningServiceNetworking(
+  services: Record<string, unknown>,
+  rawOptions: CompileRuntimeOptions,
   logicalNameByCompiled: ReadonlyMap<string, string>,
   addressByCompiled: ReadonlyMap<string, string | undefined>
 ): Record<string, unknown> {
+  const options = managedHostsWithSharedNetworkRedirects(
+    services,
+    rawOptions,
+    logicalNameByCompiled
+  )
   const spanning = options.spanningNetworks
   const environmentId = options.environmentId
   const spanningHosts = options.spanningHostsByService
