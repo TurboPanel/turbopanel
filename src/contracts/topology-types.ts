@@ -7,7 +7,7 @@
  * helpers, just the shape of a daemon-reported `topology-report` snapshot.
  *
  * Keep this file's field names, optionality, and doc comments aligned with
- * the daemon source — a drift here would silently reinterpret a stored
+ * the daemon source — a drift here would silently reinterpret a
  * stored topology record (`server-topology-records.ts`) differently than the
  * daemon that reported it.
  */
