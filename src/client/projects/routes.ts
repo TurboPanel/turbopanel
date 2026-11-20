@@ -91,7 +91,11 @@ import {
   stampNewEnvironmentDeployOptions,
 } from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import { splitProjectDefaultServer } from '../../features/projects/project-options.ts'
+import {
+  isTrackingComposeSource,
+  parseProjectOptions,
+  splitProjectDefaultServer,
+} from '../../features/projects/project-options.ts'
 import { syncEnvironmentWatch, syncProjectWatch } from '../../features/git/watch-records.ts'
 import {
   allocateProjectSlug,
@@ -650,6 +654,24 @@ async function keepStoredProjectDeployOptions(
     .where(eq(project.id, projectId))
     .limit(1)
   patchFields.options = settleDeployOptions(row?.options, patchFields.options, 'project')
+  keepTrackedComposeSource(row?.options, patchFields.options)
+}
+
+/**
+ * A project that follows its repository's compose file keeps that source
+ * through an options write: the mode and the last-read record belong to the
+ * deploy and to \`PATCH /projects/:id/compose-source\`, not to a settings edit.
+ */
+function keepTrackedComposeSource(stored: unknown, options: Record<string, unknown>): void {
+  const source = parseProjectOptions(stored).composeSource
+  if (!isTrackingComposeSource(source)) return
+  const sent = parseProjectOptions({ composeSource: options.composeSource }).composeSource
+  options.composeSource = {
+    ...(sent ?? source),
+    mode: source.mode,
+    lastReadCommitSha: source.lastReadCommitSha,
+    lastReadDigest: source.lastReadDigest,
+  }
 }
 
 async function assertDefaultServerIdInOrg(
@@ -860,6 +882,23 @@ async function insertCatalogProject(
   return inserted.id
 }
 
+export const BASE_TRACKS_REPOSITORY_ERROR = 'base_tracks_repository'
+const BASE_TRACKS_REPOSITORY_MESSAGE =
+  "This project's Base follows the repository's compose file, so it cannot be edited here. Change the file in the repository, add the change to an environment, or switch the project to seed mode to edit the Base."
+
+async function loadProjectComposeSource(db: Db, projectId: string) {
+  const [row] = await db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  return parseProjectOptions(row?.options).composeSource
+}
+
+async function projectFollowsRepository(db: Db, projectId: string): Promise<boolean> {
+  return isTrackingComposeSource(await loadProjectComposeSource(db, projectId))
+}
+
 /**
  * Sends a compose edit to its target. Returns the body the project patch
  * continues with (without `options` when the edit went to an environment), or
@@ -872,9 +911,18 @@ async function routeComposeEdit(
   projectId: string,
   requestBody: Record<string, unknown>
 ): Promise<Record<string, unknown> | Response> {
-  const editTarget = await resolveEditTarget(db, projectId, requestBody)
+  const tracking = await projectFollowsRepository(db, projectId)
+  const editTarget = await resolveEditTarget(db, projectId, requestBody, tracking)
   if (!editTarget.ok) {
     return c.json({ error: editTarget.error, message: editTarget.message }, 400)
+  }
+  // A project that follows its repository's compose file takes its Base from
+  // each deploy, so an edit to the Base would be overwritten by the next one.
+  if (tracking && editTarget.kind === 'base') {
+    return c.json(
+      { error: BASE_TRACKS_REPOSITORY_ERROR, message: BASE_TRACKS_REPOSITORY_MESSAGE },
+      409
+    )
   }
   if (editTarget.kind !== 'environment') return requestBody
   const refused = await applyEnvironmentPatch(c, db, organizationId, editTarget.environmentId, {
@@ -984,6 +1032,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   router.use('/projects', createSessionMiddleware(secrets))
   router.use('/projects/:id', createSessionMiddleware(secrets))
   router.use('/projects/:id/configure', createSessionMiddleware(secrets))
+  router.use('/projects/:id/compose-source', createSessionMiddleware(secrets))
   router.use('/projects/:id/delete-preview', createSessionMiddleware(secrets))
   router.use('/project-catalog', createSessionMiddleware(secrets))
 
@@ -1204,6 +1253,52 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     return c.json({ ok: true as const })
+  })
+
+  // Switch how the Base relates to the repository's compose file. `track`:
+  // every deploy reads the file at the deployed commit. `seed`: the Base is the
+  // last content a deploy read, and from then on it is the operator's to edit.
+  router.patch('/projects/:id/compose-source', async (c) => {
+    const id = c.req.param('id')
+    const scope = await resolveManageableProject(c, id)
+    if (scope instanceof Response) return scope
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const mode = body.mode
+    if (mode !== 'seed' && mode !== 'track') {
+      return c.json({ error: 'Invalid request', message: 'mode must be seed or track' }, 400)
+    }
+    const updated = await scope.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({ options: project.options })
+        .from(project)
+        .where(eq(project.id, id))
+        .for('update')
+        .limit(1)
+      const options =
+        typeof row?.options === 'object' && row.options !== null
+          ? (row.options as Record<string, unknown>)
+          : {}
+      const source = parseProjectOptions(options).composeSource
+      if (!source) return null
+      const composeSource = { ...source, mode }
+      await tx
+        .update(project)
+        .set({ options: { ...options, composeSource } })
+        .where(eq(project.id, id))
+      await syncProjectWatch(tx, id)
+      return composeSource
+    })
+    if (!updated) {
+      return c.json(
+        {
+          error: 'compose_source_missing',
+          message: 'This project was not created from a repository compose file.',
+        },
+        409
+      )
+    }
+    return c.json({ ok: true as const, composeSource: updated })
   })
 
   router.get('/projects/:id/delete-preview', async (c) => {

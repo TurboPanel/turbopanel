@@ -522,6 +522,11 @@ export const deploySchemas = {
         description:
           'Alias of `id`; pass to `/servers/{id}/commands/{commandId}/log` for the transcript.',
       },
+      composeBase: {
+        type: ['object', 'null'],
+        description:
+          'The compose file a project that follows its repository used as the Base: `{sourceId, ref, path, commitSha, digest}` (digest is the SHA-256 of the file). Null when the project does not follow a file.',
+      },
       generation: {
         type: ['integer', 'null'],
         description: 'Environment compose generation this attempt targeted.',
@@ -683,6 +688,7 @@ export const deploySchemas = {
     properties: {
       id: { type: 'string' },
       environmentId: { type: 'string' },
+      composeBase: { type: ['object', 'null'], description: 'See DeploymentHistoryEntry.composeBase.' },
       generation: { type: ['integer', 'null'] },
       desiredHash: { type: ['string', 'null'] },
       replicaCounts: {
@@ -779,6 +785,8 @@ export const deployPaths = {
     post: {
       tags: ['Environments'],
       summary: 'Deploy environment compose to its pinned server',
+      description:
+        "When the project follows its repository's compose file, the deploy reads that file at the commit it deploys and uses it as the Base. A missing or unusable file stops the deploy: **422** `compose_file_missing` or `compose_file_unparseable`, **502** `compose_source_unavailable`, each with `message`, `sourceId`, `ref`, `path` and `commitSha`. Nothing falls back to an older copy.",
       parameters: [
         {
           name: 'id',
@@ -1125,7 +1133,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Preview the exact compose document that deploy would send',
       description:
-        'Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeFiles` is the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.',
+        'When the project follows its repository\'s compose file, the preview reads the branch head and returns `composeBase`; if that read fails it uses the Base from the last deploy and adds a `compose_base_unreadable` warning. Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeFiles` is the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.',
       parameters: [
         {
           name: 'id',

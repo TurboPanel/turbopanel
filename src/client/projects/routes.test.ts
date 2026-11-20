@@ -2244,3 +2244,138 @@ test('PATCH /projects/:id without a target is refused when the Base already hold
     assertEquals((await storedCompose(ctx, id)).base, WEB_COMPOSE.data)
   })
 })
+
+const TRACKED_SHA = 'a'.repeat(40)
+const TRACKED_DIGEST = 'b'.repeat(64)
+
+/** A Git project the way the wizard creates it, with its repository row. */
+async function withTrackedProject(
+  fn: (ctx: ProjectTestContext, cookie: string, id: string) => Promise<void>
+): Promise<void> {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const [repo] = await ctx.db
+      .insert(repository)
+      .values({
+        organizationId: ctx.organizationId,
+        provider: 'github',
+        repositoryUrl: `https://github.com/example/${crypto.randomUUID()}`,
+      })
+      .returning({ id: repository.id })
+    try {
+      const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', {
+        type: 'docker-compose',
+        workspaceId: ctx.workspaceId,
+        name: 'Tracked Compose',
+        options: {
+          compose: WEB_COMPOSE,
+          composeSource: {
+            sourceId: repo!.id,
+            path: 'compose.yaml',
+            seededCommitSha: TRACKED_SHA,
+            seededDigest: TRACKED_DIGEST,
+          },
+        },
+      })
+      assertEquals(res.status, 200)
+      await fn(ctx, cookie, ((await res.json()) as { id: string }).id)
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM watch WHERE repository_id = ${repo!.id}::uuid`)
+      await ctx.db
+        .update(project)
+        .set({ repositoryId: null })
+        .where(eq(project.organizationId, ctx.organizationId))
+      await ctx.db.delete(repository).where(eq(repository.id, repo!.id))
+    }
+  })
+}
+
+test('POST /projects from a repository seeds the Base and follows the file by default', async () => {
+  await withTrackedProject(async (ctx, _cookie, id) => {
+    const stored = await storedCompose(ctx, id)
+    assertEquals(stored.base, WEB_COMPOSE.data)
+    for (const env of stored.envs) assertEquals(stored.envData(env.id), {})
+    const options = (await projectOptions(ctx, id)) as {
+      composeSource: Record<string, unknown>
+    }
+    assertEquals(options.composeSource.mode, 'track')
+    assertEquals(options.composeSource.lastReadCommitSha, TRACKED_SHA)
+    assertEquals(options.composeSource.lastReadDigest, TRACKED_DIGEST)
+  })
+})
+
+test('a Base edit is refused while the project follows its repository, and allowed after switching to seed', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const refused = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: { compose: WEB_COMPOSE_V2 },
+    })
+    assertEquals(refused.status, 409)
+    assertEquals(((await refused.json()) as { error: string }).error, 'base_tracks_repository')
+    assertEquals((await storedCompose(ctx, id)).base, WEB_COMPOSE.data)
+
+    const seeded = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}/compose-source`, {
+      mode: 'seed',
+    })
+    assertEquals(seeded.status, 200)
+    // The last-read content stays as the editable Base.
+    assertEquals((await storedCompose(ctx, id)).base, WEB_COMPOSE.data)
+
+    // Options are written whole, so a Base edit carries the source along.
+    const { composeSource } = (await projectOptions(ctx, id)) as {
+      composeSource: Record<string, unknown>
+    }
+    const edited = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: { compose: WEB_COMPOSE_V2, composeSource },
+    })
+    assertEquals(edited.status, 200)
+    assertEquals((await storedCompose(ctx, id)).base, WEB_COMPOSE_V2.data)
+
+    const tracking = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}/compose-source`, {
+      mode: 'track',
+    })
+    assertEquals(tracking.status, 200)
+    const options = (await projectOptions(ctx, id)) as { composeSource: { mode: string } }
+    assertEquals(options.composeSource.mode, 'track')
+  })
+})
+
+test('PATCH /projects/:id/compose-source validates the mode and needs a followed file', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const invalid = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}/compose-source`, {
+      mode: 'sometimes',
+    })
+    assertEquals(invalid.status, 400)
+    const plain = await createEmptyProject(ctx, cookie, 'No Source')
+    const missing = await sendProjectJson(
+      ctx,
+      cookie,
+      'PATCH',
+      `/projects/${plain}/compose-source`,
+      {
+        mode: 'track',
+      }
+    )
+    assertEquals(missing.status, 409)
+    assertEquals(((await missing.json()) as { error: string }).error, 'compose_source_missing')
+  })
+})
+
+test('a settings edit cannot change the mode or the last read of a followed file', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const { composeSource } = (await projectOptions(ctx, id)) as {
+      composeSource: Record<string, unknown>
+    }
+    const res = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: {
+        containerNaming: 'custom',
+        composeSource: { ...composeSource, mode: 'seed', lastReadDigest: 'c'.repeat(64) },
+      },
+    })
+    assertEquals(res.status, 200)
+    const after = (await projectOptions(ctx, id)) as { composeSource: Record<string, unknown> }
+    assertEquals(after.composeSource.mode, 'track')
+    assertEquals(after.composeSource.lastReadDigest, TRACKED_DIGEST)
+  })
+})

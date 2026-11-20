@@ -185,7 +185,16 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
+import {
+  resolveEffectivePlacementServerId,
+  type ComposeBaseRecord,
+  type TrackedBaseError,
+} from '../../features/projects/project-options.ts'
+import {
+  resolveDeployProjectOptions,
+  previewBaseFallbackMessage,
+  type DeployProjectOptionsMode,
+} from './deploy-tracked-base.ts'
 import {
   type DestroyDataPlan,
   parseDestroyRequest,
@@ -427,6 +436,38 @@ function responseForPrepareError(c: Context<AppEnv>, prepared: DeployPrepareErro
   return c.json(mapped.body, { status: mapped.status as 400 | 409 | 422 })
 }
 
+/**
+ * The tracked compose file could not be used. 422 when the file itself is the
+ * problem (missing, not a compose document), 502 when the repository could not
+ * be reached; the body always names the file and the commit.
+ */
+function responseForTrackedBaseError(c: Context<AppEnv>, error: TrackedBaseError): Response {
+  const status = error.code === 'compose_source_unavailable' ? 502 : 422
+  return c.json(
+    {
+      error: error.code,
+      message: error.message,
+      sourceId: error.sourceId,
+      ref: error.ref,
+      path: error.path,
+      ...(error.commitSha === undefined ? {} : { commitSha: error.commitSha }),
+    },
+    { status }
+  )
+}
+
+/**
+ * A head read of the tracked file is the commit the matching builds must use,
+ * so one deploy is one commit. A trigger that already named a commit keeps it.
+ */
+function selectionPinnedToTrackedBase(
+  selection: DeploySourceSelection,
+  pin: { sourceId: string; ref: string; commitSha: string } | undefined
+): DeploySourceSelection {
+  if (!pin || selection.commitSha !== null) return selection
+  return { ...selection, ref: pin.ref, commitSha: pin.commitSha, sourceId: pin.sourceId }
+}
+
 function responseForFabricGate(
   c: Context<AppEnv>,
   outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>
@@ -565,6 +606,8 @@ export async function authorizeDeployRequest(
 }
 
 type DeployCommandCreateParams = DeployActor & {
+  /** The Base a repository-following project used; recorded on the command context. */
+  composeBase: ComposeBaseRecord | null
   serverId: string
   environmentId: string
   projectId: string
@@ -835,6 +878,7 @@ async function createDeployCommand(
       serverId: params.serverId,
       generation: params.generation,
       desiredHash: params.desiredHash,
+      composeBase: params.composeBase ?? undefined,
       replicaCounts: replicaCounts ?? undefined,
       // A hostings-only run builds nothing, so it publishes no release a
       // rollback could be offered.
@@ -914,6 +958,7 @@ function createParamsForPreparedServer(
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
+    composeBase: ComposeBaseRecord | null
     /** Ports other environments already hold on this server; allocation probes past them. */
     reservedListenPorts?: ReadonlySet<number>
     /** The folders planned for this server's deploy; their references ride on the payload. */
@@ -940,6 +985,7 @@ function createParamsForPreparedServer(
     actorType: params.actorType,
     actorId: params.actorId,
     selection: params.selection,
+    composeBase: params.composeBase,
     environmentId: params.environmentId,
     projectId: params.projectId,
     organizationId: params.organizationId,
@@ -1180,6 +1226,8 @@ async function persistDeployFanOut(
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
+    /** The tracked Base this deploy used, recorded on each command's context. */
+    composeBase: ComposeBaseRecord | null
     /** Service rows that left the compose file; each server is asked about its own sites. */
     removedServices?: readonly { id: string; composeServiceName: string }[]
   }
@@ -1244,6 +1292,7 @@ async function persistDeployFanOut(
           hostLevelApproved: params.hostLevelApproved,
           remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
           selection: params.selection,
+          composeBase: params.composeBase,
           reservedListenPorts: reservedPorts.get(row.serverId),
         })
         listenPortsByServer.set(row.serverId, deployListenPorts(createParams))
@@ -1410,6 +1459,7 @@ async function preparePreviewByServer(
       serverId,
       organizationId: args.organizationId,
       mode: 'preview',
+      projectOptions: planned.projectOptions,
       composeValidated: planned.composeValidated,
       releaseIds,
       schedule: scheduleSliceForServer(
@@ -1573,7 +1623,8 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
         { actorType: 'user', actorId: auth.userId },
         auth.organizationId,
         false
-      )
+      ),
+      { mode: 'preview' }
     )
     if (planned instanceof Response) return planned
 
@@ -1642,7 +1693,23 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
         composeKey: row.composeKey,
         volumeName: row.volumeName,
       })),
+      // The Base this preview used when the project follows a repository file:
+      // the file at the branch head, or the last deployed one (see `warnings`).
+      composeBase: planned.composeBase,
       warnings: [
+        ...(planned.composeBaseUnreadable
+          ? [
+              {
+                code: 'compose_base_unreadable' as const,
+                message: previewBaseFallbackMessage(planned.composeBaseUnreadable),
+                details: {
+                  sourceId: planned.composeBaseUnreadable.sourceId,
+                  path: planned.composeBaseUnreadable.path,
+                  reason: planned.composeBaseUnreadable.code,
+                },
+              },
+            ]
+          : []),
         ...preparedByServer.flatMap((row) => row.prepared.warnings),
         ...unresolvedInterpolationWarnings(
           first?.prepared.composeYaml ?? '',
@@ -1790,16 +1857,35 @@ async function resolveSuccessfulPlan(
   db: Db,
   environmentId: string,
   organizationId: string,
-  hostAccess: HostAccessActor
+  hostAccess: HostAccessActor,
+  tracked: {
+    mode: DeployProjectOptionsMode
+    skipRead?: boolean
+    selection?: DeploySourceSelection
+  }
 ): Promise<SuccessfulPlannedDeploy | Response> {
   const planned = await planEnvironmentDeploy(db, {
     environmentId,
     organizationId,
     hostAccess,
+    // A project that follows its repository's compose file deploys the file at
+    // the commit being deployed; the layers below it are unchanged.
+    resolveProjectOptions: (row) =>
+      resolveDeployProjectOptions(c, db, {
+        organizationId,
+        projectId: row.id,
+        projectOptions: row.options,
+        mode: tracked.mode,
+        ...(tracked.skipRead ? { skipRead: true } : {}),
+        ...(tracked.selection ? { selection: tracked.selection } : {}),
+      }),
   })
   if ('kind' in planned) {
     if (planned.kind === 'not_found') {
       return c.json({ error: 'Not found' }, 404)
+    }
+    if (planned.kind === 'tracked_base_failed') {
+      return responseForTrackedBaseError(c, planned.error)
     }
     // The merged document was refused before planning wrote anything. Answer
     // with the prepare-error body, so the diagnosis does not depend on which
@@ -2037,6 +2123,7 @@ async function prepareOneServerDeploy(
     serverId: params.serverId,
     organizationId: params.auth.organizationId,
     acknowledgeHealthCheckWarnings: params.auth.acknowledgeHealthCheckWarnings,
+    projectOptions: params.planned.projectOptions,
     composeValidated: params.planned.composeValidated,
     schedule: scheduleSliceForPreparedServer(params),
     sourceSelection: params.selection,
@@ -2309,7 +2396,12 @@ async function runEnvironmentDeploy(
       auth.organizationId,
       auth.hostingsOnly !== true,
       c.get('session')?.email ?? null
-    )
+    ),
+    {
+      mode: 'deploy',
+      skipRead: auth.rollback !== undefined || auth.hostingsOnly === true,
+      selection: auth.selection,
+    }
   )
   if (planned instanceof Response) return planned
 
@@ -2348,7 +2440,7 @@ async function runEnvironmentDeploy(
       planned,
       environmentId,
       auth,
-      selection: auth.selection,
+      selection: selectionPinnedToTrackedBase(auth.selection, planned.composeBasePin),
       dataEncryptionSecrets,
       ...spanningCtx,
     })
@@ -2390,6 +2482,7 @@ async function runEnvironmentDeploy(
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
       selection: auth.selection,
+      composeBase: planned.composeBase,
       removedServices: removedServiceRows(planned.serviceRows, servicesMapping(planned.merged)),
     })
     if (persisted instanceof Response) return persisted

@@ -349,7 +349,30 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   compose (a catalog entry's shared compose merged with each environment's own,
   `catalog-compose.ts`) into the environment's own changes, so a deploy sees the
   same merged compose as before. A compose that names a repository
-  (`composeSource`) or has project overlays stays in the Base for now.
+  (`composeSource`) or has project overlays stays in the Base.
+- **A project from a Git repository follows its compose file:** the wizard
+  seeds the file into the Base (never the environment layer) and
+  `composeSource.mode` defaults to `track` (`lastReadCommitSha` and
+  `lastReadDigest` start as the seeded values). In `track` mode every deploy
+  reads `composeSource.path` at the commit it deploys through the repository
+  inspect path (`environments/deploy-tracked-base.ts`, no second clone; a
+  push's commit, else the head of `composeSource.ref` or the default branch,
+  and the same commit pins the builds), uses it as the Base, and layers the
+  environment's changes on top. The deploy command's `context.composeBase`
+  (`{sourceId, ref, path, commitSha, digest}`) is returned as `composeBase` on
+  deployment history and on the preview. A missing or unusable file fails the
+  deploy, with no fallback: 422 `compose_file_missing` /
+  `compose_file_unparseable`, 502 `compose_source_unavailable`, each with
+  `message`, `sourceId`, `ref`, `path`, `commitSha`. Rollbacks and
+  hostings-only runs keep the stored Base. A successful deploy stores what it
+  read as the Base, so listings, lint and a switch to `seed` see the last-read
+  content; the environment-layer lint therefore uses the last-deployed Base.
+  Preview reads the branch head and, when that fails, uses the stored Base with
+  a `compose_base_unreadable` warning. Known limit: the read passes no daemon
+  credential, so a private repository the provider cannot read may need its
+  connection fixed. Base edits in `track` mode are **409** `base_tracks_repository`;
+  `PATCH /projects/:id/compose-source {mode}` switches between `track` and
+  `seed` (seed keeps the last-read Base editable).
 - **A new environment is a copy of the primary one:** `POST /environments`
   without `options` copies the primary's `compose` and `composeOverlays`
   (`start: 'copy'`, the default; `features/projects/primary-environment-copy.ts`)

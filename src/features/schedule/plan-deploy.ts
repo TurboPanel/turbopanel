@@ -39,6 +39,11 @@ import { interpretServiceSchedule } from './interpret.ts'
 import { reconcileServicesFromCompose } from '../deploy/reconcile-services.ts'
 import { registerComposeVolumes } from '../deploy/register-compose-volumes.ts'
 import { registerComposeMounts } from '../deploy/register-compose-mounts.ts'
+import type {
+  ComposeBaseRecord,
+  DeployProjectOptions,
+  TrackedBaseError,
+} from '../projects/project-options.ts'
 import { loadPairRules } from '../fabric/pair-rules.ts'
 import { readOverlayDeclaredNetworkKeys } from '../fabric/spanning.ts'
 import {
@@ -205,12 +210,21 @@ export type PlannedDeploy = {
   merged: ComposeDocument
   serviceRows: Array<{ id: string; composeServiceName: string; options: unknown }>
   projectId: string
+  /** The project options the plan merged: the tracked Base is already swapped in. */
   projectOptions: unknown
+  /** The Base this deploy used when the project follows a repository file; else `null`. */
+  composeBase: ComposeBaseRecord | null
+  /** Commit the tracked read resolved from a branch head, to pin the matching builds to. */
+  composeBasePin?: { sourceId: string; ref: string; commitSha: string }
+  /** Set by a preview that fell back to the stored Base because the file could not be read. */
+  composeBaseUnreadable?: TrackedBaseError
 }
 
 export type PlanDeployError =
   | { kind: 'not_found' }
   | { kind: 'invalid_compose' }
+  /** The project follows its repository's compose file and that file could not be used. */
+  | { kind: 'tracked_base_failed'; error: TrackedBaseError }
   /**
    * The merged document is a document TurboPanel will refuse to deploy.
    *
@@ -375,6 +389,14 @@ export async function planEnvironmentDeploy(
     organizationId: string
     /** Required: there is no default actor, so a new caller cannot skip the gate. */
     hostAccess: HostAccessActor
+    /**
+     * Swaps in the repository's compose file as the Base when the project
+     * follows one. Omitted by callers that do not read repositories.
+     */
+    resolveProjectOptions?: (row: {
+      id: string
+      options: unknown
+    }) => Promise<DeployProjectOptions>
   },
   deps: PlanEnvironmentDeployDeps = {}
 ): Promise<PlannedDeploy | PlanDeployError> {
@@ -413,7 +435,11 @@ export async function planEnvironmentDeploy(
     id: envRow.id,
     name: envRow.name,
   })
-  const merged = resolveMergedCompose(projectRow.options, envRow.options, filename)
+  const resolvedOptions: DeployProjectOptions = params.resolveProjectOptions
+    ? await params.resolveProjectOptions(projectRow)
+    : { ok: true, options: projectRow.options, base: null }
+  if (!resolvedOptions.ok) return { kind: 'tracked_base_failed', error: resolvedOptions.error }
+  const merged = resolveMergedCompose(resolvedOptions.options, envRow.options, filename)
   if ('kind' in merged) return merged
 
   const [orgRow] = await db
@@ -534,6 +560,9 @@ export async function planEnvironmentDeploy(
     merged,
     serviceRows,
     projectId: projectRow.id,
-    projectOptions: projectRow.options,
+    projectOptions: resolvedOptions.options,
+    composeBase: resolvedOptions.base,
+    ...(resolvedOptions.pin ? { composeBasePin: resolvedOptions.pin } : {}),
+    ...(resolvedOptions.unreadable ? { composeBaseUnreadable: resolvedOptions.unreadable } : {}),
   }
 }

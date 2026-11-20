@@ -56,7 +56,13 @@ async function baseHasContent(db: Db, projectId: string): Promise<boolean> {
 export async function resolveEditTarget(
   db: Db,
   projectId: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  /**
+   * The Base is the repository's compose file, which no edit may change. Its
+   * content then says nothing about where an untargeted edit should go, so the
+   * edit lands on the one environment instead of being refused for it.
+   */
+  baseFollowsRepository = false
 ): Promise<EditTarget> {
   if (!carriesConfiguration(body)) return { ok: true, kind: 'none' }
 
@@ -79,7 +85,7 @@ export async function resolveEditTarget(
           "This project has more than one environment. Send target: an environment id, or 'base' to change what every environment inherits.",
       }
     }
-    if (await baseHasContent(db, projectId)) {
+    if (!baseFollowsRepository && (await baseHasContent(db, projectId))) {
       return {
         ok: false,
         error: EDIT_TARGET_REQUIRED_ERROR,
