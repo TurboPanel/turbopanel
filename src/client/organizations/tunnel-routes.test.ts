@@ -1691,8 +1691,9 @@ test('a name on a datacenter site can also be reached directly, and closed again
 
 test('a name on a public site cannot be opened for direct visitors, and a local one is refused too', async () => {
   await withFixture(async (f) => {
+    const r = await reachFixture(f, 'public')
     for (const bind of ['public', 'local']) {
-      const r = await reachFixture(f, bind, `${bind}.example.com`)
+      await f.db.update(hosting).set({ options: { bind } }).where(eq(hosting.id, r.site))
       const res = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
       assertEquals(res.status, 409, res.text)
       assertEquals(res.body.error, 'doorway_bind_not_datacenter')
@@ -1730,14 +1731,29 @@ test('opening a name moves only an untouched default certificate to the direct d
   await withFixture(async (f) => {
     const r = await reachFixture(f, 'datacenter')
     const set = (certificate: string | null) =>
-      f.db.update(hostname).set({ certificate }).where(eq(hostname.hostingId, r.site))
+      f.db
+        .update(hostname)
+        .set({ certificate })
+        .where(and(eq(hostname.hostingId, r.site), eq(hostname.hostname, 'reach.example.com')))
     const read = async () =>
-      (await f.db.select().from(hostname).where(eq(hostname.hostingId, r.site)))[0]!.certificate
-    await set('cloudflare_origin')
+      (
+        await f.db
+          .select()
+          .from(hostname)
+          .where(and(eq(hostname.hostingId, r.site), eq(hostname.hostname, 'reach.example.com')))
+      )[0]!.certificate
+    // A certificate the person picked stays as it is.
+    await set('letsencrypt_http')
     const picked = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
     assertEquals(picked.status, 200, picked.text)
-    // A certificate the person picked stays as it is.
-    assertEquals(await read(), 'cloudflare_origin')
+    assertEquals(await read(), 'letsencrypt_http')
     assertEquals(picked.body.certificateChangedNames, [])
+    await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: true })
+    // The default of a tunnel-only name moves to the default of a name reached both ways.
+    await set('cloudflare_origin')
+    const moved = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(moved.status, 200, moved.text)
+    assertEquals(moved.body.certificateChangedNames, ['reach.example.com'])
+    assert((await read()) !== 'cloudflare_origin')
   })
 })
