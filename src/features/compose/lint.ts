@@ -9,6 +9,7 @@ import {
   type YAMLMap,
   type YAMLSeq,
 } from 'yaml'
+import { parseNetworkMode } from './network-mode.ts'
 import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 import {
   type ComposeServiceKind,
@@ -527,12 +528,16 @@ function lintServiceNetworkMode(
   const extension = serviceExtensionMap(valueNode)
   const hostingNode = extension ? mapEntryValue(extension, 'hosting') : undefined
   if (!isSeq(hostingNode) || (hostingNode as YAMLSeq).items.length === 0) return
-  const shared = /^(service|container):(.+)$/.exec(mode)
-  if (shared === null && mode !== 'none') return
-  const message =
-    shared === null
-      ? `Service "${name}" uses network_mode none, so an ingress route cannot reach it. Remove the hosting entry.`
-      : `Service "${name}" shares the network of ${shared[1]} "${shared[2]}", so its ports are served by that ${shared[1]}. Declare the ingress route on "${shared[2]}" instead.`
+  const share = parseNetworkMode(mode)
+  if (share === undefined) return
+  let message: string
+  if (share.kind === 'service') {
+    message = `Service "${name}" shares the network of service "${share.target}", so its ports are served by "${share.target}". Declare the ingress route on "${share.target}" instead.`
+  } else if (share.kind === 'container') {
+    message = `Service "${name}" shares the network of container "${share.target}", so its ports are served there and a hostname route cannot reach this service. Remove the hosting entry.`
+  } else {
+    message = `Service "${name}" uses network_mode ${share.kind}, so it is not on the project network and a hostname route cannot reach it. Remove the hosting entry or the network_mode.`
+  }
   issues.push({
     level: 'error',
     message,

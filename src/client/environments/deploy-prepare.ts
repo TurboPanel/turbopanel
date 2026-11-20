@@ -1,4 +1,5 @@
 import { attachBuildLimits } from '../../features/deploy/build-limits.ts'
+import { redirectNetworkModeNames } from '../../features/compose/network-mode.ts'
 import type { Context } from 'hono'
 import {
   buildServiceVariablesViews,
@@ -4095,7 +4096,12 @@ export async function prepareDeployCompose(
     pipeline.expansion,
     params.serverId
   )
-  const boundNames = managedBindings.bound.filter((name) => !hostNativeNames.has(name))
+  // A service with `network_mode` has no network to attach; a `service:x` one
+  // hands its binding to x, whose network it shares.
+  const boundNames = redirectNetworkModeNames(
+    managedBindings.bound.filter((name) => !hostNativeNames.has(name)),
+    composeServicesRecord(split.containerDocument)
+  ).sort((a, b) => a.localeCompare(b))
   const managedLogicalNames = localManagedNetworkServiceNames(
     boundNames,
     params.schedule?.managedIngressHostsByService,

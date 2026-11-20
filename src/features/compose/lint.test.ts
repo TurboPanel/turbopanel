@@ -1438,7 +1438,7 @@ test('a hosting route on a service sharing another network names the service to 
   assertEquals(issues[0]?.message.includes('Declare the ingress route on "vpn"'), true)
 })
 
-test('a hosting route on a network_mode none service is refused, host is left alone', () => {
+test('a hosting route on a network_mode none, host or container service is refused', () => {
   const route = `
     x-turbopanel:
       hosting:
@@ -1450,5 +1450,11 @@ test('a hosting route on a network_mode none service is refused, host is left al
   const host = lintWithoutResourceAdvisory(
     VPN_PAIR.replace('network_mode: service:vpn', `network_mode: host${route}`)
   ).filter((issue) => issue.level === 'error')
-  assertEquals(host, [])
+  assertEquals(host.length, 1)
+  assertEquals(host[0]?.message.includes('not on the project network'), true)
+  const container = lintWithoutResourceAdvisory(
+    VPN_PAIR.replace('network_mode: service:vpn', `network_mode: container:other${route}`)
+  ).filter((issue) => issue.level === 'error')
+  assertEquals(container.length, 1)
+  assertEquals(container[0]?.message.includes('container "other"'), true)
 })
