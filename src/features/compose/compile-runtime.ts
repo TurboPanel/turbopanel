@@ -211,6 +211,11 @@ function rewriteSpanningNetworks(
   return next
 }
 
+/** A service with `network_mode` has no network of its own to join or alias. */
+function usesNetworkMode(body: Record<string, unknown>): boolean {
+  return typeof body.network_mode === 'string' && body.network_mode.length > 0
+}
+
 function attachDefaultNetworkIfNeeded(
   services: Record<string, unknown>,
   spanning: ReadonlyMap<string, string>
@@ -218,7 +223,7 @@ function attachDefaultNetworkIfNeeded(
   if (!spanning.has('default')) return services
   const next: Record<string, unknown> = {}
   for (const [name, raw] of Object.entries(services)) {
-    if (!isPlainObject(raw) || raw.networks !== undefined) {
+    if (!isPlainObject(raw) || raw.networks !== undefined || usesNetworkMode(raw)) {
       next[name] = raw
       continue
     }
@@ -239,6 +244,7 @@ function spanningKeysForService(
   body: Record<string, unknown>,
   spanning: ReadonlyMap<string, string>
 ): string[] {
+  if (usesNetworkMode(body)) return []
   const keys =
     body.networks === undefined && spanning.has('default')
       ? ['default']

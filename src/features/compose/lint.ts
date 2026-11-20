@@ -498,6 +498,49 @@ function lintServiceHosting(
   }
 }
 
+/**
+ * `network_mode` replaces the service's own network stack, so it cannot be
+ * combined with `networks`, and an ingress route cannot target the service by
+ * name: for `service:<x>` / `container:<x>` the ports live in the shared
+ * namespace, and for `none` there is nothing to reach.
+ */
+function lintServiceNetworkMode(
+  name: string,
+  valueNode: YAMLMap,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[]
+): void {
+  const modeNode = mapEntryValue(valueNode, 'network_mode')
+  const mode = scalarString(modeNode)?.trim()
+  if (mode === undefined || mode.length === 0) return
+
+  const networksNode = mapEntryValue(valueNode, 'networks')
+  if (networksNode !== undefined && networksNode !== null) {
+    issues.push({
+      level: 'error',
+      message: `Service "${name}" sets both network_mode (${mode}) and networks; they are mutually exclusive. Remove networks.`,
+      path: `services.${name}.networks`,
+      line: nodeLine(networksNode, lineCounter),
+    })
+  }
+
+  const extension = serviceExtensionMap(valueNode)
+  const hostingNode = extension ? mapEntryValue(extension, 'hosting') : undefined
+  if (!isSeq(hostingNode) || (hostingNode as YAMLSeq).items.length === 0) return
+  const shared = /^(service|container):(.+)$/.exec(mode)
+  if (shared === null && mode !== 'none') return
+  const message =
+    shared === null
+      ? `Service "${name}" uses network_mode none, so an ingress route cannot reach it. Remove the hosting entry.`
+      : `Service "${name}" shares the network of ${shared[1]} "${shared[2]}", so its ports are served by that ${shared[1]}. Declare the ingress route on "${shared[2]}" instead.`
+  issues.push({
+    level: 'error',
+    message,
+    path: `services.${name}.x-turbopanel.hosting`,
+    line: nodeLine(hostingNode as Node, lineCounter),
+  })
+}
+
 /** `serviceKind` as authored, narrowed for the kind-gated hosting rules. */
 function hostingServiceKind(serviceKind: string | null): ComposeServiceKind | undefined {
   const trimmed = serviceKind?.trim()
@@ -1593,6 +1636,7 @@ function lintService(params: {
   lintServiceSource(name, valueNode, known, lineCounter, issues)
   lintServicePrincipal(name, valueNode, known, lineCounter, issues)
   lintServiceHosting(name, valueNode, known, lineCounter, issues)
+  lintServiceNetworkMode(name, valueNode, lineCounter, issues)
   lintServiceNodeVersion(name, valueNode, lineCounter, issues)
   lintServiceDenoVersion(name, valueNode, lineCounter, issues)
   lintServiceResourceLimits(name, valueNode, keyLine, issues)
