@@ -2705,7 +2705,7 @@ test('live WS update-result and heartbeat with addresses cover inbound dispatch'
 })
 
 /**
- * `createMockDb` plus an `insert(topologyGeneration)` chain that captures the
+ * `createMockDb` plus an `update(hardware)` chain that captures the
  * written row — connect-time projection (`onDaemonConnected`) still needs the
  * base `select`/`update` chain.
  */
@@ -2740,16 +2740,12 @@ test('live WS topology-report writes the daemon-reported snapshot and its own ti
       })
 
       const daemonSnapshot = {
-        generation: 3,
-        bootGeneration: 1,
         networks: [{ deviceId: 'mac:aa:bb:cc:dd:ee:ff', kind: 'uplink' }],
       }
       const reportedAt = '2026-01-01T00:05:00.000Z'
       ws.send(
         JSON.stringify({
           type: 'topology-report',
-          generation: 3,
-          bootGeneration: 1,
           snapshot: daemonSnapshot,
           at: reportedAt,
         })
@@ -2758,12 +2754,10 @@ test('live WS topology-report writes the daemon-reported snapshot and its own ti
 
       const values = getInsertedValues()
       assertEquals(values.length, 1)
-      // Stored directly — never re-wrapped as `{ generation, bootGeneration, snapshot }`.
+      // Stored directly — never re-wrapped.
       assertEquals(values[0]?.snapshot, daemonSnapshot)
       // The daemon's own report time, not a control-plane receipt timestamp.
       assertEquals(values[0]?.appliedAt, reportedAt)
-      assertEquals(values[0]?.generation, 3)
-      assertEquals(values[0]?.bootGeneration, 1)
       assertEquals(values[0]?.serverId, serverId)
 
       ws.close(1000, 'done')

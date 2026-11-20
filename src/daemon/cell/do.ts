@@ -82,7 +82,7 @@ import {
   persistUpgradeProgress,
 } from '../../features/upgrades/persist.ts'
 import { enqueueLatestRecordedCapabilityPlan } from '../../client/servers/capability-plan-push.ts'
-import { recordTopologyGeneration } from '../../features/servers/server-topology-records.ts'
+import { recordTopologyReport } from '../../features/servers/server-topology-records.ts'
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
@@ -2669,9 +2669,7 @@ export class DaemonCellObject {
     if (parsed.type === 'topology-report') {
       await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
-        await recordTopologyGeneration(db, attachment.serverId, {
-          generation: parsed.generation,
-          bootGeneration: parsed.bootGeneration,
+        await recordTopologyReport(db, attachment.serverId, {
           snapshot: parsed.snapshot,
           appliedAt: parsed.at,
         })

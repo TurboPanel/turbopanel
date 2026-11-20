@@ -1155,18 +1155,14 @@ export type DaemonMessage =
       /**
        * Daemon-initiated, fire-and-forget (no correlated request/result, same
        * shape as `managed-ha-event`): the daemon's `topology/` module reporting
-       * a new topology generation (stable device/filesystem/GPU/signal
+       * a new topology (stable device/filesystem/GPU/signal
        * identity). Server identity comes from the authenticated connection, not
        * a wire field — see `managed-ha-event`'s precedent.
        *
-       * `generation` and `bootGeneration` are deprecated and optional: the
-       * control plane tells topologies apart by their content
-       * (`topologyIdentityKey`), and a daemon leaves both out once the control
-       * plane lists `topology-generation-optional-v1`.
+       * The control plane tells topologies apart by their content
+       * (`topologyIdentityKey`); the report carries no generation number.
        */
       type: 'topology-report'
-      generation?: number
-      bootGeneration?: number
       snapshot: unknown
       at: string
     }
@@ -1966,22 +1962,8 @@ function isNonNegativeInt(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0
 }
 
-/** Largest generation number the control plane stores (a Postgres `integer`). */
-const MAX_TOPOLOGY_REPORT_GENERATION = 2_147_483_647
-
-function isTopologyGenerationNumber(value: unknown): value is number {
-  return isNonNegativeInt(value) && value <= MAX_TOPOLOGY_REPORT_GENERATION
-}
-
 function validateTopologyReportFields(record: Record<string, unknown>): string | null {
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
-  // Optional (older daemons send them); a value that is sent must still fit.
-  if (record.generation !== undefined && !isTopologyGenerationNumber(record.generation)) {
-    return 'invalid generation'
-  }
-  if (record.bootGeneration !== undefined && !isTopologyGenerationNumber(record.bootGeneration)) {
-    return 'invalid bootGeneration'
-  }
   return validateTopologyReportSnapshot(record.snapshot)
 }
 

@@ -117,7 +117,7 @@ import {
 } from '../features/managed/auto-failover-switch.ts'
 import { createFreshStandbyProbe } from '../client/managed/health-probe.ts'
 import { enqueueLatestRecordedCapabilityPlan } from '../client/servers/capability-plan-push.ts'
-import { recordTopologyGeneration } from '../features/servers/server-topology-records.ts'
+import { recordTopologyReport } from '../features/servers/server-topology-records.ts'
 import { createInboundWindowGate } from './rate-limit/inbound-window.ts'
 import { daemonConnectRateLimitKey } from './rate-limit/keys.ts'
 import {
@@ -684,9 +684,7 @@ async function handleDaemonTopologyReportInbound(params: {
   reporterServerId: string
 }): Promise<void> {
   const { cell, db, connectionId, message } = params
-  await recordTopologyGeneration(db, params.reporterServerId, {
-    generation: message.generation,
-    bootGeneration: message.bootGeneration,
+  await recordTopologyReport(db, params.reporterServerId, {
     snapshot: message.snapshot,
     appliedAt: message.at,
   })

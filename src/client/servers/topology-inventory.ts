@@ -1,6 +1,6 @@
 /**
  * Builds UI-facing entity inventories from a daemon-reported `TopologySnapshot`
- * (`getLatestTopologyGeneration` / `server-topology-records.ts`) plus its
+ * (`getLatestServerTopology` / `server-topology-records.ts`) plus its
  * derived `SlotMapping` (`topology-slot-mapping.ts`) — the label/role metadata
  * the v5 metrics routes attach to `network`/`filesystem`/`block`/`gpu`/
  * `hardwareSignal` entity series so a chart legend never has to show a bare
