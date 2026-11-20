@@ -226,6 +226,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tls-capture-v1',
   'acme-issue-v1',
   'command-recovery-v1',
+  'command-recovery-v2',
   'managed-switchover-final-position-v1',
   'host-capacity-v1',
   'server-network-check-v1',
@@ -414,6 +415,14 @@ export const DEPLOY_CONFIG_FILES_FEATURE: DaemonWireFeature = 'deploy-config-fil
  * fixed run cap, worded as "no result came back".
  */
 export const COMMAND_RECOVERY_FEATURE: DaemonWireFeature = 'command-recovery-v1'
+
+/**
+ * The daemon sends `hello.commandState` (`CommandStateReport`): the ids it
+ * still holds state for, in memory and in its on-disk journal. With
+ * `complete: true`, a sent and unacked command whose id is missing was never
+ * started by that daemon, so it is sent again whatever its type.
+ */
+export const COMMAND_RECOVERY_V2_FEATURE: DaemonWireFeature = 'command-recovery-v2'
 
 /**
  * The daemon reports the old primary's final write position on a Postgres

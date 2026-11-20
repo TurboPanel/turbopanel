@@ -2,6 +2,7 @@ import { assertEquals, assertStringIncludes } from '@std/assert'
 import type { PendingRequestRecord } from '../../contracts/cell.ts'
 import type {
   CommandRecoveryReport,
+  CommandStateReport,
   DaemonOutboundEnvelope,
 } from '../../contracts/cell-protocol.ts'
 import type { Db } from '../../db/connection.ts'
@@ -48,6 +49,7 @@ test('the text is capped', () => {
 
 const SERVER_ID = 'server-1'
 const RECOVERY_FEATURES = ['command-recovery-v1']
+const RECOVERY_V2_FEATURES = ['command-recovery-v1', 'command-recovery-v2']
 
 function request(requestId: string, patch: Partial<PendingRequestRecord> = {}) {
   return {
@@ -63,13 +65,24 @@ function request(requestId: string, patch: Partial<PendingRequestRecord> = {}) {
 
 type Fixture = {
   requests: Map<string, PendingRequestRecord>
-  rows: Map<string, { type: string; status: string; ackedAt: string | null; serverId: string }>
+  rows: Map<
+    string,
+    {
+      type: string
+      status: string
+      ackedAt: string | null
+      serverId: string
+      sentAt?: string
+      createdAt?: string
+    }
+  >
   sent: DaemonOutboundEnvelope[]
   dbOpened: () => number
   run: (
     features: string[] | undefined,
     report: CommandRecoveryReport | undefined,
-    attachedAt?: string
+    attachedAt?: string,
+    commandState?: CommandStateReport
   ) => Promise<string[]>
 }
 
@@ -97,14 +110,14 @@ function fixture(): Fixture {
     rows,
     sent,
     dbOpened: () => opened,
-    run: (features, report, attachedAt) =>
+    run: (features, report, attachedAt, commandState) =>
       redeliverLostCommands(
         cell as never,
         (fn) => {
           opened++
           return fn({} as Db)
         },
-        { serverId: SERVER_ID, features, report, attachedAt },
+        { serverId: SERVER_ID, features, report, commandState, attachedAt },
         reads
       ),
   }
@@ -122,7 +135,15 @@ function addCommand(
     status: 'sent',
     ackedAt: null,
     serverId: SERVER_ID,
+    sentAt: new Date(Date.now() - 60_000).toISOString(),
+    createdAt: new Date(Date.now() - 60_000).toISOString(),
   })
+}
+
+const PROCESS_START_ID = '3f2b8a52-0c1e-4c58-9d7e-5b2f6a1d9e10'
+
+function state(known: string[], complete: boolean): CommandStateReport {
+  return { processStartId: PROCESS_START_ID, known, complete }
 }
 
 test('a sent command the daemon never acknowledged and does not report is sent again', async () => {
@@ -282,4 +303,50 @@ test('an id listed twice in one hello is sent once', async () => {
   fx.requests.values = () => [...original(), ...original()][Symbol.iterator]() as never
   assertEquals(await fx.run(RECOVERY_FEATURES, undefined), ['dup'])
   assertEquals(fx.sent.length, 1)
+})
+
+test('a complete commandState sends every unknown sent command again, of any type', async () => {
+  const fx = fixture()
+  addCommand(fx, 'deploy', {}, 'environment.deploy')
+  addCommand(fx, 'destroy', {}, 'managed.destroy')
+  addCommand(fx, 'held', {}, 'environment.deploy')
+  addCommand(fx, 'reconcile', {}, 'system.reconcile')
+  const resent = await fx.run(RECOVERY_V2_FEATURES, undefined, undefined, state(['held'], true))
+  assertEquals(resent.sort(), ['deploy', 'destroy', 'reconcile'])
+})
+
+test('an incomplete or missing commandState keeps the allowlist', async () => {
+  for (const commandState of [state([], false), undefined]) {
+    const fx = fixture()
+    addCommand(fx, 'deploy', {}, 'environment.deploy')
+    addCommand(fx, 'reconcile', {}, 'system.reconcile')
+    assertEquals(await fx.run(RECOVERY_V2_FEATURES, undefined, undefined, commandState), [
+      'reconcile',
+    ])
+  }
+})
+
+test('a complete commandState from a hello without command-recovery-v2 is not trusted', async () => {
+  const fx = fixture()
+  addCommand(fx, 'deploy', {}, 'environment.deploy')
+  assertEquals(await fx.run(RECOVERY_FEATURES, undefined, undefined, state([], true)), [])
+})
+
+test('with a complete commandState the guards still hold', async () => {
+  const fx = fixture()
+  addCommand(fx, 'acked', {}, 'environment.deploy')
+  fx.rows.get('acked')!.ackedAt = '2026-11-12T14:10:19.000Z'
+  addCommand(fx, 'done', {}, 'environment.deploy')
+  fx.rows.get('done')!.status = 'succeeded'
+  addCommand(fx, 'stale', {}, 'environment.deploy')
+  fx.rows.get('stale')!.sentAt = new Date(Date.now() - 6.5 * 24 * 3600_000).toISOString()
+  addCommand(fx, 'edge', {}, 'environment.deploy')
+  fx.rows.get('edge')!.sentAt = new Date(Date.now() - 5.9 * 24 * 3600_000).toISOString()
+  addCommand(fx, 'fresh', { sentAt: '2026-11-12T14:10:30.000Z' }, 'environment.deploy')
+  addCommand(fx, 'ok', { sentAt: '2026-11-12T14:10:10.000Z' }, 'environment.deploy')
+  const attachedAt = '2026-11-12T14:10:20.000Z'
+  assertEquals(await fx.run(RECOVERY_V2_FEATURES, undefined, attachedAt, state([], true)), [
+    'edge',
+    'ok',
+  ])
 })

@@ -178,6 +178,17 @@ in the execution-log store — there is no Postgres column for them. See
   firewall confirm must arrive before the server's own deadline or the server
   undoes the new rules, so it can never queue behind a backup. Only add a type
   that is short and safe beside any other command.
+- **Two lanes per server.** `BACKGROUND_COMMAND_TYPES` (fabric, TLS trust
+  and backup-schedule reconciles) wait only for other such reconciles
+  of the same server, one at a time; every other command waits only for the
+  others. They never hold up a user's command and the other way round. The
+  split covers only reconciles that do not race a failover or a deploy:
+  `managed.ingress.reconcile` (rewrites the ProxySQL server list without the
+  lock failover drain/undrain use), `managed.ha.reconcile` (restarts or stops
+  Orchestrator), `system.reconcile` (ProxySQL, Orchestrator, hosting ingress)
+  `server.principals.reconcile` (accounts and folders a deploy uses) and
+  `server.firewall.reconcile` (rewrites the managed firewall chain a managed
+  apply also edits, with no daemon lock) stay in the user lane with `managed.ha.failover` and `environment.deploy`.
 - **Passing failures wait, then fail.** A transient error (`isTransientError`)
   puts a new envelope back with `attempt + 1` after 5 s, 30 s, 2 min and 10 min
   (`COMMAND_RETRY_DELAYS_SECONDS`), and the delivery is acked. A deploy
@@ -439,12 +450,19 @@ longer `sent` or already has `acked_at`; the database opens only when the cell
 holds a candidate; `dispatching` is left alone because a consumer may be about
 to write it.
 
-Why an allowlist: a daemon that restarted since it received a frame cannot
-list it in its first hello (its journal is read after attach) and has
+Why an allowlist: a hello without `commandState` (or with `complete: false`)
+cannot say what the daemon never received, and a daemon that restarted has
 forgotten its seen ids, so a resend could run a deploy, destroy, rollback or
 rotation twice. Those types stay on their current paths (the deploy lane grace
-and waiter, the 45 s ack deadline on Workers). Widening the allowlist needs a
-daemon feature that reports journal ids, or a process start id, in the hello.
+and waiter, the 45 s ack deadline on Workers) unless the hello is complete.
+
+With `command-recovery-v2` the daemon sends `hello.commandState`
+(`processStartId`, `known`, `complete`) on every hello, never on a heartbeat.
+When `complete` is true, a `sent`, unacked command whose id is not in `known`
+was never started by that daemon, so it is sent again whatever its type, with
+the same guards as above (non-terminal row, younger than the 7-day unconfirmed
+retention, not written after this connection attached). When `complete` is
+false or the field is absent, the allowlist applies.
 
 ### A deploy survives a lost link or a restart (`command-recovery-v1`)
 
