@@ -1071,8 +1071,10 @@ async function publishDoorway(
   created: DoorwayRow
 ): Promise<DoorwayRow> {
   const { row, owner, account, zone } = plan
-  const hostnames = await routeNames(db, row.id, null)
-  await pushTunnelRoutes(db, deps, owner, row, { accountId: account, hostnames })
+  await pushTunnelRoutes(db, deps, owner, row, {
+    accountId: account,
+    hostnames: (tx) => routeNames(tx, row.id, null),
+  })
   const dns = zone
     ? await useBadges(db, deps.secrets, owner.id, { capability: 'dns', zone }, (token) =>
         deps.adapter.createDnsName(token, {
@@ -1193,10 +1195,9 @@ async function restoreRoutesQuietly(
   owner: CarrierRow
 ): Promise<void> {
   try {
-    const hostnames = await routeNames(db, row.id, null)
     await pushTunnelRoutes(db, deps, owner, row, {
       accountId: owner.externalAccountId,
-      hostnames,
+      hostnames: (tx) => routeNames(tx, row.id, null),
     })
   } catch {
     // The next successful change writes the whole set again.
@@ -1234,10 +1235,10 @@ export async function removeDoorway(
   try {
     // The route goes first, so a failed DNS removal leaves a name that answers nothing,
     // never a route to a name that is gone; a retry rewrites the same route.
-    const remaining = (await routeNames(db, row.id, null)).filter((n) => n !== current.hostname)
     await pushTunnelRoutes(db, deps, owner, row, {
       accountId: owner.externalAccountId,
-      hostnames: remaining,
+      hostnames: async (tx) =>
+        (await routeNames(tx, row.id, null)).filter((n) => n !== current.hostname),
     })
   } catch (err) {
     throw refuse(err, 'edit Tunnels')

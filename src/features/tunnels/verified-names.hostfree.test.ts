@@ -76,3 +76,59 @@ test('a failed deploy, or one queued before the pin changed, does not verify the
     false
   )
 })
+
+function originPin(over: Record<string, unknown> = {}) {
+  return {
+    source: 'provider_origin',
+    status: 'ready',
+    notAfter: '2027-06-01T00:00:00.000Z',
+    hasPair: true,
+    metadata: {
+      providerOrigin: {
+        provider: 'cloudflare',
+        carrierId: 'c1',
+        badgeId: 'b1',
+        zoneId: 'z1',
+        zoneName: 'example.com',
+        externalId: 'e1',
+        hostnames: ['a.example.com'],
+        scope: 'names',
+      },
+    },
+    updatedAt: EARLIER,
+    ...over,
+  }
+}
+
+test('a ready origin certificate that covers the name verifies it', () => {
+  assertEquals(nameIsVerified(facts({ pin: originPin() }), NOW), true)
+})
+
+test('an origin certificate that is due, unpaired, not ready or for other names does not verify', () => {
+  assertEquals(
+    nameIsVerified(facts({ pin: originPin({ notAfter: '2026-11-25T00:00:00.000Z' }) }), NOW),
+    false
+  )
+  assertEquals(nameIsVerified(facts({ pin: originPin({ hasPair: false }) }), NOW), false)
+  assertEquals(nameIsVerified(facts({ pin: originPin({ status: 'pending' }) }), NOW), false)
+  const other = originPin()
+  ;(other.metadata.providerOrigin as { hostnames: string[] }).hostnames = ['b.example.com']
+  assertEquals(nameIsVerified(facts({ pin: other }), NOW), false)
+})
+
+test('a pair from the test directory never verifies a name', () => {
+  const staging = lePin({ metadata: { dnsNames: ['a.example.com'], acme: { staging: true } } })
+  assertEquals(nameIsVerified(facts({ pin: staging }), NOW), false)
+  const ordered = {
+    ...lePin({ source: 'upload' }),
+    metadata: { dnsNames: ['a.example.com'], acme: { managedBy: 'panel' } },
+  }
+  assertEquals(nameIsVerified(facts({ pin: ordered }), NOW), true)
+  const testOrdered = {
+    ...ordered,
+    metadata: { dnsNames: ['a.example.com'], acme: { managedBy: 'panel', staging: true } },
+  }
+  assertEquals(nameIsVerified(facts({ pin: testOrdered }), NOW), false)
+  // An uploaded certificate nobody ordered through the authority is not public as far as the panel knows.
+  assertEquals(nameIsVerified(facts({ pin: lePin({ source: 'upload' }) }), NOW), false)
+})

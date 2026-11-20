@@ -6,7 +6,7 @@
 
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { and, eq, inArray } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -33,6 +33,7 @@ import {
   secret,
   server,
   service,
+  tls,
   tunnel,
   user,
   workspace,
@@ -48,6 +49,8 @@ import {
 } from '../../features/tunnels/route-facts.ts'
 import { NO_CAPABILITIES } from '../../features/tunnels/vocabulary.ts'
 import { carryingServers, listTunnels } from '../../features/tunnels/lifecycle.ts'
+import { loadVerifiedNames } from '../../features/tunnels/verified-names.ts'
+import { runVerifiedNamesSweepTick } from '../../features/tunnels/verified-names-sweep.ts'
 import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
 import { runTunnelRemovalSweepTick } from '../../features/tunnels/removal.ts'
 import { recordTunnelStatus } from '../../features/tunnels/status.ts'
@@ -1755,5 +1758,175 @@ test('opening a name moves only an untouched default certificate to the direct d
     assertEquals(moved.status, 200, moved.text)
     assertEquals(moved.body.certificateChangedNames, ['reach.example.com'])
     assert((await read()) !== 'cloudflare_origin')
+  })
+})
+
+test('opening a name records an audit row, and a name with no site or one being removed is refused', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const opened = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(opened.status, 200, opened.text)
+    const rows = await f.db
+      .select()
+      .from(audit)
+      .where(and(eq(audit.organizationId, f.orgA), eq(audit.action, 'doorway.update')))
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.targetId, r.doorwayId)
+    const context = rows[0]!.context as { hostname: string; isLocalOnly: boolean }
+    assertEquals([context.hostname, context.isLocalOnly], ['reach.example.com', false])
+    // No change, no second row.
+    await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: false })
+    assertEquals(
+      (
+        await f.db
+          .select()
+          .from(audit)
+          .where(and(eq(audit.organizationId, f.orgA), eq(audit.action, 'doorway.update')))
+      ).length,
+      1
+    )
+    await f.db.update(doorway).set({ status: 'removing' }).where(eq(doorway.id, r.doorwayId))
+    const removing = await call(f, 'PATCH', r.path, f.managerCookie, { isLocalOnly: true })
+    assertEquals(removing.status, 409, removing.text)
+    assertEquals(removing.body.error, 'doorway_removing')
+  })
+})
+
+test('a name no site serves cannot be opened for direct visitors', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'nosite.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    const doorwayId = (added.body.hostname as { id: string }).id
+    const res = await call(
+      f,
+      'PATCH',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames/${doorwayId}`,
+      f.managerCookie,
+      { isLocalOnly: false }
+    )
+    assertEquals(res.status, 409, res.text)
+    assertEquals(res.body.error, 'doorway_no_site')
+    const [row] = await f.db.select().from(doorway).where(eq(doorway.id, doorwayId))
+    assertEquals(row!.isLocalOnly, true)
+  })
+})
+
+/** A ready public pair covering the name, pinned to it, and a deploy applied after the pin. */
+async function pinPublicPair(f: Fixture, siteId: string, name: string, notAfter: string) {
+  const [pair] = await f.db
+    .insert(tls)
+    .values({
+      organizationId: f.orgA,
+      source: 'lets_encrypt',
+      status: 'ready',
+      notAfter,
+      certificatePem: 'certificate',
+      privateKeyPem: 'key',
+      metadata: { dnsNames: [name] },
+    })
+    .returning({ id: tls.id })
+  f.cleanup.push(async () => {
+    await f.db.update(hostname).set({ tlsId: null }).where(eq(hostname.tlsId, pair!.id))
+    await f.db.delete(tls).where(eq(tls.id, pair!.id))
+  })
+  await f.db
+    .update(hostname)
+    .set({ certificate: 'letsencrypt_http', tlsId: pair!.id })
+    .where(and(eq(hostname.hostingId, siteId), eq(hostname.hostname, name)))
+  return pair!.id
+}
+
+async function applyDeploy(f: Fixture, siteId: string, status: 'applied' | 'failed') {
+  const [site] = await f.db
+    .select({ environmentId: service.environmentId })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .where(eq(hosting.id, siteId))
+  await f.db.insert(deployment).values({
+    environmentId: site!.environmentId,
+    serverId: f.servers[2],
+    status,
+    finishedAt: new Date(Date.now() + 60_000).toISOString(),
+    durationMs: 1000,
+  })
+}
+
+test('a name is verified only with a pinned public pair that covers it and a deploy applied after the pin', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const name = 'reach.example.com'
+    const now = new Date()
+    const future = new Date(now.getTime() + 60 * 86_400_000).toISOString()
+    // No pin, no deploy.
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+    await pinPublicPair(f, r.site, name, future)
+    // Pinned, but nothing deployed since.
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+    await applyDeploy(f, r.site, 'failed')
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+    await applyDeploy(f, r.site, 'applied')
+    // The failed deploy still counts against it: every deploy of the site must be applied.
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+    await f.db
+      .delete(deployment)
+      .where(and(eq(deployment.status, 'failed'), eq(deployment.serverId, f.servers[2])))
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [name])
+    // A name the site does not store is not verified.
+    await f.db.delete(hostname).where(eq(hostname.hostingId, r.site))
+    assertEquals(await loadVerifiedNames(f.db, r.id, now), [])
+  })
+})
+
+test('the sweep writes the verified set once, then leaves the tunnel alone, and retries a failed write after a wait', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const name = 'reach.example.com'
+    const future = new Date(Date.now() + 60 * 86_400_000).toISOString()
+    const registry = createTunnelAdapterRegistry(fakeProvider)
+    const deps = { secrets: f.secrets, registry }
+    // Bring the stored route set in line first (the add already wrote it).
+    await runVerifiedNamesSweepTick(f.db, deps)
+    const quiet = provider.routeBodies.length
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 0)
+    assertEquals(provider.routeBodies.length, quiet)
+    await pinPublicPair(f, r.site, name, future)
+    await applyDeploy(f, r.site, 'applied')
+    const first = await runVerifiedNamesSweepTick(f.db, deps)
+    assertEquals(first.pushed, 1)
+    assert(JSON.stringify(provider.routeBodies.at(-1)).includes('"noTLSVerify":false'))
+    const afterFirst = provider.routeBodies.length
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 0)
+    assertEquals(provider.routeBodies.length, afterFirst)
+    // A route set that no longer matches what was written (a name added behind the
+    // sweep's back) is written again even though the verified set is the same.
+    await f.db
+      .update(tunnel)
+      .set({
+        metadata: sql`jsonb_set(${tunnel.metadata}, '{routes,hostnames}', '[]'::jsonb)`,
+      })
+      .where(eq(tunnel.id, r.id))
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 1)
+    // A failing provider is tried once, then left alone until its wait passes.
+    await f.db
+      .update(tunnel)
+      .set({ metadata: sql`jsonb_set(${tunnel.metadata}, '{routes,hostnames}', '[]'::jsonb)` })
+      .where(eq(tunnel.id, r.id))
+    provider.failRoutes = true
+    const failed = await runVerifiedNamesSweepTick(f.db, deps)
+    assertEquals([failed.pushed, failed.failed], [0, 1])
+    const attempts = provider.calls.length
+    const waiting = await runVerifiedNamesSweepTick(f.db, deps)
+    assertEquals([waiting.pushed, waiting.failed], [0, 0])
+    assertEquals(provider.calls.length, attempts)
+    provider.failRoutes = false
+    const later = new Date(Date.now() + 2 * 60 * 60_000)
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps, later)).pushed, 1)
   })
 })

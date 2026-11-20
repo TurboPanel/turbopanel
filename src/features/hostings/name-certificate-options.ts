@@ -44,6 +44,16 @@ export type NameOptionFacts = {
   covering: readonly CoveringCertificate[]
 }
 
+/**
+ * Whether ordering over DNS is offered. One gate for every reader of the table
+ * (the choice list and the default a name moves to), so they never disagree.
+ * It arrives with the relay; until then it is never offered.
+ */
+export const DNS_ISSUANCE_FACTS: Pick<NameOptionFacts, 'dnsIssuance' | 'dnsUnavailableReason'> = {
+  dnsIssuance: false,
+  dnsUnavailableReason: 'ordering over DNS is not available yet',
+}
+
 export type NameCertificateOption = {
   certificate: HostnameCertificate
   /** Set for `library` options: the row this option pins. */

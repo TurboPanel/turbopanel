@@ -20,6 +20,7 @@ import {
   resolveHostingProtocol,
 } from '../hostings/hosting-options.ts'
 import {
+  DNS_ISSUANCE_FACTS,
   nameCertificateOptions,
   type NameOptionFacts,
 } from '../hostings/name-certificate-options.ts'
@@ -44,15 +45,13 @@ function refuseBind(bind: string): TunnelRefusal {
 
 /** The default certificate of a name for one reach, from the facts the choice table reads. */
 function defaultFor(
-  facts: Omit<NameOptionFacts, 'reach' | 'dnsIssuance'>,
+  facts: Omit<NameOptionFacts, 'reach' | 'dnsIssuance' | 'dnsUnavailableReason'>,
   reach: NameOptionFacts['reach']
 ) {
   return nameCertificateOptions({
     ...facts,
     reach,
-    // Ordering over DNS is not offered yet; the table falls back as it says.
-    dnsIssuance: false,
-    dnsUnavailableReason: 'ordering over DNS is not available yet',
+    ...DNS_ISSUANCE_FACTS,
   }).default
 }
 
@@ -76,7 +75,24 @@ async function moveUntouchedNames(
   }
   const stored = (await loadNameCertificates(db, [site.id])).get(site.id) ?? []
   const sibling = wwwSiblingHostname(row.hostname)
-  const names = stored.filter((n) => n.hostname === row.hostname || n.hostname === sibling)
+  // A www sibling that is its own doorway and still tunnel-only keeps its choice:
+  // only the name that was opened (and a sibling that rides with it) moves.
+  const [ownDoorway] = sibling
+    ? await db
+        .select({ id: doorway.id })
+        .from(doorway)
+        .where(
+          and(
+            eq(doorway.hostingId, site.id),
+            eq(doorway.hostname, sibling),
+            eq(doorway.isLocalOnly, true)
+          )
+        )
+        .limit(1)
+    : []
+  const names = stored.filter(
+    (n) => n.hostname === row.hostname || (n.hostname === sibling && !ownDoorway)
+  )
   const moves = names.flatMap((name) => {
     const facts = { ...common, hostname: name.hostname }
     const before = defaultFor(facts, 'tunnel')

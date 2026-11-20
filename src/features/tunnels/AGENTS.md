@@ -624,11 +624,24 @@ other name keeps skipping verification, so one site that is not ready never make
 its neighbours unreachable. The pin of a name is `hostname.tlsId` when its
 `hostname.certificate` is set, else `hosting.tlsId`.
 
-Pushing routes goes through `pushTunnelRoutes` (`route-push.ts`), which computes
-the verified names and stores them in `tunnel.metadata.routes.verifiedNames`
-(read as `verifiedNames` on the API tunnel). `runVerifiedNamesSweepTick`
-(`verified-names-sweep.ts`, in `TUNNEL_SWEEPS`) re-pushes a tunnel's routes when
-that set changed (a deploy finished, a certificate became ready or expired).
+A name the site does not store (no `hostname` row) is never verified, and a pair
+from the authority's test directory (`metadata.acme.staging`) never verifies a name.
+A library pair counts as public only when this panel ordered it (`acme.managedBy
+= 'panel'`).
+
+Pushing routes goes through `pushTunnelRoutes` (`route-push.ts`). One writer per
+tunnel: the names are read, the provider written and `tunnel.metadata.routes`
+(`{ verifiedNames, hostnames }`) stored inside one transaction that holds the
+tunnel row `for update`, so no writer can overwrite a newer name list with an
+older one. Every route write (add, remove, restore, sweep, nudge) takes that lock
+and reads its names inside it. `route-sync.ts` writes a tunnel only when its
+routed names or verified names differ from the last write; failures back off per
+tunnel (`metadata.routesRetry`: a minute, doubling to an hour, or the provider's
+`Retry-After`). `runVerifiedNamesSweepTick` (`verified-names-sweep.ts`, in
+`TUNNEL_SWEEPS`) handles at most 50 tunnels per tick in a minute-rotated order and
+stops starting new ones after 20 seconds. `nudgeTunnelRoutes` (after a deploy
+applied, a pin change or a reach change) runs the same sync for the organization,
+so a name is verified within seconds, not at the next tick.
 The old Verified Connection switch and `tunnel.options.verifyOrigin` are gone;
 `PUT .../verify-origin` answers 410 `verify_origin_removed`, and keys left in old
 rows are ignored.

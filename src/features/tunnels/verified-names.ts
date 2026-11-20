@@ -62,6 +62,21 @@ function dnsNamesOf(metadata: unknown): string[] {
   return Array.isArray(names) ? names.filter((n): n is string => typeof n === 'string') : []
 }
 
+function acmeOf(metadata: unknown): { staging?: unknown; managedBy?: unknown } | null {
+  const acme = (metadata as { acme?: unknown } | null)?.acme
+  return typeof acme === 'object' && acme !== null ? acme : null
+}
+
+/** A pair from the authority's test directory: no browser trusts it, so the connector must not either. */
+function isStagingPair(metadata: unknown): boolean {
+  return acmeOf(metadata)?.staging === true
+}
+
+/** A library pair this panel ordered itself over DNS (a public Let's Encrypt certificate too). */
+function isPanelOrderedLibraryPair(pin: PinFacts): boolean {
+  return pin.source === 'upload' && acmeOf(pin.metadata)?.managedBy === 'panel'
+}
+
 function pinCoversAndIsPublic(pin: PinFacts, name: string, now: Date): boolean {
   if (pin.source === 'provider_origin') {
     const link = readProviderOrigin(pin.metadata)
@@ -73,11 +88,12 @@ function pinCoversAndIsPublic(pin: PinFacts, name: string, now: Date): boolean {
       certificateCoversAll(link, [name])
     )
   }
-  if (pin.source === 'lets_encrypt') {
+  if (pin.source === 'lets_encrypt' || isPanelOrderedLibraryPair(pin)) {
     const expires = pin.notAfter ? Date.parse(pin.notAfter) : Number.NaN
     return (
       pin.status === 'ready' &&
       pin.hasPair &&
+      !isStagingPair(pin.metadata) &&
       !Number.isNaN(expires) &&
       expires > now.getTime() &&
       coversHostname(dnsNamesOf(pin.metadata), name)
@@ -139,13 +155,21 @@ async function loadNameFacts(db: Db, doorways: readonly DoorwayName[]): Promise<
   const siteOf = new Map(sites.map((s) => [s.id, s]))
   const nameRow = new Map(names.map((n) => [`${n.hostingId}\n${n.hostname.toLowerCase()}`, n]))
   const pinIds = new Set<string>()
-  const chosen = doorways.map((d) => {
-    const row = nameRow.get(`${d.hostingId}\n${d.hostname}`)
+  const chosen = doorways.flatMap((d) => {
+    const row = nameRow.get(`${d.hostingId}\n${d.hostname.toLowerCase()}`)
     const site = siteOf.get(d.hostingId)
+    // A name the site does not store is not served by it, so nothing was carried for it.
+    if (!row || !site) return []
     // No stored choice reads as the whole-site pin.
-    const tlsId = row && row.certificate !== null ? row.tlsId : (site?.tlsId ?? null)
+    const own = row.certificate !== null
+    const tlsId = own ? row.tlsId : site.tlsId
     if (tlsId) pinIds.add(tlsId)
-    return { d, tlsId, pinnedAt: row?.updatedAt ?? site?.updatedAt ?? new Date(0).toISOString() }
+    // The pin changed when the name's own row did, or, for the site's pin, when the site did.
+    const pinnedAt =
+      own || Date.parse(row.updatedAt) >= Date.parse(site.updatedAt)
+        ? row.updatedAt
+        : site.updatedAt
+    return [{ d, tlsId, pinnedAt }]
   })
   const pins = pinIds.size
     ? await db

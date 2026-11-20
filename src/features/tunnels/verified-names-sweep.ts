@@ -1,59 +1,48 @@
 /**
- * The periodic pass over verified names: a tunnel whose set of verifiable names
- * changed since its routes were last written (a deploy carried a certificate,
- * a pin or a pair changed, a name was removed) gets its routes written again.
- * A tunnel with nothing new is not touched.
+ * The periodic pass over tunnel routes: a tunnel whose routed names or
+ * verifiable names changed since its routes were last written (a deploy carried
+ * a certificate, a pin or a pair changed, a name was removed, a write was lost)
+ * gets its routes written again. A tunnel with nothing new is not touched.
+ *
+ * Bounded like the origin certificate pass: at most `TUNNEL_SYNC_BATCH`
+ * tunnels per tick, in a minute-rotated order so every tunnel is reached, and
+ * no new tunnel starts after `TUNNEL_SYNC_BUDGET_MS`.
  */
 import { and, isNotNull, ne } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { tunnel } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { routeNames } from './lifecycle.ts'
-import { findCarrier } from './records.ts'
-import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
-import { pushTunnelRoutes, readRoutedVerified } from './route-push.ts'
-import { loadVerifiedNames } from './verified-names.ts'
-import type { TunnelProvider } from './vocabulary.ts'
+import { turnOrder } from './origin-certificate-sweep.ts'
+import { syncTunnelRoutes, type SyncDeps } from './route-sync.ts'
 
-export type VerifiedNamesDeps = Readonly<{
-  secrets: DerivedSecretsConfig
-  registry?: TunnelAdapterRegistry
-}>
+export const TUNNEL_SYNC_BATCH = 50
+export const TUNNEL_SYNC_BUDGET_MS = 20_000
 
-/** One failing tunnel never stops the others; the next pass tries it again. */
+export type VerifiedNamesDeps = SyncDeps & { batch?: number; budgetMs?: number }
+
 export async function runVerifiedNamesSweepTick(
   db: Db,
   deps: VerifiedNamesDeps,
   now: Date = new Date()
 ): Promise<{ pushed: number; failed: number }> {
-  const registry = deps.registry ?? createTunnelAdapterRegistry()
+  const startedAt = Date.now()
   const rows = await db
     .select()
     .from(tunnel)
     .where(and(isNotNull(tunnel.externalId), ne(tunnel.status, 'removing')))
   let pushed = 0
   let failed = 0
-  await forEachSequential(rows, async (row) => {
-    try {
-      const owner = row.carrierId ? await findCarrier(db, row.organizationId, row.carrierId) : null
-      if (!owner) return
-      const hostnames = await routeNames(db, row.id, null)
-      const routed = new Set(hostnames.map((n) => n.toLowerCase()))
-      const verified = (await loadVerifiedNames(db, row.id, now)).filter((n) => routed.has(n))
-      const was = readRoutedVerified(row.metadata)
-      if (verified.length === was.length && verified.every((n, i) => n === was[i])) return
-      await pushTunnelRoutes(
-        db,
-        { adapter: registry(row.provider as TunnelProvider), secrets: deps.secrets },
-        owner,
-        row,
-        { accountId: owner.externalAccountId, hostnames }
-      )
-      pushed++
-    } catch {
-      failed++
+  let handled = 0
+  const batch = deps.batch ?? TUNNEL_SYNC_BATCH
+  await forEachSequential(turnOrder(rows, now), async (row) => {
+    if (handled >= batch || Date.now() - startedAt > (deps.budgetMs ?? TUNNEL_SYNC_BUDGET_MS)) {
+      return
     }
+    const outcome = await syncTunnelRoutes(db, deps, row, now)
+    // Tunnels waiting out a failure or needing nothing cost no provider call, so only real attempts count.
+    if (outcome === 'pushed' || outcome === 'failed') handled++
+    if (outcome === 'pushed') pushed++
+    if (outcome === 'failed') failed++
   })
   return { pushed, failed }
 }
