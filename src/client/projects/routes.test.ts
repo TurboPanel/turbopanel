@@ -6,7 +6,7 @@ import {
 import { mergeComposeLayers, type ComposeLayer } from '../../features/compose/index.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray, sql } from 'drizzle-orm'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
@@ -31,6 +31,8 @@ import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from '../authz/http.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerProjectRoutes } from './routes.ts'
+import { resolveDeployProjectOptions } from '../environments/deploy-tracked-base.ts'
+import type { InspectOutcome } from '../repositories/inspect.ts'
 import { registerEnvironmentRoutes } from '../environments/routes.ts'
 import { registerEnvironmentDeployRoutes } from '../environments/deploy-routes.ts'
 import { registerServiceRoutes } from '../services/routes.ts'
@@ -2377,5 +2379,124 @@ test('a settings edit cannot change the mode or the last read of a followed file
     const after = (await projectOptions(ctx, id)) as { composeSource: Record<string, unknown> }
     assertEquals(after.composeSource.mode, 'track')
     assertEquals(after.composeSource.lastReadDigest, TRACKED_DIGEST)
+  })
+})
+
+const READ_SHA = 'ab'.repeat(20)
+const READ_YAML = 'services:\n  web:\n    image: nginx:2\n'
+
+/** The project's options with the branch it follows set (the test repository has no default). */
+async function trackedOptions(ctx: ProjectTestContext, id: string) {
+  const stored = (await projectOptions(ctx, id)) as { composeSource: Record<string, unknown> }
+  return { ...stored, composeSource: { ...stored.composeSource, ref: 'main' } }
+}
+
+function inspectStub(outcome: InspectOutcome) {
+  const calls: unknown[] = []
+  const inspect = (params: unknown) => {
+    calls.push(params)
+    return Promise.resolve(outcome)
+  }
+  return { inspect: inspect as never, calls }
+}
+
+function readOutcome(content: string | null): InspectOutcome {
+  return {
+    ok: true,
+    commitSha: READ_SHA,
+    via: 'provider',
+    entries: [],
+    files: [
+      content === null
+        ? { path: 'compose.yaml', found: false, reason: 'not_found' }
+        : { path: 'compose.yaml', found: true, content, bytes: content.length },
+    ],
+  }
+}
+
+function resolveArgs(
+  ctx: ProjectTestContext,
+  id: string,
+  options: Record<string, unknown> | null,
+  mode: 'deploy' | 'preview'
+) {
+  return { organizationId: ctx.organizationId, projectId: id, projectOptions: options, mode }
+}
+
+test('a deploy reads the repository file as the Base, pins the commit and stores what it read', async () => {
+  await withTrackedProject(async (ctx, _cookie, id) => {
+    const options = await trackedOptions(ctx, id)
+    const c = { get: () => undefined } as unknown as Context<AppEnv>
+    const { inspect, calls } = inspectStub(readOutcome(READ_YAML))
+    const args = resolveArgs(ctx, id, options, 'deploy')
+    const first = await resolveDeployProjectOptions(c, ctx.db, args, inspect)
+    if (!first.ok) throw new Error('expected a read')
+    assertEquals(first.base?.commitSha, READ_SHA)
+    assertEquals(first.base?.path, 'compose.yaml')
+    assertEquals(first.base?.digest.length, 64)
+    assertEquals(first.pin?.commitSha, READ_SHA)
+    assertEquals(
+      (first.options as { compose: { data: { services: { web: { image: string } } } } }).compose
+        .data.services.web.image,
+      'nginx:2'
+    )
+    // The same request reads once.
+    await resolveDeployProjectOptions(c, ctx.db, args, inspect)
+    assertEquals(calls.length, 1)
+    const stored = (await projectOptions(ctx, id)) as {
+      compose: { data: { services: { web: { image: string } } } }
+      composeSource: Record<string, unknown>
+    }
+    assertEquals(stored.compose.data.services.web.image, 'nginx:2')
+    assertEquals(stored.composeSource.lastReadCommitSha, READ_SHA)
+    assertEquals(stored.composeSource.lastReadDigest, first.base?.digest)
+  })
+})
+
+test('a deploy whose file is gone fails and stores nothing, a preview falls back to the stored Base', async () => {
+  await withTrackedProject(async (ctx, _cookie, id) => {
+    const options = await trackedOptions(ctx, id)
+    const c = { get: () => undefined } as unknown as Context<AppEnv>
+    const gone = inspectStub(readOutcome(null))
+    const failed = await resolveDeployProjectOptions(
+      c,
+      ctx.db,
+      resolveArgs(ctx, id, options, 'deploy'),
+      gone.inspect
+    )
+    assertEquals(failed.ok, false)
+    if (!failed.ok) assertEquals(failed.error.code, 'compose_file_missing')
+    const down = inspectStub({ ok: false, status: 502, error: 'x', message: 'provider down' })
+    const preview = await resolveDeployProjectOptions(
+      { get: () => undefined } as unknown as Context<AppEnv>,
+      ctx.db,
+      resolveArgs(ctx, id, options, 'preview'),
+      down.inspect
+    )
+    if (!preview.ok) throw new Error('expected a preview')
+    assertEquals(preview.unreadable?.code, 'compose_source_unavailable')
+    assertEquals(preview.options, options)
+    const after = (await projectOptions(ctx, id)) as { composeSource: Record<string, unknown> }
+    assertEquals(after.composeSource.lastReadDigest, TRACKED_DIGEST)
+  })
+})
+
+test('a deploy fails when the repository is no longer connected', async () => {
+  await withTrackedProject(async (ctx, _cookie, id) => {
+    const options = (await projectOptions(ctx, id)) as {
+      composeSource: Record<string, unknown>
+    }
+    const lost = {
+      ...options,
+      composeSource: { ...options.composeSource, sourceId: crypto.randomUUID() },
+    }
+    const result = await resolveDeployProjectOptions(
+      { get: () => undefined } as unknown as Context<AppEnv>,
+      ctx.db,
+      resolveArgs(ctx, id, lost, 'deploy'),
+      inspectStub(readOutcome(READ_YAML)).inspect
+    )
+    assertEquals(result.ok, false)
+    if (!result.ok) assertEquals(result.error.code, 'compose_source_unavailable')
   })
 })

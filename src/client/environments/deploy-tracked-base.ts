@@ -90,7 +90,7 @@ export async function readTrackedComposeBase(
     }
   }
   const { commitSha, file } = outcome
-  if (!file || !file.found) {
+  if (!file?.found) {
     const why =
       file && !file.found && file.reason !== 'not_found'
         ? ` (the file is ${file.reason.replaceAll('_', ' ')})`

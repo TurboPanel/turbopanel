@@ -363,6 +363,66 @@ async function loadStoragePins(db: Db, environmentId: string): Promise<Map<strin
   return computeStoragePinsFromMountRows(rows)
 }
 
+type PlanContext = {
+  envRow: {
+    id: string
+    projectId: string
+    serverId: string | null
+    options: unknown
+    metadata: unknown
+    name: string
+  }
+  projectRow: { id: string; options: unknown; defaultServerId: string | null }
+  resolvedOptions: Extract<DeployProjectOptions, { ok: true }>
+  merged: ComposeDocument
+}
+
+/**
+ * Read the environment and project rows, swap in the tracked Base when the
+ * project follows its repository, and merge the compose layers.
+ */
+async function loadPlanContext(
+  db: Db,
+  params: {
+    environmentId: string
+    resolveProjectOptions?: (row: { id: string; options: unknown }) => Promise<DeployProjectOptions>
+  }
+): Promise<PlanContext | PlanDeployError> {
+  const [envRow] = await db
+    .select({
+      id: environment.id,
+      projectId: environment.projectId,
+      serverId: environment.serverId,
+      options: environment.options,
+      metadata: environment.metadata,
+      name: environment.name,
+    })
+    .from(environment)
+    .where(eq(environment.id, params.environmentId))
+    .limit(1)
+  if (!envRow) return { kind: 'not_found' }
+
+  const [projectRow] = await db
+    .select({
+      id: project.id,
+      options: project.options,
+      defaultServerId: project.defaultServerId,
+    })
+    .from(project)
+    .where(eq(project.id, envRow.projectId))
+    .limit(1)
+  if (!projectRow) return { kind: 'not_found' }
+
+  const filename = environmentComposeFilename({ id: envRow.id, name: envRow.name })
+  const resolvedOptions: DeployProjectOptions = params.resolveProjectOptions
+    ? await params.resolveProjectOptions(projectRow)
+    : { ok: true, options: projectRow.options, base: null }
+  if (!resolvedOptions.ok) return { kind: 'tracked_base_failed', error: resolvedOptions.error }
+  const merged = resolveMergedCompose(resolvedOptions.options, envRow.options, filename)
+  if ('kind' in merged) return merged
+  return { envRow, projectRow, resolvedOptions, merged }
+}
+
 /**
  * Plan slots for an environment deploy. Callers map `SchedulePlan` errors to
  * HTTP (`turbofabric_required` → 422, no eligible server → 409). The merged
@@ -403,41 +463,9 @@ export async function planEnvironmentDeploy(
   const listTasks = deps.listEnvironmentSlots ?? listEnvironmentSlots
   const listLabels = deps.listServerLabelsForServers ?? listServerLabelsForServers
 
-  const [envRow] = await db
-    .select({
-      id: environment.id,
-      projectId: environment.projectId,
-      serverId: environment.serverId,
-      options: environment.options,
-      metadata: environment.metadata,
-      name: environment.name,
-    })
-    .from(environment)
-    .where(eq(environment.id, params.environmentId))
-    .limit(1)
-  if (!envRow) return { kind: 'not_found' }
-
-  const [projectRow] = await db
-    .select({
-      id: project.id,
-      options: project.options,
-      defaultServerId: project.defaultServerId,
-    })
-    .from(project)
-    .where(eq(project.id, envRow.projectId))
-    .limit(1)
-  if (!projectRow) return { kind: 'not_found' }
-
-  const filename = environmentComposeFilename({
-    id: envRow.id,
-    name: envRow.name,
-  })
-  const resolvedOptions: DeployProjectOptions = params.resolveProjectOptions
-    ? await params.resolveProjectOptions(projectRow)
-    : { ok: true, options: projectRow.options, base: null }
-  if (!resolvedOptions.ok) return { kind: 'tracked_base_failed', error: resolvedOptions.error }
-  const merged = resolveMergedCompose(resolvedOptions.options, envRow.options, filename)
-  if ('kind' in merged) return merged
+  const loaded = await loadPlanContext(db, params)
+  if ('kind' in loaded) return loaded
+  const { envRow, projectRow, resolvedOptions, merged } = loaded
 
   const [orgRow] = await db
     .select({ options: organization.options })

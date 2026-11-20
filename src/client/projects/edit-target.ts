@@ -53,6 +53,19 @@ async function baseHasContent(db: Db, projectId: string): Promise<boolean> {
   return !isBlankComposeData(data) || overlays.length > 0
 }
 
+function mixedProjectSettings(options: Record<string, unknown>): EditTarget | null {
+  const carriesSettings = Object.keys(options).some(
+    (key) => !(CONFIGURATION_OPTION_KEYS as readonly string[]).includes(key)
+  )
+  if (!carriesSettings) return null
+  return {
+    ok: false,
+    error: EDIT_TARGET_MIXED_ERROR,
+    message:
+      "Compose edits to an environment cannot carry project settings in the same request. Send the project settings separately with target 'base'.",
+  }
+}
+
 export async function resolveEditTarget(
   db: Db,
   projectId: string,
@@ -111,18 +124,7 @@ export async function resolveEditTarget(
     }
   }
 
-  const options = body.options as Record<string, unknown>
-  if (
-    Object.keys(options).some(
-      (key) => !(CONFIGURATION_OPTION_KEYS as readonly string[]).includes(key)
-    )
-  ) {
-    return {
-      ok: false,
-      error: EDIT_TARGET_MIXED_ERROR,
-      message:
-        "Compose edits to an environment cannot carry project settings in the same request. Send the project settings separately with target 'base'.",
-    }
-  }
+  const mixed = mixedProjectSettings(body.options as Record<string, unknown>)
+  if (mixed) return mixed
   return { ok: true, kind: 'environment', environmentId }
 }

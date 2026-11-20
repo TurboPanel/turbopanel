@@ -155,6 +155,33 @@ export function parseDefaultServerIdInput(
 
 const SAFE_COMPOSE_PATH_RE = /^[A-Za-z0-9._/-]{1,200}$/
 
+const COMMIT_SHA_RE = /^[0-9a-f]{7,64}$/i
+const SHA256_RE = /^[0-9a-f]{64}$/i
+
+/** The reason an optional `composeSource` field is invalid, or null. */
+function composeSourceOptionalError(value: Record<string, unknown>): string | null {
+  const { ref, mode, lastReadCommitSha, lastReadDigest } = value
+  if (ref !== undefined && (typeof ref !== 'string' || ref.length > 255)) {
+    return 'composeSource.ref is invalid'
+  }
+  if (mode !== undefined && mode !== 'seed' && mode !== 'track') {
+    return 'composeSource.mode must be seed or track'
+  }
+  if (
+    lastReadCommitSha !== undefined &&
+    (typeof lastReadCommitSha !== 'string' || !COMMIT_SHA_RE.test(lastReadCommitSha))
+  ) {
+    return 'composeSource.lastReadCommitSha is not a commit sha'
+  }
+  if (
+    lastReadDigest !== undefined &&
+    (typeof lastReadDigest !== 'string' || !SHA256_RE.test(lastReadDigest))
+  ) {
+    return 'composeSource.lastReadDigest is not a sha-256 digest'
+  }
+  return null
+}
+
 /**
  * Parse a `composeSource` block. Returns `{ ok: false }` for anything
  * malformed so a write boundary can reject rather than silently drop — losing
@@ -199,24 +226,8 @@ export function parseComposeSourceInput(
   if (typeof seededDigest !== 'string' || !/^[0-9a-f]{64}$/i.test(seededDigest)) {
     return { ok: false, reason: 'composeSource.seededDigest is not a sha-256 digest' }
   }
-  if (ref !== undefined && (typeof ref !== 'string' || ref.length > 255)) {
-    return { ok: false, reason: 'composeSource.ref is invalid' }
-  }
-  if (mode !== undefined && mode !== 'seed' && mode !== 'track') {
-    return { ok: false, reason: 'composeSource.mode must be seed or track' }
-  }
-  if (
-    lastReadCommitSha !== undefined &&
-    (typeof lastReadCommitSha !== 'string' || !/^[0-9a-f]{7,64}$/i.test(lastReadCommitSha))
-  ) {
-    return { ok: false, reason: 'composeSource.lastReadCommitSha is not a commit sha' }
-  }
-  if (
-    lastReadDigest !== undefined &&
-    (typeof lastReadDigest !== 'string' || !/^[0-9a-f]{64}$/i.test(lastReadDigest))
-  ) {
-    return { ok: false, reason: 'composeSource.lastReadDigest is not a sha-256 digest' }
-  }
+  const optionalError = composeSourceOptionalError(value)
+  if (optionalError) return { ok: false, reason: optionalError }
   return {
     ok: true,
     value: {
