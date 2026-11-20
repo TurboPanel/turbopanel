@@ -222,7 +222,13 @@ async function stepRow(
   if (!row.pinned) {
     // Nothing uses this row any more: end an open order and tell the helpers, then stop.
     if (state?.endedAt === null) {
-      await failOpenRequest(deps, row.id, state.requestId, 'Its name no longer uses this certificate.', false)
+      await failOpenRequest(
+        deps,
+        row.id,
+        state.requestId,
+        'Its name no longer uses this certificate.',
+        false
+      )
     }
     await sendPendingEnds(deps, row.id)
     return

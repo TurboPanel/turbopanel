@@ -1598,8 +1598,9 @@ test("a name's own HTTP order never becomes the site pin, so later names and the
         { hostname: 'a.example.com', certificate: 'letsencrypt_http' },
       ])
       const pin = async () =>
-        (await db.select({ tlsId: hosting.tlsId }).from(hosting).where(eq(hosting.id, hostingId)))[0]
-          ?.tlsId
+        (
+          await db.select({ tlsId: hosting.tlsId }).from(hosting).where(eq(hosting.id, hostingId))
+        )[0]?.tlsId
       const names = await nameRows(db, hostingId)
       assertEquals(names.get('a.example.com')?.tlsId !== null, true)
       assertEquals(await pin(), null, 'one HTTP name does not pin the site')
