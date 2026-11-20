@@ -419,7 +419,7 @@ export const hostingSchemas = {
       originVerified: {
         type: 'boolean',
         description:
-          "True: the tunnel checks the server's certificate (the verified connection is in effect). False: the tunnel accepts the server's own certificate without checking it, on purpose.",
+          "True: the tunnel checks the certificate this name carries (its certificate is in place and every deploy of the site has carried it). False: the tunnel accepts the server's own certificate without checking it.",
       },
       status: { type: 'string', enum: ['pending', 'live', 'attention'] },
     },

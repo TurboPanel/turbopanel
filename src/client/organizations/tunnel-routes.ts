@@ -31,6 +31,7 @@ import {
   updatePlacement,
   type TunnelRow,
 } from '../../features/tunnels/lifecycle.ts'
+import { setDoorwayLocalOnly } from '../../features/tunnels/doorway-reach.ts'
 import { toApiPeerHop, toApiStatusPorts } from '../../features/tunnels/status.ts'
 import {
   loadUnroutedReasons,
@@ -414,6 +415,49 @@ function removeDoorwayResponse(registry: TunnelAdapterRegistry) {
   }
 }
 
+/**
+ * Open or close a tunnel name for direct visitors (`isLocalOnly`). Opening is
+ * refused unless the site is on a datacenter network. The servers pick the
+ * change up with the site's next deploy (`needsDeploy`).
+ */
+async function updateDoorwayResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
+  const row = await loadTunnelParam(c, scope)
+  if (row instanceof Response) return row
+  const doorwayId = c.req.param('doorwayId') as string
+  const current = (await listDoorways(scope.db, row.id)).find((d) => d.id === doorwayId)
+  if (!current) return c.json({ error: 'Not found' }, 404)
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+  if (typeof body.isLocalOnly !== 'boolean') {
+    return invalid(c, 'doorway_invalid', 'isLocalOnly', 'Must be true or false')
+  }
+  try {
+    const done = await setDoorwayLocalOnly(
+      scope.db,
+      scope.organizationId,
+      current,
+      body.isLocalOnly
+    )
+    const changed = done.doorway.isLocalOnly !== current.isLocalOnly
+    if (changed) {
+      await audit(c, scope, 'doorway.update', current.id, {
+        tunnelId: row.id,
+        hostname: current.hostname,
+        isLocalOnly: done.doorway.isLocalOnly,
+        certificateChangedNames: done.certificateChangedNames,
+      })
+      nudgeServers(c, scope)
+    }
+    return c.json({
+      hostname: toApiDoorway(done.doorway),
+      certificateChangedNames: done.certificateChangedNames,
+      needsDeploy: changed && done.doorway.hostingId !== null,
+    })
+  } catch (err) {
+    return refused(c, err)
+  }
+}
+
 /** "This server never runs Tunnels": stored in the server's options, read by the placement rules. */
 async function carryingResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const serverId = c.req.param('serverId') as string
@@ -477,6 +521,10 @@ export function registerOrganizationTunnelRoutes(
   router.delete(
     '/organizations/:id/tunnels/:tunnelId/hostnames/:doorwayId',
     guarded(removeDoorwayResponse(registry))
+  )
+  router.patch(
+    '/organizations/:id/tunnels/:tunnelId/hostnames/:doorwayId',
+    guarded(updateDoorwayResponse)
   )
   router.put('/organizations/:id/servers/:serverId/tunnel-carrying', guarded(carryingResponse))
 }

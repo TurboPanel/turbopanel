@@ -24,6 +24,7 @@ import {
   type NameCertificateOptions,
   type NameReach,
   type CoveringCertificate,
+  DNS_ISSUANCE_FACTS,
   nameCertificateOptions,
 } from '../../features/hostings/name-certificate-options.ts'
 import {
@@ -275,9 +276,7 @@ export async function loadHostingNameReads(
             bind,
             isHttp,
             acmeEnabled,
-            // The DNS check arrives with the relay; until then it is never offered.
-            dnsIssuance: false,
-            dnsUnavailableReason: 'ordering over DNS is not available yet',
+            ...DNS_ISSUANCE_FACTS,
             covering,
           }),
         }

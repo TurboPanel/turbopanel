@@ -468,7 +468,7 @@ function isRedundantExact(old: TlsRow, replacement: ProviderOriginLink): boolean
 /**
  * Mark the certificates nobody needs any more as retired: none of the
  * hostnames still in use falls under them. `usedHostnames` is every hostname
- * of this organization that asks for a verified connection. Returns the ids.
+ * of this organization that a tunnel carries. Returns the ids.
  */
 export async function retireUnusedOriginCertificates(
   db: Db,
@@ -643,7 +643,7 @@ type SweepParams = {
   secrets: DerivedSecretsConfig
   registry: (provider: TunnelProvider) => TunnelAdapter
   organizationId: string
-  /** Hostnames still asking for a verified connection; when given, certificates nothing needs are retired first. */
+  /** Hostnames a tunnel still carries; when given, certificates nothing needs are retired first. */
   usedHostnames?: readonly string[]
   /** Most rows handled in this pass; the rest wait for the next one. Defaults to ORIGIN_SWEEP_BATCH. */
   limit?: number
