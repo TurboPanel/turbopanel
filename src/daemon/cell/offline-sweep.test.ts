@@ -1649,6 +1649,145 @@ it('T12 · finding: a throwing billing phase is NOT isolated — the queued swee
   assertEquals((await tryBeginOfflineSweep(db)) !== null, true)
 })
 
+const IDLE_GATES_ROW = {
+  commandRecoveryWork: false,
+  notificationWork: false,
+  connectedServer: false,
+  hostingPending: false,
+  repinPending: false,
+  principalRemoval: false,
+  certificates: false,
+  httpCertificates: false,
+  httpCertificatesActive: false,
+  tunnels: false,
+  networkProbe: false,
+}
+
+/** Counts every statement the tick sends: builder operations plus raw `execute`. */
+function countingIdleDb(gates: Partial<typeof IDLE_GATES_ROW> = {}): {
+  db: MemoryDb
+  statementCount: () => number
+  executed: string[]
+} {
+  const db = billingSweepDb({ withPayer: true })
+  const dialect = new PgDialect()
+  const executed: string[] = []
+  Object.assign(db, {
+    execute: (query: SQL) => {
+      const text = dialect.sqlToQuery(query).sql
+      executed.push(text)
+      return Promise.resolve(
+        text.includes('"commandRecoveryWork"') ? [{ ...IDLE_GATES_ROW, ...gates }] : []
+      )
+    },
+  })
+  return { db, statementCount: () => db.ops.length + executed.length, executed }
+}
+
+/** An idle tick (no work anywhere) must stay cheap: each statement counts against the Hyperdrive quota. */
+const IDLE_TICK_QUERY_BUDGET = 15
+
+it('idle tick budget: an idle environment sends at most 15 statements, one of them the gate query', async () => {
+  const tlsRenewal = await testTlsRenewal()
+  for (const minute of [1, 2, 4, 5, 8, 11, 13, 14]) {
+    const { db, statementCount, executed } = countingIdleDb()
+    const traces = await runTickCapturingTrace(
+      commandQueueEnv(),
+      db,
+      tlsRenewal,
+      Date.parse('2026-01-01T00:00:00.000Z') + minute * 60_000
+    )
+    assertEquals(
+      statementCount() <= IDLE_TICK_QUERY_BUDGET,
+      true,
+      `minute ${minute}: ${statementCount()} statements: ${db.ops.join(',')} | ${executed.length} raw`
+    )
+    assertEquals(executed.filter((text) => text.includes('"commandRecoveryWork"')).length, 1)
+    assertEquals(tickComplete(traces).includes('phasesSkipped=[]'), true, `minute ${minute}`)
+  }
+})
+
+const MINUTE_ZERO = Date.parse('2026-01-01T00:00:00.000Z')
+
+it('cadences: each retention job runs on its own minute and skips the others', async () => {
+  // Minutes 1..14 leave out minute 0, where the 15-minute and hourly phases also run.
+  for (let minute = 1; minute <= 14; minute += 1) {
+    const { db } = countingIdleDb()
+    const traces = await runTickCapturingTrace(
+      commandQueueEnv(),
+      db,
+      null,
+      MINUTE_ZERO + minute * 60_000
+    )
+    const ran = {
+      // A throw is the probe for the two sweeps whose tables the fake does not register.
+      commandDispatch: traces.some((line) => line.includes('event=command-dispatch-sweep-failed')),
+      daemonNonces: traces.some((line) => line.includes('event=daemon-nonce-sweep-failed')),
+      webhookDeliveries: db.ops.includes('delete:delivery'),
+      pinSilence: db.ops.filter((op) => op === 'select:setting').length > 0,
+    }
+    assertEquals(ran.commandDispatch, minute === 3, `command-dispatch at minute ${minute}`)
+    assertEquals(ran.webhookDeliveries, minute === 6, `webhook-deliveries at minute ${minute}`)
+    assertEquals(ran.daemonNonces, minute === 9, `daemon nonces at minute ${minute}`)
+    assertEquals(ran.pinSilence, minute % 5 === 2, `pin-silence at minute ${minute}`)
+  }
+})
+
+it('cadences: the stale-key socket close still runs every minute', async () => {
+  for (const minute of [1, 2, 3, 4]) {
+    const { db } = countingIdleDb()
+    await runTickCapturingTrace(commandQueueEnv(), db, null, MINUTE_ZERO + minute * 60_000)
+    assertEquals(db.ops.includes('select:server'), true, `minute ${minute}`)
+  }
+})
+
+it('gates: an open command or recovery runs the stale-command pass on any minute', async () => {
+  for (const open of [false, true]) {
+    const { db } = countingIdleDb({ commandRecoveryWork: open })
+    const traces = await runTickCapturingTrace(commandQueueEnv(), db, null, MID_HOUR)
+    assertEquals(
+      traces.some((line) => line.includes('event=stale-command-sweep-failed')),
+      open
+    )
+  }
+})
+
+it('gates: notification work wakes the retry and digest sweeps, otherwise they send nothing', async () => {
+  const closed = countingIdleDb()
+  await runTickCapturingTrace(commandQueueEnv(), closed.db, null, MID_HOUR)
+  const open = countingIdleDb({ notificationWork: true })
+  await runTickCapturingTrace(commandQueueEnv(), open.db, null, MID_HOUR)
+  assertEquals(closed.executed.length, 1)
+  assertEquals(open.executed.length > closed.executed.length, true)
+})
+
+it('gates: a connected server wakes one repair sweep per minute, none without one', async () => {
+  for (const minute of [0, 1, 2, 3, 4]) {
+    const at = CATCH_UP_MINUTE + minute * 60_000
+    const closed = countingIdleDb()
+    await runTickCapturingTrace(commandQueueEnv(), closed.db, null, at)
+    const open = countingIdleDb({ connectedServer: true })
+    await runTickCapturingTrace(commandQueueEnv(), open.db, null, at)
+    // The five repair sweeps sit on five different minutes, so each tick has exactly one.
+    assertEquals(open.statementCount() > closed.statementCount(), true, `minute ${minute}`)
+  }
+})
+
+it('idle tick: no gated sweep reads anything when every gate is closed', async () => {
+  const tlsRenewal = await testTlsRenewal()
+  const { db, executed } = countingIdleDb()
+  await runTickCapturingTrace(commandQueueEnv(), db, tlsRenewal, MID_HOUR)
+  // The only raw statement is the gate query itself.
+  assertEquals(executed.length, 1)
+  for (const table of ['command', 'recovery', 'managed', 'notification_delivery']) {
+    assertEquals(
+      db.ops.some((op) => op === `select:${table}`),
+      false,
+      table
+    )
+  }
+})
+
 function commandQueueEnv(): CloudflareBindings {
   return {
     TURBOPANEL_COMMAND_QUEUE: { send: () => Promise.resolve() },
@@ -1666,11 +1805,17 @@ async function testTlsRenewal(): Promise<NonNullable<Parameters<typeof runOfflin
 /** Off the hour / :15 so scheduled billing, tier-notices, and execution-logs stay idle. */
 const MID_HOUR = Date.parse('2026-01-01T00:01:00.000Z')
 
+/**
+ * Off the hour / :15 too, but on the reconcile family's catch-up minute
+ * (minute % 5 === 0), so the repair sweeps are due.
+ */
+const CATCH_UP_MINUTE = Date.parse('2026-01-01T00:05:00.000Z')
+
 it('queued cron: system reconcile execute throw is isolated as system-reconcile-sweep-failed', async () => {
   // MemoryDb has no `execute`; runSystemReconcileSweep's raw SQL throws and
   // the outer catch traces without aborting the tick.
   const db = billingSweepDb({ withPayer: true })
-  const traces = await runTickCapturingTrace(commandQueueEnv(), db, null, MID_HOUR)
+  const traces = await runTickCapturingTrace(commandQueueEnv(), db, null, CATCH_UP_MINUTE)
   assertEquals(
     traces.some((line) => line.includes('event=system-reconcile-sweep-failed')),
     true
@@ -1687,8 +1832,11 @@ it('queued cron: leaf renewal and managed-ingress orphan failures are isolated a
       // The notification phases' own statements (copies to drop, history to
       // prune) answer empty and are not counted: this test is about the
       // reconcile, leaf and orphan sweeps.
+      // The tick's gate query is not one of them: no row opens every gate.
       if (
-        /"(attempt|notification|event|preference|watermark)"/.test(dialect.sqlToQuery(query).sql)
+        /"(attempt|notification|event|preference|watermark|commandRecoveryWork)"/.test(
+          dialect.sqlToQuery(query).sql
+        )
       ) {
         return Promise.resolve([])
       }
@@ -1701,7 +1849,7 @@ it('queued cron: leaf renewal and managed-ingress orphan failures are isolated a
     commandQueueEnv(),
     db,
     await testTlsRenewal(),
-    MID_HOUR
+    CATCH_UP_MINUTE
   )
   assertEquals(
     traces.some((line) => line.includes('event=system-reconcile-sweep-failed')),
