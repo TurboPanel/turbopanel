@@ -789,7 +789,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Deploy environment compose to its pinned server',
       description:
-        "When the project follows its repository's compose file, the deploy reads that file at the commit it deploys and uses it as the Base. A missing or unusable file stops the deploy: **422** `compose_file_missing` or `compose_file_unparseable`, **502** `compose_source_unavailable`, each with `message`, `sourceId`, `ref`, `path` and `commitSha`. Nothing falls back to an older copy. The file is read at the commit the environment deploys: a push's commit, else the head of the branch the environment builds for that repository (else the project's `composeSource.ref`). The stored Base is updated only once the deploy is accepted.",
+        "When the project follows its repository's compose file, the deploy reads that file at the commit it deploys and uses it as the Base. A missing or unusable file stops the deploy: **422** `compose_file_missing` or `compose_file_unparseable`, **502** `compose_source_unavailable`, each with `message`, `sourceId`, `ref`, `path` and `commitSha`. Nothing falls back to an older copy. The file is read at the commit the environment deploys: a push's commit, else the head of the branch the environment builds for that repository (else the project's `composeSource.ref`). The stored Base is updated only once the deploy is accepted, and only from a read of the project's own branch (another environment's branch is built from but never stored).",
       parameters: [
         {
           name: 'id',

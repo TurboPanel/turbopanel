@@ -2611,6 +2611,38 @@ test('an environment that builds its own branch reads the file on that branch', 
     assertEquals((calls[0] as { ref: string }).ref, 'staging')
     assertEquals(result.base?.ref, 'staging')
     assertEquals(result.pin?.ref, 'staging')
+    // Another environment's branch is built from but never becomes the shared Base.
+    assertEquals(result.read, undefined)
+  })
+})
+
+test('an environment on the project branch itself hands its read over to be stored', async () => {
+  await withTrackedProject(async (ctx, _cookie, id) => {
+    const options = await trackedOptions(ctx, id)
+    const sourceId = (options.composeSource as unknown as { sourceId: string }).sourceId
+    const onMain = {
+      compose: {
+        version: 1,
+        data: {
+          services: {
+            web: { image: 'node:24', 'x-turbopanel': { source: { sourceId, branch: 'main' } } },
+          },
+        },
+        presentation: { keyOrder: [], comments: {} },
+      },
+    }
+    const result = await resolveDeployProjectOptions(
+      { get: () => undefined } as unknown as Context<AppEnv>,
+      ctx.db,
+      {
+        ...resolveArgs(ctx, id, options, 'deploy'),
+        environmentId: crypto.randomUUID(),
+        environmentOptions: onMain,
+      },
+      inspectStub(readOutcome(READ_YAML)).inspect
+    )
+    if (!result.ok) throw new Error('expected a read')
+    assertEquals(result.read !== undefined, true)
   })
 })
 

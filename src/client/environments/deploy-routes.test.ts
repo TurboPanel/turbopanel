@@ -4632,6 +4632,46 @@ test('a preview shows the branch-head Base and warns, without failing, when the 
   })
 })
 
+test('a deploy of an environment that builds its own branch never stores that branch as the shared Base', async () => {
+  await withTrackedDeploy(async (ctx) => {
+    ctx.served.set('staging', { commitSha: '5'.repeat(40), content: YAML_OLD })
+    await ctx.db
+      .update(environment)
+      .set({
+        options: {
+          compose: {
+            version: 1,
+            data: {
+              services: {
+                web: { 'x-turbopanel': { source: { sourceId: ctx.sourceId, branch: 'staging' } } },
+              },
+            },
+            presentation: { keyOrder: [], comments: {} },
+          },
+        },
+      })
+      .where(eq(environment.id, ctx.environmentId))
+    const [before] = await ctx.db
+      .select({ options: project.options })
+      .from(project)
+      .where(eq(project.id, ctx.projectId))
+      .limit(1)
+
+    await trackedPost(ctx, '/deploy')
+
+    // The environment's own branch is the one read.
+    assertEquals(ctx.reads[0]?.ref, 'staging')
+    // The project's stored Base and its last read are exactly as they were.
+    const [after] = await ctx.db
+      .select({ options: project.options })
+      .from(project)
+      .where(eq(project.id, ctx.projectId))
+      .limit(1)
+    assertEquals(after!.options, before!.options)
+    assertEquals((await storedLastRead(ctx)).lastReadCommitSha, STORED_SHA)
+  })
+})
+
 /** Deploy once as the first release of `web`, as the history would record it. */
 async function deployFirstRelease(
   ctx: TrackedCtx,

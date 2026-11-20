@@ -2386,7 +2386,7 @@ async function loadDeploySpanningContextOrRefuse(
 const ROLLBACK_BASE_UNRECORDED = {
   error: 'rollback_base_unrecorded',
   message:
-    'The project follows its repository compose file, and that release was deployed before the file it used was recorded. Deploy the current file instead of rolling back.',
+    'The project follows its repository compose file, and that release was deployed before the file it used was recorded. Deploy the current file instead, or switch the project to seed mode to roll back.',
 }
 
 /** A hostings-only run builds nothing and keeps the stored Base. A rollback reads the Base recorded on the release it returns to, at that commit. */

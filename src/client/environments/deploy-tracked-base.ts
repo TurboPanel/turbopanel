@@ -363,7 +363,11 @@ async function resolveUncached(
     base: result.record,
     // A deploy stores what it read only once it is accepted (`storeTrackedBase`);
     // a rollback re-reads an old commit and never changes the stored Base.
-    ...(args.mode === 'deploy' && args.atBase === undefined
+    // Only the project's own branch feeds the shared Base; another environment's
+    // branch (staging) is built from but never becomes what the project follows.
+    ...(args.mode === 'deploy' &&
+    args.atBase === undefined &&
+    normalizeBranchName(ref) === normalizeBranchName(composeSource.ref ?? row.defaultBranch)
       ? { read: { document: result.document, record: result.record } }
       : {}),
     ...(pinned === undefined && normalizeBranchName(ref) !== null

@@ -369,8 +369,12 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   the stored Base. A rollback reads the file again at the commit its release's
   deployment recorded in `composeBase` (never the latest read, and it stores
   nothing); a release deployed without a record is refused (**409**
-  `rollback_base_unrecorded`). The deploy stores what it read as the Base only
-  once it is accepted (a refused deploy leaves it unchanged), so listings, lint
+  `rollback_base_unrecorded`; switch to `seed` to roll back). The deploy stores
+  what it read as the Base only once it is accepted (a refused deploy leaves it
+  unchanged) and only when it read the project's own branch (`composeSource.ref`,
+  else the repository default): an environment building another branch such as
+  `staging` is built from that branch's file but never changes the shared Base
+  or the last read. Listings, lint
   and a switch to `seed` see the last-read content; the environment-layer lint
   therefore uses the last-deployed Base. `mode` and `lastRead*` are never
   writable through `PATCH /projects/:id` or create, for a `seed` project as
