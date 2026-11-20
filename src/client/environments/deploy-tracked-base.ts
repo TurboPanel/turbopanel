@@ -309,7 +309,9 @@ async function resolveUncached(
   })
   if (!row) return failure('the repository is no longer connected to this organization.')
   if (args.atBase && args.atBase.sourceId !== composeSource.sourceId) {
-    return failure('the project now follows a different repository than that release was built from.')
+    return failure(
+      'the project now follows a different repository than that release was built from.'
+    )
   }
   if (ref.length === 0) return failure('the repository records no default branch to follow.')
 
@@ -343,10 +345,7 @@ async function resolveUncached(
   const pinned =
     args.atBase?.commitSha ??
     requestedCommitShaForSource(args.selection ?? undefined, composeSource.sourceId, ref)
-  const result = await readTrackedComposeBase(source, ref,
-    pinned,
-    read
-  )
+  const result = await readTrackedComposeBase(source, ref, pinned, read)
   if (!result.ok) {
     if (args.mode === 'preview') {
       return {

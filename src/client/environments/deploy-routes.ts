@@ -2383,6 +2383,29 @@ async function loadDeploySpanningContextOrRefuse(
   }
 }
 
+const ROLLBACK_BASE_UNRECORDED = {
+  error: 'rollback_base_unrecorded',
+  message:
+    'The project follows its repository compose file, and that release was deployed before the file it used was recorded. Deploy the current file instead of rolling back.',
+}
+
+/** A hostings-only run builds nothing and keeps the stored Base. A rollback reads the Base recorded on the release it returns to, at that commit. */
+function deployReadOptions(auth: DeployRequestAuth): {
+  skipRead: boolean
+  atBase?: ComposeBaseRecord
+} {
+  const recorded = auth.rollback?.composeBase
+  return {
+    skipRead: auth.hostingsOnly === true || (auth.rollback !== undefined && !recorded),
+    ...(recorded ? { atBase: recorded } : {}),
+  }
+}
+
+/** Rolling back to a deployment that recorded no Base of a file the project now follows: the stored Base is the latest read, not that deployment's. */
+function rollbackBaseUnrecorded(auth: DeployRequestAuth, planned: PlannedDeploy): boolean {
+  return !!auth.rollback && !auth.rollback.composeBase && planned.composeBase !== null
+}
+
 async function runEnvironmentDeploy(
   c: Context<AppEnv>,
   db: Db,
@@ -2405,27 +2428,13 @@ async function runEnvironmentDeploy(
     ),
     {
       mode: 'deploy',
-      // A hostings-only run builds nothing and keeps the stored Base. A rollback
-      // reads the Base recorded on the release it returns to, at that commit.
-      skipRead:
-        auth.hostingsOnly === true ||
-        (auth.rollback !== undefined && auth.rollback.composeBase === undefined),
-      ...(auth.rollback?.composeBase ? { atBase: auth.rollback.composeBase } : {}),
+      ...deployReadOptions(auth),
       selection: auth.selection,
     }
   )
   if (planned instanceof Response) return planned
-  // Rolling back to a deployment that recorded no Base of a file the project
-  // now follows: the stored Base is the latest read, not that deployment's.
-  if (auth.rollback && !auth.rollback.composeBase && planned.composeBase !== null) {
-    return c.json(
-      {
-        error: 'rollback_base_unrecorded',
-        message:
-          'The project follows its repository compose file, and that release was deployed before the file it used was recorded. Deploy the current file instead of rolling back.',
-      },
-      409
-    )
+  if (rollbackBaseUnrecorded(auth, planned)) {
+    return c.json(ROLLBACK_BASE_UNRECORDED, 409)
   }
 
   const priorNetworks = await listEnvironmentComposeNetworks(db, environmentId)
