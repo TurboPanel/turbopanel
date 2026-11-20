@@ -11,6 +11,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { hostname, hosting, tls } from '../../db/schema.ts'
+import { isSiteLetsEncrypt } from '../tls/unused-letsencrypt.ts'
 import type { HostnameCertificate } from './name-certificate-vocabulary.ts'
 
 /** The choice a pinned library row stands for (`null` pin: self-signed). */
@@ -122,6 +123,22 @@ export async function syncHostingPin(db: Db, hostingId: string): Promise<void> {
   const pins = new Set(names.map((n) => n.tlsId))
   if (pins.size !== 1) return
   const [only] = [...pins]
+  if (only) {
+    // A row made for one name (the site's own pin is not it) never becomes the whole-site
+    // pin: a name added later would inherit it, and the whole-site flow would reach it.
+    const [row] = await db
+      .select({
+        source: tls.source,
+        status: tls.status,
+        metadata: tls.metadata,
+        sitePin: hosting.tlsId,
+      })
+      .from(tls)
+      .innerJoin(hosting, eq(hosting.id, hostingId))
+      .where(eq(tls.id, only))
+      .limit(1)
+    if (row && isSiteLetsEncrypt(row) && row.sitePin !== only) return
+  }
   await db
     .update(hosting)
     .set({ tlsId: only ?? null, updatedAt: sql`${hosting.updatedAt}` })

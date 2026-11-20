@@ -129,10 +129,11 @@ async function commitHostingPatch(
         await replaceHostingHostnames(tx, id, organizationId, hostnamesPatch, choices)
       }
       // A name set to Let's Encrypt via HTTP gets its own order (a no-op for a
-      // name that already has one), before the site pin is synced to the names.
-      const ordered = await ensureNameHttpOrders(tx, id, organizationId)
-      if (hostnamesPatch !== null && (choices !== undefined || ordered.length > 0)) {
-        await syncHostingPin(tx, id)
+      // name that already has one). Only when the names were saved: the
+      // environment lock is then already held, the order a deploy takes.
+      if (hostnamesPatch !== null) {
+        await ensureNameHttpOrders(tx, id, organizationId)
+        if (choices !== undefined) await syncHostingPin(tx, id)
       }
       await removeUnusedSiteCertificates(tx, previousCertificates, {
         reason: 'its site now uses another certificate',
@@ -247,8 +248,8 @@ async function insertHostingFromCreate(
       validatedOptions?.hostnames ?? [],
       choices
     )
-    const ordered = await ensureNameHttpOrders(tx, inserted.id, organizationId)
-    if (choices !== undefined || ordered.length > 0) await syncHostingPin(tx, inserted.id)
+    await ensureNameHttpOrders(tx, inserted.id, organizationId)
+    if (choices !== undefined) await syncHostingPin(tx, inserted.id)
     else if (fks.tlsId.kind === 'value') await pinHostingNames(tx, inserted.id, fks.tlsId.value)
     return inserted.id
   })

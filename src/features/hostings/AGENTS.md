@@ -63,7 +63,10 @@ the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
   no-op for a name that already has a pin (a library pick, a Let's Encrypt row
   included, keeps renewing through that row). Moving a name to another choice
   drops its pin; the row is removed when its order never began, and an open
-  order stays unpinned, which the sweep does not pick up.
+  order is ended by the sweep (it still picks up an unpinned open order, only to
+  end it and tell the helpers), after which the row is cleaned up as usual. A
+  per-name row never becomes `hosting.tls_id` (`syncHostingPin` skips it), so
+  names added later and the whole-site flow never reach it.
 - The library "in use" read and the delete guard look at `hostname.tls_id`
   (`certificateIdsPinnedBy`, `notPinnedBySiteCondition`).
 - Deploy preparation (`src/client/environments/deploy-prepare.ts`) judges the

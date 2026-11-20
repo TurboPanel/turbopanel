@@ -70,5 +70,9 @@ test('no serving server that lists the feature says so', () => {
     dnsUnavailableReason: 'No server serving this name can order over DNS yet',
   }
   assertEquals(dnsIssuanceFor('app.example.net', inputs({ servers: { capable: 0 } })), expected)
-  assertEquals(dnsIssuanceFor('app.example.net', inputs({ servers: { capable: 0 } })), expected)
+  // A token that does not cover the name is told first, whatever the servers can do.
+  assertEquals(dnsIssuanceFor('app.example.org', inputs({ servers: { capable: 0 } })), {
+    dnsIssuance: false,
+    dnsUnavailableReason: 'No DNS token covers app.example.org',
+  })
 })

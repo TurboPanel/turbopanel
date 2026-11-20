@@ -23,8 +23,10 @@ import {
 import {
   type HttpIssuanceState,
   newHttpIssuanceState,
+  readHttpIssuanceState,
   withHttpIssuanceState,
 } from '../../features/tls/http-issuance/state.ts'
+import { removeUnusedSiteCertificates } from '../../features/tls/unused-letsencrypt.ts'
 import { ensureNameHttpOrders } from '../hostings/name-http-orders.ts'
 import {
   httpIssuanceStaging,
@@ -404,9 +406,26 @@ test('a row made for one name by its HTTP choice is picked up by the sweep; once
       .update(hostname)
       .set({ certificate: 'self_signed', tlsId: null })
       .where(eq(hostname.tlsId, one!.id))
+    // The abandoned open order is still picked up, so the sweep can end it.
+    const wiring = {
+      registry: {} as never,
+      secrets: {} as never,
+      env: {},
+      now: () => NOW,
+      dnsLookup: async () => [],
+    }
+    assertEquals((await candidates()).includes(one!.id), true)
+    await runHttpIssuanceSweepTick(db, wiring, { budgetMs: 5_000 })
+    const [ended] = await db.select().from(tls).where(eq(tls.id, one!.id))
+    assertEquals(readHttpIssuanceState(ended!.metadata)?.endedAt === null, false)
+    // Ended and unpinned: nothing left to do, so it is no candidate, holds no issuer and can be removed.
     const after = await candidates()
     assertEquals(after.includes(one!.id), false)
     assertEquals(after.includes(rowOf('two.example.net')), true)
+    await db.transaction((tx) =>
+      removeUnusedSiteCertificates(tx as never, [one!.id], { reason: 'test' })
+    )
+    assertEquals((await db.select().from(tls).where(eq(tls.id, one!.id))).length, 0)
     await db.delete(hostname).where(eq(hostname.hostingId, site!.id))
     await db.delete(hosting).where(eq(hosting.id, site!.id))
   } finally {

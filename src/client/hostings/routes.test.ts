@@ -1520,7 +1520,7 @@ test("PATCH /hostings orders Let's Encrypt for a name set to HTTP, once, and lea
       )
       assertEquals((await nameRows(db, hostingId)).get('a.example.com')?.tlsId, order!.id)
 
-      // Moving away while the order is open keeps the row but the sweep stops picking it up.
+      // Moving away while the order is open keeps the row; the sweep still picks it up, but only to end it.
       await db
         .update(tls)
         .set({
@@ -1538,10 +1538,7 @@ test("PATCH /hostings orders Let's Encrypt for a name set to HTTP, once, and lea
       assertEquals((await choose('self_signed', 'library')).status, 200)
       assertEquals((await nameRows(db, hostingId)).get('a.example.com')?.tlsId, null)
       const after = await selectHttpIssuanceCandidates(db, now, 1000)
-      assertEquals(
-        after.some((row) => row.id === order!.id),
-        false
-      )
+      assertEquals(after.find((row) => row.id === order!.id)?.pinned, false)
 
       // Moving away before the order began removes the row.
       assertEquals((await choose('letsencrypt_http', 'library')).status, 200)
@@ -1584,6 +1581,45 @@ test('POST /hostings orders a name created with the HTTP choice, and not when th
       assertEquals((await nameRows(db, on)).get('b.example.com')?.tlsId, rows[0]!.id)
     } finally {
       await db.delete(hosting).where(eq(hosting.serviceId, serviceId))
+      await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    }
+  })
+})
+
+test("a name's own HTTP order never becomes the site pin, so later names and the whole-site flow are not reached", async () => {
+  await withHostingFixtures(async ({ app, secrets, db, userId, organizationId, serviceId }) => {
+    await db
+      .update(organization)
+      .set({ isAcmeEnabled: true })
+      .where(eq(organization.id, organizationId))
+    const call = hostingCaller(app, await sessionCookie(db, secrets, userId), organizationId)
+    try {
+      const hostingId = await createHostingWithNames(call, serviceId, [
+        { hostname: 'a.example.com', certificate: 'letsencrypt_http' },
+      ])
+      const pin = async () =>
+        (await db.select({ tlsId: hosting.tlsId }).from(hosting).where(eq(hosting.id, hostingId)))[0]
+          ?.tlsId
+      const names = await nameRows(db, hostingId)
+      assertEquals(names.get('a.example.com')?.tlsId !== null, true)
+      assertEquals(await pin(), null, 'one HTTP name does not pin the site')
+
+      // A name added later does not inherit the order of another name.
+      const res = await call('PATCH', `/hostings/${hostingId}`, {
+        options: { hostnames: ['a.example.com', 'd.example.com'] },
+        names: [
+          { hostname: 'a.example.com', certificate: 'letsencrypt_http' },
+          { hostname: 'd.example.com', certificate: 'self_signed' },
+        ],
+      })
+      assertEquals(res.status, 200)
+      const after = await nameRows(db, hostingId)
+      assertEquals(after.get('d.example.com')?.tlsId, null)
+      assertEquals(after.get('a.example.com')?.tlsId, names.get('a.example.com')?.tlsId)
+      assertEquals(await pin(), null, 'mixed names leave no site pin')
+    } finally {
+      await db.delete(hosting).where(eq(hosting.serviceId, serviceId))
+      await db.delete(audit).where(eq(audit.organizationId, organizationId))
       await db.delete(tls).where(eq(tls.organizationId, organizationId))
     }
   })
