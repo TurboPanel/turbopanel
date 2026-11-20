@@ -259,7 +259,7 @@ test('a reconcile never holds up a user command, and reconciles stay one at a ti
   await withServers(async ({ db, serverId }) => {
     const first = await newCommand(db, serverId, 'server.fabric.reconcile')
     assertEquals(await claim(db, first), 'claimed')
-    const second = await newCommand(db, serverId, 'server.firewall.reconcile')
+    const second = await newCommand(db, serverId, 'server.backups.reconcile')
     assertEquals(await claim(db, second), 'busy')
     const user = await newCommand(db, serverId, 'server.hostname.set')
     assertEquals(await claim(db, user), 'claimed')
@@ -268,14 +268,14 @@ test('a reconcile never holds up a user command, and reconciles stay one at a ti
 
 test('an older queued reconcile does not hold up a newer user command, and the reverse', async () => {
   await withServers(async ({ db, serverId }) => {
-    const reconcile = await newCommand(db, serverId, 'server.firewall.reconcile')
+    const reconcile = await newCommand(db, serverId, 'server.backups.reconcile')
     const user = await newCommand(db, serverId, 'server.hostname.set')
     assertEquals(await claim(db, user), 'claimed')
     assertEquals(await claim(db, reconcile), 'claimed')
   })
   await withServers(async ({ db, serverId }) => {
     const user = await newCommand(db, serverId, 'server.hostname.set')
-    const reconcile = await newCommand(db, serverId, 'server.firewall.reconcile')
+    const reconcile = await newCommand(db, serverId, 'server.backups.reconcile')
     assertEquals(await claim(db, reconcile), 'claimed')
     assertEquals(await claim(db, user), 'claimed')
   })
@@ -293,6 +293,17 @@ test('a managed reconcile still waits behind a failover', async () => {
       const reconcile = await newCommand(db, serverId, type)
       assertEquals(await claim(db, reconcile), 'busy')
     }
+  })
+})
+
+test('a principals reconcile waits behind an environment deploy', async () => {
+  await withServers(async ({ db, serverId }) => {
+    const deploy = await newCommand(db, serverId, 'environment.deploy')
+    assertEquals(await claim(db, deploy), 'claimed')
+    const principals = await newCommand(db, serverId, 'server.principals.reconcile')
+    assertEquals(await claim(db, principals), 'busy')
+    const firewall = await newCommand(db, serverId, 'server.firewall.reconcile')
+    assertEquals(await claim(db, firewall), 'busy')
   })
 })
 

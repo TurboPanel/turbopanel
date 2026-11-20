@@ -340,8 +340,13 @@ test('with a complete commandState the guards still hold', async () => {
   fx.rows.get('done')!.status = 'succeeded'
   addCommand(fx, 'stale', {}, 'environment.deploy')
   fx.rows.get('stale')!.sentAt = new Date(Date.now() - 6.5 * 24 * 3600_000).toISOString()
+  addCommand(fx, 'edge', {}, 'environment.deploy')
+  fx.rows.get('edge')!.sentAt = new Date(Date.now() - 5.9 * 24 * 3600_000).toISOString()
   addCommand(fx, 'fresh', { sentAt: '2026-11-12T14:10:30.000Z' }, 'environment.deploy')
   addCommand(fx, 'ok', { sentAt: '2026-11-12T14:10:10.000Z' }, 'environment.deploy')
   const attachedAt = '2026-11-12T14:10:20.000Z'
-  assertEquals(await fx.run(RECOVERY_V2_FEATURES, undefined, attachedAt, state([], true)), ['ok'])
+  assertEquals(await fx.run(RECOVERY_V2_FEATURES, undefined, attachedAt, state([], true)), [
+    'edge',
+    'ok',
+  ])
 })

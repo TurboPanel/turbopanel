@@ -28,8 +28,9 @@
  * turns among the others. These reconciles never hold up a user command, and a
  * user command never holds up them; the server runs them side by side.
  * `managed.ingress.reconcile`, `managed.ha.reconcile`, `system.reconcile` and
- * `server.principals.reconcile` stay in the user lane: they write state that a
- * failover or a deploy also writes, with no daemon lock between them.
+ * `server.principals.reconcile` and `server.firewall.reconcile` stay in the user
+ * lane: they write state that a failover, a deploy or a managed apply also
+ * writes, with no daemon lock between them.
  */
 import { and, eq, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -66,7 +67,6 @@ export const QUICK_COMMAND_TYPES: ReadonlySet<CommandType> = new Set<CommandType
 export const BACKGROUND_COMMAND_TYPES: ReadonlySet<CommandType> = new Set<CommandType>([
   'server.fabric.reconcile',
   'server.tls.trust.reconcile',
-  'server.firewall.reconcile',
   'server.backups.reconcile',
 ])
 
