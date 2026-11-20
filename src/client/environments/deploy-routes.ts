@@ -2406,6 +2406,17 @@ function rollbackBaseUnrecorded(auth: DeployRequestAuth, planned: PlannedDeploy)
   return !!auth.rollback && !auth.rollback.composeBase && planned.composeBase !== null
 }
 
+/** Store the Base a deploy read, when it read one the project should follow. */
+async function storePlannedBase(db: Db, planned: PlannedDeploy): Promise<void> {
+  if (!planned.composeBaseRead) return
+  await storeTrackedBase(
+    db,
+    planned.projectId,
+    planned.composeBaseRead.document,
+    planned.composeBaseRead.record
+  )
+}
+
 async function runEnvironmentDeploy(
   c: Context<AppEnv>,
   db: Db,
@@ -2522,14 +2533,7 @@ async function runEnvironmentDeploy(
     const created = persisted
     spanningCommitted = true
     // The deploy is accepted: only now does what it read become the stored Base.
-    if (planned.composeBaseRead) {
-      await storeTrackedBase(
-        db,
-        planned.projectId,
-        planned.composeBaseRead.document,
-        planned.composeBaseRead.record
-      )
-    }
+    await storePlannedBase(db, planned)
     await recordHostAccessUse(db, planned, auth, environmentId)
     const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
       created,
