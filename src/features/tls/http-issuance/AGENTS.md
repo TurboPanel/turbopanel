@@ -106,7 +106,7 @@ panel publishes the TXT records for the daemon.
 - `dns-relay.ts`: handles `acme-dns-publish` (replied to with
   `acme-dns-published` once the record reads back) and `acme-dns-remove`, on
   both runtimes. The record is written to `metadata.dnsCert.records` as soon as
-  it exists and removed only by id. See `dns-certificates/AGENTS.md`.
+  it exists and removed only by id. See `../dns-certificates/AGENTS.md`.
 - `caps.ts`: at most 10 new certificates per organization per day, and a pause
   for every new start while an authority rate limit is in force.
 - The sweep starts at most 2 renewals per tick.

@@ -615,7 +615,7 @@ test('a daemon of another organization cannot move or read a request', async () 
   }
 })
 
-test('a wildcard name is never ordered over the HTTP proof', async () => {
+test('a wildcard name waits for the DNS proof and is never ordered over the HTTP proof', async () => {
   if (!dbUrl) return skipWithoutDatabase('http issuance tests')
   const f = await setup({ servers: 1 })
   try {
@@ -624,7 +624,7 @@ test('a wildcard name is never ordered over the HTTP proof', async () => {
       .update(tls)
       .set({ metadata: { ...(row.metadata as object), dnsNames: ['*.example.com'] } })
       .where(eq(tls.id, f.tlsId))
-    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'not_eligible')
+    assertEquals(await startHttpIssuance(f.deps(), f.tlsId, always), 'waiting')
     assertEquals(f.sent.length, 0)
   } finally {
     await f.cleanup()

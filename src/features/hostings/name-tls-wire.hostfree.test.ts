@@ -189,8 +189,8 @@ test('the shipped feature list names the per-name certificate feature', () => {
 })
 
 test('no per-name entry carries an ACME challenge, and the preparer never sets one', async () => {
-  // This change sends no ACME: a dns-01 order must never reach a daemon that
-  // lacks `acme-issue-dns-v1`, so nothing here may emit a `challenge`.
+  // Per-name entries are not orders: the DNS proof is ordered only through the
+  // issuance sweep, so nothing here may emit a `challenge`.
   const plan = planNameTls([
     name('a.example.net', pin('t1')),
     name('b.example.net', SELF),
@@ -206,5 +206,4 @@ test('no per-name entry carries an ACME challenge, and the preparer never sets o
       []
     )
   }
-  assertEquals(DAEMON_WIRE_FEATURES.includes('acme-issue-dns-v1' as never), false)
 })

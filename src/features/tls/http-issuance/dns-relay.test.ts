@@ -167,6 +167,8 @@ async function withWorld(
     }
     await fn({ deps, replies, serverId: a!.id, otherServerId: b!.id, rowId: row!.id, host, db })
   } finally {
+    await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    await db.delete(server).where(eq(server.organizationId, organizationId))
     await db.delete(organization).where(eq(organization.id, organizationId))
     await endDbConnection(db)
   }
