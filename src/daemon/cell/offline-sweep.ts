@@ -1181,140 +1181,29 @@ async function runHostLossAndReturnFenceFirst(
   }
 }
 
-async function runQueuedCronSweeps(
-  db: Db,
-  queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
-  tlsRenewal: CronTlsRenewal | null | undefined,
-  firewallApplyGate: FirewallApplyGate,
-  registry: DaemonCellRegistry,
-  env: CloudflareBindings,
-  signal?: AbortSignal,
-  gates: CronGates = ALL_GATES_OPEN,
+/** What the queued cron sweeps read: the tick's connections, gates and clock. */
+type QueuedCronSweepContext = {
+  db: Db
+  queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>
+  tlsRenewal: CronTlsRenewal | null | undefined
+  firewallApplyGate: FirewallApplyGate
+  registry: DaemonCellRegistry
+  env: CloudflareBindings
+  signal?: AbortSignal
+  gates?: CronGates
   scheduledTime?: number
-): Promise<void> {
-  // Reconnect-repair sweeps: each has its own five minute throttle or works on
-  // expiry-scale dates, so they run on a staggered five minute catch-up, and
-  // only while a server is connected (nothing can be sent to one that is not).
-  const cadences = CRON_CADENCES
-  const repair = (job: CronJob): boolean =>
-    gates.connectedServer && isDue(job, scheduledTime, cadences)
-  // System reconcile and the ingress orphan pass keep a 5 minute throttle on their
-  // own last command, so on a 5 minute cadence alone a down container would be
-  // retried about every 10 minutes and a reconnect could fall between two slots.
-  // While the gate shows a candidate they run every minute; otherwise on their slot.
-  const reconcileDue = (job: CronJob): boolean =>
-    gates.connectedServer && (gates.reconcileUrgent || isDue(job, scheduledTime, cadences))
+}
+
+async function runQueuedCronSweeps(ctx: QueuedCronSweepContext): Promise<void> {
+  const { db, registry, signal, tlsRenewal } = ctx
+  const gates = ctx.gates ?? ALL_GATES_OPEN
   try {
-    const commandQueue = createWorkersCommandQueue(queue)
+    const commandQueue = createWorkersCommandQueue(ctx.queue)
     // Note: host-loss tick now runs first in runOfflineSweep (P1-5) before optional phases,
     // so it is not called here anymore.
-    if (reconcileDue('systemReconcile')) await runSystemReconcileSweep(db, commandQueue)
-    // Each sweep below is isolated: a failure never aborts the others.
-    // Backup policy sets after a reconnect.
-    if (repair('backupsReconcile'))
-      await runIsolatedSweep(signal, 'backups-reconcile-sweep-failed', () =>
-        runBackupsReconcileSweep(db, commandQueue, {
-          copyDeps: tlsRenewal
-            ? {
-                secretsConfig: tlsRenewal.secretsConfig,
-                dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
-              }
-            : undefined,
-        })
-      )
-    // Folders of deleted assets the host has not confirmed gone.
-    if (repair('folderRemoval'))
-      await runIsolatedSweep(signal, 'folder-removal-sweep-failed', () =>
-        runFolderRemovalSweep(db, commandQueue)
-      )
-    // Hosting Accounts of deleted projects whose folders are gone.
-    if (gates.principalRemoval)
-      await runIsolatedSweep(signal, 'principal-removal-sweep-failed', () =>
-        runPrincipalRemovalSweep(db, commandQueue, tlsRenewal?.secretsConfig)
-      )
-    // A fresh folder listing from servers that have folders, every few hours, so
-    // a folder removed or added by hand is noticed.
-    if (repair('folderReconcile'))
-      await runIsolatedSweep(signal, 'folder-reconcile-sweep-failed', () =>
-        runFolderReconcileSweep(db, commandQueue, tlsRenewal?.secretsConfig)
-      )
-    // Firewall previews after a reconnect. The gate is the deploy-time apply
-    // key: without it an opted-in host that applied would be sent a teardown on
-    // every reconnect.
-    if (repair('firewallPreview'))
-      await runIsolatedSweep(signal, 'firewall-preview-sweep-failed', () =>
-        runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
-      )
-    // Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
-    // pinned certificate goes out at once; without it the panel asks for a redeploy.
-    if (gates.hostingPending)
-      await runIsolatedSweep(signal, 'hosting-letsencrypt-sweep-failed', () =>
-        runHostingLetsEncryptSweepTick(db, {
-          ...(signal ? { signal } : {}),
-          ...(tlsRenewal
-            ? {
-                apply: {
-                  commandQueue,
-                  secretsConfig: tlsRenewal.secretsConfig,
-                  dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
-                },
-              }
-            : {}),
-        })
-      )
-    if (tlsRenewal) {
-      // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
-      // bounded batch; reset when the sweep completes or the cursor is invalid).
-      if (gates.certificates && isDue('leafRenewal', scheduledTime, cadences))
-        await runIsolatedSweep(signal, 'leaf-renewal-sweep-failed', () =>
-          runLeafRenewalSweepTick(db, commandQueue, {
-            ...tlsRenewal,
-            deliverPeerLeaf: peerLeafDelivery(commandQueue, tlsRenewal),
-          })
-        )
-      // Tunnel tables, connectors, removals, token recheck and connector status:
-      // the one list the self-hosted timer also runs (`features/tunnels/sweeps.ts`).
-      if (gates.tunnels)
-        await runTunnelSweeps(db, { commandQueue, ...tlsRenewal }, (label, sweep) =>
-          runIsolatedSweep(signal, label, sweep)
-        )
-      // DNS-validated certificates: the control plane no longer orders or renews them.
-      // Only challenge records it made are removed, through the DNS provider.
-      if (gates.certificates && isDue('dnsCertificates', scheduledTime, cadences))
-        await runIsolatedSweep(signal, 'dns-certificate-sweep-failed', () =>
-          runDnsCertificateCleanupTick(
-            buildDnsCertContext(db, { secrets: tlsRenewal.dataEncryptionSecrets })
-          )
-        )
-      // Certificates a serving server orders at the panel's request: moves each open
-      // request on, hands a finished pair to the sites, starts first orders and renewals.
-      if (
-        gates.httpCertificatesActive ||
-        (gates.httpCertificates && isDue('httpCertificates', scheduledTime, cadences))
-      )
-        await runIsolatedSweep(signal, 'http-certificate-sweep-failed', () =>
-          runHttpIssuanceSweepTick(db, {
-            registry,
-            push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
-            secrets: tlsRenewal.dataEncryptionSecrets,
-            env: env as unknown as Record<string, string | undefined>,
-          })
-        )
-      // Orphaned ProxySQL frontends: teardown needs a full
-      // `managed.ingress.reconcile`, so it can only run when the cron has the
-      // secrets bundle (same gate as leaf renewal).
-      if (reconcileDue('managedIngressOrphan'))
-        await runIsolatedSweep(signal, 'managed-ingress-orphan-sweep-failed', () =>
-          runManagedIngressOrphanSweep(db, commandQueue, tlsRenewal)
-        )
-      // Automatic membership repins: the presence path only stamps
-      // `ip.repin_pending_fanout_at` (hello / DO must not enqueue);
-      // the routing fan-out needs the same secrets bundle as leaf renewal.
-      if (gates.repinPending)
-        await runIsolatedSweep(signal, 'datacenter-repin-fanout-sweep-failed', () =>
-          runDatacenterRepinFanoutSweep(db, commandQueue, tlsRenewal)
-        )
-    }
+    await runReconnectRepairSweeps(ctx, gates, commandQueue)
+    await runHostingLetsEncryptStep(ctx, gates, commandQueue)
+    if (tlsRenewal) await runCertificateAndIngressSweeps(ctx, gates, commandQueue, tlsRenewal)
     // Automatic network fallback: ask the servers whether the network that
     // carries server-to-server traffic still works, and mark the ones nobody
     // can reach. Only stamps `ip.repin_pending_fanout_at`; the fan-out above
@@ -1328,6 +1217,155 @@ async function runQueuedCronSweeps(
       error: sweepErrorMessage(err),
     })
   }
+}
+
+/**
+ * Reconnect-repair sweeps: each has its own five minute throttle or works on
+ * expiry-scale dates, so they run on a staggered five minute catch-up, and
+ * only while a server is connected (nothing can be sent to one that is not).
+ */
+async function runReconnectRepairSweeps(
+  ctx: QueuedCronSweepContext,
+  gates: CronGates,
+  commandQueue: CommandQueue
+): Promise<void> {
+  const { db, signal, tlsRenewal, firewallApplyGate, scheduledTime } = ctx
+  const repair = (job: CronJob): boolean =>
+    gates.connectedServer && isDue(job, scheduledTime, CRON_CADENCES)
+  // System reconcile and the ingress orphan pass keep a 5 minute throttle on their
+  // own last command, so on a 5 minute cadence alone a down container would be
+  // retried about every 10 minutes and a reconnect could fall between two slots.
+  // While the gate shows a candidate they run every minute; otherwise on their slot.
+  const reconcileDue = (job: CronJob): boolean =>
+    gates.connectedServer && (gates.reconcileUrgent || isDue(job, scheduledTime, CRON_CADENCES))
+  if (reconcileDue('systemReconcile')) await runSystemReconcileSweep(db, commandQueue)
+  // Each sweep below is isolated: a failure never aborts the others.
+  // Backup policy sets after a reconnect.
+  if (repair('backupsReconcile'))
+    await runIsolatedSweep(signal, 'backups-reconcile-sweep-failed', () =>
+      runBackupsReconcileSweep(db, commandQueue, {
+        copyDeps: tlsRenewal
+          ? {
+              secretsConfig: tlsRenewal.secretsConfig,
+              dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
+            }
+          : undefined,
+      })
+    )
+  // Folders of deleted assets the host has not confirmed gone.
+  if (repair('folderRemoval'))
+    await runIsolatedSweep(signal, 'folder-removal-sweep-failed', () =>
+      runFolderRemovalSweep(db, commandQueue)
+    )
+  // Hosting Accounts of deleted projects whose folders are gone.
+  if (gates.principalRemoval)
+    await runIsolatedSweep(signal, 'principal-removal-sweep-failed', () =>
+      runPrincipalRemovalSweep(db, commandQueue, tlsRenewal?.secretsConfig)
+    )
+  // A fresh folder listing from servers that have folders, every few hours, so
+  // a folder removed or added by hand is noticed.
+  if (repair('folderReconcile'))
+    await runIsolatedSweep(signal, 'folder-reconcile-sweep-failed', () =>
+      runFolderReconcileSweep(db, commandQueue, tlsRenewal?.secretsConfig)
+    )
+  // Firewall previews after a reconnect. The gate is the deploy-time apply
+  // key: without it an opted-in host that applied would be sent a teardown on
+  // every reconnect.
+  if (repair('firewallPreview'))
+    await runIsolatedSweep(signal, 'firewall-preview-sweep-failed', () =>
+      runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
+    )
+}
+
+/**
+ * Let's Encrypt requests waiting for DNS. With the secrets bundle a newly
+ * pinned certificate goes out at once; without it the panel asks for a redeploy.
+ */
+async function runHostingLetsEncryptStep(
+  ctx: QueuedCronSweepContext,
+  gates: CronGates,
+  commandQueue: CommandQueue
+): Promise<void> {
+  const { db, signal, tlsRenewal } = ctx
+  if (!gates.hostingPending) return
+  await runIsolatedSweep(signal, 'hosting-letsencrypt-sweep-failed', () =>
+    runHostingLetsEncryptSweepTick(db, {
+      ...(signal ? { signal } : {}),
+      ...(tlsRenewal
+        ? {
+            apply: {
+              commandQueue,
+              secretsConfig: tlsRenewal.secretsConfig,
+              dataEncryptionSecrets: tlsRenewal.dataEncryptionSecrets,
+            },
+          }
+        : {}),
+    })
+  )
+}
+
+/** Certificate, tunnel and ingress sweeps that need the secrets bundle. */
+async function runCertificateAndIngressSweeps(
+  ctx: QueuedCronSweepContext,
+  gates: CronGates,
+  commandQueue: CommandQueue,
+  tlsRenewal: CronTlsRenewal
+): Promise<void> {
+  const { db, signal, registry, env, scheduledTime } = ctx
+  const cadences = CRON_CADENCES
+  const reconcileDue = (job: CronJob): boolean =>
+    gates.connectedServer && (gates.reconcileUrgent || isDue(job, scheduledTime, cadences))
+  // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
+  // bounded batch; reset when the sweep completes or the cursor is invalid).
+  if (gates.certificates && isDue('leafRenewal', scheduledTime, cadences))
+    await runIsolatedSweep(signal, 'leaf-renewal-sweep-failed', () =>
+      runLeafRenewalSweepTick(db, commandQueue, {
+        ...tlsRenewal,
+        deliverPeerLeaf: peerLeafDelivery(commandQueue, tlsRenewal),
+      })
+    )
+  // Tunnel tables, connectors, removals, token recheck and connector status:
+  // the one list the self-hosted timer also runs (`features/tunnels/sweeps.ts`).
+  if (gates.tunnels)
+    await runTunnelSweeps(db, { commandQueue, ...tlsRenewal }, (label, sweep) =>
+      runIsolatedSweep(signal, label, sweep)
+    )
+  // DNS-validated certificates: the control plane no longer orders or renews them.
+  // Only challenge records it made are removed, through the DNS provider.
+  if (gates.certificates && isDue('dnsCertificates', scheduledTime, cadences))
+    await runIsolatedSweep(signal, 'dns-certificate-sweep-failed', () =>
+      runDnsCertificateCleanupTick(
+        buildDnsCertContext(db, { secrets: tlsRenewal.dataEncryptionSecrets })
+      )
+    )
+  // Certificates a serving server orders at the panel's request: moves each open
+  // request on, hands a finished pair to the sites, starts first orders and renewals.
+  if (
+    gates.httpCertificatesActive ||
+    (gates.httpCertificates && isDue('httpCertificates', scheduledTime, cadences))
+  )
+    await runIsolatedSweep(signal, 'http-certificate-sweep-failed', () =>
+      runHttpIssuanceSweepTick(db, {
+        registry,
+        push: { commandQueue, secretsConfig: tlsRenewal.secretsConfig },
+        secrets: tlsRenewal.dataEncryptionSecrets,
+        env: env as unknown as Record<string, string | undefined>,
+      })
+    )
+  // Orphaned ProxySQL frontends: teardown needs a full
+  // `managed.ingress.reconcile`, so it can only run when the cron has the
+  // secrets bundle (same gate as leaf renewal).
+  if (reconcileDue('managedIngressOrphan'))
+    await runIsolatedSweep(signal, 'managed-ingress-orphan-sweep-failed', () =>
+      runManagedIngressOrphanSweep(db, commandQueue, tlsRenewal)
+    )
+  // Automatic membership repins: the presence path only stamps
+  // `ip.repin_pending_fanout_at` (hello / DO must not enqueue);
+  // the routing fan-out needs the same secrets bundle as leaf renewal.
+  if (gates.repinPending)
+    await runIsolatedSweep(signal, 'datacenter-repin-fanout-sweep-failed', () =>
+      runDatacenterRepinFanoutSweep(db, commandQueue, tlsRenewal)
+    )
 }
 
 function capDbTimeout(deadlineMs: number): number {
@@ -1603,21 +1641,18 @@ async function runBillingOptionalPhases(
   )
 }
 
-async function runOptionalCronPhases(
+/** Retention, webhook, trust, pin-silence and orphan-alert phases; false when the deadline cut the tick short. */
+async function runMaintenanceCronPhases(
   env: CloudflareBindings,
   db: Db,
   tlsRenewal: CronTlsRenewal | null | undefined,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  phasesSkipped: SkippedPhases
-): Promise<void> {
-  const upgradeTickMinutes = phasesSkipped.upgradeTickMinutes
+  phasesSkipped: SkippedPhases,
+  gates: CronGates
+): Promise<boolean> {
   const scheduledTime = opts.scheduledTime
-  // The one cadence table; a later change merges per-environment overrides here.
   const cadences = CRON_CADENCES
-  // One statement answers "can any gated family have work?" for the whole tick.
-  const gates = await loadGatesForTick(db, deadlineMs)
-
   // Two halves: the retention delete (a cadence) and the stale-command and
   // stuck-recovery pass (only while a command, recovery or managed row is open).
   const dispatchRetention = isDue('commandDispatchCleanup', scheduledTime, cadences)
@@ -1638,7 +1673,7 @@ async function runOptionalCronPhases(
       )
     ))
   ) {
-    return
+    return false
   }
 
   if (
@@ -1647,7 +1682,7 @@ async function runOptionalCronPhases(
       runWithDbTimeout(db, sweepExpiredWebhookDeliveriesSafely, capDbTimeout(deadlineMs))
     ))
   ) {
-    return
+    return false
   }
 
   // The stale-key socket close stays every minute (one read, a cell is woken
@@ -1664,7 +1699,7 @@ async function runOptionalCronPhases(
       )
     ))
   ) {
-    return
+    return false
   }
 
   // Pinned servers that are up (a TurboFabric peer still reaches them) but
@@ -1684,7 +1719,7 @@ async function runOptionalCronPhases(
       )
     ))
   ) {
-    return
+    return false
   }
 
   // Tell each organization about the folders that became orphans since the
@@ -1704,9 +1739,21 @@ async function runOptionalCronPhases(
       }
     ))
   ) {
-    return
+    return false
   }
+  return true
+}
 
+/** Notification retry and digest phases; false when the deadline cut the tick short. */
+async function runNotificationCronPhases(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  opts: RunOfflineSweepOpts,
+  deadlineMs: number,
+  phasesSkipped: SkippedPhases,
+  gates: CronGates
+): Promise<boolean> {
   // Retry notification deliveries whose backoff has elapsed (chat/webhook
   // channels; email and push have their own transports). Bounded batch, and
   // the sweep itself never throws.
@@ -1725,7 +1772,7 @@ async function runOptionalCronPhases(
       }
     ))
   ) {
-    return
+    return false
   }
 
   // Send each email channel's closed digest / quiet-hours window as one
@@ -1746,8 +1793,31 @@ async function runOptionalCronPhases(
       }
     ))
   ) {
-    return
+    return false
   }
+  return true
+}
+
+async function runOptionalCronPhases(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  opts: RunOfflineSweepOpts,
+  deadlineMs: number,
+  phasesSkipped: SkippedPhases
+): Promise<void> {
+  const upgradeTickMinutes = phasesSkipped.upgradeTickMinutes
+  // One statement answers "can any gated family have work?" for the whole tick.
+  const gates = await loadGatesForTick(db, deadlineMs)
+
+  if (
+    !(await runMaintenanceCronPhases(env, db, tlsRenewal, opts, deadlineMs, phasesSkipped, gates))
+  )
+    return
+  if (
+    !(await runNotificationCronPhases(env, db, tlsRenewal, opts, deadlineMs, phasesSkipped, gates))
+  )
+    return
 
   // Inbox rows after 90 days, events and the ledger after 30, and settings of
   // people who left an organization (features/notifications/cleanup.ts). On
@@ -1816,17 +1886,17 @@ async function runOptionalCronPhases(
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
   await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, (signal) =>
-    runQueuedCronSweeps(
+    runQueuedCronSweeps({
       db,
-      commandQueue,
+      queue: commandQueue,
       tlsRenewal,
-      opts.firewallApplyGate,
-      createDurableObjectDaemonCellRegistry(env, db),
+      firewallApplyGate: opts.firewallApplyGate,
+      registry: createDurableObjectDaemonCellRegistry(env, db),
       env,
       signal,
       gates,
-      opts.scheduledTime
-    )
+      scheduledTime: opts.scheduledTime,
+    })
   )
 }
 
