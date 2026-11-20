@@ -48,3 +48,28 @@ test('a pin must match the certificate the choice names', async () => {
     assertEquals(await verdict('library', 'provider_origin'), 400)
   })
 })
+
+test('a library choice may pin a Lets Encrypt row that covers the name, and only then', async () => {
+  await withScenario({}, async (s) => {
+    const [row] = await s.db
+      .insert(tls)
+      .values({
+        organizationId: s.organizationId,
+        source: 'lets_encrypt',
+        status: 'ready',
+        name: 'le',
+        metadata: { dnsNames: ['a.example.net', '*.wild.example.net'] },
+      })
+      .returning({ id: tls.id })
+    const verdict = async (hostname: string) => {
+      const result = await parseNameChoices(ctx(), s.db, s.organizationId, {
+        names: [{ hostname, certificate: 'library', tlsId: row.id }],
+      })
+      if (result.kind === 'value') return 200
+      return result.kind === 'error' ? result.response.status : 0
+    }
+    assertEquals(await verdict('a.example.net'), 200)
+    assertEquals(await verdict('x.wild.example.net'), 200)
+    assertEquals(await verdict('b.example.net'), 400)
+  })
+})

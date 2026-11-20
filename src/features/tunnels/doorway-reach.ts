@@ -20,10 +20,10 @@ import {
   resolveHostingProtocol,
 } from '../hostings/hosting-options.ts'
 import {
-  DNS_ISSUANCE_FACTS,
   nameCertificateOptions,
   type NameOptionFacts,
 } from '../hostings/name-certificate-options.ts'
+import { loadDnsIssuance } from '../hostings/dns-issuance.ts'
 import { loadNameCertificates, syncHostingPin } from '../hostings/name-certificates.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { type DoorwayRow, TunnelRefusal } from './lifecycle.ts'
@@ -44,22 +44,15 @@ function refuseBind(bind: string): TunnelRefusal {
 }
 
 /** The default certificate of a name for one reach, from the facts the choice table reads. */
-function defaultFor(
-  facts: Omit<NameOptionFacts, 'reach' | 'dnsIssuance' | 'dnsUnavailableReason'>,
-  reach: NameOptionFacts['reach']
-) {
-  return nameCertificateOptions({
-    ...facts,
-    reach,
-    ...DNS_ISSUANCE_FACTS,
-  }).default
+function defaultFor(facts: Omit<NameOptionFacts, 'reach'>, reach: NameOptionFacts['reach']) {
+  return nameCertificateOptions({ ...facts, reach }).default
 }
 
 async function moveUntouchedNames(
   db: Db,
   organizationId: string,
   row: DoorwayRow,
-  site: { id: string; options: unknown }
+  site: { id: string; serviceId: string; options: unknown }
 ): Promise<string[]> {
   const [org] = await db
     .select({ isAcmeEnabled: organization.isAcmeEnabled })
@@ -73,6 +66,7 @@ async function moveUntouchedNames(
     acmeEnabled: org?.isAcmeEnabled === true,
     covering: [],
   }
+  const dnsGate = await loadDnsIssuance(db, organizationId, [site.serviceId])
   const stored = (await loadNameCertificates(db, [site.id])).get(site.id) ?? []
   const sibling = wwwSiblingHostname(row.hostname)
   // A www sibling that is its own doorway and still tunnel-only keeps its choice:
@@ -94,7 +88,11 @@ async function moveUntouchedNames(
     (n) => n.hostname === row.hostname || (n.hostname === sibling && !ownDoorway)
   )
   const moves = names.flatMap((name) => {
-    const facts = { ...common, hostname: name.hostname }
+    const facts = {
+      ...common,
+      hostname: name.hostname,
+      ...dnsGate(site.serviceId, name.hostname),
+    }
     const before = defaultFor(facts, 'tunnel')
     const after = defaultFor(facts, 'tunnel_and_direct')
     return name.certificate === before && before !== after
@@ -128,14 +126,14 @@ export async function setDoorwayLocalOnly(
     throw new TunnelRefusal('doorway_removing', 409, 'This hostname is being removed')
   }
   if (row.isLocalOnly === isLocalOnly) return { doorway: row, certificateChangedNames: [] }
-  let site: { id: string; options: unknown } | null = null
+  let site: { id: string; serviceId: string; options: unknown } | null = null
   if (!isLocalOnly) {
     const owned = row.hostingId
       ? await hostingIdsOfOrganization(db, [row.hostingId], organizationId)
       : new Set<string>()
     const [found] = row.hostingId
       ? await db
-          .select({ id: hosting.id, options: hosting.options })
+          .select({ id: hosting.id, serviceId: hosting.serviceId, options: hosting.options })
           .from(hosting)
           .where(eq(hosting.id, row.hostingId))
           .limit(1)

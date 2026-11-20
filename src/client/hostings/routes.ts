@@ -22,6 +22,7 @@ import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings
 import {
   loadHostingNameReads,
   parseNameChoices,
+  refuseUnavailableDnsChoices,
   unservedChoice,
 } from './name-certificates-routes.ts'
 import {
@@ -173,7 +174,8 @@ async function parseCreateNameChoices(
   db: Db,
   organizationId: string,
   body: Record<string, unknown>,
-  validatedOptions: HostingCreateFields['validatedOptions']
+  validatedOptions: HostingCreateFields['validatedOptions'],
+  serviceId: string
 ): Promise<Response | { choices: ReadonlyMap<string, HostnameChoice> | undefined }> {
   const named = await parseNameChoices(c, db, organizationId, body)
   if (named.kind === 'error') return named.response
@@ -186,6 +188,17 @@ async function parseCreateNameChoices(
       validatedOptions?.www ?? 'off'
     )
     if (unserved) return unserved
+    const unavailable = await refuseUnavailableDnsChoices(
+      c,
+      db,
+      organizationId,
+      {
+        serviceId,
+        hostingId: null,
+      },
+      choices
+    )
+    if (unavailable) return unavailable
   }
   return { choices }
 }
@@ -333,7 +346,14 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const scopeDenied = await assertCreateHostingBindScope(c, db, fks.ipId, validatedOptions)
     if (scopeDenied) return scopeDenied
 
-    const created = await parseCreateNameChoices(c, db, organizationId, body, validatedOptions)
+    const created = await parseCreateNameChoices(
+      c,
+      db,
+      organizationId,
+      body,
+      validatedOptions,
+      serviceId
+    )
     if (created instanceof Response) return created
     const { choices } = created
 
@@ -362,7 +382,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (body instanceof Response) return body
 
     const [existingHosting] = await db
-      .select({ ipId: hosting.ipId, options: hosting.options })
+      .select({ ipId: hosting.ipId, options: hosting.options, serviceId: hosting.serviceId })
       .from(hosting)
       .where(eq(hosting.id, id))
       .limit(1)
@@ -386,6 +406,16 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (choices && hostnamesPatch) {
       const unserved = unservedChoice(c, choices, hostnamesPatch, readHostingWwwMode(savedOptions))
       if (unserved) return unserved
+    }
+    if (choices) {
+      const unavailable = await refuseUnavailableDnsChoices(
+        c,
+        db,
+        organizationId,
+        { serviceId: existingHosting.serviceId, hostingId: id },
+        choices
+      )
+      if (unavailable) return unavailable
     }
 
     const conflict = await commitHostingPatch(c, db, {
