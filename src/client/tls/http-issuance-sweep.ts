@@ -206,6 +206,24 @@ export const HTTP_ISSUANCE_STARTS_PER_TICK = 3
 /** Of those, renewals (a row that already has a pair) begun in one tick. */
 export const HTTP_ISSUANCE_RENEWALS_PER_TICK = 2
 
+/** Nothing uses this row any more: end an open order and tell the helpers. */
+async function endAbandonedOrder(
+  deps: HttpIssuanceDeps,
+  tlsId: string,
+  state: ReturnType<typeof readHttpIssuanceState>
+): Promise<void> {
+  if (state?.endedAt === null) {
+    await failOpenRequest(
+      deps,
+      tlsId,
+      state.requestId,
+      'Its name no longer uses this certificate.',
+      false
+    )
+  }
+  await sendPendingEnds(deps, tlsId)
+}
+
 async function stepRow(
   deps: HttpIssuanceDeps,
   row: Candidate,
@@ -220,17 +238,7 @@ async function stepRow(
   const { out, now } = step
   const state = readHttpIssuanceState(row.metadata)
   if (!row.pinned) {
-    // Nothing uses this row any more: end an open order and tell the helpers, then stop.
-    if (state?.endedAt === null) {
-      await failOpenRequest(
-        deps,
-        row.id,
-        state.requestId,
-        'Its name no longer uses this certificate.',
-        false
-      )
-    }
-    await sendPendingEnds(deps, row.id)
+    await endAbandonedOrder(deps, row.id, state)
     return
   }
   if (state?.endedAt === null) {
