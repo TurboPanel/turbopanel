@@ -566,6 +566,41 @@ async function issuerHasOpenOrder(tx: Db, serverId: string): Promise<boolean> {
   return rows.length > 0
 }
 
+/**
+ * The organization's day cap and rate-limit pause, read again under a lock on its
+ * row, so two starts at once cannot both pass a cap that only one of them fits
+ * under. A row trying again was counted when it first started; only the pause
+ * applies to it.
+ */
+async function capAllowsStart(
+  tx: Db,
+  row: RowFacts,
+  previous: HttpIssuanceState | null,
+  now: Date
+): Promise<boolean> {
+  // A renewal is not a new certificate and has no cap to meet.
+  if (row.hasPair) return true
+  await tx
+    .select({ id: organization.id })
+    .from(organization)
+    .where(eq(organization.id, row.organizationId))
+    .for('update')
+  const facts = await loadOrgOrderFacts(tx, row.organizationId, now)
+  const applied = previous === null ? facts : { ...facts, newStarts: [] }
+  return mayStartNewCertificate(applied, now).ok
+}
+
+/** Note a new certificate (not a renewal, not a retry) against the organization's day. */
+async function noteStart(
+  tx: Db,
+  row: RowFacts,
+  previous: HttpIssuanceState | null,
+  now: Date
+): Promise<void> {
+  if (previous === null && !row.hasPair)
+    await recordNewCertificateStart(tx, row.organizationId, now)
+}
+
 async function startInTransaction(
   tx: Db,
   params: {
@@ -590,22 +625,12 @@ async function startInTransaction(
     { attemptTimes: previous?.attemptTimes ?? [], nextAttemptAt: previous?.nextAttemptAt ?? null },
     now
   )
-  if (!verdict.ok) return { outcome: 'backoff', send: [] }
+  if (!verdict.ok || !(await capAllowsStart(tx, row, previous, now))) {
+    return { outcome: 'backoff', send: [] }
+  }
   if (!plan.choice.ok) {
     await writeWaiting(tx, row, waitingText(plan.choice.reason), now, plan.challenge)
     return { outcome: 'waiting', send: [] }
-  }
-  // The organization's day count is read again under a lock on its row, so two
-  // starts at once cannot both pass the cap that only one of them fits under.
-  if (!row.hasPair) {
-    await tx
-      .select({ id: organization.id })
-      .from(organization)
-      .where(eq(organization.id, row.organizationId))
-      .for('update')
-    const facts = await loadOrgOrderFacts(tx, row.organizationId, now)
-    const applied = previous === null ? facts : { ...facts, newStarts: [] }
-    if (!mayStartNewCertificate(applied, now).ok) return { outcome: 'backoff', send: [] }
   }
   const issuerId = plan.choice.issuer.serverId
   // One order at a time per issuing server: the daemon runs one window at a time, so a
@@ -625,8 +650,7 @@ async function startInTransaction(
       orderNames: row.orderNames,
     })
     await writeState(tx, row, state, now)
-    if (previous === null && !row.hasPair)
-      await recordNewCertificateStart(tx, row.organizationId, now)
+    await noteStart(tx, row, previous, now)
     return {
       outcome: 'ordering',
       send: [
@@ -652,8 +676,7 @@ async function startInTransaction(
     ? { ...fresh, phase: 'ordering', orderSentAt: fresh.startedAt }
     : fresh
   await writeState(tx, row, state, now)
-  if (previous === null && !row.hasPair)
-    await recordNewCertificateStart(tx, row.organizationId, now)
+  await noteStart(tx, row, previous, now)
   return {
     outcome: direct ? 'ordering' : 'started',
     send: openingMessages(now, row, state, choice, contactEmail),
