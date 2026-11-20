@@ -218,10 +218,11 @@ export async function redeliverLostCommands(
 
 /**
  * How long a daemon keeps a command's journal entry before it drops it
- * (`UNACKED_RETENTION_MS` in the daemon). A command older than this may have
+ * (`UNACKED_RETENTION_MS` in the daemon, 7 days; 6 here to allow for clock
+ * skew). A command older than this may have
  * run and been forgotten, so it is never sent again on the strength of a list.
  */
-export const DAEMON_UNCONFIRMED_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+export const DAEMON_UNCONFIRMED_RETENTION_MS = 6 * 24 * 60 * 60 * 1000
 
 /** True when the command was sent longer ago than the daemon keeps its journal. */
 function olderThanRetention(row: CommandRecord): boolean {

@@ -178,12 +178,16 @@ in the execution-log store — there is no Postgres column for them. See
   firewall confirm must arrive before the server's own deadline or the server
   undoes the new rules, so it can never queue behind a backup. Only add a type
   that is short and safe beside any other command.
-- **Two lanes per server.** `BACKGROUND_COMMAND_TYPES` (the `*.reconcile`
-  types) wait only for other reconciles of the same server, one at a time;
-  every other command waits only for other non-reconcile commands. A reconcile
-  never holds up a user's command and the other way round, which matches the
-  server, where a reconcile already runs beside user commands under per-resource
-  locks.
+- **Two lanes per server.** `BACKGROUND_COMMAND_TYPES` (fabric, TLS trust,
+  firewall and backup-schedule reconciles) wait only for other such reconciles
+  of the same server, one at a time; every other command waits only for the
+  others. They never hold up a user's command and the other way round. The
+  split covers only reconciles that do not race a failover or a deploy:
+  `managed.ingress.reconcile` (rewrites the ProxySQL server list without the
+  lock failover drain/undrain use), `managed.ha.reconcile` (restarts or stops
+  Orchestrator), `system.reconcile` (ProxySQL, Orchestrator, hosting ingress)
+  and `server.principals.reconcile` (accounts and folders a deploy uses) stay
+  in the user lane with `managed.ha.failover` and `environment.deploy`.
 - **Passing failures wait, then fail.** A transient error (`isTransientError`)
   puts a new envelope back with `attempt + 1` after 5 s, 30 s, 2 min and 10 min
   (`COMMAND_RETRY_DELAYS_SECONDS`), and the delivery is acked. A deploy

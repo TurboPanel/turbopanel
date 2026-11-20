@@ -25,8 +25,11 @@
  *
  * Two lanes per server: {@link BACKGROUND_COMMAND_TYPES} (the control plane's
  * own reconciles) take turns among themselves, and every other command takes
- * turns among the others. A reconcile never holds up a user command, and a user
- * command never holds up a reconcile; the server already runs them side by side.
+ * turns among the others. These reconciles never hold up a user command, and a
+ * user command never holds up them; the server runs them side by side.
+ * `managed.ingress.reconcile`, `managed.ha.reconcile`, `system.reconcile` and
+ * `server.principals.reconcile` stay in the user lane: they write state that a
+ * failover or a deploy also writes, with no daemon lock between them.
  */
 import { and, eq, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -54,20 +57,17 @@ export const QUICK_COMMAND_TYPES: ReadonlySet<CommandType> = new Set<CommandType
 ])
 
 /**
- * Background reconciles. They converge a server's state and are safe to repeat,
- * and the server runs one beside user commands under its own per-resource locks,
- * so they use a lane of their own: one at a time among themselves, and never in
- * front of a user's command.
+ * Background reconciles that touch nothing a user's command writes. They use a
+ * lane of their own: one at a time among themselves, and never in front of a
+ * user's command. Reconciles that share state with a failover or a deploy (the
+ * ProxySQL server list, Orchestrator, hosting ingress, accounts and folders)
+ * are not here, so the server's shared turn keeps them apart.
  */
 export const BACKGROUND_COMMAND_TYPES: ReadonlySet<CommandType> = new Set<CommandType>([
   'server.fabric.reconcile',
   'server.tls.trust.reconcile',
-  'server.principals.reconcile',
   'server.firewall.reconcile',
   'server.backups.reconcile',
-  'managed.ingress.reconcile',
-  'managed.ha.reconcile',
-  'system.reconcile',
 ])
 
 /** The background types as bound parameters, for the turn check. */

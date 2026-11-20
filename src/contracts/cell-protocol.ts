@@ -682,7 +682,8 @@ export type CommandRecoveryReport = {
 /**
  * What a daemon process remembers about commands (feature
  * `command-recovery-v2`), sent on every `hello` and never on a `heartbeat`.
- * `processStartId` is made once per daemon process (a UUID). `known` holds the
+ * `processStartId` is made once per daemon process (a UUID); it is checked for
+ * shape but not used yet. `known` holds the
  * ids it accepted and still holds state for, including entries left in its
  * on-disk journal. `complete` is `false` when the list was cut or the journal
  * could not be read; then a missing id proves nothing. Twin of

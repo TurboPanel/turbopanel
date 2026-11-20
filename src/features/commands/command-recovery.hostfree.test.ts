@@ -339,7 +339,7 @@ test('with a complete commandState the guards still hold', async () => {
   addCommand(fx, 'done', {}, 'environment.deploy')
   fx.rows.get('done')!.status = 'succeeded'
   addCommand(fx, 'stale', {}, 'environment.deploy')
-  fx.rows.get('stale')!.sentAt = new Date(Date.now() - 8 * 24 * 3600_000).toISOString()
+  fx.rows.get('stale')!.sentAt = new Date(Date.now() - 6.5 * 24 * 3600_000).toISOString()
   addCommand(fx, 'fresh', { sentAt: '2026-11-12T14:10:30.000Z' }, 'environment.deploy')
   addCommand(fx, 'ok', { sentAt: '2026-11-12T14:10:10.000Z' }, 'environment.deploy')
   const attachedAt = '2026-11-12T14:10:20.000Z'
