@@ -413,14 +413,14 @@ The hosted side keeps only the latest hardware facts for a server, one record th
 the Postgres column `server.hardware` (jsonb, in the control plane's database in every deployment). It is not
 in `server.metadata`, which only carries the alert stamp `topologyChurnLimitedAt`. Limits (`features/servers/server-topology-records.ts`):
 
-- The snapshot is at most 64 KiB and the generation numbers fit a Postgres integer.
-- A resend of the stored generation is rewritten at most once per 30 seconds per server
+- The snapshot is at most 64 KiB.
+- A resend of the stored topology is rewritten at most once per 30 seconds per server
   (`TOPOLOGY_REWRITE_COOLDOWN_SECONDS`).
 - At most 12 topology changes per rolling hour and 24 per rolling day
   (`MAX_TOPOLOGY_CHANGES_PER_HOUR` / `_PER_DAY`); further changes are dropped and
   `server.metadata.topologyChurnLimitedAt` is stamped.
 - "Latest" is by write time.
-- No history of older generations exists, and sizes are not stored here (they ride every sample).
+- No history of older topologies exists, and sizes are not stored here (they ride every sample).
 
 The chart cache key is `tp:metrics:chart:<kind>:<serverId>:<fromBucketMs>:<toBucketMs>:<sorted metrics>:<resolution>:<backend>:v<schemaVersion>`
 with an optional last part `hw<ms>` (`query/cache.ts:50-61`). `<ms>` is the epoch time the stored hardware record

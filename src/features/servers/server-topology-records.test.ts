@@ -172,7 +172,7 @@ test('getLatestServerTopologies returns the last topology per server in one quer
       snapshot: nicSnapshot(['b-gen1']),
       appliedAt: '2026-01-01T00:00:00.000Z',
     })
-    // serverIdC deliberately has no recorded generation.
+    // serverIdC deliberately has no recorded topology.
 
     const byServer = await getLatestServerTopologies(db, [serverIdA, serverIdB, serverIdC])
     assertEquals(byServer.size, 2)
@@ -212,7 +212,7 @@ const REPORT_AT = '2026-01-01T00:00:00.000Z'
 
 type TestDb = ReturnType<typeof createDenoDb>
 
-/** How many generation changes the server has on record (the limit counters). */
+/** How many topology changes the server has on record (the limit counters). */
 async function topologyRowCount(db: TestDb, serverId: string): Promise<number> {
   const [row] = await db
     .select({ hardware: server.hardware })
@@ -426,7 +426,7 @@ test('a flood of different topologies still stops at the hourly limit', async ()
   })
 })
 
-test('generation numbers an older daemon still sends are ignored and never stored', async () => {
+test('generation numbers an older daemon still sends are ignored and have no field in the record', async () => {
   await withServerFixture(async ({ db, serverId }) => {
     const withNumbers = { ...numberlessReport(['eth0']), generation: 4, bootGeneration: 2 }
     assertEquals(await recordTopologyReport(db, serverId, withNumbers), 'recorded')
@@ -434,6 +434,8 @@ test('generation numbers an older daemon still sends are ignored and never store
       .select({ hardware: server.hardware })
       .from(server)
       .where(eq(server.id, serverId))
+    // The numbers are not read; the record has no field for them at the top level.
+    // A snapshot from an older daemon may still carry them inside `snapshot`.
     const stored = row?.hardware as Record<string, unknown>
     assertEquals('generation' in stored, false)
     assertEquals('bootGeneration' in stored, false)

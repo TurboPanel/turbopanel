@@ -86,6 +86,9 @@ function sample(
 test('topologyIdentityKey ignores order, sizes and labels', () => {
   const reordered = {
     ...SNAPSHOT,
+    // The retired numbers an older daemon still sends must not change the key.
+    generation: 7,
+    bootGeneration: 3,
     networks: [...SNAPSHOT.networks].reverse().map((n) => ({ ...n, name: 'renamed' })),
     filesystems: [{ filesystemId: 'fs-root', roles: ['hosting', 'root'] }],
     blockDevices: [...SNAPSHOT.blockDevices].reverse(),

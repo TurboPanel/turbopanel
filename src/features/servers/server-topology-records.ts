@@ -16,7 +16,9 @@
  * - The snapshot is at most 64 KiB (`validateDaemonInboundFrame`, before any
  *   write, on both the Workers and the Deno path). A daemon that still sends
  *   the retired `generation` / `bootGeneration` numbers is accepted; the
- *   numbers are never read or stored.
+ *   numbers are never read, and the record has no field for them. A snapshot
+ *   from an older daemon can still carry them inside `snapshot`, as received.
+ *   `topologyIdentityKey` ignores them.
  * - at most {@link MAX_TOPOLOGY_CHANGES_PER_HOUR} topology changes
  *   per server per rolling hour and {@link MAX_TOPOLOGY_CHANGES_PER_DAY}
  *   per rolling day (the change times are kept in the value, at most that many);
@@ -49,7 +51,7 @@ const CHURN_STAMP_REFRESH_SECONDS = 300
 export type ServerTopologyRecord = {
   snapshot: unknown
   appliedAt: string
-  /** When the stored value was last written; it changes whenever the snapshot is rewritten, even at the same generation. */
+  /** When the stored value was last written; it changes whenever the snapshot is rewritten, even for the same topology. */
   updatedAt: string
 }
 
@@ -346,7 +348,7 @@ export function layoutPathsFromSnapshot(snapshot: unknown): TopologyLayoutPaths 
 
 /**
  * Latest reported layout paths per server, for the server DTOs. One
- * `DISTINCT ON` query over the generation table; servers with no topology
+ * `DISTINCT ON` query over `server.hardware`; servers with no topology
  * yet (or a pre-v6 daemon) are simply absent from the map.
  */
 export async function loadServerLayoutPaths(
