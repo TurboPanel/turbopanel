@@ -4918,7 +4918,7 @@ describe('signed daemon session', () => {
       browser.send(shellFrame(SID, 0))
       expect(sizeOf(await daemon.nextBinary())).toBe(64)
       daemon.ws.send(shellFrame(SID, 1))
-      await vi.waitFor(() => expect(seen.frames.length).toBe(2))
+      await vi.waitFor(() => expect(seen.frames).toHaveLength(2))
       expect(sizeOf(seen.frames[1]!)).toBe(64)
       // A daemon frame for another session, or the wrong way round, goes nowhere.
       daemon.ws.send(shellFrame(SID_2, 1))
@@ -4926,7 +4926,7 @@ describe('signed daemon session', () => {
       // Text on the terminal socket is a protocol error: closes it.
       browser.send('hello')
       await vi.waitFor(() => expect(seen.closes[0]?.code).toBeDefined())
-      expect(seen.frames.length).toBe(2)
+      expect(seen.frames).toHaveLength(2)
       await daemon.nextText('shell-kill')
 
       await daemon.report({
@@ -4956,7 +4956,7 @@ describe('signed daemon session', () => {
 
       expect(await cell.shellKill?.({ sid: SID, reason: 'revoked' })).toBe(1)
       expect(await daemon.nextText('shell-kill')).toMatchObject({ sid: SID, reason: 'revoked' })
-      await vi.waitFor(() => expect(seen.closes.length).toBe(1))
+      await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
       expect(JSON.parse(String(seen.frames.at(-1)))).toMatchObject({
         type: 'closed',
         reason: 'kill',
@@ -4980,7 +4980,7 @@ describe('signed daemon session', () => {
       const browser = (await browserUpgrade(daemon.stub, SID)).webSocket!
       browser.accept()
       const seen = textInbox(browser)
-      await vi.waitFor(() => expect(seen.closes.length).toBe(1))
+      await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
       expect(JSON.parse(String(seen.frames[0]))).toEqual({
         type: 'error',
         sid: SID,
@@ -5007,7 +5007,7 @@ describe('signed daemon session', () => {
       second.accept()
       const seen = textInbox(second)
       daemon.ws.close(1000, 'daemon gone')
-      await vi.waitFor(() => expect(seen.closes.length).toBe(1))
+      await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
       expect(JSON.parse(String(seen.frames.at(-1)))).toMatchObject({
         type: 'closed',
         reason: 'daemon-restart',

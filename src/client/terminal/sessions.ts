@@ -72,7 +72,7 @@ export async function loadTerminalContainerFacts(
     .from(container)
     .where(and(eq(container.id, input.containerRowId), eq(container.serverId, input.serverId)))
     .limit(1)
-  if (!row || row.role !== 'service') return none
+  if (row?.role !== 'service') return none
   const owner = await resolveEntityOrganizationId(db, 'container', input.containerRowId)
   if (owner !== input.organizationId) return none
   const dockerId = row.dockerId ?? ''

@@ -250,11 +250,13 @@ export function registerWorkersShellWebSocket<E extends Env>(
         })
       : env.DAEMON_CELL.getByName(claims.serverId)
 
-    const headers = new Headers(c.req.raw.headers)
-    for (const name of [...headers.keys()]) {
-      if (name.toLowerCase().startsWith('x-turbopanel-cell-')) headers.delete(name)
+    // Nothing the client sent under the cell's header prefix, or its claimed address, survives.
+    const headers = new Headers()
+    for (const [name, value] of c.req.raw.headers) {
+      const lower = name.toLowerCase()
+      if (lower.startsWith('x-turbopanel-cell-') || lower === REAL_IP_HEADER.toLowerCase()) continue
+      headers.append(name, value)
     }
-    headers.delete(REAL_IP_HEADER)
     headers.set('Sec-WebSocket-Protocol', 'tp-shell.v1')
     headers.set(CELL_SERVER_ID_HEADER, claims.serverId)
     headers.set(CELL_SHELL_SID_HEADER, claims.sid)

@@ -84,7 +84,7 @@ export function registerTerminalRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
     }
 
     const serverFacts = await loadServerTerminalFacts(db, serverId)
-    if (!serverFacts || serverFacts.organizationId !== organizationId) {
+    if (serverFacts?.organizationId !== organizationId) {
       return c.json({ error: 'Not found' }, 404)
     }
     const [holdsPermission, containerFacts, presence] = await Promise.all([

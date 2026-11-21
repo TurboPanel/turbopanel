@@ -148,6 +148,10 @@ import type {
   DaemonCellSnapshot,
   PendingRequestRecord,
   PendingRequestStatus,
+  ShellKillReason,
+  ShellOpenRequest,
+  ShellOpenResult,
+  ShellSessionInfo,
 } from '../../contracts/cell.ts'
 import type {
   AcmeDnsPublishMessage,
@@ -199,12 +203,6 @@ import {
   type ShellSessionMeta,
 } from '../../contracts/shell-relay.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
-import type {
-  ShellKillReason,
-  ShellOpenRequest,
-  ShellOpenResult,
-  ShellSessionInfo,
-} from '../../contracts/cell.ts'
 export { classifyDaemonCellSqlStorageOp }
 
 /**
@@ -381,6 +379,38 @@ type ShellCloseDetail = {
   durationMs?: number
   bytesIn?: number
   bytesOut?: number
+}
+
+type ShellReport = Extract<DaemonMessage, { type: 'shell-opened' | 'shell-closed' | 'shell-error' }>
+
+/** What the browser's terminal socket is told for one daemon report. */
+function shellReportFrame(report: ShellReport): ShellControlFrame {
+  if (report.type === 'shell-opened') {
+    return { type: 'opened', sid: report.sid, shell: report.shell, user: report.user }
+  }
+  if (report.type === 'shell-error') return { type: 'error', sid: report.sid, code: report.code }
+  return {
+    type: 'closed',
+    sid: report.sid,
+    reason: report.reason,
+    ...(report.exitCode === undefined ? {} : { exitCode: report.exitCode }),
+    confirmed: true,
+  }
+}
+
+/** What the close audit row records for a session the daemon ended (never `shell-opened`). */
+function shellReportCloseDetail(
+  report: Exclude<ShellReport, { type: 'shell-opened' }>
+): ShellCloseDetail {
+  if (report.type === 'shell-error') return { reason: `error:${report.code}`, confirmed: true }
+  return {
+    reason: report.reason,
+    confirmed: true,
+    ...(report.exitCode === undefined ? {} : { exitCode: report.exitCode }),
+    durationMs: report.durationMs,
+    bytesIn: report.bytesIn,
+    bytesOut: report.bytesOut,
+  }
 }
 
 /** An ended session kept briefly so a late daemon report still finds who it was. */
@@ -1130,27 +1160,32 @@ export class DaemonCellObject {
         told = false
       }
     }
-    let count = 0
+    const unconfirmed: ShellSessionMeta[] = []
     for (const ws of sockets) {
       const meta = this.#shellMetaOf(ws)
-      if (!meta || meta.serverId !== serverId) continue
-      count += 1
+      if (meta?.serverId !== serverId) continue
+      unconfirmed.push(meta)
       this.#rememberEndedShell(meta)
       this.#sendQuietly(
         ws,
         controlFrameText({ type: 'closed', sid: meta.sid, reason: 'kill', confirmed: told })
       )
       this.#closeQuietly(ws, SHELL_CLOSE.killed, `killed:${params.reason}`)
-      if (!told) await this.#finishShellSession(meta, { reason: 'kill', confirmed: false })
     }
     for (const open of pendings) {
-      count += 1
       this.#pendingShell.delete(open.sid)
       const meta = this.#shellMetaFromPending(open)
+      unconfirmed.push(meta)
       this.#rememberEndedShell(meta)
-      if (!told) await this.#finishShellSession(meta, { reason: 'kill', confirmed: false })
     }
-    return count
+    if (!told) {
+      await Promise.all(
+        unconfirmed.map((meta) =>
+          this.#finishShellSession(meta, { reason: 'kill', confirmed: false })
+        )
+      )
+    }
+    return unconfirmed.length
   }
 
   #shellList(serverId: string): ShellSessionInfo[] {
@@ -1171,7 +1206,7 @@ export class DaemonCellObject {
     }
     for (const ws of this.#shellSockets()) {
       const meta = this.#shellMetaOf(ws)
-      if (!meta || meta.serverId !== serverId) continue
+      if (meta?.serverId !== serverId) continue
       out.push({
         sid: meta.sid,
         userId: meta.userId,
@@ -1295,7 +1330,7 @@ export class DaemonCellObject {
     const target = this.#shellSockets(header.sid)[0]
     if (!target) return
     const meta = this.#shellMetaOf(target)
-    if (!meta || meta.daemonConnectionId !== connectionId) return
+    if (meta?.daemonConnectionId !== connectionId) return
     const verdict = checkShellFrame(bytes, {
       dir: SHELL_DIR_TO_BROWSER,
       sid: meta.sid,
@@ -1334,45 +1369,19 @@ export class DaemonCellObject {
       socketMeta ?? (pending ? this.#shellMetaFromPending(pending) : (ended?.meta ?? null))
     // A report only counts for a session that runs on the connection it came in on.
     if (
-      !meta ||
-      meta.serverId !== attachment.serverId ||
+      meta?.serverId !== attachment.serverId ||
       meta.daemonConnectionId !== attachment.connectionId
     ) {
       return true
     }
 
-    let frame: ShellControlFrame
-    if (parsed.type === 'shell-opened') {
-      frame = { type: 'opened', sid, shell: parsed.shell, user: parsed.user }
-    } else if (parsed.type === 'shell-error') {
-      frame = { type: 'error', sid, code: parsed.code }
-    } else {
-      frame = {
-        type: 'closed',
-        sid,
-        reason: parsed.reason,
-        ...(parsed.exitCode === undefined ? {} : { exitCode: parsed.exitCode }),
-        confirmed: true,
-      }
-    }
+    const frame = shellReportFrame(parsed)
     if (socket) this.#sendQuietly(socket, controlFrameText(frame))
     else if (pending) pending.outcome = frame
 
     if (parsed.type === 'shell-opened') return true
 
-    await this.#finishShellSession(
-      meta,
-      parsed.type === 'shell-closed'
-        ? {
-            reason: parsed.reason,
-            confirmed: true,
-            ...(parsed.exitCode === undefined ? {} : { exitCode: parsed.exitCode }),
-            durationMs: parsed.durationMs,
-            bytesIn: parsed.bytesIn,
-            bytesOut: parsed.bytesOut,
-          }
-        : { reason: `error:${parsed.code}`, confirmed: true }
-    )
+    await this.#finishShellSession(meta, shellReportCloseDetail(parsed))
     if (socket) {
       this.#closeQuietly(
         socket,
@@ -1412,13 +1421,14 @@ export class DaemonCellObject {
   async #endShellSessionsOfConnection(connectionId: string): Promise<void> {
     this.#daemonShellBudgets.delete(connectionId)
     const nowMs = Date.now()
+    const lost = { reason: 'daemon-restart', confirmed: false } as const
+    // Each finish claims its sid before its first await, so the ended-map pass
+    // below never sees a session an earlier loop already took.
+    const finishes: Promise<void>[] = []
     for (const open of this.#pendingShell.list(nowMs)) {
       if (open.daemonConnectionId !== connectionId) continue
       this.#pendingShell.delete(open.sid)
-      await this.#finishShellSession(this.#shellMetaFromPending(open), {
-        reason: 'daemon-restart',
-        confirmed: false,
-      })
+      finishes.push(this.#finishShellSession(this.#shellMetaFromPending(open), lost))
     }
     for (const ws of this.#shellSockets()) {
       const meta = this.#shellMetaOf(ws)
@@ -1433,12 +1443,13 @@ export class DaemonCellObject {
         })
       )
       this.#closeQuietly(ws, SHELL_CLOSE.daemonLost, 'daemon_lost')
-      await this.#finishShellSession(meta, { reason: 'daemon-restart', confirmed: false })
+      finishes.push(this.#finishShellSession(meta, lost))
     }
-    for (const ended of [...this.#endedShell.values()]) {
-      if (ended.audited || ended.meta.daemonConnectionId !== connectionId) continue
-      await this.#finishShellSession(ended.meta, { reason: 'daemon-restart', confirmed: false })
-    }
+    const unaudited = [...this.#endedShell.values()].filter(
+      (ended) => !ended.audited && ended.meta.daemonConnectionId === connectionId
+    )
+    for (const ended of unaudited) finishes.push(this.#finishShellSession(ended.meta, lost))
+    await Promise.all(finishes)
   }
 
   /** Close terminal sockets past their hard maximum age (the cron's liveness visit calls this). */
@@ -3345,6 +3356,22 @@ export class DaemonCellObject {
     return true
   }
 
+  /**
+   * A browser's terminal socket speaks for itself; a shell frame from the daemon is
+   * relayed before the text path's flood cap (terminal output is far denser than
+   * control traffic and has its own budget). True when the message was one of those.
+   */
+  #routeShellMessage(ws: WebSocket, connectionId: string, message: string | ArrayBuffer): boolean {
+    const shellMeta = this.#shellMetaOf(ws)
+    if (shellMeta) {
+      this.#onShellSocketMessage(ws, shellMeta, message)
+      return true
+    }
+    if (typeof message === 'string' || !looksLikeShellFrame(new Uint8Array(message))) return false
+    this.#relayDaemonShellFrame(ws, connectionId, message)
+    return true
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -3353,17 +3380,7 @@ export class DaemonCellObject {
     } | null
     if (!attachment) return
 
-    const shellMeta = this.#shellMetaOf(ws)
-    if (shellMeta) {
-      this.#onShellSocketMessage(ws, shellMeta, message)
-      return
-    }
-    // A shell frame from the daemon is relayed before the text path's flood cap
-    // (a terminal's output is far denser than control traffic has its own budget).
-    if (typeof message !== 'string' && looksLikeShellFrame(new Uint8Array(message))) {
-      this.#relayDaemonShellFrame(ws, attachment.connectionId, message)
-      return
-    }
+    if (this.#routeShellMessage(ws, attachment.connectionId, message)) return
 
     if (!this.#allowInboundMessage(attachment.connectionId, ws)) {
       return
