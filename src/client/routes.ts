@@ -35,6 +35,7 @@ import { registerHostingDeleteStepUp } from './hostings/delete-step-up.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerHostingLetsEncryptRoutes } from './hostings/letsencrypt-routes.ts'
 import { registerHostingComposeReleaseRoute } from './hostings/compose-release-route.ts'
+import { registerHostingRemoveNowRoute } from './hostings/remove-now-route.ts'
 import { registerTlsCaStepUp } from './tls/ca-step-up.ts'
 import { registerTlsLeafRoutes } from './tls/leaf-routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
@@ -214,6 +215,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerHostingLetsEncryptRoutes(client, opts)
   registerHostingRoutes(client, opts)
   registerHostingComposeReleaseRoute(client, opts)
+  registerHostingRemoveNowRoute(client, opts)
   registerContainerRoutes(client, opts)
   registerDockerRunRoutes(client, opts)
   registerStorageRoutes(client, opts)

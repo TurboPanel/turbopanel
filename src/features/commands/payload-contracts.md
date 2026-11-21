@@ -258,6 +258,7 @@ injection + Docker/Caddy bootstrap run on the daemon
 `noCache: true` (from UI cacheless redeploy) asks the daemon to run
 `docker compose build --no-cache --pull` before `up`. Optional payload
 `hostingsOnly: true` (queued after a hosting gets a Let's Encrypt certificate,
+or after a hosting is removed so its route leaves the server,
 `src/client/hostings/letsencrypt-apply.ts`) asks the daemon to rewrite only the
 environment's hosting Caddy config and certificates: no build, no restart. It is
 sent only when every server already runs a finished deploy of the environment,

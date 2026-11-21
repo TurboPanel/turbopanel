@@ -18,6 +18,11 @@ import {
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
 import { ensureNameHttpOrders } from './name-http-orders.ts'
+import {
+  type HostingApplyDeps,
+  pushHostingRemoval,
+  requestHostingApplyDeps,
+} from './letsencrypt-apply.ts'
 import { pinHostingNames, syncHostingPin } from '../../features/hostings/name-certificates.ts'
 import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
 import {
@@ -282,7 +287,16 @@ async function refusePatchChoices(
   )
 }
 
-export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+export type HostingRoutesDeps = {
+  /** Where the route-removal run after a delete is queued; defaults to the request's queue and registry. */
+  applyDeps?: (c: Context<AppEnv>) => HostingApplyDeps
+}
+
+export function registerHostingRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+  deps: HostingRoutesDeps = {}
+) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for hosting routes')
   }
@@ -472,6 +486,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const refused = await refuseHostingChange(c, db, id, organizationId)
     if (refused) return refused
 
+    const environmentId = await environmentOfHosting(db, id)
     const result = await runHierarchyDelete(db, async (tx) => {
       // The environment row, then the Let's Encrypt lock, then the site: the
       // order a deploy takes them in.
@@ -488,8 +503,33 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     nudgeTunnelRoutesAfterResponse(c, organizationId)
-    return c.json({ ok: true as const })
+    // The name is free now; the servers drop its route without a full deploy
+    // when that can run, else at the environment's next deploy.
+    const serverUpdate =
+      environmentId === null
+        ? 'no_environment'
+        : await pushHostingRemoval(
+            c,
+            db,
+            {
+              environmentId,
+              organizationId,
+              actor: { actorType: 'user', actorId: session.userId },
+            },
+            (deps.applyDeps ?? requestHostingApplyDeps)(c)
+          )
+    return c.json({ ok: true as const, serverUpdate })
   })
+}
+
+async function environmentOfHosting(db: Db, hostingId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ environmentId: service.environmentId })
+    .from(hosting)
+    .innerJoin(service, eq(service.id, hosting.serviceId))
+    .where(eq(hosting.id, hostingId))
+    .limit(1)
+  return row?.environmentId ?? null
 }
 
 async function lockPinnedCertificates(tx: Db, hostingId: string): Promise<string[]> {

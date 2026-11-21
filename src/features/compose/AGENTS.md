@@ -721,6 +721,16 @@ before it removes the entry from the environment's compose file, so a failed
 file save leaves a row the next deploy adopts again instead of deleting it.
 It takes the environment row lock (as the reconcile does before it reads the
 rows) and refuses with `409 environment_deploy_running` while a deploy runs.
+`POST /hostings/{id}/remove-now` (`src/client/hostings/remove-now-route.ts`) takes a
+compose-made hosting off the server without a deploy: under the same lock it
+deletes the row (its hostname rows go with it by cascade and a doorway link is
+set null, so the name is free at once), or hands an adopted row back to the
+panel, and then sends a hostings-only run (`pushHostingRemoval`) that drops the
+route. The reply carries `serverUpdate`, a `HostingApplyOutcome` such as
+`queued`, `not_deployed` or `server_offline`. When the run is skipped (server
+offline, no deploy yet, another undeployed edit) the name
+is still released and the daemon gets the route change at the environment's
+next deploy. `DELETE /hostings/{id}` for a panel row sends the same run.
 
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 
