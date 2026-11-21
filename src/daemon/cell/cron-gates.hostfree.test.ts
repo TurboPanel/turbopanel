@@ -134,6 +134,7 @@ const IDLE_ROW = {
   httpCertificatesActive: false,
   tunnels: false,
   networkProbe: false,
+  upgradeRunActive: false,
 }
 
 test('loadCronGates answers every gate in one statement', async () => {

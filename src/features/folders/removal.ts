@@ -176,7 +176,7 @@ export async function enqueueFolderRemovals(
  * server that was offline when its volume was deleted, and retries a folder the
  * host said it could not remove.
  *
- * Runs from the Workers cron and the Deno maintenance timer, never from hello
+ * Runs from the Workers cron and the Deno job tick, never from hello
  * or a Durable Object handler (those must not enqueue).
  */
 export async function runFolderRemovalSweep(

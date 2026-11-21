@@ -130,11 +130,6 @@ import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
 import { resolveJobCadencesFromEnv } from '../../features/settings/job-cadences.ts'
 import {
-  type AnalyticsEngineDatasetLike,
-  resolveServerMetricsStore,
-} from '../metrics/store-selection-workers.ts'
-import { setServerStatusEventSink } from '../metrics/status-events.ts'
-import {
   parseExecutionLogRetentionDays,
   type R2BucketLike,
   resolveExecutionLogStore,
@@ -174,7 +169,15 @@ import { createStripeClient } from '../../features/billing/client.ts'
 import { runReconcile, shouldRunReconcile } from '../../features/billing/reconcile.ts'
 import { runPendingStripeProjections } from '../../webhook/billing/stripe-projection.ts'
 
-/** Grace beyond the daemon's ~60s idle-ping cadence before declaring a server stale. */
+/**
+ * Grace beyond the daemon's ~60s idle-ping cadence before declaring a server
+ * stale on Workers. Self-hosted uses the longer `DAEMON_OFFLINE_SWEEP_MS`
+ * (150 s) instead: the Redis cell coalesces `lastInboundAt` writes
+ * (`redis/cell.ts`), so a live socket can show an inbound time that old. Here
+ * the value comes from the Durable Object's own auto-response timestamp, which
+ * is not coalesced, so 90 s is enough and raising it would only delay
+ * disconnect notices and the HA host-loss `sweep_stale` marks.
+ */
 export const OFFLINE_SWEEP_STALE_MS = 90_000
 
 /** Stay comfortably under the Workers-paid subrequest ceiling (1000/invocation). */
@@ -1938,17 +1941,9 @@ export async function runOfflineSweep(
 ): Promise<void> {
   lastScheduledTimeForTests = opts.scheduledTime
 
-  // `workers.ts`'s `scheduled()` handler awaits `initWorkerApp` (which already
-  // registers the v6 sink) before calling this function, but re-register here
-  // unconditionally anyway — this function is also called directly in tests
-  // and must not depend on that ordering. Always the v6 store so demotions /
-  // self-heal status rows land in the same dataset the read side queries.
-  setServerStatusEventSink(
-    resolveServerMetricsStore({
-      runtime: 'workers',
-      analyticsEngine: (env as { SERVER_METRICS?: AnalyticsEngineDatasetLike }).SERVER_METRICS,
-    })
-  )
+  // The status-event sink is registered once by `initWorkerApp` (`workers.ts`),
+  // which `scheduled()` awaits before this runs. A test that calls this directly
+  // registers its own sink.
 
   // Fresh per-invocation Hyperdrive client (Workers cannot reuse a DB socket
   // across requests/cron invocations). Always end it — leaving postgres.js

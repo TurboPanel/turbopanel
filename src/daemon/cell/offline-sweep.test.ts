@@ -1663,6 +1663,7 @@ const IDLE_GATES_ROW = {
   httpCertificatesActive: false,
   tunnels: false,
   networkProbe: false,
+  upgradeRunActive: false,
 }
 
 /** Counts every statement the tick sends: builder operations plus raw `execute`. */

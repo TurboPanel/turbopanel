@@ -39,28 +39,62 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
 Code that only the self-hosted build may carry lives in `ingress/`; its rules
 are in [`ingress/AGENTS.md`](./ingress/AGENTS.md).
 
-## Self-hosted timers and hosted parity
+## Self-hosted job tick and hosted parity
 
 The hosted cron (`runOfflineSweep` in `src/daemon/cell/offline-sweep.ts`, once
-a minute) has no counterpart process on a self-hosted control plane; its work
-runs from timers in `server.ts` instead. The cleanup lane of
-`createDenoMaintenanceScheduler` and `runSystemReconcileSweepTick` cover the
-command, notification, history, reconcile and folder sweeps. The one-minute
-certificate timer (`LEAF_RENEWAL_SWEEP_INTERVAL_MS`, fresh database client, no
-overlap, skipped while the command queue is the no-op one) runs leaf renewal
-(with peer leaf delivery), waiting Let's Encrypt requests, DNS certificate
-cleanup, HTTP issuance and then the tunnel sweeps (`tunnel-sweeps.ts`, the
-shared list in `src/features/tunnels/sweeps.ts`). A sweep added to
-`runQueuedCronSweeps` must also be called from `server.ts`;
-`tunnel-sweeps.hostfree.test.ts` fails otherwise.
+a minute) has no counterpart process on a self-hosted control plane. Its work
+runs on one 60 s timer in `server.ts`, the job tick (`job-tick.ts`,
+`createJobTick`), which asks the shared table (`src/jobs/registry.ts`) what is
+due and runs the same job functions with the same gates (`loadCronGates`, one
+statement; every flag open when it cannot be read).
 
-**Job cadences on self-hosted.** The cleanup lane reads the override map once per
-pass through `loadJobCadences` (`features/settings/job-cadences.ts`): the
+- **Two kinds of job.** `local` jobs are the ones that must run on every
+  instance, lease or not: the cell `maintain()` (its in-memory presence work,
+  plus a stale-row query on the database that is safe on every instance),
+  co-located self repair and the heartbeat re-read. `shared` jobs work on the database or push to servers; they run
+  only while the tick holds the `OFFLINE_SWEEP_LOCK` lease
+  (`offline-sweep-lease.ts`, the lease the hosted cron uses), so two control
+  planes on one database never both run them. A held or unreadable lease skips
+  the shared jobs for that tick.
+- **Isolation.** A job that throws is logged and the rest still run. A tick has a
+  time budget (`JOB_TICK_BUDGET_MS`, 45 s, under the 60 s timer so ticks do not
+  overlap); jobs not started by then, or still running from an earlier tick, are
+  carried and run next tick in list order with the rest. A job past the budget
+  is left to finish, never started twice, and nothing new starts after the
+  budget. The lease (renewed by each later tick) and the shared database client
+  stay open until every job the tick started has settled, so another instance
+  cannot start the same shared job and the client is not closed under it; the
+  next ticks join them and the every-minute jobs (cell maintenance, stale
+  presence, offline notices) keep running. A late tick catches up: a job is due
+  when any minute since the previous tick was one of its slots.
+  Environment is read once per tick (`ctx.env`), cadences once per tick.
+- **Fresh database client.** The certificate, tunnel and ingress jobs share one
+  `createDenoDb()` per tick through `ctx.resource`, closed after the tick (never
+  the process-long `db`, same discipline as Hyperdrive). They are skipped while
+  the command queue is the no-op one.
+- **Offline threshold.** Self-hosted marks a server offline after
+  `DAEMON_OFFLINE_SWEEP_MS` (150 s): the Redis cell coalesces `lastInboundAt`
+  (`redis/cell.ts`). Workers keeps `OFFLINE_SWEEP_STALE_MS` (90 s). The two
+  differ on purpose; do not unify them.
+- **Jobs** (`server.ts`): offline detection every tick (stale presence,
+  disconnect notices, host loss); the stale-command pass while a command,
+  recovery or managed row is open; dispatch, webhook, nonce, pin-silence,
+  orphan-folder, execution-log, history (command, audit, upgrade, peak),
+  notification-prune and edge-trust jobs on their registry cadence; the upgrade
+  tick every 15 minutes, and every minute while an upgrade run is pending or
+  running (the `upgradeRunActive` gate);
+  notification retry and digest while one is pending; the reconnect-repair
+  family, certificates and tunnels exactly as `runQueuedCronSweeps`,
+  `runReconnectRepairSweeps` and `runCertificateAndIngressSweeps` gate them; the
+  ingress tick every minute. `edgeTrust`, `heartbeatRefresh` and `ingressTick`
+  exist only for this runtime. A sweep added to `runQueuedCronSweeps` must also be
+  called from `server.ts`; `tunnel-sweeps.hostfree.test.ts` fails otherwise.
+- **Left alone.** Sub-minute event-driven loops (the outbox pump, the Redis block
+  read) and the DuckDB hourly archive are not on the tick.
+
+**Job cadences on self-hosted.** The tick reads the override map once per pass
+through `loadJobCadences` (`features/settings/job-cadences.ts`): the
 `TURBOPANEL_JOB_CADENCES` env var first (no database read), then the
 `jobs.cadences` setting row through `SettingsResolver`, cached for
-`JOB_CADENCES_CACHE_MS`, then the defaults. It never throws. Only the loops that
-already match a registry job use it today: `historyPrune` (command and audit
-history), `notificationPrune` and `upgradeCheck`. The other timers keep their
-fixed intervals, and the `upgradeTick` job is read by Workers only (the
-self-hosted upgrade tick still runs every pass) until the single self-hosted
-tick replaces the timers.
+`JOB_CADENCES_CACHE_MS`, then the defaults. It never throws. Every job in the
+table, `upgradeTick` included, follows it.

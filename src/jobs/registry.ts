@@ -61,6 +61,12 @@ const latency = () => ({ kind: 'latency', everyMinutes: 1, offset: 0, min: 1, ma
  *   only while their gate has a candidate. One minute apart so they do not pile up.
  * - `executionLogs`, `historyPrune`, `notificationPrune`, `tierNotices`:
  *   retention deletes and a notice; none has a reader that depends on the grain.
+ * - `edgeTrust`, `heartbeatRefresh`, `ingressTick`: self-hosted only (Workers never
+ *   reads them). Edge address ranges are fetched once a day inside the pass and
+ *   only a changed body reaches the daemon; the advised heartbeat is re-read from
+ *   the hostname rows; the ingress pass orders certificates for the panel's own
+ *   names (the update is read within a minute by default, and an operator may
+ *   slow it to an hour at most).
  * - `upgradeTick`: advances a managed upgrade run. `upgradeCheck`: how often an
  *   install looks for a new build (at most hourly: the schedule slots are within
  *   an hour, `features/upgrades/schedule.ts`); it is read by the upgrade code,
@@ -87,6 +93,9 @@ export const CRON_CADENCES = {
   historyPrune: housekeeping(15, 0),
   notificationPrune: housekeeping(15, 0),
   tierNotices: housekeeping(60, 0),
+  edgeTrust: housekeeping(5, 3),
+  heartbeatRefresh: housekeeping(5, 1),
+  ingressTick: housekeeping(1, 0, 60),
   upgradeTick: housekeeping(15, 0),
   upgradeCheck: housekeeping(60, 0, 60),
 } as const satisfies Record<string, JobSpec>

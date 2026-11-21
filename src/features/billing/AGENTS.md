@@ -423,7 +423,7 @@ Both run as optional phases of the Workers maintenance cron
 (`src/daemon/cell/offline-sweep.ts`; stripe-projection every tick, reconcile on
 a minute-divisor predicate, each isolated by
 `runOptionalPhase`), and are skipped entirely when `resolveBillingConfig`
-returns `null`. The Deno maintenance tick has no billing phases.
+returns `null`. The Deno job tick has no billing phases.
 
 ## Footguns that return `200`
 

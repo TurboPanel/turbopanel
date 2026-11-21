@@ -34,10 +34,10 @@ do not import a DB/cell module here.
 | `history.ts`        | how a step and a server read in the history (`stepOutcome`, worst-of `serverOutcome`, `already_current`), run `trigger`, history query parsing; SQL twin in `history-read.ts`         |
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
-in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
-pass (self-hosted keeps its every-minute timer until the single self-hosted tick lands), Workers offline-sweep on the
+in-memory test store). `maintenance.ts` is the tick: the Deno job tick and the Workers offline-sweep both on the
 `upgradeTick` job cadence (default 15 minutes, testing 5; `src/jobs/registry.ts`, set with
-`TURBOPANEL_JOB_CADENCES`).
+`TURBOPANEL_JOB_CADENCES`). The Deno tick also runs it every minute while a run is pending or
+running (the `upgradeRunActive` gate in `cron-gates.ts`), so a run moves as fast as before.
 Every tick advances the open run; only the hourly check (below) resolves
 manifests and may start one. Hello, heartbeat, and
 `update-progress` / `update-result` / `instance-update-result` persist through

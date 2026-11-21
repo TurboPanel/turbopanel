@@ -35,6 +35,7 @@ import {
   server,
   tls,
   tunnel,
+  upgrade,
 } from '../../db/schema.ts'
 import { systemReconcileRepairableExists } from '../../features/system/reconcile.ts'
 
@@ -80,6 +81,8 @@ export type CronGates = {
   tunnels: boolean
   /** Two or more trusted networks: the only case the probe has work. */
   networkProbe: boolean
+  /** A pending or running upgrade run: the self-hosted upgrade tick then runs every minute. */
+  upgradeRunActive: boolean
 }
 
 export const ALL_GATES_OPEN: CronGates = {
@@ -95,6 +98,7 @@ export const ALL_GATES_OPEN: CronGates = {
   httpCertificatesActive: true,
   tunnels: true,
   networkProbe: true,
+  upgradeRunActive: true,
 }
 
 const GATE_KEYS = Object.keys(ALL_GATES_OPEN) as (keyof CronGates)[]
@@ -145,7 +149,8 @@ export async function loadCronGates(
           or exists (select 1 from ${portal})
           or exists (select 1 from ${badge})
           or exists (select 1 from ${server} where ${server.metadata} -> 'tunnelRoutes' is not null or ${server.metadata} -> 'tunnelConnectors' is not null)) as "tunnels",
-        (select count(*) from ${datacenter} where ${datacenter.isTrusted}) >= 2 as "networkProbe"
+        (select count(*) from ${datacenter} where ${datacenter.isTrusted}) >= 2 as "networkProbe",
+        exists (select 1 from ${upgrade} where ${upgrade.status} in ('pending', 'running')) as "upgradeRunActive"
     `)) as unknown as Record<string, unknown>[]
     const row = rows[0]
     if (!row) return ALL_GATES_OPEN

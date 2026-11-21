@@ -113,8 +113,7 @@ The daemon execution payload is **not** a `command` column. It lives in the
    `expires_at = now + COMMAND_DISPATCH_FAILURE_RETENTION_MS` (24h) for
    debugging. Cleanup is best effort and never fails the transition.
 4. Expired rows are removed by `sweepExpiredCommandDispatch` on the **shared**
-   maintenance tick (Workers offline-sweep cron; Deno `DAEMON_CELL_MAINTAIN_MS`
-   timer), bounded by `COMMAND_DISPATCH_SWEEP_LIMIT` and reusing the already-open
+   maintenance tick (Workers offline-sweep cron; the Deno job tick), bounded by `COMMAND_DISPATCH_SWEEP_LIMIT` and reusing the already-open
    db — no new timer, no second connection.
 
 `getCommandDispatchPayload` is the only sanctioned read of the payload; command
@@ -584,5 +583,5 @@ placement) still answer 2xx — a retry would find them unchanged.
 (`src/features/webhook-delivery/webhook-delivery-records.ts`) before any side effect runs, so a
 redelivery or manual replay answers `204` instead of enqueuing a second deploy.
 Rows are pruned after `WEBHOOK_DELIVERY_RETENTION_MS` by the same maintenance
-sweeps that drop expired `dispatch` payloads — the Deno process timer in
+sweeps that drop expired `dispatch` payloads — the Deno job tick in
 `src/platform/deno/server.ts` and the Workers cron in `src/daemon/cell/offline-sweep.ts`.

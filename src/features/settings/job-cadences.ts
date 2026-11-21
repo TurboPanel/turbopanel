@@ -5,8 +5,13 @@
  *   never touches the database, so a cron tick costs no extra Hyperdrive statement.
  * - Self-hosted reads through `SettingsResolver`: the same env var first, then
  *   the `jobs.cadences` setting row (stored upper-cased as `JOBS__CADENCES`),
- *   then no overrides. The row is cached for a few minutes, so the one-minute
- *   timers do not read it on every pass; an env var skips the database entirely.
+ *   then no overrides. The row is cached for a few minutes, so the 60 s job tick
+ *   does not read it on every pass; an env var skips the database entirely.
+ *
+ * Env names: `TURBOPANEL_JOB_CADENCES` is the name operators set on both
+ * runtimes. `JOBS__CADENCES` is the resolver's own primary name for the setting
+ * (prefix `jobs`, key `cadences`), so self-hosted also accepts it, and it wins
+ * over the alias; Workers read the `TURBOPANEL_` name only.
  *
  * Neither path throws: an unreadable row keeps the last value read (or the
  * defaults) and says so as a warning.

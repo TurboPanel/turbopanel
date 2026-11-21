@@ -76,9 +76,9 @@ member there, a widened CHECK (forward migration) and one adapter.
   list, `TUNNEL_SWEEPS`, and both schedulers run that list every minute: the
   hosted cron (`runQueuedCronSweeps` in `src/daemon/cell/offline-sweep.ts`,
   behind the secrets bundle like leaf renewal) and the self-hosted
-  certificate timer in `src/platform/deno/server.ts`
-  (`runSelfHostedTunnelSweeps`, fresh database client, no overlap, skipped
-  while the command queue is the no-op one). Each sweep fails alone and
+  job tick in `src/platform/deno/server.ts`
+  (`runSelfHostedTunnelSweeps`, gated by the `tunnels` flag, fresh database
+  client per tick, skipped while the command queue is the no-op one). Each sweep fails alone and
   throttles itself from the database, so the minute tick is cheap. The status sweep asks a server
   at most every 10 minutes, except that a server with a portal made in the last
   10 minutes that no answer has covered yet (`last_seen_at` empty) is asked again
@@ -88,7 +88,7 @@ member there, a widened CHECK (forward migration) and one adapter.
   tunnel sweep to the list, never to one scheduler:
   `src/platform/deno/tunnel-sweeps.hostfree.test.ts` fails when a scheduler
   calls a tunnel sweep directly, or when the hosted cron runs a sweep the
-  self-hosted timers do not. Before this list existed the self-hosted control
+  self-hosted tick does not. Before this list existed the self-hosted control
   plane ran none of them; a tunnel left at `removing` then is finished by the
   removal sweep once the build with the list runs, with no data change.
 - **Removing a tunnel (`deleteTunnel`, `removal.ts`).** The mark is one guarded

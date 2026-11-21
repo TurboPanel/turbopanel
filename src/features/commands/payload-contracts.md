@@ -164,7 +164,7 @@ create / schedule / timezone / retention / enabled change / delete; managed
 create (the automatic daily policy); a managed apply, promote or HA failover
 that re-pins `managed.server_id` (both old and new host); managed delete
 (force delete in the route, `deleteAfterDestroy` in the consumer); and once per
-reconnect by `runBackupsReconcileSweep` (Workers cron + Deno maintenance tick),
+reconnect by `runBackupsReconcileSweep` (Workers cron + Deno job tick),
 which also reaches a server whose policies were all deleted while it was away.
 
 A `copy` entry (added 2026-09-30, Road row `r2-backup-tenant-volumes`) also
@@ -193,7 +193,7 @@ requested folder, in order. The consumer deletes the `removing` row of each
 folder reported removed and logs the reason of one that stayed (its row keeps
 its locks). Sent by `features/folders/removal.ts` after a delete of a service,
 a volume or a volume copy commits, naming every `removing` folder of that
-server; and by `runFolderRemovalSweep` (Workers cron + Deno maintenance tick)
+server; and by `runFolderRemovalSweep` (Workers cron + Deno job tick)
 for a connected server that has `removing` rows and was not asked since it
 reconnected or in the last 15 minutes, which is how a server that was offline at
 delete time catches up and how a folder the host could not remove is retried.
@@ -654,8 +654,8 @@ hosting enable (`PATCH /servers/:id` → `reconcile`), hosting disable (`PATCH` 
 `stop` scoped to hosting-ingress), operate restart
 (`POST /servers/:id/system/:component/restart` — hosting-ingress only, see
 `SYSTEM_OPERATE_COMPONENTS`), and a storage-free drift sweep (Workers
-offline-sweep cron + Deno maintenance timer, including an immediate tick on Deno
-boot) that enqueues for connected servers where either the hosting-ingress row
+offline-sweep cron + Deno job tick; a reconnect opens the `reconcileUrgent`
+gate, so the next tick runs it) that enqueues for connected servers where either the hosting-ingress row
 needs heal **because demand/observation exists** (and is not running, missing a
 Docker id, or the server recently reconnected), **or** a self-host
 `database`/`queue`/`analytics` system-role container is not running or missing a

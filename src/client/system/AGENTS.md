@@ -109,9 +109,9 @@ The first reconcile is **not** operator-driven. After hierarchy is created,
 when the colocated daemon is already connected (typical co-located / Vagrant
 dev: daemon hello'd before the wizard). It must **not** enqueue while
 `server.is_connected` is false — a fail-fast offline command would trip the
-5-minute sweep throttle. Deno boot also runs `runSystemReconcileSweep`
-immediately (then every `DAEMON_CELL_MAINTAIN_MS`) so a daemon that hello's
-after install is observed on the next tick without waiting a full minute.
+5-minute sweep throttle. On Deno a reconnect opens the `reconcileUrgent` gate, so the job tick runs
+`runSystemReconcileSweep` every minute while it lasts and a daemon that hello's
+after install is observed on the next tick.
 Never enqueue from `onDaemonConnected` / Durable Object handlers. Until that
 inspect lands, client rows stay allocator `pending` with no Docker id — the UI
 shows **Not started yet** / **Unknown** even when `turbopanel-database` is
