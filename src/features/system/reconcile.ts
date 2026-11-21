@@ -716,7 +716,8 @@ export function systemReconcileRepairableExists(serverIdExpr: SQL, organizationI
  *
  * Enqueue stays outside Durable Object handlers: request isolates (install,
  * hosting PATCH / operate), Workers cron, and the Deno job tick
- * (immediate tick on boot, then every cell-maintain interval).
+ * (the 60 second tick; this sweep runs on its cadence, every minute while a
+ * reconnect is recent).
  */
 export async function runSystemReconcileSweep(
   db: Db,

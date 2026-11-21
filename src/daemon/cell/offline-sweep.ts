@@ -129,7 +129,6 @@ import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
 import { resolveJobCadencesFromEnv } from '../../features/settings/job-cadences.ts'
-import { DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
 import {
   parseExecutionLogRetentionDays,
   type R2BucketLike,
@@ -172,9 +171,14 @@ import { runPendingStripeProjections } from '../../webhook/billing/stripe-projec
 
 /**
  * Grace beyond the daemon's ~60s idle-ping cadence before declaring a server
- * stale: the one threshold both runtimes use (`DAEMON_OFFLINE_SWEEP_MS`, 150 s).
+ * stale on Workers. Self-hosted uses the longer `DAEMON_OFFLINE_SWEEP_MS`
+ * (150 s) instead: the Redis cell coalesces `lastInboundAt` writes
+ * (`redis/cell.ts`), so a live socket can show an inbound time that old. Here
+ * the value comes from the Durable Object's own auto-response timestamp, which
+ * is not coalesced, so 90 s is enough and raising it would only delay
+ * disconnect notices and the HA host-loss `sweep_stale` marks.
  */
-export const OFFLINE_SWEEP_STALE_MS = DAEMON_OFFLINE_SWEEP_MS
+export const OFFLINE_SWEEP_STALE_MS = 90_000
 
 /** Stay comfortably under the Workers-paid subrequest ceiling (1000/invocation). */
 export const MAX_SWEEP_FANOUT = 900

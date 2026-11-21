@@ -1,6 +1,7 @@
 import { assert, assertEquals } from '@std/assert'
 import { ALL_GATES_OPEN, type CronGates } from '../../daemon/cell/cron-gates.ts'
 import { CRON_CADENCES, resolveJobCadences } from '../../jobs/registry.ts'
+import { DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
 import { createJobTick, type JobTickDeps, type TickJob } from './job-tick.ts'
 
 /**
@@ -43,7 +44,7 @@ function harness(overrides: Partial<JobTickDeps> & { jobs: readonly TickJob[] })
       return Promise.resolve(ALL_GATES_OPEN)
     },
     now: () => clock.ms,
-    budgetMs: 75_000,
+    budgetMs: 45_000,
     log: (_level, message) => events.push(`log:${message}`),
     ...overrides,
   }
@@ -186,7 +187,7 @@ test('one failing job does not stop the others, and the lease is still released'
   assert(h.events.some((e) => e === 'log:job broken failed: boom'))
 })
 
-test('a job that runs past the budget is left to finish and the later jobs carry to the next tick', async () => {
+test('a job that finishes after the budget counts as run and a job that is not due is not carried', async () => {
   const events: string[] = []
   const clockRef: { ms: number } = { ms: at(0) }
   let slowRuns = 0
@@ -445,10 +446,161 @@ test('every registry job the self-hosted tick reads exists in the table', () => 
   for (const name of used) assert(names.has(name), `${name} is not in CRON_CADENCES`)
 })
 
-test('both runtimes use one offline threshold', () => {
+test('Workers keeps its 90 second offline threshold and self-hosted its 150 second one', () => {
   // Read as text: importing offline-sweep.ts pulls the Workers-only types into a Deno check.
   const sweep = Deno.readTextFileSync(
     new URL('../../daemon/cell/offline-sweep.ts', import.meta.url)
   )
-  assert(sweep.includes('export const OFFLINE_SWEEP_STALE_MS = DAEMON_OFFLINE_SWEEP_MS'))
+  assert(sweep.includes('export const OFFLINE_SWEEP_STALE_MS = 90_000'))
+  const server = Deno.readTextFileSync(new URL('./server.ts', import.meta.url))
+  assert(server.includes('graceMs: DAEMON_OFFLINE_SWEEP_MS'))
+  assert(!server.includes('OFFLINE_SWEEP_STALE_MS'))
+  assertEquals(DAEMON_OFFLINE_SWEEP_MS, 150_000)
+})
+
+/** Lets the settle callbacks of a finished job run. */
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 10))
+
+test('a job past the budget keeps the lease and the shared client until it settles', async () => {
+  const events: string[] = []
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const h = harness({
+    budgetMs: 5,
+    jobs: [
+      {
+        name: 'slow',
+        scope: 'shared',
+        run: (ctx) => {
+          ctx.resource(
+            'db',
+            () => {
+              events.push('db:open')
+              return {}
+            },
+            () => {
+              events.push('db:close')
+            }
+          )
+          events.push('run:slow')
+          return gate
+        },
+      },
+    ],
+  })
+  const report = await h.tick.run()
+  assertEquals(report.failed, ['slow'])
+  assertEquals(h.events.includes('lease:release'), false)
+  assertEquals(events.includes('db:close'), false)
+  release()
+  await flush()
+  assertEquals(events, ['db:open', 'run:slow', 'db:close'])
+  assertEquals(h.events.filter((e) => e === 'lease:release').length, 1)
+  assertEquals(h.events.indexOf('lease:release') > h.events.indexOf('lease:acquire'), true)
+})
+
+test('liveness jobs run every minute while a long job is still in flight', async () => {
+  const events: string[] = []
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let acquires = 0
+  let renewals = 0
+  let releases = 0
+  const clockRef = { ms: at(0) }
+  const h = harness({
+    now: () => clockRef.ms,
+    budgetMs: 5,
+    acquireLease: () => {
+      acquires++
+      return Promise.resolve({
+        release: () => {
+          releases++
+          return Promise.resolve()
+        },
+        renew: () => {
+          renewals++
+          return Promise.resolve(true)
+        },
+      })
+    },
+    jobs: [
+      job('cell maintain', 'local', events),
+      job('stale presence', 'shared', events),
+      { name: 'slow', scope: 'shared', run: () => gate },
+      job('after slow', 'shared', events),
+    ],
+  })
+  await h.tick.run()
+  clockRef.ms = at(1)
+  const second = await h.tick.run()
+  assertEquals(second.overlapped, false)
+  clockRef.ms = at(2)
+  await h.tick.run()
+  assertEquals(events.filter((e) => e === 'run:cell maintain').length, 3)
+  assertEquals(events.filter((e) => e === 'run:stale presence').length, 3)
+  // The straggler holds one lease across all three ticks.
+  assertEquals(acquires, 1)
+  assertEquals(renewals, 2)
+  assertEquals(releases, 0)
+  release()
+  await flush()
+  assertEquals(releases, 1)
+})
+
+test('a lease that can no longer be renewed is taken again', async () => {
+  const events: string[] = []
+  let release: () => void = () => {}
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  let acquires = 0
+  const clockRef = { ms: at(0) }
+  const h = harness({
+    now: () => clockRef.ms,
+    budgetMs: 5,
+    acquireLease: () => {
+      acquires++
+      return Promise.resolve({
+        release: () => Promise.resolve(),
+        renew: () => Promise.resolve(false),
+      })
+    },
+    jobs: [{ name: 'slow', scope: 'shared', run: () => gate }, job('quick', 'shared', events)],
+  })
+  await h.tick.run()
+  clockRef.ms = at(1)
+  await h.tick.run()
+  assertEquals(acquires, 2)
+  release()
+  await flush()
+})
+
+test('a job whose due check throws is skipped and logged, and the tick still completes', async () => {
+  const events: string[] = []
+  const h = harness({
+    jobs: [
+      job('broken', 'shared', events, {
+        due: () => {
+          throw new Error('bad gate')
+        },
+      }),
+      job('fine', 'shared', events),
+    ],
+  })
+  const report = await h.tick.run()
+  assertEquals(report.ran, ['fine'])
+  assertEquals(
+    h.events.some((e) => e.includes('job broken could not decide') && e.includes('bad gate')),
+    true
+  )
+})
+
+test('the upgrade tick runs every minute while a run is active and on its slot otherwise', () => {
+  const server = Deno.readTextFileSync(new URL('./server.ts', import.meta.url))
+  assert(server.includes("name: 'upgrade tick'"))
+  assert(server.includes("ctx.gates.upgradeRunActive || ctx.isDue('upgradeTick')"))
 })

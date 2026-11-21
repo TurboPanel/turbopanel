@@ -9,12 +9,12 @@
  * Cloudflare isolate skips instead of doubling DO wakes and Hyperdrive
  * clients; no KV, D1, R2, or DO storage is added.
  */
-import { and, eq, isNull } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { lease } from "../../db/schema.ts";
+import { and, eq, isNull } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { lease } from '../../db/schema.ts'
 
 /** `lease.name` for the cross-isolate offline-sweep lease — globally scoped. */
-export const OFFLINE_SWEEP_LOCK_KEY = "OFFLINE_SWEEP_LOCK";
+export const OFFLINE_SWEEP_LOCK_KEY = 'OFFLINE_SWEEP_LOCK'
 
 /**
  * Lease TTL sized just above the tick budget so a crashed isolate cannot
@@ -23,12 +23,12 @@ export const OFFLINE_SWEEP_LOCK_KEY = "OFFLINE_SWEEP_LOCK";
  * when the tick's enforced live runtime is longer than this TTL, so a
  * still-running holder cannot be stolen mid-invocation.
  */
-export const OFFLINE_SWEEP_LEASE_MS = 90_000;
+export const OFFLINE_SWEEP_LEASE_MS = 90_000
 
 export type OfflineSweepLock = Readonly<{
-  owner: string;
-  expiresAt: string;
-}>;
+  owner: string
+  expiresAt: string
+}>
 
 export type TryBeginOfflineSweepOpts = {
   /**
@@ -36,59 +36,53 @@ export type TryBeginOfflineSweepOpts = {
    * plus bounded lease-release). `expiresAt` is `max(now + TTL, heldUntilMs)`
    * so the lock cannot be stolen until after that enforced live runtime.
    */
-  heldUntilMs?: number;
-};
+  heldUntilMs?: number
+}
 
 type OfflineSweepLockValue = {
-  owner: string;
-  expiresAt: string;
-};
+  owner: string
+  expiresAt: string
+}
 
 function nowIso(nowMs = Date.now()): string {
-  return new Date(nowMs).toISOString();
+  return new Date(nowMs).toISOString()
 }
 
-function sweepLockIsExpired(
-  lock: OfflineSweepLockValue,
-  nowMs = Date.now(),
-): boolean {
-  const expires = Date.parse(lock.expiresAt);
-  if (!Number.isFinite(expires)) return true;
-  return expires <= nowMs;
+function sweepLockIsExpired(lock: OfflineSweepLockValue, nowMs = Date.now()): boolean {
+  const expires = Date.parse(lock.expiresAt)
+  if (!Number.isFinite(expires)) return true
+  return expires <= nowMs
 }
 
-function sweepLockIsStealable(
-  lock: OfflineSweepLockValue,
-  nowMs = Date.now(),
-): boolean {
-  if (lock.owner.length === 0) return true;
-  return sweepLockIsExpired(lock, nowMs);
+function sweepLockIsStealable(lock: OfflineSweepLockValue, nowMs = Date.now()): boolean {
+  if (lock.owner.length === 0) return true
+  return sweepLockIsExpired(lock, nowMs)
 }
 
 function lockExpiryMs(nowMs: number, heldUntilMs?: number): number {
-  const ttlExpiry = nowMs + OFFLINE_SWEEP_LEASE_MS;
+  const ttlExpiry = nowMs + OFFLINE_SWEEP_LEASE_MS
   if (heldUntilMs === undefined || !Number.isFinite(heldUntilMs)) {
-    return ttlExpiry;
+    return ttlExpiry
   }
-  return Math.max(ttlExpiry, heldUntilMs);
+  return Math.max(ttlExpiry, heldUntilMs)
 }
 
 function nextSweepLockValue(
   owner: string,
   nowMs = Date.now(),
-  heldUntilMs?: number,
+  heldUntilMs?: number
 ): OfflineSweepLockValue {
   return {
     owner,
     expiresAt: new Date(lockExpiryMs(nowMs, heldUntilMs)).toISOString(),
-  };
+  }
 }
 
 function lockFromValue(value: OfflineSweepLockValue): OfflineSweepLock {
   return {
     owner: value.owner,
     expiresAt: value.expiresAt,
-  };
+  }
 }
 
 /**
@@ -99,10 +93,10 @@ function lockFromValue(value: OfflineSweepLockValue): OfflineSweepLock {
 export async function tryBeginOfflineSweep(
   db: Db,
   nowMs = Date.now(),
-  opts: TryBeginOfflineSweepOpts = {},
+  opts: TryBeginOfflineSweepOpts = {}
 ): Promise<OfflineSweepLock | null> {
-  const owner = crypto.randomUUID();
-  const fresh = nextSweepLockValue(owner, nowMs, opts.heldUntilMs);
+  const owner = crypto.randomUUID()
+  const fresh = nextSweepLockValue(owner, nowMs, opts.heldUntilMs)
 
   const inserted = await db
     .insert(lease)
@@ -113,21 +107,21 @@ export async function tryBeginOfflineSweep(
       expiresAt: fresh.expiresAt,
     })
     .onConflictDoNothing({ target: [lease.name, lease.organizationId] })
-    .returning({ id: lease.id });
+    .returning({ id: lease.id })
   if (inserted.length > 0) {
-    return lockFromValue(fresh);
+    return lockFromValue(fresh)
   }
 
   const [existing] = await db
     .select({ owner: lease.owner, expiresAt: lease.expiresAt })
     .from(lease)
     .where(and(eq(lease.name, OFFLINE_SWEEP_LOCK_KEY), isNull(lease.organizationId)))
-    .limit(1);
+    .limit(1)
   if (!existing || !sweepLockIsStealable(existing, nowMs)) {
-    return null;
+    return null
   }
 
-  const stolenValue = nextSweepLockValue(owner, nowMs, opts.heldUntilMs);
+  const stolenValue = nextSweepLockValue(owner, nowMs, opts.heldUntilMs)
   const stolen = await db
     .update(lease)
     .set({
@@ -140,14 +134,14 @@ export async function tryBeginOfflineSweep(
         eq(lease.name, OFFLINE_SWEEP_LOCK_KEY),
         isNull(lease.organizationId),
         eq(lease.owner, existing.owner),
-        eq(lease.expiresAt, existing.expiresAt),
-      ),
+        eq(lease.expiresAt, existing.expiresAt)
+      )
     )
-    .returning({ id: lease.id });
+    .returning({ id: lease.id })
   if (stolen.length > 0) {
-    return lockFromValue(stolenValue);
+    return lockFromValue(stolenValue)
   }
-  return null;
+  return null
 }
 
 /**
@@ -158,12 +152,12 @@ export async function tryBeginOfflineSweep(
 export async function endOfflineSweep(
   db: Db,
   lock: OfflineSweepLock,
-  nowMs = Date.now(),
+  nowMs = Date.now()
 ): Promise<void> {
   await db
     .update(lease)
     .set({
-      owner: "",
+      owner: '',
       expiresAt: nowIso(nowMs),
       updatedAt: nowIso(nowMs),
     })
@@ -171,7 +165,36 @@ export async function endOfflineSweep(
       and(
         eq(lease.name, OFFLINE_SWEEP_LOCK_KEY),
         isNull(lease.organizationId),
-        eq(lease.owner, lock.owner),
-      ),
-    );
+        eq(lease.owner, lock.owner)
+      )
+    )
+}
+
+/**
+ * Push the expiry of a lease this owner still holds out to `heldUntilMs` (or
+ * the TTL from `nowMs`, whichever is later). Returns false when the lease is
+ * no longer this owner's. Used by the self-hosted tick while a job outlives
+ * its tick.
+ */
+export async function renewOfflineSweep(
+  db: Db,
+  lock: OfflineSweepLock,
+  nowMs = Date.now(),
+  heldUntilMs?: number
+): Promise<boolean> {
+  const renewed = await db
+    .update(lease)
+    .set({
+      expiresAt: new Date(lockExpiryMs(nowMs, heldUntilMs)).toISOString(),
+      updatedAt: nowIso(nowMs),
+    })
+    .where(
+      and(
+        eq(lease.name, OFFLINE_SWEEP_LOCK_KEY),
+        isNull(lease.organizationId),
+        eq(lease.owner, lock.owner)
+      )
+    )
+    .returning({ id: lease.id })
+  return renewed.length > 0
 }

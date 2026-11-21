@@ -28,7 +28,11 @@ import { createRedisDaemonCellRegistry } from '../../daemon/cell/redis/registry.
 import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { noticeDisconnectedServers } from '../../daemon/cell/disconnect-notice.ts'
 import { loadCronGates } from '../../daemon/cell/cron-gates.ts'
-import { endOfflineSweep, tryBeginOfflineSweep } from '../../daemon/cell/offline-sweep-lease.ts'
+import {
+  endOfflineSweep,
+  renewOfflineSweep,
+  tryBeginOfflineSweep,
+} from '../../daemon/cell/offline-sweep-lease.ts'
 import { prunePeaks } from '../../features/servers/peak.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
@@ -967,21 +971,28 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         })
       )
     }),
-    onCadence('upgrade tick', 'upgradeTick', async (ctx) => {
-      const revision = resolveInstanceRevision(ctx.env)
-      const colocated = await resolveColocatedServerId(db, daemonCellRegistry)
-      await runUpgradeMaintenance({
-        db,
-        registry: daemonCellRegistry,
-        runtime: 'deno',
-        resolveManifests: true,
-        env: ctx.env,
-        cadences: ctx.cadences,
-        instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
-        buildLabel: resolveBuildLabel(ctx.env),
-        colocatedServerId: colocated,
-      })
-    }),
+    {
+      name: 'upgrade tick',
+      scope: 'shared',
+      // Every 15 minutes (the registry slot); every minute while a run is
+      // active, so a run advances as fast as it did on the old minute timer.
+      due: (ctx) => ctx.gates.upgradeRunActive || ctx.isDue('upgradeTick'),
+      run: async (ctx) => {
+        const revision = resolveInstanceRevision(ctx.env)
+        const colocated = await resolveColocatedServerId(db, daemonCellRegistry)
+        await runUpgradeMaintenance({
+          db,
+          registry: daemonCellRegistry,
+          runtime: 'deno',
+          resolveManifests: true,
+          env: ctx.env,
+          cadences: ctx.cadences,
+          instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+          buildLabel: resolveBuildLabel(ctx.env),
+          colocatedServerId: colocated,
+        })
+      },
+    },
     // The reconnect-repair family: a connected server, routinely on the
     // cadence and every minute while a reconnect is recent (system reconcile
     // and the managed-ingress orphan pass).
@@ -1157,7 +1168,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       }),
     acquireLease: async (nowMs, heldUntilMs) => {
       const lock = await tryBeginOfflineSweep(db, nowMs, { heldUntilMs })
-      return lock ? { release: () => endOfflineSweep(db, lock) } : null
+      return lock
+        ? {
+            release: () => endOfflineSweep(db, lock),
+            renew: (renewNowMs, renewUntilMs) =>
+              renewOfflineSweep(db, lock, renewNowMs, renewUntilMs),
+          }
+        : null
     },
     log: (level, message) => (level === 'warn' ? logWarn : logInfo)('job-tick', message),
   })

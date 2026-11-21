@@ -12,7 +12,11 @@
  * - A job that throws is logged and the rest still run. A job that runs past the
  *   tick budget is left to finish on its own (it is skipped, never started a
  *   second time, until it settles) and the jobs after it are carried to the
- *   next tick.
+ *   next tick, where they run in list order with the rest. Once the budget is
+ *   spent no job is started.
+ * - The lease and the shared database client stay open until every job the
+ *   tick started has settled, even past the budget; later ticks join them, so
+ *   the every-minute jobs keep running while one long job finishes.
  * - A tick that was late (a stalled event loop) still catches up: a job is due
  *   when any minute since the previous tick was one of its slots.
  *
@@ -31,8 +35,13 @@ import {
   type ResolvedCadences,
 } from '../../jobs/registry.ts'
 
-/** How long one tick may run before the jobs not yet started are carried to the next one. */
-export const JOB_TICK_BUDGET_MS = 75_000
+/**
+ * How long one tick may run before the jobs not yet started are carried to the
+ * next one. Below the 60 second timer, so a slow tick does not make the next
+ * one overlap and liveness (cell maintenance, presence, offline detection)
+ * runs every minute.
+ */
+export const JOB_TICK_BUDGET_MS = 45_000
 
 /** Margin kept on the lease past the budget, so a holder still finishing cannot be stolen from. */
 export const JOB_TICK_LEASE_MARGIN_MS = 10_000
@@ -68,8 +77,15 @@ export type TickJob = {
   run: (ctx: TickContext) => Promise<unknown>
 }
 
-/** The lease handle: `release` is called once after the shared jobs. */
-export type TickLease = { release: () => Promise<void> }
+/**
+ * The lease handle. `release` is called once, after every shared job it covers
+ * has settled. `renew` (optional) pushes the expiry out when a later tick joins
+ * a lease still held by a job that outlived its tick.
+ */
+export type TickLease = {
+  release: () => Promise<void>
+  renew?: (nowMs: number, heldUntilMs: number) => Promise<boolean>
+}
 
 export type JobTickDeps = {
   jobs: readonly TickJob[]
@@ -143,6 +159,48 @@ export function createJobTick(deps: JobTickDeps): JobTick {
   let carry = new Set<string>()
   /** Jobs whose run has not settled yet. */
   const running = new Set<string>()
+  /**
+   * The lease and the shared resources (the database client) outlive a tick
+   * while a job it started is still running: they are released and closed only
+   * once every started job has settled and no tick is using them. A later tick
+   * joins the open session, so the jobs that must run every minute still do.
+   */
+  type Session = {
+    opened: Map<string, unknown>
+    resources: { close: () => Promise<void> | void }[]
+    lease: TickLease | null
+    /** Ticks in progress plus started jobs not yet settled. */
+    holders: number
+  }
+  let session: Session | null = null
+  let closing: Promise<void> = Promise.resolve()
+
+  async function closeSession(open: Session): Promise<void> {
+    if (session === open) session = null
+    if (open.lease) {
+      try {
+        await open.lease.release()
+      } catch (err) {
+        log('warn', `job tick lease could not be released: ${errorText(err)}`)
+      }
+    }
+    await Promise.all(
+      open.resources.map(async (resource) => {
+        try {
+          await resource.close()
+        } catch (err) {
+          log('warn', `job tick resource close failed: ${errorText(err)}`)
+        }
+      })
+    )
+  }
+
+  function letGo(open: Session): Promise<void> {
+    open.holders -= 1
+    if (open.holders > 0) return Promise.resolve()
+    closing = closeSession(open)
+    return closing
+  }
 
   async function run(): Promise<JobTickReport> {
     const report: JobTickReport = {
@@ -157,10 +215,12 @@ export function createJobTick(deps: JobTickDeps): JobTick {
       return report
     }
     inFlight = true
+    await closing
     const startedMs = now()
     const deadlineMs = startedMs + budgetMs
-    const resources: { close: () => Promise<void> | void }[] = []
-    const opened = new Map<string, unknown>()
+    const open: Session = session ?? { opened: new Map(), resources: [], lease: null, holders: 0 }
+    session = open
+    open.holders += 1
     try {
       const env = deps.readEnv()
       const cadences = await readCadences(env, startedMs)
@@ -179,32 +239,49 @@ export function createJobTick(deps: JobTickDeps): JobTick {
         env,
         cadences,
         isDue: slotInRange,
-        resource: <T>(key: string, open: () => T, close: (value: T) => Promise<void> | void): T => {
-          if (opened.has(key)) return opened.get(key) as T
-          const value = open()
-          opened.set(key, value)
-          resources.push({ close: () => close(value) })
+        resource: <T>(
+          key: string,
+          openIt: () => T,
+          close: (value: T) => Promise<void> | void
+        ): T => {
+          if (open.opened.has(key)) return open.opened.get(key) as T
+          const value = openIt()
+          open.opened.set(key, value)
+          open.resources.push({ close: () => close(value) })
           return value
         },
       }
       const nextCarry = new Set<string>()
 
+      const isJobDue = (job: TickJob, ctx: TickContext): boolean => {
+        if (carry.has(job.name)) return true
+        try {
+          return job.due ? job.due(ctx) : true
+        } catch (err) {
+          log('warn', `job ${job.name} could not decide whether it is due: ${errorText(err)}`)
+          return false
+        }
+      }
+
       const runOne = async (job: TickJob, ctx: TickContext): Promise<void> => {
-        const due = carry.has(job.name) || (job.due ? job.due(ctx) : true)
-        if (!due) return
+        if (!isJobDue(job, ctx)) return
         if (running.has(job.name) || now() >= deadlineMs) {
           nextCarry.add(job.name)
           report.carried.push(job.name)
           return
         }
         running.add(job.name)
+        open.holders += 1
         const work = (async () => job.run(ctx))()
         // `running` clears when the work settles, even after the tick gave up waiting.
         const settled = work.then(
           () => {},
           () => {}
         )
-        void settled.then(() => running.delete(job.name))
+        void settled.then(() => {
+          running.delete(job.name)
+          return letGo(open)
+        })
         try {
           const finished = await settledWithin(work, deadlineMs - now())
           if (finished) {
@@ -228,15 +305,21 @@ export function createJobTick(deps: JobTickDeps): JobTick {
       // Local jobs first: they must run on every instance, lease or not.
       await runJobs('local', { ...baseCtx, gates: ALL_GATES_OPEN })
 
-      let lease: TickLease | null = null
       try {
-        lease = await deps.acquireLease(startedMs, deadlineMs + JOB_TICK_LEASE_MARGIN_MS)
+        // A lease that can no longer be renewed was lost: take it again.
+        if (
+          open.lease?.renew &&
+          !(await open.lease.renew(startedMs, deadlineMs + JOB_TICK_LEASE_MARGIN_MS))
+        ) {
+          open.lease = null
+        }
+        open.lease ??= await deps.acquireLease(startedMs, deadlineMs + JOB_TICK_LEASE_MARGIN_MS)
       } catch (err) {
         log('warn', `job tick lease could not be taken: ${errorText(err)}`)
         carry = nextCarry
         return report
       }
-      if (!lease) {
+      if (!open.lease) {
         report.leaseHeld = true
         // Another instance runs the shared jobs; do not keep claims on them.
         carry = new Set(
@@ -246,35 +329,21 @@ export function createJobTick(deps: JobTickDeps): JobTick {
         )
         return report
       }
+      let gates = ALL_GATES_OPEN
       try {
-        let gates = ALL_GATES_OPEN
-        try {
-          gates = await deps.loadGates(startedMs)
-        } catch (err) {
-          log('warn', `job gates could not be read, every family stays open: ${errorText(err)}`)
-        }
-        await runJobs('shared', { ...baseCtx, gates })
-      } finally {
-        try {
-          await lease.release()
-        } catch (err) {
-          log('warn', `job tick lease could not be released: ${errorText(err)}`)
-        }
+        gates = await deps.loadGates(startedMs)
+      } catch (err) {
+        log('warn', `job gates could not be read, every family stays open: ${errorText(err)}`)
       }
+      await runJobs('shared', { ...baseCtx, gates })
       carry = nextCarry
       return report
     } finally {
       previousMinute = minuteOf(startedMs)
-      await Promise.all(
-        resources.map(async (resource) => {
-          try {
-            await resource.close()
-          } catch (err) {
-            log('warn', `job tick resource close failed: ${errorText(err)}`)
-          }
-        })
-      )
+      // Next tick may start while a job runs on; the lease and database client
+      // stay with it until it settles.
       inFlight = false
+      await letGo(open)
     }
   }
 
