@@ -622,18 +622,9 @@ const composeReleasePaths = {
 
 const serverUpdateSchema = {
   type: 'string',
-  enum: [
-    'queued',
-    'queue_unavailable',
-    'no_environment',
-    'not_deployed',
-    'deploy_in_progress',
-    'server_offline',
-    'pending_changes',
-    'refused',
-  ],
+  enum: ['next_deploy', 'not_deployed', 'no_environment'],
   description:
-    "Whether the servers were told to drop the route at once. `queued`: a hostings-only run (no build, no restart) is on its way. Anything else: the name is already free in the panel, and the server keeps serving the route until the environment's next deploy rewrites its web server config (nothing reconnects an offline server on its own).",
+    "What is left on the servers. `next_deploy`: the route is still served and goes at the environment's next deploy (a removal never runs a deploy of its own, which would ship other undeployed edits). `not_deployed`: no deploy has finished yet, so no server holds the route. `no_environment`: the hosting had no environment. The name is free in the panel in every case.",
 }
 
 const removeNowPaths = {
@@ -642,7 +633,7 @@ const removeNowPaths = {
       tags: ['Hostings'],
       summary: 'Release a compose-made hostname now',
       description:
-        "Call it after the entry is removed from the environment's compose file. A compose-made hosting is deleted at once: its hostnames are free for another hosting and a doorway that pointed at it is unlinked (the doorway keeps its own name). A hosting compose adopted from the panel is handed back instead (`outcome: handed_back`): the panel row and its names stay. Then the servers are sent a hostings-only run to drop the route; `serverUpdate` says whether that happened. Asking again for a hosting that is already gone answers 200 with `alreadyGone: true`. Needs the same recent re-authentication as `DELETE /hostings/{id}` when the organization asks for it (`hosting.delete`).",
+        "Call it after the entry is removed from the environment's compose file. A compose-made hosting is deleted at once: its hostnames are free for another hosting and a doorway that pointed at it is unlinked (the doorway keeps its own name). A hosting compose adopted from the panel is handed back instead (`outcome: handed_back`): the panel row and its names stay. No deploy is started: the servers drop the route at the environment's next deploy, and `serverUpdate` says so. Asking again for a hosting that is already gone answers 200 with `alreadyGone: true`. Needs the same recent re-authentication as `DELETE /hostings/{id}` when the organization asks for it (`hosting.delete`).",
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
@@ -732,7 +723,7 @@ export const hostingPaths = {
         ).responses as Record<string, unknown>),
         '200': {
           description:
-            'Deleted. The name is free at once; `serverUpdate` says whether the servers were told to drop the route without a deploy',
+            'Deleted. The name is free at once; `serverUpdate` says when the servers drop the route',
           content: {
             'application/json': {
               schema: {

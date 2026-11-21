@@ -21,11 +21,11 @@ import { and, eq, gt, inArray, ne, or } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import { getDaemonCellRegistry, type Db } from '../../db/connection.ts'
+import type { Db } from '../../db/connection.ts'
 import { environment, hosting, project, server, service, tls } from '../../db/schema.ts'
 import { isServerConnectedStoredOrLive } from '../../daemon/cell/server-status.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
-import { type CommandQueue, getCommandQueue } from '../../features/commands/queue.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import { listEnvironmentDeploymentTargets } from '../../features/deploy/deployment-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { type DeployActor, runEnvironmentDeployForActor } from '../environments/deploy-routes.ts'
@@ -124,6 +124,22 @@ export async function environmentOfHosting(db: Db, hostingId: string): Promise<s
   return row?.environmentId ?? null
 }
 
+/**
+ * What a released hostname leaves on the servers. A removal never runs a
+ * deploy of its own: a deploy plans from the whole environment, so it would
+ * ship someone's other undeployed edits. The route goes at the next deploy.
+ */
+export type HostingRemovalUpdate = 'next_deploy' | 'no_environment' | 'not_deployed'
+
+export async function hostingRemovalUpdate(
+  db: Db,
+  environmentId: string | null
+): Promise<HostingRemovalUpdate> {
+  if (environmentId === null) return 'no_environment'
+  const targets = await listEnvironmentDeploymentTargets(db, environmentId)
+  return targets.some((target) => target.status === 'applied') ? 'next_deploy' : 'not_deployed'
+}
+
 async function everyServerOnline(
   db: Db,
   registry: DaemonCellRegistry | undefined,
@@ -146,37 +162,10 @@ async function queueApply(
   params: HostingApplyParams,
   deps: HostingApplyDeps
 ): Promise<HostingApplyOutcome> {
-  const environmentId = await environmentOfHosting(db, params.hostingId)
-  if (environmentId === null) return 'no_environment'
-  return await queueHostingsOnly(
-    c,
-    db,
-    { environmentId, organizationId: params.organizationId, actor: params.actor },
-    deps,
-    (since) =>
-      changedSince(db, {
-        environmentId,
-        hostingId: params.hostingId,
-        editedAt: params.editedAt,
-        since,
-      })
-  )
-}
-
-/**
- * The shared guard and queueing of a hostings-only run. `changed` says whether
- * anything the run would carry was edited after the last finished deploy.
- */
-async function queueHostingsOnly(
-  c: Context<AppEnv>,
-  db: Db,
-  params: { environmentId: string; organizationId: string; actor: DeployActor },
-  deps: HostingApplyDeps,
-  changed: (since: string) => Promise<boolean>
-): Promise<HostingApplyOutcome> {
   const commandQueue = deps.commandQueue
   if (!commandQueue || isNoopCommandQueue(commandQueue)) return 'queue_unavailable'
-  const { environmentId } = params
+  const environmentId = await environmentOfHosting(db, params.hostingId)
+  if (environmentId === null) return 'no_environment'
   const targets = await listEnvironmentDeploymentTargets(db, environmentId)
   if (targets.some((target) => IN_PROGRESS_DEPLOYMENT_STATUSES.has(target.status))) {
     return 'deploy_in_progress'
@@ -186,7 +175,13 @@ async function queueHostingsOnly(
   if (applied.length === 0 || since === null) return 'not_deployed'
   const serverIds = applied.map((target) => target.serverId)
   if (!(await everyServerOnline(db, deps.registry, serverIds))) return 'server_offline'
-  if (await changed(since)) return 'pending_changes'
+  const changed = await changedSince(db, {
+    environmentId,
+    hostingId: params.hostingId,
+    editedAt: params.editedAt,
+    since,
+  })
+  if (changed) return 'pending_changes'
   const runDeploy = deps.runDeploy ?? runEnvironmentDeployForActor
   const response = await runDeploy(c, db, commandQueue, environmentId, {
     ...params.actor,
@@ -199,56 +194,9 @@ async function queueHostingsOnly(
   if (response.ok) return 'queued'
   compatLogWarn(
     'hostings',
-    `hostings-only run for environment ${environmentId} not queued: ${response.status} ${await response.text()}`
+    `certificate apply for hosting ${params.hostingId} not queued: ${response.status} ${await response.text()}`
   )
   return 'refused'
-}
-
-/** Did any hosting of the environment change after `since`? */
-async function hostingsChangedSince(
-  db: Db,
-  environmentId: string,
-  since: string
-): Promise<boolean> {
-  const [other] = await db
-    .select({ id: hosting.id })
-    .from(hosting)
-    .innerJoin(service, eq(service.id, hosting.serviceId))
-    .where(and(eq(service.environmentId, environmentId), gt(hosting.updatedAt, since)))
-    .limit(1)
-  return other !== undefined
-}
-
-/** The deps a request carries: its command queue and live registry. */
-export function requestHostingApplyDeps(c: Context<AppEnv>): HostingApplyDeps {
-  return { commandQueue: getCommandQueue(c), registry: getDaemonCellRegistry(c) }
-}
-
-/**
- * After a hostname was released, drops its route from the servers with a
- * hostings-only run (no build, no restart). The name is already free: nothing
- * here can undo that. The run is skipped, and the next deploy carries the
- * change, when no deploy ran yet, a deploy is in progress, a server is offline
- * (nothing reconnects it on its own), another hosting has an undeployed edit,
- * or the run is refused. It never throws.
- */
-export async function pushHostingRemoval(
-  c: Context<AppEnv>,
-  db: Db,
-  params: { environmentId: string; organizationId: string; actor: DeployActor },
-  deps: HostingApplyDeps
-): Promise<HostingApplyOutcome> {
-  try {
-    return await queueHostingsOnly(c, db, params, deps, (since) =>
-      hostingsChangedSince(db, params.environmentId, since)
-    )
-  } catch (err) {
-    compatLogWarn(
-      'hostings',
-      `route removal for environment ${params.environmentId} failed: ${err instanceof Error ? err.message : String(err)}`
-    )
-    return 'refused'
-  }
 }
 
 /** What a hosting pins and carries to the servers, read before and after a `PATCH /hostings/:id`. */

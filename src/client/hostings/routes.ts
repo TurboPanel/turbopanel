@@ -18,12 +18,7 @@ import {
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
 import { ensureNameHttpOrders } from './name-http-orders.ts'
-import {
-  environmentOfHosting,
-  type HostingApplyDeps,
-  pushHostingRemoval,
-  requestHostingApplyDeps,
-} from './letsencrypt-apply.ts'
+import { environmentOfHosting, hostingRemovalUpdate } from './letsencrypt-apply.ts'
 import { pinHostingNames, syncHostingPin } from '../../features/hostings/name-certificates.ts'
 import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
 import {
@@ -288,16 +283,7 @@ async function refusePatchChoices(
   )
 }
 
-export type HostingRoutesDeps = {
-  /** Where the route-removal run after a delete is queued; defaults to the request's queue and registry. */
-  applyDeps?: (c: Context<AppEnv>) => HostingApplyDeps
-}
-
-export function registerHostingRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-  deps: HostingRoutesDeps = {}
-) {
+export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for hosting routes')
   }
@@ -504,21 +490,9 @@ export function registerHostingRoutes(
     }
 
     nudgeTunnelRoutesAfterResponse(c, organizationId)
-    // The name is free now; the servers drop its route without a full deploy
-    // when that can run, else at the environment's next deploy.
-    const serverUpdate =
-      environmentId === null
-        ? 'no_environment'
-        : await pushHostingRemoval(
-            c,
-            db,
-            {
-              environmentId,
-              organizationId,
-              actor: { actorType: 'user', actorId: session.userId },
-            },
-            (deps.applyDeps ?? requestHostingApplyDeps)(c)
-          )
+    // The name is free now. The servers drop the route at the environment's
+    // next deploy; a delete never runs one itself.
+    const serverUpdate = await hostingRemovalUpdate(db, environmentId)
     return c.json({ ok: true as const, serverUpdate })
   })
 }

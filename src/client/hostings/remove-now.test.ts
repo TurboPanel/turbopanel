@@ -25,9 +25,6 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
-import type { CommandQueue } from '../../features/commands/queue.ts'
-import type { DeployRequestAuth } from '../environments/deploy-routes.ts'
-import type { HostingApplyDeps } from './letsencrypt-apply.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerHostingRoutes } from './routes.ts'
 import { registerHostingRemoveNowRoute } from './remove-now-route.ts'
@@ -37,9 +34,6 @@ const dbUrl = getDatabaseUrl()
 const test = Deno.test.bind(Deno)
 
 const NAME = 'shop.example.net'
-const LIVE_QUEUE = { send: () => Promise.resolve() } as unknown as CommandQueue
-
-type DeployCall = { environmentId: string; auth: DeployRequestAuth }
 
 type Fixture = {
   db: Db
@@ -48,38 +42,24 @@ type Fixture = {
   /** Two environments of one organization, each with a service. */
   first: { environmentId: string; serviceId: string; projectId: string }
   second: { environmentId: string; serviceId: string; projectId: string }
-  calls: DeployCall[]
   call: (method: string, path: string, body?: unknown) => Promise<Response>
   cleanup: () => Promise<void>
 }
 
 async function setup(): Promise<Fixture> {
   const db = createDenoDb()
-  const calls: DeployCall[] = []
   const secrets = await deriveSecretsConfig(
     parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
     'session-signing'
   )
-  const applyDeps: HostingApplyDeps = {
-    commandQueue: LIVE_QUEUE,
-    // Stands in for the deploy pipeline: records the call and marks the deployment queued.
-    runDeploy: async (_c, _db, _queue, environmentId, auth) => {
-      calls.push({ environmentId, auth })
-      await db
-        .update(deployment)
-        .set({ status: 'pending', updatedAt: new Date().toISOString() })
-        .where(eq(deployment.environmentId, environmentId))
-      return Response.json({ commandId: crypto.randomUUID() })
-    },
-  }
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
     return next()
   })
   const routeOpts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
-  registerHostingRemoveNowRoute(app, routeOpts, { applyDeps: () => applyDeps })
-  registerHostingRoutes(app, routeOpts, { applyDeps: () => applyDeps })
+  registerHostingRemoveNowRoute(app, routeOpts)
+  registerHostingRoutes(app, routeOpts)
 
   const [org] = await db
     .insert(organization)
@@ -144,7 +124,6 @@ async function setup(): Promise<Fixture> {
     userId,
     first,
     second,
-    calls,
     call: async (method, path, body) =>
       app.request(path, {
         method,
@@ -279,6 +258,14 @@ async function linkDoorway(f: Fixture, hostingId: string): Promise<string> {
   return door!.id
 }
 
+async function deploymentCount(f: Fixture, environmentId: string): Promise<number> {
+  const rows = await f.db
+    .select({ id: deployment.id })
+    .from(deployment)
+    .where(eq(deployment.environmentId, environmentId))
+  return rows.length
+}
+
 async function nameHolders(f: Fixture): Promise<number> {
   const rows = await f.db
     .select({ id: hostname.id })
@@ -287,13 +274,14 @@ async function nameHolders(f: Fixture): Promise<number> {
   return rows.length
 }
 
-test('remove-now: the name is released at once, the route is dropped without a deploy, and another project can take it', async () => {
+test('remove-now: the name is released at once, no deploy is queued, and another project can take it', async () => {
   if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
   const f = await setup()
   try {
     const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
     const doorwayId = await linkDoorway(f, id)
     await deployedOn(f, f.first.environmentId, true)
+    const deploymentsBefore = await deploymentCount(f, f.first.environmentId)
 
     // Held: another project cannot take the name.
     const blocked = await f.call('POST', '/hostings', {
@@ -310,12 +298,10 @@ test('remove-now: the name is released at once, the route is dropped without a d
       removed: true,
       outcome: 'removed',
       hostnames: [NAME],
-      serverUpdate: 'queued',
+      serverUpdate: 'next_deploy',
     })
-    assertEquals(f.calls.length, 1)
-    assertEquals(f.calls[0]?.environmentId, f.first.environmentId)
-    assertEquals(f.calls[0]?.auth.hostingsOnly, true)
-    assertEquals(f.calls[0]?.auth.actorId, f.userId)
+    // No deploy of its own: nothing new for the environment.
+    assertEquals(await deploymentCount(f, f.first.environmentId), deploymentsBefore)
 
     assertEquals((await f.db.select().from(hosting).where(eq(hosting.id, id))).length, 0)
     assertEquals(await nameHolders(f), 0)
@@ -337,28 +323,6 @@ test('remove-now: the name is released at once, the route is dropped without a d
   }
 })
 
-test('remove-now: with the server offline the name is still released and no run is queued', async () => {
-  if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
-  const f = await setup()
-  try {
-    const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
-    await deployedOn(f, f.first.environmentId, false)
-    const res = await f.call('POST', `/hostings/${id}/remove-now`)
-    assertEquals(res.status, 200)
-    assertEquals(((await res.json()) as { serverUpdate: string }).serverUpdate, 'server_offline')
-    assertEquals(f.calls.length, 0)
-    assertEquals(await nameHolders(f), 0)
-    const again = await f.call('POST', '/hostings', {
-      serviceId: f.second.serviceId,
-      name: 'Other',
-      options: { hostnames: [NAME] },
-    })
-    assertEquals(again.status, 200)
-  } finally {
-    await f.cleanup()
-  }
-})
-
 test('remove-now: an environment never deployed releases the name and queues nothing', async () => {
   if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
   const f = await setup()
@@ -367,7 +331,6 @@ test('remove-now: an environment never deployed releases the name and queues not
     const res = await f.call('POST', `/hostings/${id}/remove-now`)
     assertEquals(res.status, 200)
     assertEquals(((await res.json()) as { serverUpdate: string }).serverUpdate, 'not_deployed')
-    assertEquals(f.calls.length, 0)
     assertEquals(await nameHolders(f), 0)
   } finally {
     await f.cleanup()
@@ -390,7 +353,6 @@ test('remove-now: a hosting the panel made first is handed back, and a panel hos
       .from(hosting)
       .where(eq(hosting.id, adopted))
     assertEquals(kept?.metadata, {})
-    assertEquals(f.calls.length, 0)
 
     // Now a panel hosting: remove-now is for compose-made rows only.
     const refused = await f.call('POST', `/hostings/${adopted}/remove-now`)
@@ -404,33 +366,17 @@ test('remove-now: a hosting the panel made first is handed back, and a panel hos
   }
 })
 
-test('DELETE /hostings/:id: a panel hosting frees its name and drops the route without a deploy', async () => {
+test('DELETE /hostings/:id: a panel hosting frees its name and leaves the route to the next deploy', async () => {
   if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
   const f = await setup()
   try {
     const id = await makeHosting(f, f.first.serviceId, null)
     await deployedOn(f, f.first.environmentId, true)
+    const deploymentsBefore = await deploymentCount(f, f.first.environmentId)
     const res = await f.call('DELETE', `/hostings/${id}`)
     assertEquals(res.status, 200)
-    assertEquals(await res.json(), { ok: true, serverUpdate: 'queued' })
-    assertEquals(f.calls.length, 1)
-    assertEquals(f.calls[0]?.auth.hostingsOnly, true)
-    assertEquals(await nameHolders(f), 0)
-  } finally {
-    await f.cleanup()
-  }
-})
-
-test('DELETE /hostings/:id: with the server offline the name is released and the update waits for the next deploy', async () => {
-  if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
-  const f = await setup()
-  try {
-    const id = await makeHosting(f, f.first.serviceId, null)
-    await deployedOn(f, f.first.environmentId, false)
-    const res = await f.call('DELETE', `/hostings/${id}`)
-    assertEquals(res.status, 200)
-    assertEquals(await res.json(), { ok: true, serverUpdate: 'server_offline' })
-    assertEquals(f.calls.length, 0)
+    assertEquals(await res.json(), { ok: true, serverUpdate: 'next_deploy' })
+    assertEquals(await deploymentCount(f, f.first.environmentId), deploymentsBefore)
     assertEquals(await nameHolders(f), 0)
   } finally {
     await f.cleanup()
@@ -450,7 +396,6 @@ test('remove-now: refused while the compose file still declares the hosting, and
     assertEquals(((await res.json()) as { error: string }).error, 'hosting_still_declared')
     assertEquals((await f.db.select().from(hosting).where(eq(hosting.id, id))).length, 1)
     assertEquals(await nameHolders(f), 1)
-    assertEquals(f.calls.length, 0)
 
     // Once the entry is out of the file the same call goes through.
     await declareInCompose(f, f.first.projectId, false)

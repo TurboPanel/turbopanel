@@ -18,17 +18,15 @@
  * again for a row that is already gone answers 200 with `alreadyGone`, so a
  * retry after a lost reply is harmless.
  *
- * Then the route is dropped from the servers with a hostings-only run
- * (`pushHostingRemoval`): no build, no restart. When that cannot run (server
- * offline, no finished deploy yet, a deploy in progress, another hosting with
- * an undeployed edit, or the run is refused) the name is still free, and the
- * answer's `serverUpdate` says so: the server keeps serving the route until
- * the environment's next deploy rewrites its web server config. Nothing
- * reconnects a server on its own. A panel-made hosting is removed with
- * `DELETE /hostings/:id`, which pushes the same way.
+ * No deploy runs: a deploy plans from the whole environment and would ship
+ * someone's other undeployed edits. The server keeps serving the route until
+ * the environment's next deploy rewrites its web server config, and the answer's
+ * `serverUpdate` says so (`next_deploy`, or `not_deployed` / `no_environment`
+ * when no server holds a route). A panel-made hosting is removed with
+ * `DELETE /hostings/:id`, which answers the same way.
  */
 import { and, eq, sql } from 'drizzle-orm'
-import type { Context, Hono } from 'hono'
+import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { isUuid } from '../access/routes-helpers.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -57,12 +55,7 @@ import {
 } from '../../features/tls/unused-letsencrypt.ts'
 import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import { assertNotSystemOwnedOr403, getOrgId } from '../shared.ts'
-import {
-  type HostingApplyDeps,
-  type HostingApplyOutcome,
-  pushHostingRemoval,
-  requestHostingApplyDeps,
-} from './letsencrypt-apply.ts'
+import { hostingRemovalUpdate } from './letsencrypt-apply.ts'
 
 const REMOVE_PATH = '/hostings/:id/remove-now'
 
@@ -166,16 +159,7 @@ async function removeUnderEnvironmentLock(
   }
 }
 
-export type HostingRemoveNowDeps = {
-  /** Where the hostings-only run is queued; defaults to the request's queue and registry. */
-  applyDeps?: (c: Context<AppEnv>) => HostingApplyDeps
-}
-
-export function registerHostingRemoveNowRoute(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-  deps: HostingRemoveNowDeps = {}
-) {
+export function registerHostingRemoveNowRoute(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for hosting routes')
   }
@@ -238,16 +222,7 @@ export function registerHostingRemoveNowRoute(
         })
       case 'removed': {
         nudgeTunnelRoutesAfterResponse(c, organizationId)
-        const serverUpdate: HostingApplyOutcome = await pushHostingRemoval(
-          c,
-          db,
-          {
-            environmentId: outcome.environmentId,
-            organizationId,
-            actor: { actorType: 'user', actorId: session.userId },
-          },
-          (deps.applyDeps ?? requestHostingApplyDeps)(c)
-        )
+        const serverUpdate = await hostingRemovalUpdate(db, outcome.environmentId)
         return c.json({
           ok: true as const,
           removed: true as const,

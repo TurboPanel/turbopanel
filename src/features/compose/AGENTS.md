@@ -732,12 +732,14 @@ cascade and a doorway link is set null, so the name is free at once. A row
 compose **adopted** from the panel is not deleted but handed back, as the
 reconcile does: the panel row and its names stay, and nothing is freed. A second
 call for a row that is gone answers `200 { removed: true, alreadyGone: true }`.
-After a delete the route is sent to the servers as a hostings-only run
-(`pushHostingRemoval`); the reply's `serverUpdate` is the apply outcome (`queued`,
-`not_deployed`, `server_offline`, `pending_changes`, ...). When no run is sent the
-name is still released and the daemon drops the route at the environment's next
-deploy. `DELETE /hostings/{id}` for a panel row replies `{ ok: true, serverUpdate }`
-the same way.
+No deploy is started: a deploy plans from the whole environment and would ship
+someone's other undeployed edits, and a project whose deploys are refused could
+not run one. The server keeps serving the route until the environment's next
+deploy; the reply's `serverUpdate` says so (`next_deploy`, or `not_deployed` /
+`no_environment` when no server holds a route). `DELETE /hostings/{id}` for a
+panel row replies `{ ok: true, serverUpdate }` the same way. Dropping the route
+at once needs a daemon command that removes only the named hostnames; there is
+none yet.
 
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 
