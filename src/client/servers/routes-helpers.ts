@@ -106,11 +106,16 @@ export type ServerPatchFields = {
   name?: string | null
   /** Pins `server.machine_class`; `null` clears the pin so ingest infers again. */
   machineClass?: ServerMachineClass | null
-  options?: Omit<ServerOptions, 'sshPort' | 'ntp' | 'hideWebServerNames' | 'sendViaHeader'> & {
+  options?: Omit<
+    ServerOptions,
+    'sshPort' | 'ntp' | 'hideWebServerNames' | 'sendViaHeader' | 'networkShares'
+  > & {
     sshPort?: number | null
     ntp?: NtpDefaults | null
     hideWebServerNames?: boolean | null
     sendViaHeader?: boolean | null
+    /** `null` turns the setting off (the stored value is dropped to false). */
+    networkShares?: boolean | null
   }
   /**
    * The request's `location` as parsed: fields to set, `null` fields to clear,
@@ -221,6 +226,13 @@ function parseServerPatchOptions(
     overlayWebServerSwitch(options, raw, 'hideWebServerNames') ??
     overlayWebServerSwitch(options, raw, 'sendViaHeader')
   if (switchError) return switchError
+  if ('networkShares' in raw) {
+    // Off by default and never inherited: only a boolean (or null for off).
+    if (raw.networkShares !== null && typeof raw.networkShares !== 'boolean') {
+      return { ok: false, error: 'Invalid networkShares', status: 400 }
+    }
+    options.networkShares = raw.networkShares
+  }
   if ('buildLimits' in raw) {
     // Replaces the stored object; `{}` or `null` clears every part.
     const buildLimits = parseBuildLimitSettingsInput(raw.buildLimits)
@@ -471,6 +483,8 @@ export type ServerHostDefaultsFields = {
   /** Effective Via header: this server's setting, else the organization's, else off. */
   sendViaHeader: boolean
   sendViaHeaderSource: string | null
+  /** Whether this server allows SMB network share volumes (off unless set; no inheritance). */
+  networkShares: boolean
   /** This server's own build limits (`null` parts are not set); see `features/deploy/build-limits.ts`. */
   buildLimits: { cores: number | null; memoryBytes: number | null; swap: boolean | null }
 }
@@ -510,6 +524,7 @@ export function resolveServerHostDefaultsFields(
     hideWebServerNamesSource: hide.source,
     sendViaHeader: via.sendViaHeader,
     sendViaHeaderSource: via.source,
+    networkShares: serverOptions?.networkShares === true,
     buildLimits: {
       cores: serverOptions?.buildLimits?.cores ?? null,
       memoryBytes: serverOptions?.buildLimits?.memoryBytes ?? null,

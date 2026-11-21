@@ -112,9 +112,15 @@ export {
   type ComposeDeployValidationError,
   type ComposeHostAccessActorError,
   type ComposeMergedInvalidError,
+  type ComposeNetworkSharesRefusedError,
   type ComposeUnsupportedFieldError,
   validateComposeForDeploy,
 } from './validate-for-deploy.ts'
+export {
+  findNetworkShareVolumes,
+  isNetworkShareDriverOpts,
+  networkSharesFingerprint,
+} from './network-shares.ts'
 export {
   collectHostAccessFindings,
   type HostAccessFinding,

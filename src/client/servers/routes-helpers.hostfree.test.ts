@@ -155,6 +155,18 @@ test('parseServerPatchCore validates name, options, and emptiness', () => {
     status: 400,
   })
 
+  const shares = parseServerPatchCore({ options: { networkShares: true } })
+  if (!shares.ok) throw new TypeError('expected networkShares patch')
+  assertEquals(shares.patch.options?.networkShares, true)
+  const sharesOff = parseServerPatchCore({ options: { networkShares: null } })
+  if (!sharesOff.ok) throw new TypeError('expected networkShares off')
+  assertEquals(sharesOff.patch.options?.networkShares, null)
+  assertEquals(parseServerPatchCore({ options: { networkShares: 'yes' } }), {
+    ok: false,
+    error: 'Invalid networkShares',
+    status: 400,
+  })
+
   const clearSsh = parseServerPatchCore({ options: { sshPort: null } })
   if (!clearSsh.ok) throw new TypeError('expected sshPort clear')
   assertEquals(clearSsh.patch.options?.sshPort, null)
@@ -325,6 +337,21 @@ test('timezone and presence shaping helpers', () => {
   )
   assertEquals(serverViaOff.sendViaHeader, false)
   assertEquals(serverViaOff.sendViaHeaderSource, 'server')
+
+  // Network shares: off unless the server itself says on; no org layer.
+  assertEquals(builtin.networkShares, false)
+  assertEquals(
+    resolveServerHostDefaultsFields({}, { networkShares: true } as never, undefined).networkShares,
+    false
+  )
+  assertEquals(
+    resolveServerHostDefaultsFields({ networkShares: true }, {}, undefined).networkShares,
+    true
+  )
+  assertEquals(
+    resolveServerHostDefaultsFields({ networkShares: 'true' }, {}, undefined).networkShares,
+    false
+  )
 
   assertEquals(builtin.buildLimits, { cores: null, memoryBytes: null, swap: null })
   const limited = resolveServerHostDefaultsFields(

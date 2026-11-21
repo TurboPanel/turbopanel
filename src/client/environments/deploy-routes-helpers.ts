@@ -369,6 +369,32 @@ function mapComposeHostAccessActorError(
   }
 }
 
+function mapNetworkSharesRefusedError(
+  prepared: Extract<DeployPrepareError, { kind: 'compose_network_shares_refused' }>
+): PrepareErrorResponse {
+  const volumes = prepared.volumes.map((name) => `\`${name}\``).join(', ')
+  const base = `This compose document mounts a network share (SMB volume ${volumes}).`
+  let message: string
+  if (prepared.reason === 'permission') {
+    message = `${base} You do not have permission to deploy network shares (environments.deploy_network_shares); only an organization owner or manager does. The target server must also have Allow Network Shares turned on, which an admin can do in the server's settings.`
+  } else if (prepared.reason === 'approval') {
+    message = `${base} This is an automated deploy (a git push or a scheduled run), and no owner or manager has deployed these shares in this form yet. Deploy it once from the web interface to approve it; automated deploys of the same shares will then run. The target server must also have Allow Network Shares turned on.`
+  } else {
+    const names = (prepared.servers ?? []).map((entry) => entry.name).join(', ')
+    message = `${base} Allow Network Shares is off on ${names}. An admin can turn on "Allow Network Shares" in the server's settings.`
+  }
+  return {
+    status: 403,
+    body: {
+      error: prepared.kind,
+      reason: prepared.reason,
+      volumes: prepared.volumes,
+      ...(prepared.servers ? { servers: prepared.servers } : {}),
+      message,
+    },
+  }
+}
+
 function mapSitePrepareError(
   prepared: Extract<
     DeployPrepareError,
@@ -827,6 +853,10 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
     case 'compose_host_access_requires_manager':
     case 'compose_host_access_requires_approval':
       return mapComposeHostAccessActorError(prepared)
+    // A network share (SMB volume) needs both the deploying user's capability
+    // and the server's "Allow Network Shares"; the body names which is missing.
+    case 'compose_network_shares_refused':
+      return mapNetworkSharesRefusedError(prepared)
     case 'datacenter_ip_required':
       return {
         status: 422,

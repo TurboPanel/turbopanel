@@ -1043,3 +1043,34 @@ test('the preview shows secret slots by name and never a value or a size', () =>
   assertEquals(Object.keys(rows[0] ?? {}).includes('bytes'), false)
   assertEquals(previewConfigFiles({} as PreparedDeployCompose), [])
 })
+
+test('mapPrepareErrorResponse names what is missing for a refused network share', () => {
+  const server = { id: projectId, name: 'server-a.example.lan' }
+  const permission = mapPrepareErrorResponse({
+    kind: 'compose_network_shares_refused',
+    reason: 'permission',
+    volumes: ['media'],
+  })
+  assertEquals(permission.status, 403)
+  assertEquals(permission.body.reason, 'permission')
+  assertEquals(String(permission.body.message).includes('environments.deploy_network_shares'), true)
+
+  const approval = mapPrepareErrorResponse({
+    kind: 'compose_network_shares_refused',
+    reason: 'approval',
+    volumes: ['media'],
+  })
+  assertEquals(approval.status, 403)
+  assertEquals(String(approval.body.message).includes('automated deploy'), true)
+
+  const setting = mapPrepareErrorResponse({
+    kind: 'compose_network_shares_refused',
+    reason: 'server_setting',
+    volumes: ['media'],
+    servers: [server],
+  })
+  assertEquals(setting.status, 403)
+  assertEquals(setting.body.servers, [server])
+  assertEquals(String(setting.body.message).includes('server-a.example.lan'), true)
+  assertEquals(String(setting.body.message).includes('"Allow Network Shares"'), true)
+})

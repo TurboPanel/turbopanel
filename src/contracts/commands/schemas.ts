@@ -2744,6 +2744,13 @@ export type EnvironmentDeployHostAccess = {
    * daemon then refuses such a context. Internal hosts are refused either way.
    */
   remoteBuildSourcesApproved?: boolean
+  /**
+   * True only when the document mounts a network share (a top-level volume
+   * with a `cifs` or `smb3` driver type), the target server allows network
+   * shares and the deploying user may deploy them. Absent reads as `false`;
+   * the daemon then refuses such a volume.
+   */
+  allowNetworkShares?: boolean
 }
 
 export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
@@ -5394,6 +5401,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       keepRunningServices: parseKeepRunningField(value.keepRunningServices),
       hostLevelApproved: parseOptionalDeployBoolean(value.hostLevelApproved),
       remoteBuildSourcesApproved: parseOptionalDeployBoolean(value.remoteBuildSourcesApproved),
+      allowNetworkShares: parseOptionalDeployBoolean(value.allowNetworkShares),
       tlsMaterial,
       variableMaterial: parseDeployVariableMaterial(value.variableMaterial),
       envFile: parseDeployEnvFile(value.envFile),

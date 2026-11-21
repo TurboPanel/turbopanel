@@ -1372,3 +1372,87 @@ describe('apply-variables database references', () => {
     assertEquals((result as { ref?: string }).ref, '{$db.MISSING.host}')
   })
 })
+
+describe('network share volume variables', () => {
+  const entry = (key: string, value: string, isSecret = false) => ({
+    key,
+    value,
+    isSecret,
+    isLiteral: false,
+    forBuild: false,
+    forRuntime: true,
+  })
+
+  function shareDoc(opts: Record<string, unknown>) {
+    const doc = emptyComposeDocument()
+    doc.data.services = { web: { image: 'nginx:latest' } }
+    doc.data.volumes = { media: { driver_opts: { type: 'cifs', ...opts } } }
+    return doc
+  }
+
+  function volumeOpts(result: ApplyVariablesResult) {
+    const volumes = result.document.data.volumes as Record<string, { driver_opts: object }>
+    return volumes.media.driver_opts as Record<string, string>
+  }
+
+  it('fills {$KEY} in device and o from project variables', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(
+        shareDoc({ device: '//{$NAS_HOST}/media', o: 'username=u,password={$SMB_PASS}' }),
+        {
+          globalEntries: [entry('NAS_HOST', 'nas.example.net'), entry('SMB_PASS', 'pa$s', true)],
+          perServiceEntries: new Map(),
+        }
+      )
+    )
+    const opts = volumeOpts(result)
+    assertEquals(opts.device, '//nas.example.net/media')
+    assertEquals(opts.o, 'username=u,password=pa$$s')
+  })
+
+  it('masks a secret with the placeholder in a preview', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(shareDoc({ device: '//h/m', o: 'password={$SMB_PASS}' }), {
+        globalEntries: [entry('SMB_PASS', 'hunter2', true)],
+        perServiceEntries: new Map(),
+        shareSecretPlaceholder: '••••••••',
+      })
+    )
+    assertEquals(volumeOpts(result).o, 'password=••••••••')
+    assertEquals(JSON.stringify(result.document.data).includes('hunter2'), false)
+  })
+
+  it('refuses an unresolved reference naming the volume and field', () => {
+    const result = applyVariablesToComposeDocument(shareDoc({ device: '//{$MISSING}/m' }), {
+      globalEntries: [],
+      perServiceEntries: new Map(),
+    })
+    assertEquals(isApplyVariablesError(result), true)
+    const error = result as { kind: string; message: string }
+    assertEquals(error.kind, 'variable_unresolved')
+    assertEquals(error.message.includes('volumes.media.driver_opts.device'), true)
+  })
+
+  it('refuses a secret in Compose interpolation form', () => {
+    const result = applyVariablesToComposeDocument(
+      shareDoc({ device: '//h/m', o: 'password=${SMB_PASS}' }),
+      { globalEntries: [entry('SMB_PASS', 'x', true)], perServiceEntries: new Map() }
+    )
+    assertEquals(isApplyVariablesError(result), true)
+    assertEquals((result as { kind: string }).kind, 'variable_secret_interpolation')
+  })
+
+  it('leaves a non-share volume untouched', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { web: { image: 'nginx:latest' } }
+    doc.data.volumes = { data: { driver_opts: { type: 'nfs', device: ':/x/{$NOPE}' } } }
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc, { globalEntries: [], perServiceEntries: new Map() })
+    )
+    assertEquals(
+      (result.document.data.volumes as Record<string, { driver_opts: { device: string } }>).data
+        .driver_opts.device,
+      ':/x/{$NOPE}'
+    )
+  })
+})

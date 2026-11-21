@@ -661,6 +661,8 @@ type DeployCommandCreateParams = DeployActor & {
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
   hostLevelApproved: boolean
   remoteBuildSourcesApproved: boolean
+  /** The planner's network-share verdict (`PlannedDeploy.allowNetworkShares`). */
+  allowNetworkShares: boolean
   generation: number
   desiredHash: string
   replicaCounts: Record<string, number>
@@ -860,6 +862,7 @@ async function createDeployCommand(
         hostingsOnly: params.hostingsOnly ? true : undefined,
         hostLevelApproved: params.hostLevelApproved ? true : undefined,
         remoteBuildSourcesApproved: params.remoteBuildSourcesApproved ? true : undefined,
+        allowNetworkShares: params.allowNetworkShares ? true : undefined,
         ...params.engine.payload,
       }),
       listenerPorts: params.listenerPorts,
@@ -973,6 +976,7 @@ function createParamsForPreparedServer(
     engine: DeployEnginePlan
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
+    allowNetworkShares: boolean
     selection: DeploySourceSelection
     composeBase: ComposeBaseRecord | null
     /** Ports other environments already hold on this server; allocation probes past them. */
@@ -1061,6 +1065,7 @@ function createParamsForPreparedServer(
     engine: params.engine,
     hostLevelApproved: params.hostLevelApproved,
     remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
+    allowNetworkShares: params.allowNetworkShares,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
@@ -1242,6 +1247,7 @@ async function persistDeployFanOut(
     engine: DeployEnginePlan
     hostLevelApproved: boolean
     remoteBuildSourcesApproved: boolean
+    allowNetworkShares: boolean
     selection: DeploySourceSelection
     /** The tracked Base this deploy used, recorded on each command's context. */
     composeBase: ComposeBaseRecord | null
@@ -1308,6 +1314,7 @@ async function persistDeployFanOut(
           engine: params.engine,
           hostLevelApproved: params.hostLevelApproved,
           remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
+          allowNetworkShares: params.allowNetworkShares,
           selection: params.selection,
           composeBase: params.composeBase,
           reservedListenPorts: reservedPorts.get(row.serverId),
@@ -2544,6 +2551,7 @@ async function runEnvironmentDeploy(
       engine,
       hostLevelApproved: planned.hostLevelApproved,
       remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
+      allowNetworkShares: planned.allowNetworkShares,
       selection,
       composeBase: planned.composeBase,
       removedServices: removedServiceRows(planned.serviceRows, servicesMapping(planned.merged)),

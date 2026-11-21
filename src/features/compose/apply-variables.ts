@@ -20,6 +20,7 @@ import {
   newConfigFilesContext,
 } from './apply-config-files.ts'
 import type { DeployConfigFileEntry, DeployConfigSecretRef } from './config-files.ts'
+import { isNetworkShareDriverOpts } from './network-shares.ts'
 import {
   collectComposeInterpolationKeys,
   type DbVariableRef,
@@ -27,6 +28,7 @@ import {
   isDbRef,
   type ParsedVariableRef,
   parseExactVariableRef,
+  splitEmbeddedRefs,
   type VariableRefScope,
 } from './variable-refs.ts'
 
@@ -673,6 +675,131 @@ function applyEntriesToService(state: ApplyServiceState): ApplyVariablesError | 
   return null
 }
 
+/** The variables a top-level volume sees: the first service's view, else the global entries. */
+function shareVariableView(
+  document: ComposeDocument,
+  params: {
+    globalEntries: DeployVariableEntry[]
+    perServiceEntries: Map<string, DeployVariableEntry[]>
+    perServiceScopes?: Map<string, VariableScopeEntryMap>
+  }
+): { inherited: Map<string, DeployVariableEntry>; scopes: VariableScopeEntryMap | undefined } {
+  const first = listComposeServiceNames(document)[0]
+  return {
+    inherited: entriesToMap([
+      ...params.globalEntries,
+      ...(first === undefined ? [] : (params.perServiceEntries.get(first) ?? [])),
+    ]),
+    scopes: first === undefined ? undefined : params.perServiceScopes?.get(first),
+  }
+}
+
+/** The `driver_opts` fields of a network share volume that take `{$KEY}` references. */
+const SHARE_REF_FIELDS = ['device', 'o'] as const
+
+type ShareValueContext = {
+  volume: string
+  field: string
+  inherited: Map<string, DeployVariableEntry>
+  scopes: VariableScopeEntryMap | undefined
+  secretKeys: Set<string>
+  /** Preview: a secret's value is replaced by this instead of being written. */
+  secretPlaceholder: string | undefined
+}
+
+function shareValueError(
+  ctx: ShareValueContext,
+  kind: ApplyVariablesError['kind'],
+  message: string,
+  ref?: string
+): ApplyVariablesError {
+  return {
+    kind,
+    message: `${message} (volumes.${ctx.volume}.driver_opts.${ctx.field})`,
+    ...(ref === undefined ? {} : { ref }),
+  }
+}
+
+/**
+ * Fill the `{$KEY}` references in one share volume string. The value is written
+ * with `$` doubled so Compose does not read it as interpolation. A secret is
+ * written for a real deploy only; a preview gets the placeholder, so no API
+ * response or log built from the preview document holds it.
+ */
+function resolveShareString(text: string, ctx: ShareValueContext): string | ApplyVariablesError {
+  let out = ''
+  for (const part of splitEmbeddedRefs(text)) {
+    if (part.kind === 'text') {
+      const secretKey = collectComposeInterpolationKeys(part.text.replaceAll('$$', '')).find(
+        (key) => ctx.secretKeys.has(key)
+      )
+      if (secretKey) {
+        return shareValueError(
+          ctx,
+          'variable_secret_interpolation',
+          `Secret ${secretKey} cannot use Compose \${${secretKey}} interpolation; use {$${secretKey}}`
+        )
+      }
+      out += part.text
+      continue
+    }
+    if (part.kind === 'invalid') {
+      return shareValueError(ctx, 'variable_ref_invalid', part.message, part.raw)
+    }
+    const entry = lookupVariable(part.ref, ctx.inherited, ctx.scopes)
+    if (!entry) {
+      const labeled = formatVariableRef(part.ref)
+      return shareValueError(ctx, 'variable_unresolved', `Unresolved variable ${labeled}`, labeled)
+    }
+    out +=
+      entry.isSecret && ctx.secretPlaceholder !== undefined
+        ? ctx.secretPlaceholder
+        : escapeLiteralComposeValue(trimVariableValue(entry.value))
+  }
+  return out
+}
+
+/**
+ * `{$KEY}` in the `device` and `o` of a network share volume (a top-level
+ * volume with a `cifs` / `smb3` type): the share address and its credentials
+ * come from project variables like any other value. Services are not involved,
+ * so the variables are the first service's view (the project, environment and
+ * server layers every service shares); a service-scoped reference is unresolved.
+ */
+function applyShareVolumeVariables(
+  data: Record<string, unknown>,
+  view: {
+    inherited: Map<string, DeployVariableEntry>
+    scopes: VariableScopeEntryMap | undefined
+  },
+  secretPlaceholder: string | undefined
+): ApplyVariablesError | null {
+  if (!isRecord(data.volumes)) return null
+  const volumes: Record<string, unknown> = { ...data.volumes }
+  const secretKeys = collectSecretKeys(view.inherited, view.scopes)
+  for (const [name, spec] of Object.entries(volumes)) {
+    if (!isRecord(spec) || !isNetworkShareDriverOpts(spec.driver_opts)) continue
+    const opts: Record<string, unknown> = { ...(spec.driver_opts as Record<string, unknown>) }
+    for (const field of SHARE_REF_FIELDS) {
+      const raw = opts[field]
+      if (typeof raw !== 'string') continue
+      const resolved = resolveShareString(raw, {
+        volume: name,
+        field,
+        inherited: view.inherited,
+        scopes: view.scopes,
+        secretKeys,
+        secretPlaceholder,
+      })
+      if (typeof resolved !== 'string') return resolved
+      opts[field] = resolved
+    }
+    volumes[name] = { ...spec, driver_opts: opts }
+  }
+  data.volumes = volumes
+  return null
+}
+
 /**
  * Inject resolved variables into a merged compose document.
  *
@@ -693,6 +820,12 @@ export function applyVariablesToComposeDocument(
     projectId?: string
     environmentId?: string
     runDir?: string
+    /**
+     * Preview: what a secret in a network share volume's `device` / `o` is
+     * written as. Omitted for a real deploy, which writes the value (the
+     * volume is mounted by the host, and no sealed file can carry it).
+     */
+    shareSecretPlaceholder?: string
   }
 ): ApplyVariablesResult | ApplyVariablesError {
   const data = { ...document.data }
@@ -758,6 +891,12 @@ export function applyVariablesToComposeDocument(
   }
 
   data.services = services
+  const shareError = applyShareVolumeVariables(
+    data,
+    shareVariableView(document, params),
+    params.shareSecretPlaceholder
+  )
+  if (shareError) return shareError
   const finishError = finishConfigFiles(configCtx, data)
   if (finishError) return finishError
 

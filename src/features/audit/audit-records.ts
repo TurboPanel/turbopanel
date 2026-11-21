@@ -45,6 +45,7 @@ export const AUDIT_ACTIONS = [
   'organization.compose_privileged_fields.set',
   'compose.host_access.approve',
   'compose.host_access.use',
+  'compose.network_shares.approve',
   'organization.compose_remote_build_sources.set',
   'organization.build_limits.set',
   'organization.deploy_hooks.set',

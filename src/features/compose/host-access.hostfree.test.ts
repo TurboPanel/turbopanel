@@ -625,6 +625,42 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
     [],
   ],
   [
+    'volumes: an SMB share is not host-level (it has its own gate)',
+    {
+      volumes: {
+        a: {
+          driver_opts: { type: 'cifs', device: '//nas.example.net/media', o: 'username=u,ro' },
+        },
+        b: { driver_opts: { type: 'smb3', device: '//{$NAS}/media', o: 'vers=3.0' } },
+      },
+    },
+    [],
+  ],
+  [
+    'volumes: cifs with a bind flag is still a bind in disguise',
+    { volumes: { a: { driver_opts: { type: 'cifs', device: '//h/s', o: 'bind' } } } },
+    [
+      [
+        ['volumes', 'a', 'driver_opts'],
+        'volume `a`',
+        'is a bind mount of a host path in disguise',
+        { type: 'cifs', device: '//h/s', o: 'bind' },
+      ],
+    ],
+  ],
+  [
+    'volumes: cifs with a host-path device is still a host path',
+    { volumes: { a: { driver_opts: { type: 'cifs', device: '/etc' } } } },
+    [
+      [
+        ['volumes', 'a', 'driver_opts', 'device'],
+        'volume `a` device `/etc`',
+        'mounts a host path',
+        { type: 'cifs', device: '/etc' },
+      ],
+    ],
+  ],
+  [
     'volumes: o: bind',
     { volumes: { a: { driver_opts: { o: 'bind' } } } },
     [

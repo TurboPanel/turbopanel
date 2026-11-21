@@ -2197,6 +2197,34 @@ test('parseCommandPayload rejects a non-boolean hostLevelApproved', () => {
   )
 })
 
+test('parseCommandPayload round-trips allowNetworkShares on environment.deploy', () => {
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+    ...MINIMAL_DEPLOY,
+    allowNetworkShares: true,
+  }) as { allowNetworkShares?: boolean }
+  assertEquals(parsed.allowNetworkShares, true)
+})
+
+test('parseCommandPayload leaves allowNetworkShares absent when the control plane omits it', () => {
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, MINIMAL_DEPLOY) as Record<
+    string,
+    unknown
+  >
+  assertEquals('allowNetworkShares' in parsed, false)
+})
+
+test('parseCommandPayload rejects a non-boolean allowNetworkShares', () => {
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...MINIMAL_DEPLOY,
+        allowNetworkShares: 'true',
+      }),
+    Error,
+    'Invalid environment.deploy payload'
+  )
+})
+
 function deployPayloadWithPrincipal(runtimes: unknown) {
   return {
     environmentId: 'env-1',

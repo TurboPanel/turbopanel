@@ -288,6 +288,21 @@ the commit its recorded Base names. Every daemon must list `compose-checkout-v1`
 (the control plane holds back one that does not), and the wire rules in
 `src/lib/version-wire.ts` apply: the daemon merges first.
 
+**`allowNetworkShares` (network share volumes):** optional boolean, `true` or
+absent, next to `hostLevelApproved`. The planner sets it only when the resolved
+compose has a top-level volume with `driver_opts.type` `cifs` or `smb3` and the
+gate passed: the target server has `options.networkShares === true` ("Allow
+Network Shares") and the deployer holds the code-level capability
+`environments.deploy_network_shares` (Owner and Admin; a scheduled or automatic
+deploy needs a recorded approval of those exact volumes, metadata key
+`composeNetworkSharesApproval`). It is set per server, so it reaches only
+servers that passed. The daemon refuses a share without it. Every daemon must
+list `network-shares-v1` (the daemon merges first). The volume's `device` and
+`o` resolve `{$KEY}` from project variables; a previewed document masks secrets.
+For a real deploy the resolved value (including an SMB password) is part of the
+compose text in the command payload until it reaches a terminal state, unlike
+other secrets, which are sealed file mounts.
+
 **`composeFiles[]` (compiled runtime file):** `environment.deploy` carries
 `EnvironmentDeployComposeFile[]`. Deploys send a **single**
 `{ filename: 'compose.yaml', role: 'runtime', source: 'inline', content }` entry

@@ -53,6 +53,7 @@ import {
   type DbRefLookup,
   type DeployVariableEntry,
   type DeployVariableMaterial,
+  DEPLOY_PREVIEW_SECRET_PLACEHOLDER,
   isApplyVariablesError,
   type VariableScopeEntryMap,
 } from '../../features/compose/apply-variables.ts'
@@ -3794,6 +3795,8 @@ async function applyDeployVariables(
     projectId: string
     warnings: DeployPrepareWarning[]
     cacheDelivery: CacheDelivery
+    /** Preview: secrets in network share volumes are masked instead of written. */
+    previewMode: boolean
   }
 ): Promise<ApplyVariablesResult | DeployPrepareError> {
   const { params, pipeline, warnings } = input
@@ -3833,6 +3836,7 @@ async function applyDeployVariables(
     nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
     projectId: input.projectId,
     environmentId: params.environmentId,
+    ...(input.previewMode ? { shareSecretPlaceholder: DEPLOY_PREVIEW_SECRET_PLACEHOLDER } : {}),
   })
   if (isApplyVariablesError(withVariables)) {
     return toApplyVariablesPrepareError(withVariables)
@@ -4057,6 +4061,7 @@ export async function prepareDeployCompose(
     principalResolution,
     orgOptions: orgRow?.options,
     serverOptions: serverRow?.options,
+    previewMode: mode === 'preview',
   })
   if ('kind' in caching) return caching
   const { cacheState, withVariables } = caching

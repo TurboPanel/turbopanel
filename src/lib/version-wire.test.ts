@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   CLIENT_VERSION_HEADER,
   COMPOSE_CHECKOUT_FEATURE,
+  NETWORK_SHARES_FEATURE,
   COMMAND_RECOVERY_V2_FEATURE,
   compareSemver,
   CUSTOM_NODE_APP_MODE_FEATURE,
@@ -389,6 +390,12 @@ test('deploy-hostings-only-v1 is advertised and raised no floor', () => {
 test('compose-checkout-v1 is advertised and raised no floor', () => {
   assertEquals(COMPOSE_CHECKOUT_FEATURE, 'compose-checkout-v1')
   assertEquals(DAEMON_WIRE_FEATURES.includes(COMPOSE_CHECKOUT_FEATURE), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
+test('network-shares-v1 is advertised and raised no floor', () => {
+  assertEquals(NETWORK_SHARES_FEATURE, 'network-shares-v1')
+  assertEquals(DAEMON_WIRE_FEATURES.includes(NETWORK_SHARES_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 

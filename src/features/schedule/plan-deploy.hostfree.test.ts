@@ -6,6 +6,7 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { COMPOSE_TAG_KEY } from '../compose/tags.ts'
 import { emptyComposeDocument } from '../compose/types.ts'
+import { networkSharesFingerprint } from '../compose/network-shares.ts'
 import {
   environment,
   fabric,
@@ -75,6 +76,9 @@ type PlanDeployDbOpts = {
   servers?: Array<{
     id: string
     connected: boolean
+    name?: string | null
+    hostname?: string | null
+    options?: unknown
   }>
   storagePinRows?: Array<{
     serviceId: string
@@ -612,7 +616,9 @@ test('planEnvironmentDeploy refuses a new service with no image and names it', a
   if (!('kind' in result) || result.kind !== 'compose_rejected') {
     throw new TypeError('expected compose_rejected')
   }
-  assertEquals(result.error.kind, 'compose_merged_invalid')
+  if (result.error.kind !== 'compose_merged_invalid') {
+    throw new TypeError(`expected compose_merged_invalid, got ${result.error.kind}`)
+  }
   const messages = result.error.issues.map((issue) => issue.message).join('\n')
   assertEquals(messages.includes('Service "worker" must define "image" or "build"'), true)
   assertEquals(reconcileCalls, 0)
@@ -838,4 +844,147 @@ test('a preview (no approval recorded) and a non-manager record nothing', async 
   }
   assertEquals(refused.result.error.kind, 'compose_host_access_requires_manager')
   assertEquals(refused.audits, [])
+})
+
+/** A document with one SMB share volume (no host path: it is not host-level). */
+function composeWithShare(): ReturnType<typeof emptyComposeDocument> {
+  const doc = composeWithWeb()
+  doc.data.volumes = {
+    media: { driver_opts: { type: 'cifs', device: '//nas.example.net/media', o: 'ro' } },
+  }
+  return doc
+}
+
+async function planShare(
+  hostAccess: Parameters<typeof planEnvironmentDeploy>[1]['hostAccess'],
+  opts: { serverOptions?: unknown; metadata?: unknown; compose?: unknown } = {}
+) {
+  const audits: AuditEntry[] = []
+  const updates = { count: 0 }
+  const result = await planEnvironmentDeploy(
+    createPlanDeployDb({
+      env: {
+        id: ENV_ID,
+        projectId: PROJECT_ID,
+        serverId: SERVER_A,
+        options: {},
+        name: 'production',
+        metadata: opts.metadata ?? {},
+      },
+      project: { id: PROJECT_ID, options: { compose: opts.compose ?? composeWithShare() } },
+      services: [],
+      servers: [
+        {
+          id: SERVER_A,
+          connected: true,
+          name: 'server-a.example.lan',
+          options: opts.serverOptions ?? { networkShares: true },
+        },
+      ],
+      updates,
+    }),
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess },
+    noopDeps({
+      recordAudit: async (_db, entry) => {
+        audits.push(entry)
+      },
+    })
+  )
+  return { result, audits, updates }
+}
+
+function shareRefusal(result: Awaited<ReturnType<typeof planShare>>['result']) {
+  if (!('kind' in result) || result.kind !== 'compose_rejected') {
+    throw new TypeError('expected compose_rejected')
+  }
+  if (result.error.kind !== 'compose_network_shares_refused') {
+    throw new TypeError(`expected a network share refusal, got ${result.error.kind}`)
+  }
+  return result.error
+}
+
+test('a manager on a server that allows shares passes, records the approval and sets the flag', async () => {
+  const { result, audits, updates } = await planShare(MANAGER)
+  if ('kind' in result) throw new TypeError(`expected a plan, got ${result.kind}`)
+  assertEquals(result.allowNetworkShares, true)
+  // Shares are not host-level.
+  assertEquals(result.hostLevelApproved, false)
+  assertEquals(updates.count, 1)
+  assertEquals(audits.length, 1)
+  assertEquals(audits[0]?.action, 'compose.network_shares.approve')
+  assertEquals(audits[0]?.actorUserId, MANAGER_ID)
+  assertEquals(audits[0]?.context?.volumes, ['media'])
+  assertEquals(String(audits[0]?.context?.fingerprint).length, 64)
+})
+
+test('a document without a share never sets the flag', async () => {
+  const { result, audits } = await planShare(MANAGER, {
+    compose: composeWithWeb(),
+    serverOptions: {},
+  })
+  if ('kind' in result) throw new TypeError(`expected a plan, got ${result.kind}`)
+  assertEquals(result.allowNetworkShares, false)
+  assertEquals(audits, [])
+})
+
+test('a person without the capability is refused before anything is written', async () => {
+  const { result, audits, updates } = await planShare({ kind: 'not_manager' })
+  const error = shareRefusal(result)
+  assertEquals(error.reason, 'permission')
+  assertEquals(error.volumes, ['media'])
+  assertEquals(updates.count, 0)
+  assertEquals(audits, [])
+})
+
+test('a server with Allow Network Shares off refuses even a manager, naming the server', async () => {
+  for (const serverOptions of [{}, { networkShares: false }, { networkShares: 'true' }]) {
+    const { result } = await planShare(MANAGER, { serverOptions })
+    const error = shareRefusal(result)
+    assertEquals(error.reason, 'server_setting')
+    assertEquals(error.servers, [{ id: SERVER_A, name: 'server-a.example.lan' }])
+  }
+})
+
+test('an automated deploy needs an approval recorded for these exact shares', async () => {
+  const none = await planShare(AUTOMATED)
+  assertEquals(shareRefusal(none.result).reason, 'approval')
+  assertEquals(none.updates.count, 0)
+
+  const fingerprint = await networkSharesFingerprint(composeWithShare().data)
+  const metadata = {
+    composeNetworkSharesApproval: { fingerprint, approvedBy: MANAGER_ID, approvedAt: 'then' },
+  }
+  const approved = await planShare(AUTOMATED, { metadata })
+  if ('kind' in approved.result) throw new TypeError('expected a plan')
+  assertEquals(approved.result.allowNetworkShares, true)
+  assertEquals(approved.updates.count, 0)
+
+  const moved = composeWithShare()
+  moved.data.volumes = {
+    media: { driver_opts: { type: 'cifs', device: '//nas.example.net/other', o: 'ro' } },
+  }
+  const changed = await planShare(AUTOMATED, { metadata, compose: moved })
+  assertEquals(shareRefusal(changed.result).reason, 'approval')
+
+  // A matching approval does not skip the server half.
+  const off = await planShare(AUTOMATED, { metadata, serverOptions: {} })
+  assertEquals(shareRefusal(off.result).reason, 'server_setting')
+})
+
+test('a preview records no approval and writes nothing', async () => {
+  const { result, audits, updates } = await planShare({ ...MANAGER, recordApproval: false })
+  if ('kind' in result) throw new TypeError(`expected a plan, got ${result.kind}`)
+  assertEquals(result.allowNetworkShares, true)
+  assertEquals(updates.count, 0)
+  assertEquals(audits, [])
+})
+
+test('an approved host-level fingerprint does not approve a share, and the reverse', async () => {
+  const hostFingerprint = await approvalFingerprint()
+  const { result } = await planShare(AUTOMATED, {
+    metadata: {
+      composeHostAccessApproval: { fingerprint: hostFingerprint, approvedBy: MANAGER_ID },
+    },
+  })
+  assertEquals(shareRefusal(result).reason, 'approval')
 })

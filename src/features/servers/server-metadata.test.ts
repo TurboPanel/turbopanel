@@ -363,6 +363,10 @@ test('parseServerOptions and resolveEffectiveServerTimezone', () => {
   assertEquals(parseServerOptions({ sendViaHeader: false }), { sendViaHeader: false })
   assertEquals(parseServerOptions({ sendViaHeader: null }), {})
   assertEquals(parseServerOptions({ sendViaHeader: 'on' }), {})
+  assertEquals(parseServerOptions({ networkShares: true }), { networkShares: true })
+  assertEquals(parseServerOptions({ networkShares: false }), { networkShares: false })
+  assertEquals(parseServerOptions({ networkShares: null }), {})
+  assertEquals(parseServerOptions({ networkShares: 'on' }), {})
   assertEquals(parseServerOptions(null), null)
   assertEquals(parseServerOptions({}), {})
 

@@ -300,6 +300,22 @@ code-unit order (never `localeCompare`) so it is byte-stable across hosts, and a
 test pins one known value — changing the canonical form voids every stored
 approval.
 
+**Network share volumes.** A top-level volume whose `driver_opts.type` is
+`cifs` or `smb3` (`findNetworkShareVolumes`, `network-shares.ts`; not host-level,
+so `checkVolumeDriverOpts` skips it unless it is also a bind) is refused before
+dispatch unless BOTH the target server has `options.networkShares === true`
+("Allow Network Shares", no organization setting) AND the deployer holds
+`environments.deploy_network_shares` (code-level: the same actor as the host
+gate, `organization:manage`). Refusals are `compose_network_shares_refused`
+with `reason` `permission`, `approval` or `server_setting` (403, route mapper
+`mapNetworkSharesRefusedError`). An automated deploy needs a recorded
+`composeNetworkSharesApproval` fingerprint of the same volumes (a client cannot
+set it; promoted metadata key), written with a `compose.network_shares.approve`
+audit row. The planner sets `allowNetworkShares: true` only on payloads of
+servers that passed. `device` and `o` take `{$KEY}` from project variables
+(`applyShareVolumeVariables`); Compose `${KEY}` of a secret is refused, and a
+preview masks secrets.
+
 **What the daemon is told.** The planner's verdict rides every
 `environment.deploy` command of that deploy as `hostLevelApproved: true`
 (`PlannedDeploy.hostLevelApproved` → `persistDeployFanOut` →
