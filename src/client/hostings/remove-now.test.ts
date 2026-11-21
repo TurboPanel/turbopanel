@@ -46,8 +46,8 @@ type Fixture = {
   organizationId: string
   userId: string
   /** Two environments of one organization, each with a service. */
-  first: { environmentId: string; serviceId: string }
-  second: { environmentId: string; serviceId: string }
+  first: { environmentId: string; serviceId: string; projectId: string }
+  second: { environmentId: string; serviceId: string; projectId: string }
   calls: DeployCall[]
   call: (method: string, path: string, body?: unknown) => Promise<Response>
   cleanup: () => Promise<void>
@@ -107,7 +107,14 @@ async function setup(): Promise<Fixture> {
   async function makeEnvironment(label: string) {
     const [proj] = await db
       .insert(project)
-      .values({ workspaceId: ws!.id, organizationId, name: label, createdAt: now, updatedAt: now })
+      .values({
+        workspaceId: ws!.id,
+        organizationId,
+        name: label,
+        options: { compose: composeDocument(false) },
+        createdAt: now,
+        updatedAt: now,
+      })
       .returning({ id: project.id })
     projectIds.push(proj!.id)
     const [env] = await db
@@ -124,7 +131,7 @@ async function setup(): Promise<Fixture> {
         updatedAt: now,
       })
       .returning({ id: service.id })
-    return { environmentId: env!.id, serviceId: svc!.id }
+    return { environmentId: env!.id, serviceId: svc!.id, projectId: proj!.id }
   }
   const first = await makeEnvironment('A')
   const second = await makeEnvironment('B')
@@ -167,6 +174,26 @@ async function setup(): Promise<Fixture> {
 }
 
 /** A hosting of `serviceId` that serves `NAME`, made from the compose file unless `owner` says otherwise. */
+/** The project's compose file: service `s`, with or without the hosting entry for `NAME`. */
+function composeDocument(declared: boolean) {
+  const web = {
+    image: 'nginx:1',
+    ...(declared ? { 'x-turbopanel': { hosting: [{ hostname: NAME }] } } : {}),
+  }
+  return {
+    version: 1,
+    data: { services: { s: web } },
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
+}
+
+async function declareInCompose(f: Fixture, projectId: string, declared: boolean) {
+  await f.db
+    .update(project)
+    .set({ options: { compose: composeDocument(declared) } })
+    .where(eq(project.id, projectId))
+}
+
 async function makeHosting(
   f: Fixture,
   serviceId: string,
@@ -280,6 +307,7 @@ test('remove-now: the name is released at once, the route is dropped without a d
     assertEquals(res.status, 200)
     assertEquals(await res.json(), {
       ok: true,
+      removed: true,
       outcome: 'removed',
       hostnames: [NAME],
       serverUpdate: 'queued',
@@ -404,6 +432,48 @@ test('DELETE /hostings/:id: with the server offline the name is released and the
     assertEquals(await res.json(), { ok: true, serverUpdate: 'server_offline' })
     assertEquals(f.calls.length, 0)
     assertEquals(await nameHolders(f), 0)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('remove-now: refused while the compose file still declares the hosting, and nothing is changed', async () => {
+  if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
+  const f = await setup()
+  try {
+    const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
+    await deployedOn(f, f.first.environmentId, true)
+    await declareInCompose(f, f.first.projectId, true)
+
+    const res = await f.call('POST', `/hostings/${id}/remove-now`)
+    assertEquals(res.status, 409)
+    assertEquals(((await res.json()) as { error: string }).error, 'hosting_still_declared')
+    assertEquals((await f.db.select().from(hosting).where(eq(hosting.id, id))).length, 1)
+    assertEquals(await nameHolders(f), 1)
+    assertEquals(f.calls.length, 0)
+
+    // Once the entry is out of the file the same call goes through.
+    await declareInCompose(f, f.first.projectId, false)
+    const ok = await f.call('POST', `/hostings/${id}/remove-now`)
+    assertEquals(ok.status, 200)
+    assertEquals(await nameHolders(f), 0)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('remove-now: asking again for a hosting that is already gone answers 200 alreadyGone', async () => {
+  if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
+  const f = await setup()
+  try {
+    const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
+    assertEquals((await f.call('POST', `/hostings/${id}/remove-now`)).status, 200)
+
+    const again = await f.call('POST', `/hostings/${id}/remove-now`)
+    assertEquals(again.status, 200)
+    assertEquals(await again.json(), { ok: true, removed: true, alreadyGone: true })
+    // A malformed id is still not a hosting.
+    assertEquals((await f.call('POST', '/hostings/not-an-id/remove-now')).status, 404)
   } finally {
     await f.cleanup()
   }

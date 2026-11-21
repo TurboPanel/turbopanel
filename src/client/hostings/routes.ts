@@ -19,6 +19,7 @@ import {
 } from '../../features/servers/hostname-records.ts'
 import { ensureNameHttpOrders } from './name-http-orders.ts'
 import {
+  environmentOfHosting,
   type HostingApplyDeps,
   pushHostingRemoval,
   requestHostingApplyDeps,
@@ -520,16 +521,6 @@ export function registerHostingRoutes(
           )
     return c.json({ ok: true as const, serverUpdate })
   })
-}
-
-async function environmentOfHosting(db: Db, hostingId: string): Promise<string | null> {
-  const [row] = await db
-    .select({ environmentId: service.environmentId })
-    .from(hosting)
-    .innerJoin(service, eq(service.id, hosting.serviceId))
-    .where(eq(hosting.id, hostingId))
-    .limit(1)
-  return row?.environmentId ?? null
 }
 
 async function lockPinnedCertificates(tx: Db, hostingId: string): Promise<string[]> {

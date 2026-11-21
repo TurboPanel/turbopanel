@@ -721,16 +721,23 @@ before it removes the entry from the environment's compose file, so a failed
 file save leaves a row the next deploy adopts again instead of deleting it.
 It takes the environment row lock (as the reconcile does before it reads the
 rows) and refuses with `409 environment_deploy_running` while a deploy runs.
-`POST /hostings/{id}/remove-now` (`src/client/hostings/remove-now-route.ts`) takes a
-compose-made hosting off the server without a deploy: under the same lock it
-deletes the row (its hostname rows go with it by cascade and a doorway link is
-set null, so the name is free at once), or hands an adopted row back to the
-panel, and then sends a hostings-only run (`pushHostingRemoval`) that drops the
-route. The reply carries `serverUpdate`, a `HostingApplyOutcome` such as
-`queued`, `not_deployed` or `server_offline`. When the run is skipped (server
-offline, no deploy yet, another undeployed edit) the name
-is still released and the daemon gets the route change at the environment's
-next deploy. `DELETE /hostings/{id}` for a panel row sends the same run.
+`POST /hostings/{id}/remove-now` (`src/client/hostings/remove-now-route.ts`) lets
+go of a compose-made hosting without waiting for a deploy. It is called after the
+entry is taken out of the environment's compose file, and refuses with
+`409 hosting_still_declared` while the merged document still declares the row
+(checked under the environment row lock, with the same key the reconcile matches
+by). It asks for the `hosting.delete` step-up like `DELETE /hostings/{id}`
+(`delete-step-up.ts`). A compose-made row is deleted: its hostname rows go by
+cascade and a doorway link is set null, so the name is free at once. A row
+compose **adopted** from the panel is not deleted but handed back, as the
+reconcile does: the panel row and its names stay, and nothing is freed. A second
+call for a row that is gone answers `200 { removed: true, alreadyGone: true }`.
+After a delete the route is sent to the servers as a hostings-only run
+(`pushHostingRemoval`); the reply's `serverUpdate` is the apply outcome (`queued`,
+`not_deployed`, `server_offline`, `pending_changes`, ...). When no run is sent the
+name is still released and the daemon drops the route at the environment's next
+deploy. `DELETE /hostings/{id}` for a panel row replies `{ ok: true, serverUpdate }`
+the same way.
 
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 

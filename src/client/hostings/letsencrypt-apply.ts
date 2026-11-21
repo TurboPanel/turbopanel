@@ -114,7 +114,7 @@ function oldestFinish(targets: readonly { finishedAt: string | null }[]): string
   return oldest
 }
 
-async function environmentOfHosting(db: Db, hostingId: string): Promise<string | null> {
+export async function environmentOfHosting(db: Db, hostingId: string): Promise<string | null> {
   const [row] = await db
     .select({ environmentId: service.environmentId })
     .from(hosting)

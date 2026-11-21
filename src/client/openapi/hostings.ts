@@ -620,10 +620,98 @@ const composeReleasePaths = {
   },
 }
 
+const serverUpdateSchema = {
+  type: 'string',
+  enum: [
+    'queued',
+    'queue_unavailable',
+    'no_environment',
+    'not_deployed',
+    'deploy_in_progress',
+    'server_offline',
+    'pending_changes',
+    'refused',
+  ],
+  description:
+    "Whether the servers were told to drop the route at once. `queued`: a hostings-only run (no build, no restart) is on its way. Anything else: the name is already free in the panel, and the server keeps serving the route until the environment's next deploy rewrites its web server config (nothing reconnects an offline server on its own).",
+}
+
+const removeNowPaths = {
+  [`${hostingIdPath}/remove-now`]: {
+    post: {
+      tags: ['Hostings'],
+      summary: 'Release a compose-made hostname now',
+      description:
+        "Call it after the entry is removed from the environment's compose file. A compose-made hosting is deleted at once: its hostnames are free for another hosting and a doorway that pointed at it is unlinked (the doorway keeps its own name). A hosting compose adopted from the panel is handed back instead (`outcome: handed_back`): the panel row and its names stay. Then the servers are sent a hostings-only run to drop the route; `serverUpdate` says whether that happened. Asking again for a hosting that is already gone answers 200 with `alreadyGone: true`. Needs the same recent re-authentication as `DELETE /hostings/{id}` when the organization asks for it (`hosting.delete`).",
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+      ],
+      responses: {
+        '200': {
+          description: 'Removed, handed back, or already gone',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'removed'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  removed: {
+                    type: 'boolean',
+                    description:
+                      'True when the hosting is gone (also on `alreadyGone`); false for `handed_back`.',
+                  },
+                  alreadyGone: {
+                    type: 'boolean',
+                    enum: [true],
+                    description:
+                      'Present only on a retry for a hosting that no longer exists; nothing else is sent.',
+                  },
+                  outcome: { type: 'string', enum: ['removed', 'handed_back'] },
+                  hostnames: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'The names that were released; empty when handed back.',
+                  },
+                  serverUpdate: serverUpdateSchema,
+                },
+              },
+            },
+          },
+        },
+        '401': {
+          description: 'Not signed in',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '403': {
+          description:
+            'No manage grant, a system-owned hosting, or `reauth_required` (action `hosting.delete`)',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '404': {
+          description: 'Not a hosting of this organization',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '409': {
+          description:
+            '`hosting_still_declared`: the compose file still declares this hostname. `hosting_not_owned_by_compose`: the hosting was made in the panel; delete it instead. `environment_deploy_running`: a deploy of this environment is running',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '503': {
+          description: 'Database unavailable',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+      },
+    },
+  },
+}
+
 export const hostingPaths = {
   ...basePaths,
   ...letsEncryptPaths,
   ...composeReleasePaths,
+  ...removeNowPaths,
   [hostingIdPath]: {
     ...(basePaths[hostingIdPath] as Record<string, unknown>),
     patch: {
@@ -642,6 +730,22 @@ export const hostingPaths = {
         ...((
           (basePaths[hostingIdPath] as Record<string, unknown>).delete as Record<string, unknown>
         ).responses as Record<string, unknown>),
+        '200': {
+          description:
+            'Deleted. The name is free at once; `serverUpdate` says whether the servers were told to drop the route without a deploy',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'serverUpdate'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  serverUpdate: serverUpdateSchema,
+                },
+              },
+            },
+          },
+        },
         ...composeOwnedConflictResponse,
       },
     },
