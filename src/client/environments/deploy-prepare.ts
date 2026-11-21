@@ -3510,6 +3510,7 @@ async function prepareSourceMaterial(
     localSourceMaterial: readonly EnvironmentDeploySource[]
     buildAssignments: Parameters<typeof withBuildEnv>[1]
     levels: Parameters<typeof attachBuildLimits>[1]
+    hostingsOnly?: boolean
   }
 ): Promise<
   | {
@@ -3993,6 +3994,8 @@ export async function prepareDeployCompose(
      * the compose file's relative paths mean.
      */
     composeBase?: ComposeBaseRecord | null
+    /** Only the web server config and certificates change: no repository checkout is resolved. */
+    hostingsOnly?: boolean
   }
 ): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
   const mode = params.mode ?? 'deploy'
@@ -4231,6 +4234,7 @@ export async function prepareDeployCompose(
     organizationId: params.organizationId,
     serverId: params.serverId,
     composeBase: params.composeBase,
+    ...(params.hostingsOnly === true ? { hostingsOnly: true } : {}),
     localSourceMaterial,
     buildAssignments: withVariables.buildAssignments,
     levels: {

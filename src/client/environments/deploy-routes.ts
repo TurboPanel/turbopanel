@@ -954,7 +954,7 @@ async function deliverDeployCommand(
  * The repository checkout for a command, as a field to spread. A hostings-only
  * run builds and starts nothing, so it carries no clone credential.
  */
-function composeCheckoutField(
+export function composeCheckoutField(
   checkout: EnvironmentDeployComposeCheckout | undefined,
   hostingsOnly: boolean | undefined
 ): { composeCheckout?: EnvironmentDeployComposeCheckout } {
@@ -2149,6 +2149,7 @@ async function prepareOneServerDeploy(
     projectOptions: params.planned.projectOptions,
     composeBase: params.planned.composeBase,
     composeValidated: params.planned.composeValidated,
+    ...(params.auth.hostingsOnly ? { hostingsOnly: true } : {}),
     schedule: scheduleSliceForPreparedServer(params),
     sourceSelection: params.selection,
     releaseIds: params.releaseIds,

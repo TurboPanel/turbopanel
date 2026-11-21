@@ -203,3 +203,14 @@ test('a server with no usable daemon key is refused with 422', async () => {
   if (!(result instanceof Response)) throw new TypeError('expected a 422 Response')
   assertEquals(result.status, 422)
 })
+
+test('a hostings-only run resolves no checkout and touches nothing', async () => {
+  const result = await resolveDeployComposeCheckout(mockContext(), fakeDb([]), {
+    mode: 'deploy',
+    organizationId: 'org-1',
+    serverId: SERVER_ID,
+    composeBase: BASE,
+    hostingsOnly: true,
+  })
+  assertEquals(result, undefined)
+})

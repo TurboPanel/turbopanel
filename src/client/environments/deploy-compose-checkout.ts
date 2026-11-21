@@ -15,8 +15,8 @@
  * from one commit even if a push lands between the two. A rollback checks out
  * the commit its recorded Base names.
  *
- * Preview carries none of it: it sends nothing to a host and must not mint or
- * seal a credential.
+ * Preview and a hostings-only run carry none of it: they send nothing to be
+ * built and must not mint or seal a credential.
  */
 import type { Context } from 'hono'
 import { and, eq } from 'drizzle-orm'
@@ -39,6 +39,8 @@ export type DeployComposeCheckoutParams = {
   serverId: string
   /** The Base this deploy used; `null` when the project does not follow a file. */
   composeBase?: ComposeBaseRecord | null
+  /** A hostings-only run builds and starts nothing: no checkout, no credential. */
+  hostingsOnly?: boolean
 }
 
 /**
@@ -51,7 +53,7 @@ export async function resolveDeployComposeCheckout(
   params: DeployComposeCheckoutParams
 ): Promise<EnvironmentDeployComposeCheckout | DeploySourcePrepareError | Response | undefined> {
   const { composeBase } = params
-  if (!composeBase || params.mode === 'preview') return undefined
+  if (!composeBase || params.mode === 'preview' || params.hostingsOnly === true) return undefined
 
   const [row] = await db
     .select({
