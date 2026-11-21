@@ -60,15 +60,17 @@ test('the self-hosted run calls every tunnel sweep, and a failing one does not s
   )
 })
 
-test('the self-hosted minute timer runs the tunnel sweeps', () => {
+test('the self-hosted tick runs the tunnel sweeps and delivers peer leaves with their table', () => {
   const server = readSource('./server.ts')
-  const timer = server.slice(
-    server.indexOf('const runCertificateSweeps = async'),
-    server.indexOf('}, LEAF_RENEWAL_SWEEP_INTERVAL_MS)')
+  const start = server.indexOf("name: 'leaf renewal'")
+  const end = server.indexOf("onCadence('ingress tick'", start)
+  assert(start >= 0 && end > start, 'the certificate jobs are not where this test looks for them')
+  const jobs = server.slice(start, end)
+  assert(
+    jobs.includes('runSelfHostedTunnelSweeps(certificateDb(ctx)'),
+    'the tick must run the tunnel sweeps'
   )
-  assert(timer.length > 0, 'the minute timer is not where this test looks for it')
-  assert(timer.includes('runSelfHostedTunnelSweeps(tickDb'), 'the timer must run the tunnel sweeps')
-  assert(timer.includes('deliverPeerLeaf: peerLeafDelivery('), 'peer leaves must ride their table')
+  assert(jobs.includes('deliverPeerLeaf: peerLeafDelivery('), 'peer leaves must ride their table')
 })
 
 test('no single tunnel sweep is wired into one scheduler only', () => {

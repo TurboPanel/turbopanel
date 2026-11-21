@@ -1309,7 +1309,7 @@ now + COMMAND_DISPATCH_FAILURE_RETENTION_MS` (24h) for
    debugging. Cleanup is best effort and never fails the transition.
 4. Expired rows are removed by `sweepExpiredCommandDispatch` on the **shared
    maintenance tick** — the Workers offline-sweep cron (reusing that cron's
-   already-open Hyperdrive db) and the Deno `DAEMON_CELL_MAINTAIN_MS` timer.
+   already-open Hyperdrive db) and the Deno job tick.
    Bounded per tick (`COMMAND_DISPATCH_SWEEP_LIMIT`); no new independent timer,
    no second db client.
 

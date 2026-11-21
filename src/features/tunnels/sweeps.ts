@@ -1,7 +1,7 @@
 /**
  * The periodic tunnel sweeps, in the order they run. Both schedulers walk this
  * one list: the hosted cron (`runQueuedCronSweeps` in
- * `daemon/cell/offline-sweep.ts`) and the self-hosted minute timer
+ * `daemon/cell/offline-sweep.ts`) and the self-hosted job tick
  * (`platform/deno/server.ts`), so a sweep added here runs on both.
  *
  * Each sweep decides for itself, from the database, whether there is work: an

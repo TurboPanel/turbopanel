@@ -2,7 +2,7 @@
  * Context-free system.reconcile enqueue helpers.
  *
  * Usable from request isolates (hosting PATCH / operate) and from the
- * Workers cron / Deno maintenance timer (drift sweep) without Hono context.
+ * Workers cron / Deno job tick (drift sweep) without Hono context.
  *
  * Sweep-driven rows use `actorType: 'system'` with `actorId = serverId`.
  * `command.actor_id` is a `uuid NOT NULL` with no FK, so the server id is a
@@ -715,7 +715,7 @@ export function systemReconcileRepairableExists(serverIdExpr: SQL, organizationI
  * bare server enroll / hosting-enabled inventory must not pull Traefik up.
  *
  * Enqueue stays outside Durable Object handlers: request isolates (install,
- * hosting PATCH / operate), Workers cron, and the Deno maintenance timer
+ * hosting PATCH / operate), Workers cron, and the Deno job tick
  * (immediate tick on boot, then every cell-maintain interval).
  */
 export async function runSystemReconcileSweep(

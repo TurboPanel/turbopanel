@@ -1395,7 +1395,7 @@ test('sweepStalePresence sends the aggregate first when the fleet goes dark toge
 })
 
 test('a hung webhook does not hold the liveness lane', async () => {
-  // This runs on the Deno maintenance scheduler's liveness lane, which refuses
+  // This runs on the Deno job tick, which refuses
   // to overlap itself — so awaiting a webhook here would skip every
   // stale-presence tick until it returned. Demotions land, the sweep returns,
   // the alert goes out behind it.

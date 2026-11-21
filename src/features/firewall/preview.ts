@@ -380,7 +380,7 @@ export function commandMayChangeFirewallPreview(type: string): boolean {
  * (re)connects. "Once" is enforced by the command table: a server is skipped
  * when a firewall reconcile was already created since its `status_changed_at`.
  * Servers whose mode is `off` are left out unless they still carry an apply
- * to undo. Runs from the Deno maintenance timer and the Workers cron sweep,
+ * to undo. Runs from the Deno job tick and the Workers cron sweep,
  * never from hello or a Durable Object handler. Both must pass the same
  * `applyGate`, or an applied host is torn down.
  */

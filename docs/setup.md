@@ -56,10 +56,11 @@
   jobs range from 1 minute to 1440; `upgradeCheck` from 1 to 60; offline
   detection and command re-delivery are pinned to every minute. A bad map never
   stops a tick: unknown names are ignored, other bad values clamp into the
-  range, and the tick logs one line saying so. Self-hosted still runs its
-  existing timers, so today the map moves its history prune, notification
-  prune and update check only; the rest follows when the single self-hosted
-  tick replaces the timers.
+  range, and the tick logs one line saying so. Self-hosted runs every job from
+  one 60 second tick that follows the same table, so the map moves all of
+  them (`edgeTrust`, `heartbeatRefresh` and `ingressTick` exist only there).
+  `TURBOPANEL_JOB_CADENCES` is the name to set; `JOBS__CADENCES` is the
+  setting's own env name, also read on self-hosted and winning over it.
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for
   full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so
   Docker Caddy (`host.docker.internal`) can reach the dev server; default

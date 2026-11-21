@@ -93,7 +93,7 @@ test('every latency job is pinned and every housekeeping job spans 1 minute up t
       assertEquals([spec.min, spec.max, spec.everyMinutes], [1, 1, 1], name)
     } else {
       assertEquals(spec.min, 1, name)
-      assertEquals(spec.max, name === 'upgradeCheck' ? 60 : 1440, name)
+      assertEquals(spec.max, name === 'upgradeCheck' || name === 'ingressTick' ? 60 : 1440, name)
     }
   }
 })
