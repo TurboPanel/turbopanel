@@ -447,6 +447,8 @@ test('every registry job the self-hosted tick reads exists in the table', () => 
 
 test('both runtimes use one offline threshold', () => {
   // Read as text: importing offline-sweep.ts pulls the Workers-only types into a Deno check.
-  const sweep = Deno.readTextFileSync(new URL('../../daemon/cell/offline-sweep.ts', import.meta.url))
+  const sweep = Deno.readTextFileSync(
+    new URL('../../daemon/cell/offline-sweep.ts', import.meta.url)
+  )
   assert(sweep.includes('export const OFFLINE_SWEEP_STALE_MS = DAEMON_OFFLINE_SWEEP_MS'))
 })
