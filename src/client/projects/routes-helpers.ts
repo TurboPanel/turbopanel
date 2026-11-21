@@ -164,6 +164,7 @@ function withTrackingDefaults(source: ProjectComposeSource): ProjectComposeSourc
     // Never client-writable: only a deploy records a read.
     lastReadCommitSha: source.seededCommitSha,
     lastReadDigest: source.seededDigest,
+    lastReadAt: new Date().toISOString(),
   }
 }
 

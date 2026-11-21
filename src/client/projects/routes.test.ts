@@ -2306,6 +2306,7 @@ test('POST /projects from a repository seeds the Base and follows the file by de
     assertEquals(options.composeSource.mode, 'track')
     assertEquals(options.composeSource.lastReadCommitSha, TRACKED_SHA)
     assertEquals(options.composeSource.lastReadDigest, TRACKED_DIGEST)
+    assertEquals(typeof options.composeSource.lastReadAt, 'string')
   })
 })
 
@@ -2346,6 +2347,178 @@ test('a Base edit is refused while the project follows its repository, and allow
   })
 })
 
+async function projectDefaultServerId(ctx: ProjectTestContext, id: string) {
+  const [row] = await ctx.db
+    .select({ defaultServerId: project.defaultServerId })
+    .from(project)
+    .where(eq(project.id, id))
+    .limit(1)
+  return row?.defaultServerId ?? null
+}
+
+test('while following the repository, the settings stored next to the Base save and the Base stays', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const before = (await projectOptions(ctx, id)) as {
+      compose: unknown
+      composeSource: Record<string, unknown>
+    }
+    // The Base editor sends the whole options object back, document unchanged.
+    const saved = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: {
+        compose: before.compose,
+        composeSource: { ...before.composeSource, mode: 'seed' },
+        containerNaming: 'custom',
+        defaultServerId: ctx.serverId,
+      },
+    })
+    assertEquals(saved.status, 200)
+    const after = (await projectOptions(ctx, id)) as typeof before & { containerNaming: string }
+    assertEquals(after.containerNaming, 'custom')
+    assertEquals(await projectDefaultServerId(ctx, id), ctx.serverId)
+    assertEquals(after.compose, before.compose)
+    assertEquals(after.composeSource, before.composeSource)
+
+    // Settings alone, with no target and no document, keep the Base too.
+    const alone = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { containerNaming: 'uuid', defaultServerId: null },
+    })
+    assertEquals(alone.status, 200)
+    const last = (await projectOptions(ctx, id)) as typeof before & { containerNaming: string }
+    assertEquals(last.containerNaming, 'uuid')
+    assertEquals(await projectDefaultServerId(ctx, id), null)
+    assertEquals(last.compose, before.compose)
+    assertEquals(last.composeSource, before.composeSource)
+  })
+})
+
+test('while following the repository, a settings save that changes the Base or its source is refused', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const before = (await projectOptions(ctx, id)) as {
+      composeSource: Record<string, unknown>
+    }
+    const refusals: Record<string, unknown>[] = [
+      { compose: WEB_COMPOSE_V2, containerNaming: 'custom' },
+      { composeOverlays: [WEB_COMPOSE_V2], containerNaming: 'custom' },
+      { composeSource: { ...before.composeSource, path: 'other.yaml' }, containerNaming: 'custom' },
+      { composeSource: { ...before.composeSource, ref: 'other' }, containerNaming: 'custom' },
+    ]
+    for (const options of refusals) {
+      const res = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+        target: 'base',
+        options,
+      })
+      assertEquals(res.status, 409)
+      assertEquals(((await res.json()) as { error: string }).error, 'base_tracks_repository')
+    }
+    const after = (await projectOptions(ctx, id)) as Record<string, unknown>
+    assertEquals(after.containerNaming, undefined)
+    assertEquals(after.composeSource, before.composeSource)
+    assertEquals((await storedCompose(ctx, id)).base, WEB_COMPOSE.data)
+  })
+})
+
+test('while following the repository, unchanged overlays and the source without a target are accepted', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const before = (await projectOptions(ctx, id)) as {
+      compose: { data: Record<string, unknown>; presentation: { keyOrder: string[] } }
+      composeSource: Record<string, unknown>
+    }
+    const withOverlay = { ...before, composeOverlays: [WEB_COMPOSE_V2] }
+    await ctx.db.update(project).set({ options: withOverlay }).where(eq(project.id, id))
+    const res = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: {
+        compose: before.compose,
+        composeOverlays: [WEB_COMPOSE_V2],
+        containerNaming: 'custom',
+      },
+    })
+    assertEquals(res.status, 200)
+    const alone = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { composeSource: before.composeSource, containerNaming: 'uuid' },
+    })
+    assertEquals(alone.status, 200)
+    const after = (await projectOptions(ctx, id)) as typeof withOverlay & {
+      containerNaming: string
+    }
+    assertEquals(after.containerNaming, 'uuid')
+    assertEquals(after.compose, before.compose)
+    assertEquals(after.composeOverlays, [WEB_COMPOSE_V2])
+    assertEquals(after.composeSource, before.composeSource)
+  })
+})
+
+test('a tracked read that lands between the start of a settings save and its write is kept', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const before = (await projectOptions(ctx, id)) as {
+      composeSource: Record<string, unknown>
+    }
+    const readAt = '2030-01-01T00:00:00.000Z'
+    let patch: Promise<Response> | undefined
+    // Hold the project row the way a tracked read does, start the save so it
+    // waits for the row, let the read commit, then let the save through.
+    await ctx.db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${id}::uuid FOR UPDATE`)
+      patch = sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+        options: { containerNaming: 'custom' },
+      })
+      for (let i = 0; i < 200; i += 1) {
+        const waiting = await tx.execute(
+          sql`SELECT 1 FROM pg_stat_activity WHERE pg_backend_pid() = ANY(pg_blocking_pids(pid))`
+        )
+        if (waiting.length > 0) break
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      await tx
+        .update(project)
+        .set({
+          options: {
+            compose: WEB_COMPOSE_V2,
+            composeSource: {
+              ...before.composeSource,
+              lastReadCommitSha: 'e'.repeat(40),
+              lastReadDigest: 'f'.repeat(64),
+              lastReadAt: readAt,
+            },
+          },
+        })
+        .where(eq(project.id, id))
+    })
+    assertEquals((await patch!).status, 200)
+    const after = (await projectOptions(ctx, id)) as {
+      containerNaming: string
+      compose: unknown
+      composeSource: Record<string, unknown>
+    }
+    assertEquals(after.containerNaming, 'custom')
+    assertEquals(after.compose, WEB_COMPOSE_V2)
+    assertEquals(after.composeSource.lastReadCommitSha, 'e'.repeat(40))
+    assertEquals(after.composeSource.lastReadDigest, 'f'.repeat(64))
+    assertEquals(after.composeSource.lastReadAt, readAt)
+  })
+})
+
+test('when the project does not follow the repository, a settings save is unchanged', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const seeded = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}/compose-source`, {
+      mode: 'seed',
+    })
+    assertEquals(seeded.status, 200)
+    const { composeSource } = (await projectOptions(ctx, id)) as {
+      composeSource: Record<string, unknown>
+    }
+    const res = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: { compose: WEB_COMPOSE_V2, composeSource, containerNaming: 'custom' },
+    })
+    assertEquals(res.status, 200)
+    const after = (await projectOptions(ctx, id)) as { containerNaming: string }
+    assertEquals(after.containerNaming, 'custom')
+    assertEquals((await storedCompose(ctx, id)).base, WEB_COMPOSE_V2.data)
+  })
+})
+
 test('PATCH /projects/:id/compose-source validates the mode and needs a followed file', async () => {
   await withTrackedProject(async (ctx, cookie, id) => {
     const invalid = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}/compose-source`, {
@@ -2375,13 +2548,19 @@ test('a settings edit cannot change the mode or the last read of a followed file
     const res = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
       options: {
         containerNaming: 'custom',
-        composeSource: { ...composeSource, mode: 'seed', lastReadDigest: 'c'.repeat(64) },
+        composeSource: {
+          ...composeSource,
+          mode: 'seed',
+          lastReadDigest: 'c'.repeat(64),
+          lastReadAt: '2000-01-01T00:00:00.000Z',
+        },
       },
     })
     assertEquals(res.status, 200)
     const after = (await projectOptions(ctx, id)) as { composeSource: Record<string, unknown> }
     assertEquals(after.composeSource.mode, 'track')
     assertEquals(after.composeSource.lastReadDigest, TRACKED_DIGEST)
+    assertEquals(after.composeSource.lastReadAt, composeSource.lastReadAt)
   })
 })
 
@@ -2530,6 +2709,56 @@ test('a deploy reads the repository file as the Base, pins the commit and stores
     assertEquals(stored.compose.data.services.web.image, 'nginx:2')
     assertEquals(stored.composeSource.lastReadCommitSha, READ_SHA)
     assertEquals(stored.composeSource.lastReadDigest, first.base?.digest)
+    assertEquals(Number.isNaN(Date.parse(String(stored.composeSource.lastReadAt))), false)
+
+    // The same file read again moves only the time of the read. Start from a
+    // fixed earlier time so the comparison does not depend on the clock.
+    const earlier = '2000-01-01T00:00:00.000Z'
+    await ctx.db
+      .update(project)
+      .set({
+        options: { ...stored, composeSource: { ...stored.composeSource, lastReadAt: earlier } },
+      })
+      .where(eq(project.id, id))
+    await storeTrackedBase(ctx.db, id, first.read.document, first.read.record)
+    const again = (await projectOptions(ctx, id)) as typeof stored
+    assertEquals(again.compose, stored.compose)
+    assertEquals(again.composeSource.lastReadCommitSha, READ_SHA)
+    assertEquals(Date.parse(String(again.composeSource.lastReadAt)) > Date.parse(earlier), true)
+  })
+})
+
+test('a repository file with placement is stored without it, so a settings save echoing the Base is accepted', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const options = await trackedOptions(ctx, id)
+    const c = { get: () => undefined } as unknown as Context<AppEnv>
+    const yaml = `${READ_YAML}x-turbopanel:\n  placement:\n    server_id: ${ctx.serverId}\n`
+    const { inspect } = inspectStub(readOutcome(yaml))
+    const read = await resolveDeployProjectOptions(
+      c,
+      ctx.db,
+      resolveArgs(ctx, id, options, 'deploy'),
+      inspect
+    )
+    if (!read.ok || !read.read) throw new Error('expected a read')
+    await storeTrackedBase(ctx.db, id, read.read.document, read.read.record)
+    const stored = (await projectOptions(ctx, id)) as {
+      compose: { data: Record<string, unknown> }
+      composeSource: Record<string, unknown>
+    }
+    assertEquals(stored.compose.data['x-turbopanel'], undefined)
+    const saved = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: {
+        compose: stored.compose,
+        composeSource: stored.composeSource,
+        containerNaming: 'custom',
+      },
+    })
+    assertEquals(saved.status, 200)
+    const after = (await projectOptions(ctx, id)) as typeof stored & { containerNaming: string }
+    assertEquals(after.containerNaming, 'custom')
+    assertEquals(after.compose, stored.compose)
   })
 })
 

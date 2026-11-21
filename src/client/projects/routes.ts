@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
@@ -55,6 +55,7 @@ import {
 } from './empty-setup.ts'
 import { catalogEnvironmentCompose } from './catalog-compose.ts'
 import { resolveEditTarget } from './edit-target.ts'
+import { changesTrackedBase, keepTrackedBase } from './tracked-base-edit.ts'
 import { applyEnvironmentPatch } from '../environments/routes.ts'
 import { isProjectDisplayNameTaken, PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
 import { isReservedSystemProjectName } from '../../features/system/hierarchy.ts'
@@ -64,7 +65,10 @@ import {
   loadOrganizationRepositoryIds,
   loadProjectRepositoryId,
 } from '../../features/git/repository-records.ts'
-import { composePrincipalAliases } from '../../features/principals/principal-alias-records.ts'
+import {
+  composePrincipalAliases,
+  loadProjectOptions,
+} from '../../features/principals/principal-alias-records.ts'
 import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
@@ -638,26 +642,6 @@ function buildProjectPatchFields(
 }
 
 /**
- * A PATCH replaces `options` wholesale and the compose editor sends only
- * `compose`: carry the stored deploy tuning settings over unless the body
- * names them (`null` clears one).
- */
-async function keepStoredProjectDeployOptions(
-  db: Db,
-  projectId: string,
-  patchFields: ProjectPatchFields
-): Promise<void> {
-  if (!patchFields.options) return
-  const [row] = await db
-    .select({ options: project.options })
-    .from(project)
-    .where(eq(project.id, projectId))
-    .limit(1)
-  patchFields.options = settleDeployOptions(row?.options, patchFields.options, 'project')
-  keepTrackedComposeSource(row?.options, patchFields.options)
-}
-
-/**
  * An options write never changes how a project follows its repository: the
  * mode belongs to `PATCH /projects/:id/compose-source` and the last-read
  * record to the deploy. Whatever a client sends for them is replaced by the
@@ -672,11 +656,13 @@ function keepTrackedComposeSource(stored: unknown, options: Record<string, unkno
   delete rest.mode
   delete rest.lastReadCommitSha
   delete rest.lastReadDigest
+  delete rest.lastReadAt
   options.composeSource = {
     ...rest,
     ...(kept?.mode === undefined ? {} : { mode: kept.mode }),
     ...(kept?.lastReadCommitSha === undefined ? {} : { lastReadCommitSha: kept.lastReadCommitSha }),
     ...(kept?.lastReadDigest === undefined ? {} : { lastReadDigest: kept.lastReadDigest }),
+    ...(kept?.lastReadAt === undefined ? {} : { lastReadAt: kept.lastReadAt }),
   }
 }
 
@@ -890,20 +876,7 @@ async function insertCatalogProject(
 
 export const BASE_TRACKS_REPOSITORY_ERROR = 'base_tracks_repository'
 const BASE_TRACKS_REPOSITORY_MESSAGE =
-  "This project's Base follows the repository's compose file, so it cannot be edited here. Change the file in the repository, add the change to an environment, or switch the project to seed mode to edit the Base."
-
-async function loadProjectComposeSource(db: Db, projectId: string) {
-  const [row] = await db
-    .select({ options: project.options })
-    .from(project)
-    .where(eq(project.id, projectId))
-    .limit(1)
-  return parseProjectOptions(row?.options).composeSource
-}
-
-async function projectFollowsRepository(db: Db, projectId: string): Promise<boolean> {
-  return isTrackingComposeSource(await loadProjectComposeSource(db, projectId))
-}
+  "This project's Base follows the repository's compose file, so it cannot be edited here. Change the file in the repository, add the change to an environment, or switch the project to seed mode to edit the Base. If you did not change the Base, it was refreshed from the repository since you loaded it: reload and save again."
 
 /**
  * Sends a compose edit to its target. Returns the body the project patch
@@ -915,20 +888,12 @@ async function routeComposeEdit(
   db: Db,
   organizationId: string,
   projectId: string,
-  requestBody: Record<string, unknown>
+  requestBody: Record<string, unknown>,
+  storedOptions: unknown
 ): Promise<Record<string, unknown> | Response> {
-  const tracking = await projectFollowsRepository(db, projectId)
-  const editTarget = await resolveEditTarget(db, projectId, requestBody, tracking)
+  const editTarget = await resolveEditTarget(db, projectId, requestBody, storedOptions)
   if (!editTarget.ok) {
     return c.json({ error: editTarget.error, message: editTarget.message }, 400)
-  }
-  // A project that follows its repository's compose file takes its Base from
-  // each deploy, so an edit to the Base would be overwritten by the next one.
-  if (tracking && editTarget.kind === 'base') {
-    return c.json(
-      { error: BASE_TRACKS_REPOSITORY_ERROR, message: BASE_TRACKS_REPOSITORY_MESSAGE },
-      409
-    )
   }
   if (editTarget.kind !== 'environment') return requestBody
   const refused = await applyEnvironmentPatch(c, db, organizationId, editTarget.environmentId, {
@@ -940,8 +905,29 @@ async function routeComposeEdit(
 }
 
 /**
+ * A PATCH replaces `options` wholesale and the compose editor sends only
+ * `compose`: carry the stored deploy tuning settings over unless the body
+ * names them (`null` clears one). While the Base follows its repository, the
+ * stored Base document is kept and a change to it, or to the source it
+ * follows, is refused (`null`). `stored` is the row as read under the lock.
+ */
+function settleOptionsWrite(
+  stored: unknown,
+  incoming: Record<string, unknown>
+): Record<string, unknown> | null {
+  const tracking = isTrackingComposeSource(parseProjectOptions(stored).composeSource)
+  if (tracking && changesTrackedBase(incoming, stored)) return null
+  const settled = settleDeployOptions(stored, incoming, 'project')
+  keepTrackedComposeSource(stored, settled)
+  if (tracking) keepTrackedBase(stored, settled)
+  return settled
+}
+
+/**
  * The options write and the watch rows it implies commit together, under the
- * project row lock. Returns a response for a name or slug collision.
+ * project row lock, and the stored options it settles against are read under
+ * that lock, so a tracked read that lands meanwhile is never overwritten.
+ * Returns a response for a refused Base change or a name or slug collision.
  */
 async function writeProjectPatch(
   c: Context<AppEnv>,
@@ -950,13 +936,30 @@ async function writeProjectPatch(
   patchFields: ProjectPatchFields
 ): Promise<Response | null> {
   try {
-    await db.transaction(async (tx) => {
+    const refused = await db.transaction(async (tx) => {
       if (patchFields.options !== undefined) {
-        await tx.execute(sql`SELECT 1 FROM "project" WHERE "id" = ${id}::uuid FOR UPDATE`)
+        const [row] = await tx
+          .select({ options: project.options })
+          .from(project)
+          .where(eq(project.id, id))
+          .for('update')
+          .limit(1)
+        if (patchFields.options) {
+          const settled = settleOptionsWrite(row?.options, patchFields.options)
+          if (settled === null) return true
+          patchFields.options = settled
+        }
       }
       await tx.update(project).set(patchFields).where(eq(project.id, id))
       if (patchFields.options !== undefined) await syncProjectWatch(tx, id)
+      return false
     })
+    if (refused) {
+      return c.json(
+        { error: BASE_TRACKS_REPOSITORY_ERROR, message: BASE_TRACKS_REPOSITORY_MESSAGE },
+        409
+      )
+    }
   } catch (err) {
     if (isProjectNameUniqueViolation(err)) {
       return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
@@ -1208,7 +1211,8 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (requestBody instanceof Response) return requestBody
 
     // Compose edits name where they land: the Base, or one environment.
-    const routed = await routeComposeEdit(c, db, organizationId, id, requestBody)
+    const storedOptions = await loadProjectOptions(db, id)
+    const routed = await routeComposeEdit(c, db, organizationId, id, requestBody, storedOptions)
     if (routed instanceof Response) return routed
     const body = routed
 
@@ -1243,7 +1247,6 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       patchFields.options
     )
     if (defaultServerError) return defaultServerError
-    await keepStoredProjectDeployOptions(db, id, patchFields)
     if (patchFields.options !== undefined) {
       const stored = splitProjectDefaultServer(patchFields.options)
       patchFields.options = stored.options

@@ -149,6 +149,7 @@ test('parseComposeSourceInput keeps the mode and the last read, and refuses a ba
     mode: 'track',
     lastReadCommitSha: 'c'.repeat(40),
     lastReadDigest: 'd'.repeat(64),
+    lastReadAt: '2026-01-02T03:04:05.000Z',
   })
   assertEquals(parsed, {
     ok: true,
@@ -157,8 +158,10 @@ test('parseComposeSourceInput keeps the mode and the last read, and refuses a ba
       mode: 'track',
       lastReadCommitSha: 'c'.repeat(40),
       lastReadDigest: 'd'.repeat(64),
+      lastReadAt: '2026-01-02T03:04:05.000Z',
     },
   })
+  assertEquals(parseComposeSourceInput({ ...base, lastReadAt: 'yesterday' }).ok, false)
   assertEquals(parseComposeSourceInput({ ...base, lastReadDigest: 'nope' }).ok, false)
   assertEquals(parseComposeSourceInput({ ...base, lastReadCommitSha: 'zz' }).ok, false)
 })
