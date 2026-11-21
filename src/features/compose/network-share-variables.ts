@@ -308,27 +308,13 @@ function resolveShareOptions(
   if (rawO !== undefined && typeof rawO !== 'string') {
     return fail(volume, 'o', 'variable_ref_invalid', 'The options of a network share must be text')
   }
-  const kept: string[] = []
-  const credentials: ShareCredentialEntry[] = []
+  const resolved: ResolvedOptions = { kept: [], credentials: [] }
+  const { kept, credentials } = resolved
   for (const piece of (rawO ?? '').split(',')) {
     if (piece.trim() === '') continue
     const outcome = resolveOption(piece, volume, lookup)
-    if (outcome.kind === 'error') return outcome.error
-    if (outcome.kind === 'credential') {
-      if (credentials.some((entry) => entry.field === outcome.entry.field)) {
-        return fail(
-          volume,
-          'o',
-          'variable_ref_invalid',
-          `The ${outcome.entry.field} of a network share is given twice`
-        )
-      }
-      credentials.push(outcome.entry)
-      continue
-    }
-    const refused = checkKeptOption(volume, outcome.text)
+    const refused = outcome.kind === 'error' ? outcome.error : takeOption(volume, outcome, resolved)
     if (refused) return refused
-    kept.push(outcome.text)
   }
   if (credentials.length > 0 && !credentials.some((entry) => entry.field === 'password')) {
     return fail(
@@ -339,6 +325,29 @@ function resolveShareOptions(
     )
   }
   return { kept, credentials }
+}
+
+/** File one resolved option under the kept ones or the credentials; an error when it is not allowed. */
+function takeOption(
+  volume: string,
+  outcome: Exclude<OptionOutcome, { kind: 'error' }>,
+  into: ResolvedOptions
+): ShareVariableError | undefined {
+  if (outcome.kind === 'credential') {
+    if (into.credentials.some((entry) => entry.field === outcome.entry.field)) {
+      return fail(
+        volume,
+        'o',
+        'variable_ref_invalid',
+        `The ${outcome.entry.field} of a network share is given twice`
+      )
+    }
+    into.credentials.push(outcome.entry)
+    return undefined
+  }
+  const refused = checkKeptOption(volume, outcome.text)
+  if (!refused) into.kept.push(outcome.text)
+  return refused
 }
 
 /** What a resolved option may not be: split by a comma or line break, empty, or one the platform owns. */
