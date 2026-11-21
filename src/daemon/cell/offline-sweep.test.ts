@@ -44,6 +44,7 @@ import {
   takeLastOfflineSweepScheduledTimeForTests,
   updateNullGraceBookkeeping,
 } from './offline-sweep.ts'
+import { resolveJobCadences } from '../../jobs/registry.ts'
 import type { Alert } from '../../features/alerts/alert-sender.ts'
 import { WEBHOOK_DELIVERY_SWEEP_LIMIT } from '../../features/webhook-delivery/webhook-delivery-records.ts'
 import type { ExecutionLogStore } from '../../features/execution-logs/types.ts'
@@ -2019,10 +2020,7 @@ it('a slow webhook cannot stop hosts from being demoted', async () => {
   assertEquals(elapsed < ALERT_DELIVERY_BUDGET_MS + 3_000, true)
 })
 
-async function upgradeTickTraces(
-  env: CloudflareBindings,
-  scheduledTime: number
-): Promise<string[]> {
+async function sweepTraces(env: CloudflareBindings, scheduledTime: number): Promise<string[]> {
   const traces: string[] = []
   const originalInfo = console.info
   console.info = (...args: unknown[]) => {
@@ -2044,27 +2042,72 @@ async function upgradeTickTraces(
   } finally {
     console.info = originalInfo
   }
+  return traces
+}
+
+async function upgradeTickTraces(
+  env: CloudflareBindings,
+  scheduledTime: number
+): Promise<string[]> {
+  const traces = await sweepTraces(env, scheduledTime)
   return traces.filter((line) => line.includes('event=upgrade-tick'))
 }
 
-it('the upgrade tick keeps its 15-minute cadence unless TURBOPANEL_UPGRADE_TICK_MINUTES says otherwise', async () => {
+it('the upgrade tick keeps its 15-minute cadence unless TURBOPANEL_JOB_CADENCES says otherwise', async () => {
   const minuteFive = Date.parse('2026-01-01T00:05:00.000Z')
   const minuteFifteen = Date.parse('2026-01-01T00:15:00.000Z')
   assertEquals(await upgradeTickTraces(inertEnv(), minuteFive), [])
   assertEquals((await upgradeTickTraces(inertEnv(), minuteFifteen)).length > 0, true)
-  const everyFive = { TURBOPANEL_UPGRADE_TICK_MINUTES: '5' } as unknown as CloudflareBindings
+  const everyFive = {
+    TURBOPANEL_JOB_CADENCES: '{"upgradeTick":5}',
+  } as unknown as CloudflareBindings
   assertEquals((await upgradeTickTraces(everyFive, minuteFive)).length > 0, true)
-  const invalid = { TURBOPANEL_UPGRADE_TICK_MINUTES: '7' } as unknown as CloudflareBindings
-  assertEquals(await upgradeTickTraces(invalid, minuteFive), [])
+  // A value outside the range clamps instead of falling back: 0 means every minute.
+  const clamped = { TURBOPANEL_JOB_CADENCES: '{"upgradeTick":0}' } as unknown as CloudflareBindings
+  assertEquals((await upgradeTickTraces(clamped, minuteFive + 60_000)).length > 0, true)
+  const unreadable = { TURBOPANEL_JOB_CADENCES: '{oops' } as unknown as CloudflareBindings
+  assertEquals(await upgradeTickTraces(unreadable, minuteFive), [])
 })
 
-it('the skipped-phase list follows the configured upgrade tick cadence', () => {
+it('the skipped-phase list follows the configured job cadences', () => {
   const minuteFive = Date.parse('2026-01-01T00:05:00.000Z')
   const minuteFifteen = Date.parse('2026-01-01T00:15:00.000Z')
+  const everyFive = resolveJobCadences('{"upgradeTick":5,"executionLogs":5}').table
   assertEquals(optionalPhaseNames(minuteFive).includes('upgrade-history'), false)
-  assertEquals(optionalPhaseNames(minuteFive, 5).includes('upgrade-history'), true)
+  assertEquals(optionalPhaseNames(minuteFive, everyFive).includes('upgrade-history'), true)
+  assertEquals(optionalPhaseNames(minuteFive).includes('execution-logs'), false)
+  assertEquals(optionalPhaseNames(minuteFive, everyFive).includes('execution-logs'), true)
   assertEquals(optionalPhaseNames(minuteFifteen).includes('upgrade-history'), true)
-  assertEquals(newSkippedPhases(5).upgradeTickMinutes, 5)
+  assertEquals(newSkippedPhases(everyFive).cadences, everyFive)
+})
+
+it('a bad TURBOPANEL_JOB_CADENCES logs one line per tick and the tick still runs', async () => {
+  const env = {
+    TURBOPANEL_JOB_CADENCES: '{"executionLogs":0,"nope":1,"tierNotices":"x"}',
+  } as unknown as CloudflareBindings
+  const lines = await sweepTraces(env, Date.parse('2026-01-01T00:15:00.000Z'))
+  assertEquals(lines.filter((line) => line.includes('event=job-cadences-adjusted')).length, 1)
+  assertEquals(
+    lines.some((line) => line.includes('event=tick-complete')),
+    true
+  )
+  const clean = await sweepTraces(inertEnv(), Date.parse('2026-01-01T00:15:00.000Z'))
+  assertEquals(
+    clean.some((line) => line.includes('event=job-cadences-adjusted')),
+    false
+  )
+})
+
+it('a cadence override moves execution-log and tier-notice retention', () => {
+  const table = resolveJobCadences('{"executionLogs":60,"tierNotices":1440}').table
+  const quarter = Date.parse('2026-01-01T00:15:00.000Z')
+  const hour = Date.parse('2026-01-01T01:00:00.000Z')
+  const midnight = Date.parse('2026-01-02T00:00:00.000Z')
+  assertEquals(shouldSweepExecutionLogs(quarter, table), false)
+  assertEquals(shouldSweepExecutionLogs(hour, table), true)
+  assertEquals(shouldSweepTierNotices(hour, table), false)
+  assertEquals(shouldSweepTierNotices(midnight, table), true)
+  assertEquals(shouldSweepUpgradeHistory(quarter, table), true)
 })
 
 it('the peak history prune deletes through the table and never throws', async () => {

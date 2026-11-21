@@ -82,7 +82,7 @@ export const INSTANCE_UPDATES_PATHS = {
         'self-hosted control plane its own or the UI update), `nextCheckAt` and ' +
         '`lastCheckAt` (the hourly check, at a minute of the hour drawn once per ' +
         'install; `lastCheckAt` also counts Check Now), `checkIntervalMinutes` (60, or ' +
-        'less where `TURBOPANEL_UPGRADE_CHECK_MINUTES` is set on a test install), ' +
+        'less where the `upgradeCheck` job cadence is overridden, as on a test install), ' +
         '`activeRunId` and `controlPlaneRecovery` (`{ runId, backupPath, rollbackCommand }` ' +
         'for a waiting self-hosted control-plane or UI update, the run id the next ' +
         'automatic run uses; otherwise null). `updateWaiting` counts only what a run would act on. Each is one `limit 1` read. ' +

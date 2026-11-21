@@ -35,7 +35,9 @@ do not import a DB/cell module here.
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
 in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
-pass, Workers offline-sweep on `TURBOPANEL_UPGRADE_TICK_MINUTES` (default 15, testing 5; `tick-cadence.ts`).
+pass (self-hosted keeps its every-minute timer until the single self-hosted tick lands), Workers offline-sweep on the
+`upgradeTick` job cadence (default 15 minutes, testing 5; `src/jobs/registry.ts`, set with
+`TURBOPANEL_JOB_CADENCES`).
 Every tick advances the open run; only the hourly check (below) resolves
 manifests and may start one. Hello, heartbeat, and
 `update-progress` / `update-result` / `instance-update-result` persist through
@@ -103,11 +105,11 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   `claimUpgradeCheck` (`maintenance.ts`) runs the check on the first tick at or
   after the next slot and records it before the check runs, so a failing check
   waits for the next slot instead of retrying every pass. On Workers the slot is
-  taken by the first upgrade tick after it (up to `TURBOPANEL_UPGRADE_TICK_MINUTES`
+  taken by the first upgrade tick after it (up to the `upgradeTick` cadence
   late). Before the first check the hour counts from the row's `createdAt`.
-  Test installs set `TURBOPANEL_UPGRADE_CHECK_MINUTES` (a divisor of 60; the
-  testing environment uses 5) to check every few minutes instead; slots stay
-  at the install's minute modulo that interval.
+  Test installs set the `upgradeCheck` job cadence (1 to 60 minutes; the testing
+  environment uses 5, in `TURBOPANEL_JOB_CADENCES`) to check every few minutes
+  instead; slots stay at the install's minute modulo that interval.
 - **Check Now** (`POST /instance/updates/check`, admins): a refresh only. It
   asks the release servers for the newest build with `resolveUpdateManifest(…,
 { fresh: true })`, saves it as the latest build and answers the `GET

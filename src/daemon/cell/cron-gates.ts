@@ -4,7 +4,7 @@
  * The tick has to stay cheap when nothing is going on: every statement it sends
  * through Hyperdrive counts against a daily quota. Two tools keep it cheap:
  *
- * - A divisor (`onDivisor`): work whose correctness does not depend on minute
+ * - A divisor (`onDivisor`, `src/jobs/registry.ts`): work whose correctness does not depend on minute
  *   latency (retention deletes, alarms measured in tens of minutes, catch-up
  *   passes) runs on a UTC-minute modulo with a per-job offset, so the jobs do
  *   not all land on the same minute. No stored state, so any isolate agrees.
@@ -38,69 +38,16 @@ import {
 } from '../../db/schema.ts'
 import { systemReconcileRepairableExists } from '../../features/system/reconcile.ts'
 
-/** True on every `everyMinutes`th UTC minute, shifted by `offset` minutes. */
-export function onDivisor(scheduledTimeMs: number, everyMinutes: number, offset = 0): boolean {
-  const minute = Math.floor(scheduledTimeMs / 60_000)
-  return minute % everyMinutes === offset % everyMinutes
-}
-
-/** How often a job runs and on which minute of its window. */
-export type CronCadence = { readonly everyMinutes: number; readonly offset: number }
-
-/**
- * Every cadence of the tick, in one place: a job name, its default interval in
- * minutes and its offset. Offsets spread the jobs over their window (the
- * 15-minute prune family sits on offset 0, see `shouldSweepUpgradeHistory`).
- * Each check goes through {@link isDue}, which takes the table as a parameter
- * so overrides can be merged into it per environment.
- *
- * Why each interval is safe:
- * - `commandDispatchCleanup`, `webhookDeliveries`, `daemonNonces`: deletes of
- *   rows that are already expired and ignored by every reader; they only bound
- *   table size, and each pass is limit-capped.
- * - `pinSilence`: its alarms fire after 30 minutes and 6 hours of silence, and
- *   the reconnect clean-up it does only clears markers; a 5 minute grain moves
- *   an alarm by at most 5 minutes.
- * - `orphanFolderAlerts`: tells people about a folder that became an orphan,
- *   once; a 5 minute delay on a notification. Same minute as `pinSilence` on
- *   purpose: both need the mail setup, resolved once for the tick.
- * - The reconcile-family jobs are repair or retry passes (each with its own
- *   throttle of five minutes or more, or working on expiry-scale dates) and run
- *   only while their gate has a candidate. One minute apart so they do not pile up.
- */
-export const CRON_CADENCES = {
-  commandDispatchCleanup: { everyMinutes: 15, offset: 3 },
-  webhookDeliveries: { everyMinutes: 15, offset: 6 },
-  daemonNonces: { everyMinutes: 15, offset: 9 },
-  pinSilence: { everyMinutes: 5, offset: 2 },
-  orphanFolderAlerts: { everyMinutes: 5, offset: 2 },
-  systemReconcile: { everyMinutes: 5, offset: 0 },
-  backupsReconcile: { everyMinutes: 5, offset: 1 },
-  folderRemoval: { everyMinutes: 5, offset: 2 },
-  folderReconcile: { everyMinutes: 5, offset: 3 },
-  firewallPreview: { everyMinutes: 5, offset: 4 },
-  managedIngressOrphan: { everyMinutes: 5, offset: 2 },
-  leafRenewal: { everyMinutes: 5, offset: 0 },
-  dnsCertificates: { everyMinutes: 5, offset: 1 },
-  httpCertificates: { everyMinutes: 5, offset: 2 },
-} as const satisfies Record<string, CronCadence>
-
-export type CronJob = keyof typeof CRON_CADENCES
-export type CronCadenceTable = Readonly<Record<CronJob, CronCadence>>
-
-/**
- * Whether a job is due on this tick. A tick with no scheduled time (a manual
- * call) runs everything, the way it did before the cadences existed.
- */
-export function isDue(
-  job: CronJob,
-  scheduledTimeMs: number | undefined,
-  table: CronCadenceTable = CRON_CADENCES
-): boolean {
-  if (scheduledTimeMs === undefined) return true
-  const { everyMinutes, offset } = table[job]
-  return onDivisor(scheduledTimeMs, everyMinutes, offset)
-}
+// The job table and `isDue` live in `src/jobs/registry.ts` (shared with the
+// self-hosted runtime); re-exported here for the tick's existing importers.
+export {
+  CRON_CADENCES,
+  type CronCadence,
+  type CronCadenceTable,
+  type CronJob,
+  isDue,
+  onDivisor,
+} from '../../jobs/registry.ts'
 
 export type CronGates = {
   /** An open command, an unfinished recovery or a managed row `applying`. */
