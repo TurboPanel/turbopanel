@@ -355,7 +355,9 @@ export function resolvedSharesCanonical(
       v.device,
       v.o ?? '',
       // Which secret fills which field, never the value.
-      v.credentials.map((entry) => `${entry.field}:${entry.key}`).sort(),
+      v.credentials
+        .map((entry) => `${entry.field}:${entry.key}`)
+        .sort((a, b) => (a < b ? -1 : Number(a > b))),
       v.plain.username ?? '',
       v.plain.domain ?? '',
     ])
