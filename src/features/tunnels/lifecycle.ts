@@ -24,6 +24,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { hostingIdsOfOrganization } from './hosting-scope.ts'
 import { compareText } from './order.ts'
 import { tunnelDoorwayHostnames } from './verified-names.ts'
+import { portalsForCarrying } from './connector-reports.ts'
 import { pushTunnelRoutes, readRoutedVerified } from './route-push.ts'
 import { retireUnusedOriginCertificates } from './origin-certificate.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
@@ -231,12 +232,32 @@ export async function carryingServers(db: Db, row: TunnelRow): Promise<string[]>
   })
 }
 
+async function serverMetadataOf(db: Db, ids: readonly string[]): Promise<Map<string, unknown>> {
+  if (ids.length === 0) return new Map()
+  const rows = await db
+    .select({
+      id: server.id,
+      reports: sql<unknown>`${server.metadata} -> 'tunnelConnectorReports'`,
+    })
+    .from(server)
+    .where(inArray(server.id, [...ids]))
+  return new Map(
+    rows.map((r) => [r.id, r.reports === null ? null : { tunnelConnectorReports: r.reports }])
+  )
+}
+
 export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
   const [portals, carrying, doorways] = await Promise.all([
     listPortals(db, row.id),
     carryingServers(db, row),
     db.select({ id: doorway.id }).from(doorway).where(eq(doorway.tunnelId, row.id)),
   ])
+  // An all-servers tunnel stores no portal for a server that simply runs it, so
+  // its carrying servers are listed from what each one reported (or unknown).
+  const shownPortals =
+    row.placement === 'all'
+      ? portalsForCarrying(carrying, portals, row.externalId, await serverMetadataOf(db, carrying))
+      : portals
   return {
     id: row.id,
     name: row.name,
@@ -246,7 +267,7 @@ export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {
     datacenterId: row.datacenterId,
     status: row.status,
     createdAt: row.createdAt,
-    portals: portals.map((p) => ({
+    portals: shownPortals.map((p) => ({
       serverId: p.serverId,
       wanted: p.wanted,
       reported: p.reported,
@@ -460,7 +481,17 @@ export async function updatePlacement(
     await replacePortals(tx, row.id, targets)
     const [updated] = await tx
       .update(tunnel)
-      .set({ placement: input.placement, datacenterId: dcId })
+      .set({
+        placement: input.placement,
+        datacenterId: dcId,
+        // The status poll asks a tunnel newly on all servers again soon; the
+        // stamp is the only thing that restarts that window (updatedAt moves
+        // on every write, so it cannot be used).
+        metadata:
+          input.placement === 'all'
+            ? sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), '{placementChangedAt}', ${JSON.stringify(new Date().toISOString())}::jsonb)`
+            : sql`${tunnel.metadata}`,
+      })
       .where(eq(tunnel.id, row.id))
       .returning()
     return updated!
