@@ -1,6 +1,8 @@
 import { assertEquals } from '@std/assert'
 import {
   checkShellFrame,
+  controlFrameText,
+  looksLikeShellFrame,
   isShellSid,
   PendingShellOpens,
   SHELL_DIR_TO_BROWSER,
@@ -80,4 +82,44 @@ test('pending opens: single use and a 30 second life', () => {
   assertEquals(pending.take(SID, 2000), null)
   pending.add(open, 1000)
   assertEquals(pending.take(SID, 31_000), null)
+})
+
+test('peek: too short, wrong version and unknown direction are not frames', () => {
+  assertEquals(peekShellFrame(new Uint8Array(SHELL_HEADER_BYTES)), null)
+  assertEquals(peekShellFrame(frame({ version: 2 })), null)
+  assertEquals(peekShellFrame(frame({ dir: 7 })), null)
+  assertEquals(peekShellFrame(frame({ dir: SHELL_DIR_TO_BROWSER }))?.dir, SHELL_DIR_TO_BROWSER)
+})
+
+test('looks like a shell frame: header length and version only', () => {
+  assertEquals(looksLikeShellFrame(frame({})), true)
+  assertEquals(looksLikeShellFrame(frame({ version: 2 })), false)
+  assertEquals(looksLikeShellFrame(new Uint8Array(3)), false)
+})
+
+test('pending opens: get, list, delete and clear sweep expired ones', () => {
+  const pending = new PendingShellOpens()
+  const other = '99999999-2222-4333-8444-555555555555'
+  pending.add({ sid: SID, expiresAtMs: 5000 } as PendingShellOpen, 0)
+  pending.add({ sid: other, expiresAtMs: 50_000 } as PendingShellOpen, 0)
+  assertEquals(pending.get(SID, 1000)?.sid, SID)
+  assertEquals(pending.list(1000).length, 2)
+  assertEquals(
+    pending.list(6000).map((open) => open.sid),
+    [other]
+  )
+  assertEquals(pending.get(SID, 6000), null)
+  pending.delete(other)
+  assertEquals(pending.has(other, 6000), false)
+  pending.add({ sid: SID, expiresAtMs: 50_000 } as PendingShellOpen, 0)
+  pending.clear()
+  assertEquals(pending.list(0), [])
+})
+
+test('control frames are plain JSON text', () => {
+  assertEquals(JSON.parse(controlFrameText({ type: 'error', sid: SID, code: 'no_shell' })), {
+    type: 'error',
+    sid: SID,
+    code: 'no_shell',
+  })
 })
