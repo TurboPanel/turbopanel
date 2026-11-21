@@ -10,7 +10,7 @@
  */
 import { and, eq, gt, isNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, portal, server } from '../../db/schema.ts'
+import { command, ip, portal, server, tunnel } from '../../db/schema.ts'
 import { parseTunnelStatusResult } from '../../contracts/commands/tunnel-status.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -126,7 +126,33 @@ async function hasUnheardPortal(db: Db, serverId: string, nowMs: number): Promis
       )
     )
     .limit(1)
-  return row !== undefined
+  return row !== undefined || (await hasUnheardAllTunnel(db, serverId, nowMs))
+}
+
+/**
+ * Does an all-servers tunnel made recently run on this server with no report
+ * kept for it yet? The same window as a new portal, so a connector that never
+ * reports costs a few extra questions, not one every tick forever.
+ */
+async function hasUnheardAllTunnel(db: Db, serverId: string, nowMs: number): Promise<boolean> {
+  const since = new Date(nowMs - TUNNEL_STATUS_NEW_PORTAL_WINDOW_MS).toISOString()
+  const rows = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(
+      and(
+        eq(server.id, serverId),
+        runsAllServersTunnel(),
+        sql`exists (
+          select 1 from ${tunnel}
+          where ${tunnel.organizationId} = ${server.organizationId}
+            and ${tunnel.placement} = 'all' and ${tunnel.status} <> 'removing'
+            and ${tunnel.createdAt} > ${since}
+            and not jsonb_exists(coalesce(${server.metadata} -> 'tunnelConnectorReports', '{}'::jsonb), ${tunnel.externalId}))`
+      )
+    )
+    .limit(1)
+  return rows.length > 0
 }
 
 /** Record what the last question learned, then ask again when it is time. */
@@ -159,6 +185,20 @@ export async function pollServerTunnelStatus(
 }
 
 /**
+ * The server is in the datacenter of an all-servers tunnel of its organization.
+ * Such a server has no portal row (unless it is left out), so
+ * without this it would be asked only when it happened to hold a forwarding table.
+ */
+function runsAllServersTunnel() {
+  return sql`exists (
+    select 1 from ${tunnel}
+    join ${ip} on ${ip.datacenterId} = ${tunnel.datacenterId}
+      and ${ip.scope} = 'datacenter' and ${ip.serverId} = ${server.id}
+    where ${tunnel.organizationId} = ${server.organizationId}
+      and ${tunnel.placement} = 'all' and ${tunnel.status} <> 'removing')`
+}
+
+/**
  * Connected servers that carry a tunnel (they have a portal row) or were sent a
  * forwarding table (a server that only runs a site behind a tunnel receives
  * peer traffic and has a peer-hop mode to report too). The same gap applies to
@@ -173,7 +213,8 @@ async function serversToPoll(db: Db) {
         eq(server.isConnected, true),
         or(
           sql`exists (select 1 from ${portal} where ${portal.serverId} = ${server.id})`,
-          sql`${server.metadata} -> 'tunnelRoutes' is not null`
+          sql`${server.metadata} -> 'tunnelRoutes' is not null`,
+          runsAllServersTunnel()
         )
       )
     )
