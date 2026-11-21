@@ -374,13 +374,13 @@ function mapNetworkSharesRefusedError(
 ): PrepareErrorResponse {
   const volumes = prepared.volumes.map((name) => `\`${name}\``).join(', ')
   const base = `This compose document mounts a network share (SMB volume ${volumes}).`
+  const names = (prepared.servers ?? []).map((entry) => entry.name).join(', ')
   let message: string
   if (prepared.reason === 'permission') {
     message = `${base} You do not have the Deploy network shares permission (environments.deploy_network_shares). Organization owners and managers have it; an owner can grant it to another role. The target server must also have Allow Network Shares turned on, which an admin can do in the server's settings.`
   } else if (prepared.reason === 'approval') {
-    message = `${base} This is an automated deploy (a git push or a scheduled run), and nobody with the Deploy network shares permission has deployed these shares in this form yet. That includes changed variables that change the address or the options, and a server that had Allow Network Shares turned off and on again since. Deploy it once from the web interface to approve it; automated deploys of the same shares will then run. The target server must also have Allow Network Shares turned on.`
+    message = `${base} This is an automated deploy (a git push or a scheduled run), and nobody with the Deploy network shares permission has deployed these shares in this form yet. That includes changed variables that change the address or the options${names === '' ? '' : `, and ${names}, where Allow Network Shares was turned off and on again since`}. Deploy it once from the web interface to approve it; automated deploys of the same shares will then run. The target server must also have Allow Network Shares turned on.`
   } else {
-    const names = (prepared.servers ?? []).map((entry) => entry.name).join(', ')
     message = `${base} Allow Network Shares is off on ${names}. An admin can turn on "Allow Network Shares" in the server's settings.`
   }
   return {

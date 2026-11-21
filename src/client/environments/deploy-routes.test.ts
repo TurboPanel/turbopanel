@@ -86,7 +86,9 @@ import {
   registerEnvironmentDeployRoutes,
   registerEnvironmentLifecycleRoutes,
   registerEnvironmentStopRoutes,
+  resolveNetworkSharesActor,
   runEnvironmentDeployForActor,
+  settlePreparedNetworkShares,
   tcpUdpIngressServiceRefs,
   validateDeployMaterials,
 } from './deploy-routes.ts'
@@ -3514,6 +3516,129 @@ test('the planner approves host-level content only for an allowed actor', async 
       hostAccess: { kind: 'automated' },
     })
     assertEquals('kind' in ordinary ? ordinary.kind : ordinary.hostLevelApproved, false)
+  })
+})
+
+// --- network shares (SMB volumes): actor permission and server switch --------
+
+function composeWithShare(): ComposeDocument {
+  return {
+    version: 1,
+    data: {
+      services: { web: { image: 'nginx:1', volumes: ['media:/media'] } },
+      volumes: {
+        media: { driver_opts: { type: 'cifs', device: '//nas.example.net/media', o: 'ro' } },
+      },
+    },
+    presentation: { keyOrder: ['services', 'volumes'], comments: {} },
+  }
+}
+
+async function setServerShares(ctx: HostLevelCtx, networkShares: boolean | undefined) {
+  await ctx.db
+    .update(server)
+    .set({ options: networkShares === undefined ? null : { networkShares } })
+    .where(eq(server.id, ctx.serverId))
+}
+
+/** A deploy of a named volume leaves a mount, a storage row and its copy behind. */
+async function dropShareStorage(ctx: HostLevelCtx): Promise<void> {
+  const mine = ctx.db
+    .select({ id: service.id })
+    .from(service)
+    .where(eq(service.environmentId, ctx.environmentId))
+  await ctx.db.delete(mount).where(inArray(mount.serviceId, mine))
+  await ctx.db.delete(storageCopy).where(eq(storageCopy.serverId, ctx.serverId))
+  await ctx.db.delete(storage).where(eq(storage.organizationId, ctx.organizationId))
+}
+
+test('a deploy of an SMB share is refused while the server setting is off, and runs with it on', async () => {
+  await withDeployFixtures(async (ctx) => {
+    try {
+      await useCompose(ctx, composeWithShare(), false)
+
+      await setServerShares(ctx, undefined)
+      const refused = await managerDeploy(ctx)
+      assertEquals(refused.status, 403)
+      const body = (await refused.json()) as { error: string; reason: string }
+      assertEquals(body.error, 'compose_network_shares_refused')
+      assertEquals(body.reason, 'server_setting')
+      assertEquals(ctx.commandQueue.envelopes.length, 0)
+
+      await setServerShares(ctx, true)
+      assertEquals((await managerDeploy(ctx)).status, 200)
+      assertEquals(ctx.commandQueue.envelopes.length, 1)
+    } finally {
+      await dropShareStorage(ctx)
+    }
+  })
+})
+
+test('an automated deploy of an SMB share needs a person to have deployed it first', async () => {
+  await withDeployFixtures(async (ctx) => {
+    try {
+      await useCompose(ctx, composeWithShare(), false)
+      await setServerShares(ctx, true)
+
+      const first = await webhookDeploy(ctx)
+      assertEquals(first.status, 403)
+      assertEquals(((await first.json()) as { reason: string }).reason, 'approval')
+
+      assertEquals((await managerDeploy(ctx)).status, 200)
+      assertEquals((await webhookDeploy(ctx)).status, 200)
+    } finally {
+      await dropShareStorage(ctx)
+    }
+  })
+})
+
+test('resolveNetworkSharesActor: only a holder of the permission is permitted', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const person = { actorType: 'user', actorId: ctx.userId, organizationId: ctx.organizationId }
+    const asPerson = (actorId: string) =>
+      resolveNetworkSharesActor(
+        ctx.db,
+        { ...person, actorId } as Parameters<typeof resolveNetworkSharesActor>[1],
+        ctx.organizationId
+      )
+    // The fixture user holds organization:manage.
+    assertEquals((await asPerson(ctx.userId)).kind, 'permitted')
+
+    await withExtraUser({ ...ctx, workspaceId: '' }, null, async (memberId) => {
+      assertEquals((await asPerson(memberId)).kind, 'denied')
+      await ctx.db.insert(grant).values({
+        entityType: 'organization',
+        entityId: ctx.organizationId,
+        actorType: 'user',
+        actorId: memberId,
+        permission: 'environments.deploy_network_shares',
+      })
+      assertEquals((await asPerson(memberId)).kind, 'permitted')
+    })
+
+    const system = await resolveNetworkSharesActor(
+      ctx.db,
+      { ...person, actorType: 'system' } as Parameters<typeof resolveNetworkSharesActor>[1],
+      ctx.organizationId
+    )
+    assertEquals(system.kind, 'automated')
+  })
+})
+
+test('settlePreparedNetworkShares passes through when the plan has no shares', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const settled = await settlePreparedNetworkShares(
+      ctx.db,
+      { networkShares: undefined, projectId: ctx.projectId },
+      [],
+      {
+        auth: { organizationId: ctx.organizationId } as Parameters<
+          typeof settlePreparedNetworkShares
+        >[3]['auth'],
+        environmentId: ctx.environmentId,
+      }
+    )
+    assertEquals(settled, {})
   })
 })
 

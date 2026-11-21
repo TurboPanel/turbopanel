@@ -8,13 +8,12 @@
  * here on the RESOLVED values, and only a plain `cifs` / `smb3` mount of a
  * `//host/share` address gets through.
  *
- * Secrets never enter the compose document. A secret named for `username`,
+ * Secrets never enter the compose document. A secret named for `username` or
  * `password` in `o` leaves `o` and becomes a credentials entry: the sealed value
- * rides as `variableMaterial` and the daemon writes a 0600 credentials file and
- * adds `credentials=<path>` itself. A plain user name and domain move into the
- * entry with it. A secret anywhere else
- * is refused; a literal password is refused too (it would be stored in the
- * project's compose document).
+ * rides as `variableMaterial` and the daemon adds `username=`, `password=` and
+ * `domain=` to `o` itself. A plain user name and domain move into the entry
+ * with it. A secret anywhere else is refused; a literal password is refused too
+ * (it would be stored in the project's compose document).
  */
 
 import { formatVariableRef, type ParsedVariableRef, splitEmbeddedRefs } from './variable-refs.ts'
@@ -68,7 +67,7 @@ export type ResolvedShareVolume = {
   o: string | undefined
   /** Secret user name and password; present only together with a password. */
   credentials: ShareCredentialEntry[]
-  /** Plain user name and domain that move into the credentials file with a password. */
+  /** Plain user name and domain that move into the credential entry with a password. */
   plain: { username?: string; domain?: string }
 }
 
@@ -77,6 +76,7 @@ const CREDENTIAL_OPTION: Record<string, OptionField> = {
   user: 'username',
   password: 'password',
   pass: 'password',
+  pwd: 'password',
   domain: 'domain',
   dom: 'domain',
 }
@@ -160,69 +160,84 @@ type OptionOutcome =
   | { kind: 'credential'; entry: ShareCredentialEntry }
   | { kind: 'error'; error: ShareVariableError }
 
+function optionError(error: ShareVariableError): OptionOutcome {
+  return { kind: 'error', error }
+}
+
 function resolveOption(raw: string, volume: string, lookup: ShareLookup): OptionOutcome {
-  const r: Resolver = { volume, field: 'o', lookup }
   const eq = raw.indexOf('=')
   const name = (eq < 0 ? raw : raw.slice(0, eq)).trim().toLowerCase()
   const value = eq < 0 ? undefined : raw.slice(eq + 1).trim()
   if (name.includes('$') || name === '') {
-    return {
-      kind: 'error',
-      error: fail(
+    return optionError(
+      fail(
         volume,
         'o',
         'variable_ref_invalid',
         'An option name of a network share volume must be written out, not a variable'
-      ),
-    }
+      )
+    )
   }
   const field = CREDENTIAL_OPTION[name]
   if (field === undefined) {
-    const resolved = resolveText(raw, r)
-    return isError(resolved)
-      ? { kind: 'error', error: resolved }
-      : { kind: 'keep', text: resolved.trim() }
+    const resolved = resolveText(raw, { volume, field: 'o', lookup })
+    return isError(resolved) ? optionError(resolved) : { kind: 'keep', text: resolved.trim() }
   }
-  const parts = splitEmbeddedRefs(value ?? '')
+  return resolveCredentialOption({ volume, name, value: value ?? '', field }, lookup)
+}
+
+/** A `username` / `password` / `domain` option: a secret reference becomes a credential entry. */
+function resolveCredentialOption(
+  option: { volume: string; name: string; value: string; field: OptionField },
+  lookup: ShareLookup
+): OptionOutcome {
+  const { volume, name, value, field } = option
+  const parts = splitEmbeddedRefs(value)
   const single = parts.length === 1 && parts[0].kind === 'ref' ? parts[0] : null
   if (single) {
     const entry = lookup(single.ref)
     const labeled = formatVariableRef(single.ref)
     if (!entry) {
-      return {
-        kind: 'error',
-        error: fail(volume, 'o', 'variable_unresolved', `Unresolved variable ${labeled}`, labeled),
-      }
+      return optionError(
+        fail(volume, 'o', 'variable_unresolved', `Unresolved variable ${labeled}`, labeled)
+      )
     }
     if (entry.isSecret) {
-      if (field === 'domain') {
-        return {
-          kind: 'error',
-          error: fail(
-            volume,
-            'o',
-            'variable_secret_interpolation',
-            `Secret ${entry.key} cannot be the domain of a network share; the domain is not secret`,
-            labeled
-          ),
-        }
-      }
-      return { kind: 'credential', entry: { field, key: entry.key, envelope: entry.value } }
+      return secretCredentialOption(volume, field, entry, labeled)
     }
   }
   if (field === 'password') {
-    return {
-      kind: 'error',
-      error: fail(
+    return optionError(
+      fail(
         volume,
         'o',
         'variable_secret_interpolation',
         'The password of a network share must be written as {$KEY} of a secret variable; a written-out or non-secret password would be stored in the compose document'
-      ),
-    }
+      )
+    )
   }
-  const resolved = resolveText(`${name}=${value ?? ''}`, r)
-  return isError(resolved) ? { kind: 'error', error: resolved } : { kind: 'keep', text: resolved }
+  const resolved = resolveText(`${name}=${value}`, { volume, field: 'o', lookup })
+  return isError(resolved) ? optionError(resolved) : { kind: 'keep', text: resolved }
+}
+
+function secretCredentialOption(
+  volume: string,
+  field: OptionField,
+  entry: ShareVariable,
+  labeled: string
+): OptionOutcome {
+  if (field === 'domain') {
+    return optionError(
+      fail(
+        volume,
+        'o',
+        'variable_secret_interpolation',
+        `Secret ${entry.key} cannot be the domain of a network share; the domain is not secret`,
+        labeled
+      )
+    )
+  }
+  return { kind: 'credential', entry: { field, key: entry.key, envelope: entry.value } }
 }
 
 /**
@@ -235,6 +250,27 @@ export function resolveShareVolume(
   driverOpts: Record<string, unknown>,
   lookup: ShareLookup
 ): ResolvedShareVolume | ShareVariableError {
+  const address = resolveShareAddress(volume, driverOpts, lookup)
+  if (isError(address)) return address
+  const options = resolveShareOptions(volume, driverOpts.o, lookup)
+  if (isError(options)) return options
+  const login = splitPlainLogin(volume, options)
+  if (isError(login)) return login
+  return {
+    type: address.type,
+    device: address.device,
+    o: login.left.length === 0 ? undefined : login.left.join(','),
+    credentials: options.credentials,
+    plain: login.plain,
+  }
+}
+
+/** The checked `type` and `//host/share` device. */
+function resolveShareAddress(
+  volume: string,
+  driverOpts: Record<string, unknown>,
+  lookup: ShareLookup
+): { type: string; device: string } | ShareVariableError {
   const type = typeof driverOpts.type === 'string' ? driverOpts.type.trim().toLowerCase() : ''
   if (type !== 'cifs' && type !== 'smb3') {
     return fail(
@@ -258,13 +294,22 @@ export function resolveShareVolume(
       'The device of a network share must be //host/share (no spaces or commas)'
     )
   }
+  return { type, device: address }
+}
 
-  const kept: string[] = []
-  const credentials: ShareCredentialEntry[] = []
-  const rawO = driverOpts.o
+type ResolvedOptions = { kept: string[]; credentials: ShareCredentialEntry[] }
+
+/** Every option of `o`, resolved: written-out options to keep and the secret login fields. */
+function resolveShareOptions(
+  volume: string,
+  rawO: unknown,
+  lookup: ShareLookup
+): ResolvedOptions | ShareVariableError {
   if (rawO !== undefined && typeof rawO !== 'string') {
     return fail(volume, 'o', 'variable_ref_invalid', 'The options of a network share must be text')
   }
+  const kept: string[] = []
+  const credentials: ShareCredentialEntry[] = []
   for (const piece of (rawO ?? '').split(',')) {
     if (piece.trim() === '') continue
     const outcome = resolveOption(piece, volume, lookup)
@@ -281,38 +326,11 @@ export function resolveShareVolume(
       credentials.push(outcome.entry)
       continue
     }
-    if (outcome.text.includes(',') || /[\r\n]/.test(outcome.text)) {
-      return fail(
-        volume,
-        'o',
-        'variable_ref_invalid',
-        'A variable used in the options of a network share must not contain a comma or a line break'
-      )
-    }
-    if (
-      outcome.text.includes('=') &&
-      outcome.text.slice(outcome.text.indexOf('=') + 1).trim() === ''
-    ) {
-      return fail(
-        volume,
-        'o',
-        'variable_ref_invalid',
-        `The option ${outcome.text.split('=')[0].trim()} of a network share has an empty value (is its variable empty?)`
-      )
-    }
-    const optionName = outcome.text.split('=')[0].trim().toLowerCase()
-    if (REFUSED_OPTIONS.has(optionName)) {
-      return fail(
-        volume,
-        'o',
-        'variable_ref_invalid',
-        `The ${optionName} option is not allowed on a network share volume`
-      )
-    }
+    const refused = checkKeptOption(volume, outcome.text)
+    if (refused) return refused
     kept.push(outcome.text)
   }
-  const hasPassword = credentials.some((entry) => entry.field === 'password')
-  if (!hasPassword && credentials.length > 0) {
+  if (credentials.length > 0 && !credentials.some((entry) => entry.field === 'password')) {
     return fail(
       volume,
       'o',
@@ -320,38 +338,71 @@ export function resolveShareVolume(
       'A secret user name needs the password of the network share as a secret variable too'
     )
   }
-  // With a password the daemon writes the credentials file, so a plain user
-  // name and domain move out of `o` and into it.
+  return { kept, credentials }
+}
+
+/** What a resolved option may not be: split by a comma or line break, empty, or one the platform owns. */
+function checkKeptOption(volume: string, text: string): ShareVariableError | undefined {
+  if (text.includes(',') || /[\r\n]/.test(text)) {
+    return fail(
+      volume,
+      'o',
+      'variable_ref_invalid',
+      'A variable used in the options of a network share must not contain a comma or a line break'
+    )
+  }
+  const optionName = text.split('=')[0].trim().toLowerCase()
+  if (text.includes('=') && text.slice(text.indexOf('=') + 1).trim() === '') {
+    return fail(
+      volume,
+      'o',
+      'variable_ref_invalid',
+      `The option ${optionName} of a network share has an empty value (is its variable empty?)`
+    )
+  }
+  if (REFUSED_OPTIONS.has(optionName)) {
+    return fail(
+      volume,
+      'o',
+      'variable_ref_invalid',
+      `The ${optionName} option is not allowed on a network share volume`
+    )
+  }
+  return undefined
+}
+
+/**
+ * With a password the daemon adds the login to `o` itself, so a plain user
+ * name and domain move out of `o` and into the credential entry.
+ */
+function splitPlainLogin(
+  volume: string,
+  options: ResolvedOptions
+): { plain: ResolvedShareVolume['plain']; left: string[] } | ShareVariableError {
+  const hasPassword = options.credentials.some((entry) => entry.field === 'password')
+  const secretUsername = options.credentials.some((entry) => entry.field === 'username')
   const plain: ResolvedShareVolume['plain'] = {}
   const left: string[] = []
-  for (const text of kept) {
+  for (const text of options.kept) {
     const optionName = text.split('=')[0].trim().toLowerCase()
     const value = text.includes('=') ? text.slice(text.indexOf('=') + 1).trim() : ''
     const field = CREDENTIAL_OPTION[optionName]
-    if (hasPassword && (field === 'username' || field === 'domain') && value !== '') {
-      if (
-        plain[field] !== undefined ||
-        (field === 'username' && credentials.some((entry) => entry.field === 'username'))
-      ) {
-        return fail(
-          volume,
-          'o',
-          'variable_ref_invalid',
-          `The ${field} of a network share is given twice`
-        )
-      }
-      plain[field] = value
+    if (!hasPassword || field === 'password' || field === undefined) {
+      left.push(text)
       continue
     }
-    left.push(text)
+    const duplicate = plain[field] !== undefined || (field === 'username' && secretUsername)
+    if (duplicate) {
+      return fail(
+        volume,
+        'o',
+        'variable_ref_invalid',
+        `The ${field} of a network share is given twice`
+      )
+    }
+    plain[field] = value
   }
-  return {
-    type,
-    device: address,
-    o: left.length === 0 ? undefined : left.join(','),
-    credentials,
-    plain,
-  }
+  return { plain, left }
 }
 
 /** Stable text of the resolved volumes: what the host will actually be told to mount. */

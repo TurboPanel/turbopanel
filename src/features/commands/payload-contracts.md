@@ -316,11 +316,12 @@ payload.
 sealed like every other secret); `username` and `domain` are plain text. The
 control plane sends the first compose service as `composeServiceName`. The
 compose text carries no login: user name, domain and password leave `o`. The
-daemon unseals the entries, writes a `0600` cifs credentials file (`username=`,
-`password=`, `domain=` lines) and adds `credentials=<file>` to that volume's `o`
-itself. A literal `password=` in `o`, or a password that is not a `{$KEY}` of a
-secret variable, is refused by the control plane (the daemon refuses
-`password=`/`pass=`/`pwd=` in compose too). A secret domain, or a secret user
+daemon unseals the entries and adds `username=`, `password=` and `domain=` to
+that volume's `o` itself; the control plane never sends them, nor `credentials=`,
+in `o`. A literal `password=` in `o` (also `pass=` or `pwd=`), or a password that
+is not a `{$KEY}` of a secret variable, is refused by the control plane (the
+daemon refuses them in compose too). Values must not be empty or contain a comma
+or a line break. A secret domain, or a secret user
 name without a secret password, is refused. The same secrets are listed in
 `configSecretRefs` of the deployment options so a boot rehydrate fetches them
 again. Previews send no credentials. The wire rules in `src/lib/version-wire.ts`

@@ -1499,6 +1499,14 @@ describe('network share volume variables', () => {
       refused({ device: '//h/m', o: 'pass={$PLAIN}' }, [entry('PLAIN', 'x')]).kind,
       'variable_secret_interpolation'
     )
+    assertEquals(
+      refused({ device: '//h/m', o: 'pwd=not-a-real-password' }).kind,
+      'variable_secret_interpolation'
+    )
+    assertEquals(
+      refused({ device: '//h/m', o: 'pwd={$PLAIN}' }, [entry('PLAIN', 'x')]).kind,
+      'variable_secret_interpolation'
+    )
   })
 
   it('refuses a secret anywhere but the username, password or domain option', () => {

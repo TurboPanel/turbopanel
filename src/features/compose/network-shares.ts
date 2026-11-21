@@ -31,8 +31,8 @@ export function isNetworkShareDriverOpts(opts: unknown): boolean {
   const type = typeof opts.type === 'string' ? opts.type.trim().toLowerCase() : ''
   if (!NETWORK_SHARE_TYPES.has(type)) return false
   const o = typeof opts.o === 'string' ? opts.o : ''
-  const flags = o.split(',').map((flag) => flag.trim().toLowerCase())
-  if (flags.includes('bind') || flags.includes('rbind')) return false
+  const flags = new Set(o.split(',').map((flag) => flag.trim().toLowerCase()))
+  if (flags.has('bind') || flags.has('rbind')) return false
   if (typeof opts.device !== 'string') return false
   // A share address is `//host/share` (or an interpolated value). Anything
   // else, a host path or an odd address, stays an ordinary mount.

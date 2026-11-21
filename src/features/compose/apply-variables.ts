@@ -152,7 +152,7 @@ export type ApplyVariablesResult = {
    * Network share volumes whose username, password or domain is a secret: the
    * keys of the sealed `secretMaterial` entries (same `composeServiceName`).
    * The volume's `o` in `document` has no credentials; the daemon adds
-   * `credentials=<file>` itself.
+   * `username=`, `password=` and `domain=` itself.
    */
   networkShareCredentials: NetworkShareCredential[]
   /**
@@ -734,7 +734,7 @@ function applyShareVolumeVariables(
     scopes: VariableScopeEntryMap | undefined
   },
   viewService: string | undefined,
-  sinks: { secretMaterial: DeployVariableMaterial[]; secretRefs: DeployConfigSecretRef[] }
+  sinks: ShareSinks
 ): ApplyVariablesError | { credentials: NetworkShareCredential[]; resolved: string | null } {
   if (!isRecord(data.volumes)) return { credentials: [], resolved: null }
   const volumes: Record<string, unknown> = { ...data.volumes }
@@ -746,45 +746,11 @@ function applyShareVolumeVariables(
   const resolvedVolumes: Array<readonly [string, ResolvedShareVolume]> = []
   for (const [name, spec] of Object.entries(volumes)) {
     if (!isRecord(spec) || !isNetworkShareDriverOpts(spec.driver_opts)) continue
-    const driverOpts = spec.driver_opts as Record<string, unknown>
-    // `local` is the only driver whose `driver_opts` are mount options.
-    if (spec.driver !== undefined && spec.driver !== 'local') {
-      return {
-        kind: 'variable_ref_invalid',
-        message: `A network share volume uses the local volume driver (volumes.${name}.driver)`,
-      }
-    }
-    const resolved = resolveShareVolume(name, driverOpts, lookup)
-    if ('kind' in resolved) return resolved
-    resolvedVolumes.push([name, resolved])
-    const opts: Record<string, unknown> = {
-      ...driverOpts,
-      type: resolved.type,
-      device: escapeLiteralComposeValue(resolved.device),
-    }
-    if (resolved.o === undefined) delete opts.o
-    else opts.o = escapeLiteralComposeValue(resolved.o)
-    volumes[name] = { ...spec, driver_opts: opts }
-    const passwordItem = resolved.credentials.find((item) => item.field === 'password')
-    if (passwordItem === undefined) continue
-    if (viewService === undefined) {
-      return {
-        kind: 'variable_ref_invalid',
-        message: `A network share with a secret needs a service in the project (volumes.${name}.driver_opts.o)`,
-      }
-    }
-    const credential: NetworkShareCredential = {
-      volume: name,
-      composeServiceName: viewService,
-      passwordKey: passwordItem.key,
-    }
-    for (const item of resolved.credentials) {
-      if (item.field === 'username') credential.usernameKey = item.key
-      addShareSecret(sinks, viewService, item)
-    }
-    if (resolved.plain.username !== undefined) credential.username = resolved.plain.username
-    if (resolved.plain.domain !== undefined) credential.domain = resolved.plain.domain
-    credentials.push(credential)
+    const outcome = applyOneShareVolume(name, spec, { lookup, viewService, sinks })
+    if ('kind' in outcome) return outcome
+    volumes[name] = outcome.spec
+    resolvedVolumes.push([name, outcome.resolved])
+    if (outcome.credential !== undefined) credentials.push(outcome.credential)
   }
   data.volumes = volumes
   return {
@@ -793,8 +759,74 @@ function applyShareVolumeVariables(
   }
 }
 
+type ShareSinks = { secretMaterial: DeployVariableMaterial[]; secretRefs: DeployConfigSecretRef[] }
+
+/** One share volume: its rewritten spec, what it resolved to and (with a password) its credential. */
+function applyOneShareVolume(
+  name: string,
+  spec: Record<string, unknown>,
+  ctx: {
+    lookup: Parameters<typeof resolveShareVolume>[2]
+    viewService: string | undefined
+    sinks: ShareSinks
+  }
+):
+  | ApplyVariablesError
+  | {
+      spec: Record<string, unknown>
+      resolved: ResolvedShareVolume
+      credential?: NetworkShareCredential
+    } {
+  const driverOpts = spec.driver_opts as Record<string, unknown>
+  // `local` is the only driver whose `driver_opts` are mount options.
+  if (spec.driver !== undefined && spec.driver !== 'local') {
+    return {
+      kind: 'variable_ref_invalid',
+      message: `A network share volume uses the local volume driver (volumes.${name}.driver)`,
+    }
+  }
+  const resolved = resolveShareVolume(name, driverOpts, ctx.lookup)
+  if ('kind' in resolved) return resolved
+  const rewritten = { ...spec, driver_opts: resolvedShareDriverOpts(driverOpts, resolved) }
+  const passwordItem = resolved.credentials.find((item) => item.field === 'password')
+  if (passwordItem === undefined) return { spec: rewritten, resolved }
+  if (ctx.viewService === undefined) {
+    return {
+      kind: 'variable_ref_invalid',
+      message: `A network share with a secret needs a service in the project (volumes.${name}.driver_opts.o)`,
+    }
+  }
+  const credential: NetworkShareCredential = {
+    volume: name,
+    composeServiceName: ctx.viewService,
+    passwordKey: passwordItem.key,
+  }
+  for (const item of resolved.credentials) {
+    if (item.field === 'username') credential.usernameKey = item.key
+    addShareSecret(ctx.sinks, ctx.viewService, item)
+  }
+  if (resolved.plain.username !== undefined) credential.username = resolved.plain.username
+  if (resolved.plain.domain !== undefined) credential.domain = resolved.plain.domain
+  return { spec: rewritten, resolved, credential }
+}
+
+/** The `driver_opts` written to the document: checked values, `$` doubled for Compose. */
+function resolvedShareDriverOpts(
+  driverOpts: Record<string, unknown>,
+  resolved: ResolvedShareVolume
+): Record<string, unknown> {
+  const opts: Record<string, unknown> = {
+    ...driverOpts,
+    type: resolved.type,
+    device: escapeLiteralComposeValue(resolved.device),
+  }
+  if (resolved.o === undefined) delete opts.o
+  else opts.o = escapeLiteralComposeValue(resolved.o)
+  return opts
+}
+
 function addShareSecret(
-  sinks: { secretMaterial: DeployVariableMaterial[]; secretRefs: DeployConfigSecretRef[] },
+  sinks: ShareSinks,
   composeServiceName: string,
   item: ShareCredentialEntry
 ): void {

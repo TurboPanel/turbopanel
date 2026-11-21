@@ -204,7 +204,7 @@
       {
         "name": "networkShareCredentials",
         "required": false,
-        "type": "Array<{ composeServiceName?: string | null; domain?: string; passwordKey: string; username?: string; usernameKey?: string; volume: string }>"
+        "type": "Array<{ composeServiceName?: null | string; domain?: string; passwordKey: string; username?: string; usernameKey?: string; volume: string }>"
       }
     ]
   },

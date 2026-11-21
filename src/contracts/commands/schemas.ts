@@ -2756,9 +2756,9 @@ export type EnvironmentDeployHostAccess = {
    * name). `passwordKey` / `usernameKey` is the `key` of a sealed
    * `variableMaterial[]` entry, looked up as `${composeServiceName ?? ""}::${key}`;
    * no secret value is carried here and none is in the compose text. A plain
-   * user name is `username` (not with `usernameKey`), a plain domain `domain`. The daemon writes the values to a 0600 cifs credentials file in its
-   * runtime secrets directory and adds `credentials=<path>` to the volume's
-   * `o` itself. A share with no secret credential is absent from the list.
+   * user name is `username` (not with `usernameKey`), a plain domain `domain`. The daemon adds
+   * `username=`, `password=` and `domain=` to the volume's `o` itself; the
+   * control plane never sends them (nor `credentials=`) in `o`. A share with no secret credential is absent from the list.
    */
   networkShareCredentials?: EnvironmentDeployNetworkShareCredential[]
 }

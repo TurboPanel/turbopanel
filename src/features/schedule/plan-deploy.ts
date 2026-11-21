@@ -710,6 +710,53 @@ async function loadPlanContext(
   return { envRow, projectRow, resolvedOptions, merged }
 }
 
+/** The schedule spec of each service row, read from the merged document. */
+function plannedServicesFromRows(
+  serviceRows: ReadonlyArray<{
+    id: string
+    composeServiceName: string
+    options: unknown
+  }>,
+  merged: ComposeDocument
+): PlannedService[] {
+  const mapping = servicesMapping(merged)
+  return serviceRows.map((row) => {
+    const raw = mapping[row.composeServiceName]
+    const body = isPlainObject(raw) ? raw : {}
+    const fallback = resolveServiceInstances(parseServiceOptions(row.options) ?? {})
+    return {
+      serviceId: row.id,
+      spec: interpretServiceSchedule(row.composeServiceName, body, fallback),
+    }
+  })
+}
+
+/** Pair rules for the planner, read only when more than one server and an overlay network could span. */
+async function loadPairRulesIfSpanning(
+  db: Db,
+  organizationId: string,
+  fleet: ReadonlyArray<{ id: string }>,
+  merged: ComposeDocument
+): Promise<Awaited<ReturnType<typeof loadPairRules>> | null> {
+  if (fleet.length <= 1 || readOverlayDeclaredNetworkKeys(merged).size === 0) return null
+  return await loadPairRules(db, { organizationId, serverIds: fleet.map((row) => row.id) })
+}
+
+/**
+ * The server half of the network share gate, over exactly the servers the plan
+ * dispatches to. Nothing to check without shares or without a plan.
+ */
+async function checkSharesOnPlannedServers(
+  db: Db,
+  plan: ReturnType<typeof planEnvironmentSchedule>,
+  shares: NetworkSharesPlan | null
+): Promise<{ shares: NetworkSharesPlan | null } | PlanDeployError> {
+  if (shares === null || !plan.ok) return { shares }
+  const checked = await checkNetworkShareServers(db, plan.serverIds, shares)
+  if ('kind' in checked) return { kind: 'compose_rejected', error: checked }
+  return { shares: { ...shares, newestEnabledAt: checked.newestEnabledAt } }
+}
+
 /**
  * Plan slots for an environment deploy. Callers map `SchedulePlan` errors to
  * HTTP (`turbofabric_required` → 422, no eligible server → 409). The merged
@@ -807,17 +854,7 @@ export async function planEnvironmentDeploy(
     .from(service)
     .where(eq(service.environmentId, params.environmentId))
 
-  const mapping = servicesMapping(merged)
-  const planned: PlannedService[] = []
-  for (const row of serviceRows) {
-    const raw = mapping[row.composeServiceName]
-    const body = isPlainObject(raw) ? raw : {}
-    const fallback = resolveServiceInstances(parseServiceOptions(row.options) ?? {})
-    planned.push({
-      serviceId: row.id,
-      spec: interpretServiceSchedule(row.composeServiceName, body, fallback),
-    })
-  }
+  const planned = plannedServicesFromRows(serviceRows, merged)
 
   const [fabricRow] = await db
     .select({ id: fabric.id, isEnabled: fabric.isEnabled })
@@ -845,13 +882,7 @@ export async function planEnvironmentDeploy(
   const storagePins = await loadStoragePins(db, params.environmentId)
   // Pure pair rules for the planner: a network whose servers all share a
   // trusted LAN needs no TurboFabric. Read only when something could span.
-  const pairRules =
-    fleet.length > 1 && readOverlayDeclaredNetworkKeys(merged).size > 0
-      ? await loadPairRules(db, {
-          organizationId: params.organizationId,
-          serverIds: fleet.map((row) => row.id),
-        })
-      : null
+  const pairRules = await loadPairRulesIfSpanning(db, params.organizationId, fleet, merged)
 
   const plan = planEnvironmentSchedule({
     pinServerId,
@@ -872,11 +903,9 @@ export async function planEnvironmentDeploy(
   })
 
   // The server half, over exactly the servers this plan dispatches to.
-  if (shares !== null && plan.ok) {
-    const checked = await checkNetworkShareServers(db, plan.serverIds, shares)
-    if ('kind' in checked) return { kind: 'compose_rejected', error: checked }
-    shares = { ...shares, newestEnabledAt: checked.newestEnabledAt }
-  }
+  const serverHalf = await checkSharesOnPlannedServers(db, plan, shares)
+  if ('kind' in serverHalf) return serverHalf
+  shares = serverHalf.shares
 
   return {
     plan,

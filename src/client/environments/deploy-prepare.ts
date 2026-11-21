@@ -3074,7 +3074,7 @@ async function toPreparedDeployResult(
 ): Promise<PreparedDeployCompose> {
   const omitSecrets = mode === 'preview'
   return {
-    ...(parts.serverId === undefined ? {} : { serverId: parts.serverId }),
+    ...optionalField('serverId', parts.serverId),
     composeYaml: parts.composeYaml,
     composeFiles: parts.composeFiles,
     desiredHash: await deployDesiredHash(
@@ -3111,16 +3111,10 @@ async function toPreparedDeployResult(
     hostings: parts.edge?.hostings ?? [],
     tlsMaterial: parts.edge?.tlsMaterial ?? [],
     listenerPorts: parts.edge?.listenerPorts ?? DEFAULT_MANAGED_INGRESS_PORTS,
-    ...(parts.edge?.hostingIngress === undefined
-      ? {}
-      : { hostingIngress: parts.edge.hostingIngress }),
-    ...(parts.edge?.hostingIngressNetwork === undefined
-      ? {}
-      : { hostingIngressNetwork: parts.edge.hostingIngressNetwork }),
-    ...(parts.edge?.hideWebServerNames === undefined
-      ? {}
-      : { hideWebServerNames: parts.edge.hideWebServerNames }),
-    ...(parts.edge?.sendViaHeader === undefined ? {} : { sendViaHeader: parts.edge.sendViaHeader }),
+    ...optionalField('hostingIngress', parts.edge?.hostingIngress),
+    ...optionalField('hostingIngressNetwork', parts.edge?.hostingIngressNetwork),
+    ...optionalField('hideWebServerNames', parts.edge?.hideWebServerNames),
+    ...optionalField('sendViaHeader', parts.edge?.sendViaHeader),
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
@@ -3129,10 +3123,8 @@ async function toPreparedDeployResult(
     ...nonEmptyListField('configFiles', parts.configFiles),
     ...nonEmptyListField('configSecretRefs', parts.configSecretRefs),
     ...nonEmptyListField('networkShareCredentials', parts.networkShareCredentials),
-    ...(parts.networkSharesResolved === undefined
-      ? {}
-      : { networkSharesResolved: parts.networkSharesResolved }),
-    ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
+    ...optionalField('networkSharesResolved', parts.networkSharesResolved),
+    ...optionalField('sourceSelection', parts.sourceSelection),
     ...projectCacheFields(parts.projectCaches ?? NO_PROJECT_CACHES),
   }
 }
@@ -3150,6 +3142,14 @@ function projectCacheFields(
       ? {}
       : { cacheConsumers: state.cacheConsumers }),
   }
+}
+
+/** A one-key object, or nothing when the value is `undefined` or `null`. */
+function optionalField<K extends string, T>(
+  key: K,
+  value: T | null | undefined
+): Partial<Record<K, T>> {
+  return value == null ? {} : ({ [key]: value } as Partial<Record<K, T>>)
 }
 
 /** A list as a one-key object, or nothing when it is absent or empty (keeps old hashes and payloads as they were). */
@@ -4317,7 +4317,7 @@ export async function prepareDeployCompose(
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),
     managedNetworkServices,
-    ...(managedNetwork === undefined ? {} : { managedNetwork }),
+    ...optionalField('managedNetwork', managedNetwork),
     containers: pipeline.containers,
     ingressServices: pipeline.ingressServices,
     edge,
@@ -4330,9 +4330,7 @@ export async function prepareDeployCompose(
     configFiles: withVariables.configFiles,
     configSecretRefs: withVariables.configSecretRefs,
     networkShareCredentials: withVariables.networkShareCredentials,
-    ...(withVariables.networkSharesResolved === null
-      ? {}
-      : { networkSharesResolved: withVariables.networkSharesResolved }),
+    ...optionalField('networkSharesResolved', withVariables.networkSharesResolved),
     sourceSelection: params.sourceSelection,
   })
 }

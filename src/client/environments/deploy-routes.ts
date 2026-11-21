@@ -1867,7 +1867,7 @@ async function resolveHostAccessActor(
  * can be granted to other roles). An automated deploy has no person behind it
  * and is judged on a recorded approval instead.
  */
-async function resolveNetworkSharesActor(
+export async function resolveNetworkSharesActor(
   db: Db,
   actor: DeployActor,
   organizationId: string,
@@ -1882,6 +1882,16 @@ async function resolveNetworkSharesActor(
     organizationId
   )
   return permitted ? { kind: 'permitted', userId: actor.actorId, email } : { kind: 'denied' }
+}
+
+/** {@link resolveNetworkSharesActor} for the signed-in request (the email is for the audit row). */
+async function networkSharesActorForRequest(
+  c: Context<AppEnv>,
+  db: Db,
+  auth: DeployRequestAuth
+): Promise<NetworkSharesActor> {
+  const email = c.get('session')?.email
+  return await resolveNetworkSharesActor(db, auth, auth.organizationId, email ?? null)
 }
 
 /**
@@ -1955,7 +1965,7 @@ export async function recordHostAccessUse(
  * The share half of the actor gate that needs the prepared deploy: what the
  * shares resolved to on each server (see `settleNetworkShares`).
  */
-async function settlePreparedNetworkShares(
+export async function settlePreparedNetworkShares(
   db: Db,
   planned: Pick<PlannedDeploy, 'networkShares' | 'projectId'>,
   preparedByServer: ReadonlyArray<{
@@ -2274,6 +2284,28 @@ async function prepareOneServerDeploy(
   return { serverId: params.serverId, prepared }
 }
 
+/**
+ * Prepare every server, then judge the shares on what they resolved to. A
+ * refusal comes back as the response; otherwise the audit event (if any) rides
+ * along for {@link recordNetworkSharesUse}.
+ */
+async function prepareAndSettleServerDeploys(
+  c: Context<AppEnv>,
+  db: Db,
+  params: Parameters<typeof prepareAllServerDeploys>[2]
+): Promise<
+  { preparedByServer: PreparedServerDeploy[]; sharesUse?: NetworkSharesUseEvent } | Response
+> {
+  const preparedByServer = await prepareAllServerDeploys(c, db, params)
+  if (preparedByServer instanceof Response) return preparedByServer
+  const settled = await settlePreparedNetworkShares(db, params.planned, preparedByServer, {
+    auth: params.auth,
+    environmentId: params.environmentId,
+  })
+  if ('error' in settled) return responseForPrepareError(c, settled.error)
+  return { preparedByServer, sharesUse: settled.use }
+}
+
 async function prepareAllServerDeploys(
   c: Context<AppEnv>,
   db: Db,
@@ -2569,7 +2601,7 @@ async function runEnvironmentDeploy(
       auth.hostingsOnly !== true,
       c.get('session')?.email ?? null
     ),
-    await resolveNetworkSharesActor(db, auth, auth.organizationId, c.get('session')?.email ?? null),
+    await networkSharesActorForRequest(c, db, auth),
     {
       mode: 'deploy',
       ...deployReadOptions(auth),
@@ -2613,7 +2645,7 @@ async function runEnvironmentDeploy(
     })
 
     const selection = selectionPinnedToTrackedBase(auth.selection, planned.composeBasePin)
-    const preparedByServer = await prepareAllServerDeploys(c, db, {
+    const preparedAndSettled = await prepareAndSettleServerDeploys(c, db, {
       planned,
       environmentId,
       auth,
@@ -2621,12 +2653,8 @@ async function runEnvironmentDeploy(
       dataEncryptionSecrets,
       ...spanningCtx,
     })
-    if (preparedByServer instanceof Response) return preparedByServer
-    const sharesSettled = await settlePreparedNetworkShares(db, planned, preparedByServer, {
-      auth,
-      environmentId,
-    })
-    if ('error' in sharesSettled) return responseForPrepareError(c, sharesSettled.error)
+    if (preparedAndSettled instanceof Response) return preparedAndSettled
+    const { preparedByServer, sharesUse } = preparedAndSettled
 
     const previous = await listEnvironmentDeploymentTargets(db, environmentId)
     const { attachmentServers, participating, drainedIds } = deployParticipation({
@@ -2674,7 +2702,7 @@ async function runEnvironmentDeploy(
     // The deploy is accepted: only now does what it read become the stored Base.
     await storePlannedBase(db, planned)
     await recordHostAccessUse(db, planned, auth, environmentId)
-    await recordNetworkSharesUse(db, sharesSettled.use, auth, {
+    await recordNetworkSharesUse(db, sharesUse, auth, {
       environmentId,
       projectId: planned.projectId,
     })

@@ -305,13 +305,6 @@ export const STOP_REMOVE_VOLUMES_FEATURE: DaemonWireFeature = 'environment-stop-
 export const COMPOSE_CHECKOUT_FEATURE: DaemonWireFeature = 'compose-checkout-v1'
 
 /**
- * `environment.deploy` may carry `allowNetworkShares`, which lets the daemon
- * mount SMB (`cifs` / `smb3`) top-level volumes. A daemon without the feature
- * would refuse or mishandle the volume, so the control plane holds it back.
- */
-export const NETWORK_SHARES_FEATURE: DaemonWireFeature = 'network-shares-v1'
-
-/**
  * The daemon takes any application mode in `nativeAppServices[].appMode` that
  * matches the deploy parser's rule (`staging`, `test`, ...), not only
  * `production` and `development`. Without it the daemon would refuse the whole

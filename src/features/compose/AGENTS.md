@@ -315,7 +315,7 @@ bare `$` there is refused, and the RESOLVED type, device (`//host/share`) and
 options are re-checked (no bind/rbind/remount/move/credentials, no comma). A
 share's password option (`{$KEY}` of a secret) leaves `o` and goes out as sealed
 `variableMaterial` plus `networkShareCredentials` (`passwordKey`, and `usernameKey`
-or plain `username`, plain `domain`); the daemon writes the credentials file. A
+or plain `username`, plain `domain`); the daemon adds `username=`/`password=`/`domain=` to `o` itself. A
 password that is literal or not a secret variable, a secret domain, and a secret
 user name without a secret password are refused.
 
