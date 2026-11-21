@@ -56,6 +56,7 @@ import {
   isApplyVariablesError,
   type VariableScopeEntryMap,
 } from '../../features/compose/apply-variables.ts'
+import type { NetworkShareCredential } from '../../features/compose/network-share-variables.ts'
 import type {
   DeployConfigFileEntry,
   DeployConfigSecretRef,
@@ -580,6 +581,17 @@ export type PreparedDeployCompose = ServerDeployment & {
   configFiles?: DeployConfigFileEntry[]
   /** Secrets the generated files read; kept so a reboot can ask for their values. */
   configSecretRefs?: DeployConfigSecretRef[]
+  /**
+   * Network share volumes with a secret username, password or domain (key
+   * names only; the sealed values ride in `variableMaterial`). Absent when none.
+   */
+  networkShareCredentials?: NetworkShareCredential[]
+  /**
+   * What the share volumes resolved to, as stable text without any secret
+   * value. Internal: the automated-deploy approval is judged on its hash. Never
+   * sent to a daemon.
+   */
+  networkSharesResolved?: string
   /**
    * What each native app's process gets as environment variables, for people:
    * every name, where it came from, and whether it reaches the process. Secret
@@ -3047,6 +3059,8 @@ async function toPreparedDeployResult(
     secretPlan?: DeploySecretPlanEntry[]
     configFiles?: DeployConfigFileEntry[]
     configSecretRefs?: DeployConfigSecretRef[]
+    networkShareCredentials?: NetworkShareCredential[]
+    networkSharesResolved?: string
     sourceSelection?: DeploySourceSelection
     projectCaches?: PreparedProjectCaches
     /**
@@ -3060,7 +3074,7 @@ async function toPreparedDeployResult(
 ): Promise<PreparedDeployCompose> {
   const omitSecrets = mode === 'preview'
   return {
-    ...(parts.serverId === undefined ? {} : { serverId: parts.serverId }),
+    ...optionalField('serverId', parts.serverId),
     composeYaml: parts.composeYaml,
     composeFiles: parts.composeFiles,
     desiredHash: await deployDesiredHash(
@@ -3097,16 +3111,10 @@ async function toPreparedDeployResult(
     hostings: parts.edge?.hostings ?? [],
     tlsMaterial: parts.edge?.tlsMaterial ?? [],
     listenerPorts: parts.edge?.listenerPorts ?? DEFAULT_MANAGED_INGRESS_PORTS,
-    ...(parts.edge?.hostingIngress === undefined
-      ? {}
-      : { hostingIngress: parts.edge.hostingIngress }),
-    ...(parts.edge?.hostingIngressNetwork === undefined
-      ? {}
-      : { hostingIngressNetwork: parts.edge.hostingIngressNetwork }),
-    ...(parts.edge?.hideWebServerNames === undefined
-      ? {}
-      : { hideWebServerNames: parts.edge.hideWebServerNames }),
-    ...(parts.edge?.sendViaHeader === undefined ? {} : { sendViaHeader: parts.edge.sendViaHeader }),
+    ...optionalField('hostingIngress', parts.edge?.hostingIngress),
+    ...optionalField('hostingIngressNetwork', parts.edge?.hostingIngressNetwork),
+    ...optionalField('hideWebServerNames', parts.edge?.hideWebServerNames),
+    ...optionalField('sendViaHeader', parts.edge?.sendViaHeader),
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
@@ -3114,7 +3122,9 @@ async function toPreparedDeployResult(
     ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
     ...nonEmptyListField('configFiles', parts.configFiles),
     ...nonEmptyListField('configSecretRefs', parts.configSecretRefs),
-    ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
+    ...nonEmptyListField('networkShareCredentials', parts.networkShareCredentials),
+    ...optionalField('networkSharesResolved', parts.networkSharesResolved),
+    ...optionalField('sourceSelection', parts.sourceSelection),
     ...projectCacheFields(parts.projectCaches ?? NO_PROJECT_CACHES),
   }
 }
@@ -3132,6 +3142,14 @@ function projectCacheFields(
       ? {}
       : { cacheConsumers: state.cacheConsumers }),
   }
+}
+
+/** A one-key object, or nothing when the value is `undefined` or `null`. */
+function optionalField<K extends string, T>(
+  key: K,
+  value: T | null | undefined
+): Partial<Record<K, T>> {
+  return value == null ? {} : ({ [key]: value } as Partial<Record<K, T>>)
 }
 
 /** A list as a one-key object, or nothing when it is absent or empty (keeps old hashes and payloads as they were). */
@@ -4267,6 +4285,7 @@ export async function prepareDeployCompose(
             // Left out when there are none, so an environment without generated
             // files keeps the hash it already has.
             ...nonEmptyListField('configFiles', withVariables.configFiles),
+            ...nonEmptyListField('networkShareCredentials', withVariables.networkShareCredentials),
             storage: storageMaterialRaw,
             ...cacheHashInputs(cacheState),
           },
@@ -4298,7 +4317,7 @@ export async function prepareDeployCompose(
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),
     managedNetworkServices,
-    ...(managedNetwork === undefined ? {} : { managedNetwork }),
+    ...optionalField('managedNetwork', managedNetwork),
     containers: pipeline.containers,
     ingressServices: pipeline.ingressServices,
     edge,
@@ -4310,6 +4329,8 @@ export async function prepareDeployCompose(
     secretPlan: withVariables.secretPlan,
     configFiles: withVariables.configFiles,
     configSecretRefs: withVariables.configSecretRefs,
+    networkShareCredentials: withVariables.networkShareCredentials,
+    ...optionalField('networkSharesResolved', withVariables.networkSharesResolved),
     sourceSelection: params.sourceSelection,
   })
 }

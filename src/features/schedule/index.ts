@@ -19,7 +19,13 @@ export {
 } from './planner.ts'
 export {
   HOST_ACCESS_APPROVAL_METADATA_KEY,
+  NETWORK_SHARES_APPROVAL_METADATA_KEY,
+  NETWORK_SHARES_PERMISSION,
   type HostAccessActor,
+  type NetworkSharesActor,
+  type NetworkSharesPlan,
+  type NetworkSharesUseEvent,
+  settleNetworkShares,
   planEnvironmentDeploy,
   type PlanDeployError,
   type PlanEnvironmentDeployDeps,

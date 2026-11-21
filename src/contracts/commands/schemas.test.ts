@@ -2197,6 +2197,34 @@ test('parseCommandPayload rejects a non-boolean hostLevelApproved', () => {
   )
 })
 
+test('parseCommandPayload round-trips allowNetworkShares on environment.deploy', () => {
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+    ...MINIMAL_DEPLOY,
+    allowNetworkShares: true,
+  }) as { allowNetworkShares?: boolean }
+  assertEquals(parsed.allowNetworkShares, true)
+})
+
+test('parseCommandPayload leaves allowNetworkShares absent when the control plane omits it', () => {
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, MINIMAL_DEPLOY) as Record<
+    string,
+    unknown
+  >
+  assertEquals('allowNetworkShares' in parsed, false)
+})
+
+test('parseCommandPayload rejects a non-boolean allowNetworkShares', () => {
+  assertThrows(
+    () =>
+      parseCommandPayload('environment.deploy' as CommandType, {
+        ...MINIMAL_DEPLOY,
+        allowNetworkShares: 'true',
+      }),
+    Error,
+    'Invalid environment.deploy payload'
+  )
+})
+
 function deployPayloadWithPrincipal(runtimes: unknown) {
   return {
     environmentId: 'env-1',
@@ -8082,6 +8110,42 @@ test('sourceMaterial carries optional build limits, strictly', () => {
         ...NATIVE_APP_BASE,
         sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, buildLimits: bad }],
       })
+    )
+  }
+})
+
+test('parseEnvironmentDeployPayload keeps networkShareCredentials and rejects bad shapes', () => {
+  const entry = {
+    volume: 'media',
+    composeServiceName: 'web',
+    usernameKey: 'SMB_USER',
+    passwordKey: 'SMB_PASS',
+    domain: 'WORK',
+  }
+  assertEquals(
+    parseEnvironmentDeployPayload({ ...BASE_ENVIRONMENT_DEPLOY, networkShareCredentials: [entry] })
+      .networkShareCredentials,
+    [entry]
+  )
+  assertEquals(
+    parseEnvironmentDeployPayload(BASE_ENVIRONMENT_DEPLOY).networkShareCredentials,
+    undefined
+  )
+  const plain = { volume: 'a', passwordKey: 'P', username: 'u', composeServiceName: null }
+  assertEquals(
+    parseEnvironmentDeployPayload({ ...BASE_ENVIRONMENT_DEPLOY, networkShareCredentials: [plain] })
+      .networkShareCredentials,
+    [plain]
+  )
+  for (const bad of [
+    'x',
+    [{ volume: 'media', composeServiceName: 'web' }],
+    [{ ...entry, username: 'u' }],
+    [entry, entry],
+    [{ ...entry, passwordKey: 5 }],
+  ]) {
+    assertThrows(() =>
+      parseEnvironmentDeployPayload({ ...BASE_ENVIRONMENT_DEPLOY, networkShareCredentials: bad })
     )
   }
 })

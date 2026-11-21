@@ -363,6 +363,17 @@ test('parseServerOptions and resolveEffectiveServerTimezone', () => {
   assertEquals(parseServerOptions({ sendViaHeader: false }), { sendViaHeader: false })
   assertEquals(parseServerOptions({ sendViaHeader: null }), {})
   assertEquals(parseServerOptions({ sendViaHeader: 'on' }), {})
+  assertEquals(parseServerOptions({ networkShares: true }), { networkShares: true })
+  assertEquals(parseServerOptions({ networkShares: false }), { networkShares: false })
+  assertEquals(parseServerOptions({ networkShares: null }), {})
+  assertEquals(parseServerOptions({ networkShares: 'on' }), {})
+  const since = '2026-02-01T00:00:00.000Z'
+  assertEquals(parseServerOptions({ networkShares: true, networkSharesSince: since }), {
+    networkShares: true,
+    networkSharesSince: since,
+  })
+  assertEquals(parseServerOptions({ networkSharesSince: 'not a time' }), {})
+  assertEquals(parseServerOptions({ networkSharesSince: 5 }), {})
   assertEquals(parseServerOptions(null), null)
   assertEquals(parseServerOptions({}), {})
 

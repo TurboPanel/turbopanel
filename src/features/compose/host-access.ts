@@ -13,7 +13,8 @@
  * - `services.<name>.volumes` — short (`src:dst[:mode]`) and long
  *   (`type: bind` / `npipe` / an unknown type) syntax;
  * - top-level `volumes.<name>.driver_opts` that make a local volume a bind
- *   (`o: bind`, `type: none`, a host-path `device`);
+ *   (`o: bind`, `type: none`, a host-path `device`); an SMB share (`cifs` /
+ *   `smb3`) is not one, and is gated by `./network-shares.ts` instead;
  * - top-level `volumes.<name>.name` / `external`, which name a Docker volume
  *   the stack does not own (another stack's data, mounted on deploy and
  *   removed by `compose down --volumes`);
@@ -41,6 +42,7 @@
  */
 
 import { GATED_SERVICE_FIELD_KEYS, HOST_LEVEL_OPT_IN_SENTENCE } from './field-policy.ts'
+import { isNetworkShareDriverOpts } from './network-shares.ts'
 import { resolveComposeTags } from './tags.ts'
 
 /** One host-level reach, at a Compose path, with the authored value. */
@@ -300,6 +302,8 @@ function checkTopLevelVolumes(out: Collector, volumes: unknown): void {
 }
 
 function checkVolumeDriverOpts(out: Collector, name: string, opts: Record<string, unknown>): void {
+  // An SMB share names no host path; it has its own gate (`./network-shares.ts`).
+  if (isNetworkShareDriverOpts(opts)) return
   const at = ['volumes', name, 'driver_opts']
   const type = typeof opts.type === 'string' ? opts.type.trim().toLowerCase() : undefined
   const o = typeof opts.o === 'string' ? opts.o : ''

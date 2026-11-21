@@ -392,6 +392,11 @@ test('compose-checkout-v1 is advertised and raised no floor', () => {
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
 })
 
+test('network-shares-v1 is advertised and raised no floor', () => {
+  assertEquals(DAEMON_WIRE_FEATURES.includes('network-shares-v1'), true)
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.18')
+})
+
 test('custom-node-app-mode-v1 is advertised and raised no floor', () => {
   assertEquals(CUSTOM_NODE_APP_MODE_FEATURE, 'custom-node-app-mode-v1')
   assertEquals(

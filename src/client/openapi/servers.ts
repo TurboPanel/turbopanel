@@ -679,6 +679,11 @@ export const serverSchemas = {
         description:
           'Which configured layer supplied sendViaHeader (null when the default, off, is used).',
       },
+      networkShares: {
+        type: 'boolean',
+        description:
+          'Allow Network Shares: whether Compose projects on this server may mount SMB (cifs / smb3) volumes. server.options.networkShares; off unless set, with no organization setting. Deploying one also needs the environments.deploy_network_shares capability (owners and managers).',
+      },
       buildLimits: {
         type: 'object',
         description:
@@ -905,12 +910,13 @@ export const serverSchemas = {
       options: {
         type: 'object',
         description:
-          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames and sendViaHeader (boolean or null to inherit the organization setting) are server options too.',
+          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames and sendViaHeader (boolean or null to inherit the organization setting) are server options too. networkShares (boolean; null turns it off) is the per-server Allow Network Shares switch.',
         properties: {
           sshPort: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
           ntp: { type: ['object', 'null'] },
           hideWebServerNames: { type: ['boolean', 'null'] },
           sendViaHeader: { type: ['boolean', 'null'] },
+          networkShares: { type: ['boolean', 'null'] },
           hosting: {
             type: 'object',
             properties: { enabled: { type: 'boolean' } },

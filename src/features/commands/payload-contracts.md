@@ -288,6 +288,45 @@ the commit its recorded Base names. Every daemon must list `compose-checkout-v1`
 (the control plane holds back one that does not), and the wire rules in
 `src/lib/version-wire.ts` apply: the daemon merges first.
 
+**`allowNetworkShares` (network share volumes):** optional boolean, `true` or
+absent, next to `hostLevelApproved`. The planner sets it only when the resolved
+compose has a top-level volume with `driver_opts.type` `cifs` or `smb3` and the
+gate passed: the target server has `options.networkShares === true` ("Allow
+Network Shares") and the deployer holds the permission
+`environments.deploy_network_shares` (organization entity: Owner and Manager by
+default, the platform admin bypass, grantable to other roles). A scheduled or
+automatic deploy needs a recorded approval (metadata key
+`composeNetworkSharesApproval`) of the authored volumes AND of what they resolved
+to; turning the server setting off and on again voids older approvals. It is set
+per server, so it reaches only servers that passed. The daemon refuses a share
+without it. Every daemon must list `network-shares-v1` (the daemon merges first).
+
+The volume's `device` and `o` resolve `{$KEY}` from project variables, then the
+control plane re-checks the result: type `cifs`/`smb3`, device `//host/share`, no
+`bind`/`rbind`/`remount`/`move`/`credentials`, no comma or line break inside a
+value, and no `$` left. A share secret never appears in the compose text or the
+payload.
+
+**`networkShareCredentials` (share logins):** optional array on
+`environment.deploy`, sent only with `allowNetworkShares`:
+`{ volume, passwordKey, usernameKey? | username?, domain?, composeServiceName? }[]`
+(at most 64, one entry per volume). `passwordKey` and `usernameKey` name
+`variableMaterial[]` entries, looked up as `${composeServiceName ?? ""}::${key}`
+(`forBuild: false`, `forRuntime: false`, `isLiteral: false`, `valueEnvelope`
+sealed like every other secret); `username` and `domain` are plain text. The
+control plane sends the first compose service as `composeServiceName`. The
+compose text carries no login: user name, domain and password leave `o`. The
+daemon unseals the entries and adds `username=`, `password=` and `domain=` to
+that volume's `o` itself; the control plane never sends them, nor `credentials=`,
+in `o`. A literal `password=` in `o` (also `pass=` or `pwd=`), or a password that
+is not a `{$KEY}` of a secret variable, is refused by the control plane (the
+daemon refuses them in compose too). Values must not be empty or contain a comma
+or a line break. A secret domain, or a secret user
+name without a secret password, is refused. The same secrets are listed in
+`configSecretRefs` of the deployment options so a boot rehydrate fetches them
+again. Previews send no credentials. The wire rules in `src/lib/version-wire.ts`
+apply.
+
 **`composeFiles[]` (compiled runtime file):** `environment.deploy` carries
 `EnvironmentDeployComposeFile[]`. Deploys send a **single**
 `{ filename: 'compose.yaml', role: 'runtime', source: 'inline', content }` entry

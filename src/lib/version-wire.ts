@@ -272,6 +272,7 @@ export const DAEMON_WIRE_FEATURES = [
   'hosting-name-tls-v1',
   'acme-issue-dns-v1',
   'compose-checkout-v1',
+  'network-shares-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]

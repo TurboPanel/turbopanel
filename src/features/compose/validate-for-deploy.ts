@@ -151,6 +151,31 @@ export type ComposeHostAccessActorError = {
   issues: ComposeValidationIssue[]
 }
 
+/**
+ * The document mounts an SMB network share (a top-level volume with a `cifs` or
+ * `smb3` driver type) and the deploy is not allowed to.
+ *
+ * - `permission` — the person deploying lacks the capability
+ *   (`environments.deploy_network_shares`).
+ * - `approval` — an automated deploy (a git push, for one) of a share no person
+ *   who may deploy shares has deployed in this form. The approval is recorded
+ *   on `environment.metadata.composeNetworkSharesApproval`, keyed on
+ *   `networkSharesFingerprint`.
+ * - `server_setting` — a target server has "Allow Network Shares" off
+ *   (`server.options.networkShares`); `servers` names them.
+ *
+ * Produced by the deploy planner, which has the actor and the servers; never by
+ * {@link validateComposeForDeploy}.
+ */
+export type ComposeNetworkSharesRefusedError = {
+  kind: 'compose_network_shares_refused'
+  reason: 'permission' | 'approval' | 'server_setting'
+  /** Names of the top-level volumes that mount a share. */
+  volumes: string[]
+  /** `server_setting` only: the target servers that do not allow shares. */
+  servers?: Array<{ id: string; name: string }>
+}
+
 /** Everything {@link validateComposeForDeploy} can refuse a deploy with. */
 export type ComposeDeployValidationError =
   | ComposeMergedInvalidError
@@ -158,6 +183,13 @@ export type ComposeDeployValidationError =
   | ComposeUnsupportedFieldError
   | ComposeGatedFieldError
   | ComposeHostAccessActorError
+  | ComposeNetworkSharesRefusedError
+
+/** What {@link validateComposeForDeploy} itself can return (never the planner's share refusal). */
+export type ComposeDocumentValidationError = Exclude<
+  ComposeDeployValidationError,
+  ComposeNetworkSharesRefusedError
+>
 
 function toValidationIssue(issue: ComposeLintIssue): ComposeValidationIssue {
   return {
@@ -195,7 +227,7 @@ export function validateComposeForDeploy(
      */
     composeRemoteBuildSourcesEnabled?: boolean
   }
-): ComposeDeployValidationError | null {
+): ComposeDocumentValidationError | null {
   // Stages 1–3. `validateComposeDocument` runs the vendored Compose schema, the
   // `x-turbopanel` extension schema and the semantic linter in that order, and
   // returns the first that refuses.

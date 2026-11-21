@@ -433,6 +433,19 @@ export type ServerOptions = {
    */
   sendViaHeader?: boolean
   /**
+   * Allow Compose projects deployed to this server to mount SMB network shares
+   * (top-level volumes with a `cifs` or `smb3` driver type). Off when omitted.
+   * There is no organization setting: the owner decides per server.
+   */
+  networkShares?: boolean
+  /**
+   * When `networkShares` was last turned on (ISO time), set by the control
+   * plane and never by a request. An automated deploy runs only on an approval
+   * recorded after this, so turning the setting off and on again voids the
+   * approvals made before.
+   */
+  networkSharesSince?: string
+  /**
    * Desired state for Docker-hosting provisioning; consumed by later phases to
    * choose self-heal vs report-only.
    */
@@ -2050,6 +2063,13 @@ function assignWebServerSettings(options: ServerOptions, value: Record<string, u
   if (hide !== undefined) options.hideWebServerNames = hide
   const via = parseSendViaHeader(value.sendViaHeader)
   if (via !== undefined) options.sendViaHeader = via
+  if (typeof value.networkShares === 'boolean') options.networkShares = value.networkShares
+  if (
+    typeof value.networkSharesSince === 'string' &&
+    !Number.isNaN(Date.parse(value.networkSharesSince))
+  ) {
+    options.networkSharesSince = value.networkSharesSince
+  }
 }
 
 /** Parse operator-controlled `server.options` jsonb. */

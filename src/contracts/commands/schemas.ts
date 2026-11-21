@@ -2744,6 +2744,32 @@ export type EnvironmentDeployHostAccess = {
    * daemon then refuses such a context. Internal hosts are refused either way.
    */
   remoteBuildSourcesApproved?: boolean
+  /**
+   * True only when the document mounts a network share (a top-level volume
+   * with a `cifs` or `smb3` driver type), the target server allows network
+   * shares and the deploying user may deploy them. Absent reads as `false`;
+   * the daemon then refuses such a volume.
+   */
+  allowNetworkShares?: boolean
+  /**
+   * The logins of the network share volumes (`volume` is the top-level volume
+   * name). `passwordKey` / `usernameKey` is the `key` of a sealed
+   * `variableMaterial[]` entry, looked up as `${composeServiceName ?? ""}::${key}`;
+   * no secret value is carried here and none is in the compose text. A plain
+   * user name is `username` (not with `usernameKey`), a plain domain `domain`. The daemon adds
+   * `username=`, `password=` and `domain=` to the volume's `o` itself; the
+   * control plane never sends them (nor `credentials=`) in `o`. A share with no secret credential is absent from the list.
+   */
+  networkShareCredentials?: EnvironmentDeployNetworkShareCredential[]
+}
+
+export type EnvironmentDeployNetworkShareCredential = {
+  volume: string
+  passwordKey: string
+  usernameKey?: string
+  username?: string
+  domain?: string
+  composeServiceName?: string | null
 }
 
 export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
@@ -3607,6 +3633,61 @@ export function parseDeployConfigFiles(value: unknown): EnvironmentDeployConfigF
     throw new TypeError('configFiles exceed the maximum total size')
   }
   return files
+}
+
+const MAX_NETWORK_SHARE_CREDENTIALS = 64
+function optionalNonEmptyString(entry: Record<string, unknown>, name: string): string | undefined {
+  const value = entry[name]
+  if (value === undefined) return undefined
+  if (!isString(value) || value === '') {
+    throw new TypeError(`networkShareCredentials ${name} must be a non-empty string`)
+  }
+  return value
+}
+
+function parseNetworkShareCredentialEntry(entry: unknown): EnvironmentDeployNetworkShareCredential {
+  if (!isRecord(entry) || !isString(entry.volume) || entry.volume === '') {
+    throw new TypeError('Invalid environment.deploy networkShareCredentials entry')
+  }
+  const passwordKey = optionalNonEmptyString(entry, 'passwordKey')
+  if (passwordKey === undefined) {
+    throw new TypeError('networkShareCredentials entry needs a passwordKey')
+  }
+  const out: EnvironmentDeployNetworkShareCredential = { volume: entry.volume, passwordKey }
+  const usernameKey = optionalNonEmptyString(entry, 'usernameKey')
+  const username = optionalNonEmptyString(entry, 'username')
+  if (usernameKey !== undefined && username !== undefined) {
+    throw new TypeError('networkShareCredentials takes usernameKey or username, not both')
+  }
+  if (usernameKey !== undefined) out.usernameKey = usernameKey
+  if (username !== undefined) out.username = username
+  const domain = optionalNonEmptyString(entry, 'domain')
+  if (domain !== undefined) out.domain = domain
+  const service = entry.composeServiceName
+  if (service !== undefined && service !== null) {
+    if (!isString(service)) {
+      throw new TypeError('networkShareCredentials composeServiceName must be a string or null')
+    }
+    out.composeServiceName = service
+  } else if (service === null) {
+    out.composeServiceName = null
+  }
+  return out
+}
+
+export function parseNetworkShareCredentials(
+  value: unknown
+): EnvironmentDeployNetworkShareCredential[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) throw new TypeError('networkShareCredentials must be an array')
+  if (value.length > MAX_NETWORK_SHARE_CREDENTIALS) {
+    throw new TypeError('too many networkShareCredentials')
+  }
+  const entries = value.map(parseNetworkShareCredentialEntry)
+  if (new Set(entries.map((row) => row.volume)).size !== entries.length) {
+    throw new TypeError('networkShareCredentials volumes must be unique')
+  }
+  return entries
 }
 
 function parseDeployEnvFile(value: unknown): string | undefined {
@@ -5394,6 +5475,8 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       keepRunningServices: parseKeepRunningField(value.keepRunningServices),
       hostLevelApproved: parseOptionalDeployBoolean(value.hostLevelApproved),
       remoteBuildSourcesApproved: parseOptionalDeployBoolean(value.remoteBuildSourcesApproved),
+      allowNetworkShares: parseOptionalDeployBoolean(value.allowNetworkShares),
+      networkShareCredentials: parseNetworkShareCredentials(value.networkShareCredentials),
       tlsMaterial,
       variableMaterial: parseDeployVariableMaterial(value.variableMaterial),
       envFile: parseDeployEnvFile(value.envFile),

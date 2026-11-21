@@ -189,6 +189,53 @@ test('user without grants is denied', async () => {
   })
 })
 
+test('environments.deploy_network_shares: owner, manager and an exact grant pass; nothing else does', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId }) => {
+    const check = () =>
+      can(db, userId, 'environments.deploy_network_shares', 'organization', organizationId)
+    const grantTo = (permission: string) =>
+      db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId: userId,
+        permission,
+      })
+
+    if (await check()) throw new Error('a member without a grant must be denied')
+
+    // A grant of another key says nothing about this one.
+    await grantTo('system:operate')
+    if (await check()) throw new Error('an unrelated grant must not confer the permission')
+
+    await grantTo('environments.deploy_network_shares')
+    if (!(await check())) throw new Error('the exact grant must allow')
+    await db.delete(grant).where(eq(grant.entityId, organizationId))
+
+    await grantTo('organization:manage')
+    if (!(await check())) throw new Error('an organization manager holds it by default')
+    await db.delete(grant).where(eq(grant.entityId, organizationId))
+
+    await grantTo('organization:own')
+    if (!(await check())) throw new Error('an organization owner holds it by default')
+  })
+})
+
+test('the network shares permission is not a way to manage the organization', async () => {
+  await withTestFixtures(async ({ db, userId, organizationId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: 'environments.deploy_network_shares',
+    })
+    if (await can(db, userId, 'organization:manage', 'organization', organizationId)) {
+      throw new Error('the share grant must not satisfy organization:manage')
+    }
+  })
+})
+
 test('superadmin bypass', async () => {
   await withTestFixtures(async ({ db, organizationId, workspaceId }) => {
     const superadminEmail = `evaluator-superadmin-${crypto.randomUUID()}@example.com`

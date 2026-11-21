@@ -4158,6 +4158,61 @@ test('PATCH /servers/:id does not commit hosting.enabled when hierarchy fails', 
   })
 })
 
+test('PATCH /servers/:id stamps networkSharesSince when network shares turn on, and audits the change', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const patch = (networkShares: boolean) =>
+      app.request(`/servers/${serverId}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ options: { networkShares } }),
+      })
+    const stored = async () => {
+      const [row] = await db
+        .select({ options: server.options })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      return row!.options as { networkShares?: boolean; networkSharesSince?: string }
+    }
+    const auditRows = async () =>
+      await db
+        .select({ context: audit.context })
+        .from(audit)
+        .where(
+          and(
+            eq(audit.organizationId, organizationId),
+            eq(audit.targetId, serverId),
+            eq(audit.action, 'server.network_shares.update')
+          )
+        )
+
+    assertEquals((await patch(true)).status, 200)
+    const on = await stored()
+    assertEquals(on.networkShares, true)
+    assertEquals(typeof on.networkSharesSince, 'string')
+    const rows = await auditRows()
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.context, { serverId, before: false, after: true })
+
+    // The same value again stamps nothing and audits nothing.
+    assertEquals((await patch(true)).status, 200)
+    assertEquals((await stored()).networkSharesSince, on.networkSharesSince)
+    assertEquals((await auditRows()).length, 1)
+
+    // Off then on again: a fresh stamp (it voids older approvals) and two more rows.
+    assertEquals((await patch(false)).status, 200)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    assertEquals((await patch(true)).status, 200)
+    assertEquals((await stored()).networkSharesSince !== on.networkSharesSince, true)
+    assertEquals((await auditRows()).length, 3)
+  })
+})
+
 test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecycle', async () => {
   await withServerDeleteFixtures(
     async ({ db, secrets, userId, organizationId, serverId, registry }) => {

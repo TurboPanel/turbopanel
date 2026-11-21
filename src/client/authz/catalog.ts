@@ -13,6 +13,12 @@ export const PERMISSIONS = [
   'system:read',
   'system:operate',
   'system:manage',
+  /**
+   * Deploy Compose projects that mount SMB network shares. Owners, managers and
+   * platform admins hold it implicitly; any other member needs an organization
+   * grant of this key. Organization-scoped only.
+   */
+  'environments.deploy_network_shares',
 ] as const
 
 export type PermissionKey = (typeof PERMISSIONS)[number]
@@ -20,8 +26,9 @@ export type PermissionKey = (typeof PERMISSIONS)[number]
 /** Permissions that may appear on `grant` rows. `system:manage` is superadmin-only. */
 export type GrantablePermissionKey = Exclude<PermissionKey, 'system:manage'>
 
-export const GRANTABLE_PERMISSIONS: readonly GrantablePermissionKey[] =
-  PERMISSIONS.filter((key): key is GrantablePermissionKey => key !== 'system:manage')
+export const GRANTABLE_PERMISSIONS: readonly GrantablePermissionKey[] = PERMISSIONS.filter(
+  (key): key is GrantablePermissionKey => key !== 'system:manage'
+)
 
 export const RESOURCE_KINDS = [
   'organization',
@@ -68,10 +75,24 @@ export const GRANT_ENTITY_TYPES = [
  * — there are no per-repository access grants.
  */
 export const ENTITY_TYPES = [
-  'organization', 'team', 'workspace', 'environment',
-  'project', 'service', 'hosting', 'server', 'variable', 'managed',
-  'container', 'tls', 'principal', 'storage',
-  'network', 'datacenter', 'ip', 'repository',
+  'organization',
+  'team',
+  'workspace',
+  'environment',
+  'project',
+  'service',
+  'hosting',
+  'server',
+  'variable',
+  'managed',
+  'container',
+  'tls',
+  'principal',
+  'storage',
+  'network',
+  'datacenter',
+  'ip',
+  'repository',
 ] as const
 export type EntityType = (typeof ENTITY_TYPES)[number]
 
@@ -87,6 +108,7 @@ export const PERMISSION_DISPLAY_NAMES: Record<PermissionKey, string> = {
   'system:read': 'System inspect',
   'system:operate': 'System operate',
   'system:manage': 'System administer',
+  'environments.deploy_network_shares': 'Deploy network shares',
 }
 
 const PERMISSION_KEY_SET = new Set<string>(PERMISSIONS)
@@ -99,9 +121,7 @@ export function isPermissionKey(value: string): value is PermissionKey {
 }
 
 /** True when the key may be written as an access grant (excludes `system:manage`). */
-export function isGrantablePermissionKey(
-  value: string,
-): value is GrantablePermissionKey {
+export function isGrantablePermissionKey(value: string): value is GrantablePermissionKey {
   return isPermissionKey(value) && value !== 'system:manage'
 }
 
@@ -114,9 +134,7 @@ export function isEntityType(value: string): value is EntityType {
   return ENTITY_TYPE_SET.has(value)
 }
 
-export function isGrantEntityType(
-  value: string,
-): value is (typeof GRANT_ENTITY_TYPES)[number] {
+export function isGrantEntityType(value: string): value is (typeof GRANT_ENTITY_TYPES)[number] {
   return GRANT_ENTITY_TYPE_SET.has(value)
 }
 

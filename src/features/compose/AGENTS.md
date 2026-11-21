@@ -300,6 +300,37 @@ code-unit order (never `localeCompare`) so it is byte-stable across hosts, and a
 test pins one known value — changing the canonical form voids every stored
 approval.
 
+**Network share volumes.** A top-level volume whose `driver_opts.type` is
+`cifs` or `smb3` (`findNetworkShareVolumes`, `network-shares.ts`; not host-level,
+so `checkVolumeDriverOpts` skips it unless it is also a bind) is refused before
+dispatch unless BOTH the target server has `options.networkShares === true`
+("Allow Network Shares", no organization setting) AND the deployer holds the
+catalog permission `environments.deploy_network_shares` (organization entity;
+`can()` treats organization owner/manager and the admin bypass as holders, other
+roles need a grant). Refusals are `compose_network_shares_refused` with `reason`
+`permission`, `approval` or `server_setting` (403, `mapNetworkSharesRefusedError`).
+`device` and `o` take `{$KEY}` from project variables
+(`applyShareVolumeVariables`, `network-share-variables.ts`); Compose `${...}` or a
+bare `$` there is refused, and the RESOLVED type, device (`//host/share`) and
+options are re-checked (no bind/rbind/remount/move/credentials, no comma). A
+share's password option (`{$KEY}` of a secret) leaves `o` and goes out as sealed
+`variableMaterial` plus `networkShareCredentials` (`passwordKey`, and `usernameKey`
+or plain `username`, plain `domain`); the daemon adds `username=`/`password=`/`domain=` to `o` itself. A
+password that is literal or not a secret variable, a secret domain, and a secret
+user name without a secret password are refused.
+
+Approval is two steps because resolved values exist only after prepare.
+`planEnvironmentDeploy` is read-only: it checks the actor, the server setting
+and (automated deploys) the authored fingerprint and that no server was
+re-enabled after the approval. `settleNetworkShares` then runs on the prepared
+deploys: automated deploys need every resolved-share hash
+(`resolvedSharesCanonical`, secret values excluded) on the stored
+`composeNetworkSharesApproval`; a permitted deploy records it with a
+`compose.network_shares.approve` audit row. Automated runs write
+`compose.network_shares.use`; changing the server setting writes
+`server.network_shares.update`. `ServerOptions.networkSharesSince` (set only by
+the control plane) is the revoke path for older approvals.
+
 **What the daemon is told.** The planner's verdict rides every
 `environment.deploy` command of that deploy as `hostLevelApproved: true`
 (`PlannedDeploy.hostLevelApproved` → `persistDeployFanOut` →
