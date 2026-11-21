@@ -352,3 +352,58 @@ test('a document that is not a partial layer is held to the full rules', () => {
   assert(!strict.ok)
   assertStringIncludes(strict.issues[0]!.message, 'nodeVersion is only valid')
 })
+
+const QBIT_BASE = {
+  compose: doc({
+    services: {
+      qbittorrent: {
+        image: 'lscr.io/linuxserver/qbittorrent',
+        volumes: ['qbittorrent-config:/config'],
+      },
+    },
+  }),
+}
+
+test('a save that drops a top-level volume a service still mounts is refused', () => {
+  // The Base only names the service; the volume was declared by the environment's changes.
+  const stored = { compose: doc({ volumes: { 'qbittorrent-config': null, pia: null } }) }
+  assertEquals(saveIssues(QBIT_BASE, stored), [])
+
+  // The editor showed the other volumes only; saving what it showed drops the declaration.
+  const resaved = { compose: doc({ volumes: { pia: null, downloads: null } }) }
+  const issues = saveIssues(QBIT_BASE, resaved)
+  assertEquals(issues.length, 1)
+  assertStringIncludes(issues[0]!.message, 'volume "qbittorrent-config"')
+  assertStringIncludes(issues[0]!.message, 'Service "qbittorrent"')
+})
+
+test('a volume the Base declares satisfies the service, and a bind mount needs none', () => {
+  const project = {
+    compose: doc({
+      services: {
+        qbittorrent: {
+          image: 'x',
+          volumes: ['qbittorrent-config:/config', './data:/data', '/srv:/srv', '/anon'],
+        },
+      },
+      volumes: { 'qbittorrent-config': null },
+    }),
+  }
+  const env = { compose: doc({ services: { qbittorrent: { image: 'y' } } }) }
+  assertEquals(saveIssues(project, env), [])
+})
+
+test('an undefined network, secret or config is refused the same way', () => {
+  const project = {
+    compose: doc({
+      services: {
+        web: { image: 'x', networks: ['back'], secrets: ['tok'], configs: [{ source: 'cfg' }] },
+      },
+    }),
+  }
+  const messages = saveIssues(project, { compose: doc({}) }).map((i) => i.message)
+  assertEquals(messages.length, 3)
+  assert(messages.some((m) => m.includes('network "back"')))
+  assert(messages.some((m) => m.includes('secret "tok"')))
+  assert(messages.some((m) => m.includes('config "cfg"')))
+})

@@ -13,6 +13,7 @@
 
 import { mergeComposeLayers } from './layers.ts'
 import { principalAliasesInComposeData } from './root-extension.ts'
+import { undefinedResourceIssues } from './undefined-resources.ts'
 import {
   assertComposeDocument,
   assertComposeLayerDocument,
@@ -201,7 +202,7 @@ export function validateEnvironmentComposeAgainstBase(params: {
     merged: true,
     knownPrincipalAliases: principalAliasesInComposeData(merged.data),
   })
-  if (result.ok) return []
+  if (result.ok) return undefinedResourceIssues(merged.data)
   return result.issues.map(({ line: _line, message, ...rest }) => ({
     ...rest,
     message: message.replace(LINE_PREFIX, ''),

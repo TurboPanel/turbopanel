@@ -111,3 +111,24 @@ test('the deploy prepare merge reads changes that only set a field on a Base ser
     web: { image: 'nginx:alpine', command: ['npm', 'start'] },
   })
 })
+
+test('a PATCH that drops a volume the Base still mounts is refused, naming the volume', () => {
+  const project = {
+    compose: compose({ qbittorrent: { image: 'qbit', volumes: ['qbittorrent-config:/config'] } }),
+  }
+  const withVolume = emptyComposeDocument()
+  withVolume.data.volumes = { 'qbittorrent-config': null, pia: null }
+  assertEquals(
+    parseEnvironmentPatchOptions({ options: { compose: withVolume } }, OVERLAY, project).ok,
+    true
+  )
+
+  // What the editor showed, saved back: the declaration is gone.
+  const shown = emptyComposeDocument()
+  shown.data.volumes = { pia: null, downloads: null }
+  const refused = refusal(
+    parseEnvironmentPatchOptions({ options: { compose: shown } }, OVERLAY, project)
+  )
+  assertEquals(refused.error, 'compose_invalid')
+  assertStringIncludes(refused.issues[0]!.message, 'volume "qbittorrent-config"')
+})
