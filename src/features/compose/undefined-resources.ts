@@ -75,11 +75,12 @@ function referencedVolumes(service: Record<string, unknown>): string[] {
 function referencedNetworks(service: Record<string, unknown>): string[] {
   if (typeof service.network_mode === 'string') return []
   const networks = service.networks
-  const names = Array.isArray(networks)
-    ? networks.filter((n): n is string => typeof n === 'string')
-    : isRecord(networks)
-      ? Object.keys(networks)
-      : []
+  let names: string[] = []
+  if (Array.isArray(networks)) {
+    names = networks.filter((n): n is string => typeof n === 'string')
+  } else if (isRecord(networks)) {
+    names = Object.keys(networks)
+  }
   return names.filter((n) => n !== 'default' && n !== 'host' && n !== 'none')
 }
 
