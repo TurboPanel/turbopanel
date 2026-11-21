@@ -289,6 +289,17 @@ export function resolveShareVolume(
         'A variable used in the options of a network share must not contain a comma or a line break'
       )
     }
+    if (
+      outcome.text.includes('=') &&
+      outcome.text.slice(outcome.text.indexOf('=') + 1).trim() === ''
+    ) {
+      return fail(
+        volume,
+        'o',
+        'variable_ref_invalid',
+        `The option ${outcome.text.split('=')[0].trim()} of a network share has an empty value (is its variable empty?)`
+      )
+    }
     const optionName = outcome.text.split('=')[0].trim().toLowerCase()
     if (REFUSED_OPTIONS.has(optionName)) {
       return fail(

@@ -1483,6 +1483,13 @@ describe('network share volume variables', () => {
     )
   })
 
+  it('refuses an option whose resolved value is empty', () => {
+    assertEquals(
+      refused({ device: '//h/m', o: 'domain={$EMPTY}' }, [entry('EMPTY', '')]).kind,
+      'variable_ref_invalid'
+    )
+  })
+
   it('refuses a literal password and a non-secret password variable', () => {
     assertEquals(
       refused({ device: '//h/m', o: 'password=not-a-real-password' }).kind,
