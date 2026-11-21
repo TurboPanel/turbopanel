@@ -229,11 +229,17 @@ export async function storeTrackedBase(
     ) {
       return
     }
+    const lastReadAt = new Date().toISOString()
+    // The same file again: only the time of the read moves, the Base stays.
     if (
       source.lastReadDigest === record.digest &&
       source.lastReadCommitSha === record.commitSha &&
       options.compose !== undefined
     ) {
+      await tx
+        .update(project)
+        .set({ options: { ...options, composeSource: { ...source, lastReadAt } } })
+        .where(eq(project.id, projectId))
       return
     }
     await tx
@@ -246,6 +252,7 @@ export async function storeTrackedBase(
             ...source,
             lastReadCommitSha: record.commitSha,
             lastReadDigest: record.digest,
+            lastReadAt,
           },
         },
       })

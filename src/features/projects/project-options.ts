@@ -48,6 +48,8 @@ export type ProjectComposeSource = {
   lastReadCommitSha?: string
   /** SHA-256 of the repository bytes the latest deploy read (track mode). */
   lastReadDigest?: string
+  /** When the latest tracked read happened (track mode), an ISO 8601 UTC string. */
+  lastReadAt?: string
 }
 
 /**
@@ -165,14 +167,14 @@ const SHA256_RE = /^[0-9a-f]{64}$/i
 
 type ComposeSourceOptional = Pick<
   ProjectComposeSource,
-  'ref' | 'mode' | 'lastReadCommitSha' | 'lastReadDigest'
+  'ref' | 'mode' | 'lastReadCommitSha' | 'lastReadDigest' | 'lastReadAt'
 >
 
 /** The optional `composeSource` fields, validated, or the reason one is invalid. */
 function parseComposeSourceOptional(
   value: Record<string, unknown>
 ): { ok: true; fields: ComposeSourceOptional } | { ok: false; reason: string } {
-  const { ref, mode, lastReadCommitSha, lastReadDigest } = value
+  const { ref, mode, lastReadCommitSha, lastReadDigest, lastReadAt } = value
   if (ref !== undefined && (typeof ref !== 'string' || ref.length > 255)) {
     return { ok: false, reason: 'composeSource.ref is invalid' }
   }
@@ -191,6 +193,12 @@ function parseComposeSourceOptional(
   ) {
     return { ok: false, reason: 'composeSource.lastReadDigest is not a sha-256 digest' }
   }
+  if (
+    lastReadAt !== undefined &&
+    (typeof lastReadAt !== 'string' || Number.isNaN(Date.parse(lastReadAt)))
+  ) {
+    return { ok: false, reason: 'composeSource.lastReadAt is not a timestamp' }
+  }
   return {
     ok: true,
     fields: {
@@ -198,6 +206,7 @@ function parseComposeSourceOptional(
       ...(mode === undefined ? {} : { mode }),
       ...(lastReadCommitSha === undefined ? {} : { lastReadCommitSha }),
       ...(lastReadDigest === undefined ? {} : { lastReadDigest }),
+      ...(lastReadAt === undefined ? {} : { lastReadAt }),
     },
   }
 }

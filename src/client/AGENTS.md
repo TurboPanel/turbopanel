@@ -404,13 +404,18 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   `staging` is built from that branch's file but never changes the shared Base
   or the last read. Listings, lint
   and a switch to `seed` see the last-read content; the environment-layer lint
-  therefore uses the last-deployed Base. `mode` and `lastRead*` are never
-  writable through `PATCH /projects/:id` or create, for a `seed` project as
+  therefore uses the last-deployed Base. `lastReadAt` (ISO time of the latest
+  tracked read, stored in the same options JSON; a read of an unchanged file
+  moves only it) is shown at `options.composeSource.lastReadAt`. `mode` and
+  `lastRead*` are never writable through `PATCH /projects/:id` or create, for a `seed` project as
   much as a `track` one.
   Preview reads the branch head and, when that fails, uses the stored Base with
   a `compose_base_unreadable` warning. Known limit: the read passes no daemon
   credential, so a private repository the provider cannot read may need its
-  connection fixed. Base edits in `track` mode are **409** `base_tracks_repository`;
+  connection fixed. Base edits in `track` mode, and changes to `composeSource` other than
+  `mode`, are **409** `base_tracks_repository` (`projects/tracked-base-edit.ts`); the
+  settings in the same options write (`containerNaming`, `defaultServerId`, deploy
+  tuning) still save and the stored Base is kept;
   `PATCH /projects/:id/compose-source {mode}` switches between `track` and
   `seed` (seed keeps the last-read Base editable).
 - **A new environment is a copy of the primary one:** `POST /environments`

@@ -55,6 +55,7 @@ import {
 } from './empty-setup.ts'
 import { catalogEnvironmentCompose } from './catalog-compose.ts'
 import { resolveEditTarget } from './edit-target.ts'
+import { changesTrackedBase, keepTrackedBase } from './tracked-base-edit.ts'
 import { applyEnvironmentPatch } from '../environments/routes.ts'
 import { isProjectDisplayNameTaken, PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
 import { isReservedSystemProjectName } from '../../features/system/hierarchy.ts'
@@ -655,6 +656,9 @@ async function keepStoredProjectDeployOptions(
     .limit(1)
   patchFields.options = settleDeployOptions(row?.options, patchFields.options, 'project')
   keepTrackedComposeSource(row?.options, patchFields.options)
+  if (isTrackingComposeSource(parseProjectOptions(row?.options).composeSource)) {
+    keepTrackedBase(row?.options, patchFields.options)
+  }
 }
 
 /**
@@ -672,11 +676,13 @@ function keepTrackedComposeSource(stored: unknown, options: Record<string, unkno
   delete rest.mode
   delete rest.lastReadCommitSha
   delete rest.lastReadDigest
+  delete rest.lastReadAt
   options.composeSource = {
     ...rest,
     ...(kept?.mode === undefined ? {} : { mode: kept.mode }),
     ...(kept?.lastReadCommitSha === undefined ? {} : { lastReadCommitSha: kept.lastReadCommitSha }),
     ...(kept?.lastReadDigest === undefined ? {} : { lastReadDigest: kept.lastReadDigest }),
+    ...(kept?.lastReadAt === undefined ? {} : { lastReadAt: kept.lastReadAt }),
   }
 }
 
@@ -892,13 +898,17 @@ export const BASE_TRACKS_REPOSITORY_ERROR = 'base_tracks_repository'
 const BASE_TRACKS_REPOSITORY_MESSAGE =
   "This project's Base follows the repository's compose file, so it cannot be edited here. Change the file in the repository, add the change to an environment, or switch the project to seed mode to edit the Base."
 
-async function loadProjectComposeSource(db: Db, projectId: string) {
+async function loadProjectOptions(db: Db, projectId: string): Promise<unknown> {
   const [row] = await db
     .select({ options: project.options })
     .from(project)
     .where(eq(project.id, projectId))
     .limit(1)
-  return parseProjectOptions(row?.options).composeSource
+  return row?.options
+}
+
+async function loadProjectComposeSource(db: Db, projectId: string) {
+  return parseProjectOptions(await loadProjectOptions(db, projectId)).composeSource
 }
 
 async function projectFollowsRepository(db: Db, projectId: string): Promise<boolean> {
@@ -924,7 +934,13 @@ async function routeComposeEdit(
   }
   // A project that follows its repository's compose file takes its Base from
   // each deploy, so an edit to the Base would be overwritten by the next one.
-  if (tracking && editTarget.kind === 'base') {
+  // The settings stored next to the Base still save: only a change to the
+  // document or to the source it follows is refused.
+  if (
+    tracking &&
+    editTarget.kind !== 'environment' &&
+    changesTrackedBase(requestBody, await loadProjectOptions(db, projectId))
+  ) {
     return c.json(
       { error: BASE_TRACKS_REPOSITORY_ERROR, message: BASE_TRACKS_REPOSITORY_MESSAGE },
       409
