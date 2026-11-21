@@ -238,3 +238,83 @@ test('a new all-servers tunnel is asked again after the short gap until a server
     assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row(), soon), 'asked')
   })
 })
+
+/** Answer the first question sent to a server, as the daemon would with nothing running. */
+async function askAndAnswer(
+  c: Parameters<Parameters<typeof withAllServersTunnel>[0]>[0],
+  id: string
+) {
+  const row = async () => {
+    const [r] = await c.db.select().from(server).where(eq(server.id, id))
+    return { id, metadata: r!.metadata }
+  }
+  assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row()), 'asked')
+  const sent = c.queued.filter((e) => e.serverId === id).at(-1)!
+  await c.db
+    .update(command)
+    .set({ status: 'succeeded', resultSummary: { pinnedVersion: '2026.6.0', connectors: [] } })
+    .where(eq(command.id, sent.commandId))
+  assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row()), 'recorded')
+  return row
+}
+
+const soonAfter = () => Date.now() + TUNNEL_STATUS_NEW_PORTAL_GAP_MS + 5_000
+const longAgo = () => new Date(Date.now() - 60 * 60 * 1000).toISOString()
+
+test('a new tunnel in another datacenter does not fast-poll servers of this one', async () => {
+  await withAllServersTunnel(async (c) => {
+    const [mine] = await c.db.select().from(tunnel).where(eq(tunnel.id, c.tunnelId))
+    const organizationId = mine!.organizationId
+    // This tunnel is old; a new all-servers tunnel starts in a second datacenter.
+    await c.db.update(tunnel).set({ updatedAt: longAgo() }).where(eq(tunnel.id, c.tunnelId))
+    const [dc2] = await c.db
+      .insert(datacenter)
+      .values({ organizationId, name: 'Other DC' })
+      .returning({ id: datacenter.id })
+    await c.db.insert(tunnel).values({
+      organizationId,
+      routingOrganizationId: organizationId,
+      carrierId: mine!.carrierId,
+      provider: 'cloudflare',
+      name: 'elsewhere',
+      externalId: crypto.randomUUID(),
+      placement: 'all',
+      datacenterId: dc2!.id,
+      secretId: mine!.secretId,
+    })
+    const row = await askAndAnswer(c, c.serverIds[0]!)
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row(), soonAfter()), 'waiting')
+  })
+})
+
+test('a server left out by a skip portal is not fast-polled for the tunnel', async () => {
+  await withAllServersTunnel(async (c) => {
+    // The skip row is old too, so only the all-servers rule could ask early.
+    await c.db.update(portal).set({ createdAt: longAgo() }).where(eq(portal.tunnelId, c.tunnelId))
+    const row = await askAndAnswer(c, c.skippedId)
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row(), soonAfter()), 'waiting')
+  })
+})
+
+test('a server marked as never carrying tunnels is neither asked nor fast-polled for it', async () => {
+  await withAllServersTunnel(async (c) => {
+    const id = c.serverIds[0]!
+    await c.db
+      .update(server)
+      .set({ options: { tunnels: { carry: false } } })
+      .where(eq(server.id, id))
+    await runTunnelStatusPollTick(c.db, c.queue)
+    assert(!c.queued.some((e) => e.serverId === id), 'a server that never carries is not asked')
+    const row = await askAndAnswer(c, id)
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row(), soonAfter()), 'waiting')
+  })
+})
+
+test('a tunnel moved to all servers is asked again after the short gap', async () => {
+  await withAllServersTunnel(async (c) => {
+    // Made long ago, then changed just now: the change restarts the window.
+    await c.db.update(tunnel).set({ createdAt: longAgo() }).where(eq(tunnel.id, c.tunnelId))
+    const row = await askAndAnswer(c, c.serverIds[0]!)
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row(), soonAfter()), 'asked')
+  })
+})

@@ -8,7 +8,7 @@
  * is recorded once, and a new question is sent when the last one is old enough.
  * Only a connected server whose daemon advertises `tunnel-status-v1` is asked.
  */
-import { and, eq, gt, isNull, or, sql } from 'drizzle-orm'
+import { and, eq, gt, isNull, or, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { command, ip, portal, server, tunnel } from '../../db/schema.ts'
 import { parseTunnelStatusResult } from '../../contracts/commands/tunnel-status.ts'
@@ -130,7 +130,8 @@ async function hasUnheardPortal(db: Db, serverId: string, nowMs: number): Promis
 }
 
 /**
- * Does an all-servers tunnel made recently run on this server with no report
+ * Does an all-servers tunnel that this server carries, made or changed
+ * recently (a new tunnel, or a placement moved to all servers), have no report
  * kept for it yet? The same window as a new portal, so a connector that never
  * reports costs a few extra questions, not one every tick forever.
  */
@@ -142,13 +143,10 @@ async function hasUnheardAllTunnel(db: Db, serverId: string, nowMs: number): Pro
     .where(
       and(
         eq(server.id, serverId),
-        runsAllServersTunnel(),
-        sql`exists (
-          select 1 from ${tunnel}
-          where ${tunnel.organizationId} = ${server.organizationId}
-            and ${tunnel.placement} = 'all' and ${tunnel.status} <> 'removing'
-            and ${tunnel.createdAt} > ${since}
-            and not jsonb_exists(coalesce(${server.metadata} -> 'tunnelConnectorReports', '{}'::jsonb), ${tunnel.externalId}))`
+        carriesAnAllServersTunnel(
+          sql`${tunnel.updatedAt} > ${since}
+            and not jsonb_exists(coalesce(${server.metadata} -> 'tunnelConnectorReports', '{}'::jsonb), ${tunnel.externalId})`
+        )
       )
     )
     .limit(1)
@@ -185,17 +183,25 @@ export async function pollServerTunnelStatus(
 }
 
 /**
- * The server is in the datacenter of an all-servers tunnel of its organization.
- * Such a server has no portal row (unless it is left out), so
- * without this it would be asked only when it happened to hold a forwarding table.
+ * The server carries an all-servers tunnel of its organization: it is in the
+ * tunnel's datacenter, has no `skip` portal for it, and is not marked as never
+ * carrying tunnels (the rule of `carryingServers`). `also` adds conditions on
+ * that same tunnel row. Such a server has no portal row, so without this it
+ * would be asked only when it happened to hold a forwarding table.
  */
-function runsAllServersTunnel() {
+function carriesAnAllServersTunnel(also?: SQL) {
   return sql`exists (
     select 1 from ${tunnel}
     join ${ip} on ${ip.datacenterId} = ${tunnel.datacenterId}
       and ${ip.scope} = 'datacenter' and ${ip.serverId} = ${server.id}
     where ${tunnel.organizationId} = ${server.organizationId}
-      and ${tunnel.placement} = 'all' and ${tunnel.status} <> 'removing')`
+      and ${tunnel.placement} = 'all' and ${tunnel.status} <> 'removing'
+      and not exists (
+        select 1 from ${portal}
+        where ${portal.tunnelId} = ${tunnel.id} and ${portal.serverId} = ${server.id}
+          and ${portal.wanted} = 'skip')
+      and coalesce(${server.options} #>> '{tunnels,carry}', '') <> 'false'
+      ${also ? sql`and ${also}` : sql``})`
 }
 
 /**
@@ -214,7 +220,7 @@ async function serversToPoll(db: Db) {
         or(
           sql`exists (select 1 from ${portal} where ${portal.serverId} = ${server.id})`,
           sql`${server.metadata} -> 'tunnelRoutes' is not null`,
-          runsAllServersTunnel()
+          carriesAnAllServersTunnel()
         )
       )
     )

@@ -235,10 +235,15 @@ export async function carryingServers(db: Db, row: TunnelRow): Promise<string[]>
 async function serverMetadataOf(db: Db, ids: readonly string[]): Promise<Map<string, unknown>> {
   if (ids.length === 0) return new Map()
   const rows = await db
-    .select({ id: server.id, metadata: server.metadata })
+    .select({
+      id: server.id,
+      reports: sql<unknown>`${server.metadata} -> 'tunnelConnectorReports'`,
+    })
     .from(server)
     .where(inArray(server.id, [...ids]))
-  return new Map(rows.map((r) => [r.id, r.metadata]))
+  return new Map(
+    rows.map((r) => [r.id, r.reports === null ? null : { tunnelConnectorReports: r.reports }])
+  )
 }
 
 export async function toApiTunnel(db: Db, row: TunnelRow): Promise<ApiTunnel> {

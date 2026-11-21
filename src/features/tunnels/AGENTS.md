@@ -122,10 +122,10 @@ member there, a widened CHECK (forward migration) and one adapter.
   `server.metadata.tunnelConnectorReports` (keyed by the provider tunnel id,
   rewritten whole from each answer, `connector-reports.ts`), and `toApiTunnel`
   lists every carrying server as a `run` portal built from that report, or as
-  `unknown` before one arrived. The status poll asks every connected server in the
-  datacenter of an all-servers tunnel not only ones
-  holding a forwarding table, and asks again after 15 s while a tunnel made in the
-  last 10 minutes has no report from that server.
+  `unknown` before one arrived. The status poll asks every connected server that carries an
+  all-servers tunnel (not only ones holding a forwarding table), and asks again
+  after 15 s while a tunnel made or changed in the last 10 minutes has no report
+  from that server.
 - **A stopped or missing connector is sent again.** A connector list that finished well is
   never resent while it is unchanged, so a connector stopped by hand (or given
   up on by systemd) used to stay down. When a status answer shows a connector
