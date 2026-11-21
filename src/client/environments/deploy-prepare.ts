@@ -3510,7 +3510,7 @@ async function prepareSourceMaterial(
     localSourceMaterial: readonly EnvironmentDeploySource[]
     buildAssignments: Parameters<typeof withBuildEnv>[1]
     levels: Parameters<typeof attachBuildLimits>[1]
-    hostingsOnly?: boolean
+    hostingsOnly: boolean
   }
 ): Promise<
   | {
@@ -4234,7 +4234,7 @@ export async function prepareDeployCompose(
     organizationId: params.organizationId,
     serverId: params.serverId,
     composeBase: params.composeBase,
-    ...(params.hostingsOnly === true ? { hostingsOnly: true } : {}),
+    hostingsOnly: params.hostingsOnly === true,
     localSourceMaterial,
     buildAssignments: withVariables.buildAssignments,
     levels: {
