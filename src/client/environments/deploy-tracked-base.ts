@@ -29,7 +29,11 @@ import { and, eq } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDaemonCellRegistry } from '../../db/connection.ts'
 import { project, repository, server } from '../../db/schema.ts'
-import { assertComposeDocument, yamlToComposeDocument } from '../../features/compose/index.ts'
+import {
+  assertComposeDocument,
+  stripComposePlacement,
+  yamlToComposeDocument,
+} from '../../features/compose/index.ts'
 import type { ComposeDocument } from '../../features/compose/index.ts'
 import type { GitProviderSourceRow, RepositoryFileEntry } from '../../features/git/git-provider.ts'
 import { syncProjectWatch } from '../../features/git/watch-records.ts'
@@ -111,7 +115,9 @@ export async function readTrackedComposeBase(
   }
   let document: ComposeDocument
   try {
-    document = assertComposeDocument(yamlToComposeDocument(file.content))
+    // A Base never carries placement (it lives on the environment), so drop it
+    // here: what is used and stored matches what a settings save echoes back.
+    document = assertComposeDocument(stripComposePlacement(yamlToComposeDocument(file.content)))
   } catch (err) {
     const detail = err instanceof Error ? err.message : 'not a compose document'
     return {

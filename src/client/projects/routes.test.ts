@@ -2465,7 +2465,7 @@ test('a tracked read that lands between the start of a settings save and its wri
       })
       for (let i = 0; i < 200; i += 1) {
         const waiting = await tx.execute(
-          sql`SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query LIKE '%FOR UPDATE%'`
+          sql`SELECT 1 FROM pg_stat_activity WHERE pg_backend_pid() = ANY(pg_blocking_pids(pid))`
         )
         if (waiting.length > 0) break
         await new Promise((resolve) => setTimeout(resolve, 25))
@@ -2725,6 +2725,40 @@ test('a deploy reads the repository file as the Base, pins the commit and stores
     assertEquals(again.compose, stored.compose)
     assertEquals(again.composeSource.lastReadCommitSha, READ_SHA)
     assertEquals(Date.parse(String(again.composeSource.lastReadAt)) > Date.parse(earlier), true)
+  })
+})
+
+test('a repository file with placement is stored without it, so a settings save echoing the Base is accepted', async () => {
+  await withTrackedProject(async (ctx, cookie, id) => {
+    const options = await trackedOptions(ctx, id)
+    const c = { get: () => undefined } as unknown as Context<AppEnv>
+    const yaml = `${READ_YAML}x-turbopanel:\n  placement:\n    server_id: ${ctx.serverId}\n`
+    const { inspect } = inspectStub(readOutcome(yaml))
+    const read = await resolveDeployProjectOptions(
+      c,
+      ctx.db,
+      resolveArgs(ctx, id, options, 'deploy'),
+      inspect
+    )
+    if (!read.ok || !read.read) throw new Error('expected a read')
+    await storeTrackedBase(ctx.db, id, read.read.document, read.read.record)
+    const stored = (await projectOptions(ctx, id)) as {
+      compose: { data: Record<string, unknown> }
+      composeSource: Record<string, unknown>
+    }
+    assertEquals(stored.compose.data['x-turbopanel'], undefined)
+    const saved = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      target: 'base',
+      options: {
+        compose: stored.compose,
+        composeSource: stored.composeSource,
+        containerNaming: 'custom',
+      },
+    })
+    assertEquals(saved.status, 200)
+    const after = (await projectOptions(ctx, id)) as typeof stored & { containerNaming: string }
+    assertEquals(after.containerNaming, 'custom')
+    assertEquals(after.compose, stored.compose)
   })
 })
 

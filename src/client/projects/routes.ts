@@ -876,7 +876,7 @@ async function insertCatalogProject(
 
 export const BASE_TRACKS_REPOSITORY_ERROR = 'base_tracks_repository'
 const BASE_TRACKS_REPOSITORY_MESSAGE =
-  "This project's Base follows the repository's compose file, so it cannot be edited here. Change the file in the repository, add the change to an environment, or switch the project to seed mode to edit the Base."
+  "This project's Base follows the repository's compose file, so it cannot be edited here. Change the file in the repository, add the change to an environment, or switch the project to seed mode to edit the Base. If you did not change the Base, it was refreshed from the repository since you loaded it: reload and save again."
 
 /**
  * Sends a compose edit to its target. Returns the body the project patch
