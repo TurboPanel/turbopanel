@@ -1384,7 +1384,7 @@ export class DaemonCellObject {
   }
 
   /** A browser's terminal socket closed: tell the daemon, unless the session already ended. */
-  async #cleanupShellSocket(ws: WebSocket, meta: ShellSessionMeta): Promise<void> {
+  async #cleanupShellSocket(meta: ShellSessionMeta): Promise<void> {
     if (this.#isShellEndedHere(meta.sid)) return
     this.#rememberEndedShell(meta)
     const daemon = this.#daemonSocketByConnection(meta.daemonConnectionId)
@@ -3522,7 +3522,7 @@ export class DaemonCellObject {
 
     const closedShell = this.#shellMetaOf(ws)
     if (closedShell) {
-      await this.#cleanupShellSocket(ws, closedShell)
+      await this.#cleanupShellSocket(closedShell)
       return
     }
 
