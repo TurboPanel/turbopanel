@@ -19,7 +19,8 @@
  * Pure of the database and the clock (both are injected), so Deno tests drive it
  * with a fixed clock and a fake lease.
  */
-import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
+// How often the tick fires: the cell maintenance period.
+export { DAEMON_CELL_MAINTAIN_MS as JOB_TICK_MS } from '../../contracts/cell-protocol.ts'
 import type { CronGates } from '../../daemon/cell/cron-gates.ts'
 import { ALL_GATES_OPEN } from '../../daemon/cell/cron-gates.ts'
 import {
@@ -29,9 +30,6 @@ import {
   isDue,
   type ResolvedCadences,
 } from '../../jobs/registry.ts'
-
-/** How often the tick fires. */
-export const JOB_TICK_MS = DAEMON_CELL_MAINTAIN_MS
 
 /** How long one tick may run before the jobs not yet started are carried to the next one. */
 export const JOB_TICK_BUDGET_MS = 75_000
@@ -191,39 +189,41 @@ export function createJobTick(deps: JobTickDeps): JobTick {
       }
       const nextCarry = new Set<string>()
 
-      const runJobs = async (scope: TickJob['scope'], ctx: TickContext): Promise<void> => {
-        for (const job of deps.jobs) {
-          if (job.scope !== scope) continue
-          const due = carry.has(job.name) || (job.due ? job.due(ctx) : true)
-          if (!due) continue
-          if (running.has(job.name) || now() >= deadlineMs) {
-            nextCarry.add(job.name)
-            report.carried.push(job.name)
-            continue
-          }
-          running.add(job.name)
-          const work = (async () => job.run(ctx))()
-          // `running` clears when the work settles, even after the tick gave up waiting.
-          const settled = work.then(
-            () => {},
-            () => {}
-          )
-          void settled.then(() => running.delete(job.name))
-          try {
-            const finished = await settledWithin(work, deadlineMs - now())
-            if (finished) {
-              report.ran.push(job.name)
-            } else {
-              report.failed.push(job.name)
-              log('warn', `job ${job.name} ran past the tick budget; left to finish`)
-            }
-          } catch (err) {
+      const runOne = async (job: TickJob, ctx: TickContext): Promise<void> => {
+        const due = carry.has(job.name) || (job.due ? job.due(ctx) : true)
+        if (!due) return
+        if (running.has(job.name) || now() >= deadlineMs) {
+          nextCarry.add(job.name)
+          report.carried.push(job.name)
+          return
+        }
+        running.add(job.name)
+        const work = (async () => job.run(ctx))()
+        // `running` clears when the work settles, even after the tick gave up waiting.
+        const settled = work.then(
+          () => {},
+          () => {}
+        )
+        void settled.then(() => running.delete(job.name))
+        try {
+          const finished = await settledWithin(work, deadlineMs - now())
+          if (finished) {
             report.ran.push(job.name)
+          } else {
             report.failed.push(job.name)
-            log('warn', `job ${job.name} failed: ${errorText(err)}`)
+            log('warn', `job ${job.name} ran past the tick budget; left to finish`)
           }
+        } catch (err) {
+          report.ran.push(job.name)
+          report.failed.push(job.name)
+          log('warn', `job ${job.name} failed: ${errorText(err)}`)
         }
       }
+      // One at a time, in list order: later jobs see the earlier ones' effects and the budget.
+      const runJobs = (scope: TickJob['scope'], ctx: TickContext): Promise<void> =>
+        deps.jobs
+          .filter((job) => job.scope === scope)
+          .reduce((previous, job) => previous.then(() => runOne(job, ctx)), Promise.resolve())
 
       // Local jobs first: they must run on every instance, lease or not.
       await runJobs('local', { ...baseCtx, gates: ALL_GATES_OPEN })
@@ -265,13 +265,15 @@ export function createJobTick(deps: JobTickDeps): JobTick {
       return report
     } finally {
       previousMinute = minuteOf(startedMs)
-      for (const resource of resources) {
-        try {
-          await resource.close()
-        } catch (err) {
-          log('warn', `job tick resource close failed: ${errorText(err)}`)
-        }
-      }
+      await Promise.all(
+        resources.map(async (resource) => {
+          try {
+            await resource.close()
+          } catch (err) {
+            log('warn', `job tick resource close failed: ${errorText(err)}`)
+          }
+        })
+      )
       inFlight = false
     }
   }
