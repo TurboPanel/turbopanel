@@ -190,6 +190,7 @@ export async function pollServerTunnelStatus(
  * would be asked only when it happened to hold a forwarding table.
  */
 function carriesAnAllServersTunnel(also?: SQL) {
+  const extra = also ? sql`and ${also}` : sql``
   return sql`exists (
     select 1 from ${tunnel}
     join ${ip} on ${ip.datacenterId} = ${tunnel.datacenterId}
@@ -201,7 +202,7 @@ function carriesAnAllServersTunnel(also?: SQL) {
         where ${portal.tunnelId} = ${tunnel.id} and ${portal.serverId} = ${server.id}
           and ${portal.wanted} = 'skip')
       and coalesce(${server.options} #>> '{tunnels,carry}', '') <> 'false'
-      ${also ? sql`and ${also}` : sql``})`
+      ${extra})`
 }
 
 /**
