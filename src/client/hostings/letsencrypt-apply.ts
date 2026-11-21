@@ -137,7 +137,12 @@ export async function hostingRemovalUpdate(
 ): Promise<HostingRemovalUpdate> {
   if (environmentId === null) return 'no_environment'
   const targets = await listEnvironmentDeploymentTargets(db, environmentId)
-  return targets.some((target) => target.status === 'applied') ? 'next_deploy' : 'not_deployed'
+  // A later failed deploy sets the status to `failed` but keeps the generation
+  // an earlier one applied, so the generation (not the status) says a server
+  // holds the route.
+  return targets.some((target) => target.appliedGeneration !== null)
+    ? 'next_deploy'
+    : 'not_deployed'
 }
 
 async function everyServerOnline(

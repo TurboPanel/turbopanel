@@ -16,7 +16,9 @@
  * reconcile does: the panel made it first, so the row and its names stay with
  * the panel, which keeps serving them, and the names are not freed. Asking
  * again for a row that is already gone answers 200 with `alreadyGone`, so a
- * retry after a lost reply is harmless.
+ * retry after a lost reply is harmless. Another organization's id answers the
+ * same way, so nobody can tell that it exists. The session gate is the step-up
+ * middleware's (`./delete-step-up.ts`, registered ahead of this route).
  *
  * No deploy runs: a deploy plans from the whole environment and would ship
  * someone's other undeployed edits. The server keeps serving the route until
@@ -30,7 +32,6 @@ import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { isUuid } from '../access/routes-helpers.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import { createSessionMiddleware } from '../authn/middleware.ts'
 import { composeDeclaresRoute } from '../environments/reconcile-hostings.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -163,8 +164,6 @@ export function registerHostingRemoveNowRoute(router: Hono<AppEnv>, opts: AuthRo
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for hosting routes')
   }
-  router.use(REMOVE_PATH, createSessionMiddleware(opts.secrets))
-
   router.post(REMOVE_PATH, async (c) => {
     const id = c.req.param('id')
     const db = getDb(c)
@@ -174,10 +173,11 @@ export function registerHostingRemoveNowRoute(router: Hono<AppEnv>, opts: AuthRo
     const organizationId = await getOrgId(c, session.userId)
     if (organizationId instanceof Response) return organizationId
     const owner = await resolveEntityOrganizationId(db, 'hosting', id)
-    // A well-formed id with no row is a retry for a hosting already removed;
-    // there is nothing left to authorize or to tell anyone.
-    if (owner === null && isUuid(id)) return c.json(ALREADY_GONE)
-    if (owner !== organizationId) return c.json({ error: 'Not found' }, 404)
+    if (!isUuid(id)) return c.json({ error: 'Not found' }, 404)
+    // A well-formed id with no row of this organization is answered as a
+    // retry for a hosting already removed, whether it is missing or another
+    // organization's, so the answer never says which ids exist elsewhere.
+    if (owner !== organizationId) return c.json(ALREADY_GONE)
     const denied =
       (await assertCanOr403(c, 'organization:manage', 'hosting', id)) ??
       (await assertNotSystemOwnedOr403(c, 'hosting', id))

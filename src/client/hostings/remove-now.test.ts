@@ -11,6 +11,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.
 import {
   audit,
   carrier,
+  command,
   deployment,
   doorway,
   environment,
@@ -26,6 +27,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { registerHostingDeleteStepUp } from './delete-step-up.ts'
 import { registerHostingRoutes } from './routes.ts'
 import { registerHostingRemoveNowRoute } from './remove-now-route.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
@@ -58,8 +60,9 @@ async function setup(): Promise<Fixture> {
     return next()
   })
   const routeOpts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
-  registerHostingRemoveNowRoute(app, routeOpts)
+  registerHostingDeleteStepUp(app, routeOpts)
   registerHostingRoutes(app, routeOpts)
+  registerHostingRemoveNowRoute(app, routeOpts)
 
   const [org] = await db
     .insert(organization)
@@ -152,7 +155,6 @@ async function setup(): Promise<Fixture> {
   }
 }
 
-/** A hosting of `serviceId` that serves `NAME`, made from the compose file unless `owner` says otherwise. */
 /** The project's compose file: service `s`, with or without the hosting entry for `NAME`. */
 function composeDocument(declared: boolean) {
   const web = {
@@ -173,6 +175,7 @@ async function declareInCompose(f: Fixture, projectId: string, declared: boolean
     .where(eq(project.id, projectId))
 }
 
+/** A hosting of `serviceId` that serves `NAME`, made from the compose file unless `metadata` says otherwise. */
 async function makeHosting(
   f: Fixture,
   serviceId: string,
@@ -205,14 +208,18 @@ const COMPOSE_OWNED = {
 }
 
 /** A server that finished a deploy of the environment just now (after every edit). */
-async function deployedOn(f: Fixture, environmentId: string, connected: boolean) {
+async function deployedOn(
+  f: Fixture,
+  environmentId: string,
+  status: 'applied' | 'failed' = 'applied'
+) {
   const now = new Date().toISOString()
   const [srv] = await f.db
     .insert(server)
     .values({
       organizationId: f.organizationId,
       name: `rm-${crypto.randomUUID().slice(0, 8)}`,
-      isConnected: connected,
+      isConnected: true,
       createdAt: now,
       updatedAt: now,
     })
@@ -223,7 +230,7 @@ async function deployedOn(f: Fixture, environmentId: string, connected: boolean)
     serverId: srv!.id,
     desiredGeneration: 1,
     appliedGeneration: 1,
-    status: 'applied',
+    status,
     finishedAt: finished,
     createdAt: finished,
     updatedAt: finished,
@@ -280,7 +287,7 @@ test('remove-now: the name is released at once, no deploy is queued, and another
   try {
     const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
     const doorwayId = await linkDoorway(f, id)
-    await deployedOn(f, f.first.environmentId, true)
+    await deployedOn(f, f.first.environmentId)
     const deploymentsBefore = await deploymentCount(f, f.first.environmentId)
 
     // Held: another project cannot take the name.
@@ -371,7 +378,7 @@ test('DELETE /hostings/:id: a panel hosting frees its name and leaves the route 
   const f = await setup()
   try {
     const id = await makeHosting(f, f.first.serviceId, null)
-    await deployedOn(f, f.first.environmentId, true)
+    await deployedOn(f, f.first.environmentId)
     const deploymentsBefore = await deploymentCount(f, f.first.environmentId)
     const res = await f.call('DELETE', `/hostings/${id}`)
     assertEquals(res.status, 200)
@@ -388,7 +395,7 @@ test('remove-now: refused while the compose file still declares the hosting, and
   const f = await setup()
   try {
     const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
-    await deployedOn(f, f.first.environmentId, true)
+    await deployedOn(f, f.first.environmentId)
     await declareInCompose(f, f.first.projectId, true)
 
     const res = await f.call('POST', `/hostings/${id}/remove-now`)
@@ -420,6 +427,122 @@ test('remove-now: asking again for a hosting that is already gone answers 200 al
     // A malformed id is still not a hosting.
     assertEquals((await f.call('POST', '/hostings/not-an-id/remove-now')).status, 404)
   } finally {
+    await f.cleanup()
+  }
+})
+
+test('remove-now: a failed deploy after an applied one still leaves the route on the server', async () => {
+  if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
+  const f = await setup()
+  try {
+    const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
+    // The deploy row keeps the generation an earlier run applied.
+    await deployedOn(f, f.first.environmentId, 'failed')
+    const res = await f.call('POST', `/hostings/${id}/remove-now`)
+    assertEquals(res.status, 200)
+    assertEquals(((await res.json()) as { serverUpdate: string }).serverUpdate, 'next_deploy')
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('remove-now: refused while a deploy of the environment runs, and nothing is changed', async () => {
+  if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
+  const f = await setup()
+  try {
+    const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
+    await deployedOn(f, f.first.environmentId)
+    const [srv] = await f.db
+      .select({ id: server.id })
+      .from(server)
+      .where(eq(server.organizationId, f.organizationId))
+      .limit(1)
+    await f.db.insert(command).values({
+      serverId: srv!.id,
+      organizationId: f.organizationId,
+      environmentId: f.first.environmentId,
+      name: 'environment.deploy',
+      status: 'running',
+      actorType: 'user',
+      actorId: f.userId,
+    })
+    const res = await f.call('POST', `/hostings/${id}/remove-now`)
+    assertEquals(res.status, 409)
+    assertEquals(((await res.json()) as { error: string }).error, 'environment_deploy_running')
+    assertEquals(await nameHolders(f), 1)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test("remove-now: another organization's hosting answers like a missing id and is left alone", async () => {
+  if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
+  const f = await setup()
+  const now = new Date().toISOString()
+  const [org] = await f.db
+    .insert(organization)
+    .values({ name: 'Other Org' })
+    .returning({ id: organization.id })
+  const [ws] = await f.db
+    .insert(workspace)
+    .values({ organizationId: org!.id, name: 'WS', createdAt: now, updatedAt: now })
+    .returning({ id: workspace.id })
+  const [proj] = await f.db
+    .insert(project)
+    .values({
+      workspaceId: ws!.id,
+      organizationId: org!.id,
+      name: 'X',
+      options: { compose: composeDocument(false) },
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: project.id })
+  const [env] = await f.db
+    .insert(environment)
+    .values({ projectId: proj!.id, name: 'e', createdAt: now, updatedAt: now })
+    .returning({ id: environment.id })
+  const [svc] = await f.db
+    .insert(service)
+    .values({
+      environmentId: env!.id,
+      name: 's',
+      composeServiceName: 's',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: service.id })
+  try {
+    const [foreign] = await f.db
+      .insert(hosting)
+      .values({
+        serviceId: svc!.id,
+        name: 'Site',
+        options: { hostnames: [NAME] },
+        metadata: COMPOSE_OWNED,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: hosting.id })
+    const missing = await f.call('POST', `/hostings/${crypto.randomUUID()}/remove-now`)
+    const other = await f.call('POST', `/hostings/${foreign!.id}/remove-now`)
+    assertEquals(other.status, 200)
+    assertEquals(other.status, missing.status)
+    const body = await other.json()
+    assertEquals(body, await missing.json())
+    assertEquals(body, { ok: true, removed: true, alreadyGone: true })
+    const [still] = await f.db
+      .select({ id: hosting.id })
+      .from(hosting)
+      .where(eq(hosting.id, foreign!.id))
+    assertEquals(still?.id, foreign!.id)
+  } finally {
+    await f.db.delete(hosting).where(eq(hosting.serviceId, svc!.id))
+    await f.db.delete(service).where(eq(service.id, svc!.id))
+    await f.db.delete(environment).where(eq(environment.id, env!.id))
+    await f.db.delete(project).where(eq(project.id, proj!.id))
+    await f.db.delete(workspace).where(eq(workspace.id, ws!.id))
+    await f.db.delete(organization).where(eq(organization.id, org!.id))
     await f.cleanup()
   }
 })

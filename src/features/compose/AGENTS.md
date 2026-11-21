@@ -731,7 +731,8 @@ by). It asks for the `hosting.delete` step-up like `DELETE /hostings/{id}`
 cascade and a doorway link is set null, so the name is free at once. A row
 compose **adopted** from the panel is not deleted but handed back, as the
 reconcile does: the panel row and its names stay, and nothing is freed. A second
-call for a row that is gone answers `200 { removed: true, alreadyGone: true }`.
+call for a row that is gone, or an id of another organization, answers
+`200 { removed: true, alreadyGone: true }`, so nobody can tell that it exists.
 No deploy is started: a deploy plans from the whole environment and would ship
 someone's other undeployed edits, and a project whose deploys are refused could
 not run one. The server keeps serving the route until the environment's next
