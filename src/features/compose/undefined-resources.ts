@@ -36,18 +36,37 @@ function declared(data: Record<string, unknown>, key: string): ReadonlySet<strin
   return new Set(isRecord(section) ? Object.keys(section) : [])
 }
 
+/**
+ * The source of a short `source:target[:mode]` entry, or null for a bare
+ * target. A `:` inside `${...}` / `{$...}` belongs to the interpolation
+ * (`${X:-./d}:/d`), not to the separator.
+ */
+function shortSource(entry: string): string | null {
+  let depth = 0
+  for (let i = 0; i < entry.length; i++) {
+    const c = entry[i]
+    if (c === '{') depth++
+    else if (c === '}' && depth > 0) depth--
+    else if (c === ':' && depth === 0) return entry.slice(0, i)
+  }
+  return null
+}
+
+/** Interpolated sources are resolved at deploy time, so they cannot be checked here. */
+function isNamedSource(source: string): boolean {
+  return source !== '' && !source.includes('$') && !isBindSource(source)
+}
+
 function referencedVolumes(service: Record<string, unknown>): string[] {
   if (!Array.isArray(service.volumes)) return []
   const out: string[] = []
   for (const entry of service.volumes) {
     if (typeof entry === 'string') {
-      const parts = entry.split(':')
       // A bare target is an anonymous volume.
-      if (parts.length < 2) continue
-      const source = parts[0] ?? ''
-      if (source !== '' && !isBindSource(source)) out.push(source)
+      const source = shortSource(entry)
+      if (source !== null && isNamedSource(source)) out.push(source)
     } else if (isRecord(entry) && entry.type === 'volume' && typeof entry.source === 'string') {
-      if (entry.source !== '') out.push(entry.source)
+      if (isNamedSource(entry.source)) out.push(entry.source)
     }
   }
   return out
@@ -98,7 +117,7 @@ export function undefinedResourceIssues(data: Record<string, unknown>): Undefine
         if (known.has(ref)) continue
         issues.push({
           path: `services.${name}`,
-          message: `Service "${name}" uses ${noun} "${ref}", but no top-level "${section}" entry declares it - this save would drop it. Keep the "${ref}" entry under "${section}:" (in the project's Base or in this environment's changes).`,
+          message: `Service "${name}" uses ${noun} "${ref}", but the compose does not declare it under a top-level "${section}:" entry. Declare "${ref}" in the project's Base or in this environment's changes.`,
         })
       }
     }
