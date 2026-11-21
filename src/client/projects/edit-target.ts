@@ -10,8 +10,12 @@
  */
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { environment, project } from '../../db/schema.ts'
+import { environment } from '../../db/schema.ts'
 import { isBlankComposeData } from '../../features/compose/index.ts'
+import {
+  isTrackingComposeSource,
+  parseProjectOptions,
+} from '../../features/projects/project-options.ts'
 import { UUID_RE } from '../repositories/routes-helpers.ts'
 
 export const EDIT_TARGET_REQUIRED_ERROR = 'edit_target_required'
@@ -39,13 +43,7 @@ export function carriesConfiguration(body: Record<string, unknown>): boolean {
 }
 
 /** True when the project's own (Base) compose or its extra project layers hold anything. */
-async function baseHasContent(db: Db, projectId: string): Promise<boolean> {
-  const [row] = await db
-    .select({ options: project.options })
-    .from(project)
-    .where(eq(project.id, projectId))
-    .limit(1)
-  const options = row?.options
+function baseHasContent(options: unknown): boolean {
   if (!isRecord(options)) return false
   const compose = options.compose
   const data = isRecord(compose) && isRecord(compose.data) ? compose.data : {}
@@ -66,12 +64,11 @@ function mixedProjectSettings(options: Record<string, unknown>): EditTarget | nu
   }
 }
 
-async function resolveUntargetedEdit(
-  db: Db,
-  projectId: string,
+function resolveUntargetedEdit(
   rows: { id: string }[],
+  storedOptions: unknown,
   baseFollowsRepository: boolean
-): Promise<EditTarget> {
+): EditTarget {
   if (rows.length === 0) return { ok: true, kind: 'base' }
   if (rows.length > 1) {
     return {
@@ -81,7 +78,7 @@ async function resolveUntargetedEdit(
         "This project has more than one environment. Send target: an environment id, or 'base' to change what every environment inherits.",
     }
   }
-  if (!baseFollowsRepository && (await baseHasContent(db, projectId))) {
+  if (!baseFollowsRepository && baseHasContent(storedOptions)) {
     return {
       ok: false,
       error: EDIT_TARGET_REQUIRED_ERROR,
@@ -97,11 +94,12 @@ export async function resolveEditTarget(
   projectId: string,
   body: Record<string, unknown>,
   /**
-   * The Base is the repository's compose file, which no edit may change. Its
-   * content then says nothing about where an untargeted edit should go, so the
-   * edit lands on the one environment instead of being refused for it.
+   * The project's stored options, read once by the caller. When the Base is the
+   * repository's compose file, which no edit may change, its content says
+   * nothing about where an untargeted edit should go, so the edit lands on the
+   * one environment instead of being refused for it.
    */
-  baseFollowsRepository = false
+  storedOptions: unknown
 ): Promise<EditTarget> {
   if (!carriesConfiguration(body)) return { ok: true, kind: 'none' }
 
@@ -115,7 +113,11 @@ export async function resolveEditTarget(
 
   let environmentId: string
   if (requested === undefined || requested === null) {
-    const untargeted = await resolveUntargetedEdit(db, projectId, rows, baseFollowsRepository)
+    const untargeted = resolveUntargetedEdit(
+      rows,
+      storedOptions,
+      isTrackingComposeSource(parseProjectOptions(storedOptions).composeSource)
+    )
     if (!untargeted.ok || untargeted.kind !== 'environment') return untargeted
     environmentId = untargeted.environmentId
   } else if (typeof requested === 'string' && UUID_RE.test(requested)) {

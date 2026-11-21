@@ -14,9 +14,7 @@
  * sent back unchanged is not an edit. Options are written whole, so the stored
  * document is put back into every options write.
  */
-import { stripComposePlacement } from '../../features/compose/placement.ts'
 import { CONFIGURATION_OPTION_KEYS } from './edit-target.ts'
-import { isComposeDocument, validateComposeDocument } from '../../features/compose/validate.ts'
 import {
   parseProjectOptions,
   type ProjectComposeSource,
@@ -26,24 +24,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** Deep equality of JSON values; the order of an object's keys does not matter. */
 function sameJson(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b)
-}
-
-/** The sent document is the stored one, as stored or as the write path would normalize it. */
-function sameDocument(sent: unknown, stored: unknown): boolean {
-  if (sameJson(sent, stored)) return true
-  const validated = validateComposeDocument(sent)
-  if (!validated.ok) return false
-  const normalized = isComposeDocument(validated.document)
-    ? stripComposePlacement(validated.document)
-    : validated.document
-  return sameJson(normalized, stored)
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((item, index) => sameJson(item, b[index]))
+    )
+  }
+  if (isRecord(a) && isRecord(b)) {
+    const keys = Object.keys(a).filter((key) => a[key] !== undefined)
+    const others = Object.keys(b).filter((key) => b[key] !== undefined)
+    return keys.length === others.length && keys.every((key) => sameJson(a[key], b[key]))
+  }
+  return a === b
 }
 
 function sameLayerValue(key: string, sent: unknown, stored: unknown): boolean {
   if (key === 'composeOverlays') return sameJson(sent ?? [], stored ?? [])
-  return sameDocument(sent, stored)
+  return sameJson(sent, stored)
 }
 
 const SOURCE_KEYS = ['sourceId', 'ref', 'path', 'seededCommitSha', 'seededDigest'] as const
@@ -54,20 +55,22 @@ function sameSource(sent: unknown, stored: ProjectComposeSource): boolean {
 }
 
 /**
- * True when the body changes the Base document or the source it follows (the
- * caller answers 409 `base_tracks_repository`). Only for a project that is
- * tracking and a body that is not an environment edit.
+ * True when the options about to be written change the Base document or the
+ * source it follows (the caller answers 409 `base_tracks_repository`). Only for
+ * a project that is tracking. The options are the normalized ones the write
+ * path would store (document validated, placement stripped), so they compare
+ * directly with the stored ones.
  */
-export function changesTrackedBase(body: Record<string, unknown>, storedOptions: unknown): boolean {
-  if (!isRecord(body.options)) return false
+export function changesTrackedBase(
+  options: Record<string, unknown>,
+  storedOptions: unknown
+): boolean {
   const stored = isRecord(storedOptions) ? storedOptions : {}
   for (const key of CONFIGURATION_OPTION_KEYS) {
-    if (key in body.options && !sameLayerValue(key, body.options[key], stored[key])) return true
+    if (key in options && !sameLayerValue(key, options[key], stored[key])) return true
   }
   const source = parseProjectOptions(stored).composeSource
-  return Boolean(
-    source && 'composeSource' in body.options && !sameSource(body.options.composeSource, source)
-  )
+  return Boolean(source && 'composeSource' in options && !sameSource(options.composeSource, source))
 }
 
 /** Options are written whole: put the stored Base document back into the options about to be written. */
