@@ -1,8 +1,6 @@
 import { assert, assertEquals } from '@std/assert'
 import { ALL_GATES_OPEN, type CronGates } from '../../daemon/cell/cron-gates.ts'
 import { CRON_CADENCES, resolveJobCadences } from '../../jobs/registry.ts'
-import { DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
-import { OFFLINE_SWEEP_STALE_MS } from '../../daemon/cell/offline-sweep.ts'
 import { createJobTick, type JobTickDeps, type TickJob } from './job-tick.ts'
 
 /**
@@ -448,5 +446,7 @@ test('every registry job the self-hosted tick reads exists in the table', () => 
 })
 
 test('both runtimes use one offline threshold', () => {
-  assertEquals(OFFLINE_SWEEP_STALE_MS, DAEMON_OFFLINE_SWEEP_MS)
+  // Read as text: importing offline-sweep.ts pulls the Workers-only types into a Deno check.
+  const sweep = Deno.readTextFileSync(new URL('../../daemon/cell/offline-sweep.ts', import.meta.url))
+  assert(sweep.includes('export const OFFLINE_SWEEP_STALE_MS = DAEMON_OFFLINE_SWEEP_MS'))
 })
