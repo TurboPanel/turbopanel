@@ -273,6 +273,7 @@ export const DAEMON_WIRE_FEATURES = [
   'acme-issue-dns-v1',
   'compose-checkout-v1',
   'network-shares-v1',
+  'terminal-container-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -862,3 +863,13 @@ export function resolveInstanceCapabilities(
  * peer site asks for no client certificate.
  */
 export const TUNNEL_PEER_MTLS_FEATURE: DaemonWireFeature = 'tunnel-peer-mtls-v1'
+
+/**
+ * `terminal-container-v1`: the control plane may send `shell-open` and
+ * `shell-kill` on the signed session and relay binary terminal frames over the
+ * same socket. The daemon opens an interactive `docker exec` in a tenant
+ * container and answers with signed `shell-opened`, `shell-closed` and
+ * `shell-error` reports. The control plane sends none of it to a daemon that
+ * does not list the feature.
+ */
+export const TERMINAL_CONTAINER_FEATURE: DaemonWireFeature = 'terminal-container-v1'

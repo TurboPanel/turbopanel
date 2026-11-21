@@ -20,7 +20,7 @@ const CORS_HEADERS =
 const CORS_EXPOSE_HEADERS =
   `${INSTANCE_VERSION_HEADER}, ${INSTANCE_REVISION_HEADER}`;
 
-function parseCorsOrigins(raw: string | undefined): string[] {
+export function parseCorsOrigins(raw: string | undefined): string[] {
   if (raw === undefined || raw.trim().length === 0) return [];
   return [
     ...new Set(

@@ -801,6 +801,88 @@ export type AcmeProofForwardReportMessage = {
   at: string
 }
 
+/**
+ * Control plane to daemon (feature `terminal-container-v1`): open one web
+ * terminal session. `keySealed` is the session's AES-256-GCM key sealed to
+ * this daemon's sealing key: base64url of the HPKE encapsulated key (32
+ * bytes) followed by the ciphertext, with `aad` = the server id and `info` =
+ * "turbopanel shell key v1" followed by `sid` (lower-case UUID text). `userId`
+ * is the stable id the per-user session limit counts; `userLabel` is for
+ * logs only. Twin of the daemon's `ShellOpenMessage`.
+ */
+export type ShellOpenMessage = {
+  type: 'shell-open'
+  sid: string
+  kind: 'container' | 'host'
+  userId: string
+  userLabel: string
+  container?: { id: string; user?: string }
+  cols: number
+  rows: number
+  term: 'xterm-256color'
+  keySealed: string
+  idleSec: number
+  maxSec: number
+  windowBytes: number
+  maxFrameBytes: number
+  /** Host sessions only; not used by `terminal-container-v1`. */
+  rootGrant?: string
+}
+
+/** Control plane to daemon: end one session (`sid`) or all of them (`all`). */
+export type ShellKillMessage = {
+  type: 'shell-kill'
+  sid?: string
+  all?: true
+  reason: 'revoked' | 'switch-off' | 'admin' | 'expired'
+}
+
+/** Daemon to control plane (signed report): the session is open. */
+export type ShellOpenedReport = {
+  type: 'shell-opened'
+  sid: string
+  shell: string
+  user: string
+  at: string
+}
+
+export type ShellCloseReason =
+  'exit' | 'idle' | 'max' | 'kill' | 'client' | 'error' | 'daemon-restart'
+
+/** Daemon to control plane (signed report): the session ended. */
+export type ShellClosedReport = {
+  type: 'shell-closed'
+  sid: string
+  reason: ShellCloseReason
+  exitCode?: number
+  durationMs: number
+  bytesIn: number
+  bytesOut: number
+  at: string
+}
+
+export type ShellErrorCode =
+  | 'container_not_found'
+  | 'container_not_owned'
+  | 'gate_denied'
+  | 'no_shell'
+  | 'helper_unavailable'
+  | 'grant_invalid'
+  | 'limit'
+  | 'key_invalid'
+  /** The control session is not signed and verified, so no terminal opens. */
+  | 'unverified'
+  /** A terminal with this `sid` is already running. */
+  | 'duplicate_sid'
+
+/** Daemon to control plane (signed report): the session could not be opened. */
+export type ShellErrorReport = {
+  type: 'shell-error'
+  sid: string
+  code: ShellErrorCode
+  at: string
+}
+
 export type DaemonMessage =
   | {
       type: 'hello'
@@ -959,6 +1041,11 @@ export type DaemonMessage =
   | AcmeDnsPublishMessage
   | AcmeDnsPublishedMessage
   | AcmeDnsRemoveMessage
+  | ShellOpenMessage
+  | ShellKillMessage
+  | ShellOpenedReport
+  | ShellClosedReport
+  | ShellErrorReport
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -1386,6 +1473,9 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'command-progress',
   'command-ack',
   'command-outcome',
+  'shell-opened',
+  'shell-closed',
+  'shell-error',
 ] as const)
 
 /** Hard cap on a single inbound WebSocket text/binary frame (UTF-8 bytes). */
@@ -3090,9 +3180,90 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateCommandProgressFields(record)
     default: {
       const acme = validateAcmeInboundFields(record)
-      return acme === undefined ? `disallowed type ${String(record.type)}` : acme
+      if (acme !== undefined) return acme
+      const shell = validateShellReportFields(record)
+      return shell === undefined ? `disallowed type ${String(record.type)}` : shell
     }
   }
+}
+
+const SHELL_SID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+export const SHELL_CLOSE_REASONS: readonly ShellCloseReason[] = [
+  'exit',
+  'idle',
+  'max',
+  'kill',
+  'client',
+  'error',
+  'daemon-restart',
+]
+export const SHELL_ERROR_CODES: readonly ShellErrorCode[] = [
+  'container_not_found',
+  'container_not_owned',
+  'gate_denied',
+  'no_shell',
+  'helper_unavailable',
+  'grant_invalid',
+  'limit',
+  'key_invalid',
+  'unverified',
+  'duplicate_sid',
+]
+
+function isShellSid(value: unknown): value is string {
+  return typeof value === 'string' && SHELL_SID_RE.test(value)
+}
+
+function isCounter(value: unknown): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function validateShellClosedFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    SHELL_CLOSE_REASONS.includes(record.reason as ShellCloseReason) ? null : 'invalid reason',
+    record.exitCode === undefined ||
+      (typeof record.exitCode === 'number' && Number.isInteger(record.exitCode))
+      ? null
+      : 'invalid exitCode',
+    isCounter(record.durationMs) ? null : 'invalid durationMs',
+    isCounter(record.bytesIn) ? null : 'invalid bytesIn',
+    isCounter(record.bytesOut) ? null : 'invalid bytesOut'
+  )
+}
+
+function validateShellOpenedFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    typeof record.shell === 'string' && record.shell.length <= 256 ? null : 'invalid shell',
+    typeof record.user === 'string' && record.user.length <= 256 ? null : 'invalid user'
+  )
+}
+
+/**
+ * Shape check for the terminal reports a daemon signs (`shell-opened`,
+ * `shell-closed`, `shell-error`); `undefined` when the type is not one of them.
+ */
+export function validateShellReportFields(
+  record: Record<string, unknown>
+): string | null | undefined {
+  let typed: string | null
+  switch (record.type) {
+    case 'shell-opened':
+      typed = validateShellOpenedFields(record)
+      break
+    case 'shell-closed':
+      typed = validateShellClosedFields(record)
+      break
+    case 'shell-error':
+      typed = SHELL_ERROR_CODES.includes(record.code as ShellErrorCode) ? null : 'invalid code'
+      break
+    default:
+      return undefined
+  }
+  return firstProblem(
+    isShellSid(record.sid) ? null : 'invalid sid',
+    typed,
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp'
+  )
 }
 
 /** The certificate frames a daemon sends; `undefined` when the type is not one of them. */

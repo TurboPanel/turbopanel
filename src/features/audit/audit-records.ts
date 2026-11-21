@@ -160,6 +160,9 @@ export const AUDIT_ACTIONS = [
   'instance.hostname_ingress.applied',
   'instance.hostname_ingress.removed',
   'instance.dns01.ordered',
+  'server.terminal.open',
+  'server.terminal.close',
+  'server.terminal_settings.update',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]
@@ -255,4 +258,22 @@ export async function listAuditForOrganization(
     .limit(limit)
 
   return rows
+}
+
+/**
+ * Record one action and throw when the row could not be written. For an
+ * action that must not happen unrecorded (a terminal opening): the caller
+ * refuses the action when this throws, where {@link recordAudit} would only
+ * log.
+ */
+export async function recordAuditOrThrow(db: Db, entry: AuditEntry): Promise<void> {
+  await db.insert(audit).values({
+    organizationId: entry.organizationId ?? null,
+    actorUserId: entry.actorUserId ?? null,
+    actorEmail: entry.actorEmail ?? null,
+    action: entry.action,
+    targetType: entry.targetType,
+    targetId: entry.targetId ?? null,
+    context: entry.context ?? null,
+  })
 }

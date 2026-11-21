@@ -824,6 +824,11 @@ async function handleBackupCopyReportInbound(params: {
   params.reply(backupCopyReportResultMessage(message.id, outcome, new Date().toISOString()))
 }
 
+/** The frame's own timestamp; the terminal frames (shared wire union) carry none. */
+function inboundMessageAt(message: DaemonMessage): string {
+  return 'at' in message && typeof message.at === 'string' ? message.at : new Date().toISOString()
+}
+
 /**
  * Route one validated, key-checked daemon frame to its handler. Types with no
  * dedicated handler record liveness and, when they carry a correlated result,
@@ -844,12 +849,12 @@ export async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch
     // A handler that fails after recordInbound leaves Redis connected, so the
     // next frame would see steady state: repair here when it got that far.
     if (!snapshotBefore.connected && (await cell.getSnapshot()).connected) {
-      await restoreProjectedOnline(db, serverId, cell, snapshotBefore, message.at)
+      await restoreProjectedOnline(db, serverId, cell, snapshotBefore, inboundMessageAt(message))
     }
     throw err
   }
   if (!snapshotBefore.connected) {
-    await restoreProjectedOnline(db, serverId, cell, snapshotBefore, message.at)
+    await restoreProjectedOnline(db, serverId, cell, snapshotBefore, inboundMessageAt(message))
   }
 }
 
@@ -1029,7 +1034,7 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
       })
       return
     default:
-      await cell.recordInbound({ connectionId, at: message.at })
+      await cell.recordInbound({ connectionId, at: inboundMessageAt(message) })
       await applyWireMessageEnvelope(cell, db, serverId, message, params.reply)
   }
 }
@@ -1679,6 +1684,11 @@ export function registerDaemonWebSocket<E extends Env>(
   }
   registerStubWebSocket(app, CLIENT_WS_PATH, 'client', (c) =>
     authorizeClientUpgrade(c, options.sessionSecrets)
+  )
+  // The self-hosted runtime has no terminal hub yet (the Durable Object path
+  // serves it); the open route already refuses with `terminal_unsupported`.
+  app.get(`${CLIENT_WS_PATH}/shell/:sid`, (c) =>
+    c.json({ ok: false, error: 'terminal_unsupported' }, 501)
   )
 }
 

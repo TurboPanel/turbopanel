@@ -158,6 +158,7 @@ import {
 import { createDurableAuthRateLimiter } from '../../client/authn/auth-rate-limit.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from '../../client/authn/email-otp.ts'
 import { WEBAUTHN_CHALLENGE_PURPOSE } from '../../client/authn/passkeys.ts'
+import { SHELL_TICKET_PURPOSE } from '../../features/terminal/ticket.ts'
 import {
   BACKUP_CODE_VERIFIER_PURPOSE,
   TWO_FACTOR_CHALLENGE_PURPOSE,
@@ -490,6 +491,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secretsConfig,
     WEBAUTHN_CHALLENGE_PURPOSE
   )
+  const shellTicketSecrets = await deriveSecretsConfig(secretsConfig, SHELL_TICKET_PURPOSE)
   const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
   const challengeSigningSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -675,6 +677,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     twoFactorChallengeSecrets,
     backupCodeVerifierSecrets,
     webauthnChallengeSecrets,
+    shellTicketSecrets,
     runtime: 'deno',
     corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
     signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),

@@ -11,6 +11,10 @@ import type {
   ExpiredUpdateRequest,
   PendingRequestRecord,
   PendingRequestStatus,
+  ShellKillReason,
+  ShellOpenRequest,
+  ShellOpenResult,
+  ShellSessionInfo,
 } from '../../contracts/cell.ts'
 import { resolveCellLocationHint } from './location.ts'
 import { listConnectedServerIdsFromProjection } from './postgres-projection.ts'
@@ -411,6 +415,30 @@ class DurableObjectStubDaemonCell implements DaemonCell {
       serverId: this.#serverId,
       body: { reason },
     })
+  }
+
+  shellOpen(request: ShellOpenRequest): Promise<ShellOpenResult> {
+    return this.#rpc<ShellOpenResult>('/rpc/shell-open', {
+      serverId: this.#serverId,
+      body: { request },
+    })
+  }
+
+  async shellKill(params: { sid?: string; all?: true; reason: ShellKillReason }): Promise<number> {
+    const result = await this.#rpc<{ killed: number }>('/rpc/shell-kill', {
+      serverId: this.#serverId,
+      body: { params },
+    })
+    return result.killed
+  }
+
+  async shellList(): Promise<ShellSessionInfo[]> {
+    const result = await this.#rpc<{ sessions: ShellSessionInfo[] }>('/rpc/shell-list', {
+      serverId: this.#serverId,
+      method: 'GET',
+      idempotent: true,
+    })
+    return result.sessions
   }
 
   checkLiveness(): Promise<DaemonCellLiveness> {
