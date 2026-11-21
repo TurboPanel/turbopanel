@@ -114,7 +114,7 @@ function oldestFinish(targets: readonly { finishedAt: string | null }[]): string
   return oldest
 }
 
-async function environmentOfHosting(db: Db, hostingId: string): Promise<string | null> {
+export async function environmentOfHosting(db: Db, hostingId: string): Promise<string | null> {
   const [row] = await db
     .select({ environmentId: service.environmentId })
     .from(hosting)
@@ -122,6 +122,27 @@ async function environmentOfHosting(db: Db, hostingId: string): Promise<string |
     .where(eq(hosting.id, hostingId))
     .limit(1)
   return row?.environmentId ?? null
+}
+
+/**
+ * What a released hostname leaves on the servers. A removal never runs a
+ * deploy of its own: a deploy plans from the whole environment, so it would
+ * ship someone's other undeployed edits. The route goes at the next deploy.
+ */
+export type HostingRemovalUpdate = 'next_deploy' | 'no_environment' | 'not_deployed'
+
+export async function hostingRemovalUpdate(
+  db: Db,
+  environmentId: string | null
+): Promise<HostingRemovalUpdate> {
+  if (environmentId === null) return 'no_environment'
+  const targets = await listEnvironmentDeploymentTargets(db, environmentId)
+  // A later failed deploy sets the status to `failed` but keeps the generation
+  // an earlier one applied, so the generation (not the status) says a server
+  // holds the route.
+  return targets.some((target) => target.appliedGeneration !== null)
+    ? 'next_deploy'
+    : 'not_deployed'
 }
 
 async function everyServerOnline(

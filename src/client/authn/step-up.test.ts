@@ -31,6 +31,7 @@ import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationMemberRoutes } from '../organizations/members.ts'
 import { registerHostingDeleteStepUp } from '../hostings/delete-step-up.ts'
 import { registerHostingRoutes } from '../hostings/routes.ts'
+import { registerHostingRemoveNowRoute } from '../hostings/remove-now-route.ts'
 import { registerReauthSettingsRoutes } from '../organizations/reauth-settings-routes.ts'
 import { registerStorageRoutes } from '../storage/routes.ts'
 import { createAuthRateLimiter, setSharedAuthRateLimiterForTests } from './auth-rate-limit.ts'
@@ -90,6 +91,7 @@ async function buildFixture(db: Db, reauthLimit = 1000) {
   registerTlsCaStepUp(client, opts)
   registerHostingDeleteStepUp(client, opts)
   registerHostingRoutes(client, opts)
+  registerHostingRemoveNowRoute(client, opts)
   // A stand-in destructive route: any route wired to the gate behaves like it.
   client.use('/probe/*', createSessionMiddleware(sessionSecrets))
   client.delete('/probe/:orgId', async (c) => {
@@ -596,6 +598,41 @@ test('delete hosting is wired to the gate', async () => {
       await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
       assertEquals((await remove()).status, 200)
       assertEquals((await db.select().from(hosting).where(eq(hosting.id, host!.id))).length, 0)
+    } finally {
+      await db.delete(hosting).where(eq(hosting.id, host!.id))
+      await db.delete(service).where(eq(service.id, svc!.id))
+      await db.delete(environment).where(eq(environment.projectId, scene.projectId))
+      await db.delete(project).where(eq(project.workspaceId, scene.workspaceId))
+      await db.delete(workspace).where(eq(workspace.organizationId, orgA))
+    }
+  })
+})
+
+test('remove a compose-made hosting now is wired to the hosting delete gate', async () => {
+  await withScene(async ({ db, fx, orgA, cookie, password }) => {
+    const scene = await makeStoppedEnvironment(db, orgA, 'hosting-now')
+    const [svc] = await db
+      .insert(service)
+      .values({ environmentId: scene.environmentId, composeServiceName: 'step-up-web' })
+      .returning({ id: service.id })
+    const [host] = await db
+      .insert(hosting)
+      .values({ serviceId: svc!.id, name: 'Step-up Site' })
+      .returning({ id: hosting.id })
+    const remove = () =>
+      fx.app.request(`${API}/hostings/${host!.id}/remove-now`, {
+        method: 'POST',
+        headers: { cookie, [ORG_ID_HEADER]: orgA, 'X-Real-IP': '203.0.113.7' },
+      })
+    try {
+      await setOrgReauth(db, orgA, true)
+      const refused = await remove()
+      assertEquals(refused.status, 403)
+      assertEquals(((await refused.json()) as { action: string }).action, 'hosting.delete')
+
+      // After re-authentication the gate lets it through; the handler then says a panel hosting is not compose-made.
+      await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
+      assertEquals((await remove()).status, 409)
     } finally {
       await db.delete(hosting).where(eq(hosting.id, host!.id))
       await db.delete(service).where(eq(service.id, svc!.id))

@@ -18,6 +18,7 @@ import {
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
 import { ensureNameHttpOrders } from './name-http-orders.ts'
+import { environmentOfHosting, hostingRemovalUpdate } from './letsencrypt-apply.ts'
 import { pinHostingNames, syncHostingPin } from '../../features/hostings/name-certificates.ts'
 import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
 import {
@@ -472,6 +473,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const refused = await refuseHostingChange(c, db, id, organizationId)
     if (refused) return refused
 
+    const environmentId = await environmentOfHosting(db, id)
     const result = await runHierarchyDelete(db, async (tx) => {
       // The environment row, then the Let's Encrypt lock, then the site: the
       // order a deploy takes them in.
@@ -488,7 +490,10 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
 
     nudgeTunnelRoutesAfterResponse(c, organizationId)
-    return c.json({ ok: true as const })
+    // The name is free now. The servers drop the route at the environment's
+    // next deploy; a delete never runs one itself.
+    const serverUpdate = await hostingRemovalUpdate(db, environmentId)
+    return c.json({ ok: true as const, serverUpdate })
   })
 }
 

@@ -262,6 +262,21 @@ function collectDeclaredRoutes(merged: ComposeDocument): DeclaredRoute[] {
   return routes
 }
 
+/**
+ * Does the merged document still declare this route on this compose service?
+ * The same key the reconcile matches a row by (`service` + `route`), so a check
+ * made outside a deploy agrees with what the next deploy would keep.
+ */
+export function composeDeclaresRoute(
+  merged: ComposeDocument,
+  composeServiceName: string,
+  route: string
+): boolean {
+  return collectDeclaredRoutes(merged).some(
+    (declared) => declared.composeServiceName === composeServiceName && declared.route === route
+  )
+}
+
 /** Refs, deduped, in the order the document names them. */
 function collectRefs(
   routes: readonly DeclaredRoute[],
