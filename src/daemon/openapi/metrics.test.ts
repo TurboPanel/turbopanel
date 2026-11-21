@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import { METRIC_EVENT_KINDS, METRICS_WIRE_VERSIONS } from '../../contracts/metrics-contract.ts'
+import { METRIC_EVENT_KINDS, METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type MetricEntityScope,
@@ -51,11 +51,12 @@ function fieldNamesForScope(scope: MetricEntityScope): string[] {
     .sort()
 }
 
-test('DaemonMetricsSample documents the accepted wire versions and required top-level fields', () => {
-  assertEquals([...METRICS_WIRE_VERSIONS], [6, 8])
+test('DaemonMetricsSample documents the one wire version and required top-level fields', () => {
+  assertEquals(METRICS_SCHEMA_VERSION, 8)
   assertEquals(sample.properties.type.const, 'metrics')
-  assertEquals(sample.properties.metadata.properties.version!.enum, [6, 8])
+  assertEquals(sample.properties.metadata.properties.version!.const, 8)
   assertEquals('durable' in sample.properties.metadata.properties, true)
+  assertEquals('topologyGeneration' in sample.properties.metadata.properties, false)
   assertEquals('extended' in sample.properties, true)
   assertEquals(sample.required.includes('metadata'), true)
   assertEquals(sample.required.includes('host'), true)

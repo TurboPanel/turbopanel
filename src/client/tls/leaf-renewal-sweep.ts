@@ -45,15 +45,6 @@ export const LEAF_RENEWAL_SWEEP_LOCK_KEY = 'LEAF_RENEWAL_SWEEP_LOCK'
 /** Lease TTL so a crashed isolate cannot block sweeps indefinitely. */
 export const LEAF_RENEWAL_SWEEP_LEASE_MS = 120_000
 
-/**
- * Deno-side cadence, the same one minute as the Workers cron. The tick also
- * carries the certificate sweeps (Let's Encrypt waiting requests, DNS-validated
- * and origin certificates), whose orders move one small step per tick, so a
- * slower tick would stretch an order over many minutes. Each part is bounded
- * and the leaf sweep keeps its lease; the timer's overlap guard stays.
- */
-export const LEAF_RENEWAL_SWEEP_INTERVAL_MS = 60 * 1000
-
 /** Remaining lifetime below which a 90-day leaf is due (lifetime / 3). */
 export const LEAF_RENEWAL_REMAINING_MS = (ORGANIZATION_CA_LEAF_VALID_DAYS * MS_PER_DAY) / 3
 

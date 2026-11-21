@@ -446,6 +446,39 @@ async function runBaselineRelease(baseUrl, tag, tagGeneration, currentGeneration
   return { tag, problems, skipped: true }
 }
 
+/**
+ * What migration 0004_hostname_certificate_choice must leave on the names the
+ * seed puts on the previous release: the choice each pin source stands for, a
+ * tunnel-only Let's Encrypt name set to self-signed (matched on lower case),
+ * and a name whose doorway is being removed left as it was.
+ */
+export const HOSTNAME_BACKFILL = [
+  ['d31', 'library', 'd11', 'a site pinned to an uploaded pair'],
+  ['d32', 'self_signed', null, "a Let's Encrypt name only its tunnel carries (mixed-case name)"],
+  ['d33', 'letsencrypt_http', 'd12', "a Let's Encrypt name the tunnel and the server both carry"],
+  ['d34', 'cloudflare_origin', 'd13', 'a site pinned to an origin pair'],
+  ['d35', 'self_signed', null, 'a site with no pin'],
+  ['d36', 'letsencrypt_http', 'd12', "a Let's Encrypt name whose doorway is being removed"],
+].map(([id, certificate, tls, what]) => ({
+  id: `00000000-0000-7000-8000-000000000${id}`,
+  certificate,
+  tlsId: tls === null ? null : `00000000-0000-7000-8000-000000000${tls}`,
+  what,
+}))
+
+/** Compare the stored choices with {@link HOSTNAME_BACKFILL}. */
+export function backfillProblems(rows) {
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  return HOSTNAME_BACKFILL.flatMap((want) => {
+    const row = byId.get(want.id)
+    if (!row) return [`backfill: ${want.what}: the name is gone`]
+    if (row.certificate === want.certificate && row.tls_id === want.tlsId) return []
+    return [
+      `backfill: ${want.what}: expected ${want.certificate}/${want.tlsId}, got ${row.certificate}/${row.tls_id}`,
+    ]
+  })
+}
+
 async function run(baseUrl, from) {
   const { tag, how } = from ? { tag: from, how: '--from' } : previousRelease()
   console.log(`migration-upgrade: previous release ${tag} (${how})`)
@@ -476,6 +509,7 @@ async function run(baseUrl, from) {
     }
 
     let seeded
+    let backfillPending = false
     await withClient(upgradeUrl, async (sql) => {
       await migrate(drizzle(sql), {
         migrationsFolder: tagMigrations,
@@ -484,6 +518,12 @@ async function run(baseUrl, from) {
       })
       console.log(`migration-upgrade: applied ${tag} migrations to ${upgradeDb}`)
       const empty = await rowSnapshot(sql)
+      // A release that already has the per-name choice backfilled nothing for the seed.
+      backfillPending =
+        (
+          await sql`select 1 from information_schema.columns
+            where table_schema = 'public' and table_name = 'hostname' and column_name = 'certificate'`
+        ).length === 0
       await applySeed(sql, `the ${tag} schema`)
       seeded = new Map([...(await rowSnapshot(sql))].filter(([key]) => !empty.has(key)))
       console.log(`migration-upgrade: seeded ${seeded.size} rows`)
@@ -503,6 +543,13 @@ async function run(baseUrl, from) {
         )
       )
       problems.push(...diffRows(seeded, await rowSnapshot(sql), allowance, tablesAfter))
+      if (backfillPending) {
+        problems.push(
+          ...backfillProblems(
+            await sql`select id, certificate, tls_id from hostname where id::text like '00000000-0000-7000-8000-000000000d3%'`
+          )
+        )
+      }
       return schemaShape(sql)
     })
     const fresh = await withClient(freshUrl, async (sql) => {

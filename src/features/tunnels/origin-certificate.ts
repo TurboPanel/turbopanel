@@ -34,6 +34,7 @@ import { encryptSecret, isSealedEnvelope } from '../../lib/secrets/data-encrypti
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { mintCertificateRequest, parseCertificatePem } from '../../lib/tls/index.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
+import { hostingsPinningName, repinNames } from '../hostings/name-certificates.ts'
 import { metadataFromParsed, splitTlsMetadata } from '../../lib/tls/metadata.ts'
 import type { ProviderOriginCertificate, TunnelAdapter } from './adapter.ts'
 import type { TunnelProvider } from './vocabulary.ts'
@@ -224,10 +225,11 @@ export async function countOriginCertificatesFrom(
   return rows.length
 }
 
-/** Ids of hostings that pin a certificate. */
+/** Ids of hostings that pin a certificate for the whole site or for any one of their names. */
 export async function hostingsPinning(db: Db, tlsId: string): Promise<string[]> {
   const rows = await db.select({ id: hosting.id }).from(hosting).where(eq(hosting.tlsId, tlsId))
-  return rows.map((row) => row.id)
+  const named = await hostingsPinningName(db, tlsId)
+  return [...new Set([...rows.map((row) => row.id), ...named])]
 }
 
 /** A badge that can issue for the zone: it must have been proved to read the zone's certificates. */
@@ -466,7 +468,7 @@ function isRedundantExact(old: TlsRow, replacement: ProviderOriginLink): boolean
 /**
  * Mark the certificates nobody needs any more as retired: none of the
  * hostnames still in use falls under them. `usedHostnames` is every hostname
- * of this organization that asks for a verified connection. Returns the ids.
+ * of this organization that a tunnel carries. Returns the ids.
  */
 export async function retireUnusedOriginCertificates(
   db: Db,
@@ -614,8 +616,15 @@ export async function renewOriginCertificate(
     .set({ tlsId: replacement.id })
     .where(eq(hosting.tlsId, params.row.id))
     .returning({ id: hosting.id })
+  // The names pinned to the old row move with it; a name pinned on its own
+  // (the site pin was another certificate) puts its site in the list too.
+  const namedHostings = await hostingsPinningName(params.db, params.row.id)
+  await repinNames(params.db, params.row.id, replacement.id)
   await retireRow(params.db, params.row, params.now ?? new Date())
-  return { replacement, repinnedHostingIds: moved.map((h) => h.id) }
+  return {
+    replacement,
+    repinnedHostingIds: [...new Set([...moved.map((h) => h.id), ...namedHostings])],
+  }
 }
 
 export type OriginSweepResult = {
@@ -634,7 +643,7 @@ type SweepParams = {
   secrets: DerivedSecretsConfig
   registry: (provider: TunnelProvider) => TunnelAdapter
   organizationId: string
-  /** Hostnames still asking for a verified connection; when given, certificates nothing needs are retired first. */
+  /** Hostnames a tunnel still carries; when given, certificates nothing needs are retired first. */
   usedHostnames?: readonly string[]
   /** Most rows handled in this pass; the rest wait for the next one. Defaults to ORIGIN_SWEEP_BATCH. */
   limit?: number

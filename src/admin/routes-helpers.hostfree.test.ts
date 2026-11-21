@@ -280,7 +280,7 @@ function registryWithWait(
 
 test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', async () => {
   const serverId = crypto.randomUUID()
-  const urls = ['https://panel.example.com']
+  const payload = { hostnames: [{ host: 'panel.example.com', source: 'platform-ca' as const }] }
 
   assertEquals(
     await waitForPublicUrlsApply(
@@ -293,7 +293,7 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         expiresAt: outbound.at,
       })),
       serverId,
-      urls
+      payload
     ),
     { kind: 'done' }
   )
@@ -310,7 +310,7 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         expiresAt: outbound.at,
       })),
       serverId,
-      urls
+      payload
     ),
     { kind: 'failed', error: 'apply blew up' }
   )
@@ -326,7 +326,7 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         expiresAt: outbound.at,
       })),
       serverId,
-      urls
+      payload
     ),
     { kind: 'failed', error: 'daemon reported failure' }
   )
@@ -342,7 +342,7 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         expiresAt: outbound.at,
       })),
       serverId,
-      urls
+      payload
     ),
     { kind: 'timeout' }
   )
@@ -353,7 +353,7 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         throw new Error('cell offline')
       }),
       serverId,
-      urls
+      payload
     ),
     { kind: 'error', error: 'cell offline' }
   )
@@ -364,7 +364,7 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         throw 'string-fail'
       }),
       serverId,
-      urls
+      payload
     ),
     { kind: 'error', error: 'string-fail' }
   )

@@ -294,7 +294,7 @@ test('collectProxySqlListenerSans and hierarchy merge', () => {
   assertEquals(merged.ipAddresses, sans.ipAddresses)
 })
 
-const NO_IPV6 = { serverHasIpv6: false, daemonPublishesIpv6: false }
+const NO_IPV6 = { serverHasIpv6: false }
 
 test('decideIngressBindAddresses: no keeps loopback, yes opens every address', () => {
   // Regression: "no" must be loopback, never an empty publish. Sites run by a
@@ -307,8 +307,8 @@ test('decideIngressBindAddresses: no keeps loopback, yes opens every address', (
 test('decideIngressBindAddresses never widens a "no" to a wildcard', () => {
   // The publish is the enforcement (no host firewall rule, no ProxySQL source
   // rule yet), so "no" must stay on the loopback address and nothing else —
-  // even on a server with IPv6 whose daemon can publish it.
-  const ipv6Ready = { serverHasIpv6: true, daemonPublishesIpv6: true }
+  // even on a server with IPv6.
+  const ipv6Ready = { serverHasIpv6: true }
   for (const address of [
     ...decideIngressBindAddresses(false, NO_IPV6),
     ...decideIngressBindAddresses(false, ipv6Ready),
@@ -318,21 +318,10 @@ test('decideIngressBindAddresses never widens a "no" to a wildcard', () => {
   assertEquals(decideIngressBindAddresses(false, ipv6Ready), ['127.0.0.1'])
 })
 
-test('decideIngressBindAddresses adds the IPv6 wildcard only with IPv6 and a daemon that can publish it', () => {
-  assertEquals(
-    decideIngressBindAddresses(true, { serverHasIpv6: true, daemonPublishesIpv6: true }),
-    ['0.0.0.0', '::']
-  )
+test('decideIngressBindAddresses adds the IPv6 wildcard only with IPv6', () => {
+  assertEquals(decideIngressBindAddresses(true, { serverHasIpv6: true }), ['0.0.0.0', '::'])
   // No IPv6 stack in the kernel: a `[::]` publish would fail and take the listener down.
-  assertEquals(
-    decideIngressBindAddresses(true, { serverHasIpv6: false, daemonPublishesIpv6: true }),
-    ['0.0.0.0']
-  )
-  // An older daemon never receives `::`.
-  assertEquals(
-    decideIngressBindAddresses(true, { serverHasIpv6: true, daemonPublishesIpv6: false }),
-    ['0.0.0.0']
-  )
+  assertEquals(decideIngressBindAddresses(true, { serverHasIpv6: false }), ['0.0.0.0'])
 })
 
 test('the IPv6 wildcard bind never lands on the listener certificate', () => {

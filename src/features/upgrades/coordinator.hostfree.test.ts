@@ -164,7 +164,7 @@ test('start updates connected fleet servers before offline ones', async () => {
   const enqueued: string[] = []
   const store = createMemoryUpgradeStore({
     facts: [
-      fleetFact(FLEET_A, 'studio', false),
+      fleetFact(FLEET_A, 'server-a', false),
       fleetFact(FLEET_B, 'alpha', true),
       fleetFact(FLEET_C, 'io', false),
       fleetFact(FLEET_D, 'beta', true),

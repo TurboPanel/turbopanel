@@ -26,12 +26,7 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { issuePeerLeaf, type PeerLeafIssue } from '../tls/peer-leaf.ts'
 import { pendingTlsLeafMetadata } from '../tls/leaf-tracking.ts'
-import {
-  daemonAddsLockFromTable,
-  daemonCanCarryTunnels,
-  daemonLockFollowsTable,
-} from './daemon-gate.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
+import { markPeerLeafReminted, peerDowngradeRepeats, peerLeafRemintDue } from './status.ts'
 import {
   buildTunnelRoutes,
   hashTunnelRoutes,
@@ -40,7 +35,8 @@ import {
 } from './route-builder.ts'
 import { relinkDoorwayHostings } from './doorway-links.ts'
 import { loadRoutingFacts } from './route-facts.ts'
-import { generationForDaemon, resolveTunnelGeneration } from './table-generation.ts'
+import { staleTunnelTableWarning } from './stale-table-note.ts'
+import { resolveTunnelGeneration, TUNNEL_GENERATION_BUMP_GAP_MS } from './table-generation.ts'
 
 /** The least time between two sends of the same table to one server. */
 export const TUNNEL_ROUTES_RESEND_GAP_MS = 10 * 60 * 1000
@@ -167,11 +163,9 @@ async function enqueueRoutes(
   return { ok: true, commandId: record.id }
 }
 
-type ServerReady =
-  | { ok: true; metadata: unknown; features: readonly string[] }
-  | { ok: false; outcome: TunnelSyncOutcome }
+type ServerReady = { ok: true; metadata: unknown } | { ok: false; outcome: TunnelSyncOutcome }
 
-/** The server exists, is connected, and runs a daemon that advertises tunnel support. */
+/** The server exists and is connected. */
 async function checkServerReady(
   db: Db,
   organizationId: string,
@@ -188,10 +182,23 @@ async function checkServerReady(
   })
   if (!row) return skip('unknown server')
   if (!row.isConnected) return skip('server offline')
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  const features = state?.projection?.features
-  if (!daemonCanCarryTunnels(features)) return skip('daemon too old')
-  return { ok: true, metadata: row.metadata, features: Array.isArray(features) ? features : [] }
+  return { ok: true, metadata: row.metadata }
+}
+
+/**
+ * How long an unsettled table waits before it is sent again. A table the daemon
+ * refused as older than its own waits only the generation bump gap: the refusal
+ * raises the organization's generation at most once in that time, so a refusal
+ * inside it left the table unsent, and the next send after the gap carries the
+ * raised number (or raises it again).
+ */
+export function resendGapAfter(
+  row: { status: string; resultSummary: unknown } | undefined
+): number {
+  const refused =
+    row?.status === 'succeeded' &&
+    staleTunnelTableWarning('server.tunnel.routes', row.resultSummary) !== undefined
+  return refused ? TUNNEL_GENERATION_BUMP_GAP_MS : TUNNEL_ROUTES_RESEND_GAP_MS
 }
 
 /**
@@ -213,7 +220,7 @@ async function isAlreadyCurrent(
   if (sent.stateHash !== stateHash) return false
   const last = await loadLastSend(db, sent)
   if (lastSendIsSettled(last, sent, Date.now())) return true
-  if (Date.now() - Date.parse(sent.sentAt) < TUNNEL_ROUTES_RESEND_GAP_MS) return true
+  if (Date.now() - Date.parse(sent.sentAt) < resendGapAfter(last)) return true
   compatLogWarn(
     'tunnel-sync',
     `server ${serverId}: the last forwarding table was not applied (${describeUnsettled(last)}); sending it again`
@@ -237,14 +244,18 @@ export async function syncServerTunnelRoutes(
   const ready = await checkServerReady(db, organizationId, serverId)
   if (!ready.ok) return ready.outcome
   const facts = await loadRoutingFacts(db, organizationId)
-  // The name lock follows the table only on a daemon that says it can.
   const built = buildTunnelRoutes(serverId, facts.tunnels, facts.addresses, {
-    withInbound: daemonLockFollowsTable(ready.features),
-    withLockAdd: daemonAddsLockFromTable(ready.features),
+    withInbound: true,
+    withLockAdd: true,
+    // The daemon shows its peer certificate and checks one when it is shown;
+    // `require` goes out with a leaf that allows client authentication: a leaf
+    // issued before that is stale (peerLeafIsCurrent), so the same send re-mints it.
+    peerClientAuth: 'require' as const,
   })
   const stateHash = await hashTunnelRoutes(built, undefined)
   const sent = readSentState(ready.metadata)
-  const open = !params.force && !params.issue
+  const remint = remintDue(serverId, ready.metadata)
+  const open = !params.force && !params.issue && !remint
   if (open && (await isAlreadyCurrent(db, serverId, sent, built, stateHash))) {
     return { status: 'unchanged' }
   }
@@ -253,10 +264,7 @@ export async function syncServerTunnelRoutes(
   const material = built.needsPeerMaterial ? issue.leaf?.material : undefined
   const payload = await toRoutesPayload(built, material)
   // The generation is not part of the hash: an unchanged table keeps its number.
-  const generation = await generationForDaemon(ready.features, () =>
-    resolveTunnelGeneration(db, organizationId, facts)
-  )
-  if (generation !== undefined) payload.generation = generation
+  payload.generation = await resolveTunnelGeneration(db, organizationId, facts)
   const notes = [...built.warnings, ...built.skipped.map((n) => `${n.hostname}: ${n.reason}`)]
   for (const note of notes) compatLogWarn('tunnel-sync', `server ${serverId}: ${note}`)
   // The leaf is tracked as delivered only when the certificate really went out.
@@ -268,6 +276,7 @@ export async function syncServerTunnelRoutes(
     material ? issue.leaf : null
   )
   if (!queued.ok) return { status: 'failed', reason: queued.reason }
+  await markRemintDone(db, serverId, remint, material)
   await recordSent(db, serverId, {
     stateHash,
     commandId: queued.commandId,
@@ -275,6 +284,32 @@ export async function syncServerTunnelRoutes(
     forwarded: built.routes.filter((r) => !r.local).length,
   })
   return { status: 'sent', commandId: queued.commandId }
+}
+
+/**
+ * A daemon that downgraded `require` has a leaf without client use: it gets a
+ * new one in this send, once per report (see peerLeafRemintDue). A repeat after
+ * that is only logged.
+ */
+function remintDue(serverId: string, metadata: unknown): boolean {
+  const due = peerLeafRemintDue(metadata)
+  if (!due && peerDowngradeRepeats(metadata)) {
+    compatLogWarn(
+      'tunnel-sync',
+      `server ${serverId}: the peer hop still runs without client certificates after a new peer certificate`
+    )
+  }
+  return due
+}
+
+/** Remember that this send carried the new leaf, so the same report does not ask again. */
+async function markRemintDone(
+  db: Db,
+  serverId: string,
+  remint: boolean,
+  material: unknown
+): Promise<void> {
+  if (remint && material !== undefined) await markPeerLeafReminted(db, serverId)
 }
 
 /** The leaf to send: the one handed in, or a freshly minted one when the table needs a certificate. */

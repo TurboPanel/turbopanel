@@ -49,7 +49,7 @@ export function planNetworkCheck(
 /** What one server's probe came back as. */
 export type NetworkCheckServerOutcome =
   | { status: 'checked'; results: ServerNetworkCheckEntry[] }
-  | { status: 'not_tested'; reason: 'daemon_update_required' | 'offline' | 'timeout' | 'error' }
+  | { status: 'not_tested'; reason: 'offline' | 'timeout' | 'error' }
 
 export type NetworkCheckPeerResult = {
   peerServerId: string

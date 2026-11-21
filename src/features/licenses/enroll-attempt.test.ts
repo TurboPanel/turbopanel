@@ -52,7 +52,7 @@ test('record → list → clear: an enrolling unbound key is provisioning until 
   ])
   assertEquals((await listProvisioningLicenses(db, ORG)).size, 0)
 
-  await recordLicenseEnrollAttempt(db, 'lic-1', 'adrastea', NOW_MS)
+  await recordLicenseEnrollAttempt(db, 'lic-1', 'host-a', NOW_MS)
   // A second attempt overwrites, never duplicates.
   await recordLicenseEnrollAttempt(db, 'lic-1', '  ', NOW_MS + 5000)
   const listed = await listProvisioningLicenses(db, ORG)
@@ -69,7 +69,7 @@ test('record → list → clear: an enrolling unbound key is provisioning until 
 })
 
 test('only active, unbound keys of the organization with a valid record are provisioning', async () => {
-  const attempt = { version: 1, at: '2026-09-27T01:00:00.000Z', hostname: 'adrastea' }
+  const attempt = { version: 1, at: '2026-09-27T01:00:00.000Z', hostname: 'host-a' }
   const db = createMemoryDb([
     [
       license,

@@ -46,7 +46,12 @@ import {
   requestsKey,
   snapshotKey,
 } from './keys.ts'
-import { COMPARE_AND_DELETE, COMPARE_AND_RENEW, RECONCILE_STALE_SOCKET_PRESENCE } from './lua.ts'
+import {
+  COMPARE_AND_DELETE,
+  COMPARE_AND_RENEW,
+  RECONCILE_STALE_SOCKET_PRESENCE,
+  REDELIVER_SENT_REQUEST,
+} from './lua.ts'
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>(['done', 'failed', 'expired'])
 
@@ -58,6 +63,9 @@ const TERMINAL_STATUSES = new Set<PendingRequestStatus>(['done', 'failed', 'expi
  * group existed.
  */
 const OUTBOX_GROUP_START_ID = '0'
+
+/** Most XAUTOCLAIM pages one attach follows, a guard against a cursor that never ends. */
+const MAX_AUTOCLAIM_PAGES = 100
 
 /** Redis answers `NOGROUP` when the stream key or its consumer group is gone. */
 export function isNoGroupError(err: unknown): boolean {
@@ -105,6 +113,7 @@ const REDIS_WRITE_METHODS = new Set([
   'srem',
   'xadd',
   'xautoclaim',
+  'xautoclaimPage',
   'xclaim',
   'xack',
   'xgroupCreate',
@@ -421,11 +430,18 @@ export class RedisDaemonCell implements DaemonCell {
   async #handOverToActiveConsumer(envelopes: DaemonOutboundEnvelope[]): Promise<void> {
     const active = this.#activeConnectionId
     if (active === undefined) return
-    const ids = envelopes
-      .map((envelope) => this.#deliveryToStreamId.get(envelope.deliveryId))
-      .filter((id): id is string => id !== undefined)
-    if (ids.length === 0) return
     const consumer = `ws:${active}`
+    // A delivery can appear twice in one batch after an earlier failed send, and
+    // may already be waiting on the live consumer: hand each entry over once.
+    const waiting = new Set((this.#reclaimedByConsumer.get(consumer) ?? []).map((e) => e.id))
+    const ids = [
+      ...new Set(
+        envelopes
+          .map((envelope) => this.#deliveryToStreamId.get(envelope.deliveryId))
+          .filter((id): id is string => id !== undefined && !waiting.has(id))
+      ),
+    ]
+    if (ids.length === 0) return
     const claimed = await this.#redis('readOutboxBatch').xclaim(
       outboxKey(this.#serverId),
       OUTBOX_GROUP,
@@ -592,7 +608,16 @@ export class RedisDaemonCell implements DaemonCell {
     // (the lease is ours alone), so none of it is in use: claim it all now.
     // An idle floor here left an entry read by the old socket a moment before
     // the reconnect pending on a consumer nobody reads, until the next attach.
-    const reclaimed = await redis.xautoclaim(outbox, OUTBOX_GROUP, consumer, 0, '0-0', 100)
+    // XAUTOCLAIM returns at most one page and a cursor; follow it until it
+    // comes back to 0-0 so a backlog past one page is claimed too.
+    const reclaimed: StreamEntry[] = []
+    let cursor = '0-0'
+    for (let page = 0; page < MAX_AUTOCLAIM_PAGES; page++) {
+      const result = await redis.xautoclaimPage(outbox, OUTBOX_GROUP, consumer, 0, cursor, 100)
+      reclaimed.push(...result.entries)
+      cursor = result.next
+      if (cursor === '0-0') break
+    }
     if (reclaimed.length > 0) {
       this.#reclaimedByConsumer.set(consumer, reclaimed)
       this.#rememberOutboxEntries(reclaimed)
@@ -1142,21 +1167,25 @@ export class RedisDaemonCell implements DaemonCell {
     this.#bumpMethodRoute('redeliverSent')
     const redis = this.#redis('redeliverSent')
     const reqKey = requestKey(this.#serverId, outbound.requestId)
-    const fields = await redis.hgetall(reqKey)
-    // Never insert: an expired request is purged, so its hash is gone.
-    if (fields?.status !== 'sent' || fields.ackAt) return false
-    const deliveries = parseDeliveryMap(fields.deliveries)
-    if (deliveries[outbound.deliveryId]) return true
-    const streamId = await redis.xadd(outboxKey(this.#serverId), '*', {
-      deliveryId: outbound.deliveryId,
-      requestId: outbound.requestId,
-      kind: outbound.kind,
-      payload: JSON.stringify(outbound),
-      enqueuedAt: outbound.at,
-    })
-    deliveries[outbound.deliveryId] = streamId
-    await redis.hset(reqKey, { deliveries: JSON.stringify(deliveries) })
-    this.#deliveryToStreamId.set(outbound.deliveryId, streamId)
+    // One Lua step: check the request is still `sent` and unacked, add to the
+    // outbox and record the delivery together. A request that expires between
+    // a separate check and write would otherwise be left as a record with no
+    // expiry, and the resend would still go. Never inserts.
+    const result = await redis.eval(
+      REDELIVER_SENT_REQUEST,
+      2,
+      reqKey,
+      outboxKey(this.#serverId),
+      outbound.deliveryId,
+      outbound.requestId,
+      outbound.kind,
+      JSON.stringify(outbound),
+      outbound.at
+    )
+    if (result === 0 || result === null) return false
+    // 1: this delivery id is already recorded (a no-op). A stream id: written.
+    if (typeof result !== 'string') return true
+    this.#deliveryToStreamId.set(outbound.deliveryId, result)
     cellTrace('redeliver-sent', {
       serverId: this.#serverId,
       requestId: outbound.requestId,

@@ -1,0 +1,1 @@
+ALTER TABLE "datacenter" ALTER COLUMN "is_trusted" SET DEFAULT false;

@@ -59,6 +59,20 @@ test('v1 is accepted until the server has used a signed session', async () => {
   })
 })
 
+test('where signed sessions are required, v1 is refused even at trust level 0', async () => {
+  const id = await identity()
+  const ctx = { identity: id, trustLevel: 0, requireSigned: true, nowMs: NOW_MS }
+  assertEquals(checkProofVersion({ version: 1 }, ctx), {
+    ok: false,
+    status: 403,
+    error: 'Signed proof required',
+  })
+  assertEquals(
+    checkProofVersion({ version: 2, panelFingerprint: id.current.kid, iat: NOW_S }, ctx),
+    { ok: true }
+  )
+})
+
 test('v2 must name the current or next key and be within five minutes', async () => {
   const id = await identity()
   const ctx = { identity: id, trustLevel: 1, nowMs: NOW_MS }

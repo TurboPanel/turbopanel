@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { carrier, organization, portal, secret, server, tunnel } from '../../db/schema.ts'
-import { connectorUpdateNotice, recordTunnelStatus } from './status.ts'
+import { connectorUpdateNotice, recordTunnelStatus, statusPortsLockOf } from './status.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -200,6 +200,44 @@ test('a connector the server was asked to run but reports stopped makes the next
         (b!.metadata as { tunnelConnectors?: unknown } | null)?.tunnelConnectors,
         undefined
       )
+    } finally {
+      await db.delete(organization).where(eq(organization.id, s.organizationId))
+      await db.delete(server).where(eq(server.id, s.serverA))
+      await db.delete(server).where(eq(server.id, s.serverB))
+    }
+  })
+})
+
+test('the status-port lock is kept per server and dropped when a report carries none', async () => {
+  await withDb(async (db) => {
+    const s = await seed(db)
+    try {
+      const base = { pinnedVersion: '2026.6.0', connectors: [] }
+      const lockOf = async () => {
+        const [row] = await db
+          .select({ metadata: server.metadata })
+          .from(server)
+          .where(eq(server.id, s.serverA))
+        return statusPortsLockOf(row!.metadata)
+      }
+      assertEquals(await lockOf(), null)
+      await recordTunnelStatus(db, s.serverA, {
+        ...base,
+        statusPortsLocked: false,
+        statusPortsLockReason: 'nft could not load',
+        statusPortsLockCheckedAt: '2026-11-19T10:00:00.000Z',
+      })
+      assertEquals(await lockOf(), {
+        locked: false,
+        reason: 'nft could not load',
+        checkedAt: '2026-11-19T10:00:00.000Z',
+      })
+      // The next load worked: the old reason must not linger.
+      await recordTunnelStatus(db, s.serverA, { ...base, statusPortsLocked: true })
+      assertEquals(await lockOf(), { locked: true, reason: null, checkedAt: null })
+      // A report without the fact (an older daemon) leaves it unknown.
+      await recordTunnelStatus(db, s.serverA, base)
+      assertEquals(await lockOf(), null)
     } finally {
       await db.delete(organization).where(eq(organization.id, s.organizationId))
       await db.delete(server).where(eq(server.id, s.serverA))

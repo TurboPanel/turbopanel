@@ -135,7 +135,8 @@ test('a switched-off server is in no peer list, snapshot, ladder or exposure and
     assertEquals(serverIds((await loadFabricReconcileSnapshot(db, record)).relays), [onId])
     assertEquals(await loadServerFabricAddress(db, offId), null)
     assertEquals(await loadFabricExposures(db, offId), [])
-    assertEquals((await loadFabricExposures(db, onId)).length, 1)
+    // Alone in the mesh, the other server has no tunnel to open.
+    assertEquals(await loadFabricExposures(db, onId), [])
 
     // The row and its settings stay reserved for the server.
     const kept = (await listFabricRelays(db, fabricId, { includeSwitchedOff: true })).find(
@@ -151,6 +152,7 @@ test('a switched-off server is in no peer list, snapshot, ladder or exposure and
       [offId, onId].sort((a, b) => a.localeCompare(b))
     )
     assertEquals(await loadServerFabricAddress(db, offId), '10.250.0.2')
+    assertEquals((await loadFabricExposures(db, onId)).length, 1)
     const [psk] = await db
       .select({ presharedKey: relay.presharedKey })
       .from(relay)

@@ -1,7 +1,7 @@
 {
   "version": "5",
   "specifiers": {
-    "jsr:@hono/hono@^4.13.5": "4.13.7",
+    "jsr:@hono/hono@^4.13.18": "4.13.18",
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/crypto@1": "1.1.0",
@@ -12,8 +12,8 @@
     "jsr:@std/testing@1": "1.0.20"
   },
   "jsr": {
-    "@hono/hono@4.13.7": {
-      "integrity": "90f83307462b2dd47c9a8028cf5e4827abedc74a53fd291a49130f1579fdcd79"
+    "@hono/hono@4.13.18": {
+      "integrity": "2e9a294f8ed5ca8f0dddf08927ad46111e756f3329f1483db550cd60757f7e21"
     },
     "@std/assert@1.0.19": {
       "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
@@ -46,7 +46,7 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@hono/hono@^4.13.5",
+      "jsr:@hono/hono@^4.13.18",
       "jsr:@std/assert@1",
       "jsr:@std/crypto@1",
       "jsr:@std/encoding@1",
@@ -76,7 +76,7 @@
         "npm:amqplib@^2.0.1",
         "npm:drizzle-kit@~0.31.1",
         "npm:drizzle-orm@~0.45.2",
-        "npm:hono@4.13.11",
+        "npm:hono@4.13.18",
         "npm:ioredis@^5.11.1",
         "npm:nodemailer@^10.2.1",
         "npm:postgres@^3.4.7",

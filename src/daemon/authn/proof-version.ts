@@ -37,14 +37,21 @@ export function parseProofVersion(
  * Whether this control plane takes the proof. A v2 proof must name this
  * control plane's current or next key and be fresh. A v1 proof is refused
  * only for a server that has already used a signed session (`trustLevel` 1 or
- * more): until the version floor moves, older daemons keep signing in.
+ * more), or where `requireSigned` is set (the Workers runtime): elsewhere an
+ * unpinned daemon, such as the one on a self-hosted control plane's own host,
+ * keeps signing in.
  */
 export function checkProofVersion(
   proof: ProofVersion,
-  ctx: { identity: PanelIdentity | null; trustLevel: number; nowMs: number }
+  ctx: {
+    identity: PanelIdentity | null
+    trustLevel: number
+    requireSigned?: boolean
+    nowMs: number
+  }
 ): { ok: true } | Refusal {
   if (proof.version === 1) {
-    return ctx.trustLevel >= 1
+    return ctx.requireSigned || ctx.trustLevel >= 1
       ? { ok: false, status: 403, error: SIGNED_PROOF_REQUIRED_ERROR }
       : { ok: true }
   }

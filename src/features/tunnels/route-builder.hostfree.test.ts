@@ -1,6 +1,13 @@
-import { assert, assertEquals, assertRejects } from '@std/assert'
+import { assert, assertEquals, assertRejects, assertThrows } from '@std/assert'
 import { parseTunnelRoutesPayload } from '../../contracts/commands/tunnel-routes.ts'
-import { buildTunnelRoutes, hashTunnelRoutes, toRoutesPayload } from './route-builder.ts'
+import {
+  buildTunnelRoutes,
+  hashTunnelRoutes,
+  toRoutesPayload,
+  unroutedReasons,
+  type AddressBook,
+  type ServerAddresses,
+} from './route-builder.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -14,10 +21,16 @@ const A = '00000000-0000-4000-8000-00000000000a'
 const B = '00000000-0000-4000-8000-00000000000b'
 const C = '00000000-0000-4000-8000-00000000000c'
 
+/** Addresses in one datacenter, plus any public ones. */
+const inDc = (list: string[], pub: string[] = [], dc = 'dc1') => ({
+  datacenters: { [dc]: list },
+  public: pub,
+})
+
 const book = new Map([
-  [A, ['fd00::a', '10.0.0.10']],
-  [B, ['fd00::b']],
-  [C, ['10.0.0.12']],
+  [A, inDc(['fd00::a', '10.0.0.10'])],
+  [B, inDc(['fd00::b', '10.0.0.11'])],
+  [C, inDc(['10.0.0.12'])],
 ])
 
 test('a name whose site runs elsewhere is forwarded to that server', () => {
@@ -36,7 +49,7 @@ test('a name whose site runs elsewhere is forwarded to that server', () => {
       hostname: 'shop.example.com',
       local: false,
       lock: true,
-      upstreams: [{ serverId: B, addresses: ['fd00::b'] }],
+      upstreams: [{ serverId: B, addresses: ['fd00::b'], localAddress: 'fd00::a' }],
     },
   ])
   // A carrier-only server has no inbound peers: the list is empty and it listens on nothing extra.
@@ -61,7 +74,8 @@ test('a name whose site runs here is local and has no upstream', () => {
   ])
   // The other carrying server may send visitors here, so its exact addresses are the peers.
   assertEquals(built.peerAddresses, ['fd00::b'])
-  assertEquals(built.listenAddresses, ['fd00::a', '10.0.0.10'])
+  // One IP version per pair: IPv6, the datacenter's first.
+  assertEquals(built.listenAddresses, ['fd00::a'])
 })
 
 test('a server that hosts the site but does not carry the tunnel gets peers and no routes', () => {
@@ -76,7 +90,7 @@ test('a server that hosts the site but does not carry the tunnel gets peers and 
     book
   )
   assertEquals(built.routes, [])
-  assertEquals(built.peerAddresses, ['10.0.0.10', 'fd00::a', 'fd00::b'].sort())
+  assertEquals(built.peerAddresses, ['10.0.0.10', '10.0.0.11'])
   assertEquals(built.needsPeerMaterial, true)
 })
 
@@ -211,12 +225,9 @@ test('a table above the contract caps is cut and says so, never sent whole', () 
     { length: 20 },
     (_, i) => `00000000-0000-4000-8000-0000000001${String(i).padStart(2, '0')}`
   )
-  const book2 = new Map<string, string[]>([[A, ['10.0.0.1']]])
+  const book2 = new Map<string, ServerAddresses>([[A, inDc(['10.0.0.1'])]])
   many.forEach((id, i) =>
-    book2.set(
-      id,
-      Array.from({ length: 10 }, (_, k) => `10.1.${i}.${k + 1}`)
-    )
+    book2.set(id, inDc(Array.from({ length: 10 }, (_, k) => `10.1.${i}.${k + 1}`)))
   )
   const built = buildTunnelRoutes(
     A,
@@ -238,7 +249,9 @@ test('a table above the contract caps is cut and says so, never sent whole', () 
         doorways: [{ hostname: 'big.example.com', siteServerIds: [many[0]!], isLocalOnly: true }],
       },
     ],
-    new Map(many.map((id, i) => [id, [`10.1.${i}.1`, `10.2.${i}.1`, `10.3.${i}.1`, `10.4.${i}.1`]]))
+    new Map(
+      many.map((id, i) => [id, inDc([`10.1.${i}.1`, `10.2.${i}.1`, `10.3.${i}.1`, `10.4.${i}.1`])])
+    )
   )
   assertEquals(hosted.peerAddresses.length, 64)
   assert(hosted.warnings[0]!.includes('64 peer addresses'))
@@ -271,7 +284,7 @@ test('the hash of a fixed table is pinned, so the order feeding it never drifts 
   const cert = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n'
   assertEquals(
     await hashTunnelRoutes(built, { certificatePem: cert, caCertPem: cert }),
-    '2d07617b9051cf5724a4c2980733b865d8914d320b5453ee08a178af2d8fb168'
+    'd3ca46a05e562eb17d86709341291dbd5f42d47624a82c95746b6b18148168b1'
   )
 })
 
@@ -413,5 +426,363 @@ test('lock: true goes out per name, only for local-only names and only when the 
       })
     ).inbound,
     built.inbound
+  )
+})
+
+test('peerClientAuth is sent only when asked for, and changes the hash', async () => {
+  const tunnels = [
+    {
+      carrying: [A],
+      doorways: [{ hostname: 's.example.com', siteServerIds: [B], isLocalOnly: false }],
+    },
+  ]
+  const cert = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n'
+  const material = { certificatePem: cert, caCertPem: cert }
+  const plain = buildTunnelRoutes(A, tunnels, book)
+  const verified = buildTunnelRoutes(A, tunnels, book, { peerClientAuth: 'verify' })
+  assertEquals(plain.peerClientAuth, undefined)
+  assertEquals(verified.peerClientAuth, 'verify')
+  assert((await hashTunnelRoutes(plain, material)) !== (await hashTunnelRoutes(verified, material)))
+  const payload = await toRoutesPayload(verified, {
+    certificatePem: cert,
+    privateKeyEnvelope: 'tpdaemon.sealed',
+    caCertPem: cert,
+  })
+  assertEquals(parseTunnelRoutesPayload(payload).peerClientAuth, 'verify')
+  const required = buildTunnelRoutes(A, tunnels, book, { peerClientAuth: 'require' })
+  assertEquals(required.peerClientAuth, 'require')
+  assert(
+    (await hashTunnelRoutes(verified, material)) !== (await hashTunnelRoutes(required, material))
+  )
+  assertEquals(
+    'peerClientAuth' in
+      (await toRoutesPayload(plain, {
+        certificatePem: cert,
+        privateKeyEnvelope: 'tpdaemon.sealed',
+        caCertPem: cert,
+      })),
+    false
+  )
+  assertThrows(
+    () => parseTunnelRoutesPayload({ ...payload, peerClientAuth: 'always' }),
+    TypeError,
+    'peerClientAuth'
+  )
+})
+
+const PUBLIC_A = '192.0.2.10'
+const PUBLIC_B = '192.0.2.11'
+
+const shop = (site: string) => [
+  {
+    carrying: [A],
+    doorways: [{ hostname: 'shop.example.com', siteServerIds: [site], isLocalOnly: true }],
+  },
+]
+
+const PUBLIC_C = '192.0.2.12'
+
+const pub = (...list: string[]): ServerAddresses => ({ datacenters: {}, public: list })
+
+test('a site server with no datacenter address is reached on its public address', () => {
+  const addresses: AddressBook = new Map([
+    [A, pub(PUBLIC_A)],
+    [B, pub(PUBLIC_B)],
+  ])
+  const built = buildTunnelRoutes(A, shop(B), addresses)
+  assertEquals(built.routes[0].upstreams, [
+    { serverId: B, addresses: [PUBLIC_B], localAddress: PUBLIC_A },
+  ])
+  assertEquals(built.skipped, [])
+  // The hop stays authenticated: the table still asks for peer material.
+  assertEquals(built.needsPeerMaterial, true)
+})
+
+test('the peer side admits the connector server public address too', () => {
+  const addresses: AddressBook = new Map([
+    [A, pub(PUBLIC_A)],
+    [B, pub(PUBLIC_B)],
+  ])
+  const built = buildTunnelRoutes(B, shop(B), addresses, { withInbound: true })
+  assertEquals(built.peerAddresses, [PUBLIC_A])
+  assertEquals(built.listenAddresses, [PUBLIC_B])
+  assertEquals(built.inbound, [{ hostname: 'shop.example.com', peers: [PUBLIC_A] }])
+})
+
+test('a shared datacenter address is preferred over public addresses on both sides', () => {
+  const addresses: AddressBook = new Map([
+    [A, inDc(['fd00::a'], [PUBLIC_A])],
+    [B, inDc(['fd00::b'], [PUBLIC_B])],
+  ])
+  const sender = buildTunnelRoutes(A, shop(B), addresses)
+  assertEquals(sender.routes[0].upstreams, [
+    { serverId: B, addresses: ['fd00::b'], localAddress: 'fd00::a' },
+  ])
+  const receiver = buildTunnelRoutes(B, shop(B), addresses)
+  assertEquals(receiver.peerAddresses, ['fd00::a'])
+  assertEquals(receiver.listenAddresses, ['fd00::b'])
+})
+
+/**
+ * One choice per pair: the upstream the carrier dials, the peers the site server
+ * admits, its listen addresses, the firewall rule and the address lock all use
+ * the same family, so no side is left on an address the other does not know.
+ */
+function assertAgree(addresses: AddressBook, carrierSide: string[], siteSide: string[]): void {
+  const sender = buildTunnelRoutes(A, shop(B), addresses)
+  assertEquals(sender.routes[0].upstreams, [
+    { serverId: B, addresses: siteSide, localAddress: carrierSide[0] },
+  ])
+  const receiver = buildTunnelRoutes(B, shop(B), addresses, { withInbound: true })
+  assertEquals(receiver.peerAddresses, carrierSide)
+  assertEquals(receiver.listenAddresses, siteSide)
+  assertEquals(receiver.inbound, [{ hostname: 'shop.example.com', peers: carrierSide }])
+}
+
+test('a connector in a datacenter and a public-only site server both use public addresses', () => {
+  assertAgree(
+    new Map([
+      [A, inDc(['fd00::a'], [PUBLIC_A])],
+      [B, pub(PUBLIC_B)],
+    ]),
+    [PUBLIC_A],
+    [PUBLIC_B]
+  )
+})
+
+test('a public-only connector and a site server in a datacenter both use public addresses', () => {
+  assertAgree(
+    new Map([
+      [A, pub(PUBLIC_A)],
+      [B, inDc(['fd00::b'], [PUBLIC_B])],
+    ]),
+    [PUBLIC_A],
+    [PUBLIC_B]
+  )
+})
+
+test('servers in different datacenters use public addresses, not either datacenter', () => {
+  assertAgree(
+    new Map([
+      [A, inDc(['fd00::a'], [PUBLIC_A], 'dc1')],
+      [B, inDc(['fd00::b'], [PUBLIC_B], 'dc2')],
+    ]),
+    [PUBLIC_A],
+    [PUBLIC_B]
+  )
+})
+
+test('different datacenters with no public address on a side skip the name', () => {
+  const addresses: AddressBook = new Map([
+    [A, inDc(['fd00::a'], [], 'dc1')],
+    [B, inDc(['fd00::b'], [PUBLIC_B], 'dc2')],
+  ])
+  const built = buildTunnelRoutes(A, shop(B), addresses)
+  assertEquals(built.routes, [])
+  assertEquals(built.skipped.length, 1)
+  // Nothing is opened on the site server either.
+  assertEquals(buildTunnelRoutes(B, shop(B), addresses).peerAddresses, [])
+})
+
+test('each carrier and site server pair is chosen on its own', () => {
+  // A and B share a datacenter; C is elsewhere with a public address only.
+  const addresses: AddressBook = new Map([
+    [A, inDc(['fd00::a'], [PUBLIC_A])],
+    [B, inDc(['fd00::b'], [PUBLIC_B])],
+    [C, pub(PUBLIC_C)],
+  ])
+  const tunnels = [
+    {
+      carrying: [A, C],
+      doorways: [{ hostname: 'shop.example.com', siteServerIds: [B], isLocalOnly: true }],
+    },
+  ]
+  const receiver = buildTunnelRoutes(B, tunnels, addresses)
+  // A reaches B on their shared datacenter; C shares none with B, so C and B use public addresses.
+  assertEquals(receiver.peerAddresses, [PUBLIC_C, 'fd00::a'].toSorted())
+  assertEquals(receiver.listenAddresses, ['fd00::b', PUBLIC_B])
+  assertEquals(buildTunnelRoutes(A, tunnels, addresses).routes[0].upstreams, [
+    { serverId: B, addresses: ['fd00::b'], localAddress: 'fd00::a' },
+  ])
+  assertEquals(buildTunnelRoutes(C, tunnels, addresses).routes[0].upstreams, [
+    { serverId: B, addresses: [PUBLIC_B], localAddress: PUBLIC_C },
+  ])
+})
+
+test('servers with only IPv6 public addresses use them', () => {
+  assertAgree(
+    new Map([
+      [A, pub('2001:db8::a')],
+      [B, pub('2001:db8::b')],
+    ]),
+    ['2001:db8::a'],
+    ['2001:db8::b']
+  )
+})
+
+test('dual-stack servers use IPv4 on both sides', () => {
+  assertAgree(
+    new Map([
+      [A, pub('2001:db8::a', PUBLIC_A)],
+      [B, pub('2001:db8::b', PUBLIC_B)],
+    ]),
+    [PUBLIC_A],
+    [PUBLIC_B]
+  )
+})
+
+test('servers that share no IP version are skipped with a reason and nothing is allowed', () => {
+  for (const [carrier, site] of [
+    [pub(PUBLIC_A), pub('2001:db8::b')],
+    [pub('2001:db8::a'), pub(PUBLIC_B)],
+  ]) {
+    const addresses: AddressBook = new Map([
+      [A, carrier],
+      [B, site],
+    ])
+    const built = buildTunnelRoutes(A, shop(B), addresses)
+    assertEquals(built.routes, [])
+    assertEquals(built.skipped.length, 1)
+    assert(built.skipped[0].reason.includes('share no IP version'))
+    const receiver = buildTunnelRoutes(B, shop(B), addresses, { withInbound: true })
+    assertEquals(receiver.peerAddresses, [])
+    assertEquals(receiver.listenAddresses, [])
+  }
+})
+
+test('a datacenter with no shared IP version falls back to public addresses', () => {
+  const addresses: AddressBook = new Map([
+    [A, { datacenters: { dc1: ['10.0.0.1'] }, public: [PUBLIC_A] }],
+    [B, { datacenters: { dc1: ['fd00::b'] }, public: [PUBLIC_B] }],
+  ])
+  assertEquals(buildTunnelRoutes(A, shop(B), addresses).routes[0].upstreams, [
+    { serverId: B, addresses: [PUBLIC_B], localAddress: PUBLIC_A },
+  ])
+})
+
+test('listen addresses cut at the cap say so', () => {
+  const carriers = Array.from(
+    { length: 2 },
+    (_, i) => `00000000-0000-4000-8000-0000000003${String(i).padStart(2, '0')}`
+  )
+  const addresses = new Map<string, ServerAddresses>([
+    [B, inDc(Array.from({ length: 70 }, (_, i) => `10.9.0.${i + 1}`))],
+    ...carriers.map((id, i) => [id, inDc([`10.8.0.${i + 1}`])] as [string, ServerAddresses]),
+  ])
+  const built = buildTunnelRoutes(
+    B,
+    [
+      {
+        carrying: carriers,
+        doorways: [{ hostname: 'shop.example.com', siteServerIds: [B], isLocalOnly: true }],
+      },
+    ],
+    addresses
+  )
+  assertEquals(built.listenAddresses.length, 64)
+  assert(built.warnings.some((w) => w.includes('64 listen addresses')))
+})
+
+test('with no address of any kind the name is skipped and the reason is reported', () => {
+  const addresses: AddressBook = new Map()
+  const built = buildTunnelRoutes(A, shop(B), addresses)
+  assertEquals(built.routes, [])
+  assertEquals(built.skipped.length, 1)
+  const reasons = unroutedReasons([A], shop(B), addresses)
+  assertEquals(reasons.get('shop.example.com'), built.skipped[0].reason)
+  assert(reasons.get('shop.example.com')?.includes('an address this server can reach'))
+  // A routed name has no entry.
+  const routed: AddressBook = new Map([
+    [A, pub(PUBLIC_A)],
+    [B, pub(PUBLIC_B)],
+  ])
+  assertEquals(unroutedReasons([A], shop(B), routed).size, 0)
+})
+
+test('a server with only IPv4 sends from its IPv4 address, and that address is the one the receiver admits', () => {
+  const addresses: AddressBook = new Map([
+    [A, pub(PUBLIC_A)],
+    [B, pub(PUBLIC_B)],
+  ])
+  const sender = buildTunnelRoutes(A, shop(B), addresses)
+  assertEquals(sender.routes[0].upstreams[0].localAddress, PUBLIC_A)
+  const receiver = buildTunnelRoutes(B, shop(B), addresses, { withInbound: true })
+  assert(receiver.peerAddresses.includes(PUBLIC_A))
+  assertEquals(receiver.inbound?.[0].peers, [PUBLIC_A])
+})
+
+test('a server with both families sends from the address of the family the hop uses', () => {
+  // Public addresses: both families on both sides, IPv4 wins.
+  const publicBook: AddressBook = new Map([
+    [A, pub('2001:db8::a', PUBLIC_A)],
+    [B, pub('2001:db8::b', PUBLIC_B)],
+  ])
+  const upstream = buildTunnelRoutes(A, shop(B), publicBook).routes[0].upstreams[0]
+  assertEquals(upstream.addresses, [PUBLIC_B])
+  assertEquals(upstream.localAddress, PUBLIC_A)
+  // A datacenter that prefers IPv6: the IPv6 pair is used on both sides.
+  const dcBook: AddressBook = new Map([
+    [A, inDc(['fd00::a', '10.0.0.10'])],
+    [B, inDc(['fd00::b', '10.0.0.11'])],
+  ])
+  const v6 = buildTunnelRoutes(A, shop(B), dcBook).routes[0].upstreams[0]
+  assertEquals(v6.addresses, ['fd00::b'])
+  assertEquals(v6.localAddress, 'fd00::a')
+  // The sender has IPv6 only on the shared network, the site IPv4 only: no shared family, no table entry.
+  const mixed: AddressBook = new Map([
+    [A, pub('2001:db8::a')],
+    [B, pub(PUBLIC_B)],
+  ])
+  assertEquals(buildTunnelRoutes(A, shop(B), mixed).routes, [])
+})
+
+test('every pair has its own source address and the payload carries it through the contract parser', async () => {
+  const addresses: AddressBook = new Map([
+    [A, inDc(['fd00::a'], [PUBLIC_A])],
+    [B, inDc(['fd00::b'], [PUBLIC_B])],
+    [C, pub(PUBLIC_C)],
+  ])
+  const built = buildTunnelRoutes(
+    A,
+    [
+      {
+        carrying: [A],
+        doorways: [{ hostname: 'shop.example.com', siteServerIds: [B, C], isLocalOnly: true }],
+      },
+    ],
+    addresses
+  )
+  assertEquals(
+    built.routes[0].upstreams.map((u) => [u.serverId, u.localAddress]),
+    [
+      [B, 'fd00::a'],
+      [C, PUBLIC_A],
+    ]
+  )
+  const cert = '-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n'
+  const payload = await toRoutesPayload(built, {
+    certificatePem: cert,
+    caCertPem: cert,
+    privateKeyEnvelope: 'tpdaemon.sealed',
+  })
+  assertEquals(
+    parseTunnelRoutesPayload(payload).routes[0].upstreams.map((u) => u.localAddress),
+    ['fd00::a', PUBLIC_A]
+  )
+})
+
+test('a changed source address changes the hash, so the table is sent again', async () => {
+  const table = (own: string) =>
+    buildTunnelRoutes(
+      A,
+      shop(B),
+      new Map([
+        [A, pub(own)],
+        [B, pub(PUBLIC_B)],
+      ])
+    )
+  assert(
+    (await hashTunnelRoutes(table(PUBLIC_A), undefined)) !==
+      (await hashTunnelRoutes(table(PUBLIC_C), undefined))
   )
 })

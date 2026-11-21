@@ -8,7 +8,6 @@ import { assert, assertEquals, assertStringIncludes } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import { DEPLOY_CONFIG_FILES_FEATURE } from '../../lib/version-wire.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
@@ -39,7 +38,6 @@ type Call = { name: string; args?: unknown }
 type Setup = {
   engine?: string
   serverId?: string | null
-  features?: readonly string[]
   destroyPending?: boolean
   panelRefusal?: string | null
   hostnameInUse?: boolean
@@ -89,7 +87,6 @@ async function build(setup: Setup = {}) {
     destroyPending: () => Promise.resolve(setup.destroyPending === true),
     panelHostnameRefusal: () => Promise.resolve(setup.panelRefusal ?? null),
     hostnameInUse: () => Promise.resolve(setup.hostnameInUse === true),
-    daemonFeatures: () => Promise.resolve(setup.features ?? [DEPLOY_CONFIG_FILES_FEATURE]),
     resolveWorkspace: () => Promise.resolve({ workspaceId: 'w1', clusterName: 'Main Database' }),
     insertProject: (input) => {
       log('insertProject', input)
@@ -327,20 +324,6 @@ const REFUSALS: ReadonlyArray<{
     error: 'managed_destroy_in_progress',
   },
   {
-    label: 'old daemon for Adminer',
-    setup: { features: [] },
-    body: { tool: 'adminer', hostname: 'a.example.com' },
-    status: 409,
-    error: 'admin_tool_needs_daemon_update',
-  },
-  {
-    label: 'old daemon for pgAdmin',
-    setup: { features: [] },
-    body: { tool: 'pgadmin', hostname: 'a.example.com' },
-    status: 409,
-    error: 'admin_tool_needs_daemon_update',
-  },
-  {
     label: 'special-use email',
     setup: { email: 'me@host.local' },
     body: { tool: 'pgadmin', hostname: 'a.example.com' },
@@ -358,12 +341,6 @@ for (const { label, setup, body, status, error } of REFUSALS) {
     assert(!names(calls).includes('createLogin'))
   })
 }
-
-test('an old daemon does not stop phpMyAdmin', async () => {
-  const { request } = await build({ features: [], engine: 'mariadb' })
-  const res = await request('POST', '', { tool: 'phpmyadmin', hostname: 'a.example.com' })
-  assertEquals(res.status, 200)
-})
 
 // 4. Authorization and foreign projects
 

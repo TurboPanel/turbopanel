@@ -96,11 +96,10 @@ const HOST_NETWORK_FIELDS = [
 function baseInput(overrides: Partial<MetricsSampleInput> = {}): MetricsSampleInput {
   return {
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-01T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: {
@@ -248,11 +247,10 @@ function contentBlobs(point: AnalyticsEngineDataPointLike, count: number): strin
 it('metrics rows: blob1 kind, blob2 family, blob3 "12", blob4 empty, blob5 UTC text sample time, blob6 entity ids', () => {
   const sample = buildSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-03-04T05:06:07.890Z',
       intervalSeconds: 60,
       sequence: 9,
-      topologyGeneration: 12,
       bootGeneration: 1,
     },
     gpus: [mkGpu('gpu0'), mkGpu('gpu1')],
@@ -273,16 +271,12 @@ it('metrics rows: blob1 kind, blob2 family, blob3 "12", blob4 empty, blob5 UTC t
   assertEquals(host.blobs[AE_BLOB_SAMPLED_AT_INDEX], '2026-03-04 05:06:07')
 })
 
-it('blob3 is always the storage layout revision "12", even for a v6-stamped sample, so rows from an earlier layout are never read with the new slot meanings', () => {
-  for (const version of [6, 8] as const) {
-    const input = baseInput()
-    input.metadata.version = version
-    const built = buildMetricsSample(input)
-    const points = buildMetricsDataPoints({ ...built, serverId: 's', receivedAt: 'x' })
-    for (const point of points)
-      assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], String(AE_STORAGE_VERSION))
-    assertEquals(AE_STORAGE_VERSION, 12)
-  }
+it('blob3 is always the storage layout revision "12", so rows from an earlier layout are never read with the new slot meanings', () => {
+  const built = buildMetricsSample(baseInput())
+  const points = buildMetricsDataPoints({ ...built, serverId: 's', receivedAt: 'x' })
+  for (const point of points)
+    assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], String(AE_STORAGE_VERSION))
+  assertEquals(AE_STORAGE_VERSION, 12)
 })
 
 it('formatAeSampleTime: UTC YYYY-MM-DD hh:mm:ss, offset inputs normalized, garbage empty', () => {

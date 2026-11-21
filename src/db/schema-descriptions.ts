@@ -65,7 +65,7 @@ export const DATA_DICTIONARY_GROUPS = {
   platform: {
     title: 'Access, audit and configuration',
     blurb:
-      'Authorization grants, the audit ledger, instance-wide settings and the global lease table the schedulers coordinate through.',
+      'Authorization grants, the audit ledger, control-plane-wide settings and the global lease table the schedulers coordinate through.',
   },
   networking: {
     title: 'Networking',
@@ -79,7 +79,7 @@ export const DATA_DICTIONARY_GROUPS = {
   },
   managed: {
     title: 'Managed databases',
-    blurb: 'Managed database instances, their replicas, backups and recovery runs.',
+    blurb: 'Managed database clusters, their replicas, backups and recovery runs.',
   },
   storage: {
     title: 'Storage and secrets',
@@ -88,12 +88,12 @@ export const DATA_DICTIONARY_GROUPS = {
   runtime: {
     title: 'Servers, runtime and metrics',
     blurb:
-      'Enrolled servers and their daemon keys, the command / dispatch pipeline, deployments, slots, tasks, labels, and the metrics topology generations.',
+      'Enrolled servers and their daemon keys, the command / dispatch pipeline, deployments, slots, tasks, labels, and the latest reported topology.',
   },
   upgrades: {
     title: 'Upgrades',
     blurb:
-      'Instance-wide upgrade runs and the per-server daemon and instance steps that belong to them.',
+      'Upgrade runs across all servers and the per-server daemon and control plane steps that belong to them.',
   },
   git: {
     title: 'Git and SSH',
@@ -202,7 +202,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       public_key:
         "Credential public key as a JSON-serialised JWK (ES256, EdDSA or RS256) converted from the attestation's COSE key; verifies sign-in assertions.",
       credential_id:
-        'Base64url credential id from the attestation; unique across the instance and the lookup key for passkey sign-in.',
+        'Base64url credential id from the attestation; unique across the control plane and the lookup key for passkey sign-in.',
       counter:
         'Authenticator signature counter from the last accepted assertion; a lower value rejects the sign-in (clone detection) and updates are compare-and-swap.',
       device_type:
@@ -231,7 +231,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   user: {
     group: 'identity',
     summary:
-      'One row per person who can sign in to the instance, keyed by unique `email`; created by password sign-up, OTP sign-in, OAuth sign-up or the install wizard.',
+      'One row per person who can sign in to the control plane, keyed by unique `email`; created by password sign-up, OTP sign-in, OAuth sign-up or the install wizard.',
     columns: {
       time_zone:
         'IANA zone (from the supported list) in which quiet hours on the personal channels of this user are read; NULL means UTC.',
@@ -244,7 +244,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Derived flag kept in step with the `totp` row: set true when TOTP enrolment is verified and false when two-factor is disabled.',
       is_disabled:
         'Sign-in gate read by every authn path (password, OTP, passkey, OAuth) and refused with `account_disabled`; no control-plane route writes it today.',
-      role: 'Instance role `user`, `admin` or `superadmin`; sign-ups get `user`, the install wizard mints the one `superadmin`, and admins bypass org grants.',
+      role: 'Control plane role `user`, `admin` or `superadmin`; sign-ups get `user`, the install wizard mints the one `superadmin`, and admins bypass org grants.',
       is_all_organizations_notified:
         'An administrator chose to hear every organization, not only those they belong to; their own preferences still decide what arrives.',
     },
@@ -548,7 +548,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'Append-only trail of security-relevant operator actions (rows never updated or deleted, no `updated_at`), written by `recordAudit` after the action succeeded.',
     columns: {
       organization_id:
-        'Organization the action belongs to, which the org-scoped read filters on; null for an instance-wide action such as a superadmin editing an org-less forge.',
+        'Organization the action belongs to, which the org-scoped read filters on; null for a control-plane-wide action such as a superadmin editing an org-less forge.',
       actor_user_id:
         "User who acted, a plain id with no FK so it survives the account's deletion; null only for an action the platform took on nobody's behalf.",
       actor_email:
@@ -599,7 +599,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   setting: {
     group: 'platform',
     summary:
-      'Instance-wide key/value store: one row per upper-case `key` with a JSON `value`, written by the settings resolvers, install state and the billing side-ledgers.',
+      'Control plane key/value store: one row per upper-case `key` with a JSON `value`, written by the settings resolvers, install state and the billing side-ledgers.',
     columns: {
       key: 'Unique upper-case key such as `SYSTEM_EMAIL`, `SYSTEM_AUTH_PROVIDERS`, `IS_SIGNUP_ENABLED`, or `BILLING_PENDING_CHANGES:` followed by an organization id.',
       value:
@@ -632,7 +632,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       uploaded_cert_id:
         'Pair (`certificate.id`) this name serves: the upload when `source` is `uploaded` (required), or the issued pair when `source` is `acme-dns-01`; otherwise NULL.',
       acme_last_attempt_at:
-        "When this instance last tried Let's Encrypt for this name; NULL until an attempt runs.",
+        "When this control plane last tried Let's Encrypt for this name; NULL until an attempt runs.",
       acme_last_error:
         "Last Let's Encrypt error for this name; NULL when the last attempt succeeded or none has run.",
       not_after:
@@ -644,6 +644,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'True for the one name used for links, sign-in callbacks and the default install URL; a partial unique index allows at most one row.',
       is_daemon_dial:
         'Whether install commands and the daemon URL list may name this hostname; false keeps it for people only.',
+      is_behind_cdn_proxy:
+        'Set by the owner when a direct name sits behind a CDN proxy; the control plane then advises daemons the shorter heartbeat.',
       ingress_state:
         'Provider state for this name, such as tunnel id, DNS record id and last status; the shape depends on `mode` and the provider writes it.',
       acme_state:
@@ -685,7 +687,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       priority:
         "Routing-ladder rank among a server's datacenters, 0 to 1000, lower wins, default 100 (API field `priority`).",
       is_trusted:
-        "True when the operator controls the datacenter's L2 (default); false keeps server-to-server traffic off it (API field `trusted`).",
+        'True when the operator marked the network trusted, so traffic may cross it unencrypted; false (default) uses TurboFabric, encrypted (API field `trusted`).',
       address_preference:
         "Address family tried first among a server's pins here, `ipv6` (default) or `ipv4` (API field `options.addressPreference`).",
       kind: 'What the network is: `lan`, `backplane` or `provider_private`; NULL means the operator never said.',
@@ -916,9 +918,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "`pending` until the daemon reports, then Docker's compose ps State verbatim (`created` through `dead`), `unknown` for an unlisted state, `exited` on stop.",
       role: '`service` for workload or engine replicas, `ingress` for the per-service Traefik or shared ProxySQL frontend (ordinal 1), `turbopanel` for the platform stack.',
       compose_service_name:
-        'Compose service key the container was started under, as reported by the daemon; multi-instance clones carry a `-N` suffix on the base key.',
+        'Compose service key the container was started under, as reported by the daemon; multi-replica clones carry a `-N` suffix on the base key.',
       ordinal:
-        '1-based instance index within the service, unique with `service_id` and `role`; ingress rows are always 1 and managed replicas match `replica.ordinal`.',
+        '1-based index within the service, unique with `service_id` and `role`; ingress rows are always 1 and managed replicas match `replica.ordinal`.',
     },
   },
   environment: {
@@ -968,12 +970,16 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   hostname: {
     group: 'resources',
     summary:
-      'Uniqueness mirror of `hosting.options.hostnames`, one row per hostname, replaced on every hosting write so Postgres can enforce one hostname per organization.',
+      'One row per served hostname of a hosting: one hostname per organization, and the certificate choice for that name.',
     columns: {
       routing_organization_id:
         "Organization whose routing owns the hostname, half of the unique key; today always the hosting's own organization, named for future cross-organization hosting.",
       hostname:
         'One DNS name copied verbatim from `hosting.options.hostnames` by `replaceHostingHostnames`; unique per routing organization regardless of path prefix.',
+      certificate:
+        'Certificate choice for this name: `cloudflare_origin`, `letsencrypt_http`, `letsencrypt_dns`, `self_signed` or `library`; NULL follows `hosting.tls_id`.',
+      tls_id:
+        'Optional pin into the organization TLS library for this name; NULL means self-signed or a pair still being issued.',
     },
   },
   marker: {
@@ -1055,9 +1061,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One system principal on one server, the per-server form of a `principal` row; written by deploy fan-out, teardown and server removal.',
     columns: {
       sync_device_id:
-        'Device id of the account file sync instance on this server, as the daemon reports it; NULL while sync is off.',
+        'Device id of the account file sync process on this server, as the daemon reports it; NULL while sync is off.',
       sync_port:
-        'Listen port the control plane gave the account file sync instance on this server, 1024 to 65535; unique per server.',
+        'Listen port the control plane gave the account file sync process on this server, 1024 to 65535; unique per server.',
       state:
         '`pending` when a deploy that creates the account is queued, `present` once it succeeded, `retiring` once a stop that retires it is queued, `absent` after.',
       uid: 'Linux uid the host assigned, reported by the daemon; NULL until then, unique per server when set.',
@@ -1203,9 +1209,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       checksum:
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
       database:
-        'Database name for a single-database backup, kept as history; null for an instance-scope backup.',
+        'Database name for a single-database backup, kept as history; null for a whole-cluster backup.',
       database_id:
-        'The `database` row the dump was of, set null if that database is dropped; null for an instance-scope backup.',
+        'The `database` row the dump was of, set null if that database is dropped; null for a whole-cluster backup.',
       path: 'Artifact path relative to the backup root of the host that made it (`managed/` plus the cluster id, then the file).',
       retention_id:
         'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
@@ -1232,7 +1238,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'True asks the storage to encrypt each object at rest with its own key (`AES256`).',
       access_key_id: 'Access key id for the bucket; an identifier, returned by the API.',
       secret_key_sealed:
-        'Secret access key sealed with the instance data key (`tpsecret` envelope); never returned by any API.',
+        'Secret access key sealed with the control plane data key (`tpsecret` envelope); never returned by any API.',
       last_tested_at:
         'When the connection test last ran against this target; null before the first test.',
       is_last_test_ok:
@@ -1272,7 +1278,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Owning organization stored directly, because the target is polymorphic; cascade-deletes the policy with the org.',
       target_kind:
         '`managed` or `copy`: which of `managed_id` and `copy_id` names the target; exactly one is set (`retention_target_check`).',
-      name: "Operator label for the policy, shown in the console's backup list.",
+      name: "Operator label for the policy, shown in the web interface's backup list.",
       schedule:
         'The schedule as authored, a cron expression or alias; translated to a systemd `OnCalendar` value when pushed to the host.',
       timezone: "IANA zone the schedule is read in; null means the host's local time.",
@@ -1296,7 +1302,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       organization_id: 'Owning organization; cascade-deletes the rule with the org.',
       server_id: 'The one server the rule applies to; null means every server in the organization.',
       label:
-        "Operator label shown in the console, also sent to the host as the rule's comment, so it uses the comment alphabet.",
+        "Operator label shown in the web interface, also sent to the host as the rule's comment, so it uses the comment alphabet.",
       scope:
         "`host` for the host's own listeners or `published` for a port Docker publishes for a container.",
       action: '`accept` allows, `drop` blocks silently and `reject` blocks and tells the sender.',
@@ -1849,7 +1855,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       sealing_key_reported_at:
         'When the daemon last registered its sealing key; NULL until it does.',
       plaintext_secrets_at:
-        'Last time the secrets decrypt route answered this server in plaintext, written at most hourly; the edge go-live gate reads it.',
+        'Unused: nothing writes or reads it any more; dropped in the release after the one that stopped reading it.',
       fabric_role:
         'Operator TurboFabric role, `gateway` (accepts connections) or `client` (only dials out); NULL means automatic, gateway when a public address is known.',
       trust_pinned_by:
@@ -1907,7 +1913,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       assigned_tier_id:
         'Tier a manager assigned this server (Add Server choice, license-tier route or a named size change); self-hosted fills the top tier. NULL until set.',
       preferred_tier_id:
-        "Written in step with `assigned_tier_id`, for the console's picked label; set alone when the Add Server tier had no free seat at enroll.",
+        "Written in step with `assigned_tier_id`, for the web interface's picked label; set alone when the Add Server tier had no free seat at enroll.",
       is_connected:
         'Daemon liveness flag written by the cell projection on connect and disconnect; `online`, `offline` or `unknown` is derived from it and `status_changed_at`.',
       status_changed_at:
@@ -1935,7 +1941,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   slot: {
     group: 'runtime',
     summary:
-      'One scheduled replica instance of a service on a server; derived scheduling state the planner writes through `replaceEnvironmentSlots` on each deploy.',
+      'One scheduled replica of a service on a server; derived scheduling state the planner writes through `replaceEnvironmentSlots` on each deploy.',
     columns: {
       server_id:
         'Server the planner placed this replica on; sticky across re-plans (only `generation` is rewritten) unless the planner moves it; ON DELETE RESTRICT.',
@@ -1980,7 +1986,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Application the grant was made through; with `external_installation_id` it resolves a webhook delivery to exactly one row (cascades on forge delete).',
       provider: '`github` or `gitlab`, denormalized from the forge as a filter column.',
       external_installation_id:
-        'Provider-side id as text: the numeric GitHub App installation id, or the GitLab user/group id; for GitHub unique per forge across the instance.',
+        'Provider-side id as text: the numeric GitHub App installation id, or the GitLab user/group id; for GitHub unique per forge across the control plane.',
       account_login:
         'Login of the provider account the grant sits on (GitHub installation account or GitLab user), refreshed on every connect or reconnect.',
       account_type:
@@ -2022,10 +2028,10 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   forge: {
     group: 'git',
     summary:
-      'A registered Git provider application (GitHub App or GitLab OAuth app) that connections are granted through; `organization_id` NULL means instance-wide.',
+      'A registered Git provider application (GitHub App or GitLab OAuth app) that connections are granted through; `organization_id` NULL means control-plane-wide.',
     columns: {
       organization_id:
-        'NULL means instance-wide (any organization may connect through it); set means the app belongs to that organization alone.',
+        'NULL means control-plane-wide (any organization may connect through it); set means the app belongs to that organization alone.',
       provider:
         'Git provider kind, `github` or `gitlab`, chosen at registration and never changed.',
       name: "Display name of the app; for GitHub Apps it is overwritten from the provider on each sync, and varchar(255) is that write's only length guard.",
@@ -2044,7 +2050,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       webhook_origin:
         'Public origin the provider was told to deliver webhooks to at registration; NULL when none was recorded.',
       is_public:
-        'Whether the provider was told the app is publicly installable; set at creation (true for instance-wide apps) and refreshed from GitHub on sync.',
+        'Whether the provider was told the app is publicly installable; set at creation (true for control-plane-wide apps) and refreshed from GitHub on sync.',
       custom_git_user:
         'SSH user for clone URLs of a self-hosted forge on a non-standard port (`ssh://user@host:port/path`); unused by GitHub App sources.',
       custom_git_port:
@@ -2128,7 +2134,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     summary:
       'Delivery-attempt ledger: one row per event per routed channel, inserted before the send so a crash leaves a pending row; retried by the maintenance tick.',
     columns: {
-      organization_id: 'Organization the event belongs to; NULL for an instance-scoped event.',
+      organization_id: 'Organization the event belongs to; NULL for a control-plane-scoped event.',
       severity: "`info`, `warning` or `critical`, copied from the event's catalogue definition.",
       payload:
         'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `destinationId`, `context`, `at`.',
@@ -2144,7 +2150,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       event_id:
         'The `event` row this copy carries; deleting the event at the end of its 30-day retention deletes its copies.',
       user_id:
-        'The person a personal copy is for, checked again for access before it is sent; NULL for an organization or instance channel.',
+        'The person a personal copy is for, checked again for access before it is sent; NULL for an organization or control plane channel.',
       device_id:
         'The device a push copy goes to; NULL for every other kind (push is not sent yet).',
       topic_code: 'The catalogue topic of the event.',
@@ -2157,12 +2163,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   channel: {
     group: 'notifications',
     summary:
-      'An address notifications can be delivered to, owned by the instance, one organization or one user per `scope`; addresses of secret kinds are sealed.',
+      'An address notifications can be delivered to, owned by the control plane, one organization or one user per `scope`; addresses of secret kinds are sealed.',
     columns: {
       is_all_organizations_notified:
-        'Instance channels only: also hear every organization event, including organizations created later; otherwise only install events.',
+        'Control plane channels only: also hear every organization event, including organizations created later; otherwise only install events.',
       scope:
-        'Owner kind: `instance`, `organization` or `user`; the owner columns must agree with it (CHECK).',
+        'Owner kind: `instance` (the control plane), `organization` or `user`; the owner columns must agree with it (CHECK).',
       organization_id:
         'Owning organization, set only when `scope` is `organization` and NULL otherwise.',
       user_id:
@@ -2178,7 +2184,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       disabled_at:
         'Set when the owner pauses the channel; it keeps its rules but receives nothing until resumed.',
       created_by_user_id:
-        'User whose session created the channel (provenance, set NULL on user delete); differs from `user_id` for org and instance channels.',
+        'User whose session created the channel (provenance, set NULL on user delete); differs from `user_id` for org and control plane channels.',
       digest_cadence:
         'Email only: `hourly` or `daily` batches non-urgent events into one summary per window; NULL sends each event as it happens.',
       quiet_start_minute:
@@ -2201,7 +2207,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       user_id:
         "Recipient of the inbox row; one row per person the event reached, chosen by the event's audience (members or managers).",
       organization_id:
-        'Organization the event belongs to; NULL for an instance-scoped event such as `fleet.mass_disconnect`.',
+        'Organization the event belongs to; NULL for a control-plane-scoped event such as `fleet.mass_disconnect`.',
       severity: "`info`, `warning` or `critical`, copied from the event's catalogue definition.",
       title:
         "One-line sentence rendered from the catalogue's title template at emit time; also the email subject.",
@@ -2275,7 +2281,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       resolves_code:
         'The topic this one resolves, such as a recovery naming the failure it ends; NULL for most topics.',
       name: 'What a person picks the topic by on the settings screens.',
-      kind: '`organization` (raised in an organization), `platform` (vendor notices), `instance` (for administrators) or `account` (one sign-in).',
+      kind: '`organization` (raised in an organization), `platform` (vendor notices), `instance` (control plane notices for administrators) or `account` (one sign-in).',
       severity:
         '`info`, `warning` or `critical`; a preference level is a floor compared against it.',
       scope:
@@ -2302,7 +2308,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       'One row per thing that happened, the outbox every inbox row and delivery hangs from; scope ids are plain uuids so deletes never touch history.',
     columns: {
       organization_id:
-        'Organization the event was raised in; NULL for an instance or platform event.',
+        'Organization the event was raised in; NULL for a control plane or platform event.',
       topic_code: 'The catalogue topic.',
       project_id:
         'Project the event is about, a plain id with no foreign key; a pending copy is dropped once the project is gone.',
@@ -2438,18 +2444,18 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   upgrade: {
     group: 'upgrades',
     summary:
-      'One instance-wide upgrade run, written by the upgrade orchestrator, with at most one `pending` or `running` row.',
+      'One upgrade run, across all servers or one server when source is `server`, written by the upgrade orchestrator, with at most one `pending` or `running` row.',
     columns: {
       source:
         'Who started the run: `manual` from the panel, `auto` from the scheduler, or `server` for a single-host request.',
       channel:
-        'Update channel the run follows (`trunk`, `canary`, `rc` or `release`), copied from the instance when the run is created.',
+        'Update channel the run follows (`trunk`, `canary`, `rc` or `release`), copied from the control plane when the run is created.',
       target:
-        'Pins for `daemon`, `instance` and `ui`: version, commit, build id, built-at time and pinned manifest URL; NULL until resolved.',
+        'Pins for `daemon`, `instance` (the control plane) and `ui`: version, commit, build id, built-at time and pinned manifest URL; NULL until resolved.',
       status:
         'Lifecycle `pending`, `running`, `succeeded`, `partially_failed`, `failed` or `cancelled`; the orchestrator advances it.',
       phase:
-        'Current wave `colocated_daemon`, `control_plane` or `fleet`; NULL until the orchestrator enters the first wave.',
+        'Current wave `colocated_daemon`, `control_plane` or `fleet` (all other servers); NULL until the orchestrator enters the first wave.',
       started_by:
         'User who started a manual run; NULL for an automatic run and after that account is deleted.',
       batch_policy:
@@ -2467,11 +2473,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
   stage: {
     group: 'upgrades',
     summary:
-      'One `daemon` or `instance` install on one server inside an upgrade run, advanced by the orchestrator until a terminal outcome.',
+      'One daemon or control plane install (`daemon` or `instance`) on one server inside an upgrade run, advanced by the orchestrator until a terminal outcome.',
     columns: {
-      unit: '`daemon` or `instance`: the package this step installs on its server.',
+      unit: '`daemon` or `instance` (the control plane): the package this step installs on its server.',
       phase:
-        'Which part of the run the step belongs to: `colocated_daemon` first, then `control_plane`, then `fleet`; checked against the run order.',
+        'Which part of the run the step belongs to: `colocated_daemon` first, then `control_plane`, then `fleet` (all other servers); checked against the run order.',
       batch_index:
         'Zero-based wave index within the run; steps that share an index are dispatched together.',
       status:

@@ -133,12 +133,11 @@ export type TunnelAdapter = {
       externalId: string
       hostnames: readonly string[]
       /**
-       * Verify the hop to the local web server instead of skipping verification.
-       * The connector already trusts the provider's own origin roots, so this
-       * only helps names served with a provider origin certificate (or a public
-       * one). Left out, verification stays off.
+       * Names whose hop to the local web server is verified instead of skipped:
+       * the ones served with a provider origin certificate or a public one that
+       * covers them. Any other name skips verification. Left out, none verify.
        */
-      verifyOrigin?: boolean
+      verifiedNames?: readonly string[]
     }
   ): Promise<void>
   /** Create the public DNS name for a hostname, pointing at the tunnel. */

@@ -20,6 +20,7 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { syncOrganizationTunnelConnectors } from './connector-sync.ts'
+import { syncOrganizationTunnelRoutes } from './route-sync.ts'
 import { relinkDoorwayHostings } from './doorway-links.ts'
 import { serversToCheck, syncServerQuietly, type TunnelSyncDeps } from './sync.ts'
 
@@ -93,6 +94,11 @@ export async function nudgeTunnelRoutes(
       await syncServerQuietly(db, deps, organizationId, serverId)
     })
   })
+  // The provider's routes carry the names the connector may verify; a pin or a
+  // deploy that changed them goes out now, not at the next periodic pass.
+  await quietly(organizationId, () =>
+    syncOrganizationTunnelRoutes(db, { secrets: deps.dataEncryptionSecrets }, organizationId)
+  )
   // Servers that gained or lost a tunnel to carry start or stop its connector too.
   await quietly(organizationId, () =>
     syncOrganizationTunnelConnectors(db, deps, organizationId, {

@@ -273,6 +273,11 @@ test('planRelayPath prefers operator pin over shared datacenter LAN', () => {
   const caches = emptyCaches()
   caches.datacenterMembershipsByServer.set('self', [membershipPin('self', 'dc-a', '10.0.0.1')])
   caches.datacenterMembershipsByServer.set('other', [membershipPin('other', 'dc-a', '10.0.0.5')])
+  caches.policyByDatacenter.set('dc-a', {
+    addressPreference: 'ipv4',
+    priority: 100,
+    trusted: false,
+  })
   caches.publicAddressByServer.set('other', '203.0.113.5')
   assertEquals(
     planRelayPath({
@@ -282,7 +287,7 @@ test('planRelayPath prefers operator pin over shared datacenter LAN', () => {
     }),
     {
       candidates: [
-        { kind: 'direct_lan', address: '10.0.0.5', datacenterId: 'dc-a' },
+        { kind: 'direct_lan', address: '10.0.0.5', datacenterId: 'dc-a', untrusted: true },
         { kind: 'direct_public', address: '192.0.2.5' },
       ],
       selected: { kind: 'direct_public', endpoint: '192.0.2.5' },
@@ -295,7 +300,11 @@ test('planRelayPath picks shared-datacenter LAN before public', () => {
   const caches = emptyCaches()
   caches.datacenterMembershipsByServer.set('self', [membershipPin('self', 'dc-a', '10.0.0.1')])
   caches.datacenterMembershipsByServer.set('other', [membershipPin('other', 'dc-a', '10.0.0.5')])
-  caches.policyByDatacenter.set('dc-a', { addressPreference: 'ipv6', priority: 100, trusted: true })
+  caches.policyByDatacenter.set('dc-a', {
+    addressPreference: 'ipv6',
+    priority: 100,
+    trusted: false,
+  })
   caches.publicAddressByServer.set('other', '203.0.113.5')
   assertEquals(
     planRelayPath({
@@ -305,13 +314,14 @@ test('planRelayPath picks shared-datacenter LAN before public', () => {
     }),
     {
       candidates: [
-        { kind: 'direct_lan', address: '10.0.0.5', datacenterId: 'dc-a' },
+        { kind: 'direct_lan', address: '10.0.0.5', datacenterId: 'dc-a', untrusted: true },
         { kind: 'direct_public', address: '203.0.113.5' },
       ],
       selected: {
         kind: 'direct_lan',
         endpoint: '10.0.0.5',
         datacenterId: 'dc-a',
+        untrusted: true,
       },
       ...unimplementedPathFields(),
     }
@@ -366,31 +376,8 @@ test("planRelayPath picks the lower-priority-number shared datacenter's pin", ()
   caches.policyByDatacenter.set('dc-a', {
     addressPreference: 'ipv4',
     priority: 200,
-    trusted: true,
+    trusted: false,
   })
-  caches.policyByDatacenter.set('dc-b', {
-    addressPreference: 'ipv4',
-    priority: 10,
-    trusted: true,
-  })
-  assertEquals(
-    planRelayPath({
-      self: { serverId: 'self' },
-      other: { serverId: 'other', endpointAddress: null },
-      caches,
-    }),
-    {
-      candidates: [{ kind: 'direct_lan', address: '10.1.0.5', datacenterId: 'dc-b' }],
-      selected: {
-        kind: 'direct_lan',
-        endpoint: '10.1.0.5',
-        datacenterId: 'dc-b',
-      },
-      ...unimplementedPathFields(),
-    }
-  )
-
-  // A trusted datacenter beats an untrusted one regardless of priority.
   caches.policyByDatacenter.set('dc-b', {
     addressPreference: 'ipv4',
     priority: 10,
@@ -401,8 +388,19 @@ test("planRelayPath picks the lower-priority-number shared datacenter's pin", ()
       self: { serverId: 'self' },
       other: { serverId: 'other', endpointAddress: null },
       caches,
-    }).selected,
-    { kind: 'direct_lan', endpoint: '10.0.0.5', datacenterId: 'dc-a' }
+    }),
+    {
+      candidates: [
+        { kind: 'direct_lan', address: '10.1.0.5', datacenterId: 'dc-b', untrusted: true },
+      ],
+      selected: {
+        kind: 'direct_lan',
+        endpoint: '10.1.0.5',
+        datacenterId: 'dc-b',
+        untrusted: true,
+      },
+      ...unimplementedPathFields(),
+    }
   )
 })
 
@@ -842,7 +840,7 @@ function gatewayCaches(params: {
         caches.policyByDatacenter.set(row.datacenterId, {
           addressPreference: 'ipv4',
           priority: 100,
-          trusted: true,
+          trusted: false,
         })
       }
     }

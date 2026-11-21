@@ -2945,7 +2945,7 @@ test('parseFabricReconcileResult accepts skipped, reconciled, and teardown shape
 })
 
 test('parseFabricReconcileResult carries warnings and refuses malformed ones', () => {
-  const warning = 'LAN route 10.194.0.0/16 via 10.10.3.86 not installed: eth0 already routes it'
+  const warning = 'LAN route 10.194.0.0/16 via 10.50.3.86 not installed: eth0 already routes it'
   assertEquals(
     parseFabricReconcileResult({ summary: 'TurboFabric reconciled', warnings: [warning] }).warnings,
     [warning]
@@ -4374,6 +4374,56 @@ const GITLAB_SOURCE_ENTRY = {
   build: { kind: 'native' },
 } as const
 
+const COMPOSE_CHECKOUT_ENTRY = {
+  sourceId: 'src-1',
+  provider: 'github',
+  cloneUrl: 'https://git.example.net/acme/stack.git',
+  ref: 'main',
+  commitSha: 'a'.repeat(40),
+  composePath: 'deploy/compose.yaml',
+} as const
+
+test('composeCheckout round-trips and is absent when the project follows no file', () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    composeCheckout: {
+      ...COMPOSE_CHECKOUT_ENTRY,
+      credential: 'tpdaemon.sealed',
+      credentialKind: 'token',
+      credentialUsername: 'oauth2',
+    },
+  })
+  assertEquals(parsed.composeCheckout?.composePath, 'deploy/compose.yaml')
+  assertEquals(parsed.composeCheckout?.credentialUsername, 'oauth2')
+  assertEquals(parseEnvironmentDeployPayload(NATIVE_APP_BASE).composeCheckout, undefined)
+})
+
+test('composeCheckout refuses a path that leaves the repository and a clone URL with a secret', () => {
+  const bad: Array<Record<string, unknown>> = [
+    { composePath: '../compose.yaml' },
+    { composePath: '/etc/compose.yaml' },
+    { composePath: 'a//compose.yaml' },
+    { composePath: 'a/./compose.yaml' },
+    { composePath: 'a\\compose.yaml' },
+    { composePath: '' },
+    { cloneUrl: 'https://user:pass@git.example.net/acme/stack.git' },
+    { provider: 'bitbucket' },
+    { credentialKind: 'password' },
+    { credential: '' },
+  ]
+  for (const override of bad) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          composeCheckout: { ...COMPOSE_CHECKOUT_ENTRY, ...override },
+        }),
+      Error,
+      'Invalid composeCheckout'
+    )
+  }
+})
+
 test('sourceMaterial carries the HTTPS credential username opaquely', () => {
   const parsed = parseEnvironmentDeployPayload({
     ...NATIVE_APP_BASE,
@@ -4873,33 +4923,6 @@ test('parseEnvironmentDeployResult keeps well-formed releases and drops junk row
         },
       ],
     }
-  )
-  // A daemon that has not moved yet reports the old field names; they come out
-  // under the new ones.
-  assertEquals(
-    parseEnvironmentDeployResult({
-      projectName: 'tp-demo',
-      releases: [
-        {
-          composeServiceName: 'web',
-          serviceId: 'svc-web',
-          releaseId: 'rel-1',
-          commitSha: 'abc123',
-          railpackFrontendVersion: '0.1.0',
-          railpackPlanVersion: '0.2.0',
-        },
-      ],
-    })?.releases,
-    [
-      {
-        composeServiceName: 'web',
-        serviceId: 'svc-web',
-        releaseId: 'rel-1',
-        commitSha: 'abc123',
-        builderFrontendVersion: '0.1.0',
-        builderPlanVersion: '0.2.0',
-      },
-    ]
   )
   assertEquals(
     parseEnvironmentDeployResult({
@@ -6786,8 +6809,8 @@ test('parseEnvironmentDeployPayload covers nativeApp resources, limits, and mode
   )
 })
 
-test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, and command edges', () => {
-  const railpack = parseEnvironmentDeployPayload({
+test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, image, and command edges', () => {
+  const image = parseEnvironmentDeployPayload({
     ...NATIVE_APP_BASE,
     sourceMaterial: [
       {
@@ -6795,27 +6818,19 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
         provider: 'git',
         cloneUrl: 'git@gitlab.test:acme/app.git',
         build: {
-          kind: 'railpack',
+          kind: 'image',
           installCommand: 'pnpm install',
           env: { NODE_ENV: 'production', skip: 1 },
         },
       },
     ],
   })
-  assertEquals(railpack.sourceMaterial?.[0]?.cloneUrl, 'git@gitlab.test:acme/app.git')
-  assertEquals(railpack.sourceMaterial?.[0]?.build, {
-    kind: 'railpack',
+  assertEquals(image.sourceMaterial?.[0]?.cloneUrl, 'git@gitlab.test:acme/app.git')
+  assertEquals(image.sourceMaterial?.[0]?.build, {
+    kind: 'image',
     installCommand: 'pnpm install',
     env: { NODE_ENV: 'production' },
   })
-
-  // The new value parses too; the panel does not send it yet, but it must not
-  // be refused once the contract phase flips the send.
-  const image = parseEnvironmentDeployPayload({
-    ...NATIVE_APP_BASE,
-    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, build: { kind: 'image' } }],
-  })
-  assertEquals(image.sourceMaterial?.[0]?.build, { kind: 'image' })
 
   const staticBuild = parseEnvironmentDeployPayload({
     ...NATIVE_APP_BASE,
@@ -8026,4 +8041,47 @@ test('parseEnvironmentStopResult reads volume states and drops malformed ones', 
     ]
   )
   assertEquals(parseEnvironmentStopResult({ projectName: 'x' }).volumes, undefined)
+})
+
+test('sourceMaterial carries optional build limits, strictly', () => {
+  const GIB = 1024 ** 3
+  const none = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY }],
+  })
+  assertEquals(none.sourceMaterial?.[0]?.buildLimits, undefined)
+
+  const limited = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    sourceMaterial: [
+      {
+        ...GITLAB_SOURCE_ENTRY,
+        buildLimits: {
+          cores: { cores: 1.5, source: 'server' },
+          memory: { bytes: 2 * GIB, source: 'service' },
+          swap: { allowed: true, source: 'organization' },
+        },
+      },
+    ],
+  })
+  assertEquals(limited.sourceMaterial?.[0]?.buildLimits, {
+    cores: { cores: 1.5, source: 'server' },
+    memory: { bytes: 2 * GIB, source: 'service' },
+    swap: { allowed: true, source: 'organization' },
+  })
+
+  for (const bad of [
+    { cores: { cores: 0.5, source: 'server' } },
+    { cores: { cores: 2, source: 'default' } },
+    { memory: { bytes: 5, source: 'server' } },
+    { swap: { allowed: 'yes', source: 'server' } },
+    'x',
+  ]) {
+    assertThrows(() =>
+      parseEnvironmentDeployPayload({
+        ...NATIVE_APP_BASE,
+        sourceMaterial: [{ ...GITLAB_SOURCE_ENTRY, buildLimits: bad }],
+      })
+    )
+  }
 })

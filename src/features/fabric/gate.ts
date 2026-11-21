@@ -19,12 +19,17 @@ export type FabricGateRecord = {
   id: string
   serverId: string
   status: CommandStatus
-  error: string | null
+  errorMessage: string | null
 }
 
 export type FabricGateOutcome =
   | { kind: 'ready' }
-  | { kind: 'failed'; serverId: string; commandId: string; error: string | null }
+  | {
+      kind: 'failed'
+      serverId: string
+      commandId: string
+      error: string | null
+    }
   | { kind: 'pending'; pending: FabricGateCommand[] }
   /** TurboFabric was paused or removed while the caller waited for it. */
   | { kind: 'turned_off'; message: string }
@@ -49,7 +54,7 @@ export function classifyFabricGate(records: readonly FabricGateRecord[]): Fabric
         kind: 'failed',
         serverId: row.serverId,
         commandId: row.id,
-        error: row.error,
+        error: row.errorMessage,
       }
       continue
     }
@@ -72,7 +77,7 @@ function padMissingCommands(
       id: command.commandId,
       serverId: command.serverId,
       status: 'queued',
-      error: null,
+      errorMessage: null,
     }
   })
 }

@@ -15,8 +15,8 @@ tables below add the contract field, unit, nullability and DuckDB column for eac
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | Hosted dataset     | `turbopanel_server_metrics_v12`, one per environment with a prefix: `testing_`, `staging_`, `live_` (the bare name is the local default)                                                                                                       | `backends/cloudflare/field-map.ts:83`, `wrangler.jsonc` (SERVER_METRICS binding and the read-side var)          |
 | Storage stamp      | `12`, written as text in blob3 of every row. Readers accept only this value                                                                                                                                                                    | `AE_STORAGE_VERSION` (`field-map.ts:81`), `AE_SUPPORTED_SCHEMA_VERSIONS` (`backends/cloudflare/sql-api.ts:114`) |
-| Wire versions      | `[6, 8]`. 6 is the plain fallback sample (no `extended` section, no `durable` flag). Any other value, including 7, is refused with a version error                                                                                             | `METRICS_WIRE_VERSIONS` (`src/contracts/metrics-contract.ts:41`), checked at `validation.ts:320`                |
-| Wire features      | `metrics-v8` and `metrics-v8-sizes`. `metrics-v7` is not advertised. A daemon stamps 6 until the panel it is attached to advertises `metrics-v8`                                                                                               | `DAEMON_WIRE_FEATURES` (`src/lib/version-wire.ts:171-182`)                                                      |
+| Wire versions      | `8` only. Any other value, including 6 and 7, is refused with a version error                                                                                                                                                                  | `METRICS_SCHEMA_VERSION` (`src/contracts/metrics-contract.ts`), checked in `validation.ts`                      |
+| Wire features      | `metrics-v8` and `metrics-v8-sizes`. `metrics-v7` is not advertised                                                                                                                                                                            | `DAEMON_WIRE_FEATURES` (`src/lib/version-wire.ts:171-182`)                                                      |
 | Rows per sample    | VPS 4, physical 5-6, plus 1 with managed databases, plus 1 per event (16 at most)                                                                                                                                                              | `buildMetricsDataPoints` (`field-map.ts:582`), table at the end of `V12-LAYOUT.md`                              |
 | Cap per write call | 250 data points per sample; the lowest-priority rows are dropped and logged past that                                                                                                                                                          | `capToInvocationLimit` (`field-map.ts:659`)                                                                     |
 | Self-hosted marker | `12` (`DUCKDB_SCHEMA_MARKER_VERSION`). Any older or unreadable marker discards the file and rebuilds it                                                                                                                                        | `backends/duckdb/schema.ts:99`, `backends/duckdb/database.ts`                                                   |
@@ -404,8 +404,8 @@ Because a self-hosted marker bump discards the metrics history of that install, 
 
 Hosted points age out after Cloudflare's roughly 3 months; Analytics Engine has no delete or update. Self-hosted:
 expired Parquet partitions and hot rows are pruned at `TURBOPANEL_SERVER_METRICS_RETENTION_DAYS`, default 90.
-A size cap on the self-hosted store (5 GiB, oldest days pruned first) is in open pull request #380 and is not on
-trunk yet.
+A size cap on the self-hosted store (5 GiB by default, `TURBOPANEL_SERVER_METRICS_MAX_BYTES`, oldest days pruned
+first) is on trunk (pull request #380, merged 2026-10-21).
 
 ## Hardware record and cache keys
 
@@ -413,14 +413,14 @@ The hosted side keeps only the latest hardware facts for a server, one record th
 the Postgres column `server.hardware` (jsonb, in the control plane's database in every deployment). It is not
 in `server.metadata`, which only carries the alert stamp `topologyChurnLimitedAt`. Limits (`features/servers/server-topology-records.ts`):
 
-- The snapshot is at most 64 KiB and the generation numbers fit a Postgres integer.
-- A resend of the stored generation is rewritten at most once per 30 seconds per server
+- The snapshot is at most 64 KiB.
+- A resend of the stored topology is rewritten at most once per 30 seconds per server
   (`TOPOLOGY_REWRITE_COOLDOWN_SECONDS`).
-- At most 12 generation changes per rolling hour and 24 per rolling day
-  (`MAX_NEW_TOPOLOGY_GENERATIONS_PER_HOUR` / `_PER_DAY`); further changes are dropped and
+- At most 12 topology changes per rolling hour and 24 per rolling day
+  (`MAX_TOPOLOGY_CHANGES_PER_HOUR` / `_PER_DAY`); further changes are dropped and
   `server.metadata.topologyChurnLimitedAt` is stamped.
-- "Latest" is by write time, never by the daemon's own number.
-- No history of older generations exists, and sizes are not stored here (they ride every sample).
+- "Latest" is by write time.
+- No history of older topologies exists, and sizes are not stored here (they ride every sample).
 
 The chart cache key is `tp:metrics:chart:<kind>:<serverId>:<fromBucketMs>:<toBucketMs>:<sorted metrics>:<resolution>:<backend>:v<schemaVersion>`
 with an optional last part `hw<ms>` (`query/cache.ts:50-61`). `<ms>` is the epoch time the stored hardware record

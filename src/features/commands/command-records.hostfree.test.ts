@@ -123,7 +123,9 @@ test('createCommandRecord writes the command row and its dispatch payload', asyn
   assertEquals((commandValues as { metadata: { followUp: boolean } }).metadata.followUp, true)
   // Payload never touches the `command` row.
   assertEquals(Object.hasOwn(commandValues as object, 'payload'), false)
-  assertEquals((dispatchValues as { payload: unknown }).payload, { ping: true })
+  assertEquals((dispatchValues as { payload: unknown }).payload, {
+    ping: true,
+  })
   assertEquals((dispatchValues as { commandId: string }).commandId, baseRow.id)
 })
 
@@ -396,7 +398,7 @@ test('transitionCommand patches columns and returns null when missing', async ()
     result: { ok: false },
   })
   assertEquals(failed?.status, 'failed')
-  assertEquals(failed?.error, 'Command queue unavailable')
+  assertEquals(failed?.errorMessage, 'Command queue unavailable')
   assertEquals(failed?.errorMessage, 'Command queue unavailable')
   const patch = setPayload as {
     attempts: number
@@ -476,7 +478,7 @@ test('serializeCommandRecord maps the full lifecycle column set', () => {
   assertEquals(record.startedAt, '2020-01-01T00:00:00.040Z')
   assertEquals(record.finishedAt, null)
   assertEquals(record.expiresAt, '2020-01-01T00:01:00.000Z')
-  assertEquals(record.error, null)
+  assertEquals(record.errorMessage, null)
   assertEquals(record.errorMessage, null)
 })
 
@@ -548,8 +550,15 @@ function fakeTransitionDb(row: Record<string, unknown>) {
 }
 
 test('transitionCommand settles the step plan on a terminal status', async () => {
-  const { db, sets } = fakeTransitionDb({ ...baseRow, status: 'failed', progress: LIVE_PROGRESS })
-  const failed = await transitionCommand(db, baseRow.id, { status: 'failed', error: 'boom' })
+  const { db, sets } = fakeTransitionDb({
+    ...baseRow,
+    status: 'failed',
+    progress: LIVE_PROGRESS,
+  })
+  const failed = await transitionCommand(db, baseRow.id, {
+    status: 'failed',
+    error: 'boom',
+  })
   assertEquals(
     failed?.progress?.steps.map((step) => step.state),
     ['done', 'failed', 'skipped']
@@ -561,8 +570,14 @@ test('transitionCommand settles the step plan on a terminal status', async () =>
 })
 
 test('transitionCommand leaves the step plan alone while the command is live', async () => {
-  const { db, sets } = fakeTransitionDb({ ...baseRow, status: 'running', progress: LIVE_PROGRESS })
-  const running = await transitionCommand(db, baseRow.id, { status: 'running' })
+  const { db, sets } = fakeTransitionDb({
+    ...baseRow,
+    status: 'running',
+    progress: LIVE_PROGRESS,
+  })
+  const running = await transitionCommand(db, baseRow.id, {
+    status: 'running',
+  })
   assertEquals(running?.progress, LIVE_PROGRESS)
   assertEquals(
     sets.some((patch) => 'progress' in patch),
@@ -571,7 +586,10 @@ test('transitionCommand leaves the step plan alone while the command is live', a
 })
 
 test('cancelNonTerminalCommand settles the step plan as skipped', async () => {
-  const { db, sets } = fakeTransitionDb({ id: baseRow.id, progress: LIVE_PROGRESS })
+  const { db, sets } = fakeTransitionDb({
+    id: baseRow.id,
+    progress: LIVE_PROGRESS,
+  })
   assertEquals(await cancelNonTerminalCommand(db, baseRow.id, { error: 'stopped' }), true)
   const progressWrite = sets.find((patch) => 'progress' in patch)
   const settled = progressWrite?.progress as typeof LIVE_PROGRESS
@@ -590,7 +608,9 @@ test('transitionCommand stores a failure without signed-URL secrets', async () =
       set: (patch: { status?: unknown; errorMessage?: string }) => {
         if (patch.status !== undefined) setPayload = patch
         return {
-          where: () => ({ returning: () => Promise.resolve([{ ...baseRow, status: 'failed' }]) }),
+          where: () => ({
+            returning: () => Promise.resolve([{ ...baseRow, status: 'failed' }]),
+          }),
         }
       },
     }),
@@ -673,7 +693,10 @@ test('transitionCommand keeps an explicit lifecycle timestamp over the auto-stam
 
 /** Fake `db.select().from().where()` that resolves to `rows` (and `.limit()` too). */
 function fakeSelectDb(rows: unknown[]): Db {
-  const where = () => Object.assign(Promise.resolve(rows), { limit: () => Promise.resolve(rows) })
+  const where = () =>
+    Object.assign(Promise.resolve(rows), {
+      limit: () => Promise.resolve(rows),
+    })
   return { select: () => ({ from: () => ({ where }) }) } as unknown as Db
 }
 

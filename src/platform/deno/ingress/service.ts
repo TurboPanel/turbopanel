@@ -271,7 +271,12 @@ export async function refreshEdgeStatuses(db: Db, deps: IngressServiceDeps): Pro
   await forEachSequential(applied, (row) => ingressStatus(db, row.id, deps))
 }
 
-export type HostnameIngressInput = { mode?: unknown; ingressId?: unknown; publicPort?: unknown }
+export type HostnameIngressInput = {
+  mode?: unknown
+  ingressId?: unknown
+  publicPort?: unknown
+  behindCdnProxy?: unknown
+}
 export type HostnameIngressUpdate =
   | { ok: true; hostname: InstanceHostnameRecord }
   | {
@@ -282,6 +287,8 @@ export type HostnameIngressUpdate =
       waiting?: EdgeGateWaitingServer[]
     }
 
+export const BEHIND_CDN_PROXY_DIRECT_ONLY =
+  'behindCdnProxy can only be true for a hostname in direct mode.'
 const EDGE_GATE_SHUT = 'Edge connection modes are not available yet.'
 
 function invalid(error: string): HostnameIngressUpdate {
@@ -311,6 +318,39 @@ async function edgeGateRefusal(
 }
 
 /**
+ * The stored proxied flag after an edit. It only means something in direct
+ * mode, so any other mode clears it in the same write.
+ */
+export function nextBehindCdnProxy(
+  mode: IngressMode,
+  requested: unknown,
+  current: boolean
+): boolean {
+  if (mode !== 'direct') return false
+  return typeof requested === 'boolean' ? requested : current
+}
+
+/** The refusal for a malformed or unusable port or proxied flag in the request, else null. */
+function inputRefusal(
+  input: HostnameIngressInput,
+  mode: IngressMode
+): HostnameIngressUpdate | null {
+  if (input.publicPort !== undefined && !isPublicPort(input.publicPort)) {
+    return invalid('publicPort must be a whole number from 1 to 65535')
+  }
+  if (input.publicPort !== undefined && !isAllowedPublicPort(input.publicPort)) {
+    return { ok: false, status: 400, error: SELF_HOSTED_PUBLIC_PORT_ERROR }
+  }
+  if (input.behindCdnProxy !== undefined && typeof input.behindCdnProxy !== 'boolean') {
+    return invalid('behindCdnProxy must be true or false')
+  }
+  if (input.behindCdnProxy === true && mode !== 'direct') {
+    return { ok: false, status: 400, error: BEHIND_CDN_PROXY_DIRECT_ONLY }
+  }
+  return null
+}
+
+/**
  * Change how visitors reach one name. A name whose provider setup is still
  * in place must be disconnected before its mode or account changes, so a
  * tunnel is never left behind without a row that knows about it.
@@ -325,12 +365,8 @@ export async function setHostnameIngress(
   if (!current) return { ok: false, status: 404, error: 'Hostname not found' }
   const mode = input.mode ?? current.mode
   if (!isIngressMode(mode)) return invalid('mode must be a known connection mode')
-  if (input.publicPort !== undefined && !isPublicPort(input.publicPort)) {
-    return invalid('publicPort must be a whole number from 1 to 65535')
-  }
-  if (input.publicPort !== undefined && !isAllowedPublicPort(input.publicPort)) {
-    return { ok: false, status: 400, error: SELF_HOSTED_PUBLIC_PORT_ERROR }
-  }
+  const invalidInput = inputRefusal(input, mode)
+  if (invalidInput) return invalidInput
   // A mode without a provider drops the account unless the caller names one.
   const keptAccount = capabilitiesFor(mode).provider ? current.ingressId : null
   const ingressId = input.ingressId === undefined ? keptAccount : input.ingressId
@@ -351,9 +387,13 @@ export async function setHostnameIngress(
   const nextIngressId = capabilitiesFor(mode).provider
     ? ((ingressId as string | null) ?? null)
     : null
+  const behindCdnProxy = nextBehindCdnProxy(mode, input.behindCdnProxy, current.behindCdnProxy)
   await db
     .update(instanceHostname)
-    .set({ mode, publicPort, ingressId: nextIngressId })
+    .set({ mode, publicPort, ingressId: nextIngressId, behindCdnProxy })
     .where(eq(instanceHostname.id, hostnameId))
-  return { ok: true, hostname: { ...current, mode, publicPort, ingressId: nextIngressId } }
+  return {
+    ok: true,
+    hostname: { ...current, mode, publicPort, ingressId: nextIngressId, behindCdnProxy },
+  }
 }

@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { EDGE_MODES, heartbeatSecondsFor } from './heartbeat-policy.ts'
+import { EDGE_MODES, effectiveHeartbeatMode, heartbeatSecondsFor } from './heartbeat-policy.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -22,4 +22,20 @@ test('deno advises 25 seconds when any hostname sits behind an edge', () => {
 test('deno advises 60 seconds with no edge hostname', () => {
   assertEquals(heartbeatSecondsFor([], 'deno'), 60)
   assertEquals(heartbeatSecondsFor(['direct', 'lan-only'], 'deno'), 60)
+})
+
+test('a direct hostname marked behind a CDN proxy gets the edge interval', () => {
+  const mode = effectiveHeartbeatMode({ mode: 'direct', behindCdnProxy: true })
+  assertEquals(mode, 'cloudflare-proxy')
+  assertEquals(heartbeatSecondsFor([mode], 'deno'), 25)
+})
+
+test('the proxied flag changes nothing for an unmarked direct name or another mode', () => {
+  assertEquals(effectiveHeartbeatMode({ mode: 'direct' }), 'direct')
+  assertEquals(effectiveHeartbeatMode({ mode: 'direct', behindCdnProxy: false }), 'direct')
+  assertEquals(effectiveHeartbeatMode({ mode: 'lan-only', behindCdnProxy: true }), 'lan-only')
+  assertEquals(
+    effectiveHeartbeatMode({ mode: 'cloudflare-tunnel', behindCdnProxy: true }),
+    'cloudflare-tunnel'
+  )
 })

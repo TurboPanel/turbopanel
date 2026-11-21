@@ -14,7 +14,6 @@ import {
   loadEndpointCaches,
   pairSharesTrustedLan,
 } from './fabric-records.ts'
-import { loadLanRouteServerIds } from './lan-pairs.ts'
 
 export type PairRules = {
   pairSharesTrustedLan: (a: string, b: string) => boolean
@@ -32,16 +31,15 @@ async function loadEndpointPins(db: Db, organizationId: string): Promise<Map<str
   return out
 }
 
-/** Load pins, policies, daemon features, public addresses and endpoint pins for the servers. */
+/** Load pins, policies, public addresses and endpoint pins for the servers. */
 export async function loadPairRules(
   db: Db,
   params: { organizationId: string; serverIds: readonly string[] }
 ): Promise<PairRules> {
   const ids = [...new Set(params.serverIds)]
-  const [{ caches: endpointCaches }, memberships, lanRouteServerIds, pins] = await Promise.all([
+  const [{ caches: endpointCaches }, memberships, pins] = await Promise.all([
     loadEndpointCaches(db, ids),
     loadDatacenterMembershipsForServers(db, ids),
-    loadLanRouteServerIds(db, ids),
     loadEndpointPins(db, params.organizationId),
   ])
   const datacenterIds = new Set<string>()
@@ -52,7 +50,6 @@ export async function loadPairRules(
     ...endpointCaches,
     datacenterMembershipsByServer: memberships,
     policyByDatacenter: await loadDatacenterPolicies(db, [...datacenterIds]),
-    lanRouteServerIds,
   }
   const hasDirect = (from: string, to: string): boolean =>
     directCandidates(from, { serverId: to, endpointAddress: pins.get(to) ?? null }, caches).length >

@@ -1,7 +1,7 @@
 /**
  * The periodic tunnel sweeps, in the order they run. Both schedulers walk this
  * one list: the hosted cron (`runQueuedCronSweeps` in
- * `daemon/cell/offline-sweep.ts`) and the self-hosted minute timer
+ * `daemon/cell/offline-sweep.ts`) and the self-hosted job tick
  * (`platform/deno/server.ts`), so a sweep added here runs on both.
  *
  * Each sweep decides for itself, from the database, whether there is work: an
@@ -19,6 +19,7 @@ import { runTunnelConnectorsSweepTick } from './connector-sync.ts'
 import { runTunnelRemovalSweepTick } from './removal.ts'
 import { runRunTokenRotationSweepTick } from './run-token-rotation.ts'
 import { runTunnelStatusPollTick } from './status-poll.ts'
+import { runVerifiedNamesSweepTick } from './verified-names-sweep.ts'
 import { runTunnelRoutesSweepTick } from './sync.ts'
 
 export type TunnelSweepDeps = Readonly<{
@@ -39,6 +40,12 @@ export const TUNNEL_SWEEPS: readonly TunnelSweep[] = [
   {
     failureLabel: 'tunnel-routes-sweep-failed',
     run: (db, deps) => runTunnelRoutesSweepTick(db, deps),
+  },
+  // Names the connector may verify: a deploy that carried a certificate (or a
+  // pair that changed) makes a name verifiable, so the routes are written again.
+  {
+    failureLabel: 'tunnel-verified-names-sweep-failed',
+    run: (db, deps) => runVerifiedNamesSweepTick(db, { secrets: deps.dataEncryptionSecrets }),
   },
   // Tunnel connectors: each carrying server is told to run its tunnels, and to
   // drop the ones that moved away. A resend leaves a running connector alone.

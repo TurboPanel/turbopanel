@@ -82,8 +82,7 @@ export function defaultPhpMode(allowed: readonly PhpMode[]): PhpMode | undefined
   return PHP_MODE_DEFAULT_ORDER.find((mode) => allowed.includes(mode))
 }
 
-export type PhpModeRefusal =
-  'engine_unsupported' | 'not_allowed' | 'none_allowed' | 'daemon_unsupported'
+export type PhpModeRefusal = 'engine_unsupported' | 'not_allowed' | 'none_allowed'
 
 export type SitePhpModeDecision =
   /** `kept`: the policy no longer offers this mode, but the site already runs it. */

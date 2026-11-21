@@ -843,6 +843,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
           targetManifest,
           colocatedWithInstance: colocatedIds.has(serverId),
           projectedUpdate: repairedUpdate ?? null,
+          daemonFeatures: presence.get(serverId)?.features,
         })
         return {
           serverId,
@@ -1056,6 +1057,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
         targetManifest,
         colocatedWithInstance: colocatedIds.has(id),
         projectedUpdate: { status: 'idle' },
+        daemonFeatures: presence.get(id)?.features,
       })
 
       return c.json({
@@ -1106,6 +1108,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       targetManifest,
       colocatedWithInstance: colocatedIds.has(id),
       projectedUpdate: repairedUpdate ?? null,
+      daemonFeatures: presence.get(id)?.features,
     })
 
     return c.json({

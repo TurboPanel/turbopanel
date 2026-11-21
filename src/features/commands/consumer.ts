@@ -38,8 +38,10 @@ import { recordDeployedSiteApps } from '../environments/app-facts.ts'
 import {
   classifyDeployFailure,
   DEPLOY_CANCELLED_ERROR_CODE,
+  DEPLOY_POST_DEPLOY_FAILED_ERROR_CODE,
   deployOutcomeErrorCode,
   isCancelledDeployError,
+  isPostDeployFailedAfterSwitch,
 } from '../deploy/deploy-outcome.ts'
 import {
   advanceRollout,
@@ -217,7 +219,11 @@ import { claimServerTurn } from './server-turn.ts'
 import { QUEUE_RETRY_EXHAUSTED_CODE, ServerBusyError } from './delivery-retry.ts'
 
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { daemonUnsupportedReason, resolveDaemonSupport } from '../../lib/version-wire.ts'
+import {
+  DAEMON_UPDATE_REQUIRED_CODE,
+  daemonUnsupportedReason,
+  resolveDaemonSupport,
+} from '../../lib/version-wire.ts'
 
 export { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 
@@ -249,7 +255,24 @@ export type CommandConsumerDeps = {
    * see `deployMayLeaveLane`.
    */
   leaveLane?: () => void
+  /** Test seam: how long after a connection opens its hello may still be on its way. */
+  helloGraceMs?: number
+  /** Test seam: how often a refused daemon whose hello may be on its way is looked at again. */
+  helloPollMs?: number
+  /** Test seam: the wait between those looks; defaults to a real timer. */
+  helloSleep?: (ms: number) => Promise<void>
+  /** Test seam: the clock the hello grace is counted against; defaults to `Date.now`. */
+  now?: () => number
 }
+
+/**
+ * A daemon that just reconnected has not necessarily had its hello written to
+ * the database yet, and until it is the stored version and wire features are
+ * the previous build's. A command that arrives in that window waits this long
+ * (counted from when the connection opened) before a refusal stands.
+ */
+export const HELLO_PROJECTION_GRACE_MS = 30_000
+const HELLO_PROJECTION_POLL_MS = 1_000
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'daemon.ping': 30_000,
@@ -603,12 +626,27 @@ async function markDispatching(
   return true
 }
 
+async function readPresence(db: Db, registry: DaemonCellRegistry, serverId: string) {
+  return (await getResolveFleetPresence()(db, registry, [serverId])).get(serverId)
+}
+
+/** The connection opened less than `graceMs` ago, so its hello may not be stored yet. */
+function helloMayBePending(
+  presence: { connectedAt?: string | null } | undefined,
+  graceMs: number,
+  now: () => number
+): boolean {
+  const openedAt = presence?.connectedAt ? Date.parse(presence.connectedAt) : Number.NaN
+  return Number.isFinite(openedAt) && now() - openedAt < graceMs
+}
+
 /** `null` when the command can be delivered; otherwise the error it was failed with. */
 async function ensureServerAndDaemonOnline(
   db: Db,
   registry: DaemonCellRegistry,
   record: DispatchableCommandRecord,
-  envelope: CommandEnvelope
+  envelope: CommandEnvelope,
+  deps?: CommandConsumerDeps
 ): Promise<string | null> {
   const serverBinding = await getServerLicenseBinding(db, envelope.serverId)
   if (!serverBinding) {
@@ -623,38 +661,54 @@ async function ensureServerAndDaemonOnline(
     return 'Server not found'
   }
 
-  const presenceMap = await getResolveFleetPresence()(db, registry, [envelope.serverId])
-  const presence = presenceMap.get(envelope.serverId)
-  if (!presence?.connected) {
+  const failOffline = async (): Promise<string> => {
     commandConsumerTrace('dispatch-failed', {
       commandId: record.id,
       commandType: record.type,
       serverId: envelope.serverId,
       reason: 'offline',
     })
-    await transitionCommand(db, record.id, {
-      status: 'failed',
-      error: 'Daemon not connected',
-    })
+    await transitionCommand(db, record.id, { status: 'failed', error: 'Daemon not connected' })
     return 'Daemon not connected'
   }
 
-  // A daemon below the supported floor keeps its connection — that is how it
-  // gets updated (the update envelope is not a command) — but gets no
-  // commands until it is. Builds that report no version are `unknown` and
-  // pass; see lib/version-wire.ts.
-  const support = resolveDaemonSupport(presence.daemonBuild?.version)
+  let presence = await readPresence(db, registry, envelope.serverId)
+  if (!presence?.connected) {
+    return failOffline()
+  }
+
+  // A daemon below the supported floor, missing a required wire feature, or
+  // with no usable version keeps its connection — that is how it gets updated
+  // (the update envelope is not a command) — but gets no commands until it is
+  // current. See lib/version-wire.ts.
+  let support = resolveDaemonSupport(presence.daemonBuild?.version, presence.features)
+  // A daemon that has only just reconnected (an update restarts it) still has
+  // the previous build's version and features stored until its hello is
+  // written, so a refusal inside that window is looked at again, not final.
+  const graceMs = deps?.helloGraceMs ?? HELLO_PROJECTION_GRACE_MS
+  const pollMs = deps?.helloPollMs ?? HELLO_PROJECTION_POLL_MS
+  const now = deps?.now ?? Date.now
+  const sleep = deps?.helloSleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
+  while (support.status === 'unsupported' && helloMayBePending(presence, graceMs, now)) {
+    await sleep(pollMs)
+    presence = await readPresence(db, registry, envelope.serverId)
+    if (!presence?.connected) break
+    support = resolveDaemonSupport(presence.daemonBuild?.version, presence.features)
+  }
+  if (!presence?.connected) {
+    return failOffline()
+  }
   if (support.status === 'unsupported') {
     commandConsumerTrace('dispatch-failed', {
       commandId: record.id,
       commandType: record.type,
       serverId: envelope.serverId,
-      reason: 'daemon_unsupported',
+      reason: DAEMON_UPDATE_REQUIRED_CODE,
     })
     const error = daemonUnsupportedReason(support)
     await transitionCommand(db, record.id, {
       status: 'failed',
-      errorCode: 'daemon_unsupported',
+      errorCode: DAEMON_UPDATE_REQUIRED_CODE,
       error,
     })
     return error
@@ -947,7 +1001,7 @@ async function settleUnansweredCommand(
   }
   const timeoutMessage = deployWaitMessage(waiter)
   if (waiter && DEPLOY_WAIT_CANCELS_SERVER.has(waiter.verdict)) {
-    await cancelDeployOnServer(db, cell, envelope.serverId, record.id)
+    await cancelDeployOnServer(cell, record.id)
   }
   if (waiter?.verdict === 'offline') {
     // Never reached the server: take it back so it cannot be delivered later.
@@ -3650,6 +3704,9 @@ export function failureErrorCodeField(
   if (type === 'environment.deploy' && isCancelledDeployError(error)) {
     return { errorCode: DEPLOY_CANCELLED_ERROR_CODE }
   }
+  if (type === 'environment.deploy' && isPostDeployFailedAfterSwitch(error)) {
+    return { errorCode: DEPLOY_POST_DEPLOY_FAILED_ERROR_CODE }
+  }
   if (type === 'storage.restore' && BACKUP_NOT_ON_HOST_RE.test(error)) {
     return { errorCode: 'backup_not_found' }
   }
@@ -4012,7 +4069,7 @@ export async function processCommandEnvelope(
   const record = resumed ?? (await attachDispatchPayload(db, open, envelope))
   if (!record) return
 
-  const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
+  const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope, deps)
   if (notReady !== null) {
     await applyUndeliveredSideEffects(db, record, envelope, notReady, deps)
     return

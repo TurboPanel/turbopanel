@@ -33,7 +33,6 @@ function authenticatedSample(input: {
   serverId?: string
   sampledAt: string
   intervalSeconds?: number
-  topologyGeneration?: number
   busyPercent?: number
   gpu?: { gpuId: string; utilizationPercent: number }
 }): AuthenticatedMetricsSample {
@@ -47,7 +46,6 @@ function authenticatedSample(input: {
       sampledAt,
       intervalSeconds: input.intervalSeconds ?? 10,
       sequence: 1,
-      topologyGeneration: input.topologyGeneration ?? 1,
       bootGeneration: 0,
     },
     host: {
@@ -208,7 +206,6 @@ test('mergeLiveSampleIntoHostSeries appends a newer bucket and replaces the same
   const sample = authenticatedSample({
     sampledAt: '2026-01-01T00:00:20.000Z',
     busyPercent: 70,
-    topologyGeneration: 3,
   })
   const empty = mergeLiveSampleIntoHostSeries(
     {

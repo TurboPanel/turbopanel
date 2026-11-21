@@ -136,8 +136,3 @@ export function webhookReachability(
     note: LAN_NOTE,
   }
 }
-
-/** GitHub-specific alias kept for the callers (and test) that predate GitLab. */
-export function githubWebhookReachability(origins: readonly string[]): WebhookReachability {
-  return webhookReachability(origins, 'github')
-}

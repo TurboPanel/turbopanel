@@ -4228,15 +4228,6 @@ test('POST promote fails closed when the daemon cannot read health', async () =>
   await expectJson(response, 409, LIVE_CHECK_FAILED)
 })
 
-test('POST promote sends no probe to a daemon without managed-health-v1', async () => {
-  const { response, sent } = await promoteVia({
-    features: ['update-progress-v1'],
-    reply: { status: 'done', result: streamingHealth() },
-  })
-  await expectJson(response, 409, LIVE_CHECK_FAILED)
-  assertEquals(sent.length, 0)
-})
-
 test('POST promote probes even when the stored observation is recent', async () => {
   const { response, sent } = await promoteVia({
     features: [HEALTH_FEATURE],
@@ -4403,27 +4394,7 @@ test('GET status?refresh=1 does not probe a primary that has no replicas', async
   assertEquals(sent.length, 0)
 })
 
-test('GET status?refresh=1 falls back quietly when the daemon lacks the feature or times out', async () => {
-  const unsupported = healthRegistry({
-    status: 'done',
-    result: streamingHealth(),
-  })
-  const a = await buildApp({
-    db: fakeDb({
-      managedRows: [managedRow()],
-      serverRows: [serverAdvertising([])],
-      memberRows: [memberRow()],
-    }),
-    registry: unsupported.registry,
-  })
-  const noFeature = await jsonOf(
-    await a.app.request(envPath('/status?refresh=1'), {
-      headers: authHeaders(a.cookie),
-    })
-  )
-  assertEquals(unsupported.sent.length, 0)
-  assertEquals(noFeature.healthRefresh, { observed: 0, unavailable: 1 })
-
+test('GET status?refresh=1 falls back quietly when the daemon times out', async () => {
   const timedOut = healthRegistry({ status: 'expired' })
   const b = await buildApp({
     db: fakeDb({
@@ -4542,15 +4513,6 @@ test('POST backup-login refuses an invalid or reserved name', async () => {
   assertEquals((await jsonOf(reserved.res)).error, 'reserved_username')
   const wrongType = await postBackupLogin({ allowedSources: ['internal'], username: 7 })
   assertEquals(wrongType.res.status, 400)
-})
-
-test('POST backup-login refuses a server whose daemon cannot give the login its rights', async () => {
-  const { res, inserted } = await postBackupLogin({ allowedSources: ['internal'] }, [
-    'managed-login-limits-v1',
-  ])
-  assertEquals(res.status, 409)
-  assertEquals((await jsonOf(res)).error, 'managed_backup_login_needs_daemon_update')
-  assertEquals(inserted, [])
 })
 
 test('POST backup-login refuses a second backup login on the cluster', async () => {

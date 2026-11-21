@@ -326,6 +326,14 @@ test('timezone and presence shaping helpers', () => {
   assertEquals(serverViaOff.sendViaHeader, false)
   assertEquals(serverViaOff.sendViaHeaderSource, 'server')
 
+  assertEquals(builtin.buildLimits, { cores: null, memoryBytes: null, swap: null })
+  const limited = resolveServerHostDefaultsFields(
+    { buildLimits: { cores: 1.5, memoryBytes: 2 * 1024 ** 3, swap: true } },
+    {},
+    undefined
+  )
+  assertEquals(limited.buildLimits, { cores: 1.5, memoryBytes: 2 * 1024 ** 3, swap: true })
+
   const os = shapeServerOsFields({ family: 'linux', id: 'debian' })
   assertEquals(os.os?.id, 'debian')
   assertEquals(typeof os.osDisplay, 'string')

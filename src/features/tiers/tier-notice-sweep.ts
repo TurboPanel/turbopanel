@@ -20,7 +20,7 @@ import {
   type TierPlacementEvaluation,
   type TierUnwatchedIds,
 } from './tier-enforcement.ts'
-import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
+import { getLatestServerTopologies } from '../servers/server-topology-records.ts'
 
 export const TIER_NOTICE_SWEEP_LIMIT = 100
 export const TIER_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1000
@@ -363,7 +363,7 @@ export async function sweepTierNotices(
   })
   if (eligible.length === 0) return { considered: 0, sent: 0 }
 
-  const topologyByServer = await getLatestTopologyGenerations(
+  const topologyByServer = await getLatestServerTopologies(
     opts.db,
     eligible.map((row) => row.serverId)
   )

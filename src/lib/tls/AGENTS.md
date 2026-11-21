@@ -217,7 +217,7 @@ progress when earlier rows keep failing.
 | Runtime | Tick                                                                                                                                                                                                     | DB client                                                                  |
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Workers | existing cron (`workers.ts` `scheduled()` → `runOfflineSweep`) piggybacks one bounded batch on the **already-open** Hyperdrive client after `runSystemReconcileSweep`                                    | reuse; never a second client                                               |
-| Deno    | `startDenoServer` (`src/platform/deno/server.ts`, covers `deno.ts` / `deno-dev.ts`) — first Deno-side scheduled surface besides cell maintain; `LEAF_RENEWAL_SWEEP_INTERVAL_MS` (1 min), overlap-guarded | **fresh** `createDenoDb()` per tick, always `endDbConnection` in `finally` |
+| Deno    | `startDenoServer` (`src/platform/deno/server.ts`, covers `deno.ts` / `deno-dev.ts`) — the Deno job tick (`platform/deno/job-tick.ts`, 60 s, lease-guarded, `leafRenewal` on its 5 minute cadence while a certificate exists) | **fresh** `createDenoDb()` per tick, always `endDbConnection` in `finally` |
 
 Module: `src/client/tls/leaf-renewal-sweep.ts`. `GET /tls/ca` exposes
 `leafHealth: { dueCount, staleCount, caGeneration, caNotAfter }` via one org-scoped pass

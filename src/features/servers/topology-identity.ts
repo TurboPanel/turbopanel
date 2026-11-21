@@ -1,11 +1,9 @@
 /**
  * Telling topologies apart without the daemon's topology generation number.
  *
- * Older daemons number every topology they report (`topology-report.generation`)
- * and stamp that number on every metrics sample (`metadata.topologyGeneration`).
- * Newer daemons leave both out once the control plane lists the
- * `topology-generation-optional-v1` wire feature, so the control plane works
- * out the same two answers from content it already receives:
+ * The control plane no longer reads or stores the number older daemons send
+ * (`topology-report.generation`); it works out the same two answers from
+ * content it already receives:
  *
  * - **Is this report a new topology or a resend?** Two snapshots are the same
  *   topology when {@link topologyIdentityKey} matches: the entity ids and the
@@ -21,8 +19,7 @@
  *   Hardware signals are left out of the check: a signal the snapshot does not
  *   list only moves to the end of its page.
  *
- * While both sides still carry a generation number (an older daemon), the
- * number decides, exactly as before. Pure functions, no I/O.
+ * Pure functions, no I/O.
  */
 import type { MetricsSample } from '../../contracts/metrics-contract.ts'
 
@@ -109,22 +106,17 @@ export function sampleFitsTopology(
 }
 
 /** The part of a stored topology record the checks below read. */
-export type RecordedTopology = { generation?: number; snapshot: unknown }
+export type RecordedTopology = { snapshot: unknown }
 
 /**
- * Whether a sample was collected under the stored topology. An older daemon's
- * generation number decides when both the sample and the record carry one;
- * otherwise the sample's entity ids decide ({@link sampleFitsTopology}).
+ * Whether a sample was collected under the stored topology: the sample's
+ * entity ids decide ({@link sampleFitsTopology}).
  */
 export function sampleMatchesRecordedTopology(
   record: RecordedTopology | undefined,
   sample: Pick<MetricsSample, 'metadata' | 'networks' | 'filesystems' | 'blockDevices' | 'gpus'>
 ): boolean {
   if (!record) return false
-  const generation = sample.metadata.topologyGeneration
-  if (generation !== undefined && record.generation !== undefined) {
-    return record.generation === generation
-  }
   return sampleFitsTopology(sample, record.snapshot)
 }
 
@@ -138,15 +130,11 @@ export function recordedTopologyForSample<T extends RecordedTopology>(
 
 /**
  * Whether a topology report describes the stored topology (a resend or a
- * refresh) rather than a new one. Generation numbers decide when both sides
- * carry one; otherwise {@link topologyIdentityKey} does.
+ * refresh) rather than a new one: {@link topologyIdentityKey} decides.
  */
 export function reportIsSameTopology(
   record: RecordedTopology,
-  report: { generation?: number; snapshot: unknown }
+  report: { snapshot: unknown }
 ): boolean {
-  if (report.generation !== undefined && record.generation !== undefined) {
-    return record.generation === report.generation
-  }
   return topologyIdentityKey(record.snapshot) === topologyIdentityKey(report.snapshot)
 }

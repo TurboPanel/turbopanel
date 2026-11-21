@@ -15,6 +15,7 @@ import {
   parseSshPort,
 } from './host-defaults.ts'
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
+import { type BuildLimitSettings, parseBuildLimitSettings } from '../deploy/build-limits.ts'
 import {
   type ManagedExternalAccess,
   parseManagedExternalAccess,
@@ -373,6 +374,19 @@ export type ServerMetadata = {
    * hosting path, drivetemp opt-in, generation). jsonb, so no migration.
    */
   hardwareProfile?: ServerHardwareProfile
+  /**
+   * What the daemon reports about the client-certificate check on the tunnel
+   * peer hop (`require` asked for, `verify` in force when `downgraded`). A
+   * report, written from the tunnel status and never part of the table hash.
+   * jsonb, so no migration.
+   */
+  tunnelPeerHop?: {
+    clientAuth: 'verify' | 'require'
+    downgraded: boolean
+    reminted?: boolean
+    /** When the daemon last reported it (ISO 8601). */
+    reportedAt?: string
+  }
 }
 
 /**
@@ -381,6 +395,11 @@ export type ServerMetadata = {
  * when both are present.
  */
 export type ServerOptions = {
+  /**
+   * The most cores and memory one build on this server may use. Part of the
+   * smallest-wins resolution in `../deploy/build-limits.ts`.
+   */
+  buildLimits?: BuildLimitSettings
   /**
    * Cloudflare `locationHint` for the daemon cell (e.g. `"wnam"`, `"eeur"`).
    * Takes precedence over `server.metadata.cell.locationHint` when set.
@@ -842,17 +861,6 @@ export function osColumnsFromMetadata(os: ServerOsMetadata): ServerOsColumns {
   }
 }
 
-/** Dedicated columns first; legacy `metadata.os` when columns are unset. */
-export function resolveServerOsForRead(
-  row: ServerOsColumns,
-  metadata: unknown
-): ServerOsMetadata | undefined {
-  return (
-    osMetadataFromColumns(row) ??
-    parseServerOsMetadata(isRecord(metadata) ? metadata.os : undefined)
-  )
-}
-
 /** Compose the API `os` object from dedicated columns. */
 export function osMetadataFromColumns(row: ServerOsColumns): ServerOsMetadata | undefined {
   const os: ServerOsMetadata = {}
@@ -1241,6 +1249,8 @@ export type ServerPhpPatchSite = {
   series: string
   version?: string
   outdated?: true
+  /** The site's PHP runs in the shared php-fpm master, not a per-site runtime (daemon 0.1.19+). */
+  shared?: true
 }
 
 export type ServerPhpRestartError = {
@@ -1315,7 +1325,7 @@ function parsePhpPatchVersions(value: unknown): Record<string, string> {
 
 function parsePhpPatchSite(raw: unknown): ServerPhpPatchSite | null {
   if (!isRecord(raw)) return null
-  const { environmentId, composeServiceName, series, version, outdated } = raw
+  const { environmentId, composeServiceName, series, version, outdated, shared } = raw
   if (
     typeof environmentId !== 'string' ||
     !UUID_TOKEN.test(environmentId) ||
@@ -1332,6 +1342,7 @@ function parsePhpPatchSite(raw: unknown): ServerPhpPatchSite | null {
     series,
     ...(typeof version === 'string' && PHP_PATCH_VERSION.test(version) ? { version } : {}),
     ...(outdated === true ? { outdated: true as const } : {}),
+    ...(shared === true ? { shared: true as const } : {}),
   }
 }
 
@@ -2060,6 +2071,7 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   const ntp = parseNtpDefaults(value.ntp)
   if (ntp) options.ntp = ntp
   assignWebServerSettings(options, value)
+  assignServerBuildLimits(options, value.buildLimits)
   if ('metricsCapabilityPlan' in value) {
     const metricsCapabilityPlan = parseServerMetricsCapabilityPlanOverride(
       value.metricsCapabilityPlan
@@ -2076,6 +2088,11 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   }
   assignTunnelCarry(options, value.tunnels)
   return Object.keys(options).length > 0 ? options : {}
+}
+
+function assignServerBuildLimits(options: ServerOptions, value: unknown): void {
+  const buildLimits = parseBuildLimitSettings(value)
+  if (Object.keys(buildLimits).length > 0) options.buildLimits = buildLimits
 }
 
 function assignTunnelCarry(options: ServerOptions, value: unknown): void {

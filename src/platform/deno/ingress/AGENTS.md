@@ -47,6 +47,9 @@ High Availability (Workers) must not contain any of it.
   `src/features/install/heartbeat-policy.ts` (that file cannot import this
   directory, so the test lives here). The Deno heartbeat reader is fed the
   hostname modes from `server.ts` every five minutes.
+  A `direct` name with `origin.is_behind_cdn_proxy` set (PATCH body `behindCdnProxy`,
+  boolean, default false) counts as `cloudflare-proxy` there: the owner says a
+  CDN proxy sits in front of it, and the panel cannot detect that itself.
 - **Edge gate** (`gate.ts`), decided by the control plane alone. An `isEdge`
   mode is allowed only when every remote server has this control plane's key
   pinned (`server.trust_pinned_by` is `install` or `upgrade`; NULL and
@@ -98,7 +101,8 @@ High Availability (Workers) must not contain any of it.
   the step in every provider error (`Creating the tunnel failed: …`).
 - **Cloudflare tunnel** (`providers/cloudflare-tunnel.ts`,
   `cloudflare/tunnel-config.ts`). One remotely managed tunnel per account,
-  named `turbopanel-control-plane-<INSTANCE_ID prefix>`, adopted by stored id or
+  named `turbopanel-control-plane-<id>` (first 12 `INSTANCE_ID` characters with
+  hyphens removed), adopted by stored id or
   name before one is created. Before writing routes, Connect reads the
   tunnel (`config_src`, falling back to the deprecated `remote_config`) and
   refuses a locally managed one (`config_src: local`: routes live in a file on

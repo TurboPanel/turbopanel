@@ -23,11 +23,8 @@ import {
 import { ensureActiveOrganizationCa } from '../../features/managed/apply-prepare.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { loadSiteRefNames } from '../../features/bindings/db-refs.ts'
-import { SITE_DB_BINDINGS_FEATURE, SITE_DB_URL_CA_FEATURE } from '../../lib/version-wire.ts'
 
-/** How many `dbCa.variables` a daemon without `site-db-url-ca-v1` takes. */
-const LEGACY_MAX_DB_CA_VARIABLES = 8
-/** How many a daemon with it takes (the daemon parser's limit). */
+/** How many `dbCa.variables` and `dbCa.urlVariables` a daemon takes (its parser's limit). */
 const MAX_DB_CA_VARIABLES = 16
 
 export type SiteDbBindingsWarning = {
@@ -52,7 +49,7 @@ export function siteNeedsHostnameError(composeServiceName: string): SiteDbBindin
 export function siteDbCaUnavailableWarning(composeServiceName: string): SiteDbBindingsWarning {
   return {
     code: 'site_db_ca_unavailable',
-    message: `Site "${composeServiceName}" is bound to a managed database, but the TurboPanel daemon on this server is too old to give a PHP site the database's certificate. The site gets its connection settings without it. Update the daemon on this server, then deploy again.`,
+    message: `Site "${composeServiceName}" is bound to a managed database, but the organization's database certificate could not be loaded. The site gets its connection settings without it. Deploy again once the certificate is available.`,
     details: { composeServiceName },
   }
 }
@@ -106,8 +103,8 @@ const unique = (names: readonly string[]): string[] => [...new Set(names)]
 
 /**
  * Attach `dbCa` / `requiredEnv` to the sites that have bindings. Sites without
- * a binding, and every site on a daemon without the feature, come back as they
- * were (the latter with a warning).
+ * a binding come back as they were, and so do bound sites when the
+ * organization's CA cannot be loaded (with a warning).
  */
 export async function withSiteDbBindings(
   db: Db,
@@ -116,7 +113,6 @@ export async function withSiteDbBindings(
     organizationId: string
     sites: readonly EnvironmentDeploySite[]
     serviceRows: readonly { id: string; composeServiceName: string }[]
-    daemonFeatures: readonly string[]
     warnings: SiteDbBindingsWarning[]
   }>,
   deps: SiteDbBindingsDeps = defaultDeps
@@ -137,10 +133,7 @@ export async function withSiteDbBindings(
     }
   }
 
-  const supported = params.daemonFeatures.includes(SITE_DB_BINDINGS_FEATURE)
-  const pem = supported
-    ? await deps.loadCaPem(db, dataEncryptionSecrets, params.organizationId)
-    : undefined
+  const pem = await deps.loadCaPem(db, dataEncryptionSecrets, params.organizationId)
 
   return await attachToSites(db, deps, {
     sites: params.sites,
@@ -148,7 +141,6 @@ export async function withSiteDbBindings(
     needs,
     pem,
     warnings: params.warnings,
-    urlSupported: params.daemonFeatures.includes(SITE_DB_URL_CA_FEATURE),
   })
 }
 
@@ -159,10 +151,9 @@ async function attachToSites(
     sites: readonly EnvironmentDeploySite[]
     idByName: ReadonlyMap<string, string>
     needs: ReadonlyMap<string, HostSiteBindingNeeds>
-    /** Undefined when the daemon cannot take a CA file at all. */
+    /** Undefined when the organization's CA could not be loaded. */
     pem: string | undefined
     warnings: SiteDbBindingsWarning[]
-    urlSupported: boolean
   }>
 ): Promise<EnvironmentDeploySite[] | SiteDbBindingsError> {
   const out: EnvironmentDeploySite[] = []
@@ -175,8 +166,7 @@ async function attachToSites(
       input.warnings.push(siteDbCaUnavailableWarning(site.composeServiceName))
       out.push(site)
     } else {
-      const { pem, urlSupported } = input
-      const attached = await attachDbCa(db, deps, { site, serviceId, siteNeeds, pem, urlSupported })
+      const attached = await attachDbCa(db, deps, { site, serviceId, siteNeeds, pem: input.pem })
       if ('kind' in attached) return attached
       out.push(attached)
     }
@@ -193,36 +183,30 @@ async function attachDbCa(
     serviceId: string
     siteNeeds: HostSiteBindingNeeds
     pem: string
-    urlSupported: boolean
   }>
 ): Promise<EnvironmentDeploySite | SiteDbBindingsError> {
-  const { site, siteNeeds, urlSupported } = input
+  const { site, siteNeeds } = input
   const refNames = await deps.loadRefNames(db, input.serviceId)
   const variables = unique([...siteNeeds.caFileKeys, ...refNames.siteCaFileNames])
   const urlVariables = unique([...siteNeeds.urlKeys, ...refNames.siteUrlNames])
-  // Only the names that are sent count: an older daemon is never sent the URL names.
-  const tooMany = urlSupported
-    ? Math.max(variables.length, urlVariables.length) > MAX_DB_CA_VARIABLES
-    : variables.length > LEGACY_MAX_DB_CA_VARIABLES
-  if (tooMany) return tooManyNamesError(site.composeServiceName, urlSupported)
+  if (Math.max(variables.length, urlVariables.length) > MAX_DB_CA_VARIABLES) {
+    return tooManyNamesError(site.composeServiceName)
+  }
   return {
     ...site,
-    // Older daemons refuse an empty list, so the key is left out when no name is bound.
+    // The daemon refuses an empty list, so the key is left out when no name is bound.
     dbCa: {
       variables,
       pem: input.pem,
-      ...(urlSupported && urlVariables.length > 0 ? { urlVariables } : {}),
+      ...(urlVariables.length > 0 ? { urlVariables } : {}),
     },
     requiredEnv: unique(siteNeeds.requiredKeys),
   }
 }
 
-function tooManyNamesError(composeServiceName: string, urlSupported: boolean): SiteDbBindingsError {
-  const hint = urlSupported
-    ? 'Remove some database references or bindings from the site'
-    : 'Update the daemon on this server, or remove some database references or bindings from the site'
+function tooManyNamesError(composeServiceName: string): SiteDbBindingsError {
   return {
     kind: 'binding_host_site_unsupported',
-    message: `Site "${composeServiceName}" names more database CA file variables than this server's daemon can take. ${hint}, then deploy again.`,
+    message: `Site "${composeServiceName}" names more database CA file variables than this server's daemon can take. Remove some database references or bindings from the site, then deploy again.`,
   }
 }

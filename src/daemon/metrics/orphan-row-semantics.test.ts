@@ -111,11 +111,10 @@ function authenticate(
 function realHostSample(atMs: number): AuthenticatedMetricsSample {
   const built = buildMetricsSample({
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: new Date(atMs).toISOString(),
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: EMPTY_HOST_INPUT,
@@ -281,11 +280,10 @@ function writeOrphanNetworkRow(fakeAe: FakeAnalyticsEngine, atMs: number): void 
   const sample = authenticate(
     buildMetricsSample({
       metadata: {
-        version: 6,
+        version: 8,
         sampledAt: new Date(atMs).toISOString(),
         intervalSeconds: 60,
         sequence: 1,
-        topologyGeneration: 1,
         bootGeneration: 1,
       },
       host: EMPTY_HOST_INPUT,

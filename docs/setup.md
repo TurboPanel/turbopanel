@@ -44,6 +44,23 @@
   `setting` row (same env-wins story as `TURBOPANEL_SYSTEM_EMAIL__*`);
   superadmin `GET`/`PUT /api/admin/v1/settings/auth-providers` is mounted on
   both runtimes, but hosted typically leaves the DB row empty.
+- **Job cadences.** Background jobs run from one table (`src/jobs/registry.ts`)
+  with a default interval, offset and allowed range each. One JSON map moves
+  them, for example `{"executionLogs": 60, "tierNotices": 1440}` (minutes;
+  names are the table's keys). Workers read it from the
+  `TURBOPANEL_JOB_CADENCES` var of each `wrangler.jsonc` environment (vars are
+  not inherited, so each block sets it; empty keeps every default) and never
+  query the database for it. Self-hosted reads the same env var first, then
+  the `jobs.cadences` `setting` row (`JOBS__CADENCES`, read through
+  `SettingsResolver`, cached for a few minutes), then the defaults. Housekeeping
+  jobs range from 1 minute to 1440; `upgradeCheck` from 1 to 60; offline
+  detection and command re-delivery are pinned to every minute. A bad map never
+  stops a tick: unknown names are ignored, other bad values clamp into the
+  range, and the tick logs one line saying so. Self-hosted runs every job from
+  one 60 second tick that follows the same table, so the map moves all of
+  them (`edgeTrust`, `heartbeatRefresh` and `ingressTick` exist only there).
+  `TURBOPANEL_JOB_CADENCES` is the name to set; `JOBS__CADENCES` is the
+  setting's own env name, also read on self-hosted and winning over it.
 - `pnpm dev` (wrangler) still runs the **Cloudflare Workers** path for
   full-stack testing — unchanged. **`wrangler.jsonc` `dev.ip` is `0.0.0.0`** so
   Docker Caddy (`host.docker.internal`) can reach the dev server; default

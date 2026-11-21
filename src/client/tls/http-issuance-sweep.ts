@@ -7,23 +7,25 @@
  * through its life, gets a new request. No timer of its own: it runs inside
  * the Workers cron and the Deno interval that already exist.
  */
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import { hosting, tls } from '../../db/schema.ts'
+import { hostname, hosting, tls } from '../../db/schema.ts'
 import { isServerConnected } from '../../daemon/cell/server-status.ts'
+import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { runtimeDnsLookup } from '../../features/hostings/hosting-dns-check.ts'
 import { organizationAcmeContactEmail } from '../../features/organizations/acme-contact-email.ts'
-import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import {
   advanceHttpIssuance,
   deliverIssuedPair,
+  failOpenRequest,
   sendPendingEnds,
   type HttpIssuanceDeps,
   startHttpIssuance,
 } from '../../features/tls/http-issuance/orchestrator.ts'
-import { renewalDue } from '../../features/tls/http-issuance/progress.ts'
+import { renewalDue, waitingMarker } from '../../features/tls/http-issuance/progress.ts'
+import { waitingText } from '../../features/tls/http-issuance/status-text.ts'
 import { readHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import { logWarn } from '../../lib/logger.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -52,6 +54,8 @@ export type HttpIssuanceSweepResult = {
   advanced: number
   started: number
   delivered: number
+  /** Of `started`, the renewals. */
+  renewalsStarted: number
 }
 
 /**
@@ -81,7 +85,7 @@ export function buildHttpIssuanceDeps(db: Db, wiring: HttpIssuanceSweepWiring): 
     },
     dnsLookup: wiring.dnsLookup ?? runtimeDnsLookup(),
     isOnline: (serverId) => isServerConnected(db, wiring.registry, serverId),
-    daemonFeatures: async (serverId) =>
+    serverFeatures: async (serverId) =>
       (await getServerDaemonStateByServerId(db, serverId))?.projection?.features ?? [],
     contactEmail: (organizationId) => organizationAcmeContactEmail(db, organizationId),
     staging: httpIssuanceStaging(wiring.env),
@@ -110,26 +114,35 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
     or (${h} ->> 'endedAt' is not null and ${h} ->> 'endsSentAt' is null
         and jsonb_array_length(coalesce(${h} -> 'forwards', '[]'::jsonb)) > 0)
   ))`
+  const pinnedBySite = sql`(exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) or exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id}))`
+  // An order a site stopped using (its name moved to another choice) is still picked up
+  // while it is open or has end notices to send, so it is ended and cannot hold its
+  // issuing server. DNS orders keep their own wait notice.
+  const abandonedHttp = sql`(${h} is not null and coalesce(${tls.metadata} #>> '{acme,challengeType}', '') <> 'dns-01' and (
+    ${h} ->> 'endedAt' is null
+    or (${h} ->> 'endsSentAt' is null and jsonb_array_length(coalesce(${h} -> 'forwards', '[]'::jsonb)) > 0)
+  ))`
   return db
     .select({
       id: tls.id,
       metadata: tls.metadata,
       organizationId: tls.organizationId,
+      hasPair: sql<boolean>`${tls.privateKeyPem} is not null`,
+      pinned: sql<boolean>`${pinnedBySite}`,
     })
     .from(tls)
     .where(
       and(
         eq(tls.source, 'lets_encrypt'),
         eq(tls.status, 'automatic'),
-        // Only a row that a site pins, with at least one name, and never a wildcard (that
-        // is the connected DNS host's). A row with several names is ordered only from a
-        // daemon that gets one certificate for all of them (`takesOrderFor`).
-        sql`exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`,
+        // Only a row that a site pins, with at least one name. A wildcard name needs the DNS
+        // proof, so a row with one is picked only when it was made for that proof.
+        sql`(${pinnedBySite} or ${abandonedHttp})`,
         sql`jsonb_array_length(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) >= 1`,
-        sql`not exists (
+        sql`(${tls.metadata} #>> '{acme,challengeType}' = 'dns-01' or not exists (
           select 1 from jsonb_array_elements_text(coalesce(${tls.metadata} -> 'dnsNames', '[]'::jsonb)) as n
           where n like '*%'
-        )`,
+        ))`,
         sql`(
           (${h} is null and ${tls.privateKeyPem} is null)
           or (${h} is not null and ${h} ->> 'endedAt' is null)
@@ -148,10 +161,69 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
     .limit(limit)
 }
 
+/** A library order nothing pins yet says so, once, instead of showing nothing. */
+const UNPINNED_BATCH = 50
+
+export async function markUnpinnedLibraryOrders(db: Db, now: Date): Promise<number> {
+  const marker = waitingMarker(undefined, waitingText('no_site'), 'dns-01')
+  // One statement, so only the marker keys change and a write made meanwhile to the
+  // rest of the metadata is kept.
+  const marked = await db
+    .update(tls)
+    .set({
+      metadata: sql`jsonb_set(${tls.metadata}, '{acme}', coalesce(${tls.metadata} -> 'acme', '{}'::jsonb) || ${JSON.stringify(marker)}::jsonb)`,
+      updatedAt: now.toISOString(),
+    })
+    .where(
+      inArray(
+        tls.id,
+        db
+          .select({ id: tls.id })
+          .from(tls)
+          .where(
+            and(
+              eq(tls.source, 'lets_encrypt'),
+              eq(tls.status, 'automatic'),
+              isNull(tls.privateKeyPem),
+              sql`${tls.metadata} #>> '{acme,challengeType}' = 'dns-01'`,
+              sql`${tls.metadata} -> 'httpCert' is null`,
+              sql`coalesce(${tls.metadata} #>> '{acme,warning}', '') <> ${waitingText('no_site')}`,
+              sql`not exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id})`,
+              sql`not exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id})`
+            )
+          )
+          .limit(UNPINNED_BATCH)
+      )
+    )
+    .returning({ id: tls.id })
+  return marked.length
+}
+
 type Candidate = Awaited<ReturnType<typeof selectHttpIssuanceCandidates>>[number]
 
 /** New orders begun in one tick, so a first run after a rollout is gradual. */
 export const HTTP_ISSUANCE_STARTS_PER_TICK = 3
+/** Of those, renewals (a row that already has a pair) begun in one tick. */
+export const HTTP_ISSUANCE_RENEWALS_PER_TICK = 2
+
+/** Nothing uses this row any more: end an open order and tell the helpers. */
+async function endAbandonedOrder(
+  deps: HttpIssuanceDeps,
+  tlsId: string,
+  state: ReturnType<typeof readHttpIssuanceState>
+): Promise<void> {
+  if (state?.endedAt === null) {
+    await failOpenRequest(
+      deps,
+      tlsId,
+      state.requestId,
+      'Its name no longer uses this certificate.',
+      false,
+      { onlyIfUnpinned: true }
+    )
+  }
+  await sendPendingEnds(deps, tlsId)
+}
 
 async function stepRow(
   deps: HttpIssuanceDeps,
@@ -161,10 +233,15 @@ async function stepRow(
     now: Date
     out: HttpIssuanceSweepResult
     startsLeft: number
+    renewalsLeft: number
   }
 ): Promise<void> {
   const { out, now } = step
   const state = readHttpIssuanceState(row.metadata)
+  if (!row.pinned) {
+    await endAbandonedOrder(deps, row.id, state)
+    return
+  }
   if (state?.endedAt === null) {
     await advanceHttpIssuance(deps, row.id)
     out.advanced += 1
@@ -178,10 +255,17 @@ async function stepRow(
     await sendPendingEnds(deps, row.id)
   }
   if (step.startsLeft <= 0) return
+  // Renewals are slow to matter and cheap to postpone: at most two begin per tick, so
+  // a day when many certificates come due does not start them all in one minute.
+  const renewing = row.hasPair
+  if (renewing && step.renewalsLeft <= 0) return
   const outcome = await startHttpIssuance(deps, row.id, (facts) =>
     facts.hasPair ? renewalDue(state, now) : true
   )
-  if (outcome === 'started' || outcome === 'ordering') out.started += 1
+  if (outcome === 'started' || outcome === 'ordering') {
+    out.started += 1
+    if (renewing) out.renewalsStarted += 1
+  }
 }
 
 export async function runHttpIssuanceSweepTick(
@@ -189,7 +273,8 @@ export async function runHttpIssuanceSweepTick(
   wiring: HttpIssuanceSweepWiring,
   options: { batch?: number; budgetMs?: number } = {}
 ): Promise<HttpIssuanceSweepResult> {
-  if (!httpIssuanceEnabled(wiring.env)) return { scanned: 0, advanced: 0, started: 0, delivered: 0 }
+  if (!httpIssuanceEnabled(wiring.env))
+    return { scanned: 0, advanced: 0, started: 0, delivered: 0, renewalsStarted: 0 }
   const startedAt = Date.now()
   const now = (wiring.now ?? (() => new Date()))()
   const deps = buildHttpIssuanceDeps(db, wiring)
@@ -201,11 +286,15 @@ export async function runHttpIssuanceSweepTick(
     now,
     options.batch ?? HTTP_ISSUANCE_SWEEP_BATCH
   )
+  await markUnpinnedLibraryOrders(db, now).catch((err) =>
+    logWarn('tls', `marking unpinned certificate orders failed: ${String(err)}`)
+  )
   const out: HttpIssuanceSweepResult = {
     scanned: rows.length,
     advanced: 0,
     started: 0,
     delivered: 0,
+    renewalsStarted: 0,
   }
   const budgetMs = options.budgetMs ?? HTTP_ISSUANCE_SWEEP_BUDGET_MS
   // Rows not started inside the budget simply wait for the next minute.
@@ -213,7 +302,13 @@ export async function runHttpIssuanceSweepTick(
     if (Date.now() - startedAt > budgetMs) return
     try {
       const startsLeft = HTTP_ISSUANCE_STARTS_PER_TICK - out.started
-      await stepRow(deps, row, { push, now, out, startsLeft })
+      await stepRow(deps, row, {
+        push,
+        now,
+        out,
+        startsLeft,
+        renewalsLeft: HTTP_ISSUANCE_RENEWALS_PER_TICK - out.renewalsStarted,
+      })
     } catch (err) {
       logWarn('tls', `server-placed certificate step failed for ${row.id}: ${String(err)}`)
     }

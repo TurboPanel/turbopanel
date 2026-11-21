@@ -57,6 +57,7 @@ function open(over: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     issueTimes: [],
     renewAt: null,
     orderNames: [],
+    challenge: 'http-01',
     roster: [
       { serverId: 'a', label: 'Server A', role: 'issuer' },
       { serverId: 'b', label: 'Server B', role: 'helper' },

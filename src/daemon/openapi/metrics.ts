@@ -4,7 +4,7 @@ import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type MetricEntityScope,
 } from '../metrics/metric-descriptors.ts'
-import { METRIC_EVENT_KINDS, METRICS_WIRE_VERSIONS } from '../../contracts/metrics-contract.ts'
+import { METRIC_EVENT_KINDS, METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
 
 /** Every descriptor-backed numeric field for `scope`, keyed by `fieldName` — the same grouping `field-map.ts` uses to pack physical storage. */
 function numericPropertiesForScope(
@@ -78,19 +78,12 @@ export const metricsSchemas = {
         properties: {
           version: {
             type: 'integer',
-            enum: [...METRICS_WIRE_VERSIONS],
-            description:
-              'Wire version: 6 (legacy shape) or 8. The control plane stores every sample as v12 rows either way.',
+            const: METRICS_SCHEMA_VERSION,
+            description: 'Wire version: always 8. Any other version is rejected.',
           },
           sampledAt: { type: 'string', format: 'date-time' },
           intervalSeconds: { type: 'number' },
           sequence: { type: 'integer' },
-          topologyGeneration: {
-            type: 'integer',
-            deprecated: true,
-            description:
-              'Deprecated and optional. Older daemons send their topology change counter here; the control plane ignores it.',
-          },
           bootGeneration: {
             type: 'integer',
             description: 'Host boot generation this sample was collected under.',

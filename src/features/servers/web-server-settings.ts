@@ -11,7 +11,6 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { organization, server } from '../../db/schema.ts'
-import { HOSTING_VIA_HEADER_FEATURE } from '../../lib/version-wire.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import {
   resolveEffectiveHideWebServerNames,
@@ -52,19 +51,13 @@ export async function loadWebServerSettings(
   }
 }
 
-/**
- * The deploy fields for these settings. `sendViaHeader` goes only to a daemon
- * that lists `hosting-via-header-v1`; any other daemon gets no field and keeps
- * tying the Via header to `hideWebServerNames`, as it always has.
- */
-export function webServerDeployFields(
-  settings: WebServerSettings,
-  daemonFeatures: readonly string[] | null | undefined
-): { hideWebServerNames: boolean; sendViaHeader?: boolean } {
+/** The deploy fields for these settings. */
+export function webServerDeployFields(settings: WebServerSettings): {
+  hideWebServerNames: boolean
+  sendViaHeader: boolean
+} {
   return {
     hideWebServerNames: settings.hideWebServerNames,
-    ...(daemonFeatures?.includes(HOSTING_VIA_HEADER_FEATURE)
-      ? { sendViaHeader: settings.sendViaHeader }
-      : {}),
+    sendViaHeader: settings.sendViaHeader,
   }
 }

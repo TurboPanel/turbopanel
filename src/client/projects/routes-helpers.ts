@@ -1,6 +1,6 @@
 import {
   applyValidatedComposeOption,
-  stripProjectComposePlacementOption,
+  stripComposePlacementOption,
   type ComposeValidateOptions,
   type ComposeValidationIssue,
 } from '../../features/compose/index.ts'
@@ -8,6 +8,7 @@ import {
   parseComposeSourceInput,
   parseContainerNamingInput,
   parseDefaultServerIdInput,
+  type ProjectComposeSource,
 } from '../../features/projects/project-options.ts'
 import { isPlacementServerId } from '../../features/compose/placement.ts'
 import { settleDeployOptions, validateDeployOptions } from '../../features/deploy/deploy-options.ts'
@@ -155,6 +156,18 @@ export function parseCreateProjectNames(
   }
 }
 
+/** New repository projects follow the file; what was seeded is the last read. */
+function withTrackingDefaults(source: ProjectComposeSource): ProjectComposeSource {
+  return {
+    ...source,
+    mode: source.mode ?? 'track',
+    // Never client-writable: only a deploy records a read.
+    lastReadCommitSha: source.seededCommitSha,
+    lastReadDigest: source.seededDigest,
+    lastReadAt: new Date().toISOString(),
+  }
+}
+
 export function parseCreateProjectOptions(
   body: Record<string, unknown>,
   validateOptions?: ComposeValidateOptions
@@ -177,7 +190,9 @@ export function parseCreateProjectOptions(
       return { ok: false, error: parsed.reason, status: 400 }
     }
     if (parsed.value === null) delete optionsResult.composeSource
-    else optionsResult.composeSource = parsed.value
+    // A project created from a repository follows its compose file from the
+    // start: the Base is what the wizard read, and the first deploy re-reads it.
+    else optionsResult.composeSource = withTrackingDefaults(parsed.value)
   }
   const createComposeOption = applyValidatedComposeOption(optionsResult, validateOptions)
   if (!createComposeOption.ok) {
@@ -191,7 +206,7 @@ export function parseCreateProjectOptions(
   if (optionsResult !== null) {
     const deployOptions = validateDeployOptions(optionsResult, 'project')
     if (!deployOptions.ok) return { ok: false, error: deployOptions.reason, status: 400 }
-    stripProjectComposePlacementOption(optionsResult)
+    stripComposePlacementOption(optionsResult)
     return { ok: true, options: settleDeployOptions(null, optionsResult, 'project') }
   }
   return { ok: true, options: optionsResult }
@@ -374,7 +389,7 @@ export function normalizeProjectPatchOptions(
   const deployOptions = validateDeployOptions(optionsResult, 'project')
   if (!deployOptions.ok) return { ok: false, error: deployOptions.reason, status: 400 }
 
-  stripProjectComposePlacementOption(optionsResult)
+  stripComposePlacementOption(optionsResult)
   return { ok: true, options: optionsResult }
 }
 

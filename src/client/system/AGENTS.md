@@ -68,7 +68,7 @@ Canonical mapping (implementation: `src/lib/naming.ts`):
 Two different components legitimately land on `-in` / `role: 'ingress'` — the
 shared HTTP Traefik (`hosting-ingress`) and the shared ProxySQL
 (`managed-ingress`) — so **the suffix alone never disambiguates them**. What
-does: the `com.turbopanel.system.component` label, and the **compose project**,
+does: the `io.turbopanel.system.component` label, and the **compose project**,
 which is each component's own allocated `serviceId`. Both projects are bare
 UUIDs; there is no `turbopanel-ingress` / `turbopanel-proxysql` literal to key
 off. Only the self-hosted instance stack keeps a human-readable project name
@@ -100,7 +100,7 @@ colocated server (`ensureSelfHostSystemHierarchy`). Then `docker compose up`
 hierarchy allocates the `service` / `container` rows and assigns each service a
 UUID → a `system.reconcile` command carries that allocated `serviceId` (as the
 compose service's container name) to the daemon → the daemon inspects
-`docker compose ps` by the `com.turbopanel.system.component` label and reports
+`docker compose ps` by the `io.turbopanel.system.component` label and reports
 identity/status back by container name. Inventory rows exist before the daemon
 ever inspects the stack; the daemon never invents ids.
 
@@ -109,9 +109,9 @@ The first reconcile is **not** operator-driven. After hierarchy is created,
 when the colocated daemon is already connected (typical co-located / Vagrant
 dev: daemon hello'd before the wizard). It must **not** enqueue while
 `server.is_connected` is false — a fail-fast offline command would trip the
-5-minute sweep throttle. Deno boot also runs `runSystemReconcileSweep`
-immediately (then every `DAEMON_CELL_MAINTAIN_MS`) so a daemon that hello's
-after install is observed on the next tick without waiting a full minute.
+5-minute sweep throttle. On Deno a reconnect opens the `reconcileUrgent` gate, so the job tick runs
+`runSystemReconcileSweep` every minute while it lasts and a daemon that hello's
+after install is observed on the next tick.
 Never enqueue from `onDaemonConnected` / Durable Object handlers. Until that
 inspect lands, client rows stay allocator `pending` with no Docker id — the UI
 shows **Not started yet** / **Unknown** even when `turbopanel-database` is

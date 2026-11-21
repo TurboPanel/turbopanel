@@ -6,6 +6,8 @@
 import { assertEquals, assertThrows } from '@std/assert'
 import {
   addBreakingOkAllowance,
+  backfillProblems,
+  HOSTNAME_BACKFILL,
   diffRows,
   diffSchemas,
   newestStableTag,
@@ -201,4 +203,18 @@ test('schema diff reports objects on either side only', () => {
     'indexes only after upgrade: c',
     'indexes only on fresh apply: b',
   ])
+})
+
+test('the backfill check passes the expected choices and names each wrong one', () => {
+  const right = HOSTNAME_BACKFILL.map((w) => ({
+    id: w.id,
+    certificate: w.certificate,
+    tls_id: w.tlsId,
+  }))
+  assertEquals(backfillProblems(right), [])
+  const wrong = right.slice(1).map((r, i) => (i === 0 ? { ...r, certificate: 'library' } : r))
+  const problems = backfillProblems(wrong)
+  assertEquals(problems.length, 2)
+  assertEquals(problems[0].includes('gone'), true)
+  assertEquals(problems[1].includes('expected'), true)
 })

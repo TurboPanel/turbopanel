@@ -76,9 +76,9 @@ member there, a widened CHECK (forward migration) and one adapter.
   list, `TUNNEL_SWEEPS`, and both schedulers run that list every minute: the
   hosted cron (`runQueuedCronSweeps` in `src/daemon/cell/offline-sweep.ts`,
   behind the secrets bundle like leaf renewal) and the self-hosted
-  certificate timer in `src/platform/deno/server.ts`
-  (`runSelfHostedTunnelSweeps`, fresh database client, no overlap, skipped
-  while the command queue is the no-op one). Each sweep fails alone and
+  job tick in `src/platform/deno/server.ts`
+  (`runSelfHostedTunnelSweeps`, gated by the `tunnels` flag, fresh database
+  client per tick, skipped while the command queue is the no-op one). Each sweep fails alone and
   throttles itself from the database, so the minute tick is cheap. The status sweep asks a server
   at most every 10 minutes, except that a server with a portal made in the last
   10 minutes that no answer has covered yet (`last_seen_at` empty) is asked again
@@ -88,7 +88,7 @@ member there, a widened CHECK (forward migration) and one adapter.
   tunnel sweep to the list, never to one scheduler:
   `src/platform/deno/tunnel-sweeps.hostfree.test.ts` fails when a scheduler
   calls a tunnel sweep directly, or when the hosted cron runs a sweep the
-  self-hosted timers do not. Before this list existed the self-hosted control
+  self-hosted tick does not. Before this list existed the self-hosted control
   plane ran none of them; a tunnel left at `removing` then is finished by the
   removal sweep once the build with the list runs, with no data change.
 - **Removing a tunnel (`deleteTunnel`, `removal.ts`).** The mark is one guarded
@@ -117,20 +117,20 @@ member there, a widened CHECK (forward migration) and one adapter.
   rows (only `one` and `chosen` store them), so the answer is applied to the
   tunnel directly and a down answer only moves it off `pending`. Only a server
   that carries the tunnel (`carryingServers`) can move it.
-- **A stopped connector is sent again.** A connector list that finished well is
+- **A stopped or missing connector is sent again.** A connector list that finished well is
   never resent while it is unchanged, so a connector stopped by hand (or given
   up on by systemd) used to stay down. When a status answer shows a connector
-  the last list asked that server to run as stopped or failed
-  (`connectorsNeedingRepair`) and that list has finished (one still on its way
+  the last list asked that server to run as stopped, failed or
+  `not-installed` (`connectorsNeedingRepair`) and that list has finished (one still on its way
   is waited for), `recordTunnelStatus` clears the remembered hash
   (`server.metadata.tunnelConnectors.stateHash`, the rest kept), so the next
   connector sweep sends the same list again; the daemon starts an installed
-  connector that is stopped or failed when the list is resent. An older daemon
+  connector that is stopped or failed, and reinstalls a missing one from its
+  stored token copy, when the list is resent. An older daemon
   ignores the resend, so at worst one list per status poll goes out while the
-  connector stays down. `not-installed` is not repaired this way: a daemon
-  that still holds the connector's record skips it on a resend, so the list
-  would only repeat (a daemon-side reinstall from the stored token copy is not
-  built yet).
+  connector stays down. The resend is bounded: a status poll runs at most
+  every 10 minutes per server (15 seconds only for a new portal's first 10
+  minutes), and a list still open is waited for.
 - `carrier` is unique on (organization, provider, external account id); a
   provider with no account stores NULL, and NULLs never collide.
 
@@ -350,9 +350,26 @@ provider accounts.
   `doorway.create` audit row.
 - The route builder turns the facts into the `server.tunnel.routes` payload for
   one server: routes only for tunnels the server carries; a name whose site
-  runs on this server is `local`; otherwise the upstreams are the datacenter
-  addresses of the servers that run the site (exact addresses, preferred
-  family first). `peerAddresses` is the other carrying servers of a tunnel
+  runs on this server is `local`; otherwise the upstreams are the addresses of
+  the servers that run the site. The address is chosen per carrier and site
+  server pair (`pairAddresses`): both use their datacenter network addresses
+  only when they share a datacenter (exact addresses, preferred family first),
+  otherwise both use their dedicated public addresses (shared ones never). Each
+  side is cut to one IP version both servers have (IPv4 preferred on public
+  addresses); a pair with no shared version is not routed and the reason says
+  the two servers share no IP version. The upstream, `peerAddresses`,
+  `listenAddresses`, the firewall rule and the receiver's address lock all come
+  from that one choice, so they agree. Each upstream also carries
+  `localAddress`: the carrier's own first address of that pair (the same IP
+  version, the one the receiver's allowlist names), so the daemon dials the hop
+  from the address the receiver admits and not whichever the kernel picks on a
+  host with several. No carrier address in the pair = the field is left out. It
+  is part of the routes, so it is in the hash. A public hop gets the same
+  mutual TLS and address lock as any other (port 9443 when the receiver is
+  updated, see below). A name no
+  server can reach is left out of the table and its reason is on the hostname
+  list as `routingNote`.
+  `peerAddresses` is the other carrying servers of a tunnel
   whose site runs here (inbound only: servers allowed to forward to this one). A
   server that only carries tunnels sends an empty list. Sites count as running on a server through an
   `applied` deployment of their environment. The hash covers the routes, the
@@ -410,7 +427,13 @@ provider accounts.
   The tunnel routes once sent only the connector lists, so a server added to a
   tunnel started its connector at once but got its forwarding table only from
   the sweep (or the next deploy result): the tables and the lists go out
-  together from every trigger.
+  together from every trigger. A datacenter address a daemon reports moving
+  (a repin or link change, found at hello, which may not enqueue) is the last
+  trigger: the repin fan-out sweep (`client/datacenters/repin-fanout.ts`) nudges
+  each affected organization once per pass after its routing fan-out. Only the
+  tables that changed go out (the carrier's `localAddress`, the peers' allowed
+  sources), and one already sent and awaiting its result is left alone, so a
+  burst of changes is one resend per server, not a storm.
   **A request handler never waits for it**: it calls
   `nudgeTunnelRoutesAfterResponse` (`src/client/organizations/tunnel-nudge.ts`),
   which runs the work after the response (`runAfterResponse`) on its own
@@ -449,9 +472,7 @@ provider accounts.
   preparation stores nothing but the table generation counter, see Table
   generation), and a doorway already linked to another site is
   never taken. Without it the first deploy sent no lock.
-  Refused with 409: `tunnel_daemon_too_old` (the daemon lacks
-  `tunnel-forwarding-v1` and the hosting has a locked name; an all-public hosting is
-  allowed and sends nothing) and `tunnel_name_public_certificate` (a locked name
+  Refused with 409: `tunnel_name_public_certificate` (a locked name
   pinned to a public Let's Encrypt certificate while the hosting also serves
   ordinary public names; the daemon contract needs every name open in that mode).
   The names counted are those the certificate would cover
@@ -479,28 +500,16 @@ provider accounts.
   server carries it). The daemon rewrites only those names' lock and
   `trusted_proxies` lines, so a carrier added or removed by a placement change
   is let in or shut out within seconds of the nudge, with no redeploy, and a
-  later deploy takes the same peers. `inbound` is in the table hash only when
-  sent, so a daemon without the feature keeps its hash and gets no field; a
-  table that holds only `inbound` is still sent. For a daemon without the
-  feature the old rule holds (the lock follows the site's next deploy: a newly
-  added carrier's forwards are dropped, a removed one stays allowed), and the
-  tunnel's `warnings` say how many servers that run its sites are in that case
-  (`serversWithDeployOnlyLock`, `siteServersOfTunnel`). **Adding a hostname to a deployed site** (daemon
-  feature `tunnel-lock-add-v1`): the site block deployed before the name joined
-  the tunnel has no lock, and the daemon only edits locks that exist. For a
-  daemon that lists the feature, each `inbound` entry of a local-only name
-  (`isLocalOnly`) carries `lock: true` (`withLockAdd` in `buildTunnelRoutes`,
-  set from `daemonAddsLockFromTable`), and the daemon makes the block the
+  later deploy takes the same peers. `inbound` is in the table hash. **Adding a hostname to a deployed site**: the site block deployed before the name joined
+  the tunnel has no lock, and the daemon only edits locks that exist. Each
+  `inbound` entry of a local-only name (`isLocalOnly`) carries `lock: true`
+  (`withLockAdd` in `buildTunnelRoutes`), and the daemon makes the block the
   locked block a deploy renders, so the name is locked within seconds of the
-  nudge. An open name never carries it. For a daemon that follows the table
-  but cannot add a lock, the tunnel's `warnings` say how many servers that run
-  its sites lock a newly added hostname only at the site's next deploy
-  (`serversWithoutLockAdd`, `hostnameLockWarning`); until then the site block
-  is an ordinary public site, as it was before the name was added. The daemon's lock add also
+  nudge. An open name never carries it. The daemon's lock add also
   skips a site with an automatic certificate (no `tls` line) and one with
   `forceHttps` off (no HTTPS block yet), and never locks a block with no
   `reverse_proxy` (a `www` redirect) or adds a lock from a deploy, only from a
-  table apply. So a daemon that has the feature still leaves a local-only
+  table apply. So the daemon still leaves a local-only
   hostname added to such a site open until its next deploy: the tunnel's
   warnings count those servers too (`lockAddSkippedServers`,
   `lockAddSkipsSite`, `hostnameLockSkippedWarning`). Nothing else on this side
@@ -515,10 +524,41 @@ provider accounts.
   logged note, never sent whole to be refused. A hostname whose site belongs to
   another organization is refused (409 `hosting_mismatch`), and a site counts as
   running on a server only when its hosting is in the tunnel's organization.
+- Client certificates on the hop: every table carries
+  `peerClientAuth: 'require'` (it is part of the table
+  hash, so verify to require resends). `require` needs a peer leaf with client
+  authentication; the leaf row has no certificate or EKU column, so
+  `peerLeafIsCurrent` treats a leaf issued before `PEER_LEAF_CLIENT_AUTH_SINCE`
+  as stale and `ensurePeerLeaf` re-mints it in that same send, not at normal
+  renewal (a leaf issued by older code after that date is kept and shows as a
+  downgrade). A daemon that cannot show its own certificate applies `verify`
+  and says so in `server.tunnel.status` (`peerClientAuth`,
+  `peerClientAuthDowngraded`), never as a table warning (that would resend);
+  `recordTunnelStatus` keeps it in `server.metadata.tunnelPeerHop`
+  (`peerHopStatusOf`), outside the table hash. Tunnels between a server on this
+  version and one without it fail until both are updated (owner decision).
+  The status poll also asks a connected server that only runs a site (no
+  portal, but a stored table), so its mode and downgrade are recorded too;
+  `reportedAt` is kept next to them and moves on every report. The tunnel
+  response shows the report as `peerHop` (`mode` require, verify or none,
+  `downgraded`, `reportedAt`) for each carrying and site server.
+  There is no support for daemons without `tunnel-peer-mtls-v1` (pre-MVP): every
+  table carries `peerClientAuth: 'require'` and the peer hop is always 9443.
+  A stored downgrade makes the next send mint the peer leaf again, once per
+  report (`peerLeafRemintDue`, `markPeerLeafReminted` sets `reminted`); a repeat
+  after that is only logged.
+- The daemon also reports whether the nftables lock on the connector status
+  ports (20300-20899) loaded (`statusPortsLocked`, `statusPortsLockReason`,
+  `statusPortsLockCheckedAt`, all optional, absent on older daemons).
+  `recordTunnelStatus` keeps it in `server.metadata.tunnelStatusPorts`
+  (`statusPortsLockOf`) and drops it when a report carries none; the tunnel
+  response shows it as `statusPorts` per carrying server, with `locked: null`
+  meaning unknown (never locked). It is the last load, not a live check.
 - Firewall: `peer-exposure.ts` turns the same `peerAddresses` the route builder
-  sends a server into one derived rule, accept tcp 443 on the host from exactly
-  those addresses (`facts.ts` adds it to the hosting exposures; not 80, not
-  443/udp, not the panel port). The rule and the Caddy address lock therefore
+  sends a server into one derived rule, accept tcp 9443 (`TUNNEL_PEER_PORT`, the
+  daemon's peer-facing server, checked by `check:contract-drift`) on the host
+  from exactly those addresses (`facts.ts` adds it to the hosting exposures; not
+  80, not 443, not 443/udp, not the panel port). The port is always 9443. The rule and the Caddy address lock therefore
   name the same servers, and a carrier-only server gets no rule. A successful
   `server.tunnel.routes` is a firewall preview trigger
   (`commandMayChangeFirewallPreview`), so the rule follows the table. It only
@@ -561,7 +601,8 @@ generation is raised to `max(previous + 1, now)` with the same compare-and-set
 (`bumpedAt` in the stored value limits that to once a minute per organization,
 so two stuck daemons cannot loop) and that server is sent its table again
 through `syncServerTunnelRoutes` with `force`. A server refused inside the
-minute is not requeued at once; the sweep sends it the table again.
+minute is not requeued at once; the sweep sends it the table again once that
+minute is over (`resendGapAfter` in `sync.ts`, not the ten minute gap).
 Anything that writes `organization.options` must merge into it (a jsonb merge or
 `jsonb_set`), never replace it whole, or the counter is lost. A deploy
 preparation (a preview too) can write the counter: the generation is stored the
@@ -571,15 +612,49 @@ generation of a deploy come from one unchanged read of the routing facts
 
 ## Origin certificates
 
-Optional, per tunnel. The default hop from the connector to the local web server
-skips certificate verification (`noTLSVerify: true`; the connector still sends
-the hostname as the origin server name). With the choice "verify the
-connection" (`tunnel.options.verifyOrigin`) the sites that serve the tunnel's
-names present an origin certificate and the connector verifies it
-(`setRoutes` with `verifyOrigin: true`, which sets `noTLSVerify: false` and
-nothing else; no certificate file or path is needed, the connector's origin pool
-includes the provider's origin roots, proved on a real connector, see the end of
-this section.)
+Per name, no tunnel-wide switch. The default hop from the connector to the local
+web server skips certificate verification (`noTLSVerify: true`; the connector
+still sends the hostname as the origin server name). A name is verified
+(`noTLSVerify: false`, set by `buildIngress(hostnames, verifiedNames)`) only when
+all of these hold (`verified-names.ts`, pure rule `nameIsVerified`): its pin is a
+provider origin certificate or a ready public Let's Encrypt pair, the certificate
+covers the name, and a successful deploy carried it (every deployment of the
+site's environment is `applied` and was queued after the pin last changed). Every
+other name keeps skipping verification, so one site that is not ready never makes
+its neighbours unreachable. The pin of a name is `hostname.tlsId` when its
+`hostname.certificate` is set, else `hosting.tlsId`.
+
+A name the site does not store (no `hostname` row) is never verified, and a pair
+from the authority's test directory (`metadata.acme.staging`) never verifies a name.
+A library pair counts as public only when this panel ordered it (`acme.managedBy
+= 'panel'`).
+
+Pushing routes goes through `pushTunnelRoutes` (`route-push.ts`). One writer per
+tunnel: the names are read, the provider written and `tunnel.metadata.routes`
+(`{ verifiedNames, hostnames }`) stored inside one transaction that holds the
+tunnel row `for update`, so no writer can overwrite a newer name list with an
+older one. Every route write (add, remove, restore, sweep, nudge) takes that lock
+and reads its names inside it. `route-sync.ts` writes a tunnel only when its
+routed names or verified names differ from the last write; failures back off per
+tunnel (`metadata.routesRetry`: a minute, doubling to an hour, or the provider's
+`Retry-After`). `runVerifiedNamesSweepTick` (`verified-names-sweep.ts`, in
+`TUNNEL_SWEEPS`) handles at most 50 tunnels per tick in a minute-rotated order and
+stops starting new ones after 20 seconds. `nudgeTunnelRoutes` (after a deploy
+applied, a pin change or a reach change) runs the same sync for the organization,
+so a name is verified within seconds, not at the next tick.
+The old Verified Connection switch and `tunnel.options.verifyOrigin` are gone;
+`PUT .../verify-origin` answers 410 `verify_origin_removed`, and keys left in old
+rows are ignored.
+
+**Also directly** (`doorway-reach.ts`, `PATCH /organizations/:id/tunnels/:tunnelId/hostnames/:doorwayId`
+`{ isLocalOnly }`, owners and managers): `isLocalOnly: false` puts the name in the
+deploy's `openHostnames` so the site's datacenter address answers it as well as the
+tunnel. Refused with 409 `doorway_bind_not_datacenter` unless the site's bind is a
+datacenter network (never public or local), `doorway_no_site` without a site,
+`doorway_removing`; closing (`true`) is always allowed. Opening moves a name whose
+stored certificate is still the default of a tunnel-only name to the default of a
+name reached both ways (a picked certificate is never changed) and answers
+`certificateChangedNames` and `needsDeploy`. Audit action `doorway.update`.
 
 **The default is a certificate for EXACT hostnames, not a wildcard.** One
 certificate per site (a site pins one `tlsId`), listing exactly the names that
@@ -652,11 +727,11 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
   with a plain sentence, and a row without a provider link is never touched.
 - **Compose-owned sites keep the pin.** The compose reconcile re-asserts a
   site's `tls_id` from its declaration on every deploy, which used to hand a site
-  pinned by the verified connection back to the declared mode (internal or
+  pinned to an origin certificate back to the declared mode (internal or
   Let's Encrypt) and left the connector with no matching certificate (502). The
   reconcile now keeps a pin on an unretired `provider_origin` row unless the
   declaration names a certificate itself; once the certificate is retired
-  (verified connection off) the next deploy returns the site to its declaration
+  (no name needs it) the next deploy returns the site to its declaration
   and the sweep can revoke the certificate. Removing a tunnel also retires the
   certificates nothing needs.
 - If storing fails after the provider issued the certificate, it is revoked
@@ -673,7 +748,7 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
   so none is always last (a pass also stops starting organizations after 20
   seconds), and only rows
   that need it (retired, or close to expiry); a pinned certificate close to expiry
-  is renewed even when retired (verification turned off), so a server never keeps
+  is renewed even when retired, so a server never keeps
   an expired one. Sites re-pinned by a renewal get their hostings-only apply. It
   needs the data-encryption secrets and does nothing without them.
 - **Back-off** (`origin-certificate-retry.ts`): a row whose renewal or revoke
@@ -687,46 +762,16 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
 - Deleting an organization removes the rows without revoking them at the
   provider.
 
-**Turning it on** (`verify-origin.ts`, `PUT /organizations/:id/tunnels/:tunnelId/verify-origin`
-`{ enabled, wildcard? }`): each site that serves the tunnel's names gets the
-certificate for exactly the names it serves (`hostingCertificateNames`, so the
-`www` sibling counts) and `hosting.tlsId` is pointed at it. The daemon already
-renders a pinned pair for a locked tunnel name instead of `tls internal`, so no
-daemon change is needed; the server gets the new pair with the site's next
-deploy (`needsDeploy`). Refused (409) when the site also serves a name that is
-not a verified tunnel name (`verify_origin_public_names`: browsers do not trust
-an origin certificate), when its names span more than one zone
-(`verify_origin_zones`), or when a chosen wildcard does not cover a deeper name
-(`verify_origin_names`). Safe to repeat: run it again when a site was missing or
-names were added. One request asks the provider for at most 10 certificates
-(`MAX_CERTIFICATES_PER_VERIFY`); the other sites come back as
-`deferredHostingIds` and the next apply continues without issuing anything twice.
-A wildcard request is checked against every site's names before anything is issued.
-
-**The connector only verifies while every name is covered.** `tunnelVerifyState`
-(`verify-state.ts`) is `active` only when every non-removing name of the tunnel
-belongs to a site that pins a ready, unexpired origin certificate covering it;
-the routes sent to the provider use `active`, never the bare choice, so a site
-that does not exist yet can never make a verified tunnel unreachable. `pendingNames`
-(in the tunnel's `verifyOrigin`) says which names still wait.
-
 Routes (`client/organizations/origin-certificate-routes.ts`, `organization:manage`):
 `GET|POST /organizations/:id/carriers/:carrierId/origin-certificates`,
-`GET .../origin-certificates/existing?zone=`, `DELETE .../origin-certificates/:tlsId`
-and the tunnel route above. Tunnel-only names never get an automatic public
+`GET .../origin-certificates/existing?zone=` and `DELETE .../origin-certificates/:tlsId`. Tunnel-only names never get an automatic public
 certificate request; nothing here touches that path.
 
-**Proved on a real connector (2026-10-28, testing server w, connector 2026.5.2):**
-a throwaway tunnel routed one hostname to a small TLS server on the same machine
-that presented an origin certificate issued for exactly that name, with the
-route set to `originServerName` = the hostname and `noTLSVerify: false`. A request
-through Cloudflare returned the page (200), so the connector verifies the origin
-certificate against its built-in roots with no file or path configured. The same
-server presenting a self-signed certificate answered 502 and the connector log
-said `x509: certificate signed by unknown authority`, so verification really was
-on. The tunnel, DNS name and certificate were removed afterwards. Not yet tried
-through the full panel flow (turning the option on for a tunnel with a site): that
-is the next testing round.
+**Proved on a real connector (2026-10-28, connector 2026.5.2):** a route with
+`originServerName` = the hostname and `noTLSVerify: false` to a local TLS server
+presenting an origin certificate for exactly that name returned the page (200),
+so the connector verifies against its built-in roots with no file configured; a
+self-signed certificate answered 502 (`x509: certificate signed by unknown authority`).
 
 ## Run-token rotation
 
@@ -736,10 +781,7 @@ is the next testing round.
 removing the tunnel:
 
 - Refused (409) while the tunnel is being removed or not yet at the provider,
-  while a rotation is under way (`rotation_in_progress`), when a carrying
-  server's daemon lacks `tunnel-connector-token-change-v1`, `tunnel-connector-v1`
-  or `tunnel-status-v1` (`tunnel_daemon_too_old`, with `serverIds`; an older
-  daemon keeps the old token, which can no longer reconnect), and for a single
+  while a rotation is under way (`rotation_in_progress`), and for a single
   carrier without `confirmSingleServer` (`rotation_single_server`: visitors
   lose the tunnel for a few seconds). Every start warns that connectors
   briefly reconnect. The same refusals (all but the single carrier) are

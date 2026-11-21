@@ -3,10 +3,11 @@ import { Hono, type Context } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../contracts/cell.ts'
 import type { Db } from '../db/connection.ts'
-import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
+import { parseTestSecretsConfig, TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../lib/secrets/secrets.ts'
 import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 import { TUNNEL_TOKEN_COLOCATED_ONLY } from '../client/servers/colocated.ts'
+import { SEALED_INSTANCE_SECRETS_FEATURE } from '../lib/version-wire.ts'
 import { parseTunnelTokenBody, registerTunnelRoutes } from './tunnel-routes.ts'
 
 /**
@@ -53,8 +54,15 @@ function fleetRow(remoteAddress = '__direct__') {
         fingerprint: 'fp-1',
         createdAt: '2020-01-01T00:00:00.000Z',
       },
-      projection: { remoteAddress },
+      projection: { remoteAddress, features: [SEALED_INSTANCE_SECRETS_FEATURE] },
     },
+    // The joined key-table columns the daemon-state read maps.
+    algorithm: 'Ed25519',
+    publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+    fingerprint: 'fp-1',
+    createdAt: '2020-01-01T00:00:00.000Z',
+    revokedAt: null,
+    lastUsedAt: null,
     metadata: {},
     hostname: 'host-1',
     machineKey: null,
@@ -133,6 +141,7 @@ async function createApp(
   const app = new Hono()
   app.use('*', async (c, next) => {
     const vars = c as unknown as Context<AppEnv>
+    vars.set('secretsConfig', parseTestSecretsConfig())
     if (opts.db !== null) vars.set('db', opts.db ?? createDb([fleetRow()]))
     if (opts.registry !== null) {
       vars.set('daemonCellRegistry', opts.registry ?? createRegistry())

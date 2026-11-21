@@ -50,10 +50,6 @@ export type InstallStateProvider = keyof typeof INSTALL_STATE_PURPOSES
 /** Short window: the operator is mid-redirect, not sitting on the link. */
 export const INSTALL_STATE_TTL_MS = 10 * 60 * 1000
 
-/** Back-compat alias for the GitHub-only constants this module replaced. */
-export const GITHUB_INSTALL_STATE_PURPOSE = INSTALL_STATE_PURPOSES.github
-export const GITHUB_INSTALL_STATE_TTL_MS = INSTALL_STATE_TTL_MS
-
 const textEncoder = new TextEncoder()
 const textDecoder = new TextDecoder()
 
@@ -114,44 +110,36 @@ type ManifestStatePayload = GithubManifestStateClaims & { exp: number }
 export async function signGithubManifestState(
   secretsConfig: SecretsConfig,
   claims: GithubManifestStateClaims,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<string> {
-  const derived = await deriveSecretsConfig(
-    secretsConfig,
-    GITHUB_MANIFEST_STATE_PURPOSE,
-  )
+  const derived = await deriveSecretsConfig(secretsConfig, GITHUB_MANIFEST_STATE_PURPOSE)
   const payload: ManifestStatePayload = {
     ...claims,
     exp: Math.floor((nowMs + INSTALL_STATE_TTL_MS) / 1000),
   }
-  const encodedPayload = base64urlEncode(
-    textEncoder.encode(JSON.stringify(payload)),
-  )
+  const encodedPayload = base64urlEncode(textEncoder.encode(JSON.stringify(payload)))
   const signature = await crypto.subtle.sign(
     'HMAC',
     derived.current.key,
-    textEncoder.encode(encodedPayload),
+    textEncoder.encode(encodedPayload)
   )
   return formatEnvelope(
     ENVELOPE_SCHEME_INSTALL_STATE,
     derived.current.version,
     encodedPayload,
-    base64urlEncode(new Uint8Array(signature)),
+    base64urlEncode(new Uint8Array(signature))
   )
 }
 
 export async function verifyGithubManifestState(
   secretsConfig: SecretsConfig,
   state: string,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<GithubManifestStateClaims | null> {
   const parsed = parseEnvelope(ENVELOPE_SCHEME_INSTALL_STATE, state, 2)
   if (!parsed) return null
 
-  const derived = await deriveSecretsConfig(
-    secretsConfig,
-    GITHUB_MANIFEST_STATE_PURPOSE,
-  )
+  const derived = await deriveSecretsConfig(secretsConfig, GITHUB_MANIFEST_STATE_PURPOSE)
   const key = findKeyForVersion(derived, parsed.version)
   if (!key) return null
 
@@ -161,7 +149,7 @@ export async function verifyGithubManifestState(
   try {
     signature = base64urlDecode(encodedSignature!)
     payload = JSON.parse(
-      textDecoder.decode(base64urlDecode(encodedPayload!)),
+      textDecoder.decode(base64urlDecode(encodedPayload!))
     ) as ManifestStatePayload
   } catch {
     return null
@@ -171,7 +159,7 @@ export async function verifyGithubManifestState(
     'HMAC',
     key,
     signature as BufferSource,
-    textEncoder.encode(encodedPayload!),
+    textEncoder.encode(encodedPayload!)
   )
   if (!verified) return null
 
@@ -193,9 +181,7 @@ export async function verifyGithubManifestState(
     isPublic: payload.isPublic === true,
     pullRequestAccess: payload.pullRequestAccess === 'write' ? 'write' : 'read',
     customGitUser: payload.customGitUser ?? null,
-    customGitPort: typeof payload.customGitPort === 'number'
-      ? payload.customGitPort
-      : null,
+    customGitPort: typeof payload.customGitPort === 'number' ? payload.customGitPort : null,
   }
 }
 
@@ -203,30 +189,25 @@ export async function signProviderInstallState(
   secretsConfig: SecretsConfig,
   provider: InstallStateProvider,
   claims: InstallStateClaims,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<string> {
-  const derived = await deriveSecretsConfig(
-    secretsConfig,
-    INSTALL_STATE_PURPOSES[provider],
-  )
+  const derived = await deriveSecretsConfig(secretsConfig, INSTALL_STATE_PURPOSES[provider])
   const payload: InstallStatePayload = {
     organizationId: claims.organizationId,
     forgeId: claims.forgeId,
     exp: Math.floor((nowMs + INSTALL_STATE_TTL_MS) / 1000),
   }
-  const encodedPayload = base64urlEncode(
-    textEncoder.encode(JSON.stringify(payload)),
-  )
+  const encodedPayload = base64urlEncode(textEncoder.encode(JSON.stringify(payload)))
   const signature = await crypto.subtle.sign(
     'HMAC',
     derived.current.key,
-    textEncoder.encode(encodedPayload),
+    textEncoder.encode(encodedPayload)
   )
   return formatEnvelope(
     ENVELOPE_SCHEME_INSTALL_STATE,
     derived.current.version,
     encodedPayload,
-    base64urlEncode(new Uint8Array(signature)),
+    base64urlEncode(new Uint8Array(signature))
   )
 }
 
@@ -238,15 +219,12 @@ export async function verifyProviderInstallState(
   secretsConfig: SecretsConfig,
   provider: InstallStateProvider,
   state: string,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<InstallStateClaims | null> {
   const parsed = parseEnvelope(ENVELOPE_SCHEME_INSTALL_STATE, state, 2)
   if (!parsed) return null
 
-  const derived = await deriveSecretsConfig(
-    secretsConfig,
-    INSTALL_STATE_PURPOSES[provider],
-  )
+  const derived = await deriveSecretsConfig(secretsConfig, INSTALL_STATE_PURPOSES[provider])
   const key = findKeyForVersion(derived, parsed.version)
   if (!key) return null
 
@@ -256,7 +234,7 @@ export async function verifyProviderInstallState(
   try {
     signature = base64urlDecode(encodedSignature!)
     payload = JSON.parse(
-      textDecoder.decode(base64urlDecode(encodedPayload!)),
+      textDecoder.decode(base64urlDecode(encodedPayload!))
     ) as InstallStatePayload
   } catch {
     return null
@@ -266,7 +244,7 @@ export async function verifyProviderInstallState(
     'HMAC',
     key,
     signature as BufferSource,
-    textEncoder.encode(encodedPayload!),
+    textEncoder.encode(encodedPayload!)
   )
   if (!verified) return null
 
@@ -285,7 +263,7 @@ export async function verifyProviderInstallState(
 export function signGithubInstallState(
   secretsConfig: SecretsConfig,
   claims: InstallStateClaims,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<string> {
   return signProviderInstallState(secretsConfig, 'github', claims, nowMs)
 }
@@ -293,7 +271,7 @@ export function signGithubInstallState(
 export function verifyGithubInstallState(
   secretsConfig: SecretsConfig,
   state: string,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<InstallStateClaims | null> {
   return verifyProviderInstallState(secretsConfig, 'github', state, nowMs)
 }
@@ -302,7 +280,7 @@ export function verifyGithubInstallState(
 export function signGitlabConnectState(
   secretsConfig: SecretsConfig,
   claims: InstallStateClaims,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<string> {
   return signProviderInstallState(secretsConfig, 'gitlab', claims, nowMs)
 }
@@ -310,7 +288,7 @@ export function signGitlabConnectState(
 export function verifyGitlabConnectState(
   secretsConfig: SecretsConfig,
   state: string,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): Promise<InstallStateClaims | null> {
   return verifyProviderInstallState(secretsConfig, 'gitlab', state, nowMs)
 }

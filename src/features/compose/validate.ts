@@ -313,9 +313,4 @@ export function stripComposePlacementOption(options: Record<string, unknown> | n
   options.compose = stripComposePlacement(options.compose)
 }
 
-/** Alias kept for existing project-route call sites. */
-export function stripProjectComposePlacementOption(options: Record<string, unknown> | null): void {
-  stripComposePlacementOption(options)
-}
-
 export { isComposeDocument }

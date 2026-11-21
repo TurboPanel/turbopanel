@@ -30,7 +30,7 @@
  * control plane's, and each side is checked against the other repository's
  * trunk (never another pull request's branch). So the rule is one-way:
  *
- *   - lists and maps (DAEMON_WIRE_FEATURES, DAEMON_FEATURE_MIN_VERSIONS,
+ *   - lists and maps (DAEMON_WIRE_FEATURES,
  *     INSTANCE_FEATURE_MIN_VERSIONS, UPDATE_CHANNELS, the ServerReportedIp
  *     field names) and the field snapshot: every control plane entry must be
  *     in the daemon's, unchanged. The daemon may have more (a daemon-only
@@ -769,30 +769,17 @@ function parseType(text) {
 
 function collectTypeAliases(source) {
   const aliases = new Map()
-  let i = 0
-  while (i < source.length) {
-    const trivia = skipTrivia(source, i)
-    if (trivia > i) {
-      i = trivia
-      continue
-    }
-    const ch = source[i]
-    if (ch === "'" || ch === '"' || ch === '`') {
-      i = skipQuoted(source, i)
-      continue
-    }
-    if (source.startsWith('export type ', i) && boundaryBefore(source, i)) {
-      i = captureAlias(source, i + 'export type '.length, aliases)
-      continue
-    }
-    i += 1
+  // Only a declaration at the start of a line counts. Scanning every
+  // character for quotes broke on a regex literal such as /[`'"]/, which
+  // swallowed every alias declared after it.
+  const declaration = /^export type /gm
+  let match = declaration.exec(source)
+  while (match) {
+    const next = captureAlias(source, match.index + match[0].length, aliases)
+    declaration.lastIndex = Math.max(next, declaration.lastIndex)
+    match = declaration.exec(source)
   }
   return aliases
-}
-
-function boundaryBefore(source, i) {
-  if (i === 0) return true
-  return !isWordChar(source[i - 1] ?? '')
 }
 
 function captureAlias(source, i, aliases) {
@@ -862,6 +849,10 @@ function resolveAst(ast, aliases, seen) {
 function resolveAliasRef(name, aliases, seen) {
   const body = aliases.get(name)
   if (!body || seen.has(name)) return { kind: 'ref', name, args: [] }
+  // `(typeof CODES)[number]` is derived from a runtime value the parser cannot
+  // read, and the other repository keeps such an alias in another file, so both
+  // sides must pin the alias name rather than a half-parsed expansion.
+  if (/^\(?\s*typeof\b/.test(body)) return { kind: 'ref', name, args: [] }
   const next = new Set(seen)
   next.add(name)
   return resolveAst(parseType(body), aliases, next)
@@ -1228,6 +1219,25 @@ function checkExpandOnly(tp, td) {
     extractConst(daemonWire, 'INSTANCE_VERSION_HEADER'),
     'INSTANCE_VERSION_HEADER'
   )
+  // The port of the peer hop: the firewall rule here and the daemon's
+  // peer-facing server must agree.
+  constantEqual(
+    extractConst(
+      requireText(
+        readRel(tp, 'src/contracts/commands/tunnel-routes.ts'),
+        'instance tunnel-routes contract missing'
+      ),
+      'TUNNEL_PEER_PORT'
+    ),
+    extractConst(
+      requireText(
+        readRel(td, 'src/contracts/commands-contracts.ts'),
+        'daemon commands contract missing'
+      ),
+      'TUNNEL_PEER_PORT'
+    ),
+    'TUNNEL_PEER_PORT'
+  )
   // The two floors name versions on two separate release lines (the daemon's
   // and the control plane's), so they are not equal. Each must be a plain
   // X.Y.Z no newer than the version the peer repo is building.
@@ -1240,11 +1250,6 @@ function checkExpandOnly(tp, td) {
     extractConst(instanceWire, 'MIN_SUPPORTED_DAEMON_VERSION'),
     readDenoVersion(td),
     'MIN_SUPPORTED_DAEMON_VERSION'
-  )
-  requireMapSubset(
-    extractObjectLiteral(instanceWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
-    extractObjectLiteral(daemonWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
-    'DAEMON_FEATURE_MIN_VERSIONS'
   )
   requireMapSubset(
     extractObjectLiteral(instanceWire, 'INSTANCE_FEATURE_MIN_VERSIONS'),

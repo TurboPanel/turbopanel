@@ -64,9 +64,9 @@ test('installOriginNeedsInsecureTls trusts public HTTPS on 443', () => {
 })
 
 test('installOriginNeedsInsecureTls flags private names on any port', () => {
-  assertEquals(installOriginNeedsInsecureTls('https://studio.lan:8443'), true)
-  assertEquals(installOriginNeedsInsecureTls('https://huey.lan:8443'), true)
-  assertEquals(installOriginNeedsInsecureTls('https://studio.lan'), true)
+  assertEquals(installOriginNeedsInsecureTls('https://dev-workstation.example.lan:8443'), true)
+  assertEquals(installOriginNeedsInsecureTls('https://server-a.example.lan:8443'), true)
+  assertEquals(installOriginNeedsInsecureTls('https://dev-workstation.example.lan'), true)
   assertEquals(installOriginNeedsInsecureTls('https://box.local'), true)
   assertEquals(installOriginNeedsInsecureTls('https://localhost'), true)
   assertEquals(installOriginNeedsInsecureTls('https://192.168.1.10:8443'), true)
@@ -142,7 +142,7 @@ test('installOriginNeedsInsecureTls follows the hostname certificate source', ()
     false
   )
   assertEquals(
-    installOriginNeedsInsecureTls('https://studio.lan:8443', {
+    installOriginNeedsInsecureTls('https://dev-workstation.example.lan:8443', {
       source: 'platform-ca',
       publicUploaded: true,
     }),
@@ -151,9 +151,9 @@ test('installOriginNeedsInsecureTls follows the hostname certificate source', ()
 })
 
 test('installOriginNeedsInsecureTls never flags plaintext HTTP', () => {
-  assertEquals(installOriginNeedsInsecureTls('http://studio.lan'), false)
+  assertEquals(installOriginNeedsInsecureTls('http://dev-workstation.example.lan'), false)
   assertEquals(installOriginNeedsInsecureTls('http://turbopanel.dev'), false)
-  assertEquals(installOriginNeedsInsecureTls('ftp://studio.lan'), false)
+  assertEquals(installOriginNeedsInsecureTls('ftp://dev-workstation.example.lan'), false)
   assertEquals(installOriginNeedsInsecureTls(''), false)
   assertEquals(installOriginNeedsInsecureTls('not a url'), false)
 })
@@ -188,7 +188,7 @@ test('installOriginTlsOptions marks only an uploaded leaf from TURBOPANEL_TLS_PU
 })
 
 test('installOriginNeedsInsecureTls still flags private origins without publicOrigin', () => {
-  assertEquals(installOriginNeedsInsecureTls('https://studio.lan:8443'), true)
+  assertEquals(installOriginNeedsInsecureTls('https://dev-workstation.example.lan:8443'), true)
   assertEquals(installOriginNeedsInsecureTls('https://box.local'), true)
   assertEquals(installOriginNeedsInsecureTls('https://localhost'), true)
   assertEquals(installOriginNeedsInsecureTls('https://192.168.1.10:8443'), true)

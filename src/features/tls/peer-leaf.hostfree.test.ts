@@ -28,6 +28,7 @@ import {
   loadServerDatacenterAddresses,
   PEER_LEAF_NAME,
   PEER_LEAF_RENEW_BEFORE_MS,
+  PEER_LEAF_CLIENT_AUTH_SINCE,
   peerLeafIsCurrent,
 } from './peer-leaf.ts'
 
@@ -92,7 +93,8 @@ test('a peer leaf is signed by the Organization CA, named tp-peer.internal and c
   const serverAuth = [0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01]
   const clientAuth = [0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02]
   assertEquals(contains(der, serverAuth), true)
-  assertEquals(contains(der, clientAuth), false)
+  // Clients show the same leaf on the hop, so it must allow client use too.
+  assertEquals(contains(der, clientAuth), true)
 })
 
 test('the peer leaf key is sealed for one server and is never in the clear', async () => {
@@ -119,9 +121,9 @@ test('the peer leaf key is sealed for one server and is never in the clear', asy
 })
 
 test('a tracked peer leaf stays until a third of its lifetime is left, the CA generation changes or it is stale', () => {
-  const now = Date.parse('2026-06-01T00:00:00.000Z')
+  const now = Date.parse('2027-06-01T00:00:00.000Z')
   const at = (ms: number) => new Date(now + ms).toISOString()
-  const base = { caGeneration: 2, state: 'active' }
+  const base = { caGeneration: 2, state: 'active', issuedAt: at(-DAY) }
 
   assertEquals(peerLeafIsCurrent({ ...base, notAfter: at(60 * DAY) }, 2, now), true)
   assertEquals(
@@ -141,6 +143,24 @@ test('a tracked peer leaf stays until a third of its lifetime is left, the CA ge
   )
   assertEquals(peerLeafIsCurrent({ ...base, notAfter: 'not a date' }, 2, now), false)
   assertEquals(peerLeafIsCurrent(null, 2, now), false)
+  // A leaf from before client authentication was added is stale at once.
+  const before = new Date(Date.parse(PEER_LEAF_CLIENT_AUTH_SINCE) - 1).toISOString()
+  assertEquals(
+    peerLeafIsCurrent({ ...base, issuedAt: before, notAfter: at(80 * DAY) }, 2, now),
+    false
+  )
+  assertEquals(
+    peerLeafIsCurrent(
+      { ...base, issuedAt: PEER_LEAF_CLIENT_AUTH_SINCE, notAfter: at(80 * DAY) },
+      2,
+      now
+    ),
+    true
+  )
+  assertEquals(
+    peerLeafIsCurrent({ ...base, issuedAt: 'nope', notAfter: at(80 * DAY) }, 2, now),
+    false
+  )
 })
 
 type SelectRows = unknown[][]
@@ -166,6 +186,7 @@ test('ensurePeerLeaf keeps a current leaf and mints nothing', async () => {
   const { db, selects } = selectDb([
     [
       {
+        issuedAt: new Date(Date.parse(PEER_LEAF_CLIENT_AUTH_SINCE) + 1000).toISOString(),
         notAfter: new Date(Date.now() + 80 * DAY).toISOString(),
         caGeneration: 2,
         state: 'active',
@@ -185,6 +206,7 @@ test('ensurePeerLeaf issues again when the leaf is missing, near expiry or on an
   const { secretsConfig, dataEncryptionSecrets } = await setup()
   const tracked = (days: number, generation: number) => [
     {
+      issuedAt: new Date(Date.parse(PEER_LEAF_CLIENT_AUTH_SINCE) + 1000).toISOString(),
       notAfter: new Date(Date.now() + days * DAY).toISOString(),
       caGeneration: generation,
       state: 'active',

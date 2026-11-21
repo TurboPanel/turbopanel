@@ -8,6 +8,34 @@
       "when": 1794507698078,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795028797979,
+      "tag": "0001_delete_orphan_public_urls_setting",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795033537931,
+      "tag": "0002_origin_behind_cdn_proxy",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1795101169925,
+      "tag": "0003_datacenter_untrusted_by_default",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795105891479,
+      "tag": "0004_hostname_certificate_choice",
+      "breakpoints": true
     }
   ]
 }

@@ -33,11 +33,12 @@ export async function affectedServer(ctx: CheckContext): Promise<Rec | undefined
   return server
 }
 
-/** A managed-database placement: the first `--host` that is themisto or megaclite. */
+/** A managed-database placement: the first `--host`, unless it carries a shared managed Postgres. */
 export async function managedServer(ctx: CheckContext): Promise<Rec | undefined> {
-  const name = ctx.hosts.find((h) => ['themisto', 'megaclite'].includes(shortHost(h)))
+  const name = ctx.hosts[0]
   if (!name) return undefined
   const server = await findServer(ctx, name)
+  assertAffectedHost(str(server, 'hostname'), ctx.hosts)
   assertManagedPlacement(str(server, 'hostname'))
   return server
 }

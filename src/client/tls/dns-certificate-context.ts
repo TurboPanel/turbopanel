@@ -3,9 +3,9 @@
  * (the DNS host), and the push that refreshes the sites pinning a renewed
  * certificate.
  */
-import { eq } from 'drizzle-orm'
+import { eq, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { hosting } from '../../db/schema.ts'
+import { hostname, hosting } from '../../db/schema.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DnsCertContext } from '../../features/tls/dns-certificates/context.ts'
 import { createCloudflareDnsChallenge } from '../../features/tunnels/cloudflare-dns-challenge.ts'
@@ -34,7 +34,12 @@ export function renewalPusher(db: Db, wiring: RenewalPushWiring) {
     const sites = await db
       .select({ id: hosting.id, updatedAt: hosting.updatedAt })
       .from(hosting)
-      .where(eq(hosting.tlsId, tlsId))
+      .where(
+        or(
+          eq(hosting.tlsId, tlsId),
+          sql`exists (select 1 from ${hostname} where ${hostname.hostingId} = ${hosting.id} and ${hostname.tlsId} = ${tlsId})`
+        )
+      )
     await forEachSequential(sites, async (site) => {
       const outcome = await queueHostingCertificateApply(
         context,

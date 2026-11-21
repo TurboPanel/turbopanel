@@ -32,10 +32,8 @@ export async function loadManagedOrgDefaults(
 
 /**
  * Effective principal name policy (default scheme + lock) for the
- * organization. Reads the new `principalNameScheme` key, falling back to the
- * legacy `randomizedPrincipalUsernames` boolean (true = partial, false =
- * plain); a missing org row resolves to the platform default (`partial`,
- * unlocked).
+ * organization. Reads the `principalNameScheme` key; a missing org row
+ * resolves to the platform default (`partial`, unlocked).
  */
 export async function loadPrincipalNamePolicy(
   db: Db,

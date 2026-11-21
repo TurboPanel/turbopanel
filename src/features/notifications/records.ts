@@ -1256,7 +1256,7 @@ export async function listRecentDeliveriesForChannel(
 /** The label the operator's instance-wide alert webhook carries once folded into a channel. */
 export const OPERATOR_WEBHOOK_LABEL = 'Operator alert webhook'
 
-/** The instance webhook channel the legacy `ALERT_WEBHOOK_URL` setting became, if any. */
+/** The operator's instance webhook channel, if any. */
 export async function getOperatorWebhookChannel(db: Db): Promise<NotificationChannelRecord | null> {
   const [row] = await db
     .select()

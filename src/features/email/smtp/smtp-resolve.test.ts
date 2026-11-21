@@ -29,16 +29,13 @@ function mockEmailSettingsDb(): Db {
 
 test('smtpEnvOverrideActive requires both host and port', () => {
   assertEquals(smtpEnvOverrideActive({}), false)
-  assertEquals(
-    smtpEnvOverrideActive({ TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: '127.0.0.1' }),
-    false,
-  )
+  assertEquals(smtpEnvOverrideActive({ TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: '127.0.0.1' }), false)
   assertEquals(
     smtpEnvOverrideActive({
       TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: '127.0.0.1',
       TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '1025',
     }),
-    true,
+    true
   )
 })
 
@@ -49,7 +46,7 @@ test('smtpConfigFromRuntimeEnv parses host/port/user/pass', () => {
       TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: 'mail.example.com',
       TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: 'not-a-port',
     }),
-    undefined,
+    undefined
   )
   assertEquals(
     smtpConfigFromRuntimeEnv({
@@ -63,7 +60,8 @@ test('smtpConfigFromRuntimeEnv parses host/port/user/pass', () => {
       port: 587,
       user: 'ops',
       pass: 'secret',
-    },
+      security: 'auto',
+    }
   )
   assertEquals(
     smtpConfigFromRuntimeEnv({
@@ -72,15 +70,12 @@ test('smtpConfigFromRuntimeEnv parses host/port/user/pass', () => {
       TURBOPANEL_SYSTEM_EMAIL__SMTP_USER: '',
       TURBOPANEL_SYSTEM_EMAIL__SMTP_PASS: '',
     }),
-    { host: 'mail.example.com', port: 587 },
+    { host: 'mail.example.com', port: 587, security: 'auto' }
   )
 })
 
 test('smtpEnvOverrideActive is false when only port is set', () => {
-  assertEquals(
-    smtpEnvOverrideActive({ TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '587' }),
-    false,
-  )
+  assertEquals(smtpEnvOverrideActive({ TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '587' }), false)
 })
 
 test('resolveSelfHostedSmtpConfig returns smtp settings for smtp provider', async () => {
@@ -89,7 +84,7 @@ test('resolveSelfHostedSmtpConfig returns smtp settings for smtp provider', asyn
     TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: '127.0.0.1',
     TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '1025',
   })
-  assertEquals(config, { host: '127.0.0.1', port: 1025 })
+  assertEquals(config, { host: '127.0.0.1', port: 1025, security: 'auto' })
 })
 
 test('resolveSelfHostedSmtpConfig returns undefined for non-smtp providers', async () => {
@@ -106,4 +101,21 @@ test('resolveSelfHostedMailFromAddress resolves from runtime env', async () => {
     TURBOPANEL_SYSTEM_EMAIL__FROM: 'ops@203.0.113.10.example',
   })
   assertEquals(from, 'ops@203.0.113.10.example')
+})
+
+test('smtpConfigFromRuntimeEnv reads the encryption override and defaults to auto', () => {
+  const base = {
+    TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: 'mail.example.com',
+    TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '587',
+  }
+  assertEquals(smtpConfigFromRuntimeEnv(base)?.security, 'auto')
+  assertEquals(
+    smtpConfigFromRuntimeEnv({ ...base, TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'none' })?.security,
+    'none'
+  )
+  assertEquals(
+    smtpConfigFromRuntimeEnv({ ...base, TURBOPANEL_SYSTEM_EMAIL__SMTP_SECURITY: 'bogus' })
+      ?.security,
+    'auto'
+  )
 })

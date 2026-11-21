@@ -333,11 +333,9 @@ export async function onDaemonHeartbeat(
  * It carries the same two alerts for the same reason: alerting that only
  * exists on the hosted runtime is alerting most instances do not have.
  *
- * The delivery is deliberately **not awaited**. This runs on the Deno
- * maintenance scheduler's liveness lane, which exists precisely so that "a
- * hung command-dispatch, webhook, execution-log, or system-reconcile phase
- * must not suppress the next stale-presence tick" (`deno-maintenance.ts`) —
- * and the lane refuses to overlap itself, so awaiting twenty hosts' worth of
+ * The delivery is deliberately **not awaited**. This runs inside the
+ * Deno job tick (`platform/deno/job-tick.ts`), which has a time budget and
+ * does not overlap itself, so awaiting twenty hosts' worth of
  * webhook timeouts here would skip every liveness tick in between. Demotions
  * land first, the alerts go out behind them, and `notifyDemotions` carries
  * its own batch bound so a pathological sender cannot accumulate across

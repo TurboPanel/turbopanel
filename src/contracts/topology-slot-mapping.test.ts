@@ -12,8 +12,6 @@ const test = Deno.test.bind(Deno)
 
 function snapshot(overrides: Partial<TopologySnapshot> = {}): TopologySnapshot {
   return {
-    generation: 0,
-    bootGeneration: 0,
     networks: [
       {
         deviceId: 'mac:b',

@@ -45,6 +45,14 @@ import {
   handleHttpIssuanceInbound,
   isHttpIssuanceMessage,
 } from '../../features/tls/http-issuance/events.ts'
+import {
+  confirmThroughProvider,
+  handleDnsRelayInbound,
+  unavailableDnsAnswer,
+  isDnsRelayMessage,
+} from '../../features/tls/http-issuance/dns-relay.ts'
+import { createCloudflareDnsChallenge } from '../../features/tunnels/cloudflare-dns-challenge.ts'
+import { createTunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
 import { handleManagedHealthReport } from '../../features/managed/health-report.ts'
 import {
   FabricPeerReportThrottle,
@@ -74,7 +82,7 @@ import {
   persistUpgradeProgress,
 } from '../../features/upgrades/persist.ts'
 import { enqueueLatestRecordedCapabilityPlan } from '../../client/servers/capability-plan-push.ts'
-import { recordTopologyGeneration } from '../../features/servers/server-topology-records.ts'
+import { recordTopologyReport } from '../../features/servers/server-topology-records.ts'
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
@@ -82,6 +90,7 @@ import {
   type DaemonSessionPhase,
   decideFirstFrame,
   PANEL_IDENTITY_CLOSE_CODE,
+  SIGNED_MODE_REQUIRED_REASON,
   SIGNED_SEND_FAILED_REASON,
 } from '../signed-session-gate.ts'
 import {
@@ -141,7 +150,10 @@ import type {
   PendingRequestStatus,
 } from '../../contracts/cell.ts'
 import type {
+  AcmeDnsPublishMessage,
+  AcmeDnsRemoveMessage,
   CommandRecoveryReport,
+  CommandStateReport,
   DaemonBuildInfo,
   DaemonInboundEnvelope,
   DaemonInboundFrameResult,
@@ -178,6 +190,12 @@ export { classifyDaemonCellSqlStorageOp }
  * this guard was added for (billing-audit follow-up, Jul 2026).
  */
 const BACKGROUND_TASK_TIMEOUT_MS = 5_000
+
+/** How long the DNS relay waits for a record to read back; an invocation cannot wait long. */
+const DNS_RELAY_READBACK_MS = 18_000
+const DNS_RELAY_POLL_MS = 2_000
+/** The whole relay call, records and read-back, stays under the invocation's ceiling. */
+const DNS_RELAY_TIMEOUT_MS = 27_000
 
 /**
  * Hard client-side deadline for daemon JWT keyring derivation on the
@@ -322,6 +340,7 @@ let projectionDbFactoryForTests: ProjectionDbFactory | null = null
 let daemonJwtKeyringFactoryForTests: DaemonJwtKeyringFactory | null = null
 let forceOutboxSendErrorForTests: Error | null = null
 let panelIdentityBindingForTests: string | null = null
+let unsignedSessionsAllowedForTests = false
 let forceAlarmErrorForTests: Error | null = null
 /** When set, `#collectStaleDemotions` treats auto-response age as this many ms. */
 let forceAutoResponseAgeMsForTests: number | null = null
@@ -336,6 +355,14 @@ export function setDaemonCellProjectionDbFactoryForTests(
 /** Test-only seam: the `TURBOPANEL_IDENTITY_KEYS` value a cell reads (null = the env binding). */
 export function setDaemonCellPanelIdentityBindingForTests(raw: string | null): void {
   panelIdentityBindingForTests = raw
+}
+
+/**
+ * Test-only seam: let a cell open an unsigned session, take an attach without a proof and a
+ * report without a signature. Production never sets it: a Workers cell takes only signed sessions.
+ */
+export function setDaemonCellUnsignedSessionsAllowedForTests(allowed: boolean): void {
+  unsignedSessionsAllowedForTests = allowed
 }
 
 /** Test-only seam: override JWT keyring derivation on the WS-upgrade path. */
@@ -1845,6 +1872,8 @@ export class DaemonCellObject {
   ): Promise<boolean> {
     const decision = await decideFirstFrame(raw, {
       trustLevel: attachment.trustLevel ?? 0,
+      // The Workers runtime has no co-located daemon: only a signed session opens.
+      requireSigned: !unsignedSessionsAllowedForTests,
       panelIdentity: () => this.#getPanelIdentity(),
       binding: sessionBindingOf(attachment),
     })
@@ -1856,6 +1885,7 @@ export class DaemonCellObject {
       return false
     }
     if (decision.kind === 'legacy') {
+      // Only reachable through the test seam: `requireSigned` refuses an unsigned first frame above.
       ws.serializeAttachment({ ...attachment, phase: 'legacy' })
       this.#startSession(ws, attachment, true)
       return true
@@ -1976,7 +2006,8 @@ export class DaemonCellObject {
       keyId: attachment.daemonKey?.id,
       publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
       daemonSignsReports: current.signsReports === true,
-      serverSignsReports: current.reportsSigned === true,
+      // Every report on a Workers session is signed, whatever the row says.
+      serverSignsReports: !unsignedSessionsAllowedForTests || current.reportsSigned === true,
       nowMs: Date.now(),
     })
     if (intake.verdict === 'verified' && current.reportsSigned !== true) {
@@ -2080,6 +2111,8 @@ export class DaemonCellObject {
       keyId: attachment.daemonKey?.id,
       publicJwk: attachment.daemonKey ? ed25519PublicJwk(attachment.daemonKey.x) : undefined,
       trustLevel,
+      // The Workers runtime has no co-located daemon: every attach proves the daemon key.
+      requireSigned: !unsignedSessionsAllowedForTests,
       nowMs: Date.now(),
     })
     if (decision.kind === 'refused') {
@@ -2286,6 +2319,7 @@ export class DaemonCellObject {
       connectionId: string
       serverId: string
       geo?: ServerGeo
+      connectedAtMs?: number
     },
     parsed: {
       type: 'hello' | 'heartbeat'
@@ -2302,6 +2336,7 @@ export class DaemonCellObject {
       services?: unknown
       features?: string[]
       commands?: CommandRecoveryReport
+      commandState?: CommandStateReport
       panelPin?: { pinnedBy: string }
     }
   ): Promise<void> {
@@ -2398,7 +2433,13 @@ export class DaemonCellObject {
       )
     }
     if (parsed.type === 'hello') {
-      await this.#redeliverLostCommands(attachment.serverId, parsed.features, reported)
+      await this.#redeliverLostCommands(
+        attachment.serverId,
+        parsed.features,
+        reported,
+        parsed.commandState,
+        attachment.connectedAtMs
+      )
     }
   }
 
@@ -2410,7 +2451,9 @@ export class DaemonCellObject {
   async #redeliverLostCommands(
     serverId: string,
     features: string[] | undefined,
-    report: CommandRecoveryReport | undefined
+    report: CommandRecoveryReport | undefined,
+    commandState: CommandStateReport | undefined,
+    connectedAtMs: number | undefined
   ): Promise<void> {
     await redeliverLostCommands(
       {
@@ -2420,7 +2463,13 @@ export class DaemonCellObject {
           Promise.resolve(this.#listRequests(serverId, limit ?? 50, filter?.requestKind)),
       },
       (fn) => this.#withProjectionDb('command-redelivery', serverId, fn),
-      { serverId, features, report }
+      {
+        serverId,
+        features,
+        report,
+        commandState,
+        attachedAt: connectedAtMs === undefined ? undefined : new Date(connectedAtMs).toISOString(),
+      }
     )
   }
 
@@ -2515,6 +2564,61 @@ export class DaemonCellObject {
    * (`managed-health-report`, `fabric-peers-report`, `repo-key-changed`, `topology-report`).
    * Returns true when handled.
    */
+  /**
+   * The DNS relay. A Durable Object invocation has a short wall-time ceiling, so the
+   * read-back waits only {@link DNS_RELAY_READBACK_MS}; the DNS provider shows a new
+   * record within seconds. The work runs under `waitUntil` and answers the daemon on
+   * the socket it arrived on once it is done.
+   */
+  async #handleDnsRelayFrame(
+    ws: WebSocket,
+    attachment: { connectionId: string; serverId: string },
+    parsed: AcmeDnsPublishMessage | AcmeDnsRemoveMessage
+  ): Promise<void> {
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
+    const secrets = await this.#dataEncryptionSecrets()
+    const db = this.#newProjectionDb()
+    if (!db) {
+      if (parsed.type === 'acme-dns-publish') {
+        await this.#sendToDaemon(ws, unavailableDnsAnswer(parsed)).catch(() => undefined)
+      }
+      return
+    }
+    const work = (async () => {
+      try {
+        await runWithDbTimeout(
+          db,
+          (open) =>
+            handleDnsRelayInbound(
+              {
+                db: open,
+                secrets,
+                dns: (_provider, token) => createCloudflareDnsChallenge({ token }),
+                adapters: createTunnelAdapterRegistry(),
+                // Workers cannot ask a nameserver directly: the provider's own read is the check.
+                confirm: confirmThroughProvider,
+                reply: (answer) => this.#sendToDaemon(ws, answer),
+                readbackTimeoutMs: DNS_RELAY_READBACK_MS,
+                readbackPollMs: DNS_RELAY_POLL_MS,
+              },
+              attachment.serverId,
+              parsed
+            ),
+          DNS_RELAY_TIMEOUT_MS
+        )
+      } catch (err) {
+        console.error(
+          `daemon cell dns-relay failed (${attachment.serverId}): ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      } finally {
+        await endDbConnection(db).catch(() => {})
+      }
+    })()
+    this.#ctx.waitUntil(work)
+  }
+
   async #handleReportInbound(
     attachment: { connectionId: string; serverId: string },
     parsed: DaemonMessage
@@ -2570,9 +2674,7 @@ export class DaemonCellObject {
     if (parsed.type === 'topology-report') {
       await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
-        await recordTopologyGeneration(db, attachment.serverId, {
-          generation: parsed.generation,
-          bootGeneration: parsed.bootGeneration,
+        await recordTopologyReport(db, attachment.serverId, {
           snapshot: parsed.snapshot,
           appliedAt: parsed.at,
         })
@@ -2608,6 +2710,23 @@ export class DaemonCellObject {
     if (!failure.ignored) ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, 'policy_violation')
   }
 
+  /**
+   * False when the session may not carry this frame: the first frame failed its gate, or the
+   * socket was opened unsigned by an earlier build (closed, never served).
+   */
+  async #sessionAdmitsFrame(
+    ws: WebSocket,
+    session: SocketSessionAttachment,
+    raw: string
+  ): Promise<boolean> {
+    if (session.phase === 'await-first-frame') return this.#firstFrameGate(ws, session, raw)
+    if (session.phase === 'legacy' && !unsignedSessionsAllowedForTests) {
+      ws.close(PANEL_IDENTITY_CLOSE_CODE, SIGNED_MODE_REQUIRED_REASON)
+      return false
+    }
+    return true
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -2623,9 +2742,7 @@ export class DaemonCellObject {
     const raw = typeof message === 'string' ? message : new TextDecoder().decode(message)
 
     const session = attachment as SocketSessionAttachment
-    if (session.phase === 'await-first-frame' && !(await this.#firstFrameGate(ws, session, raw))) {
-      return
-    }
+    if (!(await this.#sessionAdmitsFrame(ws, session, raw))) return
 
     const validated = await this.#acceptedInboundFrame(ws, session, raw)
     if (!validated) return
@@ -2653,6 +2770,11 @@ export class DaemonCellObject {
           parsed,
           haEventSignature(validated.signature, session.phase === 'signed')
         )
+        return
+      }
+
+      if (isDnsRelayMessage(parsed)) {
+        await this.#handleDnsRelayFrame(ws, attachment, parsed)
         return
       }
 

@@ -15,7 +15,12 @@ import {
   setSelfHostedAddress,
 } from '../../../features/install/ingress-modes.ts'
 import type { EdgeGate } from './gate.ts'
-import { applyIngress, readStoredIngress, setHostnameIngress } from './service.ts'
+import {
+  applyIngress,
+  BEHIND_CDN_PROXY_DIRECT_ONLY,
+  readStoredIngress,
+  setHostnameIngress,
+} from './service.ts'
 
 const test = Deno.test.bind(Deno)
 const dbUrl = Deno.env.get('TURBOPANEL_DATABASE_URL')
@@ -25,8 +30,8 @@ const OPEN: EdgeGate = { open: true, waiting: [], remoteServers: 0, forcedClosed
 const SHUT: EdgeGate = {
   open: false,
   reason:
-    "1 server still needs to re-learn this control plane's key before an edge mode can be used: kappa.",
-  waiting: [{ id: 'srv-1', name: 'kappa', organizationId: 'org-1', pinnedBy: null }],
+    "1 server still needs to re-learn this control plane's key before an edge mode can be used: server-c.",
+  waiting: [{ id: 'srv-1', name: 'server-c', organizationId: 'org-1', pinnedBy: null }],
   remoteServers: 1,
   forcedClosed: false,
 }
@@ -114,6 +119,27 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
       (await setHostnameIngress(db, hostnameId, { publicPort: 8443 }, openGate)).ok,
       true
     )
+    // The proxied flag defaults to false, is validated, and survives an unrelated edit.
+    const proxiedOf = async () =>
+      (await listInstanceHostnames(db)).find((item) => item.id === hostnameId)?.behindCdnProxy
+    assertEquals(await proxiedOf(), false)
+    const badFlag = await setHostnameIngress(db, hostnameId, { behindCdnProxy: 'yes' }, openGate)
+    assertEquals(badFlag.ok ? 0 : badFlag.status, 422)
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { behindCdnProxy: true }, openGate)).ok,
+      true
+    )
+    assertEquals(await proxiedOf(), true)
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { publicPort: 8443 }, openGate)).ok,
+      true
+    )
+    assertEquals(await proxiedOf(), true)
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { behindCdnProxy: false }, openGate)).ok,
+      true
+    )
+    assertEquals(await proxiedOf(), false)
     // A remote server that has not pinned this control plane's key: the switch is a 409 naming it.
     const held = await setHostnameIngress(
       db,
@@ -123,7 +149,7 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
     )
     assertEquals(held.ok ? 0 : held.status, 409)
     assertEquals(held.ok ? '' : held.error, SHUT.reason)
-    assertEquals(held.ok ? [] : held.waiting?.map((item) => item.name), ['kappa'])
+    assertEquals(held.ok ? [] : held.waiting?.map((item) => item.name), ['server-c'])
     const set = await setHostnameIngress(
       db,
       hostnameId,
@@ -131,6 +157,14 @@ test('an account is stored sealed, used by a tunnel hostname, and cannot be remo
       openGate
     )
     assert(set.ok)
+    // The proxied flag only applies in direct mode: true is refused (omitted or false is fine).
+    const proxiedEdge = await setHostnameIngress(db, hostnameId, { behindCdnProxy: true }, openGate)
+    assertEquals(proxiedEdge.ok ? 0 : proxiedEdge.status, 400)
+    assertEquals(proxiedEdge.ok ? '' : proxiedEdge.error, BEHIND_CDN_PROXY_DIRECT_ONLY)
+    assertEquals(
+      (await setHostnameIngress(db, hostnameId, { behindCdnProxy: false }, openGate)).ok,
+      true
+    )
     // Changing only the account on an edge row does not read the gate again.
     assertEquals(
       (await setHostnameIngress(db, hostnameId, { ingressId: accountId }, shutGate)).ok,

@@ -104,7 +104,6 @@ export type ApplyVariablesError = {
     | 'config_interpolation'
     | 'config_file_invalid'
     | 'config_file_shared'
-    | 'config_files_need_daemon_update'
   message: string
   ref?: string
   composeServiceName?: string
@@ -694,12 +693,6 @@ export function applyVariablesToComposeDocument(
     projectId?: string
     environmentId?: string
     runDir?: string
-    /**
-     * Whether the target daemon lists `deploy-config-files-v1`. Absent reads
-     * false: a content config with a `{$…}` value is then refused, and one
-     * without stays as authored.
-     */
-    configFilesEnabled?: boolean
   }
 ): ApplyVariablesResult | ApplyVariablesError {
   const data = { ...document.data }
@@ -714,7 +707,6 @@ export function applyVariablesToComposeDocument(
   const projectId = params.projectId ?? 'preview'
   const environmentId = params.environmentId ?? 'preview'
   const configCtx = newConfigFilesContext({
-    enabled: params.configFilesEnabled === true,
     projectId,
     environmentId,
     runDir,

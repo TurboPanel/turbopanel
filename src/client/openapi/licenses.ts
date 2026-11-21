@@ -12,7 +12,10 @@ export function buildLicenseSchemas(installCommandDescription: string) {
             {
               type: 'object',
               required: ['id', 'label'],
-              properties: { id: { type: 'string', format: 'uuid' }, label: { type: 'string' } },
+              properties: {
+                id: { type: 'string', format: 'uuid' },
+                label: { type: 'string' },
+              },
             },
             { type: 'null' },
           ],
@@ -108,7 +111,11 @@ export function buildLicenseSchemas(installCommandDescription: string) {
           description:
             'The one-hour join secret the install command carries (the key itself has no token); shown once, stored hashed.',
         },
-        joinId: { type: 'string', format: 'uuid', description: 'Id of the join ticket.' },
+        joinId: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Id of the join ticket.',
+        },
         joinExpiresAt: { type: 'string', format: 'date-time' },
         installCommand: {
           type: 'string',
@@ -118,25 +125,32 @@ export function buildLicenseSchemas(installCommandDescription: string) {
     },
     TicketResponse: {
       type: 'object',
-      required: ['licenseToken', 'licenseArg'],
+      required: ['licenseToken', 'installCommand'],
       properties: {
         licenseToken: {
           type: 'string',
           description: 'One-hour, single-use secret; shown once, stored hashed.',
         },
-        licenseArg: {
-          type: 'string',
-          description:
-            'The value the installer takes as TURBOPANEL_LICENSE (id and secret, base64url).',
-        },
         installCommand: {
           type: 'string',
           description: installCommandDescription,
         },
-        ticketId: { type: 'string', format: 'uuid', description: 'Re-enroll ticket id.' },
-        expiresAt: { type: 'string', format: 'date-time', description: 'Re-enroll ticket expiry.' },
+        ticketId: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Re-enroll ticket id.',
+        },
+        expiresAt: {
+          type: 'string',
+          format: 'date-time',
+          description: 'Re-enroll ticket expiry.',
+        },
         licenseId: { type: 'string', description: 'Key reissue only.' },
-        joinId: { type: 'string', format: 'uuid', description: 'Key reissue only: ticket id.' },
+        joinId: {
+          type: 'string',
+          format: 'uuid',
+          description: 'Key reissue only: ticket id.',
+        },
         joinExpiresAt: {
           type: 'string',
           format: 'date-time',
@@ -273,7 +287,10 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                         'reservedSeatCount',
                       ],
                       properties: {
-                        error: { type: 'string', const: 'server_capacity_exceeded' },
+                        error: {
+                          type: 'string',
+                          const: 'server_capacity_exceeded',
+                        },
                         maxServers: { type: ['integer', 'null'] },
                         usedSeats: { type: 'integer' },
                         serverCount: { type: 'integer' },
@@ -295,7 +312,10 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                         'tiers',
                       ],
                       properties: {
-                        error: { type: 'string', const: 'no_license_available' },
+                        error: {
+                          type: 'string',
+                          const: 'no_license_available',
+                        },
                         message: {
                           type: 'string',
                           description:
@@ -320,7 +340,10 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                           type: 'integer',
                           description: 'Licenses ending at the period boundary; restorable.',
                         },
-                        endsAt: { type: ['string', 'null'], format: 'date-time' },
+                        endsAt: {
+                          type: ['string', 'null'],
+                          format: 'date-time',
+                        },
                         available: { type: 'integer', const: 0 },
                         tiers: {
                           type: 'array',
@@ -344,21 +367,13 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                                 description: 'Servers assigned this tier.',
                               },
                               ending: { type: 'integer' },
-                              endsAt: { type: ['string', 'null'], format: 'date-time' },
+                              endsAt: {
+                                type: ['string', 'null'],
+                                format: 'date-time',
+                              },
                               available: { type: 'integer' },
                             },
                           },
-                        },
-                        releasing: {
-                          type: 'integer',
-                          deprecated: true,
-                          description: 'Use `ending`.',
-                        },
-                        held: {
-                          type: 'integer',
-                          deprecated: true,
-                          description:
-                            'Use `inUse` and `unusedKeys` (`held = inUse + unusedKeys`).',
                         },
                       },
                     },
@@ -366,7 +381,10 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                       type: 'object',
                       required: ['error'],
                       properties: {
-                        error: { type: 'string', const: 'billing_mutation_in_progress' },
+                        error: {
+                          type: 'string',
+                          const: 'billing_mutation_in_progress',
+                        },
                       },
                     },
                   ],
@@ -481,15 +499,26 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
         description:
           'Owner action, behind step-up re-authentication when the organization requires it (403 `reauth_required`). For a key whose token may have crossed an edge: burns its old token and issues a one-hour, single-use join ticket for the same unbound key.',
         security: [{ cookieAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
         responses: {
           '200': {
             description: 'Fresh ticket',
             content: {
-              'application/json': { schema: { $ref: '#/components/schemas/TicketResponse' } },
+              'application/json': {
+                schema: { $ref: '#/components/schemas/TicketResponse' },
+              },
             },
           },
-          '403': { description: 'Step-up re-authentication required (`reauth_required`)' },
+          '403': {
+            description: 'Step-up re-authentication required (`reauth_required`)',
+          },
           '404': { description: 'Key not found, already bound or revoked' },
         },
       },
@@ -501,15 +530,26 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
         description:
           'Owner only, behind step-up re-authentication when the organization requires it (403 `reauth_required`). A one-hour, single-use ticket bound to this server that lets it replace a lost daemon key once. Issuing a new one retires any unused ticket.',
         security: [{ cookieAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
         responses: {
           '200': {
             description: 'Ticket issued',
             content: {
-              'application/json': { schema: { $ref: '#/components/schemas/TicketResponse' } },
+              'application/json': {
+                schema: { $ref: '#/components/schemas/TicketResponse' },
+              },
             },
           },
-          '403': { description: 'Step-up re-authentication required (`reauth_required`)' },
+          '403': {
+            description: 'Step-up re-authentication required (`reauth_required`)',
+          },
           '404': { description: 'Server not found' },
         },
       },
@@ -517,7 +557,14 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
         tags: ['Licenses'],
         summary: 'Revoke unused re-enroll tickets for a server',
         security: [{ cookieAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        parameters: [
+          {
+            name: 'id',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
         responses: {
           '200': { description: 'Unused tickets revoked' },
           '404': { description: 'Server not found' },

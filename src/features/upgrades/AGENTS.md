@@ -34,8 +34,10 @@ do not import a DB/cell module here.
 | `history.ts`        | how a step and a server read in the history (`stepOutcome`, worst-of `serverOutcome`, `already_current`), run `trigger`, history query parsing; SQL twin in `history-read.ts`         |
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
-in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
-pass, Workers offline-sweep on `TURBOPANEL_UPGRADE_TICK_MINUTES` (default 15, testing 5; `tick-cadence.ts`).
+in-memory test store). `maintenance.ts` is the tick: the Deno job tick and the Workers offline-sweep both on the
+`upgradeTick` job cadence (default 15 minutes, testing 5; `src/jobs/registry.ts`, set with
+`TURBOPANEL_JOB_CADENCES`). The Deno tick also runs it every minute while a run is pending or
+running (the `upgradeRunActive` gate in `cron-gates.ts`), so a run moves as fast as before.
 Every tick advances the open run; only the hourly check (below) resolves
 manifests and may start one. Hello, heartbeat, and
 `update-progress` / `update-result` / `instance-update-result` persist through
@@ -103,11 +105,11 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   `claimUpgradeCheck` (`maintenance.ts`) runs the check on the first tick at or
   after the next slot and records it before the check runs, so a failing check
   waits for the next slot instead of retrying every pass. On Workers the slot is
-  taken by the first upgrade tick after it (up to `TURBOPANEL_UPGRADE_TICK_MINUTES`
+  taken by the first upgrade tick after it (up to the `upgradeTick` cadence
   late). Before the first check the hour counts from the row's `createdAt`.
-  Test installs set `TURBOPANEL_UPGRADE_CHECK_MINUTES` (a divisor of 60; the
-  testing environment uses 5) to check every few minutes instead; slots stay
-  at the install's minute modulo that interval.
+  Test installs set the `upgradeCheck` job cadence (1 to 60 minutes; the testing
+  environment uses 5, in `TURBOPANEL_JOB_CADENCES`) to check every few minutes
+  instead; slots stay at the install's minute modulo that interval.
 - **Check Now** (`POST /instance/updates/check`, admins): a refresh only. It
   asks the release servers for the newest build with `resolveUpdateManifest(…,
 { fresh: true })`, saves it as the latest build and answers the `GET
@@ -199,9 +201,8 @@ surface's own daemon update route (`../../developer/update-routes.ts`) stays.
   keeps it to one run at a time.
 - **Batch size** stays an admin setting (`UPGRADE_SETTINGS.batch`, default 100%
   of the fleet). The maintenance window and `autoUpdate` are gone: a row saved
-  before keeps its batch, the other keys are read and ignored, and a save still
-  writes `autoUpdate: true` and a disabled window so a control plane rolled back
-  to an older build reads a valid row with updates on.
+  before keeps its batch, the other keys are read and ignored, and a save
+  writes only `batch`.
 - `GET /instance/updates` adds `automatic`, `updatesPaused`, `pausedAt`,
   `pausedBy`, `daemonsBehind` (`anyDaemonBehind`, one `limit 1` read against
   the cached daemon manifest), `updateWaiting`, `nextCheckAt`, `lastCheckAt`,

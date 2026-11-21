@@ -576,8 +576,8 @@ test('parseServiceSourceExtension keeps an image buildKind', () => {
   assertEquals(parsed?.source?.buildKind, 'image')
 })
 
-test('parseServiceSourceExtension normalizes the old buildKind value to image', () => {
-  for (const buildKind of ['railpack', '  railpack  ']) {
+test('parseServiceSourceExtension trims the buildKind value', () => {
+  for (const buildKind of ['image', '  image  ']) {
     const parsed = parseServiceTurbopanelExtension({
       serviceKind: 'container',
       source: { sourceId: IMAGE_SOURCE_ID, buildKind },
@@ -586,9 +586,9 @@ test('parseServiceSourceExtension normalizes the old buildKind value to image', 
   }
 })
 
-test('isImageBuildKind accepts both spellings and nothing else', () => {
+test('isImageBuildKind accepts only image', () => {
   assertEquals(isImageBuildKind('image'), true)
-  assertEquals(isImageBuildKind('railpack'), true)
+  assertEquals(isImageBuildKind('railpack'), false)
   assertEquals(isImageBuildKind('native'), false)
   assertEquals(isImageBuildKind(undefined), false)
 })
@@ -648,36 +648,32 @@ test('a non-boolean deployOnPush is dropped and reported', () => {
   )
 })
 
-test('the image build kind is rejected on a host-native service kind, in either spelling', () => {
-  for (const buildKind of ['image', 'railpack']) {
-    const issues = collectServiceTurbopanelValidationIssues({
-      site: {
-        'x-turbopanel': {
-          serviceKind: 'node',
-          principal: 'app',
-          source: { sourceId: IMAGE_SOURCE_ID, buildKind },
-        },
+test('the image build kind is rejected on a host-native service kind', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    site: {
+      'x-turbopanel': {
+        serviceKind: 'node',
+        principal: 'app',
+        source: { sourceId: IMAGE_SOURCE_ID, buildKind: 'image' },
       },
-    })
-    assertEquals(
-      issues.map((issue) => issue.path),
-      ['services.site.x-turbopanel.source.buildKind']
-    )
-  }
+    },
+  })
+  assertEquals(
+    issues.map((issue) => issue.path),
+    ['services.site.x-turbopanel.source.buildKind']
+  )
 })
 
-test('the image build kind is accepted on a container service with no image, in either spelling', () => {
-  for (const buildKind of ['image', 'railpack']) {
-    const issues = collectServiceTurbopanelValidationIssues({
-      api: {
-        'x-turbopanel': {
-          serviceKind: 'container',
-          source: { sourceId: IMAGE_SOURCE_ID, buildKind },
-        },
+test('the image build kind is accepted on a container service with no image', () => {
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      'x-turbopanel': {
+        serviceKind: 'container',
+        source: { sourceId: IMAGE_SOURCE_ID, buildKind: 'image' },
       },
-    })
-    assertEquals(issues, [])
-  }
+    },
+  })
+  assertEquals(issues, [])
 })
 
 test('an image-built container service needs neither image nor build', () => {
@@ -687,7 +683,7 @@ test('an image-built container service needs neither image nor build', () => {
       serviceKind: container
       source:
         sourceId: ${IMAGE_SOURCE_ID}
-        buildKind: railpack
+        buildKind: image
 `
   const issues = lintComposeYaml(source).filter((issue) =>
     issue.message.includes('must define "image"')

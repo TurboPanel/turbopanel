@@ -13,14 +13,13 @@ function reasonSuffix(reason: string | null | undefined): string {
 }
 
 function skippedLine(entry: RosterEntry): string {
-  switch (entry.skip) {
-    case 'offline':
-      return `${entry.label} is offline. It will get the certificate when it is back.`
-    case 'old_daemon':
-      return `${entry.label} runs an older version, so it orders its own certificate until it is updated.`
-    default:
-      return `${entry.label} is not in this name's DNS records, so it did not take part in the check. It has the certificate installed and will use it if you add it to DNS.`
+  if (entry.skip === 'offline') {
+    return `${entry.label} is offline. It will get the certificate when it is back.`
   }
+  if (entry.skip === 'no_dns_orders') {
+    return `${entry.label} needs a newer TurboPanel version to order this kind of certificate. It will get the certificate once it is installed.`
+  }
+  return `${entry.label} is not in this name's DNS records, so it did not take part in the check. It has the certificate installed and will use it if you add it to DNS.`
 }
 
 function helperLine(entry: RosterEntry, state: HttpIssuanceState, issuerLabel: string): string {
@@ -41,6 +40,9 @@ function issuerLine(entry: RosterEntry, state: HttpIssuanceState): string {
   if (state.phase === 'failed') {
     return `${entry.label} could not finish the order${reasonSuffix(state.lastError)}`
   }
+  if (state.challenge === 'dns-01' && state.phase === 'ordering') {
+    return `${entry.label} is ordering the certificate. The panel adds the DNS records it needs.`
+  }
   return state.phase === 'ordering'
     ? `${entry.label} is ordering the certificate.`
     : `${entry.label} will order the certificate once the other servers are ready.`
@@ -59,7 +61,13 @@ export function serverStatusLines(state: HttpIssuanceState): ServerStatusLine[] 
 }
 
 /** What the Certificate panel says when no server can take the order yet. */
-export function waitingText(reason: 'no_servers' | 'none_in_dns' | 'no_contact'): string {
+export function waitingText(
+  reason: 'no_servers' | 'none_in_dns' | 'no_contact' | 'none_take_dns' | 'no_site'
+): string {
+  if (reason === 'none_take_dns') {
+    return 'Waiting for an online server with a version that can order this kind of certificate.'
+  }
+  if (reason === 'no_site') return 'Waiting for a site to use this certificate.'
   if (reason === 'no_servers') return 'Waiting for a server to serve this name.'
   if (reason === 'no_contact') {
     return 'Waiting for a contact email address for certificates to be set for this organization.'

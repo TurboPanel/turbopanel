@@ -1,50 +1,65 @@
 # DNS-validated certificates (`src/features/tls/dns-certificates/`)
 
-## Ordering is gone (owner decisions 2026-11-04 and 2026-11-12)
+## The panel relays DNS records; a server's daemon orders
 
-The control plane does not order, renew or retry these certificates, on either
-edition, and the code that did is deleted: there is no certificate authority
-account, no order state machine and no ordering sweep here. An organization
-certificate is ordered by the daemon on a server that runs the service; the
-control plane only schedules the work and relays the DNS records (decision
-2026-11-04, certificates ordered only by the serving daemon). What stays in this
-folder is the part both sides still use:
+The control plane never talks to the certificate authority, on either edition.
+A certificate over the DNS proof is ordered by the daemon on a serving server
+(feature `acme-issue-dns-v1`, see `src/features/tls/http-issuance/AGENTS.md`).
+The panel holds the organization's DNS token and publishes the challenge
+records for the daemon: that relay is `http-issuance/dns-relay.ts`, shared by
+the Deno socket (`daemon/deno-ws.ts`) and the Cloudflare cell
+(`daemon/cell/do.ts`). The token never leaves the panel. What lives in this
+folder is the part the relay, the cleanup and the library routes use:
 
-| File | What it is for |
-| --- | --- |
-| `dns-provider.ts` | The DNS host port (`DnsChallengeProvider`) and the challenge record name. Used by the daemon-side order in `platform/deno/ingress/dns01/` and by `features/tunnels/cloudflare-dns-challenge.ts`. |
-| `order-state.ts` | Reads the private state under `metadata.dnsCert` and the public marker `metadata.acme`; `isPanelManagedAcme` picks the rows the list route shows. |
-| `records.ts`, `token.ts`, `context.ts`, `sql-time.ts` | The DNS records a past order left listed, removed by id through the account's DNS token (`withDnsToken`, `openDnsToken`). |
-| `cleanup.ts` | `runDnsCertificateCleanupTick`, the only sweep step left (see below). |
+| File                                                  | What it is for                                                                                                                           |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `dns-provider.ts`                                     | The DNS host port (`DnsChallengeProvider`) and the challenge record name.                                                                |
+| `order-state.ts`                                      | Reads the private state under `metadata.dnsCert` (`carrierId`, `zones`, `records`, `claimUntil`) and the public marker `metadata.acme`.  |
+| `records.ts`, `token.ts`, `context.ts`, `sql-time.ts` | Records removed by id through the account's DNS token (`withDnsToken`, `openDnsToken`, `withAnyDnsToken`).                               |
+| `zones.ts`                                            | Which zone a name belongs to among the zones the organization's tokens cover, and where a record goes when `_acme-challenge` is a CNAME. |
+| `names.ts`                                            | `parseCertificateNames`: one to ten names, exact or `*.` wildcards.                                                                      |
+| `cleanup.ts`                                          | `runDnsCertificateCleanupTick` (see below).                                                                                              |
 
 Routes (`client/organizations/dns-certificate-routes.ts`):
 
-- `POST …/dns-certificates`, `…/:tlsId/check` and `…/:tlsId/retry` answer 422
-  `certificate_ordering_off` with a plain `message`, for anyone signed in, before
-  anything is read. The UI still calls these three paths and the list, so they
-  stay until the UI drops them.
-- The list shows the rows that carry the marker; an issued row in use says in
-  `warning` that it will not renew from the control plane (`renewAt` and
-  `nextAttemptAt` are null).
+- `POST …/dns-certificates` takes `names` (single, several, or wildcard) and
+  inserts a `lets_encrypt` row with `acme.challengeType: 'dns-01'`. The sweep
+  hands it to a serving server; nothing is sent to the authority from here.
+- `…/:tlsId/check` returns the row. `…/:tlsId/retry` lifts the wait after a
+  failed order so the next sweep places it. It answers 409 `rate_limited` (with
+  `retryAt`) while the authority's rate-limit pause is in force.
+- The list shows uploaded panel-managed rows and the `lets_encrypt` dns-01
+  rows; an ordered row shows `renewAt` and `nextAttemptAt`.
 
-The sweep on both editions (Workers offline sweep, Deno interval) runs only
-`runDnsCertificateCleanupTick`: it removes the challenge records the panel made
-and still lists, by id, through the DNS provider. Every listed record is a
-leftover. A row whose record would not go is held an hour. It never asks the
-certificate authority anything. `ordering-off.hostfree.test.ts` pins that no
-ordering module exists and that `cleanup.ts` reaches nothing in `src/lib/acme/`.
-Wiring ordering back into the control plane is a new owner decision.
+The relay answers `acme-dns-published` only once the TXT record reads back.
+Deno reads it on the zone's own nameservers (`platform/deno/dns-confirm.ts`,
+injected so `features/` never imports `platform/`). Workers cannot ask a
+specific nameserver, so there the read-back is the DNS provider's own read, and
+it waits a short bounded time (a Durable Object invocation has a wall-time
+ceiling); a record that is not visible in time is answered as an error and
+removed, and the daemon retries. Only the issuing server of an open DNS request
+may publish. A record name must be `_acme-challenge.` plus a name of the order
+and inside a zone the organization's token covers. Errors reach the daemon as a
+plain sentence, never a token.
+
+The sweep on both editions runs `runDnsCertificateCleanupTick`: it removes the
+challenge records the panel made and still lists, by id, through the DNS
+provider. The rows it covers are earlier uploaded panel-managed rows and
+`lets_encrypt` rows whose request has ended (the daemon asks for removal once;
+this tick is the net under that one ask). A row whose record would not go is
+held an hour. `ordering-off.hostfree.test.ts` pins that no panel-side ordering
+module exists and that `cleanup.ts` reaches nothing in `src/lib/acme/`.
 
 Certificates already issued stay in the library and serve until they expire;
-they are deleted like any library certificate. The databases are wiped before
-the release that removed the ordering code, so no `acme_account` secrets and no
-open orders exist after it (the secret provider value and its index leave with
-the reset).
+they are deleted like any library certificate. Deleting a row is refused (409
+`tls_dns_records_outstanding`) while it lists challenge records not removed yet,
+and the unused-certificate cleanup keeps such rows.
 
 ## What the row is
 
-An ordinary library certificate: `tls.source = 'upload'`, the chain in
-`certificate_pem`, the key sealed in `private_key_pem`. The public marker is
+An uploaded panel-managed row (`tls.source = 'upload'`, the chain in
+`certificate_pem`, the key sealed in `private_key_pem`), or a `lets_encrypt`
+row ordered through a server (its order state is `metadata.httpCert`). The public marker is
 `metadata.acme` (`managedBy: 'panel'`, `challengeType: 'dns-01'`, `stage`,
 `staging`, `lastError`, `warning`). Everything private lives under
 `metadata.dnsCert` (`order-state.ts`): the carrier and zones, the list of

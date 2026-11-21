@@ -23,21 +23,6 @@ test('parsePrincipalDefaultsPatch accepts scheme and lock fields', () => {
   })
 })
 
-test('parsePrincipalDefaultsPatch maps the legacy boolean onto schemes', () => {
-  assertEquals(parsePrincipalDefaultsPatch({ randomizedUsernames: true }), {
-    ok: true,
-    patch: { nameScheme: 'partial' },
-  })
-  assertEquals(parsePrincipalDefaultsPatch({ randomizedUsernames: false }), {
-    ok: true,
-    patch: { nameScheme: 'plain' },
-  })
-  assertEquals(parsePrincipalDefaultsPatch({ randomizedUsernames: null }), {
-    ok: true,
-    patch: { nameScheme: null },
-  })
-})
-
 test('parsePrincipalDefaultsPatch rejects empty, mistyped and unknown values', () => {
   for (const body of [
     {},
@@ -46,20 +31,20 @@ test('parsePrincipalDefaultsPatch rejects empty, mistyped and unknown values', (
     { nameScheme: 'full' },
     { nameScheme: 3 },
     { schemeLocked: 'yes' },
-    { randomizedUsernames: 'yes' },
+    { randomizedUsernames: true },
     { somethingElse: true },
   ]) {
     assertEquals(parsePrincipalDefaultsPatch(body), { ok: false })
   }
 })
 
-test('principalDefaultsOptionChanges retires the legacy key and toggles the lock', () => {
+test('principalDefaultsOptionChanges sets or clears the scheme and toggles the lock', () => {
   assertEquals(principalDefaultsOptionChanges({ nameScheme: 'random' }), {
-    remove: ['randomizedPrincipalUsernames'],
+    remove: [],
     set: { principalNameScheme: 'random' },
   })
   assertEquals(principalDefaultsOptionChanges({ nameScheme: null }), {
-    remove: ['randomizedPrincipalUsernames', 'principalNameScheme'],
+    remove: ['principalNameScheme'],
     set: {},
   })
   assertEquals(principalDefaultsOptionChanges({ schemeLocked: true }), {
@@ -72,22 +57,18 @@ test('principalDefaultsOptionChanges retires the legacy key and toggles the lock
   })
 })
 
-test('principalDefaultsResponse reads new keys and the legacy boolean fallback', () => {
+test('principalDefaultsResponse reads the stored keys and ignores a stale legacy boolean', () => {
   assertEquals(principalDefaultsResponse({}), {
     nameScheme: null,
     effectiveNameScheme: 'partial',
     schemeLocked: false,
-    randomizedUsernames: null,
-    effectiveRandomizedUsernames: true,
   })
   assertEquals(
     principalDefaultsResponse(parseOrganizationOptions({ randomizedPrincipalUsernames: false })),
     {
       nameScheme: null,
-      effectiveNameScheme: 'plain',
+      effectiveNameScheme: 'partial',
       schemeLocked: false,
-      randomizedUsernames: false,
-      effectiveRandomizedUsernames: false,
     }
   )
   assertEquals(
@@ -95,15 +76,12 @@ test('principalDefaultsResponse reads new keys and the legacy boolean fallback',
       parseOrganizationOptions({
         principalNameScheme: 'random',
         principalNameSchemeLocked: true,
-        randomizedPrincipalUsernames: false,
       })
     ),
     {
       nameScheme: 'random',
       effectiveNameScheme: 'random',
       schemeLocked: true,
-      randomizedUsernames: false,
-      effectiveRandomizedUsernames: true,
     }
   )
 })

@@ -115,3 +115,46 @@ INSERT INTO command (id, server_id, actor_type, actor_id, name, status, organiza
 
 INSERT INTO audit (id, organization_id, actor_user_id, actor_email, action, target_type, target_id) VALUES
   ('00000000-0000-7000-8000-000000000c71', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000001', 'upgrade-owner@example.test', 'server.delete', 'server', '00000000-0000-7000-8000-000000000502');
+
+-- Certificates and names for the per-name certificate backfill (migration
+-- 0004_hostname_certificate_choice): one library row of each source a site can
+-- pin, five sites pinned to them (or to nothing), and doorways that decide
+-- which Let's Encrypt names a tunnel carries alone. scripts/check-migration-upgrade.mjs
+-- checks the choice each name ends up with.
+INSERT INTO tls (id, organization_id, name, status, source) VALUES
+  ('00000000-0000-7000-8000-000000000d11', '00000000-0000-7000-8000-000000000101', 'uploaded pair', 'ready', 'upload'),
+  ('00000000-0000-7000-8000-000000000d12', '00000000-0000-7000-8000-000000000101', 'lets encrypt pair', 'ready', 'lets_encrypt'),
+  ('00000000-0000-7000-8000-000000000d13', '00000000-0000-7000-8000-000000000101', 'origin pair', 'ready', 'provider_origin');
+
+INSERT INTO service (id, environment_id, compose_service_name, name) VALUES
+  ('00000000-0000-7000-8000-000000000d01', '00000000-0000-7000-8000-000000000601', 'site-upload', 'site-upload'),
+  ('00000000-0000-7000-8000-000000000d02', '00000000-0000-7000-8000-000000000601', 'site-le', 'site-le'),
+  ('00000000-0000-7000-8000-000000000d03', '00000000-0000-7000-8000-000000000601', 'site-origin', 'site-origin'),
+  ('00000000-0000-7000-8000-000000000d04', '00000000-0000-7000-8000-000000000601', 'site-none', 'site-none'),
+  ('00000000-0000-7000-8000-000000000d05', '00000000-0000-7000-8000-000000000601', 'site-removing', 'site-removing');
+
+INSERT INTO hosting (id, service_id, tls_id, name, protocol) VALUES
+  ('00000000-0000-7000-8000-000000000d21', '00000000-0000-7000-8000-000000000d01', '00000000-0000-7000-8000-000000000d11', 'site-upload', 'http'),
+  ('00000000-0000-7000-8000-000000000d22', '00000000-0000-7000-8000-000000000d02', '00000000-0000-7000-8000-000000000d12', 'site-le', 'http'),
+  ('00000000-0000-7000-8000-000000000d23', '00000000-0000-7000-8000-000000000d03', '00000000-0000-7000-8000-000000000d13', 'site-origin', 'http'),
+  ('00000000-0000-7000-8000-000000000d24', '00000000-0000-7000-8000-000000000d04', NULL, 'site-none', 'http'),
+  ('00000000-0000-7000-8000-000000000d25', '00000000-0000-7000-8000-000000000d05', '00000000-0000-7000-8000-000000000d12', 'site-removing', 'http');
+
+-- 'Locked.Example.Test' is stored with capitals; the doorway has it in lower case.
+INSERT INTO hostname (id, hosting_id, routing_organization_id, hostname) VALUES
+  ('00000000-0000-7000-8000-000000000d31', '00000000-0000-7000-8000-000000000d21', '00000000-0000-7000-8000-000000000101', 'upload.example.test'),
+  ('00000000-0000-7000-8000-000000000d32', '00000000-0000-7000-8000-000000000d22', '00000000-0000-7000-8000-000000000101', 'Locked.Example.Test'),
+  ('00000000-0000-7000-8000-000000000d33', '00000000-0000-7000-8000-000000000d22', '00000000-0000-7000-8000-000000000101', 'open.example.test'),
+  ('00000000-0000-7000-8000-000000000d34', '00000000-0000-7000-8000-000000000d23', '00000000-0000-7000-8000-000000000101', 'origin.example.test'),
+  ('00000000-0000-7000-8000-000000000d35', '00000000-0000-7000-8000-000000000d24', '00000000-0000-7000-8000-000000000101', 'none.example.test'),
+  ('00000000-0000-7000-8000-000000000d36', '00000000-0000-7000-8000-000000000d25', '00000000-0000-7000-8000-000000000101', 'gone.example.test');
+
+INSERT INTO tunnel (id, organization_id, routing_organization_id, name, provider, external_id, placement, datacenter_id) VALUES
+  ('00000000-0000-7000-8000-000000000d41', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000101', 'upgrade-tunnel', 'cloudflare', 'upgrade-external-id', 'all', '00000000-0000-7000-8000-000000000401');
+
+-- locked.example.test: only the tunnel carries it. open.example.test: the tunnel
+-- and the server's own address. gone.example.test: a doorway being removed.
+INSERT INTO doorway (id, routing_organization_id, tunnel_id, hosting_id, status, hostname, is_local_only) VALUES
+  ('00000000-0000-7000-8000-000000000d51', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000d41', '00000000-0000-7000-8000-000000000d22', 'live', 'locked.example.test', true),
+  ('00000000-0000-7000-8000-000000000d52', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000d41', '00000000-0000-7000-8000-000000000d22', 'live', 'open.example.test', false),
+  ('00000000-0000-7000-8000-000000000d53', '00000000-0000-7000-8000-000000000101', '00000000-0000-7000-8000-000000000d41', '00000000-0000-7000-8000-000000000d25', 'removing', 'gone.example.test', true);

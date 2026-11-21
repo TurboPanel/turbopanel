@@ -11,11 +11,13 @@
  * stored state and the clock, writes, and only then sends. A send that fails
  * after the write is caught by the silence timeouts, so nothing waits forever.
  */
-import { and, eq, inArray, ne, sql } from 'drizzle-orm'
+import { and, eq, inArray, ne, or, sql } from 'drizzle-orm'
+import { notPinnedBySiteCondition } from '../unused-letsencrypt.ts'
 import type { Db } from '../../../db/connection.ts'
 import {
   deployment,
   environment,
+  hostname,
   hosting,
   organization,
   server,
@@ -30,7 +32,15 @@ import { forEachSequential } from '../../../lib/sequential.ts'
 import { type DnsLookup, resolveNameAddresses } from '../../hostings/hosting-dns-check.ts'
 import type { TlsAcmeMetadata } from '../../../lib/tls/types.ts'
 import { mayStartAttempt, pruneAttempts } from './attempts.ts'
-import { type Choice, chooseParticipants, type ServingServer } from './choose.ts'
+import { ACME_ISSUE_DNS_FEATURE } from '../../../lib/version-wire.ts'
+import { loadOrgOrderFacts, mayStartNewCertificate, recordNewCertificateStart } from './caps.ts'
+import {
+  type Choice,
+  chooseDnsIssuer,
+  chooseParticipants,
+  type DnsChoice,
+  type ServingServer,
+} from './choose.ts'
 import {
   applyForwardReports,
   decideOpen,
@@ -38,6 +48,7 @@ import {
   mayReplaceKey,
   failedState,
   publicMarker,
+  DNS_REQUEST_LIFETIME_MS,
   REQUEST_LIFETIME_MS,
   type ReplaceKeyRefusal,
   waitingMarker,
@@ -46,13 +57,14 @@ import {
   closedAsIssued,
   type ForwardResult,
   type HttpIssuanceState,
+  type IssuanceChallenge,
   newHttpIssuanceState,
   readHttpIssuanceState,
   type RosterEntry,
   withHttpIssuanceState,
 } from './state.ts'
 import { waitingText } from './status-text.ts'
-import { orderNamesFor, type PinningSite, takesOrderFor } from './names.ts'
+import { orderNamesFor, type PinningSite } from './names.ts'
 
 export type HttpIssuanceDeps = {
   db: Db
@@ -61,7 +73,11 @@ export type HttpIssuanceDeps = {
   send: (serverId: string, envelope: DaemonOutboundEnvelope) => Promise<void>
   dnsLookup: DnsLookup
   isOnline: (serverId: string) => Promise<boolean>
-  daemonFeatures: (serverId: string) => Promise<readonly string[]>
+  /**
+   * The features the server's daemon lists. Without this no server counts as able to
+   * order over the DNS proof, so a DNS order is never sent anywhere.
+   */
+  serverFeatures?: (serverId: string) => Promise<readonly string[]>
   /** The organization's certificate contact address, or null when it has none (orders cannot start). */
   contactEmail: (organizationId: string) => Promise<string | null>
   /** Order from the authority's test directory (a platform setting). */
@@ -94,12 +110,17 @@ function hostnamesOf(options: unknown): string[] {
     : []
 }
 
+/** A site pins the row for the whole site or for any one of its names. */
+function pinsRow(tlsId: string) {
+  return or(
+    eq(hosting.tlsId, tlsId),
+    sql`exists (select 1 from ${hostname} where ${hostname.hostingId} = ${hosting.id} and ${hostname.tlsId} = ${tlsId})`
+  )
+}
+
 /** The typed names and www mode of every site that pins the row. */
 async function loadPinningSites(db: Db, tlsId: string): Promise<PinningSite[]> {
-  const rows = await db
-    .select({ options: hosting.options })
-    .from(hosting)
-    .where(eq(hosting.tlsId, tlsId))
+  const rows = await db.select({ options: hosting.options }).from(hosting).where(pinsRow(tlsId))
   return rows.map((row) => ({
     hostnames: hostnamesOf(row.options),
     www: readHostingWwwMode(row.options),
@@ -162,11 +183,17 @@ async function writeState(
     .where(eq(tls.id, row.id))
 }
 
-async function writeWaiting(tx: Db, row: RowFacts, text: string, now: Date): Promise<void> {
+async function writeWaiting(
+  tx: Db,
+  row: RowFacts,
+  text: string,
+  now: Date,
+  challenge: IssuanceChallenge = 'http-01'
+): Promise<void> {
   const previous = row.metadata.acme as TlsAcmeMetadata | undefined
   // The same words again: leave the row alone, so a waiting row is not rewritten every minute.
   if (previous?.stage === 'waiting' && previous.warning === text) return
-  const acme = waitingMarker(previous, text)
+  const acme = waitingMarker(previous, text, challenge)
   await tx
     .update(tls)
     .set({ metadata: { ...row.metadata, acme }, updatedAt: now.toISOString() })
@@ -182,13 +209,13 @@ async function loadServingServers(db: Db, tlsId: string): Promise<ServingRow[]> 
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .innerJoin(environment, eq(environment.id, service.environmentId))
-    .where(eq(hosting.tlsId, tlsId))
+    .where(pinsRow(tlsId))
   const deployed = await db
     .select({ serverId: deployment.serverId })
     .from(hosting)
     .innerJoin(service, eq(service.id, hosting.serviceId))
     .innerJoin(deployment, eq(deployment.environmentId, service.environmentId))
-    .where(and(eq(hosting.tlsId, tlsId), ne(deployment.status, 'draining')))
+    .where(and(pinsRow(tlsId), ne(deployment.status, 'draining')))
   const ids = [...new Set([...own, ...deployed].flatMap((r) => r.serverId ?? []))]
   if (ids.length === 0) return []
   const names = await db
@@ -199,25 +226,35 @@ async function loadServingServers(db: Db, tlsId: string): Promise<ServingRow[]> 
   return ids.map((serverId) => ({ serverId, label: label.get(serverId) ?? 'A server' }))
 }
 
+/** Does the server's daemon list the DNS order feature? A read that fails counts as no. */
+async function serverTakesDnsOrders(
+  deps: Pick<HttpIssuanceDeps, 'serverFeatures'>,
+  serverId: string
+): Promise<boolean> {
+  try {
+    return ((await deps.serverFeatures?.(serverId)) ?? []).includes(ACME_ISSUE_DNS_FEATURE)
+  } catch {
+    return false
+  }
+}
+
 async function describeServers(
   deps: HttpIssuanceDeps,
-  rows: ServingRow[],
-  names: readonly string[]
+  rows: ServingRow[]
 ): Promise<ServingServer[]> {
   return await Promise.all(
     rows.map(async (r) => {
-      const [online, features, addresses] = await Promise.all([
+      const [online, addresses, takesDnsOrders] = await Promise.all([
         deps.isOnline(r.serverId),
-        deps.daemonFeatures(r.serverId),
         loadServerPublicAddresses(deps.db, r.serverId),
+        serverTakesDnsOrders(deps, r.serverId),
       ])
       return {
         serverId: r.serverId,
         label: r.label,
         online,
-        // Several names need a daemon that gets one certificate for all of them.
-        hasFeature: takesOrderFor(features, names),
         addresses,
+        takesDnsOrders,
       }
     })
   )
@@ -248,13 +285,24 @@ function envelope<K extends DaemonOutboundEnvelope['kind']>(
   } as DaemonOutboundEnvelope
 }
 
-async function sendAll(
+export async function sendAll(
   deps: HttpIssuanceDeps,
   items: Array<{ serverId: string; envelope: DaemonOutboundEnvelope }>
 ): Promise<string[]> {
   const failed: string[] = []
   await forEachSequential(items, async (item) => {
     try {
+      // The last gate before the wire: an order over the DNS proof goes only to a daemon
+      // that lists the feature now. An older daemon drops the field and would run the HTTP
+      // proof for names the panel meant to prove over DNS.
+      if (
+        item.envelope.kind === 'acme-issue-request' &&
+        item.envelope.challenge === 'dns-01' &&
+        !(await serverTakesDnsOrders(deps, item.serverId))
+      ) {
+        failed.push(item.serverId)
+        return
+      }
       await deps.send(item.serverId, item.envelope)
     } catch {
       failed.push(item.serverId)
@@ -281,18 +329,43 @@ function orderEnvelope(
     names: requestNames(state, row),
     directory: state.directory,
     contactEmail,
+    ...(state.challenge === 'dns-01' ? { challenge: 'dns-01' as const } : {}),
     startByIso: state.startByAt,
     helpers,
   })
 }
 
 /**
- * Whether names may be ordered centrally at all: at least one, and no wildcard
- * (that needs the DNS proof). Several names are fine; who may take such an
- * order is `takesOrderFor`.
+ * Whether names may be ordered over the HTTP proof: at least one, and no wildcard
+ * (that needs the DNS proof). Several names are fine.
  */
 export function isHttpOrderable(names: readonly string[]): boolean {
   return names.length >= 1 && names.every((name) => !name.includes('*'))
+}
+
+/** Most names one order carries (the daemon's own limit). */
+const MAX_ORDER_NAMES = 100
+
+/** Whether names may be ordered over the DNS proof: one to the daemon's limit, each a name or `*.name`. */
+export function isDnsOrderable(names: readonly string[]): boolean {
+  return (
+    names.length >= 1 &&
+    names.length <= MAX_ORDER_NAMES &&
+    names.every(
+      (name) => /^(\*\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(name) && name.length <= 253
+    )
+  )
+}
+
+/**
+ * Which proof a row is ordered with: the DNS proof when it was made for it (the
+ * public marker) or when any name is a wildcard, the HTTP proof otherwise.
+ */
+export function challengeFor(metadata: unknown, names: readonly string[]): IssuanceChallenge {
+  const acme = (metadata as { acme?: { challengeType?: unknown } } | null)?.acme
+  return acme?.challengeType === 'dns-01' || names.some((name) => name.includes('*'))
+    ? 'dns-01'
+    : 'http-01'
 }
 
 export type StartOutcome =
@@ -310,19 +383,29 @@ async function gather(
   row: Pick<RowFacts, 'id' | 'orderNames'>,
   previous: HttpIssuanceState | null
 ): Promise<{ choice: Choice; servers: ServingServer[] }> {
-  const servers = await describeServers(
-    deps,
-    await loadServingServers(deps.db, row.id),
-    row.orderNames
-  )
+  const servers = await describeServers(deps, await loadServingServers(deps.db, row.id))
   // Nothing to choose from until the first pass over the servers: skip the DNS lookup.
-  if (!servers.some((s) => s.hasFeature)) {
+  if (servers.length === 0) {
     return { choice: { ok: false, reason: 'no_servers', skipped: [] }, servers }
   }
   const dnsAddresses = await dnsAddressesOf(deps.dnsLookup, row.orderNames)
   const choice = chooseParticipants({
     servers,
     dnsAddresses,
+    previousIssuerId: previous?.issuingServerId ?? null,
+    avoidServerId: previous?.avoidServerId ?? null,
+  })
+  return { choice, servers }
+}
+
+async function gatherDns(
+  deps: HttpIssuanceDeps,
+  row: Pick<RowFacts, 'id'>,
+  previous: HttpIssuanceState | null
+): Promise<{ choice: DnsChoice; servers: ServingServer[] }> {
+  const servers = await describeServers(deps, await loadServingServers(deps.db, row.id))
+  const choice = chooseDnsIssuer({
+    servers,
     previousIssuerId: previous?.issuingServerId ?? null,
     avoidServerId: previous?.avoidServerId ?? null,
   })
@@ -337,6 +420,18 @@ function rosterOf(choice: Extract<Choice, { ok: true }>): RosterEntry[] {
       label: h.server.label,
       role: 'helper' as const,
     })),
+    ...choice.skipped.map((s) => ({
+      serverId: s.server.serverId,
+      label: s.server.label,
+      role: 'skipped' as const,
+      skip: s.reason,
+    })),
+  ]
+}
+
+function dnsRosterOf(choice: Extract<DnsChoice, { ok: true }>): RosterEntry[] {
+  return [
+    { serverId: choice.issuer.serverId, label: choice.issuer.label, role: 'issuer' },
     ...choice.skipped.map((s) => ({
       serverId: s.server.serverId,
       label: s.server.label,
@@ -368,6 +463,7 @@ function freshState(params: {
   const { deps, now, choice, previous } = params
   const startedAt = now.toISOString()
   return newHttpIssuanceState({
+    challenge: 'http-01',
     issuingServerId: choice.issuer.serverId,
     requestId: (deps.newRequestId ?? (() => `tlsreq_${crypto.randomUUID()}`))(),
     startedAt,
@@ -386,6 +482,39 @@ function freshState(params: {
     directory: params.staging ? 'staging' : 'production',
     consecutiveFailures: previous?.consecutiveFailures ?? 0,
     roster: rosterOf(choice),
+    centralPair: previous?.centralPair ?? false,
+    issueTimes: previous?.issueTimes ?? [],
+    orderNames: params.orderNames,
+  })
+}
+
+/**
+ * The state a DNS request starts in: no helpers and nothing to forward, so the order
+ * is sent at once and the request is already `ordering`. It lives a shorter time than an
+ * HTTP request, since the daemon gives up on its own after 10 minutes.
+ */
+function freshDnsState(params: {
+  deps: HttpIssuanceDeps
+  now: Date
+  choice: Extract<DnsChoice, { ok: true }>
+  previous: HttpIssuanceState | null
+  staging: boolean
+  orderNames: string[]
+}): HttpIssuanceState {
+  const { deps, now, choice, previous } = params
+  const startedAt = now.toISOString()
+  return newHttpIssuanceState({
+    issuingServerId: choice.issuer.serverId,
+    requestId: (deps.newRequestId ?? (() => `tlsreq_${crypto.randomUUID()}`))(),
+    startedAt,
+    startByAt: new Date(now.getTime() + DNS_REQUEST_LIFETIME_MS).toISOString(),
+    challenge: 'dns-01',
+    phase: 'ordering',
+    orderSentAt: startedAt,
+    attemptTimes: [...pruneAttempts(previous?.attemptTimes ?? [], now), startedAt],
+    directory: params.staging ? 'staging' : 'production',
+    consecutiveFailures: previous?.consecutiveFailures ?? 0,
+    roster: dnsRosterOf(choice),
     centralPair: previous?.centralPair ?? false,
     issueTimes: previous?.issueTimes ?? [],
     orderNames: params.orderNames,
@@ -438,18 +567,53 @@ async function issuerHasOpenOrder(tx: Db, serverId: string): Promise<boolean> {
   return rows.length > 0
 }
 
+/**
+ * The organization's day cap and rate-limit pause, read again under a lock on its
+ * row, so two starts at once cannot both pass a cap that only one of them fits
+ * under. A row trying again was counted when it first started; only the pause
+ * applies to it.
+ */
+async function capAllowsStart(
+  tx: Db,
+  row: RowFacts,
+  previous: HttpIssuanceState | null,
+  now: Date
+): Promise<boolean> {
+  // A renewal is not a new certificate and has no cap to meet.
+  if (row.hasPair) return true
+  await tx
+    .select({ id: organization.id })
+    .from(organization)
+    .where(eq(organization.id, row.organizationId))
+    .for('update')
+  const facts = await loadOrgOrderFacts(tx, row.organizationId, now)
+  const applied = previous === null ? facts : { ...facts, newStarts: [] }
+  return mayStartNewCertificate(applied, now).ok
+}
+
+/** Note a new certificate (not a renewal, not a retry) against the organization's day. */
+async function noteStart(
+  tx: Db,
+  row: RowFacts,
+  previous: HttpIssuanceState | null,
+  now: Date
+): Promise<void> {
+  if (previous === null && !row.hasPair)
+    await recordNewCertificateStart(tx, row.organizationId, now)
+}
+
 async function startInTransaction(
   tx: Db,
   params: {
     deps: HttpIssuanceDeps
     now: Date
     tlsId: string
-    choice: Choice
+    plan: { challenge: 'http-01'; choice: Choice } | { challenge: 'dns-01'; choice: DnsChoice }
     contactEmail: string
     due: (facts: { hasPair: boolean; metadata: Record<string, unknown> }) => boolean
   }
 ): Promise<StepResult> {
-  const { deps, now, choice, contactEmail } = params
+  const { deps, now, plan, contactEmail } = params
   const row = await lockRow(tx, params.tlsId)
   if (!row) return { outcome: 'not_eligible', send: [] }
   if (!(await acmeEnabledFor(tx, row.organizationId))) return { outcome: 'not_eligible', send: [] }
@@ -462,17 +626,44 @@ async function startInTransaction(
     { attemptTimes: previous?.attemptTimes ?? [], nextAttemptAt: previous?.nextAttemptAt ?? null },
     now
   )
-  if (!verdict.ok) return { outcome: 'backoff', send: [] }
-  if (!choice.ok) {
-    await writeWaiting(tx, row, waitingText(choice.reason), now)
+  if (!verdict.ok || !(await capAllowsStart(tx, row, previous, now))) {
+    return { outcome: 'backoff', send: [] }
+  }
+  if (!plan.choice.ok) {
+    await writeWaiting(tx, row, waitingText(plan.choice.reason), now, plan.challenge)
     return { outcome: 'waiting', send: [] }
   }
+  const issuerId = plan.choice.issuer.serverId
   // One order at a time per issuing server: the daemon runs one window at a time, so a
   // second order would only wait behind the first and could pass the silence limit.
   await tx.execute(
-    sql`select pg_advisory_xact_lock(${ISSUER_LOCK_NAMESPACE}, hashtext(${choice.issuer.serverId}))`
+    sql`select pg_advisory_xact_lock(${ISSUER_LOCK_NAMESPACE}, hashtext(${issuerId}))`
   )
-  if (await issuerHasOpenOrder(tx, choice.issuer.serverId)) return { outcome: 'busy', send: [] }
+  if (await issuerHasOpenOrder(tx, issuerId)) return { outcome: 'busy', send: [] }
+  if (plan.challenge === 'dns-01') {
+    const dnsChoice = plan.choice as Extract<DnsChoice, { ok: true }>
+    const state = freshDnsState({
+      deps,
+      now,
+      choice: dnsChoice,
+      previous,
+      staging: deps.staging,
+      orderNames: row.orderNames,
+    })
+    await writeState(tx, row, state, now)
+    await noteStart(tx, row, previous, now)
+    return {
+      outcome: 'ordering',
+      send: [
+        {
+          serverId: state.issuingServerId,
+          envelope: orderEnvelope(now, row, state, [], contactEmail),
+        },
+      ],
+      state,
+    }
+  }
+  const choice = plan.choice as Extract<Choice, { ok: true }>
   const fresh = freshState({
     deps,
     now,
@@ -486,11 +677,33 @@ async function startInTransaction(
     ? { ...fresh, phase: 'ordering', orderSentAt: fresh.startedAt }
     : fresh
   await writeState(tx, row, state, now)
+  await noteStart(tx, row, previous, now)
   return {
     outcome: direct ? 'ordering' : 'started',
     send: openingMessages(now, row, state, choice, contactEmail),
     state,
   }
+}
+
+/**
+ * A row marked "waiting for a site" whose name now has one, with no server serving
+ * it yet: say that instead, so the text matches the real reason.
+ */
+async function restateNoSiteMarker(db: Db, tlsId: string, now: Date): Promise<void> {
+  const noSite = waitingText('no_site')
+  await db
+    .update(tls)
+    .set({
+      metadata: sql`jsonb_set(${tls.metadata}, '{acme,warning}', to_jsonb(${waitingText('no_servers')}::text))`,
+      updatedAt: now.toISOString(),
+    })
+    .where(
+      and(
+        eq(tls.id, tlsId),
+        sql`${tls.metadata} #>> '{acme,warning}' = ${noSite}`,
+        sql`(exists (select 1 from ${hosting} where ${hosting.tlsId} = ${tls.id}) or exists (select 1 from ${hostname} where ${hostname.tlsId} = ${tls.id}))`
+      )
+    )
 }
 
 /**
@@ -517,7 +730,10 @@ export async function startHttpIssuance(
     .limit(1)
   if (peek?.source !== 'lets_encrypt' || peek.status !== 'automatic') return 'not_eligible'
   const names = await orderNamesOf(deps.db, tlsId, peek.metadata)
-  if (!isHttpOrderable(names)) return 'not_eligible'
+  const challenge = challengeFor(peek.metadata, names)
+  if (challenge === 'dns-01' ? !isDnsOrderable(names) : !isHttpOrderable(names)) {
+    return 'not_eligible'
+  }
   const previous = readHttpIssuanceState(peek.metadata)
   if (previous?.endedAt === null) return 'not_due'
   // The cheap answers first: nothing to do, a wait or a cap in force, no contact
@@ -531,22 +747,40 @@ export async function startHttpIssuance(
   if (!mayStartAttempt(attempts, now).ok) return 'backoff'
   const contactEmail = await deps.contactEmail(peek.organizationId)
   if (contactEmail === null || contactEmail.trim() === '') {
-    return await waitForContact(deps, peek.organizationId, tlsId, now, names)
+    return await waitForContact(deps, peek.organizationId, tlsId, now, challenge)
   }
-  const { choice, servers } = await gather(deps, { id: tlsId, orderNames: names }, previous)
-  // Every serving server on an older daemon keeps ordering for itself; the row is left alone.
-  if (!servers.some((s) => s.hasFeature)) return 'not_eligible'
+  // Organization limits: a day's worth of new certificates, and a pause for everyone
+  // once the authority said it is rate limiting. A renewal is not a new certificate.
+  if (peek.hasKey !== true) {
+    const facts = await loadOrgOrderFacts(deps.db, peek.organizationId, now)
+    // A row trying again was counted when it first started; only the pause applies to it.
+    const applied = previous === null ? facts : { ...facts, newStarts: [] }
+    if (!mayStartNewCertificate(applied, now).ok) return 'backoff'
+  }
+  const gathered =
+    challenge === 'dns-01'
+      ? await gatherDns(deps, { id: tlsId }, previous)
+      : await gather(deps, { id: tlsId, orderNames: names }, previous)
+  // No serving server: the row is left alone.
+  if (gathered.servers.length === 0) {
+    await restateNoSiteMarker(deps.db, tlsId, now)
+    return 'not_eligible'
+  }
+  const plan =
+    challenge === 'dns-01'
+      ? { challenge, choice: gathered.choice as DnsChoice }
+      : { challenge, choice: gathered.choice as Choice }
   const result = await deps.db.transaction((tx) =>
-    startInTransaction(tx as unknown as Db, { deps, now, tlsId, choice, contactEmail, due })
+    startInTransaction(tx as unknown as Db, { deps, now, tlsId, plan, contactEmail, due })
   )
   await deliverOrFail(deps, tlsId, result)
   return result.outcome
 }
 
 /**
- * No contact address for the organization. Only database reads: when a serving
- * server's daemon lists the feature the row says it is waiting for an address (an
- * unchanged marker is not rewritten); otherwise it is not ours and is left alone.
+ * No contact address for the organization. Only database reads: when a server
+ * serves the row it says it is waiting for an address (an unchanged marker is not
+ * rewritten); otherwise it is not ours and is left alone.
  * Never looks at DNS.
  */
 async function waitForContact(
@@ -554,18 +788,15 @@ async function waitForContact(
   organizationId: string,
   tlsId: string,
   now: Date,
-  names: readonly string[]
+  challenge: IssuanceChallenge
 ): Promise<StartOutcome> {
   const serving = await loadServingServers(deps.db, tlsId)
-  const lists = await Promise.all(
-    serving.map(async (s) => takesOrderFor(await deps.daemonFeatures(s.serverId), names))
-  )
-  if (!lists.some(Boolean)) return 'not_eligible'
+  if (serving.length === 0) return 'not_eligible'
   await deps.db.transaction(async (tx0) => {
     const tx = tx0 as unknown as Db
     const row = await lockRow(tx, tlsId)
     if (row?.organizationId !== organizationId) return
-    await writeWaiting(tx, row, waitingText('no_contact'), now)
+    await writeWaiting(tx, row, waitingText('no_contact'), now, challenge)
   })
   return 'waiting'
 }
@@ -624,7 +855,8 @@ export async function failOpenRequest(
   tlsId: string,
   requestId: string,
   reason: string,
-  blameIssuer: boolean
+  blameIssuer: boolean,
+  options: { onlyIfUnpinned?: boolean } = {}
 ): Promise<void> {
   const now = clock(deps)
   await deps.db.transaction(async (tx0) => {
@@ -632,6 +864,14 @@ export async function failOpenRequest(
     const row = await lockRow(tx, tlsId)
     const state = row ? readHttpIssuanceState(row.metadata) : null
     if (!row || state?.requestId !== requestId || state.endedAt !== null) return
+    // Read under the row lock: a name pinned again since the sweep looked keeps its order.
+    if (options.onlyIfUnpinned) {
+      const [pin] = await tx
+        .select({ one: sql<number>`1` })
+        .from(tls)
+        .where(and(eq(tls.id, tlsId), sql`not (${notPinnedBySiteCondition()})`))
+      if (pin) return
+    }
     await writeState(tx, row, failedState(state, now, reason, blameIssuer), now)
   })
 }

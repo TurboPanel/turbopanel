@@ -12,6 +12,11 @@ import { buildMailpitSmtpConfig } from '../email/mailpit/smtp-config.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { parseExplicitSmtpConfig, type SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
+  parseSmtpSecurityStrict,
+  resolveSmtpSecurity,
+  SMTP_SECURITY_MODES,
+} from '../email/smtp/smtp-security.ts'
+import {
   normalizeSettingFullKey,
   SettingsResolver,
   type ResolvedSetting,
@@ -33,6 +38,7 @@ export const EMAIL_SETTING_SHORT_KEYS = [
   'SMTP_PORT',
   'SMTP_USER',
   'SMTP_PASS',
+  'SMTP_SECURITY',
   'MAILPIT_API_URL',
   'MAILPIT_SMTP_PORT',
   'RATE_LIMIT_PER_MINUTE',
@@ -54,6 +60,7 @@ export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefi
   SMTP_PORT: undefined,
   SMTP_USER: undefined,
   SMTP_PASS: undefined,
+  SMTP_SECURITY: 'auto',
   MAILPIT_API_URL: undefined,
   MAILPIT_SMTP_PORT: undefined,
   RATE_LIMIT_PER_MINUTE: '60',
@@ -205,7 +212,15 @@ function isAllowedEmailSettingValue(shortKey: EmailSettingShortKey, trimmed: str
   if (shortKey === 'MAILGUN_REGION') {
     return trimmed === 'us' || trimmed === 'eu'
   }
+  if (shortKey === 'SMTP_SECURITY') {
+    return parseSmtpSecurityStrict(trimmed) !== undefined
+  }
   return true
+}
+
+/** Values with a fixed vocabulary are stored in lower case. */
+function normalizeEmailSettingValue(shortKey: EmailSettingShortKey, trimmed: string): string {
+  return shortKey === 'SMTP_SECURITY' ? trimmed.toLowerCase() : trimmed
 }
 
 function collectEmailSettingMutations(
@@ -230,7 +245,10 @@ function collectEmailSettingMutations(
     if (trimmed === '') continue
     if (!isAllowedEmailSettingValue(shortKey, trimmed)) continue
 
-    mutations.push({ shortKey, value: trimmed })
+    mutations.push({
+      shortKey,
+      value: normalizeEmailSettingValue(shortKey, trimmed),
+    })
   }
 
   return mutations
@@ -489,13 +507,15 @@ export async function resolveEmailSettings(
           keys.SMTP_PORT.value,
           keys.MAILPIT_SMTP_PORT.value,
           keys.SMTP_USER.value,
-          keys.SMTP_PASS.value
+          keys.SMTP_PASS.value,
+          resolveSmtpSecurity(keys.SMTP_SECURITY.value)
         )
       : parseExplicitSmtpConfig(
           keys.SMTP_HOST.value,
           keys.SMTP_PORT.value,
           keys.SMTP_USER.value,
-          keys.SMTP_PASS.value
+          keys.SMTP_PASS.value,
+          resolveSmtpSecurity(keys.SMTP_SECURITY.value)
         )
 
   return {
@@ -569,6 +589,24 @@ export function emailUpdatesRequireEncryption(updates: Record<string, string | n
     if (shortKey && EMAIL_SECRET_KEYS.has(shortKey)) return true
   }
   return false
+}
+
+/**
+ * The message to refuse a save with when an update names `SMTP_SECURITY` with a
+ * value that is not one of the four modes; `undefined` when every update is
+ * acceptable. Checked before any write so a typo is an error, not a silent no-op.
+ */
+export function invalidEmailSettingUpdate(
+  updates: Record<string, string | null>
+): string | undefined {
+  for (const [key, value] of Object.entries(updates)) {
+    if (typeof value !== 'string' || value.trim() === '') continue
+    if (resolveShortKeyFromInput(key) !== 'SMTP_SECURITY') continue
+    if (parseSmtpSecurityStrict(value) === undefined) {
+      return `SMTP_SECURITY must be one of: ${SMTP_SECURITY_MODES.join(', ')}`
+    }
+  }
+  return undefined
 }
 
 function resolveShortKeyFromInput(key: string): EmailSettingShortKey | null {

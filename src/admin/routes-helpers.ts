@@ -39,32 +39,19 @@ import {
 const PUBLIC_URLS_APPLY_TIMEOUT_MS = 180_000
 
 export type PublicUrlsApplyPayload = {
-  urls: string[]
-  hostnames?: InstanceHostnameWireEntry[]
+  hostnames: InstanceHostnameWireEntry[]
   instanceAcme?: InstanceAcmeWireSettings
   edgeTrust?: InstanceEdgeTrustWire
-}
-
-function normalizePublicUrlsApply(
-  urlsOrPayload: string[] | PublicUrlsApplyPayload
-): PublicUrlsApplyPayload {
-  if (Array.isArray(urlsOrPayload)) return { urls: urlsOrPayload }
-  return urlsOrPayload
 }
 
 /** Trace fields for a public-urls apply. Certificate PEMs stay off the trace. */
 function tracePublicUrlsPayload(payload: PublicUrlsApplyPayload): Record<string, unknown> {
   return {
-    urls: payload.urls,
-    ...(payload.hostnames
-      ? {
-          hostnames: payload.hostnames.map((entry) => ({
-            host: entry.host,
-            source: entry.source,
-            ...(entry.uploadedCertId ? { uploadedCertId: entry.uploadedCertId } : {}),
-          })),
-        }
-      : {}),
+    hostnames: payload.hostnames.map((entry) => ({
+      host: entry.host,
+      source: entry.source,
+      ...(entry.uploadedCertId ? { uploadedCertId: entry.uploadedCertId } : {}),
+    })),
     ...(payload.instanceAcme ? { instanceAcme: payload.instanceAcme } : {}),
     ...(payload.edgeTrust ? { edgeTrust: { hash: payload.edgeTrust.hash } } : {}),
   }
@@ -477,9 +464,8 @@ export function publicUrlsApplyErrorResponse(err: unknown): PublicUrlsApplyError
 export async function waitForPublicUrlsApply(
   registry: DaemonCellRegistry,
   serverId: string,
-  urlsOrPayload: string[] | PublicUrlsApplyPayload
+  payload: PublicUrlsApplyPayload
 ): Promise<PublicUrlsApplyWaitResult> {
-  const payload = normalizePublicUrlsApply(urlsOrPayload)
   const requestId = generateRequestId()
   const traced = tracePublicUrlsPayload(payload)
   cellTrace('request-start', {
@@ -493,8 +479,7 @@ export async function waitForPublicUrlsApply(
     deliveryId: generateDeliveryId(),
     requestId,
     at: nowTs(),
-    urls: payload.urls,
-    ...(payload.hostnames ? { hostnames: payload.hostnames } : {}),
+    hostnames: payload.hostnames,
     ...(payload.instanceAcme ? { instanceAcme: payload.instanceAcme } : {}),
     ...(payload.edgeTrust ? { edgeTrust: payload.edgeTrust } : {}),
   }

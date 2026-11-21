@@ -29,12 +29,27 @@ import {
 } from '../../db/schema.ts'
 import { TUNNEL_FORWARDING_FEATURE } from '../../lib/version-wire.ts'
 import { settleTunnelOnlyHosting } from './tunnel-only-certificate.ts'
-import { LOOPBACK_PEER, loadNameLock, resolveDeployNameLock } from './name-lock.ts'
+import {
+  LOOPBACK_PEER,
+  loadNameLock,
+  resolveDeployNameLock as resolveWithGeneration,
+} from './name-lock.ts'
 
 /** Sonar only recognises `test()`; see the note in the other suites. */
 const test = Deno.test.bind(Deno)
 
 const dbUrl = getDatabaseUrl()
+
+/** The deploy lock without its table generation (a clock reading), after checking one is sent. */
+async function resolveDeployNameLock(
+  ...args: Parameters<typeof resolveWithGeneration>
+): Promise<Awaited<ReturnType<typeof resolveWithGeneration>>> {
+  const result = await resolveWithGeneration(...args)
+  if (!('tunnel' in result) || result.tunnel === undefined) return result
+  assertEquals(typeof result.tunnel.generation, 'number')
+  const { generation: _generation, ...tunnel } = result.tunnel
+  return { ...result, tunnel }
+}
 const NAME = 'shop.example.com'
 
 type Db = ReturnType<typeof createDenoDb>
@@ -258,14 +273,18 @@ test('a locked name pinned to a library certificate stays locked and is not refu
   })
 })
 
-test('an older daemon refuses a locked name and ignores an all-public hosting', async () => {
+test('an all-public hosting keeps its names open and locks none', async () => {
   await withSite({ hereFeatures: [] }, async (c) => {
     await addDoorway(c)
-    assertEquals(await resolveDeployNameLock(c.db, params(c)), {
-      refusal: { code: 'tunnel_daemon_too_old', hostnames: [NAME] },
-    })
     await c.db.update(doorway).set({ isLocalOnly: false }).where(eq(doorway.hostname, NAME))
-    assertEquals(await resolveDeployNameLock(c.db, params(c)), { tunnel: undefined })
+    assertEquals(await resolveDeployNameLock(c.db, params(c)), {
+      tunnel: {
+        hostnames: [NAME],
+        openHostnames: [NAME],
+        peers: ['10.95.0.11'],
+        extraBind: ['10.95.0.10'],
+      },
+    })
   })
 })
 

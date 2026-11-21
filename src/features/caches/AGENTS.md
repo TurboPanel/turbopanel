@@ -11,12 +11,7 @@ between calls.
 
 ## Wire (feature `project-cache-v1`)
 
-- Everything is sent only to a daemon that lists the feature
-  (`PROJECT_CACHE_FEATURE`). Without it a write answers 409
-  `daemon_update_needed` ("Update the daemon on this server to use project
-  caches"), and a deploy that has a cache or a reach port is refused the same
-  way; with none, `caches` and `helperReach` are left absent, never sent empty.
-- With the feature, `environment.deploy` always carries the complete `caches`
+- `environment.deploy` always carries the complete `caches`
   set for that server (an empty list clears it) and `helperReach`. A
   hostings-only run carries neither (absent leaves the host alone).
 - `cache.apply` carries `{ environmentId, caches, removed? }`. It never prunes a

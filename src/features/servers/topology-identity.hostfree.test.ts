@@ -16,8 +16,6 @@ import {
 const test = Deno.test.bind(Deno)
 
 const SNAPSHOT = {
-  generation: 3,
-  bootGeneration: 1,
   networks: [
     { deviceId: 'eth0', kind: 'uplink', defaultRoute: true, name: 'eth0' },
     { deviceId: 'tp0', kind: 'fabric', name: 'tp0' },
@@ -34,7 +32,6 @@ const SNAPSHOT = {
 
 function sample(
   overrides: Partial<{
-    topologyGeneration: number
     networks: string[]
     filesystems: string[]
     blockDevices: string[]
@@ -48,9 +45,6 @@ function sample(
       intervalSeconds: 60,
       sequence: 1,
       bootGeneration: 1,
-      ...(overrides.topologyGeneration === undefined
-        ? {}
-        : { topologyGeneration: overrides.topologyGeneration }),
     },
     networks: (overrides.networks ?? ['eth0', 'tp0']).map((deviceId) => ({
       deviceId,
@@ -89,11 +83,12 @@ function sample(
   }
 }
 
-test('topologyIdentityKey ignores order, sizes, labels and generation numbers', () => {
+test('topologyIdentityKey ignores order, sizes and labels', () => {
   const reordered = {
     ...SNAPSHOT,
-    generation: 99,
-    bootGeneration: 7,
+    // The retired numbers an older daemon still sends must not change the key.
+    generation: 7,
+    bootGeneration: 3,
     networks: [...SNAPSHOT.networks].reverse().map((n) => ({ ...n, name: 'renamed' })),
     filesystems: [{ filesystemId: 'fs-root', roles: ['hosting', 'root'] }],
     blockDevices: [...SNAPSHOT.blockDevices].reverse(),
@@ -144,33 +139,26 @@ test('sampleFitsTopology needs every named network, filesystem, block device and
   )
 })
 
-test('sampleMatchesRecordedTopology: generation numbers decide while both sides carry one', () => {
-  const record = { generation: 3, snapshot: SNAPSHOT }
-  assert(sampleMatchesRecordedTopology(record, sample({ topologyGeneration: 3 })))
-  // An older daemon's different number is a different topology, even with known ids.
-  assertEquals(sampleMatchesRecordedTopology(record, sample({ topologyGeneration: 4 })), false)
-  // Without a number on the sample, the ids decide.
+test('sampleMatchesRecordedTopology: the sample entity ids decide', () => {
+  const record = { snapshot: SNAPSHOT }
   assert(sampleMatchesRecordedTopology(record, sample()))
   assertEquals(sampleMatchesRecordedTopology(record, sample({ networks: ['eth9'] })), false)
-  // A record from a daemon that sends no number: the ids decide even if the sample has one.
-  assert(sampleMatchesRecordedTopology({ snapshot: SNAPSHOT }, sample({ topologyGeneration: 8 })))
   assertEquals(sampleMatchesRecordedTopology(undefined, sample()), false)
 })
 
-test('reportIsSameTopology: generation numbers decide while both sides carry one, else the key', () => {
-  const record = { generation: 3, snapshot: SNAPSHOT }
-  assert(reportIsSameTopology(record, { generation: 3, snapshot: { other: true } }))
-  assertEquals(reportIsSameTopology(record, { generation: 4, snapshot: SNAPSHOT }), false)
+test('reportIsSameTopology: the identity key decides', () => {
+  const record = { snapshot: SNAPSHOT }
+  assertEquals(reportIsSameTopology(record, { snapshot: { other: true } }), false)
   assert(reportIsSameTopology(record, { snapshot: { ...SNAPSHOT, memoryTotalBytes: 1 } }))
   assertEquals(
     reportIsSameTopology(record, { snapshot: { ...SNAPSHOT, gpus: [{ gpuId: 'gpu0' }] } }),
     false
   )
-  assert(reportIsSameTopology({ snapshot: SNAPSHOT }, { generation: 5, snapshot: SNAPSHOT }))
+  assert(reportIsSameTopology(record, { snapshot: SNAPSHOT }))
 })
 
 test('recordedTopologyForSample hands back the record only when the sample matches it', () => {
-  const record = { generation: 3, snapshot: SNAPSHOT, extra: 'kept' }
+  const record = { snapshot: SNAPSHOT, extra: 'kept' }
   assertEquals(recordedTopologyForSample(record, sample()), record)
   assertEquals(recordedTopologyForSample(record, sample({ gpus: ['gpu9'] })), undefined)
   assertEquals(recordedTopologyForSample(undefined, sample()), undefined)

@@ -6,8 +6,7 @@
  * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
  * `forge.envelopes` (private key / client secret / webhook secret),
  * `connection.oauth_envelope` (GitLab access/refresh token pair), `totp.secret`,
- * `monitor.secret_envelope`, `relay.preshared_key`, `destination.secret_key_sealed`, `ingress.token_envelope`, the `ALERT_WEBHOOK_URL`
- * setting, `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in the
+ * `monitor.secret_envelope`, `relay.preshared_key`, `destination.secret_key_sealed`, `ingress.token_envelope`, `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in the
  * `SYSTEM_EMAIL` setting row onto the current data-encryption key version.
  *
  * Per-blob rules (variable / TLS / principal / storage / secret / forge / gitConnection / twofactor / authproviders / email secrets):
@@ -67,7 +66,6 @@ import {
   twoFactor,
   variable,
 } from '../db/schema.ts'
-import { ALERT_WEBHOOK_URL_KEY } from '../features/alerts/alert-webhook-settings.ts'
 import { EMAIL_SECRET_KEYS, SYSTEM_EMAIL_DB_KEY } from '../features/settings/email-settings.ts'
 import {
   AUTH_PROVIDER_SECRET_KEYS,
@@ -108,7 +106,6 @@ export const REENCRYPT_STAGES = [
   'ingress',
   'authproviders',
   'email',
-  'alertwebhook',
   'identity',
 ] as const
 
@@ -137,7 +134,6 @@ export const REENCRYPT_COVERED_PLACES = [
   'ingress.token_envelope',
   `setting:${SYSTEM_AUTH_PROVIDERS_DB_KEY}`,
   `setting:${SYSTEM_EMAIL_DB_KEY}`,
-  `setting:${ALERT_WEBHOOK_URL_KEY}`,
   `setting:${PANEL_IDENTITY_SETTING_KEY}`,
   `setting:${INSTANCE_ACME_ACCOUNT_SETTING_KEY}`,
 ] as const
@@ -1233,37 +1229,6 @@ async function sweepRelayPresharedKeysBatch(
   return { pageSize: rows.length, lastId: rows.at(-1)?.id }
 }
 
-/** The legacy operator `ALERT_WEBHOOK_URL` setting: one sealed string in `setting.value`. */
-async function sweepAlertWebhookSetting(
-  db: Db,
-  secrets: DerivedSecretsConfig,
-  summary: ReencryptSweepSummary
-): Promise<void> {
-  const rows = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-    .limit(1)
-
-  const original = rows[0]?.value
-  if (typeof original !== 'string' || original === '') return
-
-  await processBlob(
-    summary,
-    secrets,
-    original,
-    async (resealed) => {
-      const updated = await db
-        .update(setting)
-        .set({ value: resealed, updatedAt: nowIso() })
-        .where(and(eq(setting.key, ALERT_WEBHOOK_URL_KEY), eq(setting.value, original)))
-        .returning({ key: setting.key })
-      return updated.length > 0
-    },
-    { allowDaemonBound: false }
-  )
-}
-
 /**
  * A setting whose `sealed` member holds a `tpsecret`: the panel identity row
  * (`PANEL_IDENTITY_KEYS`, the key seeds) and the control plane's own ACME
@@ -1302,7 +1267,7 @@ async function sweepSealedMemberSetting(
   )
 }
 
-type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email' | 'alertwebhook' | 'identity'>
+type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email' | 'identity'>
 
 async function runTableStageBatch(
   db: Db,
@@ -1431,12 +1396,6 @@ export async function reencryptAtRestSecrets(
 
     if (cursor.stage === 'email') {
       await sweepEmailSettingSecrets(db, dataEncryptionSecrets, summary)
-      cursor = { stage: 'alertwebhook' }
-      continue
-    }
-
-    if (cursor.stage === 'alertwebhook') {
-      await sweepAlertWebhookSetting(db, dataEncryptionSecrets, summary)
       cursor = { stage: 'identity' }
       continue
     }

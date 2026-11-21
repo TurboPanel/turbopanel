@@ -18,11 +18,6 @@ import {
 } from '../../db/schema.ts'
 import type { Db } from '../../db/connection.ts'
 import { parseTunnelRoutesPayload } from '../../contracts/commands/tunnel-routes.ts'
-import {
-  TUNNEL_CONNECTOR_FEATURE,
-  TUNNEL_FORWARDING_FEATURE,
-  TUNNEL_LOCK_FOLLOW_FEATURE,
-} from '../../lib/version-wire.ts'
 import { createCommandRecord, getCommandDispatchPayload } from '../commands/command-records.ts'
 import { applySucceededSideEffects } from '../commands/consumer.ts'
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
@@ -337,31 +332,14 @@ test('a name held by a site of another organization is not linked to a doorway',
   })
 })
 
-test('a server whose daemon takes the lock from the table is sent each name and its carriers; an older one is not', async () => {
+test('a server is sent each name it runs and the carriers that may forward it', async () => {
   await withScenario({}, async (s) => {
-    await s.db
-      .update(server)
-      .set({
-        daemon: {
-          projection: {
-            features: [
-              TUNNEL_FORWARDING_FEATURE,
-              TUNNEL_CONNECTOR_FEATURE,
-              TUNNEL_LOCK_FOLLOW_FEATURE,
-            ],
-          },
-        },
-      })
-      .where(eq(server.id, s.siteAId))
     await nudgeTunnelRoutes(s.db, s.deps, s.organizationId)
     // Site A runs the name; only the carrier may forward it.
     const toA = sentTo(s, s.siteAId)
     assertEquals(toA.length, 1)
     assertEquals((await tableOf(s, s.queued.indexOf(toA[0]!))).inbound, [
-      { hostname: NAME, peers: ['10.95.0.10'] },
+      { hostname: NAME, lock: true, peers: ['10.95.0.10'] },
     ])
-    // The carrier's daemon does not advertise it: no field, same table as before.
-    const toCarrier = sentTo(s, s.carrierId)
-    assertEquals((await tableOf(s, s.queued.indexOf(toCarrier[0]!))).inbound, undefined)
   })
 })

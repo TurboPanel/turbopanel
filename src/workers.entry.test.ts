@@ -130,6 +130,71 @@ describe('workers.ts entry handlers', () => {
     await Promise.all(ctx.waitUntilPromises)
   }, 30_000)
 
+  it('fetch sets Server-Timing on /status, with init on the first request only', async () => {
+    const statusUrl = `https://panel.example.com${CLIENT_API_PREFIX}/status`
+    const first = fakeExecutionContext()
+    const cold = await workers.fetch(new Request(statusUrl), workersTestEnv(), first)
+    await Promise.all(first.waitUntilPromises)
+    expect(cold.headers.get('Server-Timing')).toMatch(
+      /^init;dur=\d+\.\d, db;desc="\d+ stmts", app;dur=\d+\.\d$/
+    )
+
+    try {
+      // The cold response was stored in the edge cache; drop it so the warm
+      // request runs the app again (a cache hit carries no timing at all).
+      await caches.default.delete(new Request(statusUrl))
+      const second = fakeExecutionContext()
+      const warm = await workers.fetch(new Request(statusUrl), workersTestEnv(), second)
+      await Promise.all(second.waitUntilPromises)
+      expect(warm.headers.get('Server-Timing')).toMatch(/^db;desc="\d+ stmts", app;dur=\d+\.\d$/)
+    } finally {
+      await Promise.all(first.waitUntilPromises)
+      await caches.default.delete(new Request(statusUrl))
+    }
+  }, 30_000)
+
+  it('fetch sends no Server-Timing on auth routes or anywhere off the allowlist', async () => {
+    const base = `https://panel.example.com${CLIENT_API_PREFIX}`
+    const requests = [
+      new Request(`https://panel.example.com${HEALTH_PATH}`),
+      ...['/auth/request-password-reset', '/auth/sign-in', '/auth/sign-up'].map(
+        (path) =>
+          new Request(`${base}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: 'nobody@example.net', password: 'x' }),
+          })
+      ),
+    ]
+    for (const request of requests) {
+      const ctx = fakeExecutionContext()
+      const response = await workers.fetch(request, workersTestEnv(), ctx)
+      await Promise.all(ctx.waitUntilPromises)
+      expect(response.headers.get('Server-Timing'), `${request.method} ${request.url}`).toBeNull()
+    }
+  }, 30_000)
+
+  it('fetch answers /status from the edge cache before the app runs', async () => {
+    const url = `https://panel.example.com${CLIENT_API_PREFIX}/status`
+    const stored = new Response('{"ok":true,"runtime":"workers"}', {
+      headers: { 'Cache-Control': 'public, max-age=30', 'Content-Type': 'application/json' },
+    })
+    await caches.default.put(new Request(url), stored)
+    try {
+      const response = await workers.fetch(
+        new Request(`${url}?probe=1`, { headers: { Cookie: 'session=ignored' } }),
+        workersTestEnv(),
+        fakeExecutionContext()
+      )
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({ ok: true, runtime: 'workers' })
+      // Served before init: no route table was built.
+      expect(getWorkerAppRoutePathsForTests()).toEqual([])
+    } finally {
+      await caches.default.delete(new Request(url))
+    }
+  }, 30_000)
+
   it('built Workers app has no self-hosted ingress or tunnel-token routes', async () => {
     const ctx = fakeExecutionContext()
     await workers.fetch(
@@ -155,10 +220,9 @@ describe('workers.ts entry handlers', () => {
     const paths = getWorkerAppRoutePathsForTests().filter((path) =>
       path.includes('/dns-certificates')
     )
-    // The list stays; start, check and retry answer `certificate_ordering_off`
-    // (dns-certificate-routes.hostfree.test.ts), and no Workers code can reach
-    // the ordering modules (ordering-off.hostfree.test.ts).
-    // Exactly these three: no other ordering route under `/dns-certificates`.
+    // The list, the order and its check and retry only write the row; the
+    // order itself is placed by a server's daemon (dns-certificate-routes.hostfree.test.ts),
+    // and no Workers code can reach the ordering modules (ordering-off.hostfree.test.ts).
     expect([...new Set(paths)].sort((a, b) => a.localeCompare(b))).toEqual([
       `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates`,
       `${CLIENT_API_PREFIX}/organizations/:id/dns-certificates/:tlsId/check`,

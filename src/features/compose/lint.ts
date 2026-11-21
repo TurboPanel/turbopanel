@@ -9,6 +9,7 @@ import {
   type YAMLMap,
   type YAMLSeq,
 } from 'yaml'
+import { parseNetworkMode } from './network-mode.ts'
 import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 import {
   type ComposeServiceKind,
@@ -351,8 +352,7 @@ function serviceIsNativeApp(valueNode: YAMLMap): boolean {
 }
 
 /**
- * True when `x-turbopanel.source.buildKind` is `image` (or the old spelling of
- * it, still accepted until the contract phase of the rename).
+ * True when `x-turbopanel.source.buildKind` is `image`.
  *
  * Deliberately a sibling of {@link serviceIsHostNative} rather than another
  * entry in {@link HOST_NATIVE_SERVICE_KINDS}: an image-built service *is* a
@@ -497,6 +497,53 @@ function lintServiceHosting(
       issues,
     })
   }
+}
+
+/**
+ * `network_mode` replaces the service's own network stack, so it cannot be
+ * combined with `networks`, and an ingress route cannot target the service by
+ * name: for `service:<x>` / `container:<x>` the ports live in the shared
+ * namespace, and for `none` there is nothing to reach.
+ */
+function lintServiceNetworkMode(
+  name: string,
+  valueNode: YAMLMap,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[]
+): void {
+  const modeNode = mapEntryValue(valueNode, 'network_mode')
+  const mode = scalarString(modeNode)?.trim()
+  if (mode === undefined || mode.length === 0) return
+
+  const networksNode = mapEntryValue(valueNode, 'networks')
+  if (networksNode !== undefined && networksNode !== null) {
+    issues.push({
+      level: 'error',
+      message: `Service "${name}" sets both network_mode (${mode}) and networks; they are mutually exclusive. Remove networks.`,
+      path: `services.${name}.networks`,
+      line: nodeLine(networksNode, lineCounter),
+    })
+  }
+
+  const extension = serviceExtensionMap(valueNode)
+  const hostingNode = extension ? mapEntryValue(extension, 'hosting') : undefined
+  if (!isSeq(hostingNode) || (hostingNode as YAMLSeq).items.length === 0) return
+  const share = parseNetworkMode(mode)
+  if (share === undefined) return
+  let message: string
+  if (share.kind === 'service') {
+    message = `Service "${name}" shares the network of service "${share.target}", so its ports are served by "${share.target}". Declare the ingress route on "${share.target}" instead.`
+  } else if (share.kind === 'container') {
+    message = `Service "${name}" shares the network of container "${share.target}", so its ports are served there and a hostname route cannot reach this service. Remove the hosting entry.`
+  } else {
+    message = `Service "${name}" uses network_mode ${share.kind}, so it is not on the project network and a hostname route cannot reach it. Remove the hosting entry or the network_mode.`
+  }
+  issues.push({
+    level: 'error',
+    message,
+    path: `services.${name}.x-turbopanel.hosting`,
+    line: nodeLine(hostingNode as Node, lineCounter),
+  })
 }
 
 /** `serviceKind` as authored, narrowed for the kind-gated hosting rules. */
@@ -1594,6 +1641,7 @@ function lintService(params: {
   lintServiceSource(name, valueNode, known, lineCounter, issues)
   lintServicePrincipal(name, valueNode, known, lineCounter, issues)
   lintServiceHosting(name, valueNode, known, lineCounter, issues)
+  lintServiceNetworkMode(name, valueNode, lineCounter, issues)
   lintServiceNodeVersion(name, valueNode, lineCounter, issues)
   lintServiceDenoVersion(name, valueNode, lineCounter, issues)
   lintServiceResourceLimits(name, valueNode, keyLine, issues)

@@ -521,7 +521,7 @@ export const rotation = pgTable(
  * `defaultServerTimezone` / `enforceServerTimezone` (parsed by
  * `src/features/datacenters/datacenter-options.ts`); the routing policy lives in
  * real columns: `priority` (integer, lower wins, default 100), `trusted`
- * (default true; false when the L2 is not under the operator's control) and
+ * (default false: untrusted, TurboFabric secures traffic; true only when the operator marks the L2 trusted) and
  * `address_preference`, plus the optional `kind` of network. Must stay declared before `server` (same
  * rule as `license`).
  */
@@ -558,8 +558,8 @@ export const datacenter = pgTable(
     priority: integer().default(100).notNull(),
     /** Address family tried first among a server's pins here: `ipv6` or `ipv4`. */
     addressPreference: text('address_preference').default('ipv6').notNull(),
-    /** Whether the operator controls the datacenter's L2; `false` keeps server-to-server traffic off it. */
-    isTrusted: boolean('is_trusted').default(true).notNull(),
+    /** Whether the operator controls the datacenter's L2; `false` sends server-to-server traffic over TurboFabric. */
+    isTrusted: boolean('is_trusted').default(false).notNull(),
   },
   (table) => [
     index('idx_datacenter_organization_id').using(
@@ -937,8 +937,8 @@ export const server = pgTable(
      */
     containerPrefix: cidr('container_prefix'),
     /**
-     * Latest hardware layout the daemon reported (`generation`,
-     * `bootGeneration`, `snapshot`, `appliedAt`, `updatedAt`, `changes`), at
+     * Latest hardware layout the daemon reported (`snapshot`,
+     * `appliedAt`, `updatedAt`, `changes`), at
      * most 64 KiB, rewritten at most once per cooldown. Overwritten in
      * place: there is no history. Never selected by list, detail or auth reads.
      */
@@ -4356,10 +4356,13 @@ export const hosting = pgTable(
  * `UNIQUE (routing_organization_id, hostname)`, an invariant a jsonb array
  * element cannot express across rows. Every write to `options.hostnames`
  * (panel `POST`/`PATCH /hostings` and compose's `reconcileHostingsFromCompose`)
- * does a full delete-then-insert replace of this hosting's rows in the same
- * transaction as the `hosting` write, mirroring `hostnames[]`'s own
- * replace-whole-array semantics — see `replaceHostingHostnames` in
- * `features/servers/hostname-records.ts`.
+ * syncs this hosting's rows in the same transaction as the `hosting` write:
+ * rows for names that left are deleted, new names are inserted, names that
+ * stay keep their row (and so their certificate choice) — see
+ * `replaceHostingHostnames` in `features/servers/hostname-records.ts`.
+ *
+ * `certificate` and `tls_id` are the name's own certificate choice; NULL
+ * `certificate` reads as "use `hosting.tls_id`".
  *
  * `routing_organization_id` is named for the future cross-org-hosting feature
  * (hosting onto another organization's servers), where it would diverge from
@@ -4398,6 +4401,8 @@ export const hostname = pgTable(
     hostingId: uuid('hosting_id').notNull(),
     routingOrganizationId: uuid('routing_organization_id').notNull(),
     hostname: text().notNull(),
+    certificate: text(),
+    tlsId: uuid('tls_id'),
   },
   (table) => [
     index('idx_hostname_hosting_id').using(
@@ -4418,6 +4423,16 @@ export const hostname = pgTable(
       foreignColumns: [organization.id],
       name: 'hostname_routing_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+    index('idx_hostname_tls_id').using('btree', table.tlsId.asc().nullsLast().op('uuid_ops')),
+    foreignKey({
+      columns: [table.tlsId],
+      foreignColumns: [tls.id],
+      name: 'hostname_tls_id_tls_id_fk',
+    }).onDelete('set null'),
+    check(
+      'hostname_certificate_check',
+      sql`certificate IS NULL OR certificate IN ('cloudflare_origin', 'letsencrypt_http', 'letsencrypt_dns', 'self_signed', 'library')`
+    ),
   ]
 )
 /**
@@ -4940,8 +4955,9 @@ export const folder = pgTable(
     state: text().notNull(),
     /**
      * Why the host kept a `removing` folder, in plain words, from its last
-     * answer; NULL when it has not refused. Cleared when the row leaves
-     * `removing`.
+     * answer; NULL when it has not refused. On an `orphan` volume folder it
+     * says the folder holds back a deleted project's Hosting Account. Cleared
+     * when the row leaves those states.
      */
     removalNote: text('removal_note'),
     /** When the owners were told this folder is an orphan; NULL until then and again once it stops being one. */
@@ -7000,9 +7016,9 @@ export const ingressAccount = pgTable(
 )
 /**
  * One public name for this control plane. Replaces the flat
- * `TURBOPANEL_PUBLIC_URLS` setting as the source of truth; that setting stays
- * as a compatibility projection. Certificate source and Let's Encrypt attempt
- * state live on the row because a single jsonb setting cannot hold them.
+ * `TURBOPANEL_PUBLIC_URLS` setting as the only source of truth. Certificate
+ * source and Let's Encrypt attempt state live on the row because a single
+ * jsonb setting cannot hold them.
  */
 export const instanceHostname = pgTable(
   'origin',
@@ -7053,6 +7069,8 @@ export const instanceHostname = pgTable(
     acmeState: jsonb('acme_state'),
     isPrimary: boolean('is_primary').default(false).notNull(),
     isDaemonDial: boolean('is_daemon_dial').default(true).notNull(),
+    /** True when a `direct` name actually sits behind a CDN proxy; the owner sets it. Advises the shorter heartbeat. */
+    behindCdnProxy: boolean('is_behind_cdn_proxy').default(false).notNull(),
   },
   (table) => [
     unique('origin_host_unique').on(table.host),
@@ -8885,8 +8903,8 @@ export const portal = pgTable(
 /**
  * One hostname a tunnel carries. It keeps the name as text and the site it
  * serves; it does not point at a `hostname` row, because
- * `replaceHostingHostnames` deletes and reinserts a hosting's hostname rows on
- * every save. A name is unique per routing organization here too, and the
+ * `replaceHostingHostnames` adds and removes a hosting's hostname rows as its
+ * names change. A name is unique per routing organization here too, and the
  * doorway code path surfaces the same 409 `hostname_in_use` when either this
  * table or `hostname` already holds it.
  * `routing_organization_id` is named as on `hostname`.

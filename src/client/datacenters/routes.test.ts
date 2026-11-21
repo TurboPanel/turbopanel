@@ -504,7 +504,7 @@ test('DELETE /datacenters/:id returns 409 when members remain', async () => {
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'DC Net',
       createdAt: now,
       updatedAt: now,
@@ -524,7 +524,7 @@ test('DELETE /datacenters/:id returns 409 when members remain', async () => {
     datacenterId: dc!.id,
     networkId: net!.id,
     serverId: srv!.id,
-    address: '10.10.0.10',
+    address: '10.50.0.10',
     allocation: 'dedicated',
     scope: 'datacenter',
   })
@@ -574,7 +574,7 @@ test('GET /datacenters lists datacenters with privateCidrs', async () => {
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'Site LAN',
       createdAt: now,
       updatedAt: now,
@@ -592,7 +592,7 @@ test('GET /datacenters lists datacenters with privateCidrs', async () => {
     assertEquals(body.datacenters.length, 1)
     assertEquals(body.datacenters[0]?.id, dc!.id)
     assertEquals(body.datacenters[0]?.name, 'Listed DC')
-    assertEquals(body.datacenters[0]?.privateCidrs, ['10.10.0.0/24'])
+    assertEquals(body.datacenters[0]?.privateCidrs, ['10.50.0.0/24'])
   })
 })
 
@@ -604,6 +604,7 @@ test('GET /datacenters includes effective priority and trusted', async () => {
       .values({
         organizationId,
         name: 'Defaults DC',
+        isTrusted: true,
         createdAt: now,
         updatedAt: now,
       })
@@ -717,6 +718,7 @@ test('GET /datacenters/:id includes effective priority and trusted', async () =>
         name: 'Policy DC',
         addressPreference: 'ipv4',
         priority: 25,
+        isTrusted: true,
         createdAt: now,
         updatedAt: now,
       })
@@ -745,7 +747,7 @@ test('GET /datacenters/:id includes effective priority and trusted', async () =>
   })
 })
 
-test('POST /datacenters creates site network and membership pins', async () => {
+test('POST /datacenters creates an untrusted site network with membership pins when trusted is omitted', async () => {
   await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [srv] = await db
@@ -785,11 +787,13 @@ test('POST /datacenters creates site network and membership pins', async () => {
     assertEquals(body.ok, true)
 
     const [dcRow] = await db
-      .select({ name: datacenter.name })
+      .select({ name: datacenter.name, isTrusted: datacenter.isTrusted })
       .from(datacenter)
       .where(eq(datacenter.id, body.id))
       .limit(1)
     assertEquals(dcRow?.name, 'Frankfurt DE - Hetzner AS24940')
+    // No `trusted` in the request: the new network starts untrusted.
+    assertEquals(dcRow?.isTrusted, false)
 
     const [siteNet] = await db
       .select({ cidr: network.cidr, kind: network.kind })
@@ -909,7 +913,7 @@ test('DELETE /datacenters/:id removes an empty datacenter including its site net
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'Site LAN',
       createdAt: now,
       updatedAt: now,
@@ -1645,7 +1649,7 @@ test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad 
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    assertEquals(afterInvalid, { priority: 100, isTrusted: true, addressPreference: 'ipv6' })
+    assertEquals(afterInvalid, { priority: 100, isTrusted: false, addressPreference: 'ipv6' })
 
     const list = await app.request('/datacenters', {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
@@ -1655,7 +1659,7 @@ test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad 
     }
     const row = listBody.datacenters.find((item) => item.id === dc!.id)
     assertEquals(row?.priority, 100)
-    assertEquals(row?.trusted, true)
+    assertEquals(row?.trusted, false)
   })
 })
 
@@ -1696,7 +1700,7 @@ test('PATCH /datacenters/:id with options null clears the stored blob', async ()
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    assertEquals(row, { options: null, priority: 100, isTrusted: true })
+    assertEquals(row, { options: null, priority: 100, isTrusted: false })
 
     const detail = await app.request(`/datacenters/${dc!.id}`, {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
@@ -1707,11 +1711,11 @@ test('PATCH /datacenters/:id with options null clears the stored blob', async ()
     }
     assertEquals(body.datacenter.options, {
       priority: 100,
-      trusted: true,
+      trusted: false,
       addressPreference: 'ipv6',
     })
     assertEquals(body.datacenter.priority, 100)
-    assertEquals(body.datacenter.trusted, true)
+    assertEquals(body.datacenter.trusted, false)
   })
 })
 
@@ -1862,7 +1866,7 @@ test('POST /datacenters/:id/subnets reports each collision code from the authori
         organizationId,
         datacenterId: dc!.id,
         kind: 'datacenter',
-        cidr: '10.10.0.0/24',
+        cidr: '10.50.0.0/24',
         name: 'lan',
         createdAt: now,
         updatedAt: now,
@@ -1927,11 +1931,11 @@ test('POST /datacenters/:id/subnets reports each collision code from the authori
         },
       ],
       [
-        '10.10.0.128/25',
+        '10.50.0.128/25',
         {
           error: 'subnet_overlaps',
-          cidr: '10.10.0.128/25',
-          conflictingCidr: '10.10.0.0/24',
+          cidr: '10.50.0.128/25',
+          conflictingCidr: '10.50.0.0/24',
           networkId: ownSite!.id,
           datacenterId: dc!.id,
         },
@@ -2071,7 +2075,7 @@ async function withManagedPolicyFixtures(
   ): Promise<string> => {
     const [row] = await db
       .insert(datacenter)
-      .values({ organizationId, name, options, createdAt: now, updatedAt: now })
+      .values({ organizationId, name, options, isTrusted: true, createdAt: now, updatedAt: now })
       .returning({ id: datacenter.id })
     const [net] = await db
       .insert(network)
@@ -2351,6 +2355,7 @@ test('PATCH /datacenters/:id policy change without a command queue still saves',
       .values({
         organizationId,
         name: 'Queueless Policy DC',
+        isTrusted: true,
         createdAt: now,
         updatedAt: now,
       })
@@ -2388,7 +2393,12 @@ async function seedLanOnlyNetwork(
   const daemon = { projection: { features: ['fabric-lan-routes-v1'] } }
   const [dc] = await db
     .insert(datacenter)
-    .values({ organizationId, name: 'LAN Guard DC', addressPreference: 'ipv4' })
+    .values({
+      organizationId,
+      name: 'LAN Guard DC',
+      addressPreference: 'ipv4',
+      isTrusted: true,
+    })
     .returning({ id: datacenter.id })
   const [lan] = await db
     .insert(network)

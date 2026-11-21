@@ -197,6 +197,8 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
               Object.assign(Promise.resolve(rows), {
                 limit: () => Promise.resolve(rows),
                 orderBy: () => Promise.resolve(rows),
+                // The options write reads the row under its lock first.
+                for: () => ({ limit: () => Promise.resolve(rows) }),
               }),
             orderBy: () => Promise.resolve(rows),
             innerJoin: () => ({

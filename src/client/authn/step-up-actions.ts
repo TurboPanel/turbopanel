@@ -11,15 +11,16 @@
  * and add that one call to the route; nothing else needs to know.
  *
  * Deliberately not on the list: sign-out, creating things, and anything an
- * undo (or a re-deploy) fully reverses. There is no "delete organization"
- * route in this build; when one lands it belongs here as `organization.delete`.
+ * undo (or a re-deploy) fully reverses. `organization.delete` ignores the
+ * switch and is always gated (`requireInstanceStepUp`), the most permanent
+ * action of all.
  * "Revoke a key" here means a license key (`DELETE /licenses/:id`) and a
  * server's daemon key (`POST /servers/:id/daemon-key/revoke`); there are no
  * other API keys yet.
  *
  * A re-enroll ticket hands out the power to replace a server's key, and a burn
  * reissues an install ticket, so both are gated like revoking a key (owner
- * decision), even though they create something. The four key-changing
+ * decision), even though they create something. The key-changing
  * actions (re-enroll ticket, key burn, license revoke, server key revoke) are
  * gated whatever the organization switch says (`requireInstanceStepUp`).
  *
@@ -56,6 +57,7 @@ export const STEP_UP_ACTIONS = {
   'tls.leaf.stale': 'Mark a certificate as not needing renewal',
   'tls.leaf.delete': 'Delete the record of a certificate signed by the organization CA',
   'organization.reauth_settings.update': 'Change the re-authentication setting',
+  'organization.delete': 'Delete an organization and everything it owns',
 } as const
 
 /**
@@ -65,7 +67,6 @@ export const STEP_UP_ACTIONS = {
  */
 export const INSTANCE_STEP_UP_ACTIONS = {
   'panel.key.change': "Change the control plane's key or the passkeys that approve it",
-  'server.sealing_key.clear': "Clear a server's sealing key",
   'instance.tunnel_token.set': 'Change the tunnel token',
   'instance.ingress_account.added': 'Connect a Cloudflare account',
   'instance.ingress_account.removed': 'Remove a Cloudflare account',

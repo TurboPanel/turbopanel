@@ -67,6 +67,10 @@ export function parseStreamEntries(raw: unknown): StreamEntry[] {
   return entries
 }
 
+export function parseAutoClaimNext(raw: unknown): string {
+  return Array.isArray(raw) && typeof raw[0] === 'string' ? raw[0] : '0-0'
+}
+
 export function parseAutoClaimEntries(raw: unknown): StreamEntry[] {
   if (!Array.isArray(raw) || raw.length < 2) return []
   return parseMessageList(raw[1])
@@ -233,6 +237,18 @@ export class RedisCellClient {
     startId: string,
     count: number
   ): Promise<StreamEntry[]> {
+    return (await this.xautoclaimPage(key, group, consumer, minIdleMs, startId, count)).entries
+  }
+
+  /** One XAUTOCLAIM page with its cursor; `next` is `0-0` once the pending list is exhausted. */
+  async xautoclaimPage(
+    key: string,
+    group: string,
+    consumer: string,
+    minIdleMs: number,
+    startId: string,
+    count: number
+  ): Promise<{ next: string; entries: StreamEntry[] }> {
     const raw = await this.#maint.xautoclaim(
       key,
       group,
@@ -242,7 +258,7 @@ export class RedisCellClient {
       'COUNT',
       count
     )
-    return parseAutoClaimEntries(raw)
+    return { next: parseAutoClaimNext(raw), entries: parseAutoClaimEntries(raw) }
   }
 
   /** Move the named pending entries to `consumer` (a minimum idle of 0 takes them at once). */

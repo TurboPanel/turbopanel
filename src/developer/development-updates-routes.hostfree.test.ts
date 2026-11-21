@@ -5,7 +5,11 @@ import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import type { Db } from '../db/connection.ts'
 import { withDevelopmentAdminRoutes } from '../platform/deno/development-admin-routes.ts'
 import type { DaemonUpdateResult } from './daemon-update-fanout.ts'
-import { DevOverlayRebuildError, type DevOverlayState } from './dev-update-overlay.ts'
+import {
+  DevOverlayRebuildError,
+  type DevOverlayState,
+  ERROR_TEXT_MAX_BYTES,
+} from './dev-update-overlay.ts'
 import {
   computePendingDaemonChanges,
   type DevelopmentPushJob,
@@ -353,4 +357,46 @@ test('GET carries the host block and answers when reading it fails', async () =>
   const failed = await failing.request('/instance/updates/development')
   assertEquals(failed.status, 200)
   assertEquals(((await failed.json()) as { host: unknown }).host, null)
+})
+
+test('per-server errors are colour-free and capped in bytes', async () => {
+  resetDevelopmentPushJobForTests()
+  const app = createApp({
+    readState: () => Promise.resolve(FRESH),
+    listRemoteServers: () => Promise.resolve([remote(SERVER_A)]),
+    push: (_registry, _db, ids) =>
+      Promise.resolve(
+        ids.map((serverId) => ({
+          serverId,
+          ok: false as const,
+          error: `\u001b[31mdenied\u001b[0m ${'z'.repeat(20_000)}`,
+        }))
+      ),
+  })
+  assertEquals((await post(app)).status, 202)
+  const ended = await waitForJobEnd(app)
+  const error = ended.servers[0].error ?? ''
+  assertEquals(error.includes('\u001b'), false)
+  assertEquals(new TextEncoder().encode(error).length <= ERROR_TEXT_MAX_BYTES, true)
+})
+
+test('a failed build message is capped in bytes and colour-free', async () => {
+  resetDevelopmentPushJobForTests()
+  const app = createApp({
+    readState: () =>
+      Promise.resolve({ built: null, sourceFingerprint: 'abc', sourceChanged: true }),
+    rebuild: () =>
+      Promise.reject(new DevOverlayRebuildError(1, `\u001b[31m${'q'.repeat(30_000)}\u001b[0m`)),
+    listRemoteServers: () => Promise.resolve([remote(SERVER_A)]),
+  })
+  assertEquals((await post(app)).status, 202)
+  const ended = await waitForJobEnd(app)
+  assertEquals(ended.message?.includes('\u001b'), false)
+  assertEquals(new TextEncoder().encode(ended.message ?? '').length <= ERROR_TEXT_MAX_BYTES, true)
+  // The header survives however long the output is.
+  assertEquals(
+    ended.message?.startsWith('daemon overlay rebuild failed (deno task release:dev exited 1)\n'),
+    true
+  )
+  assertEquals(ended.message?.endsWith('q'), true)
 })

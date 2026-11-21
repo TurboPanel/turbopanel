@@ -136,6 +136,23 @@ test('any other first frame is unsigned until the server has used signed mode', 
   assertEquals(identityReads, 0)
 })
 
+test('where signed sessions are required, every other first frame is refused at trust level 0', async () => {
+  const panelIdentity = () => Promise.resolve(null)
+  for (const raw of [
+    JSON.stringify({ type: 'hello', at: '2026-11-02T00:00:00.000Z' }),
+    '{"type":"ping"}',
+    'not json',
+  ]) {
+    assertEquals(
+      await decideFirstFrame(raw, { trustLevel: 0, requireSigned: true, panelIdentity }),
+      {
+        kind: 'refused',
+        reason: 'signed-mode-required',
+      }
+    )
+  }
+})
+
 test('an unsigned sender writes plain JSON', async () => {
   const sent: string[] = []
   const sender = createDaemonSessionSender({

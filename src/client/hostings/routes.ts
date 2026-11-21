@@ -13,9 +13,19 @@ import {
   removeUnusedSiteCertificates,
 } from '../../features/tls/unused-letsencrypt.ts'
 import {
+  type HostnameChoice,
   isHostnameUniqueViolation,
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
+import { ensureNameHttpOrders } from './name-http-orders.ts'
+import { pinHostingNames, syncHostingPin } from '../../features/hostings/name-certificates.ts'
+import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
+import {
+  loadHostingNameReads,
+  parseNameChoices,
+  refuseUnavailableDnsChoices,
+  unservedChoice,
+} from './name-certificates-routes.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -85,31 +95,50 @@ function hostnamesPatchFromFields(patchFields: HostingPatchFields): string[] | n
   return (patchFields.options as { hostnames?: string[] }).hostnames ?? []
 }
 
+type HostingPatchCommit = {
+  id: string
+  organizationId: string
+  patchFields: HostingPatchFields
+  hostnamesPatch: string[] | null
+  choices: ReadonlyMap<string, HostnameChoice> | undefined
+  actor: { userId: string; email: string | null }
+}
+
 async function commitHostingPatch(
   c: Context<AppEnv>,
   db: Db,
-  id: string,
-  organizationId: string,
-  patchFields: HostingPatchFields,
-  hostnamesPatch: string[] | null,
-  actor: { userId: string; email: string | null }
+  commit: HostingPatchCommit
 ): Promise<Response | null> {
+  const { id, organizationId, patchFields, hostnamesPatch, choices, actor } = commit
   try {
     await db.transaction(async (tx) => {
-      // Changing the pin can leave a managed Let's Encrypt entry unused. Lock in
-      // the order a deploy does (environment, then the organization lock).
+      // Changing the pin, or the choice of a name, can leave a managed Let's
+      // Encrypt entry unused. Lock in the order a deploy does (environment,
+      // then the organization lock).
       const previousCertificates =
-        patchFields.tlsId === undefined ? [] : await lockPinnedCertificates(tx, id)
+        patchFields.tlsId === undefined && hostnamesPatch === null
+          ? []
+          : await lockPinnedCertificates(tx, id)
       await tx.update(hosting).set(patchFields).where(eq(hosting.id, id))
+      // A pin written to the whole site gives every name that pin; per-name
+      // choices sent in the same request are applied after it and win.
+      if (patchFields.tlsId !== undefined) await pinHostingNames(tx, id, patchFields.tlsId)
+      if (hostnamesPatch !== null) {
+        // `organizationId` was already checked equal to this hosting's
+        // resolved workspace-ancestry organization above.
+        await replaceHostingHostnames(tx, id, organizationId, hostnamesPatch, choices)
+      }
+      // A name set to Let's Encrypt via HTTP gets its own order (a no-op for a
+      // name that already has one). Only when the names were saved: the
+      // environment lock is then already held, the order a deploy takes.
+      if (hostnamesPatch !== null) {
+        await ensureNameHttpOrders(tx, id, organizationId)
+        if (choices !== undefined) await syncHostingPin(tx, id)
+      }
       await removeUnusedSiteCertificates(tx, previousCertificates, {
         reason: 'its site now uses another certificate',
         actor,
       })
-      if (hostnamesPatch !== null) {
-        // `organizationId` was already checked equal to this hosting's
-        // resolved workspace-ancestry organization above.
-        await replaceHostingHostnames(tx, id, organizationId, hostnamesPatch)
-      }
     })
   } catch (err) {
     if (isHostnameUniqueViolation(err)) {
@@ -149,12 +178,48 @@ function parseHostingCreatePayload(c: Context<AppEnv>, body: Record<string, unkn
 
 type HostingCreateFields = Exclude<ReturnType<typeof parseHostingCreatePayload>, Response>
 
+/** The `names` of a create request, checked against the names the new site serves. */
+async function parseCreateNameChoices(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  body: Record<string, unknown>,
+  validatedOptions: HostingCreateFields['validatedOptions'],
+  serviceId: string
+): Promise<Response | { choices: ReadonlyMap<string, HostnameChoice> | undefined }> {
+  const named = await parseNameChoices(c, db, organizationId, body)
+  if (named.kind === 'error') return named.response
+  const choices = named.kind === 'value' ? named.choices : undefined
+  if (choices) {
+    const unserved = unservedChoice(
+      c,
+      choices,
+      validatedOptions?.hostnames ?? [],
+      validatedOptions?.www ?? 'off'
+    )
+    if (unserved) return unserved
+    const unavailable = await refuseUnavailableDnsChoices(
+      c,
+      db,
+      organizationId,
+      {
+        serviceId,
+        hostingId: null,
+      },
+      choices
+    )
+    if (unavailable) return unavailable
+  }
+  return { choices }
+}
+
 async function insertHostingFromCreate(
   db: Db,
   fields: HostingCreateFields,
   serviceId: string,
   organizationId: string,
-  fks: Extract<HostingFkResult, { kind: 'ok' }>
+  fks: Extract<HostingFkResult, { kind: 'ok' }>,
+  choices: ReadonlyMap<string, HostnameChoice> | undefined
 ): Promise<string> {
   const { name, description, metadataResult, validatedOptions } = fields
   return await db.transaction(async (tx) => {
@@ -180,10 +245,41 @@ async function insertHostingFromCreate(
       tx,
       inserted.id,
       organizationId,
-      validatedOptions?.hostnames ?? []
+      validatedOptions?.hostnames ?? [],
+      choices
     )
+    await ensureNameHttpOrders(tx, inserted.id, organizationId)
+    if (choices !== undefined) await syncHostingPin(tx, inserted.id)
+    else if (fks.tlsId.kind === 'value') await pinHostingNames(tx, inserted.id, fks.tlsId.value)
     return inserted.id
   })
+}
+
+/** The refusal for a patch's certificate choices, or null: a name the site does not serve, or DNS ordering that is not available. */
+async function refusePatchChoices(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  input: {
+    choices: ReadonlyMap<string, HostnameChoice> | undefined
+    hostnamesPatch: string[] | null
+    savedOptions: unknown
+    site: { id: string; serviceId: string }
+  }
+): Promise<Response | null> {
+  const { choices, hostnamesPatch, savedOptions, site } = input
+  if (!choices) return null
+  if (hostnamesPatch) {
+    const unserved = unservedChoice(c, choices, hostnamesPatch, readHostingWwwMode(savedOptions))
+    if (unserved) return unserved
+  }
+  return refuseUnavailableDnsChoices(
+    c,
+    db,
+    organizationId,
+    { serviceId: site.serviceId, hostingId: site.id },
+    choices
+  )
 }
 
 export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -223,7 +319,10 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(and(...conditions))
       .orderBy(hosting.createdAt)
 
-    return c.json({ hostings: rows })
+    const names = await loadHostingNameReads(db, organizationId, rows)
+    return c.json({
+      hostings: rows.map((row) => ({ ...row, names: names.get(row.id) ?? [] })),
+    })
   })
 
   router.get('/hostings/:id', async (c) => {
@@ -247,7 +346,8 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanReadOr403(c, 'hosting', id)
     if (denied) return denied
 
-    return c.json({ hosting: row })
+    const names = await loadHostingNameReads(db, organizationId, [row])
+    return c.json({ hosting: { ...row, names: names.get(row.id) ?? [] } })
   })
 
   router.post('/hostings', async (c) => {
@@ -284,8 +384,19 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const scopeDenied = await assertCreateHostingBindScope(c, db, fks.ipId, validatedOptions)
     if (scopeDenied) return scopeDenied
 
+    const created = await parseCreateNameChoices(
+      c,
+      db,
+      organizationId,
+      body,
+      validatedOptions,
+      serviceId
+    )
+    if (created instanceof Response) return created
+    const { choices } = created
+
     try {
-      const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks)
+      const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks, choices)
       nudgeTunnelRoutesAfterResponse(c, organizationId)
       return c.json({ ok: true as const, id })
     } catch (err) {
@@ -309,7 +420,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (body instanceof Response) return body
 
     const [existingHosting] = await db
-      .select({ ipId: hosting.ipId, options: hosting.options })
+      .select({ ipId: hosting.ipId, options: hosting.options, serviceId: hosting.serviceId })
       .from(hosting)
       .where(eq(hosting.id, id))
       .limit(1)
@@ -321,15 +432,31 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const scopeDenied = await assertMergedHostingBindScope(c, db, existingHosting, patchFields)
     if (scopeDenied) return scopeDenied
 
-    const conflict = await commitHostingPatch(
-      c,
-      db,
+    const named = await parseNameChoices(c, db, organizationId, body)
+    if (named.kind === 'error') return named.response
+    const choices = named.kind === 'value' ? named.choices : undefined
+    // The names the saved site serves: the new ones when options came with the
+    // request, else the ones it already has.
+    const savedOptions = patchFields.options ?? existingHosting.options
+    const hostnamesPatch =
+      hostnamesPatchFromFields(patchFields) ??
+      (choices === undefined ? null : (parseHostingOptions(savedOptions)?.hostnames ?? []))
+    const badChoice = await refusePatchChoices(c, db, organizationId, {
+      choices,
+      hostnamesPatch,
+      savedOptions,
+      site: { id, serviceId: existingHosting.serviceId },
+    })
+    if (badChoice) return badChoice
+
+    const conflict = await commitHostingPatch(c, db, {
       id,
       organizationId,
       patchFields,
-      hostnamesPatchFromFields(patchFields),
-      { userId: session.userId, email: session.email ?? null }
-    )
+      hostnamesPatch,
+      choices,
+      actor: { userId: session.userId, email: session.email ?? null },
+    })
     if (conflict) return conflict
 
     nudgeTunnelRoutesAfterResponse(c, organizationId)

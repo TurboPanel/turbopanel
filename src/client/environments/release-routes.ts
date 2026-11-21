@@ -26,7 +26,10 @@ import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { eq } from 'drizzle-orm'
 import { getDb } from '../../db/connection.ts'
+import { command } from '../../db/schema.ts'
+import { readComposeBaseRecord } from '../../features/projects/project-options.ts'
 import { assertCanReadOr403, parseJsonBody } from '../shared.ts'
 import {
   isReleaseMaterializedEverywhere,
@@ -232,6 +235,17 @@ export function registerEnvironmentReleaseRoutes(router: Hono<AppEnv>, opts: Aut
     const commandQueue = assertDeployDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue
 
+    // The Base the deployment being returned to recorded (a project that
+    // follows its repository's compose file); the deploy reads it at that commit.
+    const [targetCommand] = await db
+      .select({ context: command.context })
+      .from(command)
+      .where(eq(command.id, target.commandId))
+      .limit(1)
+    const composeBase = readComposeBaseRecord(
+      (targetCommand?.context as Record<string, unknown> | null)?.composeBase
+    )
+
     return await runEnvironmentDeployForActor(c, db, commandQueue, environmentId, {
       actorType: 'user',
       actorId: auth.userId,
@@ -244,6 +258,7 @@ export function registerEnvironmentReleaseRoutes(router: Hono<AppEnv>, opts: Aut
       rollback: {
         composeServiceName: parsed.composeServiceName,
         releaseByService: releaseByService(releases, target, targetServerIds),
+        ...(composeBase ? { composeBase } : {}),
       },
     })
   })

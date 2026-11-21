@@ -26,30 +26,21 @@
  * approved cached read models copy into Redis. Anything stored there is
  * published to every client with read access to the server and cached outside
  * Postgres. A sealed secret has no business on that path, so it lives on the
- * `monitor` table, which nothing client-facing selects. Rows written by the
- * earlier `server.options.managedMonitor` model are **dropped, not adopted**
- * ({@link stripLegacyServerOptionsMonitor}): a password that was served to
- * clients is not one to keep using, and the next
- * reconcile + apply pair installs the freshly minted replacement.
+ * `monitor` table, which nothing client-facing selects. The read models
+ * still redact the old `server.options.managedMonitor` key as a guard.
  */
 
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { monitor, server } from '../../db/schema.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import {
-  ENVELOPE_PREFIX_SECRET,
-  generateSealedSecret,
-} from '../../lib/secrets/data-encryption.ts'
+import { ENVELOPE_PREFIX_SECRET, generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
 
 export type ServerMonitorCredential = {
   username: string
   /** Data-encryption sealed password (`ENVELOPE_PREFIX_SECRET`). */
   passwordSealed: string
 }
-
-/** Legacy `server.options` key this model replaced; never written again. */
-export const LEGACY_SERVER_OPTIONS_MONITOR_KEY = 'managedMonitor'
 
 /**
  * Deterministic per-server monitor username. Short id prefix keeps it inside
@@ -67,7 +58,7 @@ type MonitorRow = {
 
 function parseStoredMonitor(
   row: MonitorRow | undefined,
-  expectedUsername: string,
+  expectedUsername: string
 ): ServerMonitorCredential | null {
   if (!row) return null
   if (
@@ -85,41 +76,13 @@ const MONITOR_COLUMNS = {
   secretEnvelope: monitor.secretEnvelope,
 } as const
 
-async function loadServerMonitorRow(
-  db: Db,
-  serverId: string,
-): Promise<MonitorRow | undefined> {
+async function loadServerMonitorRow(db: Db, serverId: string): Promise<MonitorRow | undefined> {
   const [row] = await db
     .select(MONITOR_COLUMNS)
     .from(monitor)
     .where(eq(monitor.serverId, serverId))
     .limit(1)
   return row
-}
-
-/**
- * Delete a pre-table `server.options.managedMonitor` blob.
- *
- * Idempotent and cheap — the existence test means the UPDATE touches nothing
- * once the key is gone. It runs on the mint path rather than a migration so a control
- * plane that never re-reconciles still stops publishing the old sealed password
- * the first time anything asks for that server's monitor credential.
- */
-async function stripLegacyServerOptionsMonitor(
-  db: Db,
-  serverId: string,
-): Promise<void> {
-  await db
-    .update(server)
-    .set({
-      options: sql`${server.options} - ${LEGACY_SERVER_OPTIONS_MONITOR_KEY}`,
-      updatedAt: new Date().toISOString(),
-    })
-    .where(
-      // `jsonb_exists(...)` rather than the `?` operator: `?` is a placeholder
-      // token in several drivers and does not survive every SQL-building path.
-      sql`${server.id} = ${serverId} AND jsonb_exists(COALESCE(${server.options}, '{}'::jsonb), ${LEGACY_SERVER_OPTIONS_MONITOR_KEY})`,
-    )
 }
 
 /**
@@ -134,13 +97,10 @@ async function stripLegacyServerOptionsMonitor(
 export async function ensureServerMonitorCredential(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  serverId: string,
+  serverId: string
 ): Promise<ServerMonitorCredential> {
   const expectedUsername = monitorUsernameForServer(serverId)
-  const existing = parseStoredMonitor(
-    await loadServerMonitorRow(db, serverId),
-    expectedUsername,
-  )
+  const existing = parseStoredMonitor(await loadServerMonitorRow(db, serverId), expectedUsername)
   if (existing) return existing
 
   const [serverRow] = await db
@@ -169,14 +129,8 @@ export async function ensureServerMonitorCredential(
   if (inserted.length === 0) {
     // A row exists: either a concurrent mint (keep it — it may already be on
     // its way to a daemon) or a stale shape this call must replace.
-    const current = parseStoredMonitor(
-      await loadServerMonitorRow(db, serverId),
-      expectedUsername,
-    )
-    if (current) {
-      await stripLegacyServerOptionsMonitor(db, serverId)
-      return current
-    }
+    const current = parseStoredMonitor(await loadServerMonitorRow(db, serverId), expectedUsername)
+    if (current) return current
     await db
       .update(monitor)
       .set({
@@ -187,6 +141,5 @@ export async function ensureServerMonitorCredential(
       .where(eq(monitor.serverId, serverId))
   }
 
-  await stripLegacyServerOptionsMonitor(db, serverId)
   return { username: expectedUsername, passwordSealed: sealed }
 }

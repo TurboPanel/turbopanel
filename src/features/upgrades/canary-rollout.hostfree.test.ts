@@ -111,7 +111,7 @@ const onTarget = { commit: canaryTarget.daemon!.commit, builtAt: CANARY_BUILT_AT
 
 test('the hosted panel’s own deploy commit never opens an automatic run', async () => {
   const { coordinator, enqueued, decisions, store } = workersFleet(
-    [fleetHost('adrastea', onTarget), fleetHost('kore', onTarget)],
+    [fleetHost('host-a', onTarget), fleetHost('host-b', onTarget)],
     true,
     hostedTarget
   )
@@ -132,7 +132,7 @@ test('the hosted panel’s own deploy commit never opens an automatic run', asyn
 
 test('a daemon behind on the hosted panel still starts an automatic run', async () => {
   const { coordinator, enqueued, decisions, store } = workersFleet(
-    [fleetHost('adrastea', onTarget), fleetHost('kore')],
+    [fleetHost('host-a', onTarget), fleetHost('host-b')],
     true,
     hostedTarget
   )
@@ -144,18 +144,18 @@ test('a daemon behind on the hosted panel still starts an automatic run', async 
   if (started?.decision !== 'started') return
   const steps = await store.stepsFor(started.runId)
   assertEquals(steps.map((step) => [step.serverId, step.unit, step.status]).sort(), [
-    ['adrastea', 'daemon', 'done'],
-    ['kore', 'daemon', 'dispatched'],
+    ['host-a', 'daemon', 'done'],
+    ['host-b', 'daemon', 'dispatched'],
   ])
   assertEquals(
     enqueued.map((entry) => entry.serverId),
-    ['kore']
+    ['host-b']
   )
 })
 
 test('an automatic start with nothing to send saves no run; a manual one still does', async () => {
   const { coordinator, enqueued, decisions, store } = workersFleet(
-    [fleetHost('adrastea', onTarget)],
+    [fleetHost('host-a', onTarget)],
     true,
     hostedTarget
   )
@@ -220,8 +220,8 @@ test('a self-hosted panel behind the channel starts a run with the control-plane
 
 test('a canary build of the installed base rolls out to the Workers fleet', async () => {
   const { coordinator, enqueued, decisions, store } = workersFleet([
-    fleetHost('adrastea'),
-    fleetHost('kore'),
+    fleetHost('host-a'),
+    fleetHost('host-b'),
   ])
 
   await coordinator.tick({ resolveManifests: true })
@@ -315,7 +315,7 @@ test('self-hosted preflight does not call a canary build of the installed base a
 
 test('a canary build never starts a Workers run while updates are paused', async () => {
   const { coordinator, enqueued, decisions, store } = workersFleet(
-    [fleetHost('adrastea'), fleetHost('kore')],
+    [fleetHost('host-a'), fleetHost('host-b')],
     false
   )
 

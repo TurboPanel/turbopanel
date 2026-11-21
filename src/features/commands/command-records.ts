@@ -75,8 +75,6 @@ export type CommandRecord = {
    * command has no error text.
    */
   errorLine: string | null
-  /** @deprecated Legacy alias for {@link CommandRecord.errorMessage}. */
-  error: string | null
   attempts: number
   createdAt: string
   updatedAt: string
@@ -178,7 +176,6 @@ export function serializeCommandRecord(row: CommandRowInput): CommandRecord {
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
     errorLine: lastErrorLine(row.errorMessage),
-    error: row.errorMessage ?? null,
     attempts: row.attempts ?? 0,
     createdAt: toIsoTimestamp(row.createdAt) ?? row.createdAt,
     updatedAt: toIsoTimestamp(row.updatedAt) ?? row.updatedAt,

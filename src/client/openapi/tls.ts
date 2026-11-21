@@ -138,7 +138,7 @@ export const tlsSchemas = {
         type: 'string',
         enum: ['http-01', 'dns-01'],
         description:
-          'http-01 only. dns-01 is rejected (`dns_01_unsupported`); Caddy issues on the host.',
+          'http-01 (default) or dns-01. A wildcard name (`*.example.com`) is accepted only with dns-01; a dns-01 order needs a connected DNS account for the name.',
       },
     },
   },

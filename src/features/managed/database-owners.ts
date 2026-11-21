@@ -5,7 +5,6 @@
 
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
-import { daemonOwnerSupport } from './login-limit-fields.ts'
 import {
   applySettingsPatch,
   findManagedLogin,
@@ -17,11 +16,8 @@ import {
 import type { ManagedRowOptions } from './options.ts'
 import {
   adminAccessNotes,
-  type DaemonOwnerSupport,
-  DATABASE_OWNER_NEEDS_DAEMON_ERROR,
   databasesOwnedByLogin,
   evaluateOwnedDatabasesKept,
-  DATABASE_OWNER_NEEDS_DAEMON_MESSAGE,
   evaluateOwnerLogin,
   OWNER_ROLE_MAX_DATABASE_NAME,
 } from './owner-role.ts'
@@ -59,13 +55,11 @@ export async function resolveChosenOwnerLogin(
   engine: string,
   managedId: string,
   body: Record<string, unknown>,
-  name: string,
-  serverId: string
+  name: string
 ): Promise<Response | { login: ManagedLoginCredentialRow } | null> {
   const ref = body.ownerLoginId
   if (ref === undefined || ref === null) return null
-  const refuse = (error: string, message: string, status: 400 | 409) =>
-    c.json({ error, message }, status)
+  const refuse = (error: string, message: string, status: 400) => c.json({ error, message }, status)
   if (typeof ref !== 'string' || ref.length === 0) {
     return refuse('Invalid request', 'ownerLoginId must be the id of a login.', 400)
   }
@@ -104,9 +98,6 @@ export async function resolveChosenOwnerLogin(
       "This login's name has characters a database owner cannot have. Pick another login, or leave the owner out to use the default owner role.",
       400
     )
-  }
-  if (!(await daemonOwnerSupport(db, serverId)).databaseOwner) {
-    return refuse(DATABASE_OWNER_NEEDS_DAEMON_ERROR, DATABASE_OWNER_NEEDS_DAEMON_MESSAGE, 409)
   }
   return { login: found }
 }
@@ -249,21 +240,16 @@ export function loginPatchOwnerChecks(
   engine: string,
   options: Pick<ManagedRowOptions, 'databaseOwners' | 'ownerRoleDatabases'>,
   target: LoginSettings & { id: string },
-  plan: { patch: LoginSettingsPatch; grantMode: string },
-  support: DaemonOwnerSupport
+  plan: { patch: LoginSettingsPatch; grantMode: string }
 ): { refusal: ReturnType<typeof ownedDatabasesRefusal>; notes: string[] } {
   const after = applySettingsPatch(target, plan.patch)
   return {
     refusal: ownedDatabasesRefusal(options, target.id, after, plan.grantMode),
-    notes: adminAccessNotes(
-      engine,
-      {
-        privileges: after.privileges,
-        databases: after.databases,
-        ownerRoleDatabases: options.ownerRoleDatabases,
-      },
-      support
-    ),
+    notes: adminAccessNotes(engine, {
+      privileges: after.privileges,
+      databases: after.databases,
+      ownerRoleDatabases: options.ownerRoleDatabases,
+    }),
   }
 }
 

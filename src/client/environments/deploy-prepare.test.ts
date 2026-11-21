@@ -1,4 +1,4 @@
-import { assertEquals, assertRejects } from '@std/assert'
+import { assertEquals, assertNotEquals, assertRejects } from '@std/assert'
 import type { EnvironmentDeploySite } from '../../contracts/commands/schemas.ts'
 import { describe, it } from '@std/testing/bdd'
 import {
@@ -39,6 +39,7 @@ import {
   detachMountsOfRemovedServices,
   loadStorageMaterial,
   localManagedNetworkServiceNames,
+  managedNetworkNamesForDeploy,
   mergeProjectEnvironmentCompose,
   nativeAppServicesForDeploy,
   readHostingProxyFromOptions,
@@ -195,6 +196,37 @@ describe('deploy-prepare helpers', () => {
     ])
     // Without a co-resident binding the service still stays off the network.
     assertEquals(localManagedNetworkServiceNames(['api', 'worker'], remote, new Set()), [])
+  })
+
+  it('hands a service:x binding to x after the local and remote sort', () => {
+    const services = {
+      vpn: { image: 'vpn' },
+      qbittorrent: { image: 'qbt', network_mode: 'service:vpn' },
+      tools: { image: 'tools', network_mode: 'container:other' },
+    }
+    const hosts = [{ name: 'svc-in', address: '203.0.113.254' }]
+    // vpn is remote-only, qbittorrent is local: vpn still joins the local network.
+    assertEquals(
+      managedNetworkNamesForDeploy(
+        ['vpn', 'qbittorrent'],
+        new Map([['vpn', hosts]]),
+        new Set(),
+        services
+      ),
+      ['vpn']
+    )
+    // qbittorrent is remote-only and vpn has no binding: nothing joins.
+    assertEquals(
+      managedNetworkNamesForDeploy(
+        ['qbittorrent'],
+        new Map([['qbittorrent', hosts]]),
+        new Set(),
+        services
+      ),
+      []
+    )
+    // container:x has no service to hand it to.
+    assertEquals(managedNetworkNamesForDeploy(['tools'], undefined, undefined, services), [])
   })
 
   it('warns only when the operator sets healthCheck.policy to warn', () => {
@@ -1919,6 +1951,51 @@ describe('resolveSitesForMode and toPreparedDeployResult', () => {
     assertEquals(prepared.variableMaterial.length, 1)
     assertEquals(prepared.storageMaterial.length, 1)
     assertEquals(prepared.dockerExternalNetworks, ['edge'])
+  })
+
+  it('carries composeCheckout and hashes its commit, not its credential', async () => {
+    const parts = (commitSha: string, credential: string) => ({
+      composeYaml: 'services: {}\n',
+      composeFiles: [
+        { filename: 'compose.yaml', role: 'runtime' as const, content: 'services: {}\n' },
+      ],
+      hooks: [],
+      variableMaterial: [],
+      storageMaterial: [],
+      principalMaterial: [],
+      sites: [],
+      nativeAppServices: [],
+      sourceMaterial: [],
+      composeCheckout: {
+        sourceId: 'src-1',
+        provider: 'git' as const,
+        cloneUrl: 'https://git.example.net/acme/stack.git',
+        ref: 'main',
+        commitSha,
+        composePath: 'compose.yaml',
+        credential,
+      },
+      dockerExternalNetworks: [],
+      managedNetworkServices: [],
+      containers: [],
+      ingressServices: [],
+      expansion: new Map(),
+      registeredVolumes: [],
+      warnings: [],
+      replicaCounts: {},
+      hashInputs: {},
+    })
+    const first = await toPreparedDeployResult('deploy', parts('a'.repeat(40), 'tpdaemon.one'))
+    const resealed = await toPreparedDeployResult('deploy', parts('a'.repeat(40), 'tpdaemon.two'))
+    const moved = await toPreparedDeployResult('deploy', parts('b'.repeat(40), 'tpdaemon.one'))
+    assertEquals(first.composeCheckout?.commitSha, 'a'.repeat(40))
+    assertEquals(first.desiredHash, resealed.desiredHash)
+    assertNotEquals(first.desiredHash, moved.desiredHash)
+    const without = await toPreparedDeployResult('deploy', {
+      ...parts('a'.repeat(40), 'x'),
+      composeCheckout: undefined,
+    })
+    assertEquals('composeCheckout' in without, false)
   })
 
   it('injects secret placeholders only in preview documentForServiceOptions', () => {
