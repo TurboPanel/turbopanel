@@ -12,6 +12,7 @@ import {
   expiredBatchStatusCoalesceKeys,
   currentCommitFromDaemonBuild,
   parseServerPatchCore,
+  networkSharesChange,
   isHostingEnableTransition,
   isHostingDisableTransition,
   hostingHierarchyFailedBody,
@@ -477,4 +478,29 @@ test('parseServerPatchCore accepts a location-only patch and refuses a bad one',
   if (bad.ok) throw new TypeError('expected invalid location rejection')
   assertEquals(bad.error, 'Invalid location.country')
   assertEquals(bad.status, 400)
+})
+
+test('networkSharesChange stamps the time only when the setting turns on from anything but on', () => {
+  const at = '2026-03-01T00:00:00.000Z'
+  assertEquals(networkSharesChange(null, { networkShares: true }, at), {
+    before: false,
+    after: true,
+    since: at,
+  })
+  assertEquals(networkSharesChange({ networkShares: false }, { networkShares: true }, at).since, at)
+  // Already on: a repeated PATCH does not move the time, so approvals stay valid.
+  assertEquals(networkSharesChange({ networkShares: true }, { networkShares: true }, at), {
+    before: true,
+    after: true,
+  })
+  assertEquals(networkSharesChange({ networkShares: true }, { networkShares: null }, at), {
+    before: true,
+    after: false,
+  })
+  // A PATCH that does not mention it changes nothing.
+  assertEquals(networkSharesChange({ networkShares: true }, { sshPort: 22 }, at), {
+    before: true,
+    after: true,
+  })
+  assertEquals(networkSharesChange({}, undefined, at), { before: false, after: false })
 })

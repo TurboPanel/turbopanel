@@ -8113,3 +8113,39 @@ test('sourceMaterial carries optional build limits, strictly', () => {
     )
   }
 })
+
+test('parseEnvironmentDeployPayload keeps networkShareCredentials and rejects bad shapes', () => {
+  const entry = {
+    volume: 'media',
+    composeServiceName: 'web',
+    usernameKey: 'SMB_USER',
+    passwordKey: 'SMB_PASS',
+    domain: 'WORK',
+  }
+  assertEquals(
+    parseEnvironmentDeployPayload({ ...BASE_ENVIRONMENT_DEPLOY, networkShareCredentials: [entry] })
+      .networkShareCredentials,
+    [entry]
+  )
+  assertEquals(
+    parseEnvironmentDeployPayload(BASE_ENVIRONMENT_DEPLOY).networkShareCredentials,
+    undefined
+  )
+  const plain = { volume: 'a', passwordKey: 'P', username: 'u', composeServiceName: null }
+  assertEquals(
+    parseEnvironmentDeployPayload({ ...BASE_ENVIRONMENT_DEPLOY, networkShareCredentials: [plain] })
+      .networkShareCredentials,
+    [plain]
+  )
+  for (const bad of [
+    'x',
+    [{ volume: 'media', composeServiceName: 'web' }],
+    [{ ...entry, username: 'u' }],
+    [entry, entry],
+    [{ ...entry, passwordKey: 5 }],
+  ]) {
+    assertThrows(() =>
+      parseEnvironmentDeployPayload({ ...BASE_ENVIRONMENT_DEPLOY, networkShareCredentials: bad })
+    )
+  }
+})

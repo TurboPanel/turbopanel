@@ -84,10 +84,14 @@ export function networkSharesCanonical(doc: unknown): string {
   return JSON.stringify(sortKeys(entries))
 }
 
+/** SHA-256 hex of `text`. */
+export async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 /** SHA-256 hex of {@link networkSharesCanonical}, or `null` when no volume is a share. */
 export async function networkSharesFingerprint(doc: unknown): Promise<string | null> {
   const canonical = networkSharesCanonical(doc)
-  if (canonical === '') return null
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical))
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+  return canonical === '' ? null : await sha256Hex(canonical)
 }

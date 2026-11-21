@@ -20,6 +20,13 @@ import {
   newConfigFilesContext,
 } from './apply-config-files.ts'
 import type { DeployConfigFileEntry, DeployConfigSecretRef } from './config-files.ts'
+import {
+  type NetworkShareCredential,
+  type ResolvedShareVolume,
+  resolvedSharesCanonical,
+  resolveShareVolume,
+  type ShareCredentialEntry,
+} from './network-share-variables.ts'
 import { isNetworkShareDriverOpts } from './network-shares.ts'
 import {
   collectComposeInterpolationKeys,
@@ -142,6 +149,19 @@ export type ApplyVariablesResult = {
   /** Secrets the generated files read, kept so a reboot can ask for their values. */
   configSecretRefs: DeployConfigSecretRef[]
   configWarnings: ConfigFileWarning[]
+  /**
+   * Network share volumes whose username, password or domain is a secret: the
+   * keys of the sealed `secretMaterial` entries (same `composeServiceName`).
+   * The volume's `o` in `document` has no credentials; the daemon adds
+   * `credentials=<file>` itself.
+   */
+  networkShareCredentials: NetworkShareCredential[]
+  /**
+   * What the share volumes resolved to (addresses, options and which secret
+   * fills which field, never a value), as stable text; `null` with no shares.
+   * The approval of an automated deploy is judged on its hash.
+   */
+  networkSharesResolved: string | null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -694,77 +714,19 @@ function shareVariableView(
   }
 }
 
-/** The `driver_opts` fields of a network share volume that take `{$KEY}` references. */
-const SHARE_REF_FIELDS = ['device', 'o'] as const
-
-type ShareValueContext = {
-  volume: string
-  field: string
-  inherited: Map<string, DeployVariableEntry>
-  scopes: VariableScopeEntryMap | undefined
-  secretKeys: Set<string>
-  /** Preview: a secret's value is replaced by this instead of being written. */
-  secretPlaceholder: string | undefined
-}
-
-function shareValueError(
-  ctx: ShareValueContext,
-  kind: ApplyVariablesError['kind'],
-  message: string,
-  ref?: string
-): ApplyVariablesError {
-  return {
-    kind,
-    message: `${message} (volumes.${ctx.volume}.driver_opts.${ctx.field})`,
-    ...(ref === undefined ? {} : { ref }),
-  }
-}
-
 /**
- * Fill the `{$KEY}` references in one share volume string. The value is written
- * with `$` doubled so Compose does not read it as interpolation. A secret is
- * written for a real deploy only; a preview gets the placeholder, so no API
- * response or log built from the preview document holds it.
- */
-function resolveShareString(text: string, ctx: ShareValueContext): string | ApplyVariablesError {
-  let out = ''
-  for (const part of splitEmbeddedRefs(text)) {
-    if (part.kind === 'text') {
-      const secretKey = collectComposeInterpolationKeys(part.text.replaceAll('$$', '')).find(
-        (key) => ctx.secretKeys.has(key)
-      )
-      if (secretKey) {
-        return shareValueError(
-          ctx,
-          'variable_secret_interpolation',
-          `Secret ${secretKey} cannot use Compose \${${secretKey}} interpolation; use {$${secretKey}}`
-        )
-      }
-      out += part.text
-      continue
-    }
-    if (part.kind === 'invalid') {
-      return shareValueError(ctx, 'variable_ref_invalid', part.message, part.raw)
-    }
-    const entry = lookupVariable(part.ref, ctx.inherited, ctx.scopes)
-    if (!entry) {
-      const labeled = formatVariableRef(part.ref)
-      return shareValueError(ctx, 'variable_unresolved', `Unresolved variable ${labeled}`, labeled)
-    }
-    out +=
-      entry.isSecret && ctx.secretPlaceholder !== undefined
-        ? ctx.secretPlaceholder
-        : escapeLiteralComposeValue(trimVariableValue(entry.value))
-  }
-  return out
-}
-
-/**
- * `{$KEY}` in the `device` and `o` of a network share volume (a top-level
- * volume with a `cifs` / `smb3` type): the share address and its credentials
- * come from project variables like any other value. Services are not involved,
- * so the variables are the first service's view (the project, environment and
- * server layers every service shares); a service-scoped reference is unresolved.
+ * The network share volumes (top-level volumes with a `cifs` / `smb3` type and
+ * a `//host/share` or `{$KEY}` device), resolved against project variables.
+ * Services are not involved, so the variables are the first service's view (the
+ * project, environment and server layers every service shares); a
+ * service-scoped reference is unresolved.
+ *
+ * What is written to the document is the resolved, checked `device` and `o`
+ * (`$` doubled so Compose leaves them alone). A secret named for the username,
+ * password or domain never reaches the document: it leaves `o` and comes back
+ * as a credentials entry plus sealed material (see `network-share-variables.ts`).
+ * Compose `${...}` in a share's text is refused, so nothing is filled in later
+ * from the generated `.env`.
  */
 function applyShareVolumeVariables(
   data: Record<string, unknown>,
@@ -772,32 +734,93 @@ function applyShareVolumeVariables(
     inherited: Map<string, DeployVariableEntry>
     scopes: VariableScopeEntryMap | undefined
   },
-  secretPlaceholder: string | undefined
-): ApplyVariablesError | null {
-  if (!isRecord(data.volumes)) return null
+  viewService: string | undefined,
+  sinks: { secretMaterial: DeployVariableMaterial[]; secretRefs: DeployConfigSecretRef[] }
+): ApplyVariablesError | { credentials: NetworkShareCredential[]; resolved: string | null } {
+  if (!isRecord(data.volumes)) return { credentials: [], resolved: null }
   const volumes: Record<string, unknown> = { ...data.volumes }
-  const secretKeys = collectSecretKeys(view.inherited, view.scopes)
+  const lookup = (ref: ParsedVariableRef) => {
+    const entry = lookupVariable(ref, view.inherited, view.scopes)
+    return entry && { key: entry.key, value: entry.value, isSecret: entry.isSecret }
+  }
+  const credentials: NetworkShareCredential[] = []
+  const resolvedVolumes: Array<readonly [string, ResolvedShareVolume]> = []
   for (const [name, spec] of Object.entries(volumes)) {
     if (!isRecord(spec) || !isNetworkShareDriverOpts(spec.driver_opts)) continue
-    const opts: Record<string, unknown> = { ...(spec.driver_opts as Record<string, unknown>) }
-    for (const field of SHARE_REF_FIELDS) {
-      const raw = opts[field]
-      if (typeof raw !== 'string') continue
-      const resolved = resolveShareString(raw, {
-        volume: name,
-        field,
-        inherited: view.inherited,
-        scopes: view.scopes,
-        secretKeys,
-        secretPlaceholder,
-      })
-      if (typeof resolved !== 'string') return resolved
-      opts[field] = resolved
+    const driverOpts = spec.driver_opts as Record<string, unknown>
+    // `local` is the only driver whose `driver_opts` are mount options.
+    if (spec.driver !== undefined && spec.driver !== 'local') {
+      return {
+        kind: 'variable_ref_invalid',
+        message: `A network share volume uses the local volume driver (volumes.${name}.driver)`,
+      }
     }
+    const resolved = resolveShareVolume(name, driverOpts, lookup)
+    if ('kind' in resolved) return resolved
+    resolvedVolumes.push([name, resolved])
+    const opts: Record<string, unknown> = {
+      ...driverOpts,
+      type: resolved.type,
+      device: escapeLiteralComposeValue(resolved.device),
+    }
+    if (resolved.o === undefined) delete opts.o
+    else opts.o = escapeLiteralComposeValue(resolved.o)
     volumes[name] = { ...spec, driver_opts: opts }
+    const passwordItem = resolved.credentials.find((item) => item.field === 'password')
+    if (passwordItem === undefined) continue
+    if (viewService === undefined) {
+      return {
+        kind: 'variable_ref_invalid',
+        message: `A network share with a secret needs a service in the project (volumes.${name}.driver_opts.o)`,
+      }
+    }
+    const credential: NetworkShareCredential = {
+      volume: name,
+      composeServiceName: viewService,
+      passwordKey: passwordItem.key,
+    }
+    for (const item of resolved.credentials) {
+      if (item.field === 'username') credential.usernameKey = item.key
+      addShareSecret(sinks, viewService, item)
+    }
+    if (resolved.plain.username !== undefined) credential.username = resolved.plain.username
+    if (resolved.plain.domain !== undefined) credential.domain = resolved.plain.domain
+    credentials.push(credential)
   }
   data.volumes = volumes
-  return null
+  return {
+    credentials,
+    resolved: resolvedVolumes.length === 0 ? null : resolvedSharesCanonical(resolvedVolumes),
+  }
+}
+
+function addShareSecret(
+  sinks: { secretMaterial: DeployVariableMaterial[]; secretRefs: DeployConfigSecretRef[] },
+  composeServiceName: string,
+  item: ShareCredentialEntry
+): void {
+  if (
+    !sinks.secretMaterial.some(
+      (row) => row.key === item.key && row.composeServiceName === composeServiceName
+    )
+  ) {
+    sinks.secretMaterial.push({
+      key: item.key,
+      composeServiceName,
+      forBuild: false,
+      forRuntime: false,
+      isLiteral: false,
+      valueEnvelope: item.envelope,
+    })
+  }
+  // Recorded on the deployment (key names only) so a reboot can ask for the value again.
+  if (
+    !sinks.secretRefs.some(
+      (ref) => ref.key === item.key && ref.composeServiceName === composeServiceName
+    )
+  ) {
+    sinks.secretRefs.push({ composeServiceName, key: item.key })
+  }
 }
 
 /**
@@ -820,12 +843,6 @@ export function applyVariablesToComposeDocument(
     projectId?: string
     environmentId?: string
     runDir?: string
-    /**
-     * Preview: what a secret in a network share volume's `device` / `o` is
-     * written as. Omitted for a real deploy, which writes the value (the
-     * volume is mounted by the host, and no sealed file can carry it).
-     */
-    shareSecretPlaceholder?: string
   }
 ): ApplyVariablesResult | ApplyVariablesError {
   const data = { ...document.data }
@@ -891,12 +908,13 @@ export function applyVariablesToComposeDocument(
   }
 
   data.services = services
-  const shareError = applyShareVolumeVariables(
+  const shares = applyShareVolumeVariables(
     data,
     shareVariableView(document, params),
-    params.shareSecretPlaceholder
+    listComposeServiceNames(document)[0],
+    { secretMaterial, secretRefs: configCtx.secretRefs }
   )
-  if (shareError) return shareError
+  if ('kind' in shares) return shares
   const finishError = finishConfigFiles(configCtx, data)
   if (finishError) return finishError
 
@@ -915,6 +933,8 @@ export function applyVariablesToComposeDocument(
     configFiles: configCtx.files,
     configSecretRefs: configCtx.secretRefs,
     configWarnings: configCtx.warnings,
+    networkShareCredentials: shares.credentials,
+    networkSharesResolved: shares.resolved,
   }
 }
 

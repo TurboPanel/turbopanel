@@ -128,6 +128,23 @@ export type ServerPatchFields = {
   updatedAt: string
 }
 
+/**
+ * What a PATCH does to Allow Network Shares: whether it was on and will be on,
+ * and the time to stamp (`since`) when it turns on from anything but on.
+ */
+export function networkSharesChange(
+  previous: ServerOptions | null | undefined,
+  patchOptions: ServerPatchFields['options'],
+  at: string
+): { before: boolean; after: boolean; since?: string } {
+  const before = previous?.networkShares === true
+  const after =
+    patchOptions !== undefined && 'networkShares' in patchOptions
+      ? patchOptions.networkShares === true
+      : before
+  return { before, after, ...(!before && after ? { since: at } : {}) }
+}
+
 export type ServerRouteValidationError = {
   ok: false
   error: string

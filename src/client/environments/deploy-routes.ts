@@ -28,6 +28,8 @@ import {
   type ReleaseIdAllocator,
 } from './deploy-prepare.ts'
 import { findUnresolvedComposeInterpolations } from '../../features/compose/unresolved-interpolation.ts'
+import type { ComposeDeployValidationError } from '../../features/compose/validate-for-deploy.ts'
+import { sha256Hex } from '../../features/compose/network-shares.ts'
 import { definedFields, presentFields } from '../../lib/optional-fields.ts'
 import { recordedNodeVersions } from './deploy-node-version.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -44,6 +46,7 @@ import type {
   EnvironmentDeployServiceHook,
   EnvironmentDeployCache,
   EnvironmentDeployConfigFile,
+  EnvironmentDeployNetworkShareCredential,
   EnvironmentDeployHelperReach,
   EnvironmentDeploySecretPlanEntry,
   EnvironmentDeployComposeCheckout,
@@ -147,8 +150,12 @@ import {
   assignSlotAddresses,
   buildCompileAddressMaps,
   type HostAccessActor,
+  NETWORK_SHARES_PERMISSION,
+  type NetworkSharesActor,
+  type NetworkSharesUseEvent,
   planEnvironmentDeploy,
   type PlannedDeploy,
+  settleNetworkShares,
 } from '../../features/schedule/index.ts'
 import { servicesMapping } from '../../features/schedule/plan-deploy.ts'
 import {
@@ -646,6 +653,8 @@ type DeployCommandCreateParams = DeployActor & {
   secretPlan?: EnvironmentDeploySecretPlanEntry[]
   /** Generated config files (parts only) the daemon puts together from `variableMaterial`. */
   configFiles?: EnvironmentDeployConfigFile[]
+  /** Secret credentials of network share volumes (key names; the sealed values are in `variableMaterial`). */
+  networkShareCredentials?: EnvironmentDeployNetworkShareCredential[]
   serviceHooks: EnvironmentDeployServiceHook[]
   dockerExternalNetworks: string[]
   dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
@@ -852,6 +861,7 @@ async function createDeployCommand(
         envFile: params.envFile || undefined,
         secretPlan: params.secretPlan,
         configFiles: params.configFiles,
+        networkShareCredentials: params.networkShareCredentials,
         serviceHooks: params.serviceHooks,
         dockerExternalNetworks: params.dockerExternalNetworks,
         dockerNetworkAddressing: params.dockerNetworkAddressing,
@@ -1052,6 +1062,7 @@ function createParamsForPreparedServer(
     envFile: row.prepared.envFile,
     secretPlan: row.prepared.secretPlan,
     configFiles: row.prepared.configFiles,
+    networkShareCredentials: row.prepared.networkShareCredentials,
     serviceHooks: row.prepared.hooks,
     dockerExternalNetworks: row.prepared.dockerExternalNetworks,
     dockerNetworkAddressing: row.prepared.dockerNetworkAddressing,
@@ -1649,6 +1660,12 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
         auth.organizationId,
         false
       ),
+      // A preview shows the same refusal a deploy would get and approves nothing.
+      await resolveNetworkSharesActor(
+        db,
+        { actorType: 'user', actorId: auth.userId },
+        auth.organizationId
+      ),
       { mode: 'preview' }
     )
     if (planned instanceof Response) return planned
@@ -1845,6 +1862,63 @@ async function resolveHostAccessActor(
 }
 
 /**
+ * Who is deploying, for network shares: the `environments.deploy_network_shares`
+ * permission on the organization (owner and manager hold it by default, and it
+ * can be granted to other roles). An automated deploy has no person behind it
+ * and is judged on a recorded approval instead.
+ */
+async function resolveNetworkSharesActor(
+  db: Db,
+  actor: DeployActor,
+  organizationId: string,
+  email: string | null = null
+): Promise<NetworkSharesActor> {
+  if (actor.actorType === 'system') return { kind: 'automated' }
+  const permitted = await can(
+    db,
+    actor.actorId,
+    NETWORK_SHARES_PERMISSION,
+    'organization',
+    organizationId
+  )
+  return permitted ? { kind: 'permitted', userId: actor.actorId, email } : { kind: 'denied' }
+}
+
+/**
+ * The history row for an automated deploy that runs network shares under a
+ * recorded approval. Written once the deploy's rows are persisted, like
+ * {@link recordHostAccessUse}; a hostings-only run mounts nothing.
+ */
+export async function recordNetworkSharesUse(
+  db: Db,
+  use: NetworkSharesUseEvent | undefined,
+  auth: Pick<DeployRequestAuth, 'organizationId' | 'actorId' | 'selection' | 'hostingsOnly'>,
+  ids: { environmentId: string; projectId: string },
+  record: typeof recordAudit = recordAudit
+): Promise<void> {
+  if (!use || auth.hostingsOnly === true) return
+  await record(db, {
+    organizationId: auth.organizationId,
+    actorUserId: null,
+    actorEmail: null,
+    action: 'compose.network_shares.use',
+    targetType: 'environment',
+    targetId: ids.environmentId,
+    context: {
+      environmentId: ids.environmentId,
+      projectId: ids.projectId,
+      fingerprint: use.fingerprint,
+      volumes: use.volumes,
+      resolved: use.resolved,
+      approvedBy: use.approvedBy,
+      approvedAt: use.approvedAt,
+      automatedActorId: auth.actorId,
+      trigger: hostAccessUseTrigger(auth.selection),
+    },
+  })
+}
+
+/**
  * The history row for an automated deploy that runs host-level content under a
  * recorded approval (`PlannedDeploy.hostAccessUse`). Called once the deploy's
  * rows are persisted; the approval it names is the one the planner matched, and
@@ -1877,12 +1951,43 @@ export async function recordHostAccessUse(
   )
 }
 
+/**
+ * The share half of the actor gate that needs the prepared deploy: what the
+ * shares resolved to on each server (see `settleNetworkShares`).
+ */
+async function settlePreparedNetworkShares(
+  db: Db,
+  planned: Pick<PlannedDeploy, 'networkShares' | 'projectId'>,
+  preparedByServer: ReadonlyArray<{
+    prepared: Pick<PreparedDeployCompose, 'networkSharesResolved'>
+  }>,
+  ctx: { auth: DeployRequestAuth; environmentId: string }
+): Promise<{ error: ComposeDeployValidationError } | { use?: NetworkSharesUseEvent }> {
+  if (!planned.networkShares) return {}
+  const resolved = await Promise.all(
+    preparedByServer.flatMap((row) =>
+      row.prepared.networkSharesResolved === undefined
+        ? []
+        : [sha256Hex(row.prepared.networkSharesResolved)]
+    )
+  )
+  return await settleNetworkShares(db, {
+    shares: planned.networkShares,
+    organizationId: ctx.auth.organizationId,
+    environmentId: ctx.environmentId,
+    projectId: planned.projectId,
+    resolved,
+    record: ctx.auth.hostingsOnly !== true,
+  })
+}
+
 async function resolveSuccessfulPlan(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
   organizationId: string,
   hostAccess: HostAccessActor,
+  networkShares: NetworkSharesActor,
   tracked: {
     mode: DeployProjectOptionsMode
     skipRead?: boolean
@@ -1895,6 +2000,7 @@ async function resolveSuccessfulPlan(
     environmentId,
     organizationId,
     hostAccess,
+    networkShares,
     // A project that follows its repository's compose file deploys the file at
     // the commit being deployed; the layers below it are unchanged.
     resolveProjectOptions: (row) =>
@@ -2463,6 +2569,7 @@ async function runEnvironmentDeploy(
       auth.hostingsOnly !== true,
       c.get('session')?.email ?? null
     ),
+    await resolveNetworkSharesActor(db, auth, auth.organizationId, c.get('session')?.email ?? null),
     {
       mode: 'deploy',
       ...deployReadOptions(auth),
@@ -2515,6 +2622,11 @@ async function runEnvironmentDeploy(
       ...spanningCtx,
     })
     if (preparedByServer instanceof Response) return preparedByServer
+    const sharesSettled = await settlePreparedNetworkShares(db, planned, preparedByServer, {
+      auth,
+      environmentId,
+    })
+    if ('error' in sharesSettled) return responseForPrepareError(c, sharesSettled.error)
 
     const previous = await listEnvironmentDeploymentTargets(db, environmentId)
     const { attachmentServers, participating, drainedIds } = deployParticipation({
@@ -2562,6 +2674,10 @@ async function runEnvironmentDeploy(
     // The deploy is accepted: only now does what it read become the stored Base.
     await storePlannedBase(db, planned)
     await recordHostAccessUse(db, planned, auth, environmentId)
+    await recordNetworkSharesUse(db, sharesSettled.use, auth, {
+      environmentId,
+      projectId: planned.projectId,
+    })
     const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
       created,
       environmentId,

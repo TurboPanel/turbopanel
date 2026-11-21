@@ -9,6 +9,7 @@ export const accessSchemas = {
       'system:read',
       'system:operate',
       'system:manage',
+      'environments.deploy_network_shares',
     ],
     description:
       'Atomic permission key from the fixed catalog. `system:manage` is superadmin-only and is not grantable.',
@@ -22,6 +23,7 @@ export const accessSchemas = {
       'team:manage',
       'system:read',
       'system:operate',
+      'environments.deploy_network_shares',
     ],
     description: 'Permission keys that may be written as access grants. Excludes `system:manage`.',
   },

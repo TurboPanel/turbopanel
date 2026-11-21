@@ -705,6 +705,9 @@ export async function can(
     orgPermissionFilter = sql`ag.permission = ${permissionKey}`
   } else if (permissionKey === 'organization:own') {
     orgPermissionFilter = sql`ag.permission = 'organization:own'`
+  } else if (permissionKey === 'environments.deploy_network_shares') {
+    // Owners and managers hold it by default; anyone else needs the exact grant.
+    orgPermissionFilter = sql`ag.permission IN ('organization:own', 'organization:manage', 'environments.deploy_network_shares')`
   } else {
     orgPermissionFilter = sql`ag.permission IN ('organization:own', 'organization:manage')`
   }

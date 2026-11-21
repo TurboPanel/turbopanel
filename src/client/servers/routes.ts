@@ -11,6 +11,7 @@ import { isAdminRole } from '../authn/session-store.ts'
 import { listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId, parseJsonBody } from '../shared.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
 import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
 import { parseOrganizationOptions } from '../../features/organizations/organization-options.ts'
 import { parseDatacenterOptions } from '../../features/datacenters/datacenter-options.ts'
@@ -130,6 +131,7 @@ import {
   hostingHierarchyFailedBody,
   isHostingDisableTransition,
   isHostingEnableTransition,
+  networkSharesChange,
   parseServerPatchCore,
   repairedUpdateDoneProjection,
   repairedUpdateIdleProjection,
@@ -1254,6 +1256,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
     const hostingEnable = isHostingEnableTransition(previousOptions, patch)
     const hostingDisable = isHostingDisableTransition(previousOptions, patch)
+    const shares = networkSharesChange(previousOptions, patch.options, patch.updatedAt)
+    if (patch.options !== undefined && shares.since !== undefined) {
+      // Turning it on again voids the approvals recorded before (see
+      // `ServerOptions.networkSharesSince`); a request can never set this.
+      patch.options.networkSharesSince = shares.since
+    }
 
     const failed = await applyServerPatchUpdate(c, db, {
       serverId: id,
@@ -1262,6 +1270,18 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       previousOptions,
     })
     if (failed) return failed
+
+    if (shares.before !== shares.after) {
+      await recordAudit(db, {
+        organizationId,
+        actorUserId: session.userId,
+        actorEmail: session.email,
+        action: 'server.network_shares.update',
+        targetType: 'server',
+        targetId: id,
+        context: { serverId: id, before: shares.before, after: shares.after },
+      })
+    }
 
     if (hostingEnable) {
       await enqueueHostingReconcileBestEffort(c, db, {

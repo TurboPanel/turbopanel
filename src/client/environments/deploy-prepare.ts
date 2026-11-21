@@ -53,10 +53,10 @@ import {
   type DbRefLookup,
   type DeployVariableEntry,
   type DeployVariableMaterial,
-  DEPLOY_PREVIEW_SECRET_PLACEHOLDER,
   isApplyVariablesError,
   type VariableScopeEntryMap,
 } from '../../features/compose/apply-variables.ts'
+import type { NetworkShareCredential } from '../../features/compose/network-share-variables.ts'
 import type {
   DeployConfigFileEntry,
   DeployConfigSecretRef,
@@ -581,6 +581,17 @@ export type PreparedDeployCompose = ServerDeployment & {
   configFiles?: DeployConfigFileEntry[]
   /** Secrets the generated files read; kept so a reboot can ask for their values. */
   configSecretRefs?: DeployConfigSecretRef[]
+  /**
+   * Network share volumes with a secret username, password or domain (key
+   * names only; the sealed values ride in `variableMaterial`). Absent when none.
+   */
+  networkShareCredentials?: NetworkShareCredential[]
+  /**
+   * What the share volumes resolved to, as stable text without any secret
+   * value. Internal: the automated-deploy approval is judged on its hash. Never
+   * sent to a daemon.
+   */
+  networkSharesResolved?: string
   /**
    * What each native app's process gets as environment variables, for people:
    * every name, where it came from, and whether it reaches the process. Secret
@@ -3048,6 +3059,8 @@ async function toPreparedDeployResult(
     secretPlan?: DeploySecretPlanEntry[]
     configFiles?: DeployConfigFileEntry[]
     configSecretRefs?: DeployConfigSecretRef[]
+    networkShareCredentials?: NetworkShareCredential[]
+    networkSharesResolved?: string
     sourceSelection?: DeploySourceSelection
     projectCaches?: PreparedProjectCaches
     /**
@@ -3115,6 +3128,10 @@ async function toPreparedDeployResult(
     ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
     ...nonEmptyListField('configFiles', parts.configFiles),
     ...nonEmptyListField('configSecretRefs', parts.configSecretRefs),
+    ...nonEmptyListField('networkShareCredentials', parts.networkShareCredentials),
+    ...(parts.networkSharesResolved === undefined
+      ? {}
+      : { networkSharesResolved: parts.networkSharesResolved }),
     ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
     ...projectCacheFields(parts.projectCaches ?? NO_PROJECT_CACHES),
   }
@@ -3795,8 +3812,6 @@ async function applyDeployVariables(
     projectId: string
     warnings: DeployPrepareWarning[]
     cacheDelivery: CacheDelivery
-    /** Preview: secrets in network share volumes are masked instead of written. */
-    previewMode: boolean
   }
 ): Promise<ApplyVariablesResult | DeployPrepareError> {
   const { params, pipeline, warnings } = input
@@ -3836,7 +3851,6 @@ async function applyDeployVariables(
     nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
     projectId: input.projectId,
     environmentId: params.environmentId,
-    ...(input.previewMode ? { shareSecretPlaceholder: DEPLOY_PREVIEW_SECRET_PLACEHOLDER } : {}),
   })
   if (isApplyVariablesError(withVariables)) {
     return toApplyVariablesPrepareError(withVariables)
@@ -4061,7 +4075,6 @@ export async function prepareDeployCompose(
     principalResolution,
     orgOptions: orgRow?.options,
     serverOptions: serverRow?.options,
-    previewMode: mode === 'preview',
   })
   if ('kind' in caching) return caching
   const { cacheState, withVariables } = caching
@@ -4272,6 +4285,7 @@ export async function prepareDeployCompose(
             // Left out when there are none, so an environment without generated
             // files keeps the hash it already has.
             ...nonEmptyListField('configFiles', withVariables.configFiles),
+            ...nonEmptyListField('networkShareCredentials', withVariables.networkShareCredentials),
             storage: storageMaterialRaw,
             ...cacheHashInputs(cacheState),
           },
@@ -4315,6 +4329,10 @@ export async function prepareDeployCompose(
     secretPlan: withVariables.secretPlan,
     configFiles: withVariables.configFiles,
     configSecretRefs: withVariables.configSecretRefs,
+    networkShareCredentials: withVariables.networkShareCredentials,
+    ...(withVariables.networkSharesResolved === null
+      ? {}
+      : { networkSharesResolved: withVariables.networkSharesResolved }),
     sourceSelection: params.sourceSelection,
   })
 }
