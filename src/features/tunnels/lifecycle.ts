@@ -481,7 +481,17 @@ export async function updatePlacement(
     await replacePortals(tx, row.id, targets)
     const [updated] = await tx
       .update(tunnel)
-      .set({ placement: input.placement, datacenterId: dcId })
+      .set({
+        placement: input.placement,
+        datacenterId: dcId,
+        // The status poll asks a tunnel newly on all servers again soon; the
+        // stamp is the only thing that restarts that window (updatedAt moves
+        // on every write, so it cannot be used).
+        metadata:
+          input.placement === 'all'
+            ? sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), '{placementChangedAt}', ${JSON.stringify(new Date().toISOString())}::jsonb)`
+            : sql`${tunnel.metadata}`,
+      })
       .where(eq(tunnel.id, row.id))
       .returning()
     return updated!

@@ -130,10 +130,11 @@ async function hasUnheardPortal(db: Db, serverId: string, nowMs: number): Promis
 }
 
 /**
- * Does an all-servers tunnel that this server carries, made or changed
- * recently (a new tunnel, or a placement moved to all servers), have no report
- * kept for it yet? The same window as a new portal, so a connector that never
- * reports costs a few extra questions, not one every tick forever.
+ * Does an all-servers tunnel that this server carries, made or moved to all
+ * servers recently, have no report kept for it yet? "Recently" reads
+ * `createdAt` or `metadata.placementChangedAt`, never `updatedAt`, which every
+ * write to the tunnel moves. The same window as a new portal, so a connector
+ * that never reports costs a few extra questions, not one every tick forever.
  */
 async function hasUnheardAllTunnel(db: Db, serverId: string, nowMs: number): Promise<boolean> {
   const since = new Date(nowMs - TUNNEL_STATUS_NEW_PORTAL_WINDOW_MS).toISOString()
@@ -144,7 +145,7 @@ async function hasUnheardAllTunnel(db: Db, serverId: string, nowMs: number): Pro
       and(
         eq(server.id, serverId),
         carriesAnAllServersTunnel(
-          sql`${tunnel.updatedAt} > ${since}
+          sql`greatest(${tunnel.createdAt}, coalesce((${tunnel.metadata} ->> 'placementChangedAt')::timestamptz, ${tunnel.createdAt})) > ${since}
             and not jsonb_exists(coalesce(${server.metadata} -> 'tunnelConnectorReports', '{}'::jsonb), ${tunnel.externalId})`
         )
       )

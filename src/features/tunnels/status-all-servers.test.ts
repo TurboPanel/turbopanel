@@ -25,7 +25,7 @@ import {
 } from '../../db/schema.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import { toApiTunnel } from './lifecycle.ts'
+import { toApiTunnel, updatePlacement } from './lifecycle.ts'
 import {
   pollServerTunnelStatus,
   runTunnelStatusPollTick,
@@ -266,7 +266,7 @@ test('a new tunnel in another datacenter does not fast-poll servers of this one'
     const [mine] = await c.db.select().from(tunnel).where(eq(tunnel.id, c.tunnelId))
     const organizationId = mine!.organizationId
     // This tunnel is old; a new all-servers tunnel starts in a second datacenter.
-    await c.db.update(tunnel).set({ updatedAt: longAgo() }).where(eq(tunnel.id, c.tunnelId))
+    await c.db.update(tunnel).set({ createdAt: longAgo() }).where(eq(tunnel.id, c.tunnelId))
     const [dc2] = await c.db
       .insert(datacenter)
       .values({ organizationId, name: 'Other DC' })
@@ -312,9 +312,29 @@ test('a server marked as never carrying tunnels is neither asked nor fast-polled
 
 test('a tunnel moved to all servers is asked again after the short gap', async () => {
   await withAllServersTunnel(async (c) => {
-    // Made long ago, then changed just now: the change restarts the window.
+    // Made long ago, then moved to all servers just now: the move restarts the window.
     await c.db.update(tunnel).set({ createdAt: longAgo() }).where(eq(tunnel.id, c.tunnelId))
+    const [before] = await c.db.select().from(tunnel).where(eq(tunnel.id, c.tunnelId))
+    await updatePlacement(
+      c.db,
+      before!,
+      { placement: 'all', serverIds: [], exceptServerIds: [c.skippedId] },
+      before!.datacenterId
+    )
     const row = await askAndAnswer(c, c.serverIds[0]!)
     assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row(), soonAfter()), 'asked')
+  })
+})
+
+test('a write that is not a placement move does not reopen the short-gap window', async () => {
+  await withAllServersTunnel(async (c) => {
+    await c.db.update(tunnel).set({ createdAt: longAgo() }).where(eq(tunnel.id, c.tunnelId))
+    // What a failed route push saves: tunnel metadata only (updatedAt moves too).
+    await c.db
+      .update(tunnel)
+      .set({ metadata: { routesRetry: { attempts: 1, nextTryAt: new Date().toISOString() } } })
+      .where(eq(tunnel.id, c.tunnelId))
+    const row = await askAndAnswer(c, c.serverIds[0]!)
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await row(), soonAfter()), 'waiting')
   })
 })

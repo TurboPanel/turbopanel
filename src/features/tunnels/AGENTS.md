@@ -124,7 +124,7 @@ member there, a widened CHECK (forward migration) and one adapter.
   lists every carrying server as a `run` portal built from that report, or as
   `unknown` before one arrived. The status poll asks every connected server that carries an
   all-servers tunnel (not only ones holding a forwarding table), and asks again
-  after 15 s while a tunnel made or changed in the last 10 minutes has no report
+  after 15 s while a tunnel made, or moved to all servers (`metadata.placementChangedAt`), in the last 10 minutes has no report
   from that server.
 - **A stopped or missing connector is sent again.** A connector list that finished well is
   never resent while it is unchanged, so a connector stopped by hand (or given
