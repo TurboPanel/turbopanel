@@ -271,6 +271,7 @@ export const DAEMON_WIRE_FEATURES = [
   'tunnel-peer-mtls-v1',
   'hosting-name-tls-v1',
   'acme-issue-dns-v1',
+  'compose-checkout-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -292,6 +293,15 @@ export const DEPLOY_HOSTINGS_ONLY_FEATURE: DaemonWireFeature = 'deploy-hostings-
  * ignore the field and keep the data without saying so.
  */
 export const STOP_REMOVE_VOLUMES_FEATURE: DaemonWireFeature = 'environment-stop-remove-volumes-v1'
+
+/**
+ * `environment.deploy` may carry `composeCheckout`: the repository a Git
+ * Compose project's compose file was read from, which the daemon checks out
+ * before the build and start so relative paths in the compose file resolve.
+ * Every daemon must list it (the control plane holds a daemon back that does
+ * not), so the field is sent whenever the project follows a repository file.
+ */
+export const COMPOSE_CHECKOUT_FEATURE: DaemonWireFeature = 'compose-checkout-v1'
 
 /**
  * The daemon takes any application mode in `nativeAppServices[].appMode` that

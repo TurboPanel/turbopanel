@@ -254,7 +254,7 @@ export type DeploySourceResolveParams = {
   releaseIds?: ReleaseIdAllocator
 }
 
-type SourceRow = {
+export type SourceRow = {
   id: string
   provider: string
   repositoryUrl: string
@@ -403,9 +403,9 @@ export function withBuildEnv(
   return out
 }
 
-type DaemonRecipient = { serverId: string; keyId: string }
+export type DaemonRecipient = { serverId: string; keyId: string }
 
-async function resolveDaemonRecipient(
+export async function resolveDaemonRecipient(
   db: Db,
   serverId: string
 ): Promise<DaemonRecipient | Response> {
@@ -755,7 +755,7 @@ export async function resolveDeploySourceMaterial(
   return out
 }
 
-type CommitAndCredentialParams = {
+export type CommitAndCredentialParams = {
   composeServiceName: string
   row: SourceRow
   ref: string
@@ -778,7 +778,7 @@ type CommitAndCredentialParams = {
  * clone. A follow-up phase adds `git ls-remote` resolution so the control plane
  * pins the exact commit for those too.
  */
-async function resolveSourceCommitAndCredential(
+export async function resolveSourceCommitAndCredential(
   c: Context<AppEnv>,
   db: Db,
   params: CommitAndCredentialParams

@@ -124,3 +124,26 @@ test('a changed text-only generated config file changes the digest', async () =>
   assertEquals(a, again)
   assertNotEquals(a, await deployInputsDigest(inputs()))
 })
+
+test('the checkout commit and path change the digest; a re-sealed credential does not', async () => {
+  const checkout = (overrides: Record<string, unknown> = {}) =>
+    inputs({
+      composeCheckout: {
+        sourceId: 'src-1',
+        cloneUrl: 'https://git.example.net/acme/stack.git',
+        commitSha: SHA,
+        composePath: 'compose.yaml',
+        credential: 'tpdaemon.nonce-one',
+        ...overrides,
+      },
+    })
+  const base = await deployInputsDigest(checkout())
+  assertEquals(await deployInputsDigest(checkout({ credential: 'tpdaemon.nonce-two' })), base)
+  assertNotEquals(await deployInputsDigest(checkout({ commitSha: 'b'.repeat(40) })), base)
+  assertNotEquals(await deployInputsDigest(checkout({ composePath: 'deploy/compose.yaml' })), base)
+  // A deploy with no checkout keeps the digest it had before the field existed.
+  assertEquals(
+    await deployInputsDigest(inputs({ composeCheckout: undefined })),
+    await deployInputsDigest(inputs())
+  )
+})

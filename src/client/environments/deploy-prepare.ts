@@ -226,6 +226,7 @@ import type {
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySite,
   EnvironmentDeploySitePrincipal,
+  EnvironmentDeployComposeCheckout,
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployStorageMount,
@@ -239,6 +240,8 @@ import {
   resolveDeploySourceMaterial,
   withBuildEnv,
 } from './deploy-sources.ts'
+import { resolveDeployComposeCheckout } from './deploy-compose-checkout.ts'
+import type { ComposeBaseRecord } from '../../features/projects/project-options.ts'
 import {
   binding,
   environment,
@@ -2951,6 +2954,7 @@ function deployHashInputs(parts: {
   nativeAppNodeVersions?: NativeAppNodeVersionView[]
   nativeAppDenoVersions?: NativeAppDenoVersionView[]
   sourceMaterial: EnvironmentDeploySource[]
+  composeCheckout?: EnvironmentDeployComposeCheckout
   dockerExternalNetworks: string[]
   dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
   fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -2972,6 +2976,11 @@ function deployHashInputs(parts: {
     nativeAppNodeVersions: parts.nativeAppNodeVersions,
     nativeAppDenoVersions: parts.nativeAppDenoVersions,
     sourceMaterial: parts.sourceMaterial,
+    // The repository tree, commit and compose path decide what a relative path
+    // in the compose file means, so a moved commit is a different deploy even
+    // when the compiled YAML is byte-identical. The sealed credential never
+    // counts (`deploy-inputs-digest.ts`); absent, the hash is what it was.
+    composeCheckout: parts.composeCheckout,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing,
     fabricNetworks: parts.fabricNetworks,
@@ -3015,6 +3024,7 @@ async function toPreparedDeployResult(
     nativeAppNodeVersions?: NativeAppNodeVersionView[]
     nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
+    composeCheckout?: EnvironmentDeployComposeCheckout
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
     fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -3074,6 +3084,7 @@ async function toPreparedDeployResult(
     nativeAppNodeVersions: parts.nativeAppNodeVersions ?? [],
     nativeAppDenoVersions: parts.nativeAppDenoVersions ?? [],
     sourceMaterial: parts.sourceMaterial,
+    ...(parts.composeCheckout === undefined ? {} : { composeCheckout: parts.composeCheckout }),
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing
       ? [...parts.dockerNetworkAddressing]
@@ -3480,6 +3491,43 @@ async function resolveManagedNetworkHostName(
     organizationId,
   })
   return network.hostName
+}
+
+/**
+ * What the host needs from the repository: the local source material with its
+ * build environment and build limits set, and the checkout of a followed
+ * compose file. The commit hash never includes build limits, so changing a
+ * limit does not make a deploy look new.
+ */
+async function prepareSourceMaterial(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: 'deploy' | 'preview'
+    organizationId: string
+    serverId: string
+    composeBase: ComposeBaseRecord | null | undefined
+    localSourceMaterial: readonly EnvironmentDeploySource[]
+    buildAssignments: Parameters<typeof withBuildEnv>[1]
+    levels: Parameters<typeof attachBuildLimits>[1]
+    hostingsOnly: boolean
+  }
+): Promise<
+  | {
+      sourceMaterial: EnvironmentDeploySource[]
+      composeCheckout?: EnvironmentDeployComposeCheckout
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const built = withBuildEnv(args.localSourceMaterial, args.buildAssignments)
+  if (!Array.isArray(built)) return toApplyVariablesPrepareError(built)
+  const composeCheckout = await resolveDeployComposeCheckout(c, db, args)
+  if (isPrepareStop(composeCheckout)) return composeCheckout
+  return {
+    sourceMaterial: attachBuildLimits(built, args.levels),
+    ...(composeCheckout === undefined ? {} : { composeCheckout }),
+  }
 }
 
 /** A prepare step answered with a refusal (a `Response` or a `DeployPrepareError`) instead of its value. */
@@ -3939,6 +3987,15 @@ export async function prepareDeployCompose(
      * the stored row, so the plan and every server read one Base.
      */
     projectOptions?: unknown
+    /**
+     * The Base this deploy used when the project follows its repository's
+     * compose file (`PlannedDeploy.composeBase`). Its repository, commit and
+     * path become the payload's `composeCheckout`, so the host has the files
+     * the compose file's relative paths mean.
+     */
+    composeBase?: ComposeBaseRecord | null
+    /** Only the web server config and certificates change: no repository checkout is resolved. */
+    hostingsOnly?: boolean
   }
 ): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
   const mode = params.mode ?? 'deploy'
@@ -4172,15 +4229,22 @@ export async function prepareDeployCompose(
   })
   if (isPrepareStop(edge)) return edge
 
-  const builtSources = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
-  if (!Array.isArray(builtSources)) return toApplyVariablesPrepareError(builtSources)
-  // The commit hash never includes build limits, so changing a limit does not
-  // make a deploy look new.
-  const sourceMaterial = attachBuildLimits(builtSources, {
-    organizationOptions: orgRow?.options,
-    serverOptions: serverRow?.options,
-    serviceOptionsByComposeName: pipeline.optionsByComposeName,
+  const sources = await prepareSourceMaterial(c, db, {
+    mode,
+    organizationId: params.organizationId,
+    serverId: params.serverId,
+    composeBase: params.composeBase,
+    hostingsOnly: params.hostingsOnly === true,
+    localSourceMaterial,
+    buildAssignments: withVariables.buildAssignments,
+    levels: {
+      organizationOptions: orgRow?.options,
+      serverOptions: serverRow?.options,
+      serviceOptionsByComposeName: pipeline.optionsByComposeName,
+    },
   })
+  if (isPrepareStop(sources)) return sources
+  const { sourceMaterial, composeCheckout } = sources
 
   const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
     c,
@@ -4229,6 +4293,7 @@ export async function prepareDeployCompose(
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial,
+    composeCheckout,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),
