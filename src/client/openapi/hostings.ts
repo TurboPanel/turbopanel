@@ -633,7 +633,7 @@ const removeNowPaths = {
       tags: ['Hostings'],
       summary: 'Release a compose-made hostname now',
       description:
-        "Call it after the entry is removed from the environment's compose file. A compose-made hosting is deleted at once: its hostnames are free for another hosting and a doorway that pointed at it is unlinked (the doorway keeps its own name). A hosting compose adopted from the panel is handed back instead (`outcome: handed_back`): the panel row and its names stay. No deploy is started: the servers drop the route at the environment's next deploy, and `serverUpdate` says so. Asking again for a hosting that is already gone answers 200 with `alreadyGone: true`, and so does an id that belongs to another organization (so nobody can tell it exists). Needs the same recent re-authentication as `DELETE /hostings/{id}` when the organization asks for it (`hosting.delete`).",
+        "Call it after the entry is removed from the environment's compose file. A compose-made hosting is deleted at once: its hostnames are free for another hosting and a doorway that pointed at it is unlinked (the doorway keeps its own name). A hosting compose adopted from the panel is handed back instead (`outcome: handed_back`): the panel row and its names stay. No deploy is started: the servers drop the route at the environment's next deploy, and `serverUpdate` says so. Asking again for a hosting that is already gone answers 200 with `alreadyGone: true`. Needs the same recent re-authentication as `DELETE /hostings/{id}` when the organization asks for it (`hosting.delete`).",
       security: [{ cookieAuth: [] }],
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
@@ -681,7 +681,7 @@ const removeNowPaths = {
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '404': {
-          description: 'Not a well-formed hosting id',
+          description: 'Not a hosting of this organization, or not a well-formed id',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '409': {

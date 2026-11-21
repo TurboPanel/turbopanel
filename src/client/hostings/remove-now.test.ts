@@ -45,6 +45,10 @@ type Fixture = {
   first: { environmentId: string; serviceId: string; projectId: string }
   second: { environmentId: string; serviceId: string; projectId: string }
   call: (method: string, path: string, body?: unknown) => Promise<Response>
+  /** The same request with another user's session cookie, or none. */
+  callAs: (cookie: string | null, method: string, path: string) => Promise<Response>
+  /** A session cookie for `userId`. */
+  cookieFor: (userId: string) => Promise<string>
   cleanup: () => Promise<void>
 }
 
@@ -133,6 +137,18 @@ async function setup(): Promise<Fixture> {
         headers: { cookie, [ORG_ID_HEADER]: organizationId, 'content-type': 'application/json' },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
+    callAs: async (asCookie, method, path) =>
+      app.request(path, {
+        method,
+        headers: {
+          ...(asCookie === null ? {} : { cookie: asCookie }),
+          [ORG_ID_HEADER]: organizationId,
+        },
+      }),
+    cookieFor: async (userId) => {
+      const { token } = await createSession(db, userId, {})
+      return `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
+    },
     async cleanup() {
       await db.delete(audit).where(eq(audit.organizationId, organizationId))
       await db.delete(doorway).where(eq(doorway.routingOrganizationId, organizationId))
@@ -475,7 +491,7 @@ test('remove-now: refused while a deploy of the environment runs, and nothing is
   }
 })
 
-test("remove-now: another organization's hosting answers like a missing id and is left alone", async () => {
+test("remove-now: another organization's hosting is a 404 and is left alone", async () => {
   if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
   const f = await setup()
   const now = new Date().toISOString()
@@ -524,13 +540,8 @@ test("remove-now: another organization's hosting answers like a missing id and i
         updatedAt: now,
       })
       .returning({ id: hosting.id })
-    const missing = await f.call('POST', `/hostings/${crypto.randomUUID()}/remove-now`)
     const other = await f.call('POST', `/hostings/${foreign!.id}/remove-now`)
-    assertEquals(other.status, 200)
-    assertEquals(other.status, missing.status)
-    const body = await other.json()
-    assertEquals(body, await missing.json())
-    assertEquals(body, { ok: true, removed: true, alreadyGone: true })
+    assertEquals(other.status, 404)
     const [still] = await f.db
       .select({ id: hosting.id })
       .from(hosting)
@@ -543,6 +554,26 @@ test("remove-now: another organization's hosting answers like a missing id and i
     await f.db.delete(project).where(eq(project.id, proj!.id))
     await f.db.delete(workspace).where(eq(workspace.id, ws!.id))
     await f.db.delete(organization).where(eq(organization.id, org!.id))
+    await f.cleanup()
+  }
+})
+
+test('remove-now: no session answers 401 and a member without manage answers 403, both leave the hosting', async () => {
+  if (!dbUrl) return skipWithoutDatabase('hosting remove-now route tests')
+  const f = await setup()
+  const [viewer] = await f.db
+    .insert(user)
+    .values({ email: `rm-viewer-${crypto.randomUUID()}@example.com`, isEmailVerified: true })
+    .returning({ id: user.id })
+  try {
+    const id = await makeHosting(f, f.first.serviceId, COMPOSE_OWNED)
+    const path = `/hostings/${id}/remove-now`
+    assertEquals((await f.callAs(null, 'POST', path)).status, 401)
+    const denied = await f.callAs(await f.cookieFor(viewer!.id), 'POST', path)
+    assertEquals(denied.status, 403)
+    assertEquals(await nameHolders(f), 1)
+  } finally {
+    await f.db.delete(user).where(eq(user.id, viewer!.id))
     await f.cleanup()
   }
 })

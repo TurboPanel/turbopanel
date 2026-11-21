@@ -16,8 +16,7 @@
  * reconcile does: the panel made it first, so the row and its names stay with
  * the panel, which keeps serving them, and the names are not freed. Asking
  * again for a row that is already gone answers 200 with `alreadyGone`, so a
- * retry after a lost reply is harmless. Another organization's id answers the
- * same way, so nobody can tell that it exists. The session gate is the step-up
+ * retry after a lost reply is harmless. Another organization's id is a 404. The session gate is the step-up
  * middleware's (`./delete-step-up.ts`, registered ahead of this route).
  *
  * No deploy runs: a deploy plans from the whole environment and would ship
@@ -172,12 +171,12 @@ export function registerHostingRemoveNowRoute(router: Hono<AppEnv>, opts: AuthRo
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
     const organizationId = await getOrgId(c, session.userId)
     if (organizationId instanceof Response) return organizationId
-    const owner = await resolveEntityOrganizationId(db, 'hosting', id)
     if (!isUuid(id)) return c.json({ error: 'Not found' }, 404)
-    // A well-formed id with no row of this organization is answered as a
-    // retry for a hosting already removed, whether it is missing or another
-    // organization's, so the answer never says which ids exist elsewhere.
-    if (owner !== organizationId) return c.json(ALREADY_GONE)
+    const owner = await resolveEntityOrganizationId(db, 'hosting', id)
+    // A well-formed id with no row is a retry for a hosting already removed;
+    // there is nothing left to authorize or to tell anyone.
+    if (owner === null) return c.json(ALREADY_GONE)
+    if (owner !== organizationId) return c.json({ error: 'Not found' }, 404)
     const denied =
       (await assertCanOr403(c, 'organization:manage', 'hosting', id)) ??
       (await assertNotSystemOwnedOr403(c, 'hosting', id))
