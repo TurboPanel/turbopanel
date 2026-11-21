@@ -35,7 +35,6 @@ import {
   isDbRef,
   type ParsedVariableRef,
   parseExactVariableRef,
-  splitEmbeddedRefs,
   type VariableRefScope,
 } from './variable-refs.ts'
 
