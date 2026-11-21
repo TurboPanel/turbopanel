@@ -53,3 +53,14 @@ cleanup, HTTP issuance and then the tunnel sweeps (`tunnel-sweeps.ts`, the
 shared list in `src/features/tunnels/sweeps.ts`). A sweep added to
 `runQueuedCronSweeps` must also be called from `server.ts`;
 `tunnel-sweeps.hostfree.test.ts` fails otherwise.
+
+**Job cadences on self-hosted.** The cleanup lane reads the override map once per
+pass through `loadJobCadences` (`features/settings/job-cadences.ts`): the
+`TURBOPANEL_JOB_CADENCES` env var first (no database read), then the
+`jobs.cadences` setting row through `SettingsResolver`, cached for
+`JOB_CADENCES_CACHE_MS`, then the defaults. It never throws. Only the loops that
+already match a registry job use it today: `historyPrune` (command and audit
+history), `notificationPrune` and `upgradeCheck`. The other timers keep their
+fixed intervals, and the `upgradeTick` job is read by Workers only (the
+self-hosted upgrade tick still runs every pass) until the single self-hosted
+tick replaces the timers.

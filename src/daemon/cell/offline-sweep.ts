@@ -87,6 +87,7 @@ import {
   type CronGates,
   loadCronGates,
   isDue,
+  type CronCadenceTable,
   type CronJob,
 } from './cron-gates.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
@@ -127,11 +128,7 @@ import { resolveBuildLabel, resolveInstanceRevision } from '../../app/build-info
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
-import {
-  parseUpgradeTickMinutes,
-  shouldRunUpgradeTick,
-  UPGRADE_TICK_DEFAULT_MINUTES,
-} from '../../features/upgrades/tick-cadence.ts'
+import { resolveJobCadencesFromEnv } from '../../features/settings/job-cadences.ts'
 import {
   type AnalyticsEngineDatasetLike,
   resolveServerMetricsStore,
@@ -209,12 +206,6 @@ export { ALERT_DELIVERY_BUDGET_MS } from '../../features/alerts/notify-demotions
 /** Hard deadline per `checkLiveness` DO RPC. */
 export const LIVENESS_RPC_TIMEOUT_MS = 5_000
 
-/** Execution-log R2 retention runs on this minute-modulo divisor. */
-export const EXECUTION_LOG_SWEEP_MINUTE_DIVISOR = 15
-
-/** Hosted license-tier nag — hourly on the same cron tick. */
-export const TIER_NOTICE_SWEEP_MINUTE_DIVISOR = 60
-
 export type SweepOnceStats = {
   probed: number
   stale: number
@@ -236,23 +227,27 @@ export function takeLastOfflineSweepScheduledTimeForTests(): number | undefined 
   return value
 }
 
-/** True on every Nth UTC minute (isolate-independent, no stored state). */
-export function shouldSweepExecutionLogs(scheduledTimeMs: number): boolean {
-  const minute = Math.floor(scheduledTimeMs / 60_000)
-  return minute % EXECUTION_LOG_SWEEP_MINUTE_DIVISOR === 0
+/** Execution-log retention: the `executionLogs` job (isolate-independent, no stored state). */
+export function shouldSweepExecutionLogs(
+  scheduledTimeMs: number,
+  table: CronCadenceTable = CRON_CADENCES
+): boolean {
+  return isDue('executionLogs', scheduledTimeMs, table)
 }
 
-/** Upgrade-history prune shares the execution-log 15-minute window. */
-export const UPGRADE_HISTORY_SWEEP_MINUTE_DIVISOR = EXECUTION_LOG_SWEEP_MINUTE_DIVISOR
-
-export function shouldSweepUpgradeHistory(scheduledTimeMs: number): boolean {
-  const minute = Math.floor(scheduledTimeMs / 60_000)
-  return minute % UPGRADE_HISTORY_SWEEP_MINUTE_DIVISOR === 0
+/** Command, audit, peak and upgrade history prune: the `historyPrune` job. */
+export function shouldSweepUpgradeHistory(
+  scheduledTimeMs: number,
+  table: CronCadenceTable = CRON_CADENCES
+): boolean {
+  return isDue('historyPrune', scheduledTimeMs, table)
 }
 
-export function shouldSweepTierNotices(scheduledTimeMs: number): boolean {
-  const minute = Math.floor(scheduledTimeMs / 60_000)
-  return minute % TIER_NOTICE_SWEEP_MINUTE_DIVISOR === 0
+export function shouldSweepTierNotices(
+  scheduledTimeMs: number,
+  table: CronCadenceTable = CRON_CADENCES
+): boolean {
+  return isDue('tierNotices', scheduledTimeMs, table)
 }
 
 /** Format a trace field without relying on Object's default `[object Object]`. */
@@ -1099,8 +1094,8 @@ export async function sweepCommandHistorySafely(db: Db): Promise<void> {
 }
 
 /**
- * Advance managed upgrades. The cadence is `TURBOPANEL_UPGRADE_TICK_MINUTES`
- * (default 15, see features/upgrades/tick-cadence.ts), independent of history prune.
+ * Advance managed upgrades. The cadence is the `upgradeTick` job (default 15
+ * minutes, `TURBOPANEL_JOB_CADENCES`), independent of history prune.
  * The check for a new build (and an automatic start) runs on the first tick at
  * or after this install's minute of the hour (`schedule.ts`), so once an hour.
  * Manifest fetches are cached. Dispatch is capped inside the coordinator.
@@ -1192,6 +1187,8 @@ type QueuedCronSweepContext = {
   signal?: AbortSignal
   gates?: CronGates
   scheduledTime?: number
+  /** The tick's resolved cadences; the defaults when omitted. */
+  cadences?: CronCadenceTable
 }
 
 async function runQueuedCronSweeps(ctx: QueuedCronSweepContext): Promise<void> {
@@ -1230,14 +1227,15 @@ async function runReconnectRepairSweeps(
   commandQueue: CommandQueue
 ): Promise<void> {
   const { db, signal, tlsRenewal, firewallApplyGate, scheduledTime } = ctx
+  const cadences = ctx.cadences ?? CRON_CADENCES
   const repair = (job: CronJob): boolean =>
-    gates.connectedServer && isDue(job, scheduledTime, CRON_CADENCES)
+    gates.connectedServer && isDue(job, scheduledTime, cadences)
   // System reconcile and the ingress orphan pass keep a 5 minute throttle on their
   // own last command, so on a 5 minute cadence alone a down container would be
   // retried about every 10 minutes and a reconnect could fall between two slots.
   // While the gate shows a candidate they run every minute; otherwise on their slot.
   const reconcileDue = (job: CronJob): boolean =>
-    gates.connectedServer && (gates.reconcileUrgent || isDue(job, scheduledTime, CRON_CADENCES))
+    gates.connectedServer && (gates.reconcileUrgent || isDue(job, scheduledTime, cadences))
   if (reconcileDue('systemReconcile')) await runSystemReconcileSweep(db, commandQueue)
   // Each sweep below is isolated: a failure never aborts the others.
   // Backup policy sets after a reconnect.
@@ -1312,7 +1310,7 @@ async function runCertificateAndIngressSweeps(
   tlsRenewal: CronTlsRenewal
 ): Promise<void> {
   const { db, signal, registry, env, scheduledTime } = ctx
-  const cadences = CRON_CADENCES
+  const cadences = ctx.cadences ?? CRON_CADENCES
   const reconcileDue = (job: CronJob): boolean =>
     gates.connectedServer && (gates.reconcileUrgent || isDue(job, scheduledTime, cadences))
   // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced per
@@ -1382,34 +1380,37 @@ function shouldRunScheduledPhase(
 }
 
 /**
- * Phases a tick did not run, plus the upgrade tick cadence in force for it
- * (`TURBOPANEL_UPGRADE_TICK_MINUTES`) so the skipped-phase list agrees with
- * what the tick would really have scheduled.
+ * Phases a tick did not run, plus the cadences in force for it
+ * (`TURBOPANEL_JOB_CADENCES`) so the skipped-phase list agrees with what the
+ * tick would really have scheduled.
  */
-export type SkippedPhases = string[] & { readonly upgradeTickMinutes: number }
+export type SkippedPhases = string[] & { readonly cadences: CronCadenceTable }
 
-export function newSkippedPhases(upgradeTickMinutes: number): SkippedPhases {
-  return Object.assign([] as string[], { upgradeTickMinutes })
+export function newSkippedPhases(cadences: CronCadenceTable = CRON_CADENCES): SkippedPhases {
+  return Object.assign([] as string[], { cadences })
+}
+
+/** The 'upgrade-history' phase runs for the history prune, the upgrade tick, or both. */
+function upgradePhaseDue(scheduledTimeMs: number, cadences: CronCadenceTable): boolean {
+  return (
+    shouldSweepUpgradeHistory(scheduledTimeMs, cadences) ||
+    isDue('upgradeTick', scheduledTimeMs, cadences)
+  )
 }
 
 /** The phases this tick schedules after liveness, in run order. */
 export function optionalPhaseNames(
   scheduledTime: number | undefined,
-  upgradeTickMinutes: number = UPGRADE_TICK_DEFAULT_MINUTES
+  cadences: CronCadenceTable = CRON_CADENCES
 ): string[] {
   const names = ['command-dispatch', 'webhook-deliveries', 'daemon-trust']
-  if (shouldRunScheduledPhase(scheduledTime, shouldSweepExecutionLogs)) {
+  if (shouldRunScheduledPhase(scheduledTime, (ms) => shouldSweepExecutionLogs(ms, cadences))) {
     names.push('execution-logs')
   }
-  if (
-    shouldRunScheduledPhase(
-      scheduledTime,
-      (ms) => shouldSweepUpgradeHistory(ms) || shouldRunUpgradeTick(ms, upgradeTickMinutes)
-    )
-  ) {
+  if (shouldRunScheduledPhase(scheduledTime, (ms) => upgradePhaseDue(ms, cadences))) {
     names.push('upgrade-history')
   }
-  if (shouldRunScheduledPhase(scheduledTime, shouldSweepTierNotices)) {
+  if (shouldRunScheduledPhase(scheduledTime, (ms) => shouldSweepTierNotices(ms, cadences))) {
     names.push('tier-notices')
   }
   names.push('billing-stripe-projection')
@@ -1425,7 +1426,7 @@ function markSkippedFrom(
   phase: string,
   scheduledTime: number | undefined
 ): void {
-  const rest = optionalPhaseNames(scheduledTime, phasesSkipped.upgradeTickMinutes)
+  const rest = optionalPhaseNames(scheduledTime, phasesSkipped.cadences)
   const index = rest.indexOf(phase)
   phasesSkipped.push(...(index === -1 ? rest : rest.slice(index)))
 }
@@ -1497,19 +1498,19 @@ async function runScheduledOptionalPhase(
 }
 
 /**
- * The 'upgrade-history' cron phase: history prune on its own 15-minute window
- * and the upgrade tick on `upgradeTickMinutes`; whichever is due runs.
+ * The 'upgrade-history' cron phase: history prune on the `historyPrune`
+ * cadence and the upgrade tick on `upgradeTick`; whichever is due runs.
  */
 async function upgradePhaseWork(
   db: Db,
   env: CloudflareBindings,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  upgradeTickMinutes: number
+  cadences: CronCadenceTable
 ): Promise<void> {
   const scheduledTime = opts.scheduledTime
   if (scheduledTime === undefined) return
-  if (shouldSweepUpgradeHistory(scheduledTime)) {
+  if (shouldSweepUpgradeHistory(scheduledTime, cadences)) {
     await runWithDbTimeout(
       db,
       (database) =>
@@ -1526,7 +1527,7 @@ async function upgradePhaseWork(
     await runWithDbTimeout(db, sweepAuditHistorySafely, capDbTimeout(deadlineMs))
     await runWithDbTimeout(db, sweepPeakHistorySafely, capDbTimeout(deadlineMs))
   }
-  if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
+  if (isDue('upgradeTick', scheduledTime, cadences)) {
     await runUpgradeMaintenanceSafely(db, env)
   }
 }
@@ -1652,7 +1653,7 @@ async function runMaintenanceCronPhases(
   gates: CronGates
 ): Promise<boolean> {
   const scheduledTime = opts.scheduledTime
-  const cadences = CRON_CADENCES
+  const cadences = phasesSkipped.cadences
   // Two halves: the retention delete (a cadence) and the stale-command and
   // stuck-recovery pass (only while a command, recovery or managed row is open).
   const dispatchRetention = isDue('commandDispatchCleanup', scheduledTime, cadences)
@@ -1806,7 +1807,7 @@ async function runOptionalCronPhases(
   deadlineMs: number,
   phasesSkipped: SkippedPhases
 ): Promise<void> {
-  const upgradeTickMinutes = phasesSkipped.upgradeTickMinutes
+  const cadences = phasesSkipped.cadences
   // One statement answers "can any gated family have work?" for the whole tick.
   const gates = await loadGatesForTick(db, deadlineMs)
 
@@ -1821,15 +1822,15 @@ async function runOptionalCronPhases(
 
   // Inbox rows after 90 days, events and the ledger after 30, and settings of
   // people who left an organization (features/notifications/cleanup.ts). On
-  // the upgrade-history 15-minute window, like the self-hosted tick: the
-  // settings pass reads the whole preference table.
+  // the `notificationPrune` cadence (15 minutes by default): the settings
+  // pass reads the whole preference table.
   if (
     !(await runScheduledOptionalPhase(
       deadlineMs,
       'notification-prune',
       opts.scheduledTime,
       phasesSkipped,
-      shouldSweepUpgradeHistory,
+      (ms) => isDue('notificationPrune', ms, cadences),
       async () => {
         await pruneNotificationHistory(db)
       }
@@ -1844,7 +1845,7 @@ async function runOptionalCronPhases(
       'execution-logs',
       opts.scheduledTime,
       phasesSkipped,
-      shouldSweepExecutionLogs,
+      (ms) => shouldSweepExecutionLogs(ms, cadences),
       () => sweepExecutionLogsPhase(env, opts)
     ))
   ) {
@@ -1857,10 +1858,8 @@ async function runOptionalCronPhases(
       'upgrade-history',
       opts.scheduledTime,
       phasesSkipped,
-      (scheduledTimeMs) =>
-        shouldSweepUpgradeHistory(scheduledTimeMs) ||
-        shouldRunUpgradeTick(scheduledTimeMs, upgradeTickMinutes),
-      () => upgradePhaseWork(db, env, opts, deadlineMs, upgradeTickMinutes)
+      (scheduledTimeMs) => upgradePhaseDue(scheduledTimeMs, cadences),
+      () => upgradePhaseWork(db, env, opts, deadlineMs, cadences)
     ))
   ) {
     return
@@ -1872,7 +1871,7 @@ async function runOptionalCronPhases(
       'tier-notices',
       opts.scheduledTime,
       phasesSkipped,
-      shouldSweepTierNotices,
+      (ms) => shouldSweepTierNotices(ms, cadences),
       () => sweepTierNoticesPhase(env, db, tlsRenewal, opts)
     ))
   ) {
@@ -1896,6 +1895,7 @@ async function runOptionalCronPhases(
       signal,
       gates,
       scheduledTime: opts.scheduledTime,
+      cadences,
     })
   )
 }
@@ -1958,11 +1958,12 @@ export async function runOfflineSweep(
 
   const startedAtMs = opts.nowMs ?? Date.now()
   const deadlineMs = opts.deadlineMs ?? startedAtMs + OFFLINE_SWEEP_TICK_BUDGET_MS
-  const phasesSkipped = newSkippedPhases(
-    parseUpgradeTickMinutes(
-      (env as { TURBOPANEL_UPGRADE_TICK_MINUTES?: string }).TURBOPANEL_UPGRADE_TICK_MINUTES
-    )
-  )
+  // Vars only: no database read, so the cadences add no Hyperdrive statement to a tick.
+  const resolved = resolveJobCadencesFromEnv(env as unknown as Record<string, string | undefined>)
+  if (resolved.warnings.length > 0) {
+    sweepTrace('job-cadences-adjusted', { warnings: resolved.warnings.join('; ') })
+  }
+  const phasesSkipped = newSkippedPhases(resolved.table)
   let stats: SweepOnceStats = { ...EMPTY_SWEEP_STATS }
 
   try {

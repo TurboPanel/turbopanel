@@ -5,7 +5,8 @@
 import { assertEquals } from '@std/assert'
 import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
 import { createUpgradeCoordinator, UPGRADE_PAUSED, UPGRADE_RETRY_LATER } from './coordinator.ts'
-import { claimUpgradeCheck } from './maintenance.ts'
+import { claimUpgradeCheck, upgradeCheckIntervalMinutes } from './maintenance.ts'
+import { resolveJobCadences } from '../../jobs/registry.ts'
 import { createMemoryUpgradeStore, type FleetServerFact } from './store.ts'
 import type { UpgradeRuntime } from './planner.ts'
 import type { UpgradeSettings } from '../settings/upgrade-settings.ts'
@@ -351,12 +352,18 @@ test('the hourly check runs once per slot and records itself first', async () =>
   assertEquals(schedule.lastCheckAt, '2026-10-27T11:17:30.000Z')
 })
 
-test('a test install with TURBOPANEL_UPGRADE_CHECK_MINUTES=5 checks every 5 minutes', async () => {
+test('a test install with the upgradeCheck job cadence at 5 checks every 5 minutes', async () => {
   const store = createMemoryUpgradeStore({ checkMinute: 17 })
-  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:40:00.000Z'), 5), false)
-  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:42:00.000Z'), 5), true)
-  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:44:00.000Z'), 5), false)
-  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:47:00.000Z'), 5), true)
+  const every = upgradeCheckIntervalMinutes({ TURBOPANEL_JOB_CADENCES: '{"upgradeCheck":5}' })
+  assertEquals(every, 5)
+  assertEquals(upgradeCheckIntervalMinutes({}), 60)
+  assertEquals(upgradeCheckIntervalMinutes({ TURBOPANEL_JOB_CADENCES: '{"upgradeCheck":500}' }), 60)
+  // A resolved table passed in (self-hosted, after the env var and the setting row) wins over the env var.
+  assertEquals(upgradeCheckIntervalMinutes({}, resolveJobCadences('{"upgradeCheck":10}').table), 10)
+  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:40:00.000Z'), every), false)
+  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:42:00.000Z'), every), true)
+  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:44:00.000Z'), every), false)
+  assertEquals(await claimUpgradeCheck(store, new Date('2026-10-27T09:47:00.000Z'), every), true)
 })
 
 test('a new web interface build alone starts a self-hosted run that installs it, then nothing is waiting', async () => {

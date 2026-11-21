@@ -33,6 +33,8 @@ import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settin
 import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
+import { loadJobCadences } from '../../features/settings/job-cadences.ts'
+import { jobEveryMinutes } from '../../jobs/registry.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { resolveSelfHostedConsoleBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
@@ -388,8 +390,8 @@ function resolveCommandAmqpUrl(): string | null {
 }
 
 /** Isolate one cleanup phase so a failure cannot abort the rest of the tick. */
-const COMMAND_PRUNE_INTERVAL_MS = 15 * 60_000
 let lastCommandPruneMs = 0
+let lastNotificationPruneMs = 0
 let lastEdgeTrustTickMs = 0
 const EDGE_TRUST_TICK_INTERVAL_MS = 5 * 60_000
 
@@ -928,6 +930,10 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       }
     },
     async runCleanup() {
+      // Job cadences: the TURBOPANEL_JOB_CADENCES env var, else the `jobs.cadences`
+      // setting (cached a few minutes). Never throws; problems come back as warnings.
+      const cadences = await loadJobCadences(db, Deno.env.toObject())
+      if (cadences.warnings.length > 0) logWarn('job-cadences', cadences.warnings.join('; '))
       // One console link per tick, read the first time a mail sweep needs it.
       let tickEmail: Promise<EmitEmail> | null = null
       const email = () => (tickEmail ??= consoleEmail())
@@ -998,15 +1004,25 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           ),
         })
       )
-      // Workers parity: that cron prunes on its 15-minute window, not every tick.
-      if (Date.now() - lastCommandPruneMs >= COMMAND_PRUNE_INTERVAL_MS) {
+      // Workers parity: that cron prunes on the `historyPrune` and `notificationPrune`
+      // cadences (15 minutes by default), not every tick.
+      if (
+        Date.now() - lastCommandPruneMs >=
+        jobEveryMinutes('historyPrune', cadences.table) * 60_000
+      ) {
         lastCommandPruneMs = Date.now()
         await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
         await runCleanupPhase('audit history prune', async () =>
           pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
         )
-        // Workers parity (offline-sweep cron): inbox after 90 days, events and
-        // the ledger after 30, and settings of people who left an organization.
+      }
+      // Workers parity (offline-sweep cron): inbox after 90 days, events and
+      // the ledger after 30, and settings of people who left an organization.
+      if (
+        Date.now() - lastNotificationPruneMs >=
+        jobEveryMinutes('notificationPrune', cadences.table) * 60_000
+      ) {
+        lastNotificationPruneMs = Date.now()
         await runCleanupPhase('notification history prune', () => pruneNotificationHistory(db))
       }
       // Edge address ranges for proxy modes: the fetch itself runs at most once
@@ -1036,6 +1052,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           runtime: 'deno',
           resolveManifests: true,
           env,
+          cadences: cadences.table,
           instanceInstalled: {
             version: INSTANCE_VERSION,
             commit: revision.commit,
