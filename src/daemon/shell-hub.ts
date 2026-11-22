@@ -281,8 +281,10 @@ export class ShellHub {
       [...subjects.values()].map(async (meta) => ({ meta, why: await check(meta) }))
     )
     const counts = await Promise.all(
-      answers.map(({ meta, why }) =>
-        why ? this.#kill(meta.serverId, { sid: meta.sid, reason: 'revoked' }, `revoked:${why}`) : 0
+      answers.map(async ({ meta, why }) =>
+        why
+          ? await this.#kill(meta.serverId, { sid: meta.sid, reason: 'revoked' }, `revoked:${why}`)
+          : 0
       )
     )
     const ended = counts.reduce((sum, n) => sum + n, 0)

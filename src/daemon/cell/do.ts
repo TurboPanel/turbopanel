@@ -1185,6 +1185,27 @@ export class DaemonCellObject {
   }
 
   /**
+   * Run the terminal revocation check when it is due. A null deadline with
+   * sessions present is a fresh instance (hibernation or eviction lost it): due
+   * now. A failure is logged and swallowed so the rest of the alarm still runs.
+   */
+  async #recheckShellSessionsWhenDue(serverId: string, nowMs: number): Promise<void> {
+    const hasSessions = this.#shellSockets().length > 0 || this.#pendingShell.list(nowMs).length > 0
+    const due = this.#shellRecheckAtMs === null ? hasSessions : nowMs >= this.#shellRecheckAtMs
+    if (!due) return
+    this.#shellRecheckAtMs = null
+    try {
+      await this.#endRevokedShellSessions(serverId)
+    } catch (err) {
+      console.error(
+        `daemon-cell event=shell-revocation-error serverId=${serverId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    }
+  }
+
+  /**
    * End every session of this cell whose owner no longer holds what it was
    * opened with (see `terminalRevocation`): the browser socket closes, the
    * daemon is told (`shell-kill`, reason `revoked`) and the close row is written
@@ -3830,23 +3851,7 @@ export class DaemonCellObject {
         this.#projectDisconnected(staleServerId)
       )
 
-      // A null deadline with sessions present is a fresh instance: due now.
-      const shellDue =
-        this.#shellRecheckAtMs === null
-          ? this.#shellSockets().length > 0 || this.#pendingShell.list(nowMs).length > 0
-          : nowMs >= this.#shellRecheckAtMs
-      if (serverId && shellDue) {
-        this.#shellRecheckAtMs = null
-        try {
-          await this.#endRevokedShellSessions(serverId)
-        } catch (err) {
-          console.error(
-            `daemon-cell event=shell-revocation-error serverId=${serverId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          )
-        }
-      }
+      if (serverId) await this.#recheckShellSessionsWhenDue(serverId, nowMs)
 
       if (serverId) {
         this.#requeueExpiredInflightOutbox(nowMs)
