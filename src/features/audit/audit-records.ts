@@ -17,10 +17,11 @@
  * - **No secrets in `context`.** Record the fact and the identifiers, never
  *   the credential that changed; the same rule `setting` rows follow.
  */
-import { and, desc, eq, gt, lt, sql } from 'drizzle-orm'
+import { and, desc, eq, gt, gte, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { audit, server } from '../../db/schema.ts'
 import { logWarn } from '../../lib/logger.ts'
+import { auditBoundaryId } from './prune.ts'
 
 /**
  * Every action this build records, as `<subject>.<verb>` or
@@ -290,26 +291,98 @@ export type TerminalOpenAudit = {
 /** How far back a late daemon report may look for its open row (a session lasts at most 8 h). */
 const TERMINAL_OPEN_LOOKBACK_HOURS = 12
 
+/** The cross-organization lookup's window: a session lasts at most 8 h, plus slack. */
+const TERMINAL_MOVED_LOOKBACK_HOURS = 9
+
 /**
  * The open row of one terminal session on one server, by sid, for a daemon
  * report that arrives when the control plane no longer remembers the session.
- * The sid is a random UUID the control plane minted; the server id and its
- * organization keep one daemon from closing another server's session and keep
- * the scan on the organization's audit index. Null when there is no such row.
+ * The sid is a random UUID the control plane minted; the server id keeps one
+ * daemon from closing another server's session. Null when there is no such row.
+ *
+ * The open row sits under the organization that owned the server when the
+ * session opened, which is not always the one that owns it now (a server can
+ * move, or lose its organization). The server's current organization is tried
+ * first because it keeps the scan on the organization's audit index; when it
+ * has no such row the scan runs over every organization, bounded by the
+ * lookback on the time-ordered primary key.
  */
 export async function findTerminalOpenAudit(
   db: Db,
   serverId: string,
   sid: string
 ): Promise<TerminalOpenAudit | null> {
-  // The server's organization narrows the scan to idx_audit_organization_recent;
-  // a server with no organization never opened a terminal.
   const [owner] = await db
     .select({ organizationId: server.organizationId })
     .from(server)
     .where(eq(server.id, serverId))
     .limit(1)
-  if (!owner?.organizationId) return null
+  if (owner?.organizationId) {
+    const found = await scanTerminalAudit(db, serverId, sid, owner.organizationId)
+    if (found) return found
+  }
+  return scanMovedTerminalAudit(db, serverId, sid)
+}
+
+/**
+ * The cross-organization lookup, for a session whose open row is not under the
+ * server's current organization. It has no organization index to use, so it
+ * stays small: the open row alone (one row), inside the window a session can
+ * still be open in (8 hours plus an hour of slack) on the time-ordered key; the
+ * close row is then looked for only after the open row's own id.
+ */
+async function scanMovedTerminalAudit(
+  db: Db,
+  serverId: string,
+  sid: string
+): Promise<TerminalOpenAudit | null> {
+  const [open] = await db
+    .select({
+      id: audit.id,
+      organizationId: audit.organizationId,
+      actorUserId: audit.actorUserId,
+      context: audit.context,
+    })
+    .from(audit)
+    .where(
+      and(
+        gte(audit.id, auditBoundaryId(Date.now() - TERMINAL_MOVED_LOOKBACK_HOURS * 3_600_000)),
+        eq(audit.action, 'server.terminal.open'),
+        eq(audit.targetId, serverId),
+        sql`${audit.context}->>'sid' = ${sid}`
+      )
+    )
+    .limit(1)
+  if (!open) return null
+  const [close] = await db
+    .select({ id: audit.id })
+    .from(audit)
+    .where(
+      and(
+        gte(audit.id, open.id),
+        eq(audit.action, 'server.terminal.close'),
+        eq(audit.targetId, serverId),
+        sql`${audit.context}->>'sid' = ${sid}`
+      )
+    )
+    .limit(1)
+  return {
+    organizationId: open.organizationId,
+    actorUserId: open.actorUserId,
+    context:
+      open.context && typeof open.context === 'object'
+        ? (open.context as Record<string, unknown>)
+        : {},
+    closed: close !== undefined,
+  }
+}
+
+async function scanTerminalAudit(
+  db: Db,
+  serverId: string,
+  sid: string,
+  organizationId: string
+): Promise<TerminalOpenAudit | null> {
   const since = sql`now() - make_interval(hours => ${TERMINAL_OPEN_LOOKBACK_HOURS})`
   const rows = await db
     .select({
@@ -321,7 +394,7 @@ export async function findTerminalOpenAudit(
     .from(audit)
     .where(
       and(
-        eq(audit.organizationId, owner.organizationId),
+        eq(audit.organizationId, organizationId),
         eq(audit.targetId, serverId),
         gt(audit.createdAt, since),
         sql`${audit.context}->>'sid' = ${sid}`,
@@ -340,4 +413,83 @@ export async function findTerminalOpenAudit(
     context,
     closed: rows.some((row) => row.action === 'server.terminal.close'),
   }
+}
+
+/** Why a close row was written for a session nothing reported the end of. */
+export const TERMINAL_LOST_CLOSE_REASON = 'lost:no-close-report'
+
+/**
+ * A session lasts at most 8 hours; an open row older than this with no close
+ * row belongs to a session whose end nobody reported (the cell was replaced or
+ * evicted and the daemon's report never arrived).
+ */
+const TERMINAL_ABANDONED_AFTER_HOURS = 9
+
+/** How far back the abandoned-open scan looks (bounded on the time-ordered id). */
+const TERMINAL_ABANDONED_LOOKBACK_HOURS = 48
+
+/**
+ * Write the close row for every terminal open row old enough that its session
+ * must be over and that has none, against the organization of the open row.
+ * Returns how many rows it wrote. Run from the periodic sweeps; a close row
+ * that a late report wrote first is found and left alone.
+ */
+export async function closeAbandonedTerminalOpens(
+  db: Db,
+  opts: { nowMs?: number; limit?: number } = {}
+): Promise<number> {
+  const nowMs = opts.nowMs ?? Date.now()
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50), 1), 500)
+  const newest = auditBoundaryId(nowMs - TERMINAL_ABANDONED_AFTER_HOURS * 3_600_000)
+  const oldest = auditBoundaryId(nowMs - TERMINAL_ABANDONED_LOOKBACK_HOURS * 3_600_000)
+  const rows = await db
+    .select({
+      targetId: audit.targetId,
+      organizationId: audit.organizationId,
+      actorUserId: audit.actorUserId,
+      context: audit.context,
+    })
+    .from(audit)
+    .where(
+      and(
+        eq(audit.action, 'server.terminal.open'),
+        gte(audit.id, oldest),
+        lt(audit.id, newest),
+        sql`not exists (
+          select 1 from audit c
+          where c.action = 'server.terminal.close'
+            and c.id >= ${oldest}
+            and c.target_id = ${audit.targetId}
+            and c.context->>'sid' = ${audit.context}->>'sid'
+        )`
+      )
+    )
+    .limit(limit)
+  const writes = rows.flatMap((open) => {
+    const context =
+      open.context && typeof open.context === 'object'
+        ? (open.context as Record<string, unknown>)
+        : {}
+    if (!open.targetId || typeof context.sid !== 'string') return []
+    return [
+      recordAudit(db, {
+        organizationId: open.organizationId,
+        actorUserId: open.actorUserId,
+        action: 'server.terminal.close',
+        targetType: 'server',
+        targetId: open.targetId,
+        context: {
+          sid: context.sid,
+          kind: context.kind,
+          containerId: context.containerId,
+          loginUser: context.loginUser,
+          reason: TERMINAL_LOST_CLOSE_REASON,
+          confirmed: false,
+        },
+      }),
+    ]
+  })
+  await Promise.all(writes)
+  const written = writes.length
+  return written
 }

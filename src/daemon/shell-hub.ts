@@ -204,7 +204,10 @@ export class ShellHub {
 
   async #kill(
     serverId: string,
-    params: { sid?: string; all?: true; reason: ShellKillReason }
+    params: { sid?: string; all?: true; reason: ShellKillReason },
+    // Set when the control plane itself ended the session and writes the close row
+    // now (a revoked sign-in), instead of waiting for a daemon report that may never come.
+    closeReason?: string
   ): Promise<number> {
     const nowMs = this.#now()
     const wanted = (sid: string) => params.all === true || sid === params.sid
@@ -234,7 +237,12 @@ export class ShellHub {
       metas.push(live.meta)
       this.#remember(live.meta)
       live.browser.send(
-        controlFrameText({ type: 'closed', sid: live.meta.sid, reason: 'kill', confirmed: told })
+        controlFrameText({
+          type: 'closed',
+          sid: live.meta.sid,
+          reason: closeReason ?? 'kill',
+          confirmed: closeReason === undefined ? told : false,
+        })
       )
       live.browser.close(SHELL_CLOSE.killed, `killed:${params.reason}`)
     }
@@ -244,12 +252,43 @@ export class ShellHub {
       metas.push(meta)
       this.#remember(meta)
     }
-    if (!told) {
+    if (!told || closeReason !== undefined) {
       await Promise.all(
-        metas.map((meta) => this.#finish(meta, { reason: 'kill', confirmed: false }))
+        metas.map((meta) =>
+          this.#finish(meta, {
+            reason: closeReason ?? 'kill',
+            // A close the control plane wrote itself is unconfirmed until the daemon reports.
+            confirmed: closeReason === undefined ? told : false,
+          })
+        )
       )
     }
     return metas.length
+  }
+
+  /**
+   * End every live or pending session whose owner no longer holds what it was
+   * opened with. `check` answers why a session must end, or null; the hub only
+   * acts on the answer (the runtime supplies the database check, see
+   * `client/terminal/revocation.ts`). The browser socket closes, the daemon is
+   * told and the close row is written now, with the cause as its reason.
+   */
+  async endRevoked(check: (meta: ShellSessionMeta) => Promise<string | null>): Promise<number> {
+    const subjects = new Map<string, ShellSessionMeta>()
+    for (const open of this.#pending.list(this.#now())) subjects.set(open.sid, this.#metaOf(open))
+    for (const { meta } of this.#live.values()) subjects.set(meta.sid, meta)
+    const answers = await Promise.all(
+      [...subjects.values()].map(async (meta) => ({ meta, why: await check(meta) }))
+    )
+    const counts = await Promise.all(
+      answers.map(async ({ meta, why }) =>
+        why
+          ? await this.#kill(meta.serverId, { sid: meta.sid, reason: 'revoked' }, `revoked:${why}`)
+          : 0
+      )
+    )
+    const ended = counts.reduce((sum, n) => sum + n, 0)
+    return ended
   }
 
   #list(serverId: string): ShellSessionInfo[] {

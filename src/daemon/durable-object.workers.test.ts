@@ -24,6 +24,7 @@ import {
   setDaemonCellUnsignedSessionsAllowedForTests,
   setDaemonCellProjectionDbFactoryForTests,
   setDaemonCellShellBudgetForTests,
+  setDaemonCellShellRevocationForTests,
   setDaemonJwtKeyringFactoryForTests,
   setForceAlarmErrorForTests,
   setForceAutoResponseAgeMsForTests,
@@ -4986,6 +4987,74 @@ describe('signed daemon session', () => {
       expect(await cell.shellKill?.({ all: true, reason: 'switch-off' })).toBe(1)
       expect(await daemon.nextText('shell-kill')).toMatchObject({ all: true })
       expect(await cell.shellList?.()).toEqual([])
+      daemon.ws.close(1000, 'test done')
+    })
+
+    it('ends a session whose sign-in is revoked: browser closed, shell-kill sent, close row written once', async () => {
+      const serverId = 'test-srv-shell-revoked'
+      const auditRows = auditRecorder()
+      const daemon = await signedDaemon(serverId)
+      setDaemonCellShellRevocationForTests({
+        intervalMs: 50,
+        check: async () => 'session-ended',
+      })
+      try {
+        const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+        await cell.shellOpen?.(shellRequest(SID))
+        await daemon.nextText('shell-open')
+        const browser = (await browserUpgrade(daemon.stub, SID)).webSocket!
+        browser.accept()
+        const seen = textInbox(browser)
+        await runInDurableObject(daemon.stub, async (instance: DaemonCellObject) => {
+          await instance.alarm() // arms the re-check timer
+          await new Promise((resolve) => setTimeout(resolve, 80))
+          await instance.alarm()
+        })
+        expect(await daemon.nextText('shell-kill')).toMatchObject({ sid: SID, reason: 'revoked' })
+        await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
+        expect(JSON.parse(String(seen.frames.at(-1)))).toMatchObject({
+          type: 'closed',
+          reason: 'revoked:session-ended',
+        })
+        expect(auditRows.filter((row) => row.action === 'server.terminal.close')).toHaveLength(1)
+        expect(auditRows.at(-1)).toMatchObject({
+          context: { sid: SID, reason: 'revoked:session-ended' },
+        })
+        expect(await cell.shellList?.()).toEqual([])
+      } finally {
+        setDaemonCellShellRevocationForTests(null)
+      }
+      daemon.ws.close(1000, 'test done')
+    })
+
+    it('re-checks an idle session on a fresh instance (after eviction), where the in-memory deadline is gone', async () => {
+      const serverId = 'test-srv-shell-revoked-fresh'
+      const auditRows = auditRecorder()
+      const daemon = await signedDaemon(serverId)
+      setDaemonCellShellRevocationForTests({
+        intervalMs: 60_000,
+        check: async () => 'user-disabled',
+      })
+      try {
+        const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+        await cell.shellOpen?.(shellRequest(SID))
+        await daemon.nextText('shell-open')
+        const browser = (await browserUpgrade(daemon.stub, SID)).webSocket!
+        browser.accept()
+        const seen = textInbox(browser)
+        // A new instance over the same storage and sockets: no deadline in memory.
+        await runInDurableObject(daemon.stub, async (_instance, state) => {
+          const fresh = new DaemonCellObject(state, env)
+          await fresh.alarm()
+        })
+        expect(await daemon.nextText('shell-kill')).toMatchObject({ sid: SID, reason: 'revoked' })
+        await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
+        expect(auditRows.filter((row) => row.action === 'server.terminal.close')).toMatchObject([
+          { context: { sid: SID, reason: 'revoked:user-disabled', confirmed: false } },
+        ])
+      } finally {
+        setDaemonCellShellRevocationForTests(null)
+      }
       daemon.ws.close(1000, 'test done')
     })
 

@@ -40,6 +40,10 @@ import {
 import { haEventSignature, type HaEventSignature } from '../../features/managed/ha-event.ts'
 import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
 import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
+import {
+  TERMINAL_REVOCATION_CHECK_MS,
+  terminalRevocation,
+} from '../../client/terminal/revocation.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
 import {
   handleHttpIssuanceInbound,
@@ -412,6 +416,10 @@ let daemonJwtKeyringFactoryForTests: DaemonJwtKeyringFactory | null = null
 let forceOutboxSendErrorForTests: Error | null = null
 let panelIdentityBindingForTests: string | null = null
 let shellDaemonBudgetForTests: typeof SHELL_DAEMON_BUDGET | null = null
+let shellRevocationForTests: {
+  check: (meta: ShellSessionMeta) => Promise<string | null>
+  intervalMs: number
+} | null = null
 let unsignedSessionsAllowedForTests = false
 let forceAlarmErrorForTests: Error | null = null
 /** When set, `#collectStaleDemotions` treats auto-response age as this many ms. */
@@ -422,6 +430,19 @@ export function setDaemonCellProjectionDbFactoryForTests(
   factory: ProjectionDbFactory | null
 ): void {
   projectionDbFactoryForTests = factory
+}
+
+/**
+ * Test-only seam: replace the terminal sessions' revocation check and its re-check
+ * interval, so a test needs no sign-in and grant rows. Pass null to restore.
+ */
+export function setDaemonCellShellRevocationForTests(
+  seam: {
+    check: (meta: ShellSessionMeta) => Promise<string | null>
+    intervalMs: number
+  } | null
+): void {
+  shellRevocationForTests = seam
 }
 
 /** Test-only seam: a small daemon-output budget so the close path runs without a flood. */
@@ -670,6 +691,12 @@ export class DaemonCellObject {
   #lastConnectedAt: string | undefined
   #scheduledAlarmMs: number | null = null
   #scheduledAlarmMsLoaded = false
+  /**
+   * When the terminal sessions are next re-checked. In memory only: null on a
+   * fresh instance (after hibernation or eviction), which the alarm treats as
+   * due, so an idle session is still re-checked.
+   */
+  #shellRecheckAtMs: number | null = null
   /**
    * Terminal opens waiting for their browser (30 s). In memory only: a cell
    * that hibernates in between loses them and the browser's connect is refused
@@ -1097,7 +1124,10 @@ export class DaemonCellObject {
    */
   async #shellKill(
     serverId: string,
-    params: { sid?: string; all?: true; reason: ShellKillReason }
+    params: { sid?: string; all?: true; reason: ShellKillReason },
+    // Set when the control plane itself ended the session and writes the close row
+    // now (a revoked sign-in), instead of waiting for a daemon report that may never come.
+    closeReason?: string
   ): Promise<number> {
     const nowMs = Date.now()
     const sockets = params.sid ? this.#shellSockets(params.sid) : this.#shellSockets()
@@ -1126,7 +1156,12 @@ export class DaemonCellObject {
       this.#rememberEndedShell(meta)
       this.#sendQuietly(
         ws,
-        controlFrameText({ type: 'closed', sid: meta.sid, reason: 'kill', confirmed: told })
+        controlFrameText({
+          type: 'closed',
+          sid: meta.sid,
+          reason: closeReason ?? 'kill',
+          confirmed: closeReason === undefined ? told : false,
+        })
       )
       this.#closeQuietly(ws, SHELL_CLOSE.killed, `killed:${params.reason}`)
     }
@@ -1136,14 +1171,70 @@ export class DaemonCellObject {
       unconfirmed.push(meta)
       this.#rememberEndedShell(meta)
     }
-    if (!told) {
+    if (!told || closeReason !== undefined) {
       await Promise.all(
         unconfirmed.map((meta) =>
-          this.#finishShellSession(meta, { reason: 'kill', confirmed: false })
+          this.#finishShellSession(meta, {
+            reason: closeReason ?? 'kill',
+            confirmed: closeReason === undefined ? told : false,
+          })
         )
       )
     }
     return unconfirmed.length
+  }
+
+  /**
+   * Run the terminal revocation check when it is due. A null deadline with
+   * sessions present is a fresh instance (hibernation or eviction lost it): due
+   * now. A failure is logged and swallowed so the rest of the alarm still runs.
+   */
+  async #recheckShellSessionsWhenDue(serverId: string, nowMs: number): Promise<void> {
+    const hasSessions = this.#shellSockets().length > 0 || this.#pendingShell.list(nowMs).length > 0
+    const due = this.#shellRecheckAtMs === null ? hasSessions : nowMs >= this.#shellRecheckAtMs
+    if (!due) return
+    this.#shellRecheckAtMs = null
+    try {
+      await this.#endRevokedShellSessions(serverId)
+    } catch (err) {
+      console.error(
+        `daemon-cell event=shell-revocation-error serverId=${serverId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+    }
+  }
+
+  /**
+   * End every session of this cell whose owner no longer holds what it was
+   * opened with (see `terminalRevocation`): the browser socket closes, the
+   * daemon is told (`shell-kill`, reason `revoked`) and the close row is written
+   * now, with the cause as its reason. Runs from the alarm while sessions exist.
+   */
+  async #endRevokedShellSessions(serverId: string): Promise<void> {
+    const nowMs = Date.now()
+    const subjects = new Map<string, ShellSessionMeta>()
+    for (const open of this.#pendingShell.list(nowMs)) {
+      if (open.serverId === serverId) subjects.set(open.sid, this.#shellMetaFromPending(open))
+    }
+    for (const ws of this.#shellSockets()) {
+      const meta = this.#shellMetaOf(ws)
+      if (meta?.serverId === serverId) subjects.set(meta.sid, meta)
+    }
+    if (subjects.size === 0) return
+    const revoked = await this.#withProjectionDbResult('shell-revocation', serverId, async (db) => {
+      const check =
+        shellRevocationForTests?.check ?? ((m: ShellSessionMeta) => terminalRevocation(db, m))
+      const answers = await Promise.all(
+        [...subjects.values()].map(async (meta) => ({ sid: meta.sid, why: await check(meta) }))
+      )
+      return answers.flatMap(({ sid, why }) => (why ? [{ sid, why }] : []))
+    })
+    await Promise.all(
+      (revoked ?? []).map(({ sid, why }) =>
+        this.#shellKill(serverId, { sid, reason: 'revoked' }, `revoked:${why}`)
+      )
+    )
   }
 
   /** The TTL dropped a pending open: the daemon's session must not outlive it. */
@@ -1235,6 +1326,8 @@ export class DaemonCellObject {
     const pair = new WebSocketPair()
     const [client, server] = Object.values(pair)
     this.#ctx.acceptWebSocket(server, ['shell', `shell:${sid}`])
+    // Arm the re-check of the owner's sign-in and grants for as long as the session lives.
+    this.#ctx.waitUntil(this.#scheduleNearestAlarm())
     const meta = { ...this.#shellMetaFromPending(pending), openedAtMs: nowMs }
     meta.maxAtMs = nowMs + pending.maxMs
     server.serializeAttachment({
@@ -2219,6 +2312,15 @@ export class DaemonCellObject {
 
     if (hasSocket && hasDeliverableOutbox) {
       bumpPump(nowMs)
+    }
+
+    // Terminal sessions are re-checked against their owner's sign-in and grants.
+    if (this.#shellSockets().length > 0 || this.#pendingShell.list(nowMs).length > 0) {
+      this.#shellRecheckAtMs ??=
+        nowMs + (shellRevocationForTests?.intervalMs ?? TERMINAL_REVOCATION_CHECK_MS)
+      candidates.push(Math.max(this.#shellRecheckAtMs, nowMs))
+    } else {
+      this.#shellRecheckAtMs = null
     }
 
     return candidates
@@ -3748,6 +3850,8 @@ export class DaemonCellObject {
       await forEachSequential(staleDemotions, (staleServerId) =>
         this.#projectDisconnected(staleServerId)
       )
+
+      if (serverId) await this.#recheckShellSessionsWhenDue(serverId, nowMs)
 
       if (serverId) {
         this.#requeueExpiredInflightOutbox(nowMs)
