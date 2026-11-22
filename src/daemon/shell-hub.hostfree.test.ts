@@ -327,7 +327,7 @@ test('a revoked sign-in ends a live session: browser closed, daemon told, close 
   assertEquals(rows.length, 1)
   assertEquals(rows[0].action, 'server.terminal.close')
   assertEquals(rows[0].context?.reason, 'revoked:session-ended')
-  assertEquals(rows[0].context?.confirmed, true)
+  assertEquals(rows[0].context?.confirmed, false)
 
   // The daemon's own report for it afterwards writes no second row.
   await hub.onDaemonReport(

@@ -5027,6 +5027,37 @@ describe('signed daemon session', () => {
       daemon.ws.close(1000, 'test done')
     })
 
+    it('re-checks an idle session on a fresh instance (after eviction), where the in-memory deadline is gone', async () => {
+      const serverId = 'test-srv-shell-revoked-fresh'
+      const auditRows = auditRecorder()
+      const daemon = await signedDaemon(serverId)
+      setDaemonCellShellRevocationForTests({
+        intervalMs: 60_000,
+        check: async () => 'user-disabled',
+      })
+      try {
+        const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+        await cell.shellOpen?.(shellRequest(SID))
+        await daemon.nextText('shell-open')
+        const browser = (await browserUpgrade(daemon.stub, SID)).webSocket!
+        browser.accept()
+        const seen = textInbox(browser)
+        // A new instance over the same storage and sockets: no deadline in memory.
+        await runInDurableObject(daemon.stub, async (_instance, state) => {
+          const fresh = new DaemonCellObject(state, env)
+          await fresh.alarm()
+        })
+        expect(await daemon.nextText('shell-kill')).toMatchObject({ sid: SID, reason: 'revoked' })
+        await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
+        expect(auditRows.filter((row) => row.action === 'server.terminal.close')).toMatchObject([
+          { context: { sid: SID, reason: 'revoked:user-disabled', confirmed: false } },
+        ])
+      } finally {
+        setDaemonCellShellRevocationForTests(null)
+      }
+      daemon.ws.close(1000, 'test done')
+    })
+
     it('a daemon error report fails the pending open; a foreign report is ignored', async () => {
       const serverId = 'test-srv-shell-error'
       const daemon = await signedDaemon(serverId)

@@ -125,8 +125,9 @@ test('an old open row with no close row gets one, under the open row organizatio
         open(sidClosed, hoursAgo(11), 3, 'server.terminal.close'),
         open(sidYoung, hoursAgo(1), 4),
       ])
-    assertEquals(await closeAbandonedTerminalOpens(db), 1)
-    assertEquals(await closeAbandonedTerminalOpens(db), 0)
+    // The sweep is global and the database may hold other rows: assert on this test's own.
+    await closeAbandonedTerminalOpens(db, { limit: 10_000 })
+    await closeAbandonedTerminalOpens(db, { limit: 10_000 })
     const closes = await db
       .select({ organizationId: audit.organizationId, context: audit.context })
       .from(audit)

@@ -291,6 +291,9 @@ export type TerminalOpenAudit = {
 /** How far back a late daemon report may look for its open row (a session lasts at most 8 h). */
 const TERMINAL_OPEN_LOOKBACK_HOURS = 12
 
+/** The cross-organization lookup's window: a session lasts at most 8 h, plus slack. */
+const TERMINAL_MOVED_LOOKBACK_HOURS = 9
+
 /**
  * The open row of one terminal session on one server, by sid, for a daemon
  * report that arrives when the control plane no longer remembers the session.
@@ -318,16 +321,68 @@ export async function findTerminalOpenAudit(
     const found = await scanTerminalAudit(db, serverId, sid, owner.organizationId)
     if (found) return found
   }
-  return scanTerminalAudit(db, serverId, sid, null)
+  return scanMovedTerminalAudit(db, serverId, sid)
+}
+
+/**
+ * The cross-organization lookup, for a session whose open row is not under the
+ * server's current organization. It has no organization index to use, so it
+ * stays small: the open row alone (one row), inside the window a session can
+ * still be open in (8 hours plus an hour of slack) on the time-ordered key; the
+ * close row is then looked for only after the open row's own id.
+ */
+async function scanMovedTerminalAudit(
+  db: Db,
+  serverId: string,
+  sid: string
+): Promise<TerminalOpenAudit | null> {
+  const [open] = await db
+    .select({
+      id: audit.id,
+      organizationId: audit.organizationId,
+      actorUserId: audit.actorUserId,
+      context: audit.context,
+    })
+    .from(audit)
+    .where(
+      and(
+        gte(audit.id, auditBoundaryId(Date.now() - TERMINAL_MOVED_LOOKBACK_HOURS * 3_600_000)),
+        eq(audit.action, 'server.terminal.open'),
+        eq(audit.targetId, serverId),
+        sql`${audit.context}->>'sid' = ${sid}`
+      )
+    )
+    .limit(1)
+  if (!open) return null
+  const [close] = await db
+    .select({ id: audit.id })
+    .from(audit)
+    .where(
+      and(
+        gte(audit.id, open.id),
+        eq(audit.action, 'server.terminal.close'),
+        eq(audit.targetId, serverId),
+        sql`${audit.context}->>'sid' = ${sid}`
+      )
+    )
+    .limit(1)
+  return {
+    organizationId: open.organizationId,
+    actorUserId: open.actorUserId,
+    context:
+      open.context && typeof open.context === 'object'
+        ? (open.context as Record<string, unknown>)
+        : {},
+    closed: close !== undefined,
+  }
 }
 
 async function scanTerminalAudit(
   db: Db,
   serverId: string,
   sid: string,
-  organizationId: string | null
+  organizationId: string
 ): Promise<TerminalOpenAudit | null> {
-  const lookbackMs = TERMINAL_OPEN_LOOKBACK_HOURS * 3_600_000
   const since = sql`now() - make_interval(hours => ${TERMINAL_OPEN_LOOKBACK_HOURS})`
   const rows = await db
     .select({
@@ -339,9 +394,7 @@ async function scanTerminalAudit(
     .from(audit)
     .where(
       and(
-        organizationId ? eq(audit.organizationId, organizationId) : undefined,
-        // Without an organization the time-ordered id keeps the scan to the lookback range.
-        organizationId ? undefined : gte(audit.id, auditBoundaryId(Date.now() - lookbackMs)),
+        eq(audit.organizationId, organizationId),
         eq(audit.targetId, serverId),
         gt(audit.createdAt, since),
         sql`${audit.context}->>'sid' = ${sid}`,
@@ -412,29 +465,31 @@ export async function closeAbandonedTerminalOpens(
       )
     )
     .limit(limit)
-  let written = 0
-  for (const open of rows) {
+  const writes = rows.flatMap((open) => {
     const context =
       open.context && typeof open.context === 'object'
         ? (open.context as Record<string, unknown>)
         : {}
-    if (!open.targetId || typeof context.sid !== 'string') continue
-    await recordAudit(db, {
-      organizationId: open.organizationId,
-      actorUserId: open.actorUserId,
-      action: 'server.terminal.close',
-      targetType: 'server',
-      targetId: open.targetId,
-      context: {
-        sid: context.sid,
-        kind: context.kind,
-        containerId: context.containerId,
-        loginUser: context.loginUser,
-        reason: TERMINAL_LOST_CLOSE_REASON,
-        confirmed: false,
-      },
-    })
-    written += 1
-  }
+    if (!open.targetId || typeof context.sid !== 'string') return []
+    return [
+      recordAudit(db, {
+        organizationId: open.organizationId,
+        actorUserId: open.actorUserId,
+        action: 'server.terminal.close',
+        targetType: 'server',
+        targetId: open.targetId,
+        context: {
+          sid: context.sid,
+          kind: context.kind,
+          containerId: context.containerId,
+          loginUser: context.loginUser,
+          reason: TERMINAL_LOST_CLOSE_REASON,
+          confirmed: false,
+        },
+      }),
+    ]
+  })
+  await Promise.all(writes)
+  const written = writes.length
   return written
 }

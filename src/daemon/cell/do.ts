@@ -432,7 +432,6 @@ export function setDaemonCellProjectionDbFactoryForTests(
   projectionDbFactoryForTests = factory
 }
 
-/** Test-only seam: a small daemon-output budget so the close path runs without a flood. */
 /**
  * Test-only seam: replace the terminal sessions' revocation check and its re-check
  * interval, so a test needs no sign-in and grant rows. Pass null to restore.
@@ -446,6 +445,7 @@ export function setDaemonCellShellRevocationForTests(
   shellRevocationForTests = seam
 }
 
+/** Test-only seam: a small daemon-output budget so the close path runs without a flood. */
 export function setDaemonCellShellBudgetForTests(limits: typeof SHELL_DAEMON_BUDGET | null): void {
   shellDaemonBudgetForTests = limits
 }
@@ -692,13 +692,17 @@ export class DaemonCellObject {
   #scheduledAlarmMs: number | null = null
   #scheduledAlarmMsLoaded = false
   /**
+   * When the terminal sessions are next re-checked. In memory only: null on a
+   * fresh instance (after hibernation or eviction), which the alarm treats as
+   * due, so an idle session is still re-checked.
+   */
+  #shellRecheckAtMs: number | null = null
+  /**
    * Terminal opens waiting for their browser (30 s). In memory only: a cell
    * that hibernates in between loses them and the browser's connect is refused
    * (410), so the user opens again. Connected sessions live in the socket
    * attachments and survive hibernation.
    */
-  /** When the terminal sessions are next re-checked; null while there are none. */
-  #shellRecheckAtMs: number | null = null
   readonly #pendingShell = new PendingShellOpens((open) => this.#onPendingShellExpired(open))
   readonly #endedShell = new Map<string, EndedShellSession>()
   readonly #shellBudgets = new WeakMap<WebSocket, ShellBudget>()
@@ -1156,7 +1160,7 @@ export class DaemonCellObject {
           type: 'closed',
           sid: meta.sid,
           reason: closeReason ?? 'kill',
-          confirmed: told,
+          confirmed: closeReason === undefined ? told : false,
         })
       )
       this.#closeQuietly(ws, SHELL_CLOSE.killed, `killed:${params.reason}`)
@@ -1170,7 +1174,10 @@ export class DaemonCellObject {
     if (!told || closeReason !== undefined) {
       await Promise.all(
         unconfirmed.map((meta) =>
-          this.#finishShellSession(meta, { reason: closeReason ?? 'kill', confirmed: told })
+          this.#finishShellSession(meta, {
+            reason: closeReason ?? 'kill',
+            confirmed: closeReason === undefined ? told : false,
+          })
         )
       )
     }
@@ -1195,18 +1202,18 @@ export class DaemonCellObject {
     }
     if (subjects.size === 0) return
     const revoked = await this.#withProjectionDbResult('shell-revocation', serverId, async (db) => {
-      const out: Array<{ sid: string; why: string }> = []
-      for (const meta of subjects.values()) {
-        const why = await (shellRevocationForTests?.check ?? ((m) => terminalRevocation(db, m)))(
-          meta
-        )
-        if (why) out.push({ sid: meta.sid, why })
-      }
-      return out
+      const check =
+        shellRevocationForTests?.check ?? ((m: ShellSessionMeta) => terminalRevocation(db, m))
+      const answers = await Promise.all(
+        [...subjects.values()].map(async (meta) => ({ sid: meta.sid, why: await check(meta) }))
+      )
+      return answers.flatMap(({ sid, why }) => (why ? [{ sid, why }] : []))
     })
-    for (const { sid, why } of revoked ?? []) {
-      await this.#shellKill(serverId, { sid, reason: 'revoked' }, `revoked:${why}`)
-    }
+    await Promise.all(
+      (revoked ?? []).map(({ sid, why }) =>
+        this.#shellKill(serverId, { sid, reason: 'revoked' }, `revoked:${why}`)
+      )
+    )
   }
 
   /** The TTL dropped a pending open: the daemon's session must not outlive it. */
@@ -3823,7 +3830,12 @@ export class DaemonCellObject {
         this.#projectDisconnected(staleServerId)
       )
 
-      if (serverId && this.#shellRecheckAtMs !== null && nowMs >= this.#shellRecheckAtMs) {
+      // A null deadline with sessions present is a fresh instance: due now.
+      const shellDue =
+        this.#shellRecheckAtMs === null
+          ? this.#shellSockets().length > 0 || this.#pendingShell.list(nowMs).length > 0
+          : nowMs >= this.#shellRecheckAtMs
+      if (serverId && shellDue) {
         this.#shellRecheckAtMs = null
         try {
           await this.#endRevokedShellSessions(serverId)

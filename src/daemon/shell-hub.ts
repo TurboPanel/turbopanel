@@ -241,7 +241,7 @@ export class ShellHub {
           type: 'closed',
           sid: live.meta.sid,
           reason: closeReason ?? 'kill',
-          confirmed: told,
+          confirmed: closeReason === undefined ? told : false,
         })
       )
       live.browser.close(SHELL_CLOSE.killed, `killed:${params.reason}`)
@@ -254,7 +254,13 @@ export class ShellHub {
     }
     if (!told || closeReason !== undefined) {
       await Promise.all(
-        metas.map((meta) => this.#finish(meta, { reason: closeReason ?? 'kill', confirmed: told }))
+        metas.map((meta) =>
+          this.#finish(meta, {
+            reason: closeReason ?? 'kill',
+            // A close the control plane wrote itself is unconfirmed until the daemon reports.
+            confirmed: closeReason === undefined ? told : false,
+          })
+        )
       )
     }
     return metas.length
@@ -271,16 +277,15 @@ export class ShellHub {
     const subjects = new Map<string, ShellSessionMeta>()
     for (const open of this.#pending.list(this.#now())) subjects.set(open.sid, this.#metaOf(open))
     for (const { meta } of this.#live.values()) subjects.set(meta.sid, meta)
-    let ended = 0
-    for (const meta of subjects.values()) {
-      const why = await check(meta)
-      if (!why) continue
-      ended += await this.#kill(
-        meta.serverId,
-        { sid: meta.sid, reason: 'revoked' },
-        `revoked:${why}`
+    const answers = await Promise.all(
+      [...subjects.values()].map(async (meta) => ({ meta, why: await check(meta) }))
+    )
+    const counts = await Promise.all(
+      answers.map(({ meta, why }) =>
+        why ? this.#kill(meta.serverId, { sid: meta.sid, reason: 'revoked' }, `revoked:${why}`) : 0
       )
-    }
+    )
+    const ended = counts.reduce((sum, n) => sum + n, 0)
     return ended
   }
 
