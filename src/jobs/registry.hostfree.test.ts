@@ -115,7 +115,7 @@ test('the tunnel sweeps default to every 5 minutes and run once per window', () 
   assertEquals(dueMinutes('tunnelSweeps', stretched.table).length, 96)
 })
 
-test('the digest sweep defaults to every 5 minutes and run once per window', () => {
+test('the digest sweep defaults to every 5 minutes and runs once per window', () => {
   assertEquals(CRON_CADENCES.notificationDigests.everyMinutes, 5)
   assertEquals(dueMinutes('notificationDigests').length, 288)
   const hourly = resolveJobCadences('{"notificationDigests": 60}')

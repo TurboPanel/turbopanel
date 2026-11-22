@@ -154,6 +154,13 @@ export async function loadCronGates(
     (options.now ?? new Date()).getTime() - FAN_OUT_SWEEP_MAX_AGE_MS
   ).toISOString()
   const newPortalSince = new Date((options.now ?? new Date()).getTime() - 10 * 60_000).toISOString()
+  // The channels the retry and digest sweeps can send to: not paused, not push, and
+  // email only when verified or the account's own (the claim queries' filter, minus
+  // the tick's mail queue, which the gate cannot see and so counts as present).
+  const sendableChannel = sql`${notificationChannel.disabledAt} is null
+    and ${notificationChannel.kind} <> 'push'
+    and (${notificationChannel.kind} <> 'email'
+      or ${notificationChannel.verifiedAt} is not null or ${notificationChannel.isPrimary})`
   try {
     const rows = (await db.execute(sql`
       select
@@ -167,13 +174,13 @@ export async function loadCronGates(
         (exists (select 1 from ${notificationDelivery} where ${notificationDelivery.status} in ('pending', 'failed')
             and ${notificationDelivery.nextAttemptAt} < ${at}::timestamptz
             and exists (select 1 from ${notificationChannel} where ${notificationChannel.id} = ${notificationDelivery.channelId}
-              and ${notificationChannel.disabledAt} is null and ${notificationChannel.kind} <> 'push'))
+              and ${sendableChannel}))
           or exists (select 1 from ${notificationEvent} where ${notificationEvent.fannedOutAt} is null
             and ${notificationEvent.createdAt} < ${unfannedBefore}::timestamptz
             and ${notificationEvent.createdAt} > ${unfannedAfter}::timestamptz)) as "notificationWork",
         exists (select 1 from ${notificationDelivery} where ${notificationDelivery.status} = 'held'
           and exists (select 1 from ${notificationChannel} where ${notificationChannel.id} = ${notificationDelivery.channelId}
-            and ${notificationChannel.disabledAt} is null and ${notificationChannel.kind} <> 'push')) as "notificationHeld",
+            and ${sendableChannel})) as "notificationHeld",
         (exists (select 1 from ${tls}) or exists (select 1 from ${leaf}) or exists (select 1 from ${changeover})) as "certificates",
         exists (select 1 from ${server} where ${server.isConnected}) as "connectedServer",
         exists (select 1 from ${server} srv where srv.is_connected
