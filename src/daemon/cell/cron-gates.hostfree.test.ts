@@ -124,6 +124,7 @@ function fakeDb(respond: (sqlText: string) => unknown[] | Promise<unknown[]>): {
 const IDLE_ROW = {
   commandRecoveryWork: false,
   notificationWork: false,
+  notificationHeld: false,
   connectedServer: false,
   reconcileUrgent: false,
   hostingPending: false,

@@ -1793,7 +1793,8 @@ async function runNotificationCronPhases(
   // Send each email channel's closed digest / quiet-hours window as one
   // summary (held deliveries; see features/notifications/digest.ts).
   if (
-    gates.notificationWork &&
+    gates.notificationHeld &&
+    isDue('notificationDigests', opts.scheduledTime, phasesSkipped.cadences) &&
     !(await runOptionalPhase(
       deadlineMs,
       'notification-digests',

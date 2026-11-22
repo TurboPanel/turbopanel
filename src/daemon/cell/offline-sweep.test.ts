@@ -1653,6 +1653,7 @@ it('T12 · finding: a throwing billing phase is NOT isolated — the queued swee
 const IDLE_GATES_ROW = {
   commandRecoveryWork: false,
   notificationWork: false,
+  notificationHeld: false,
   connectedServer: false,
   reconcileUrgent: false,
   hostingPending: false,
@@ -2217,6 +2218,30 @@ it('gates: the tunnel sweeps skip the minutes between their slots and run on the
     (await cost(between, { tunnels: true, tunnelsUrgent: true })) > (await cost(between, {})),
     true
   )
+})
+
+it('gates: the digest sweep reads nothing before its slot and runs on it while a delivery is held', async () => {
+  const tlsRenewal = await testTlsRenewal()
+  // The registry slot is minute 3 of a 5 minute window; CATCH_UP_MINUTE is on minute 0.
+  const slot = CATCH_UP_MINUTE + 3 * 60_000
+  const cost = async (at: number, gates: Partial<typeof IDLE_GATES_ROW>): Promise<number> => {
+    const counted = countingIdleDb(gates)
+    await runTickCapturingTrace(commandQueueEnv(), counted.db, tlsRenewal, at)
+    return counted.statementCount()
+  }
+  for (const minute of [0, 1, 2, 4]) {
+    const between = CATCH_UP_MINUTE + minute * 60_000
+    // A held delivery costs nothing over an idle tick between slots.
+    assertEquals(
+      await cost(between, { notificationHeld: true }),
+      await cost(between, {}),
+      `minute ${minute}`
+    )
+  }
+  assertEquals((await cost(slot, { notificationHeld: true })) > (await cost(slot, {})), true)
+  // A due retry still runs on any minute.
+  const between = CATCH_UP_MINUTE + 60_000
+  assertEquals((await cost(between, { notificationWork: true })) > (await cost(between, {})), true)
 })
 
 it('gates: an unreadable gate is traced and opens every family', async () => {

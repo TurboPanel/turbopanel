@@ -115,6 +115,14 @@ test('the tunnel sweeps default to every 5 minutes and run once per window', () 
   assertEquals(dueMinutes('tunnelSweeps', stretched.table).length, 96)
 })
 
+test('the digest sweep defaults to every 5 minutes and runs once per window', () => {
+  assertEquals(CRON_CADENCES.notificationDigests.everyMinutes, 5)
+  assertEquals(dueMinutes('notificationDigests').length, 288)
+  const hourly = resolveJobCadences('{"notificationDigests": 60}')
+  assertEquals(hourly.warnings, [])
+  assertEquals(dueMinutes('notificationDigests', hourly.table).length, 24)
+})
+
 test('a tick with no scheduled time runs every job', () => {
   for (const job of Object.keys(CRON_CADENCES) as CronJob[])
     assertEquals(isDue(job, undefined), true)
