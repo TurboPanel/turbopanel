@@ -113,9 +113,7 @@ export function lastSendIsSettled(
   const open = ['queued', 'dispatching', 'sent', 'acked', 'running']
   // Still moving: wait for it, unless it has been stuck for too long.
   return Boolean(
-    row &&
-    open.includes(row.status) &&
-    gapStillRunning(nowMs - Date.parse(state.sentAt), TUNNEL_ROUTES_STALE_MS)
+    row && open.includes(row.status) && nowMs - Date.parse(state.sentAt) < TUNNEL_ROUTES_STALE_MS
   )
 }
 
@@ -204,6 +202,15 @@ export function resendGapAfter(
   return refused ? TUNNEL_GENERATION_BUMP_GAP_MS : TUNNEL_ROUTES_RESEND_GAP_MS
 }
 
+/** Is a table that did not finish still inside its resend gap (with the slot slack)? */
+export function resendIsWaiting(
+  row: { status: string; resultSummary: unknown } | undefined,
+  sentAtMs: number,
+  nowMs: number
+): boolean {
+  return gapStillRunning(nowMs - sentAtMs, resendGapAfter(row))
+}
+
 /**
  * Is the table already where it should be? A table that finished is left alone.
  * One that did not finish waits out the gap before it is sent again, so a table
@@ -223,7 +230,7 @@ async function isAlreadyCurrent(
   if (sent.stateHash !== stateHash) return false
   const last = await loadLastSend(db, sent)
   if (lastSendIsSettled(last, sent, Date.now())) return true
-  if (gapStillRunning(Date.now() - Date.parse(sent.sentAt), resendGapAfter(last))) return true
+  if (resendIsWaiting(last, Date.parse(sent.sentAt), Date.now())) return true
   compatLogWarn(
     'tunnel-sync',
     `server ${serverId}: the last forwarding table was not applied (${describeUnsettled(last)}); sending it again`

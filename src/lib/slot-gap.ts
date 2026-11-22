@@ -6,7 +6,10 @@
 /** Slack a per-sweep wait gets, so jitter of a few seconds does not push a run a whole slot later. */
 export const SLOT_TOLERANCE_MS = 60_000
 
-/** The shortest gap that is measured in whole slots. */
+/**
+ * The shortest gap that is measured in whole slots. It assumes the default
+ * `tunnelSweeps` cadence of 5 minutes, which an operator can override.
+ */
 const SLOT_MS = 5 * 60_000
 
 /**

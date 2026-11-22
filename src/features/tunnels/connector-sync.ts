@@ -196,12 +196,13 @@ async function loadLastSend(db: Db, state: SentState) {
  * One that did not finish waits out the gap before it is sent again, so a list
  * the server keeps refusing is not sealed and sent on every tick.
  */
-function isAlreadyCurrent(
+export function isAlreadyCurrent(
   sent: SentState | null,
   last: { status: string } | undefined,
   installHash: string,
   remove: readonly string[],
-  nothingToDo: boolean
+  nothingToDo: boolean,
+  nowMs: number = Date.now()
 ): boolean {
   if (sent === null) return nothingToDo
   if (sent.stateHash !== installHash) return false
@@ -212,9 +213,9 @@ function isAlreadyCurrent(
   if (confirmed) return true
   const open = ['queued', 'dispatching', 'sent', 'acked', 'running']
   if (last && open.includes(last.status)) {
-    return gapStillRunning(Date.now() - Date.parse(sent.sentAt), TUNNEL_CONNECTORS_STALE_MS)
+    return nowMs - Date.parse(sent.sentAt) < TUNNEL_CONNECTORS_STALE_MS
   }
-  return gapStillRunning(Date.now() - Date.parse(sent.sentAt), TUNNEL_CONNECTORS_RESEND_GAP_MS)
+  return gapStillRunning(nowMs - Date.parse(sent.sentAt), TUNNEL_CONNECTORS_RESEND_GAP_MS)
 }
 
 /**
