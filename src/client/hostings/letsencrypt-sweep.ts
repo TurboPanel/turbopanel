@@ -158,7 +158,9 @@ async function retryNameOriginCertificates(
       secrets,
       ...(deps.now ? { now: deps.now() } : {}),
       ...(deps.registry ? { registry: deps.registry } : {}),
-      ...(deps.testNameOriginHostingIds ? { testOnlyHostingIds: deps.testNameOriginHostingIds } : {}),
+      ...(deps.testNameOriginHostingIds
+        ? { testOnlyHostingIds: deps.testNameOriginHostingIds }
+        : {}),
     })
     await forEachSequential(done.pinned, ({ hostingId, organizationId, editedAt }) =>
       sendPin(hostingId, organizationId, editedAt).then(() => undefined)
