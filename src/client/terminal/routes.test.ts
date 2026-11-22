@@ -19,6 +19,7 @@ import {
   project,
   server,
   service,
+  session,
   team,
   teammate,
   user,
@@ -41,6 +42,7 @@ import type {
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerServerRoutes } from '../servers/routes.ts'
 import { registerTerminalRoutes } from './routes.ts'
+import { terminalRevocation } from './revocation.ts'
 import { verifyShellTicket } from '../../features/terminal/ticket.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -566,5 +568,42 @@ test('a container that belongs to another organization is refused', async () => 
       await res.body?.cancel()
       assertEquals(ctx.opened.length, 0)
     })
+  })
+})
+
+test('revocation: sign-in, account and grant are each re-read for a live session', async () => {
+  await withTerminalFixtures({ callerGrant: 'terminal' }, async (ctx) => {
+    const [signIn] = await ctx.db
+      .select({ id: session.id })
+      .from(session)
+      .where(eq(session.userId, ctx.userId))
+    const subject = {
+      serverId: ctx.serverId,
+      userId: ctx.userId,
+      authSessionId: signIn!.id,
+      containerId: 'docker-abc123',
+      kind: 'container' as const,
+    }
+    assertEquals(await terminalRevocation(ctx.db, subject), null)
+
+    // Losing the terminal permission.
+    await ctx.db
+      .delete(grant)
+      .where(and(eq(grant.actorId, ctx.userId), eq(grant.entityId, ctx.organizationId)))
+    assertEquals(await terminalRevocation(ctx.db, subject), 'permission-lost')
+
+    // The account disabled (checked before the grants).
+    await ctx.db.update(user).set({ isDisabled: true }).where(eq(user.id, ctx.userId))
+    assertEquals(await terminalRevocation(ctx.db, subject), 'user-disabled')
+
+    // The sign-in revoked ("sign out everywhere" deletes the rows).
+    await ctx.db.delete(session).where(eq(session.userId, ctx.userId))
+    assertEquals(await terminalRevocation(ctx.db, subject), 'session-ended')
+
+    // Another user's sign-in id never satisfies this session.
+    assertEquals(
+      await terminalRevocation(ctx.db, { ...subject, authSessionId: crypto.randomUUID() }),
+      'session-ended'
+    )
   })
 })

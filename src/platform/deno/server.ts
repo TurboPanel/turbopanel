@@ -116,13 +116,14 @@ import {
   resolvePanelIdentityFromDb,
 } from '../../lib/panel-identity/identity.ts'
 import { pruneExpiredNonces } from '../../features/servers/daemon-nonce.ts'
-import { recordAudit } from '../../features/audit/audit-records.ts'
+import { closeAbandonedTerminalOpens, recordAudit } from '../../features/audit/audit-records.ts'
 import { setSelfHostedAddress } from '../../features/install/ingress-modes.ts'
 import { setPublicTlsProbe } from '../../features/install/install-trust.ts'
 import { createPublicTlsProbe } from './public-tls-probe.ts'
 import { serverDialOrigins } from '../../lib/panel-identity/urls.ts'
 import { type DevHostStatusSink, registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
 import { ShellHub, withShellHub } from '../../daemon/shell-hub.ts'
+import { terminalRevocation } from '../../client/terminal/revocation.ts'
 import { confirmOnNameservers } from './dns-confirm.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
@@ -862,6 +863,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       run: () => Promise.resolve(shellHub.reap()),
     },
     {
+      name: 'terminal revocation',
+      scope: 'local',
+      run: () => shellHub.endRevoked((meta) => terminalRevocation(db, meta)),
+    },
+    {
       name: 'co-located self repair',
       scope: 'local',
       run: () => colocatedSelfRepair.tick(),
@@ -964,6 +970,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       await runCleanupPhase('audit history prune', async () =>
         pruneAuditHistory(db, { months: await getAuditRetentionMonths(db) })
       )
+      await runCleanupPhase('terminal close rows', () => closeAbandonedTerminalOpens(db))
       await runCleanupPhase('peak history prune', () => prunePeaks(db))
     }),
     // Inbox after 90 days, events and the ledger after 30, and settings of

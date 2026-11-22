@@ -302,3 +302,55 @@ test('an unconfirmed close is audited when the browser leaves and the daemon is 
   assertEquals(rows.length, 1)
   assertEquals(rows[0].context?.confirmed, false)
 })
+
+test('a revoked sign-in ends a live session: browser closed, daemon told, close row now', async () => {
+  const { hub, cell, rows, daemon } = setup()
+  await cell.shellOpen?.(request())
+  const claim = hub.claim(SID, 'user-1', 'auth-1')
+  if (!claim.ok) throw new Error('claim refused')
+  const browser = browserLink()
+  hub.activate(claim.pending, browser)
+
+  // Nothing revoked: nothing happens.
+  assertEquals(await hub.endRevoked(() => Promise.resolve(null)), 0)
+  assertEquals(rows.length, 0)
+
+  assertEquals(
+    await hub.endRevoked((meta) => Promise.resolve(meta.sid === SID ? 'session-ended' : null)),
+    1
+  )
+  assertEquals(browser.closes.length, 1)
+  assertEquals(browser.closes[0]?.[0], SHELL_CLOSE.killed)
+  const kill = daemon.sent.find((message) => message.type === 'shell-kill')
+  assertEquals(kill && 'sid' in kill ? kill.sid : null, SID)
+  assertEquals(kill && 'reason' in kill ? kill.reason : null, 'revoked')
+  assertEquals(rows.length, 1)
+  assertEquals(rows[0].action, 'server.terminal.close')
+  assertEquals(rows[0].context?.reason, 'revoked:session-ended')
+  assertEquals(rows[0].context?.confirmed, true)
+
+  // The daemon's own report for it afterwards writes no second row.
+  await hub.onDaemonReport(
+    SERVER,
+    CONN,
+    {
+      type: 'shell-closed',
+      sid: SID,
+      reason: 'kill',
+      durationMs: 5,
+      bytesIn: 0,
+      bytesOut: 0,
+    } as DaemonMessage,
+    'verified'
+  )
+  assertEquals(rows.length, 1)
+})
+
+test('a revoked sign-in also ends an open still waiting for its browser', async () => {
+  const { hub, cell, rows } = setup()
+  await cell.shellOpen?.(request())
+  assertEquals(await hub.endRevoked(() => Promise.resolve('user-disabled')), 1)
+  assertEquals(rows.length, 1)
+  assertEquals(rows[0].context?.reason, 'revoked:user-disabled')
+  assertEquals(hub.claim(SID, 'user-1', 'auth-1').ok, false)
+})

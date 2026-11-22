@@ -121,6 +121,7 @@ import {
   parseUpgradeStepRetentionDays,
   pruneUpgradeHistory,
 } from '../../features/upgrades/prune.ts'
+import { closeAbandonedTerminalOpens } from '../../features/audit/audit-records.ts'
 import { pruneAuditHistory } from '../../features/audit/prune.ts'
 import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { getAuditRetentionMonths } from '../../features/settings/audit-retention-settings.ts'
@@ -1045,7 +1046,8 @@ export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: numb
 
 /**
  * Retention prune of audit rows older than the instance's window (see
- * features/audit/prune.ts). Same 15-minute window and the same isolation.
+ * features/audit/prune.ts), then the close rows owed to terminal sessions whose
+ * end nobody reported. Same 15-minute window and the same isolation.
  */
 export async function sweepAuditHistorySafely(db: Db): Promise<void> {
   try {
@@ -1056,6 +1058,14 @@ export async function sweepAuditHistorySafely(db: Db): Promise<void> {
     }
   } catch (err) {
     sweepTrace('audit-history-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+  try {
+    const closed = await closeAbandonedTerminalOpens(db)
+    if (closed > 0) sweepTrace('terminal-close-rows-written', { closed })
+  } catch (err) {
+    sweepTrace('terminal-close-sweep-failed', {
       error: sweepErrorMessage(err),
     })
   }
