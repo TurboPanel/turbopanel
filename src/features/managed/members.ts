@@ -923,9 +923,14 @@ export async function updateManagedMemberObservedReplication(
  * that is not an object is compared as it is.
  */
 function displayChangeKey(reading: SQL): SQL {
-  const bucket = (key: string, size: number) =>
-    sql`CASE WHEN jsonb_typeof(${reading} -> ${sql.raw(`'${key}'`)}) = 'number'
-      THEN floor((${reading} ->> ${sql.raw(`'${key}'`)})::numeric / ${sql.raw(String(size))}) END`
+  // Field names and sizes are fixed constants below, never input, so they are
+  // written into the statement as literals rather than bound as parameters.
+  const bucket = (key: string, size: number) => {
+    const field = sql.raw("'" + key + "'")
+    const width = sql.raw(String(size))
+    return sql`CASE WHEN jsonb_typeof(${reading} -> ${field}) = 'number'
+      THEN floor((${reading} ->> ${field})::numeric / ${width}) END`
+  }
   return sql`(CASE WHEN jsonb_typeof(${reading}) = 'object'
     THEN (${reading} - 'observedAt' - 'receivedLsn' - 'replayLsn'
         - 'receivedGtid' - 'executedGtid'
