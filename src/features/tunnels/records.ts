@@ -393,6 +393,12 @@ export type CheckOutcome = { capabilities: CredentialReport['capabilities']; sta
  */
 export const CAPABILITY_PROBE_REVISION = 2
 
+/** Was the token last checked before the check learned to see every kind of right (certificates)? */
+export function capabilityProbeStale(row: Pick<BadgeRow, 'options'>): boolean {
+  const seen = (row.options as Record<string, unknown> | null)?.capabilityProbe
+  return typeof seen !== 'number' || seen < CAPABILITY_PROBE_REVISION
+}
+
 /** The non-secret facts a check learned about the token itself. */
 function tokenOptions(report: Pick<CredentialReport, 'token'>): Record<string, unknown> {
   return {

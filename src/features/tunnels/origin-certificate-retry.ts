@@ -20,6 +20,8 @@ const ORIGIN_RETRY_PATH = `{${ORIGIN_RETRY_KEY}}`
 const HOUR_MS = 3_600_000
 /** Longest wait between tries on a row that keeps failing. */
 export const ORIGIN_RETRY_MAX_MS = 24 * HOUR_MS
+/** Longest pause taken from a provider's own wait; a far-off date is not obeyed in full. */
+export const ORIGIN_RETRY_ASKED_MAX_MS = 6 * HOUR_MS
 /** A provider that says "retry after 0" is still not asked again inside a minute. */
 const MIN_PAUSE_MS = 60_000
 
@@ -54,7 +56,7 @@ export function throttleWait(err: unknown): number | null {
 export function nextOriginRetry(previous: OriginRetry, err: unknown, now: Date): OriginRetry {
   const asked = throttleWait(err)
   if (asked !== null) {
-    const until = now.getTime() + Math.max(asked, MIN_PAUSE_MS)
+    const until = now.getTime() + Math.min(Math.max(asked, MIN_PAUSE_MS), ORIGIN_RETRY_ASKED_MAX_MS)
     return { attempts: previous.attempts, nextTryAt: new Date(until).toISOString() }
   }
   const attempts = previous.attempts + 1

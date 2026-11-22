@@ -72,8 +72,13 @@ the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
   the counterpart for the origin certificate. Unlike the Let's Encrypt order it
   calls the provider, so it runs after the save committed
   (`issueNameOriginCertificates`: `POST`/`PATCH /hostings`, and a doorway add
-  that attaches the name to a tunnel), under an advisory lock per organization,
-  re-reading the waiting names under it, so a second caller issues nothing.
+  that attaches the name to a tunnel). The provider call is made outside any
+  transaction and without the lock; the advisory lock per organization is taken
+  only to re-read the waiting names and pin, so a second caller that won the
+  race makes the extra certificate be revoked at the provider (the manual
+  route takes the same lock). Older tokens with a stale capability probe are
+  re-checked once, as the manual route does. The POST and PATCH answers carry
+  `names` with each name's state after the attempt.
   Names of one zone share one certificate: the organization's own carriers are
   searched, the longest matching zone wins, the token comes from `pickBadges`
   on its recorded certificate rights, and `ensureOriginCertificate` reuses a
@@ -86,7 +91,12 @@ the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
   `names[].originCertificateIssue`. A save or attach retries at once; the
   hourly Let's Encrypt tick (`sweepNameOriginCertificates`) retries names whose
   `nextTryAt` has passed (15 minutes with no token, else the doubling back-off
-  of the origin sweep, or the provider's own wait). The entry goes when the
+  of the origin sweep, or the provider's own wait, capped at 6 hours). The
+  sweep picks due names in stored `nextTryAt` order (oldest first), so a
+  backlog of failing names cannot starve the rest. The hostings-only apply
+  after a pin measures the edit time from before the save when the save left
+  the server facts (options, `ipId`) alone, so it is not skipped as
+  `pending_changes`. The entry goes when the
   name is pinned or leaves the choice. A compose-owned site is left alone.
 - The library "in use" read and the delete guard look at `hostname.tls_id`
   (`certificateIdsPinnedBy`, `notPinnedBySiteCondition`).

@@ -108,6 +108,7 @@ async function sweepOriginCertificatesToo(
     now?: () => Date
     apply?: HostingLetsEncryptSweepApply
     registry?: TunnelAdapterRegistry
+    nameOriginHostingIds?: readonly string[]
   },
   sendPin: (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean>
 ): Promise<void> {
@@ -140,7 +141,11 @@ async function sweepOriginCertificatesToo(
  */
 async function retryNameOriginCertificates(
   db: Db,
-  deps: { now?: () => Date; registry?: TunnelAdapterRegistry },
+  deps: {
+    now?: () => Date
+    registry?: TunnelAdapterRegistry
+    nameOriginHostingIds?: readonly string[]
+  },
   secrets: DerivedSecretsConfig,
   sendPin: (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean>
 ): Promise<void> {
@@ -149,6 +154,7 @@ async function retryNameOriginCertificates(
       secrets,
       ...(deps.now ? { now: deps.now() } : {}),
       ...(deps.registry ? { registry: deps.registry } : {}),
+      ...(deps.nameOriginHostingIds ? { onlyHostingIds: deps.nameOriginHostingIds } : {}),
     })
     await forEachSequential(done.pinned, ({ hostingId, organizationId, editedAt }) =>
       sendPin(hostingId, organizationId, editedAt).then(() => undefined)
@@ -224,6 +230,8 @@ export async function runHostingLetsEncryptSweepTick(
     deadlineMs?: number
     /** The provider adapters; tests stand in for the provider. */
     registry?: TunnelAdapterRegistry
+    /** Test seam: the name-certificate retry looks only at these hostings. */
+    nameOriginHostingIds?: readonly string[]
   } = {}
 ): Promise<HostingLetsEncryptSweepResult> {
   const deadline = AbortSignal.timeout(deps.deadlineMs ?? HOSTING_LETS_ENCRYPT_SWEEP_DEADLINE_MS)

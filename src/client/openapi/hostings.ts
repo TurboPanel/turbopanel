@@ -740,7 +740,7 @@ export const hostingPaths = {
     patch: {
       ...((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>),
       description:
-        "Pointing `tlsId` at a managed Let's Encrypt certificate, with nothing else the servers receive changed, sends it to the servers at once when the environment is deployed (the same hostings-only apply as use-letsencrypt); the answer then carries `needsDeploy`, true when a deploy is still needed to start it.",
+        "Pointing `tlsId` at a managed Let's Encrypt certificate, with nothing else the servers receive changed, sends it to the servers at once when the environment is deployed (the same hostings-only apply as use-letsencrypt); the answer then carries `needsDeploy`, true when a deploy is still needed to start it. The answer also carries `names`, the hosting's names as a read returns them (with `originCertificateIssue`), so a name set to `cloudflare_origin` shows at once whether it got a certificate or why not. `POST /hostings` answers `names` the same way.",
       responses: {
         ...(((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
           .responses as Record<string, unknown>),

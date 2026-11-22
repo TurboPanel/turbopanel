@@ -7,11 +7,13 @@
  * Nothing else issues a certificate for a name that only picked the choice.
  *
  * Unlike the Let's Encrypt order this calls the provider, so it runs after the
- * save has committed, never inside it. The whole step runs under an advisory
- * lock per organization and re-reads the waiting names under it: a second
- * caller (a double click, the scheduled retry, a tunnel attach) finds the names
- * pinned and issues nothing. The lock is held across the provider call on
- * purpose; origin certificates are few and the per-organization cap is 50.
+ * save has committed, never inside it, and the provider is never called while
+ * a lock or a transaction is held. The certificate is issued first (the issue
+ * step takes the per-organization lock only to store it, and reuses a
+ * certificate another caller stored meanwhile, revoking the extra one), then
+ * the lock is taken again to record the outcome and pin the names that still
+ * wait: a second caller (a double click, the scheduled retry, a tunnel attach)
+ * finds the names pinned and pins nothing.
  *
  * Names of one zone share one certificate. Only the organization's own
  * carriers and tokens are looked at; the token is picked with `pickBadges` on
@@ -20,14 +22,15 @@
  * (`features/hostings/name-origin-issues.ts`), with a back-off the scheduled
  * retry honours; a save or a tunnel attach tries at once.
  */
-import { and, asc, eq, isNull, sql } from 'drizzle-orm'
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import type { Db } from '../../db/connection.ts'
+import { type Db, getDaemonCellRegistry } from '../../db/connection.ts'
 import { hostname, hosting } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import { readHostingComposeOwner } from '../../features/hostings/hosting-compose-owner.ts'
 import {
+  NAME_ORIGIN_ISSUES_KEY,
   type NameOriginIssue,
   type NameOriginIssueCode,
   type NameOriginIssues,
@@ -39,26 +42,37 @@ import { getCommandQueue } from '../../features/commands/queue.ts'
 import { TunnelProviderError } from '../../features/tunnels/errors.ts'
 import {
   ensureOriginCertificate,
+  organizationOriginLock,
   OriginCertificateRefusal,
 } from '../../features/tunnels/origin-certificate.ts'
 import { nextOriginRetry } from '../../features/tunnels/origin-certificate-retry.ts'
 import {
   type BadgeRow,
   type CarrierRow,
+  capabilityProbeStale,
+  declaredZonesOf,
   listCarriers,
+  openBadgeToken,
   pickBadges,
+  recordBadgeCheck,
   toApiBadge,
 } from '../../features/tunnels/records.ts'
 import {
   createTunnelAdapterRegistry,
   type TunnelAdapterRegistry,
 } from '../../features/tunnels/registry.ts'
-import type { TunnelProvider } from '../../features/tunnels/vocabulary.ts'
+import { NO_CAPABILITIES, type TunnelProvider } from '../../features/tunnels/vocabulary.ts'
 import { compareText } from '../../features/tunnels/order.ts'
 import { logWarn } from '../../lib/logger.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import { type HostingApplyDeps, queueHostingCertificateApply } from './letsencrypt-apply.ts'
+import {
+  type HostingApplyDeps,
+  type HostingPinState,
+  leftServerFactsAlone,
+  loadHostingPinState,
+  queueHostingCertificateApply,
+} from './letsencrypt-apply.ts'
 
 /** How long a name with no usable API token waits before the scheduled retry looks again. */
 export const NO_BADGE_RETRY_MS = 15 * 60_000
@@ -205,17 +219,19 @@ function failureIssue(failure: Failure, previous: NameOriginIssue | undefined, n
 
 type IssuedAudit = { tlsId: string; carrierId: string; zone: string }
 
-/** Issue (or reuse) the certificate of one zone's names. Returns the pinned row's id. */
+type RunContext = { organizationId: string; deps: NameOriginDeps; registry: TunnelAdapterRegistry }
+
+/** Issue (or reuse) the certificate of one zone's names. Returns the row's id. */
 async function issueGroup(
-  tx: Db,
-  ctx: { organizationId: string; deps: NameOriginDeps; registry: TunnelAdapterRegistry },
+  db: Db,
+  ctx: RunContext,
   group: Group
 ): Promise<{ tlsId: string; reused: boolean }> {
   if (ctx.deps.secrets === null) {
     throw new OriginCertificateRefusal('secrets_unavailable', 'The stored API token cannot be read')
   }
   const ensured = await ensureOriginCertificate({
-    db: tx,
+    db,
     secrets: ctx.deps.secrets,
     adapter: ctx.registry(group.carrier.provider as TunnelProvider),
     organizationId: ctx.organizationId,
@@ -236,15 +252,15 @@ type RunState = {
 }
 
 async function runGroups(
-  tx: Db,
-  ctx: { organizationId: string; deps: NameOriginDeps; registry: TunnelAdapterRegistry },
+  db: Db,
+  ctx: RunContext,
   plan: { groups: Group[]; unplaced: string[] }
 ): Promise<RunState> {
   const state: RunState = { pins: new Map(), failures: new Map(), issued: [] }
   for (const name of plan.unplaced) state.failures.set(name, 'no_badge')
   await forEachSequential(plan.groups, async (group) => {
     try {
-      const done = await issueGroup(tx, ctx, group)
+      const done = await issueGroup(db, ctx, group)
       for (const name of group.names) state.pins.set(name, done.tlsId)
       if (!done.reused) {
         state.issued.push({
@@ -260,6 +276,55 @@ async function runGroups(
     }
   })
   return state
+}
+
+type Carriers = { carrier: CarrierRow; badges: BadgeRow[] }[]
+
+/**
+ * A token added before certificates were checked has no certificate rights
+ * recorded. Check each active one of that kind once and store what it reaches,
+ * the way the manual issue route does. A provider that cannot be reached leaves
+ * the token as it was. Returns whether anything was checked.
+ */
+async function recheckStaleBadges(db: Db, ctx: RunContext, carriers: Carriers): Promise<boolean> {
+  const secrets = ctx.deps.secrets
+  if (secrets === null) return false
+  const stale = carriers.flatMap(({ carrier, badges }) =>
+    badges
+      .filter((b) => b.status === 'active' && capabilityProbeStale(b))
+      .map((b) => ({ carrier, b }))
+  )
+  let checked = false
+  await forEachSequential(stale, async ({ carrier, b }) => {
+    const token = await openBadgeToken(db, secrets, b)
+    if (token === null) return
+    try {
+      const report = await ctx.registry(carrier.provider as TunnelProvider).checkCredential(token, {
+        accountId: carrier.externalAccountId,
+        declaredZones: declaredZonesOf(b),
+      })
+      await recordBadgeCheck(db, b, {
+        capabilities: report.capabilities ?? NO_CAPABILITIES,
+        status: 'active',
+        token: report.token,
+      })
+      checked = true
+    } catch (err) {
+      if (!(err instanceof TunnelProviderError)) throw err
+    }
+  })
+  return checked
+}
+
+/** Where each due name goes; names no token can place get one look at their older tokens first. */
+async function planDue(db: Db, ctx: RunContext, due: readonly string[]) {
+  let carriers = await listCarriers(db, ctx.organizationId)
+  let plan = planNames(due, carriers)
+  if (plan.unplaced.length > 0 && (await recheckStaleBadges(db, ctx, carriers))) {
+    carriers = await listCarriers(db, ctx.organizationId)
+    plan = planNames(due, carriers)
+  }
+  return plan
 }
 
 /** The reasons to store: what was recorded for names still waiting, with this run's results applied. */
@@ -311,54 +376,66 @@ async function pinNames(
   return pinned
 }
 
-async function lockOrganizationOriginIssue(tx: Db, organizationId: string): Promise<void> {
-  const lockKey = 'origin-certificate-issue:' + organizationId
-  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`)
-}
-
-async function runLocked(
-  tx: Db,
-  hostingId: string,
-  organizationId: string,
-  deps: NameOriginDeps
-): Promise<NameOriginOutcome & { issued: IssuedAudit[] }> {
-  const now = deps.now ?? new Date()
-  const waiting = await waitingNames(tx, hostingId, organizationId)
-  const [site] = await tx
-    .select({ metadata: hosting.metadata })
-    .from(hosting)
-    .where(eq(hosting.id, hostingId))
-    .limit(1)
-  const previous = readNameOriginIssues(site?.metadata)
-  const due = waiting.filter(
-    (name) => !(deps.respectBackoff && nameOriginIssueWaiting(previous[name], now))
-  )
-  const registry = deps.registry ?? createTunnelAdapterRegistry()
-  const plan = planNames(due, await listCarriers(tx, organizationId))
-  const state = await runGroups(tx, { organizationId, deps, registry }, plan)
-  const issues = nextIssues(previous, waiting, state, now)
-  // The site row before the name rows, the order a save writes them in.
-  if (JSON.stringify(issues) !== JSON.stringify(previous)) {
-    await saveNameOriginIssues(tx, hostingId, issues)
-  }
-  const pinned = await pinNames(tx, hostingId, organizationId, state.pins)
-  return {
-    pinned,
-    failed: [...state.failures.keys()].toSorted(compareText),
-    issued: state.issued,
-  }
-}
-
-/** Remove reasons for names that no longer ask for the origin certificate. */
-async function dropStaleIssues(db: Db, hostingId: string): Promise<void> {
+async function readSiteIssues(db: Db, hostingId: string): Promise<NameOriginIssues> {
   const [site] = await db
     .select({ metadata: hosting.metadata })
     .from(hosting)
     .where(eq(hosting.id, hostingId))
     .limit(1)
-  if (Object.keys(readNameOriginIssues(site?.metadata)).length > 0) {
+  return readNameOriginIssues(site?.metadata)
+}
+
+/**
+ * Under the organization's lock: read the names that still wait (they may have
+ * changed while the provider was called), record the reasons and pin. Only
+ * database work happens here.
+ */
+async function recordOutcome(
+  db: Db,
+  ctx: RunContext,
+  hostingId: string,
+  state: RunState
+): Promise<string[]> {
+  const now = ctx.deps.now ?? new Date()
+  return await organizationOriginLock(
+    db,
+    ctx.organizationId
+  )(async (tx) => {
+    const waiting = await waitingNames(tx, hostingId, ctx.organizationId)
+    const previous = await readSiteIssues(tx, hostingId)
+    const issues = nextIssues(previous, waiting, state, now)
+    // The site row before the name rows, the order a save writes them in.
+    if (JSON.stringify(issues) !== JSON.stringify(previous)) {
+      await saveNameOriginIssues(tx, hostingId, issues)
+    }
+    return await pinNames(tx, hostingId, ctx.organizationId, state.pins)
+  })
+}
+
+/** Remove reasons for names that no longer ask for the origin certificate. */
+async function dropStaleIssues(db: Db, hostingId: string): Promise<void> {
+  if (Object.keys(await readSiteIssues(db, hostingId)).length > 0) {
     await saveNameOriginIssues(db, hostingId, {})
   }
+}
+
+async function auditIssued(
+  db: Db,
+  hostingId: string,
+  ctx: RunContext,
+  issued: readonly IssuedAudit[]
+): Promise<void> {
+  await forEachSequential(issued, async (one) => {
+    await recordAudit(db, {
+      organizationId: ctx.organizationId,
+      actorUserId: ctx.deps.actor?.userId ?? null,
+      actorEmail: ctx.deps.actor?.email ?? null,
+      action: 'origin_certificate.issue',
+      targetType: 'organization',
+      targetId: one.tlsId,
+      context: { carrierId: one.carrierId, zone: one.zone, scope: 'names', hostingId },
+    })
+  })
 }
 
 /**
@@ -374,7 +451,8 @@ export async function ensureNameOriginCertificates(
   deps: NameOriginDeps
 ): Promise<NameOriginOutcome> {
   const none: NameOriginOutcome = { pinned: [], failed: [] }
-  if ((await waitingNames(db, hostingId, organizationId)).length === 0) {
+  const waiting = await waitingNames(db, hostingId, organizationId)
+  if (waiting.length === 0) {
     await dropStaleIssues(db, hostingId)
     return none
   }
@@ -384,34 +462,42 @@ export async function ensureNameOriginCertificates(
     .where(eq(hosting.id, hostingId))
     .limit(1)
   if (!site || readHostingComposeOwner(site.metadata) !== null) return none
-  const done = await db.transaction(async (tx) => {
-    await lockOrganizationOriginIssue(tx, organizationId)
-    return runLocked(tx, hostingId, organizationId, deps)
-  })
-  await forEachSequential(done.issued, async (issued) => {
-    await recordAudit(db, {
-      organizationId,
-      actorUserId: deps.actor?.userId ?? null,
-      actorEmail: deps.actor?.email ?? null,
-      action: 'origin_certificate.issue',
-      targetType: 'organization',
-      targetId: issued.tlsId,
-      context: {
-        carrierId: issued.carrierId,
-        zone: issued.zone,
-        scope: 'names',
-        hostingId,
-      },
-    })
-  })
-  return { pinned: done.pinned, failed: done.failed }
+  const now = deps.now ?? new Date()
+  const previous = readNameOriginIssues(site.metadata)
+  const due = waiting.filter(
+    (name) => !(deps.respectBackoff && nameOriginIssueWaiting(previous[name], now))
+  )
+  const ctx: RunContext = {
+    organizationId,
+    deps,
+    registry: deps.registry ?? createTunnelAdapterRegistry(),
+  }
+  const state = await runGroups(db, ctx, await planDue(db, ctx, due))
+  const pinned = await recordOutcome(db, ctx, hostingId, state)
+  await auditIssued(db, hostingId, ctx, state.issued)
+  return { pinned, failed: [...state.failures.keys()].toSorted(compareText) }
+}
+
+/** What the servers got from the hosting before the edit that is being answered. */
+export type HostingBeforeEdit = Pick<HostingPinState, 'ipId' | 'options' | 'updatedAt'>
+
+/**
+ * The edit time the apply measures "changed since the last deploy" against. An
+ * edit that only chose certificates (the options and the pinned address are as
+ * they were) does not count as a change itself, so the time before it is used;
+ * any other edit of the site keeps its own time and the apply leaves the pair
+ * to the next deploy.
+ */
+function editTimeForApply(before: HostingBeforeEdit | null, after: HostingPinState): string {
+  return before && leftServerFactsAlone(before, after) ? before.updatedAt : after.updatedAt
 }
 
 /**
  * The call the routes make: issue what the hosting's names wait for and, when
  * something was pinned, queue the hostings-only apply that sends the pair to
  * the servers (when that is not safe right now the pair goes with the next
- * deploy). Never throws: a failure here must not undo the save or the attach
+ * deploy). `before` is the site as it was before the save that is being
+ * answered. Never throws: a failure here must not undo the save or the attach
  * that triggered it, and the reason is on the site.
  */
 export async function issueNameOriginCertificates(
@@ -423,15 +509,12 @@ export async function issueNameOriginCertificates(
     actor: { userId: string; email: string | null }
     registry?: TunnelAdapterRegistry
     applyDeps?: HostingApplyDeps
+    before?: HostingBeforeEdit
   }
 ): Promise<NameOriginOutcome> {
   const none: NameOriginOutcome = { pinned: [], failed: [] }
   try {
-    const [site] = await db
-      .select({ updatedAt: hosting.updatedAt })
-      .from(hosting)
-      .where(eq(hosting.id, params.hostingId))
-      .limit(1)
+    const site = await loadHostingPinState(db, params.hostingId)
     if (!site) return none
     const done = await ensureNameOriginCertificates(db, params.hostingId, params.organizationId, {
       secrets: c.get('dataEncryptionSecrets') ?? null,
@@ -446,9 +529,12 @@ export async function issueNameOriginCertificates(
           hostingId: params.hostingId,
           organizationId: params.organizationId,
           actor: { actorType: 'user', actorId: params.actor.userId },
-          editedAt: site.updatedAt,
+          editedAt: editTimeForApply(params.before ?? null, site),
         },
-        params.applyDeps ?? { commandQueue: getCommandQueue(c) }
+        params.applyDeps ?? {
+          commandQueue: getCommandQueue(c),
+          registry: getDaemonCellRegistry(c),
+        }
       )
     }
     return done
@@ -464,7 +550,7 @@ export async function issueNameOriginCertificates(
 /** Hostings the scheduled retry looks at per pass; each one may call the provider. */
 export const NAME_ORIGIN_SWEEP_BATCH = 10
 
-/** Waiting names read per pass, before the ones still backing off are set aside. */
+/** Due names read per pass, in the order they are tried. */
 const NAME_ORIGIN_SWEEP_SCAN = 500
 
 export type NameOriginSweepResult = {
@@ -474,19 +560,36 @@ export type NameOriginSweepResult = {
   pinned: { hostingId: string; organizationId: string; editedAt: string }[]
 }
 
+/** A time stored in a name's recorded reason, as a timestamp the database can order by. */
+function recordedTime(field: 'nextTryAt' | 'failedAt') {
+  return sql`(${hosting.metadata} #>> array[${NAME_ORIGIN_ISSUES_KEY}::text, ${hostname.hostname}::text, ${field}::text])::timestamptz`
+}
+
+export type NameOriginSweepDeps = {
+  secrets: DerivedSecretsConfig | null
+  registry?: TunnelAdapterRegistry
+  now?: Date
+  /** Test seams: look only at these hostings, and take this many per pass. */
+  onlyHostingIds?: readonly string[]
+  batch?: number
+}
+
 /**
  * The scheduled retry: hostings with a name set to the origin certificate and
- * no pin, whose recorded back-off has passed, oldest first. Each runs the same
- * step a save runs. It adds no timer; the Let's Encrypt retry tick calls it.
- * Without the data-encryption secrets it does nothing.
+ * no pin, whose recorded back-off has passed. The most overdue come first
+ * (names never tried, then the earliest recorded retry time, then the earliest
+ * failure), so a name that keeps failing cannot hold the others back. Each
+ * runs the same step a save runs. It adds no timer; the Let's Encrypt retry
+ * tick calls it. Without the data-encryption secrets it does nothing.
  */
 export async function sweepNameOriginCertificates(
   db: Db,
-  deps: { secrets: DerivedSecretsConfig | null; registry?: TunnelAdapterRegistry; now?: Date }
+  deps: NameOriginSweepDeps
 ): Promise<NameOriginSweepResult> {
   const out: NameOriginSweepResult = { tried: 0, failed: 0, pinned: [] }
   if (deps.secrets === null) return out
   const now = deps.now ?? new Date()
+  const nextTry = recordedTime('nextTryAt')
   const rows = await db
     .select({
       hostingId: hostname.hostingId,
@@ -497,8 +600,19 @@ export async function sweepNameOriginCertificates(
     })
     .from(hostname)
     .innerJoin(hosting, eq(hosting.id, hostname.hostingId))
-    .where(and(eq(hostname.certificate, 'cloudflare_origin'), isNull(hostname.tlsId)))
-    .orderBy(asc(hostname.updatedAt), asc(hostname.id))
+    .where(
+      and(
+        eq(hostname.certificate, 'cloudflare_origin'),
+        isNull(hostname.tlsId),
+        sql`(${nextTry} is null or ${nextTry} <= ${now.toISOString()}::timestamptz)`,
+        ...(deps.onlyHostingIds ? [inArray(hostname.hostingId, [...deps.onlyHostingIds])] : [])
+      )
+    )
+    .orderBy(
+      sql`${nextTry} asc nulls first`,
+      sql`${recordedTime('failedAt')} asc nulls first`,
+      asc(hostname.id)
+    )
     .limit(NAME_ORIGIN_SWEEP_SCAN)
   const due = new Map<string, { organizationId: string; updatedAt: string }>()
   for (const row of rows) {
@@ -506,7 +620,8 @@ export async function sweepNameOriginCertificates(
     if (nameOriginIssueWaiting(issue, now) || due.has(row.hostingId)) continue
     due.set(row.hostingId, { organizationId: row.organizationId, updatedAt: row.updatedAt })
   }
-  await forEachSequential([...due].slice(0, NAME_ORIGIN_SWEEP_BATCH), async ([id, site]) => {
+  const batch = deps.batch ?? NAME_ORIGIN_SWEEP_BATCH
+  await forEachSequential([...due].slice(0, batch), async ([id, site]) => {
     out.tried += 1
     try {
       const done = await ensureNameOriginCertificates(db, id, site.organizationId, {

@@ -245,6 +245,18 @@ export function isPinOnlyChange(before: HostingPinState, after: HostingPinState)
   )
 }
 
+/**
+ * True when an edit left what the servers receive from the hosting itself (its
+ * options and pinned address) as it was, so the hostings-only apply may carry
+ * it and the edit does not count as a pending change.
+ */
+export function leftServerFactsAlone(
+  before: Pick<HostingPinState, 'ipId' | 'options'>,
+  after: Pick<HostingPinState, 'ipId' | 'options'>
+): boolean {
+  return after.ipId === before.ipId && sortedJson(after.options) === sortedJson(before.options)
+}
+
 /** Is this certificate row a managed Let's Encrypt one (the web server obtains it)? */
 async function isManagedLetsEncryptRow(db: Db, tlsId: string): Promise<boolean> {
   const [row] = await db
