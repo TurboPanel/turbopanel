@@ -88,7 +88,11 @@ the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
   the zone, a refusal, a provider failure) records why on `hosting.metadata`
   (`nameOriginIssues`, `name-origin-issues.ts`, one entry per name with
   `attempts` and `nextTryAt`; no table) and the hosting read shows it as
-  `names[].originCertificateIssue`. A save or attach retries at once; the
+  `names[].originCertificateIssue`. A name that waits with no recorded reason
+  (before its first attempt) reads as code `queued` (`failedAt` null,
+  `attempts` 0; a read-time value, never stored). An error that is neither a
+  refusal nor the provider's is recorded as `provider_error` with a fixed
+  message and the same back-off. A save or attach retries at once; the
   hourly Let's Encrypt tick (`sweepNameOriginCertificates`) retries names whose
   `nextTryAt` has passed (15 minutes with no token, else the doubling back-off
   of the origin sweep, or the provider's own wait, capped at 6 hours). The

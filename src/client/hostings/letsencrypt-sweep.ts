@@ -108,7 +108,7 @@ async function sweepOriginCertificatesToo(
     now?: () => Date
     apply?: HostingLetsEncryptSweepApply
     registry?: TunnelAdapterRegistry
-    nameOriginHostingIds?: readonly string[]
+    testNameOriginHostingIds?: readonly string[]
     originSweepOrganizationIds?: readonly string[]
   },
   sendPin: (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean>
@@ -148,7 +148,7 @@ async function retryNameOriginCertificates(
   deps: {
     now?: () => Date
     registry?: TunnelAdapterRegistry
-    nameOriginHostingIds?: readonly string[]
+    testNameOriginHostingIds?: readonly string[]
   },
   secrets: DerivedSecretsConfig,
   sendPin: (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean>
@@ -158,7 +158,7 @@ async function retryNameOriginCertificates(
       secrets,
       ...(deps.now ? { now: deps.now() } : {}),
       ...(deps.registry ? { registry: deps.registry } : {}),
-      ...(deps.nameOriginHostingIds ? { onlyHostingIds: deps.nameOriginHostingIds } : {}),
+      ...(deps.testNameOriginHostingIds ? { testOnlyHostingIds: deps.testNameOriginHostingIds } : {}),
     })
     await forEachSequential(done.pinned, ({ hostingId, organizationId, editedAt }) =>
       sendPin(hostingId, organizationId, editedAt).then(() => undefined)
@@ -235,7 +235,7 @@ export async function runHostingLetsEncryptSweepTick(
     /** The provider adapters; tests stand in for the provider. */
     registry?: TunnelAdapterRegistry
     /** Test seam: the name-certificate retry looks only at these hostings. */
-    nameOriginHostingIds?: readonly string[]
+    testNameOriginHostingIds?: readonly string[]
     /** Test seam: the origin certificate renewal looks only at these organizations. */
     originSweepOrganizationIds?: readonly string[]
   } = {}

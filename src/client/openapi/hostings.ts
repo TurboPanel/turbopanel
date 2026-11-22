@@ -315,7 +315,7 @@ export const hostingSchemas = {
         properties: {
           originCertificateIssue: {
             description:
-              'Why a name set to `cloudflare_origin` has no certificate yet; null when nothing went wrong or the name holds one. Shown instead of a silent wait. The scheduled retry tries again after `nextTryAt` (a save or a tunnel attach tries at once).',
+              'Why a name set to `cloudflare_origin` has no certificate yet (`queued` while no attempt has run); null when the name holds one. Shown instead of a silent wait. The scheduled retry tries again after `nextTryAt` (a save or a tunnel attach tries at once).',
             oneOf: [
               { type: 'null' },
               {
@@ -333,13 +333,14 @@ export const hostingSchemas = {
                       'badge_cannot_certify',
                       'origin_certificate_limit',
                       'origin_certificate_names',
+                      'queued',
                     ],
                     description:
-                      "`no_badge`: no API token of the organization has certificate rights for the name's zone. `provider_error`: the provider refused or failed. The others are the issuing code's refusals.",
+                      "`queued`: waiting for the first attempt (`failedAt` is null, `attempts` is 0). `no_badge`: no API token of the organization has certificate rights for the name's zone. `provider_error`: the provider refused or failed. The others are the issuing code's refusals.",
                   },
                   message: { type: 'string', description: 'Plain words, safe to show.' },
-                  failedAt: { type: 'string', format: 'date-time' },
-                  attempts: { type: 'integer', minimum: 1 },
+                  failedAt: { type: ['string', 'null'], format: 'date-time' },
+                  attempts: { type: 'integer', minimum: 0 },
                   nextTryAt: { type: ['string', 'null'], format: 'date-time' },
                 },
               },
