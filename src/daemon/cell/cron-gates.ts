@@ -81,7 +81,7 @@ export type CronGates = {
   tunnels: boolean
   /**
    * Tunnel work that should not wait for the routine slot: a tunnel being
-   * removed, a run-token rotation under way, or a portal made in the last ten
+   * removed, a run-token rotation under way (or stopped and due a retry), or a portal made in the last ten
    * minutes that no status answer has covered yet.
    */
   tunnelsUrgent: boolean
@@ -159,7 +159,9 @@ export async function loadCronGates(
           or exists (select 1 from ${badge})
           or exists (select 1 from ${server} where ${server.metadata} -> 'tunnelRoutes' is not null or ${server.metadata} -> 'tunnelConnectors' is not null)) as "tunnels",
         (exists (select 1 from ${tunnel} where ${tunnel.status} = 'removing'
-          or (${tunnel.metadata} -> 'runTokenRotation' ->> 'phase') in ('starting', 'rolling', 'finishing'))
+          or (${tunnel.metadata} -> 'runTokenRotation' ->> 'phase') in ('starting', 'rolling', 'finishing')
+          or ((${tunnel.metadata} -> 'runTokenRotation' ->> 'phase') = 'stopped'
+            and (${tunnel.metadata} -> 'runTokenRotation' ->> 'retryable') = 'true'))
           or exists (select 1 from ${portal} where ${portal.lastSeenAt} is null
             and ${portal.createdAt} > ${newPortalSince}::timestamptz)) as "tunnelsUrgent",
         (select count(*) from ${datacenter} where ${datacenter.isTrusted}) >= 2 as "networkProbe",
