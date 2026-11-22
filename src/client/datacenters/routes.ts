@@ -3,10 +3,9 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import { type OrgRequest, resolveOrgRequest } from '../org-request.ts'
+import { resolveEntityRequest, resolveOrgRequest, resolveVisibleList } from '../org-request.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
-import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { listVisible } from '../authz/index.ts'
 import type { Db } from '../../db/connection.ts'
 import { getDaemonCellRegistry } from '../../db/connection.ts'
 import { datacenter, ip, network, server } from '../../db/schema.ts'
@@ -63,7 +62,6 @@ import { pruneClientAddressesWithoutPin } from '../../features/net/client-addres
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
-  assertCanReadOr403,
   buildPatchUpdateFields,
   parseDescription,
   parseName,
@@ -117,34 +115,6 @@ async function refuseUntrustingLanPairs(
     change: { kind: 'untrust_datacenter', datacenterId: params.datacenterId },
   })
   return refusal ? lanPairRefusalResponse(c, refusal) : null
-}
-
-/**
- * {@link resolveOrgRequest}, then the `:id` datacenter: `404` unless it belongs
- * to the request's organization, then the access check — `read` for
- * `datacenter` read, `manage` for `organization:manage` on it. Same responses,
- * same order as the handlers wrote inline.
- */
-async function resolveDatacenterRequest(
-  c: Context<AppEnv>,
-  access: 'read' | 'manage'
-): Promise<(OrgRequest & { id: string }) | Response> {
-  const scope = await resolveOrgRequest(c)
-  if (scope instanceof Response) return scope
-
-  const id = c.req.param('id') ?? ''
-  const entityOrgId = await resolveEntityOrganizationId(scope.db, 'datacenter', id)
-  if (entityOrgId !== scope.organizationId) {
-    return c.json({ error: 'Not found' }, 404)
-  }
-
-  const denied =
-    access === 'read'
-      ? await assertCanReadOr403(c, 'datacenter', id)
-      : await assertCanOr403(c, 'organization:manage', 'datacenter', id)
-  if (denied) return denied
-
-  return { ...scope, id }
 }
 
 function datacenterPolicyChanged(before: DatacenterPolicy, after: DatacenterPolicy): boolean {
@@ -640,18 +610,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   router.use('/datacenters/:id/subnets/:networkId', createSessionMiddleware(secrets))
 
   router.get('/datacenters', async (c) => {
-    const scope = await resolveOrgRequest(c)
+    const scope = await resolveVisibleList(c, 'datacenter')
     if (scope instanceof Response) return scope
-    const { db, session, organizationId } = scope
-
-    const manageDenied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (manageDenied) return manageDenied
-
-    const visibleIds = await listVisible(db, {
-      kind: 'datacenter',
-      userId: session.userId,
-      organizationId,
-    })
+    const { db, organizationId, visibleIds } = scope
 
     if (visibleIds.length === 0) {
       return c.json({ datacenters: [], warnings: [] })
@@ -758,7 +719,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.get('/datacenters/:id', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'read')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'read')
     if (scope instanceof Response) return scope
     const { db, id } = scope
 
@@ -915,7 +876,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.post('/datacenters/:id/members', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, session, organizationId, id } = scope
 
@@ -1005,7 +966,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.delete('/datacenters/:id/members/:serverId', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, session, organizationId, id } = scope
     const serverId = c.req.param('serverId')
@@ -1032,7 +993,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.post('/datacenters/:id/subnets', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, organizationId, id } = scope
 
@@ -1078,7 +1039,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.patch('/datacenters/:id/subnets/:networkId', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, organizationId, id } = scope
     const networkId = c.req.param('networkId')
@@ -1116,7 +1077,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.delete('/datacenters/:id/subnets/:networkId', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, organizationId, id } = scope
     const networkId = c.req.param('networkId')
@@ -1138,7 +1099,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.patch('/datacenters/:id', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, session, organizationId, id } = scope
 
@@ -1213,7 +1174,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.post('/datacenters/:id/server-traffic', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, session, organizationId, id } = scope
 
@@ -1255,7 +1216,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.post('/datacenters/:id/server-traffic/check', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, organizationId, id } = scope
     const check = await runNetworkCheck(db, getDaemonCellRegistry(c), {
@@ -1266,7 +1227,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.delete('/datacenters/:id', async (c) => {
-    const scope = await resolveDatacenterRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'datacenter', 'manage')
     if (scope instanceof Response) return scope
     const { db, id } = scope
 

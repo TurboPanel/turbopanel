@@ -1,10 +1,9 @@
 import { and, eq, inArray, ne, type SQL } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import { type OrgRequest, resolveOrgRequest } from '../org-request.ts'
+import { resolveEntityRequest, resolveOrgRequest, resolveVisibleList } from '../org-request.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import type { Db } from '../../db/connection.ts'
 import { hosting, ip, network } from '../../db/schema.ts'
@@ -43,8 +42,6 @@ export {
 
 import {
   assertCanCreateOr403,
-  assertCanManageOr403,
-  assertCanReadOr403,
   buildPatchUpdateFields,
   parseDescription,
   parseJsonbObject,
@@ -386,34 +383,6 @@ async function buildIpPatchFields(
   return patchFields
 }
 
-/**
- * The preamble of every `/ips/:id` handler: {@link resolveOrgRequest}, then
- * `404` unless the ip belongs to the request's organization, then the access
- * check, `read` for `ip` read, `manage` for `organization:manage` on it. Same
- * responses, same order as the handlers wrote inline.
- */
-async function resolveIpRequest(
-  c: Context<AppEnv>,
-  access: 'read' | 'manage'
-): Promise<(OrgRequest & { id: string }) | Response> {
-  const scope = await resolveOrgRequest(c)
-  if (scope instanceof Response) return scope
-
-  const id = c.req.param('id') ?? ''
-  const entityOrgId = await resolveEntityOrganizationId(scope.db, 'ip', id)
-  if (entityOrgId !== scope.organizationId) {
-    return c.json({ error: 'Not found' }, 404)
-  }
-
-  const denied =
-    access === 'read'
-      ? await assertCanReadOr403(c, 'ip', id)
-      : await assertCanOr403(c, 'organization:manage', 'ip', id)
-  if (denied) return denied
-
-  return { ...scope, id }
-}
-
 export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for ip routes')
@@ -424,18 +393,9 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/ips/:id', createSessionMiddleware(secrets))
 
   router.get('/ips', async (c) => {
-    const scope = await resolveOrgRequest(c)
+    const scope = await resolveVisibleList(c, 'ip')
     if (scope instanceof Response) return scope
-    const { db, session, organizationId } = scope
-
-    const manageDenied = await assertCanManageOr403(c, 'organization', organizationId)
-    if (manageDenied) return manageDenied
-
-    const visibleIds = await listVisible(db, {
-      kind: 'ip',
-      userId: session.userId,
-      organizationId,
-    })
+    const { db, organizationId, visibleIds } = scope
 
     if (visibleIds.length === 0) {
       return c.json({ ips: [] })
@@ -454,7 +414,7 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.get('/ips/:id', async (c) => {
-    const scope = await resolveIpRequest(c, 'read')
+    const scope = await resolveEntityRequest(c, 'ip', 'read')
     if (scope instanceof Response) return scope
     const { db, id } = scope
 
@@ -508,7 +468,7 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.patch('/ips/:id', async (c) => {
-    const scope = await resolveIpRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'ip', 'manage')
     if (scope instanceof Response) return scope
     const { db, session, organizationId, id } = scope
 
@@ -556,7 +516,7 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.delete('/ips/:id', async (c) => {
-    const scope = await resolveIpRequest(c, 'manage')
+    const scope = await resolveEntityRequest(c, 'ip', 'manage')
     if (scope instanceof Response) return scope
     const { db, session, organizationId, id } = scope
 
