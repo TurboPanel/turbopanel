@@ -1337,7 +1337,8 @@ async function runCertificateAndIngressSweeps(
     )
   // Tunnel tables, connectors, removals, token recheck and connector status:
   // the one list the self-hosted timer also runs (`features/tunnels/sweeps.ts`).
-  if (gates.tunnels)
+  // On its registry cadence, or at once while a removal, rotation or new portal needs it.
+  if (gates.tunnels && (gates.tunnelsUrgent || isDue('tunnelSweeps', scheduledTime, cadences)))
     await runTunnelSweeps(db, { commandQueue, ...tlsRenewal }, (label, sweep) =>
       runIsolatedSweep(signal, label, sweep)
     )

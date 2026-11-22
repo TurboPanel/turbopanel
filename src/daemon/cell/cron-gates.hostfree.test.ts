@@ -133,6 +133,7 @@ const IDLE_ROW = {
   httpCertificates: false,
   httpCertificatesActive: false,
   tunnels: false,
+  tunnelsUrgent: false,
   networkProbe: false,
   upgradeRunActive: false,
 }

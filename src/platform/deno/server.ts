@@ -1160,7 +1160,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     {
       name: 'tunnel sweeps',
       scope: 'shared',
-      due: (ctx) => !noopQueue && ctx.gates.tunnels,
+      due: (ctx) =>
+        !noopQueue && ctx.gates.tunnels && (ctx.gates.tunnelsUrgent || ctx.isDue('tunnelSweeps')),
       // Tunnel tables, connectors, removals, token recheck and connector
       // status: the hosted cron's list, each sweep on its own (never throws).
       run: async (ctx) => {

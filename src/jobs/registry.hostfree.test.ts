@@ -107,6 +107,14 @@ test('isDue honours an override together with the job offset', () => {
   assertEquals(dueMinutes('daemonNonces', resolved.table), [9])
 })
 
+test('the tunnel sweeps default to every 5 minutes and run once per window', () => {
+  assertEquals(CRON_CADENCES.tunnelSweeps.everyMinutes, 5)
+  assertEquals(dueMinutes('tunnelSweeps').length, 288)
+  const stretched = resolveJobCadences('{"tunnelSweeps": 15}')
+  assertEquals(stretched.warnings, [])
+  assertEquals(dueMinutes('tunnelSweeps', stretched.table).length, 96)
+})
+
 test('a tick with no scheduled time runs every job', () => {
   for (const job of Object.keys(CRON_CADENCES) as CronJob[])
     assertEquals(isDue(job, undefined), true)
