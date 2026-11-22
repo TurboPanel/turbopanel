@@ -5095,6 +5095,33 @@ describe('signed daemon session', () => {
       daemon.ws.close(1000, 'test done')
     })
 
+    it('caps the audit lookups for unknown sids per daemon connection', async () => {
+      const serverId = 'test-srv-shell-late-cap'
+      const daemon = await signedDaemon(serverId)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        for (let n = 0; n < 22; n++) {
+          await daemon.report({
+            type: 'shell-closed',
+            sid: `33333333-2222-4333-8444-${String(n).padStart(12, '0')}`,
+            reason: 'exit',
+            durationMs: 1,
+            bytesIn: 0,
+            bytesOut: 0,
+          })
+        }
+        await vi.waitFor(() => {
+          const dropped = warn.mock.calls.filter((call) =>
+            String(call[0]).includes('shell-late-close-dropped')
+          )
+          expect(dropped).toHaveLength(2)
+        })
+      } finally {
+        warn.mockRestore()
+      }
+      daemon.ws.close(1000, 'test done')
+    })
+
     it('refuses a bad sid, and opens only against a signed daemon', async () => {
       const stub = env.DAEMON_CELL.getByName('test-srv-shell-refuse')
       expect((await browserUpgrade(stub, 'not-a-sid')).status).toBe(400)

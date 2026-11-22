@@ -82,6 +82,17 @@ export const SHELL_DAEMON_BUDGET = {
   maxBytes: 128 * 1024 * 1024,
 } as const
 
+/**
+ * Lookups of the audit trail for a sid nobody here remembers, per daemon
+ * connection. A well-behaved daemon sends one for a session that outlived a
+ * deploy or eviction; a flood of them is dropped and logged.
+ */
+export const SHELL_LATE_CLOSE_BUDGET = {
+  windowMs: 60_000,
+  maxMessages: 20,
+  maxBytes: Number.MAX_SAFE_INTEGER,
+} as const
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export function isShellSid(value: unknown): value is string {

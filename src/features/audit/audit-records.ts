@@ -19,7 +19,7 @@
  */
 import { and, desc, eq, gt, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { audit } from '../../db/schema.ts'
+import { audit, server } from '../../db/schema.ts'
 import { logWarn } from '../../lib/logger.ts'
 
 /**
@@ -293,14 +293,23 @@ const TERMINAL_OPEN_LOOKBACK_HOURS = 12
 /**
  * The open row of one terminal session on one server, by sid, for a daemon
  * report that arrives when the control plane no longer remembers the session.
- * The sid is a random UUID the control plane minted; the server id keeps one
- * daemon from closing another server's session. Null when there is no such row.
+ * The sid is a random UUID the control plane minted; the server id and its
+ * organization keep one daemon from closing another server's session and keep
+ * the scan on the organization's audit index. Null when there is no such row.
  */
 export async function findTerminalOpenAudit(
   db: Db,
   serverId: string,
   sid: string
 ): Promise<TerminalOpenAudit | null> {
+  // The server's organization narrows the scan to idx_audit_organization_recent;
+  // a server with no organization never opened a terminal.
+  const [owner] = await db
+    .select({ organizationId: server.organizationId })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  if (!owner?.organizationId) return null
   const since = sql`now() - make_interval(hours => ${TERMINAL_OPEN_LOOKBACK_HOURS})`
   const rows = await db
     .select({
@@ -312,6 +321,7 @@ export async function findTerminalOpenAudit(
     .from(audit)
     .where(
       and(
+        eq(audit.organizationId, owner.organizationId),
         eq(audit.targetId, serverId),
         gt(audit.createdAt, since),
         sql`${audit.context}->>'sid' = ${sid}`,

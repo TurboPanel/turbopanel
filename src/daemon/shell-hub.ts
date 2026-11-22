@@ -33,6 +33,7 @@ import {
   SHELL_DIR_TO_BROWSER,
   SHELL_DIR_TO_DAEMON,
   SHELL_ENDED_TTL_MS,
+  SHELL_LATE_CLOSE_BUDGET,
   SHELL_PENDING_TTL_MS,
   ShellBudget,
   type PendingShellOpen,
@@ -98,6 +99,9 @@ export class ShellHub {
     this.#now = options.nowMs ?? Date.now
   }
 
+  /** Lookups of unknown-sid closes per daemon connection (see `SHELL_LATE_CLOSE_BUDGET`). */
+  readonly #lateCloseBudgets = new Map<string, ShellBudget>()
+
   attachDaemon(serverId: string, link: HubDaemonLink): void {
     this.#daemons.set(serverId, link)
   }
@@ -105,6 +109,7 @@ export class ShellHub {
   /** The daemon connection closed: its sessions are gone with it. */
   async detachDaemon(serverId: string, connectionId: string): Promise<void> {
     if (this.#daemons.get(serverId)?.connectionId === connectionId) this.#daemons.delete(serverId)
+    this.#lateCloseBudgets.delete(connectionId)
     const lost = { reason: 'daemon-restart', confirmed: false } as const
     const finishes: Promise<void>[] = []
     for (const open of this.#pending.list(this.#now())) {
@@ -419,7 +424,7 @@ export class ShellHub {
     const ended = this.#ended.get(message.sid)
     const meta = live?.meta ?? (pending ? this.#metaOf(pending) : (ended?.meta ?? null))
     if (!meta) {
-      if (message.type !== 'shell-opened') await this.#closeUnknown(serverId, message)
+      if (message.type !== 'shell-opened') await this.#closeUnknown(serverId, connectionId, message)
       return true
     }
     if (meta.serverId !== serverId || meta.daemonConnectionId !== connectionId) return true
@@ -501,7 +506,7 @@ export class ShellHub {
       try {
         await daemon.send({ type: 'shell-kill', sid: open.sid, reason: killReason })
       } catch {
-        // The daemon's own pending timeout ends it; the row is written either way.
+        // The daemon has no pending timeout of its own; the row is written either way.
       }
     }
     await this.#finish(meta, { reason: closeReason, confirmed: false })
@@ -510,10 +515,20 @@ export class ShellHub {
   /** A close report for a sid this hub no longer knows: close its open row, once. */
   async #closeUnknown(
     serverId: string,
+    connectionId: string,
     report: Exclude<ShellReport, { type: 'shell-opened' }>
   ): Promise<void> {
     const db = this.#db
     if (!db || !isShellSid(report.sid)) return
+    let budget = this.#lateCloseBudgets.get(connectionId)
+    if (!budget) {
+      budget = new ShellBudget(SHELL_LATE_CLOSE_BUDGET)
+      this.#lateCloseBudgets.set(connectionId, budget)
+    }
+    if (!budget.take(0, this.#now())) {
+      console.warn(`shell-hub event=late-close-dropped serverId=${serverId} conn=${connectionId}`)
+      return
+    }
     const open = await findTerminalOpenAudit(db, serverId, report.sid)
     if (!open || open.closed) return
     await recordAudit(

@@ -7,6 +7,7 @@ import {
   SHELL_DIR_TO_BROWSER,
   SHELL_EARLY_MAX_FRAMES,
   SHELL_FRAME_OVERHEAD_BYTES,
+  SHELL_LATE_CLOSE_BUDGET,
   SHELL_PENDING_TTL_MS,
 } from '../contracts/shell-relay.ts'
 import type { Db } from '../db/connection.ts'
@@ -33,13 +34,16 @@ function fakeDb(existing: Row[] = []): { db: Db; rows: Row[] } {
     select: () => ({
       from: () => ({
         where: () =>
-          Promise.resolve(
-            existing.map((row) => ({
-              action: row.action,
-              organizationId: 'org-1',
-              actorUserId: 'user-1',
-              context: row.context,
-            }))
+          Object.assign(
+            Promise.resolve(
+              existing.map((row) => ({
+                action: row.action,
+                organizationId: 'org-1',
+                actorUserId: 'user-1',
+                context: row.context,
+              }))
+            ),
+            { limit: () => Promise.resolve([{ organizationId: 'org-1' }]) }
           ),
       }),
     }),
@@ -218,6 +222,44 @@ test('a late shell-closed for an unknown sid closes the open audit row once', as
   // Unsigned reports are ignored.
   await hub.onDaemonReport(SERVER, CONN, closed, 'unsigned')
   assertEquals(rows.length, 1)
+})
+
+test('unknown-sid close lookups are capped per daemon connection', async () => {
+  const { hub, rows } = setup([
+    {
+      action: 'server.terminal.open',
+      targetId: SERVER,
+      context: { sid: SID, kind: 'container', containerId: 'abc123', loginUser: '' },
+    },
+  ])
+  const closed = (sid: string): DaemonMessage => ({
+    type: 'shell-closed',
+    sid,
+    reason: 'exit',
+    durationMs: 5,
+    bytesIn: 1,
+    bytesOut: 2,
+    at: 'x',
+  })
+  const other = (n: number) => `22222222-2222-4333-8444-${n.toString().padStart(12, '0')}`
+  // The allowance is spent first; a late close past it is dropped, not looked up.
+  for (let n = 0; n < SHELL_LATE_CLOSE_BUDGET.maxMessages; n++) {
+    await hub.onDaemonReport(SERVER, CONN, closed(other(n)), 'verified')
+  }
+  const spent = rows.length
+  const warn = console.warn
+  const warned: string[] = []
+  console.warn = (...args: unknown[]) => void warned.push(args.join(' '))
+  try {
+    await hub.onDaemonReport(SERVER, CONN, closed(SID), 'verified')
+  } finally {
+    console.warn = warn
+  }
+  assertEquals(rows.length, spent)
+  assertEquals(warned.length, 1)
+  // A new connection has its own allowance.
+  await hub.onDaemonReport(SERVER, 'conn-2', closed(SID), 'verified')
+  assertEquals(rows.length, spent + 1)
 })
 
 test('replacing the daemon connection leaves a session on the old one ended, not the new one', async () => {

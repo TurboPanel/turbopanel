@@ -192,6 +192,7 @@ import {
   SHELL_BROWSER_BUDGET,
   SHELL_CLOSE,
   SHELL_DAEMON_BUDGET,
+  SHELL_LATE_CLOSE_BUDGET,
   SHELL_DIR_TO_BROWSER,
   SHELL_DIR_TO_DAEMON,
   SHELL_ENDED_TTL_MS,
@@ -680,6 +681,8 @@ export class DaemonCellObject {
   readonly #shellBudgets = new WeakMap<WebSocket, ShellBudget>()
   /** The daemon's output budget per session, so one runaway session closes only its own socket. */
   readonly #daemonShellBudgets = new Map<string, ShellBudget>()
+  /** Unknown-sid close lookups per daemon connection (in memory; hibernation resets it). */
+  readonly #lateCloseBudgets = new Map<string, ShellBudget>()
   /** Per-connection inbound message counters (in-memory; no timers). */
   readonly #inboundRate = new Map<string, { windowStartMs: number; count: number }>()
   readonly #inboundLimit: number
@@ -1166,7 +1169,7 @@ export class DaemonCellObject {
       try {
         await this.#sendToDaemon(daemon, { type: 'shell-kill', sid: open.sid, reason: killReason })
       } catch {
-        // The daemon's own pending timeout ends it; the row is written either way.
+        // The daemon has no pending timeout of its own; the row is written either way.
       }
     }
     await this.#finishShellSession(meta, { reason: closeReason, confirmed: false })
@@ -1418,10 +1421,21 @@ export class DaemonCellObject {
 
   /** A close report for a sid this cell no longer knows: close its open audit row, once. */
   async #closeAuditOfUnknownShell(
-    attachment: { serverId: string },
+    attachment: { serverId: string; connectionId: string },
     report: Exclude<ShellReport, { type: 'shell-opened' }>
   ): Promise<void> {
     if (!isShellSid(report.sid)) return
+    let budget = this.#lateCloseBudgets.get(attachment.connectionId)
+    if (!budget) {
+      budget = new ShellBudget(SHELL_LATE_CLOSE_BUDGET)
+      this.#lateCloseBudgets.set(attachment.connectionId, budget)
+    }
+    if (!budget.take(0, Date.now())) {
+      console.warn(
+        `daemon-cell event=shell-late-close-dropped serverId=${attachment.serverId} conn=${attachment.connectionId}`
+      )
+      return
+    }
     const detail = shellReportCloseDetail(report)
     await this.#withProjectionDb('shell-late-close', attachment.serverId, async (db) => {
       const open = await findTerminalOpenAudit(db, attachment.serverId, report.sid)
@@ -1458,6 +1472,7 @@ export class DaemonCellObject {
    * end as unconfirmed.
    */
   async #endShellSessionsOfConnection(connectionId: string): Promise<void> {
+    this.#lateCloseBudgets.delete(connectionId)
     const nowMs = Date.now()
     const lost = { reason: 'daemon-restart', confirmed: false } as const
     // Each finish claims its sid before its first await, so the ended-map pass
