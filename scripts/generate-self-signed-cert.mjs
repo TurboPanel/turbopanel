@@ -108,6 +108,16 @@ function fail(message) {
   process.exit(1)
 }
 
+/**
+ * Create the CA folder at 0750 when it is missing. Missing parents are made
+ * with the default mode; only the folder this script owns gets 0750.
+ */
+function ensureCaDir(dir) {
+  if (lstatOrNull(dir)) return
+  mkdirSync(path.dirname(dir), { recursive: true })
+  mkdirSync(dir, { mode: 0o750 })
+}
+
 function lstatOrNull(filePath) {
   try {
     return lstatSync(filePath)
@@ -206,15 +216,29 @@ function installFile(destPath, data, { secret = false, strict = false } = {}) {
 
 /** Mode 0640 on an existing key through its descriptor, never through a link. */
 function chmodKeyNoFollow(filePath) {
+  const before = lstatOrNull(filePath)
+  if (!before) return
+  if (before.isSymbolicLink() || !before.isFile()) {
+    fail(`${filePath} is a link or not a regular file; refusing to change its mode`)
+  }
   let fd
   try {
     fd = openSync(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW)
   } catch (err) {
-    if (err?.code === 'ENOENT') return
-    fail(`${filePath} is a link or cannot be opened without following links: ${err?.code ?? err}`)
+    fail(`${filePath} cannot be opened without following links: ${err?.code ?? err}`)
   }
   try {
-    if (!fstatSync(fd).isFile()) fail(`${filePath} is not a regular file`)
+    // O_NOFOLLOW is not relied on alone: the opened file must be the one that
+    // was looked at, with no second name (hard link) pointing at it.
+    const opened = fstatSync(fd)
+    if (
+      !opened.isFile() ||
+      opened.dev !== before.dev ||
+      opened.ino !== before.ino ||
+      opened.nlink !== 1
+    ) {
+      fail(`${filePath} changed underneath or has more than one name; refusing to change its mode`)
+    }
     fchmodSync(fd, KEY_MODE)
   } finally {
     closeSync(fd)
@@ -477,12 +501,12 @@ function writeCaBundle() {
   }
   const parts = [current]
   if (retired) parts.push(retired)
-  mkdirSync(path.dirname(caBundlePath), { recursive: true, mode: 0o750 })
+  ensureCaDir(path.dirname(caBundlePath))
   installFile(caBundlePath, `${parts.join('\n')}\n`, { strict: true })
 }
 
 function mintPlatformCa() {
-  mkdirSync(path.dirname(caCrtPath), { recursive: true, mode: 0o750 })
+  ensureCaDir(path.dirname(caCrtPath))
   console.log('generate-self-signed-cert: creating platform CA')
   const workKey = workFile('ca.key')
   const workCrt = workFile('ca.crt')
@@ -675,7 +699,7 @@ if (
 }
 
 mkdirSync(certsDir, { recursive: true })
-mkdirSync(path.dirname(caCrtPath), { recursive: true, mode: 0o750 })
+ensureCaDir(path.dirname(caCrtPath))
 
 if (existsSync(crtPath) || existsSync(keyPath)) {
   let reason = 'interface addresses or DNS names changed'

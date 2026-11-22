@@ -268,3 +268,70 @@ test('minting a CA does not write through a planted dangling ca.key link', async
     await Deno.remove(root, { recursive: true })
   }
 })
+
+async function runRotate(dirs: { stateDir: string; certsDir: string }) {
+  const out = await new Deno.Command('node', {
+    args: [script],
+    env: {
+      ...Deno.env.toObject(),
+      TURBOPANEL_STATE_DIR: dirs.stateDir,
+      TURBOPANEL_TLS_CERTS_DIR: dirs.certsDir,
+      TURBOPANEL_TLS_CA_ROTATE: '1',
+    },
+    stdout: 'piped',
+    stderr: 'piped',
+  }).output()
+  return {
+    success: out.success,
+    text: `${new TextDecoder().decode(out.stderr)}\n${new TextDecoder().decode(out.stdout)}`,
+  }
+}
+
+test('a CA rotation keeps the old root, lists the new one first and leaves regular files', async () => {
+  const { root, stateDir, certsDir } = await setupGeneratedCerts()
+  try {
+    const tlsDir = join(stateDir, 'tls')
+    const oldCrt = (await Deno.readTextFile(join(tlsDir, 'ca.crt'))).trim()
+    const run = await runRotate({ stateDir, certsDir })
+    assertEquals(run.success, true, run.text)
+
+    const newCrt = (await Deno.readTextFile(join(tlsDir, 'ca.crt'))).trim()
+    if (newCrt === oldCrt) throw new Error('expected a new CA certificate')
+    assertEquals((await Deno.readTextFile(join(tlsDir, 'ca-retired.pem'))).trim(), oldCrt)
+    assertEquals(
+      (await Deno.readTextFile(join(tlsDir, 'ca-bundle.pem'))).trim(),
+      `${newCrt}\n${oldCrt}`
+    )
+
+    for (const name of ['ca.key', 'ca.crt', 'ca-bundle.pem', 'ca-retired.pem']) {
+      assertEquals((await Deno.lstat(join(tlsDir, name))).isFile, true, name)
+    }
+    assertEquals(await mode(join(tlsDir, 'ca.key')), 0o640)
+    assertEquals(await mode(join(certsDir, 'self-signed.key')), 0o640)
+
+    const names: string[] = []
+    for await (const d of Deno.readDir(tlsDir)) names.push(d.name)
+    for await (const d of Deno.readDir(certsDir)) names.push(d.name)
+    assertEquals(
+      names.filter((n) => n.startsWith('.')),
+      []
+    )
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
+})
+
+test('a leaf key with a second hard link is refused and its mode is kept', async () => {
+  const { root, stateDir, certsDir } = await setupGeneratedCerts()
+  try {
+    const victim = await plantVictim(root)
+    const key = join(certsDir, 'self-signed.key')
+    await Deno.remove(key)
+    await Deno.link(victim, key)
+    const run = await runGenerator({ stateDir, certsDir })
+    assertEquals(run.success, false)
+    await assertVictimUntouched(victim)
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
+})
