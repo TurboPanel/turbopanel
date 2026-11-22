@@ -96,7 +96,9 @@ the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
   backlog of failing names cannot starve the rest. The hostings-only apply
   after a pin measures the edit time from before the save when the save left
   the server facts (options, `ipId`) alone, so it is not skipped as
-  `pending_changes`. The entry goes when the
+  `pending_changes`. A PATCH that also moves the whole-site `tlsId`
+  goes live without a deploy for the same reason (the server facts are
+  untouched); any other edit still waits for the next deploy. The entry goes when the
   name is pinned or leaves the choice. A compose-owned site is left alone.
 - The library "in use" read and the delete guard look at `hostname.tls_id`
   (`certificateIdsPinnedBy`, `notPinnedBySiteCondition`).

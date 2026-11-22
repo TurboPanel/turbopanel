@@ -324,17 +324,17 @@ export async function loadHostingNameReads(
   hostings: readonly HostingForNames[]
 ): Promise<Map<string, HostingNameRead[]>> {
   const ids = hostings.map((h) => h.id)
-  // One after another: a save answers with these reads, and a burst of five
-  // would hold five connections of the pool for a few small queries.
-  const stored = await loadNameCertificates(db, ids)
-  const reach = await loadReach(db, organizationId, ids)
-  const library = await loadLibraryRows(db, organizationId)
-  const acmeEnabled = await loadAcmeEnabled(db, organizationId)
-  const dnsGate = await loadDnsIssuance(
-    db,
-    organizationId,
-    hostings.map((h) => h.serviceId)
-  )
+  const [stored, reach, library, acmeEnabled, dnsGate] = await Promise.all([
+    loadNameCertificates(db, ids),
+    loadReach(db, organizationId, ids),
+    loadLibraryRows(db, organizationId),
+    loadAcmeEnabled(db, organizationId),
+    loadDnsIssuance(
+      db,
+      organizationId,
+      hostings.map((h) => h.serviceId)
+    ),
+  ])
   const out = new Map<string, HostingNameRead[]>()
   for (const row of hostings) {
     const options = parseHostingOptions(row.options)

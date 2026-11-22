@@ -109,6 +109,7 @@ async function sweepOriginCertificatesToo(
     apply?: HostingLetsEncryptSweepApply
     registry?: TunnelAdapterRegistry
     nameOriginHostingIds?: readonly string[]
+    originSweepOrganizationIds?: readonly string[]
   },
   sendPin: (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean>
 ): Promise<void> {
@@ -118,6 +119,9 @@ async function sweepOriginCertificatesToo(
     const done = await runOriginCertificateSweepTick(db, secrets, {
       ...(deps.now ? { now: deps.now() } : {}),
       ...(deps.registry ? { registry: deps.registry } : {}),
+      ...(deps.originSweepOrganizationIds
+        ? { onlyOrganizationIds: deps.originSweepOrganizationIds }
+        : {}),
     })
     await forEachSequential(done.repinned, async ({ hostingId, organizationId }) => {
       const [site] = await db
@@ -232,6 +236,8 @@ export async function runHostingLetsEncryptSweepTick(
     registry?: TunnelAdapterRegistry
     /** Test seam: the name-certificate retry looks only at these hostings. */
     nameOriginHostingIds?: readonly string[]
+    /** Test seam: the origin certificate renewal looks only at these organizations. */
+    originSweepOrganizationIds?: readonly string[]
   } = {}
 ): Promise<HostingLetsEncryptSweepResult> {
   const deadline = AbortSignal.timeout(deps.deadlineMs ?? HOSTING_LETS_ENCRYPT_SWEEP_DEADLINE_MS)
