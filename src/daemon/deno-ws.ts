@@ -1504,19 +1504,22 @@ export function registerDaemonWebSocket<E extends Env>(
           (await options.shellHub.onDaemonReport(payload.sub, connectionId, message, signature))
         )
 
+      /** The first frame opens the session; false when this frame ends here. */
+      const sessionReadyFor = async (raw: string, ws: WSContext<WebSocket>): Promise<boolean> => {
+        if (phase !== 'await-first-frame') return true
+        if (sessionOpening) {
+          await sessionOpening
+          return phase !== 'await-first-frame'
+        }
+        sessionOpening = openSession(raw, ws)
+        return await sessionOpening
+      }
+
       const handleInboundMessageBody = async (
         raw: string,
         ws: WSContext<WebSocket>
       ): Promise<void> => {
-        if (phase === 'await-first-frame') {
-          if (sessionOpening) {
-            await sessionOpening
-            if (phase === 'await-first-frame') return
-          } else {
-            sessionOpening = openSession(raw, ws)
-            if (!(await sessionOpening)) return
-          }
-        }
+        if (!(await sessionReadyFor(raw, ws))) return
         if (raw === DAEMON_CELL_PING) {
           await handlePingFrame(ws)
           return

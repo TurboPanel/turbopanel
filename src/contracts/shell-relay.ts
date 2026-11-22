@@ -89,7 +89,8 @@ export const SHELL_DAEMON_BUDGET = {
  */
 export const SHELL_LATE_CLOSE_BUDGET = {
   windowMs: 60_000,
-  maxMessages: 20,
+  // Twice the daemon's 16 sessions per server: a deploy can leave that many unknown at once.
+  maxMessages: 32,
   maxBytes: Number.MAX_SAFE_INTEGER,
 } as const
 

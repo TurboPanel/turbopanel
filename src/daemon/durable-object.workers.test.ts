@@ -5100,7 +5100,7 @@ describe('signed daemon session', () => {
       const daemon = await signedDaemon(serverId)
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
       try {
-        for (let n = 0; n < 22; n++) {
+        for (let n = 0; n < 34; n++) {
           await daemon.report({
             type: 'shell-closed',
             sid: `33333333-2222-4333-8444-${String(n).padStart(12, '0')}`,
