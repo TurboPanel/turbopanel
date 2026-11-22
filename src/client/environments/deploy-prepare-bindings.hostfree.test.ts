@@ -37,7 +37,10 @@ function boundManagedDb(chains: BoundManagedFixture[]): Db {
   } = {
     innerJoin: () => chain,
     where: (clause) => {
-      const asked = new Set(dialect.sqlToQuery(clause).params)
+      const query = dialect.sqlToQuery(clause)
+      // The ids must be bound to the binding's service column, not any column.
+      assertEquals(query.sql.includes('"binding"."service_id" in ('), true)
+      const asked = new Set(query.params)
       return Promise.resolve(chains.filter((row) => asked.has(row.serviceId)))
     },
   }

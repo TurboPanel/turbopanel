@@ -800,8 +800,8 @@ test('POST create retries a failed first apply in place and keeps the bindings',
       })
       const queuedBefore = commandQueue.envelopes.length
 
-      // A retry whose apply cannot be queued puts the row and the root
-      // password back and drops nothing.
+      // A retry whose apply cannot be queued puts the row back and drops
+      // nothing; the root password is never touched.
       const [before] = await db
         .select({ password: login.password })
         .from(login)
@@ -838,6 +838,69 @@ test('POST create retries a failed first apply in place and keeps the bindings',
         1
       )
 
+      const bindingCount = async () =>
+        (
+          await db
+            .select({ id: binding.id })
+            .from(binding)
+            .where(eq(binding.serviceId, consumer!.id))
+        ).length
+
+      // A throw after the row moved still puts it back as `failed`.
+      const originalInsert = db.insert
+      Object.assign(db, {
+        insert: () => {
+          throw new Error('boom')
+        },
+      })
+      const thrown = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      Object.assign(db, { insert: originalInsert })
+      assertEquals(thrown.status, 500)
+      const [afterThrow] = await db
+        .select({ status: managed.status, metadata: managed.metadata })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+      assertEquals(afterThrow!.status, 'failed')
+      assertEquals((afterThrow!.metadata as { error?: string }).error, 'compose up failed')
+      assertEquals(await bindingCount(), 1)
+
+      // A second POST while a retry holds the row (provisioning, fresh marker)
+      // is refused and must not read it as an abandoned create and delete it.
+      await db
+        .update(managed)
+        .set({
+          status: 'provisioning',
+          metadata: sql`${managed.metadata} || jsonb_build_object('retryStartedAt', now()::text)`,
+        })
+        .where(eq(managed.id, managedId))
+      const concurrent = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(concurrent.status, 409)
+      assertEquals(
+        (
+          await db
+            .select({ id: managed.id })
+            .from(managed)
+            .where(eq(managed.environmentId, environmentId))
+        ).length,
+        1
+      )
+      assertEquals(await bindingCount(), 1)
+      // Once the marker is stale the retry died: the row is retried in place.
+      await db
+        .update(managed)
+        .set({
+          metadata: sql`${managed.metadata} || jsonb_build_object('retryStartedAt', '2020-01-01T00:00:00.000Z')`,
+        })
+        .where(eq(managed.id, managedId))
+
       const retry = await app.request(`/environments/${environmentId}/managed`, {
         method: 'POST',
         headers,
@@ -850,7 +913,7 @@ test('POST create retries a failed first apply in place and keeps the bindings',
         managed: { id: string }
       }
       assertEquals(retryBody.alreadyProvisioned, undefined)
-      assertEquals(typeof retryBody.rootPassword, 'string')
+      assertEquals(retryBody.rootPassword, undefined)
       // Same row: nothing was deleted, so the binding survives.
       assertEquals(retryBody.managed.id, managedId)
       const rows = await db
@@ -861,11 +924,12 @@ test('POST create retries a failed first apply in place and keeps the bindings',
       assertEquals(rows[0]!.id, managedId)
       assertEquals(rows[0]!.status, 'applying')
       assertEquals((rows[0]!.metadata as { error?: string }).error, undefined)
-      const bindings = await db
-        .select({ id: binding.id })
-        .from(binding)
-        .where(eq(binding.serviceId, consumer!.id))
-      assertEquals(bindings.length, 1)
+      assertEquals(await bindingCount(), 1)
+      const [finalLogin] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      assertEquals(finalLogin!.password, before!.password)
       const queued = commandQueue.envelopes.slice(queuedBefore)
       assertEquals(queued[0]?.type, 'managed.apply')
     }

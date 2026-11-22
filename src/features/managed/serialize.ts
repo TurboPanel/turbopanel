@@ -44,6 +44,30 @@ export function isManagedNeverProvisioned(row: {
   return parseManagedResidual(row.metadata).host === undefined
 }
 
+/** How long a retry that started in place counts as still running. */
+export const MANAGED_RETRY_WINDOW_MS = 10 * 60 * 1000
+
+/**
+ * A retry in place marks the row it moves back to `provisioning` with
+ * `metadata.retryStartedAt`. `running` while the marker is fresh (the row must
+ * not be treated as an abandoned create); `stale` once it has outlived the
+ * window (the retry died, so the row can be retried again); `null` otherwise.
+ */
+export function managedRetryState(
+  row: { status: string | null; metadata: unknown },
+  now: number
+): 'running' | 'stale' | null {
+  if (row.status !== 'provisioning') return null
+  const marker =
+    typeof row.metadata === 'object' && row.metadata !== null
+      ? (row.metadata as Record<string, unknown>).retryStartedAt
+      : undefined
+  if (typeof marker !== 'string') return null
+  const started = Date.parse(marker)
+  if (Number.isNaN(started)) return 'stale'
+  return now - started < MANAGED_RETRY_WINDOW_MS ? 'running' : 'stale'
+}
+
 export function serializeManagedRow(
   row: {
     id: string
