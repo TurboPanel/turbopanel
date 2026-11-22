@@ -1,4 +1,3 @@
-Task check:types sh scripts/check-types.sh
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
