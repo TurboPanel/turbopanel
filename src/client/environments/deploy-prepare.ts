@@ -304,6 +304,7 @@ import {
   resolveDbRefsForService,
 } from '../../features/bindings/db-refs.ts'
 import {
+  hasUnprovisionedBoundManaged,
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
 } from '../../features/bindings/materialize.ts'
@@ -2619,13 +2620,22 @@ function absorbBindingOutcome(
  * Re-materialize service bindings and classify the outcome so the caller
  * stays a flat sequence of early returns / warning pushes.
  */
-async function resolveBindingMaterializationOutcome(
+export async function resolveBindingMaterializationOutcome(
   db: Db,
   dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined,
   serviceIds: string[],
   mode: DeployPrepareMode,
   deliveries?: ReadonlyMap<string, BindingDelivery>
 ): Promise<BindingMaterializationOutcome> {
+  // Same predicate the create route uses to retry a failed first apply: a
+  // cluster that never finished provisioning has no endpoint to bind to.
+  if (await hasUnprovisionedBoundManaged(db, serviceIds)) {
+    const error: DeployPrepareError = { kind: 'binding_endpoint_unavailable' }
+    return mode === 'preview'
+      ? { kind: 'warn', warning: warningFromPrepareError(error) }
+      : { kind: 'error', error }
+  }
+
   if (!dataEncryptionSecrets) return { kind: 'ok' }
 
   const bindResult = await materializeBindingsForServices(

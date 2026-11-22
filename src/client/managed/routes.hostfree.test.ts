@@ -1214,6 +1214,66 @@ test('POST create returns alreadyProvisioned for a finished row', async () => {
   assertEquals(body.alreadyProvisioned, true)
 })
 
+test('POST create keeps a failed row that once reported an address as already provisioned', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [
+        managedRow({
+          status: 'failed',
+          metadata: { rootLoginId: LOGIN_ID, host: 'db.example.net', port: 5432 },
+        }),
+      ],
+    }),
+  })
+  const res = await app.request(envPath(), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assertEquals(res.status, 200)
+  assertEquals((await jsonOf(res)).alreadyProvisioned, true)
+})
+
+test('POST create retries a failed first apply in place: never deletes the row or its bindings', async () => {
+  const deleted: unknown[] = []
+  const updated: unknown[] = []
+  const base = fakeDb({
+    managedRows: [
+      managedRow({
+        status: 'failed',
+        serverId: null,
+        metadata: { rootLoginId: LOGIN_ID, error: 'managed.apply compose up failed' },
+      }),
+    ],
+    loginRows: [loginRow({ role: 'root' })],
+    envRows: [envRow({ serverId: null })],
+  })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deleted.push(table)
+      return base.delete(table as never)
+    },
+    update: (table: unknown) => {
+      updated.push(table)
+      return base.update(table as never)
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db })
+  // No placement to retry on: refused before anything is touched.
+  await expectJson(
+    await app.request(envPath(), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    409,
+    { error: 'server_placement_required' }
+  )
+  assertEquals(deleted, [])
+  assertEquals(updated.includes(managed), false)
+})
+
 test('POST create clears a provisioning row then requires placement', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({

@@ -756,6 +756,186 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
   )
 })
 
+test('POST create retries a failed first apply in place and keeps the bindings', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const managedId = created.managed.id
+      await db
+        .update(managed)
+        .set({
+          status: 'failed',
+          metadata: sql`${managed.metadata} || '{"error":"compose up failed"}'::jsonb`,
+        })
+        .where(eq(managed.id, managedId))
+
+      const [consumer] = await db
+        .insert(service)
+        .values({ environmentId, name: 'app', composeServiceName: 'app' })
+        .returning({ id: service.id })
+      const [rootRow] = await db
+        .select({ id: login.id })
+        .from(login)
+        .where(and(eq(login.managedId, managedId), eq(login.role, 'root')))
+        .limit(1)
+      await db.insert(binding).values({
+        loginId: rootRow!.id,
+        serviceId: consumer!.id,
+        databaseId: await databaseIdByName(db, managedId, 'defaultdb'),
+        keyPrefix: 'DATABASE',
+        isEmitEngineDefaults: true,
+      })
+      const queuedBefore = commandQueue.envelopes.length
+
+      // A retry whose apply cannot be queued puts the row back and drops
+      // nothing; the root password is never touched.
+      const [before] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      const enqueue = commandQueue.enqueue
+      commandQueue.enqueue = () => {
+        throw new Error('queue unavailable')
+      }
+      const refused = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      commandQueue.enqueue = enqueue
+      assertEquals(refused.status, 503)
+      const [restored] = await db
+        .select({ status: managed.status, metadata: managed.metadata })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+      assertEquals(restored!.status, 'failed')
+      assertEquals((restored!.metadata as { error?: string }).error, 'compose up failed')
+      const [after] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      assertEquals(after!.password, before!.password)
+      assertEquals(
+        (
+          await db
+            .select({ id: binding.id })
+            .from(binding)
+            .where(eq(binding.serviceId, consumer!.id))
+        ).length,
+        1
+      )
+
+      const bindingCount = async () =>
+        (
+          await db
+            .select({ id: binding.id })
+            .from(binding)
+            .where(eq(binding.serviceId, consumer!.id))
+        ).length
+
+      // A throw after the row moved still puts it back as `failed`.
+      const originalInsert = db.insert
+      Object.assign(db, {
+        insert: () => {
+          throw new Error('boom')
+        },
+      })
+      const thrown = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      Object.assign(db, { insert: originalInsert })
+      assertEquals(thrown.status, 500)
+      const [afterThrow] = await db
+        .select({ status: managed.status, metadata: managed.metadata })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+      assertEquals(afterThrow!.status, 'failed')
+      assertEquals((afterThrow!.metadata as { error?: string }).error, 'compose up failed')
+      assertEquals(await bindingCount(), 1)
+
+      // A second POST while a retry holds the row (provisioning, fresh marker)
+      // is refused and must not read it as an abandoned create and delete it.
+      await db
+        .update(managed)
+        .set({
+          status: 'provisioning',
+          metadata: sql`${managed.metadata} || jsonb_build_object('retryStartedAt', now()::text)`,
+        })
+        .where(eq(managed.id, managedId))
+      const concurrent = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(concurrent.status, 409)
+      assertEquals(
+        (
+          await db
+            .select({ id: managed.id })
+            .from(managed)
+            .where(eq(managed.environmentId, environmentId))
+        ).length,
+        1
+      )
+      assertEquals(await bindingCount(), 1)
+      // Once the marker is stale the retry died: the row is retried in place.
+      await db
+        .update(managed)
+        .set({
+          metadata: sql`${managed.metadata} || jsonb_build_object('retryStartedAt', '2020-01-01T00:00:00.000Z')`,
+        })
+        .where(eq(managed.id, managedId))
+
+      const retry = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(retry.status, 200)
+      const retryBody = (await retry.json()) as {
+        alreadyProvisioned?: boolean
+        rootPassword?: string
+        managed: { id: string }
+      }
+      assertEquals(retryBody.alreadyProvisioned, undefined)
+      assertEquals(retryBody.rootPassword, undefined)
+      // Same row: nothing was deleted, so the binding survives.
+      assertEquals(retryBody.managed.id, managedId)
+      const rows = await db
+        .select({ id: managed.id, status: managed.status, metadata: managed.metadata })
+        .from(managed)
+        .where(eq(managed.environmentId, environmentId))
+      assertEquals(rows.length, 1)
+      assertEquals(rows[0]!.id, managedId)
+      assertEquals(rows[0]!.status, 'applying')
+      assertEquals((rows[0]!.metadata as { error?: string }).error, undefined)
+      assertEquals(await bindingCount(), 1)
+      const [finalLogin] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      assertEquals(finalLogin!.password, before!.password)
+      const queued = commandQueue.envelopes.slice(queuedBefore)
+      assertEquals(queued[0]?.type, 'managed.apply')
+    }
+  )
+})
+
 test('PATCH rejects denylisted dockerOptions and does not enqueue', async () => {
   await withManagedFixtures(
     {},
