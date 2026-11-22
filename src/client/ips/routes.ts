@@ -1,4 +1,4 @@
-import { and, eq, inArray, type SQL } from 'drizzle-orm'
+import { and, eq, inArray, ne, type SQL } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -178,25 +178,64 @@ function memberPinOf(row: {
   return { datacenterId: row.datacenterId, serverId: row.serverId }
 }
 
+type MemberPin = { datacenterId: string; serverId: string }
+
 /**
- * A datacenter member pin is what makes a server a member of that datacenter,
- * so removing it, or moving it to another server or datacenter, ends the
- * membership exactly like `DELETE /datacenters/:id/members/:serverId`: the
- * same 409 `lan_pair_in_use` refusal applies. Null when the row is not a
- * member pin, keeps its datacenter and server, or the change is fine.
+ * Whether a different pin still holds this server in this datacenter. A server
+ * may hold several pins in one datacenter (dual-stack, multi-subnet), so
+ * dropping or moving one of them does not end the membership while another stays.
  */
-async function refuseMemberPinLeave(
-  c: Context,
+async function otherMemberPinExists(
   db: Db,
   organizationId: string,
+  member: MemberPin,
+  excludeId: string
+): Promise<boolean> {
+  const [row] = await db
+    .select({ id: ip.id })
+    .from(ip)
+    .where(
+      and(
+        eq(ip.organizationId, organizationId),
+        eq(ip.scope, 'datacenter'),
+        eq(ip.serverId, member.serverId),
+        eq(ip.datacenterId, member.datacenterId),
+        ne(ip.id, excludeId)
+      )
+    )
+    .limit(1)
+  return row !== undefined
+}
+
+/**
+ * A datacenter member pin is what makes a server a member of that datacenter,
+ * so removing its last pin, or moving it to another server or datacenter, ends
+ * the membership exactly like `DELETE /datacenters/:id/members/:serverId`: the
+ * same 409 `lan_pair_in_use` refusal applies. `left` is the membership the
+ * change ends, null when the row is not a member pin, keeps its datacenter and
+ * server, or another pin of that server in that datacenter remains.
+ */
+async function findMemberPinLeave(
+  db: Db,
+  organizationId: string,
+  id: string,
   existing: Pick<ExistingIpScope, 'scope' | 'serverId' | 'datacenterId'>,
   after: Pick<IpScopeFks, 'serverId' | 'datacenterId'> | null
-): Promise<Response | null> {
+): Promise<MemberPin | null> {
   const member = memberPinOf(existing)
   if (!member) return null
   if (after && after.serverId === member.serverId && after.datacenterId === member.datacenterId) {
     return null
   }
+  return (await otherMemberPinExists(db, organizationId, member, id)) ? null : member
+}
+
+async function refuseMemberPinLeave(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  member: MemberPin
+): Promise<Response | null> {
   const refusal = await findLanPairChangeRefusal(db, {
     organizationId,
     change: { kind: 'leave_datacenter', ...member },
@@ -507,15 +546,22 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     if (patchFields instanceof Response) return patchFields
 
     const after = mergeIpScopeFks(existingIp, patchFields)
-    const leaveDenied = await refuseMemberPinLeave(c, db, organizationId, existingIp, after)
-    if (leaveDenied) return leaveDenied
+    const left = await findMemberPinLeave(db, organizationId, id, existingIp, after)
+    if (left) {
+      const leaveDenied = await refuseMemberPinLeave(c, db, organizationId, left)
+      if (leaveDenied) return leaveDenied
+    }
+    const next = memberPinOf({ scope: existingIp.scope, ...after })
+    const before = memberPinOf(existingIp)
+    const joined =
+      next !== null &&
+      (next.datacenterId !== before?.datacenterId || next.serverId !== before?.serverId) &&
+      !(await otherMemberPinExists(db, organizationId, next, id))
 
     await db.update(ip).set(patchFields).where(eq(ip.id, id))
 
-    const before = memberPinOf(existingIp)
-    const next = memberPinOf({ scope: existingIp.scope, ...after })
-    if (before?.datacenterId !== next?.datacenterId || before?.serverId !== next?.serverId) {
-      if (before) await pruneClientAddressesWithoutPin(db, [before.serverId])
+    if (left || joined) {
+      if (left) await pruneClientAddressesWithoutPin(db, [left.serverId])
       await fanOutDatacenterMembershipChange(c, db, organizationId, session.userId)
       nudgeTunnelRoutesAfterResponse(c, organizationId)
     }
@@ -563,14 +609,16 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       .limit(1)
     if (!existingIp) return c.json({ error: 'Not found' }, 404)
 
-    const leaveDenied = await refuseMemberPinLeave(c, db, organizationId, existingIp, null)
-    if (leaveDenied) return leaveDenied
+    const left = await findMemberPinLeave(db, organizationId, id, existingIp, null)
+    if (left) {
+      const leaveDenied = await refuseMemberPinLeave(c, db, organizationId, left)
+      if (leaveDenied) return leaveDenied
+    }
 
     await db.delete(ip).where(eq(ip.id, id))
 
-    const member = memberPinOf(existingIp)
-    if (member) {
-      await pruneClientAddressesWithoutPin(db, [member.serverId])
+    if (left) {
+      await pruneClientAddressesWithoutPin(db, [left.serverId])
       await fanOutDatacenterMembershipChange(c, db, organizationId, session.userId)
       nudgeTunnelRoutesAfterResponse(c, organizationId)
     }

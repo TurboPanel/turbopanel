@@ -23,6 +23,7 @@ import {
   fabric,
   grant,
   ip,
+  clientAddress,
   managed,
   managedDatabase,
   network,
@@ -2611,6 +2612,154 @@ test('deleting a member pin through /ips is allowed while TurboFabric runs', asy
         .from(ip)
         .where(eq(ip.datacenterId, seeded.datacenterId))
       assertEquals(pins.length, 1)
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+async function memberPinFixture(
+  db: ReturnType<typeof createDenoDb>,
+  seeded: { datacenterId: string; serverIds: string[] }
+) {
+  const [pin] = await db
+    .select({ id: ip.id, networkId: ip.networkId })
+    .from(ip)
+    .where(and(eq(ip.datacenterId, seeded.datacenterId), eq(ip.serverId, seeded.serverIds[1]!)))
+  return pin!
+}
+
+test('deleting one of two pins a server holds in a datacenter is allowed; deleting the last is refused', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, false)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = { cookie, [ORG_ID_HEADER]: organizationId }
+      const first = await memberPinFixture(db, seeded)
+      const [second] = await db
+        .insert(ip)
+        .values({
+          organizationId,
+          datacenterId: seeded.datacenterId,
+          networkId: first.networkId,
+          serverId: seeded.serverIds[1]!,
+          address: '10.0.0.9',
+          allocation: 'dedicated',
+          scope: 'datacenter',
+        })
+        .returning({ id: ip.id })
+
+      const dropFirst = await app.request(`/ips/${first.id}`, { method: 'DELETE', headers })
+      assertEquals(dropFirst.status, 200)
+      const remaining = await db
+        .select({ id: ip.id })
+        .from(ip)
+        .where(and(eq(ip.datacenterId, seeded.datacenterId), eq(ip.serverId, seeded.serverIds[1]!)))
+      assertEquals(
+        remaining.map((row) => row.id),
+        [second!.id]
+      )
+
+      const dropLast = await app.request(`/ips/${second!.id}`, { method: 'DELETE', headers })
+      assertEquals(dropLast.status, 409)
+      assertEquals(((await dropLast.json()) as { error: string }).error, 'lan_pair_in_use')
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+test('moving a member pin to another server is allowed while TurboFabric runs and prunes the old server addresses', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, true)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      }
+      const pin = await memberPinFixture(db, seeded)
+      const [third] = await db
+        .insert(server)
+        .values({ organizationId, name: 'lan-three', containerPrefix: '10.194.0.0/16' })
+        .returning({ id: server.id })
+      await db.insert(clientAddress).values({
+        organizationId,
+        serverId: seeded.serverIds[1]!,
+        datacenterId: seeded.datacenterId,
+        scope: 'datacenter',
+        hostname: 'old-member.example.net',
+      })
+
+      const move = await app.request(`/ips/${pin.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ serverId: third!.id }),
+      })
+      assertEquals(move.status, 200)
+      const [moved] = await db.select({ serverId: ip.serverId }).from(ip).where(eq(ip.id, pin.id))
+      assertEquals(moved?.serverId, third!.id)
+      const addresses = await db
+        .select({ id: clientAddress.id })
+        .from(clientAddress)
+        .where(eq(clientAddress.serverId, seeded.serverIds[1]!))
+      assertEquals(addresses.length, 0)
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+test('moving a member pin to another datacenter is allowed while TurboFabric runs', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, true)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      }
+      const pin = await memberPinFixture(db, seeded)
+      const [otherDc] = await db
+        .insert(datacenter)
+        .values({ organizationId, name: 'Second DC', addressPreference: 'ipv4', isTrusted: true })
+        .returning({ id: datacenter.id })
+      const [otherNet] = await db
+        .insert(network)
+        .values({
+          organizationId,
+          datacenterId: otherDc!.id,
+          kind: 'datacenter',
+          cidr: '10.0.0.0/16',
+          name: 'Second DC LAN',
+        })
+        .returning({ id: network.id })
+      await db.insert(clientAddress).values({
+        organizationId,
+        serverId: seeded.serverIds[1]!,
+        datacenterId: seeded.datacenterId,
+        scope: 'datacenter',
+        hostname: 'old-dc.example.net',
+      })
+
+      const move = await app.request(`/ips/${pin.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ datacenterId: otherDc!.id, networkId: otherNet!.id }),
+      })
+      assertEquals(move.status, 200)
+      const [moved] = await db
+        .select({ datacenterId: ip.datacenterId, networkId: ip.networkId })
+        .from(ip)
+        .where(eq(ip.id, pin.id))
+      assertEquals(moved, { datacenterId: otherDc!.id, networkId: otherNet!.id })
+      const addresses = await db
+        .select({ id: clientAddress.id })
+        .from(clientAddress)
+        .where(eq(clientAddress.serverId, seeded.serverIds[1]!))
+      assertEquals(addresses.length, 0)
     } finally {
       await dropLanOnlyNetwork(db, seeded)
     }

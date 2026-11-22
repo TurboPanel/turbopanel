@@ -3,7 +3,7 @@ import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
-import { type LanPairRefusal } from '../../features/fabric/lan-pair-guard.ts'
+import type { LanPairRefusal } from '../../features/fabric/lan-pair-guard.ts'
 import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 

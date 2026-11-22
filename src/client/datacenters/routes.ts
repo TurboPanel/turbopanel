@@ -35,11 +35,7 @@ import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { fanOutDatacenterRoutingChange } from './routing-fanout.ts'
 import { fanOutDatacenterMembershipChange, lanPairRefusalResponse } from './membership-fanout.ts'
-import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
-import {
-  findLanPairChangeRefusal,
-  type LanPairRefusal,
-} from '../../features/fabric/lan-pair-guard.ts'
+import { findLanPairChangeRefusal } from '../../features/fabric/lan-pair-guard.ts'
 import { runNetworkCheck } from './network-check-run.ts'
 import { chosenNetworkDownWarnings } from '../../features/net/server-network-check.ts'
 import { suggestDatacenterNames } from '../../features/datacenters/datacenter-name-suggestions.ts'
