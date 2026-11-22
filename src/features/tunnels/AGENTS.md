@@ -626,8 +626,9 @@ web server skips certificate verification (`noTLSVerify: true`; the connector
 still sends the hostname as the origin server name). A name is verified
 (`noTLSVerify: false`, set by `buildIngress(hostnames, verifiedNames)`) only when
 all of these hold (`verified-names.ts`, pure rule `nameIsVerified`): its pin is a
-provider origin certificate or a ready public Let's Encrypt pair, the certificate
-covers the name, and a successful deploy carried it (every deployment of the
+ready, unexpired public Let's Encrypt pair (a provider origin certificate is not:
+the connector does not trust the provider's origin CA, and verifying one needs
+`caPool`, a later step), the certificate covers the name, and a successful deploy carried it (every deployment of the
 site's environment is `applied` and was queued after the pin last changed). Every
 other name keeps skipping verification, so one site that is not ready never makes
 its neighbours unreachable. The pin of a name is `hostname.tlsId` when its

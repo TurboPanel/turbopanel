@@ -4,8 +4,10 @@
  * every other name keeps skipping verification so one site that is not ready
  * never makes its neighbours unreachable.
  *
- * 1. The name's pin is a provider origin certificate, or a ready public Let's
- *    Encrypt pair (a name with no pin, or one pinned to anything else, is not).
+ * 1. The name's pin is a ready, unexpired, publicly trusted pair (Let's
+ *    Encrypt). A provider origin certificate is not: the connector cannot
+ *    verify one without `caPool`, which is a later step. A name with no pin,
+ *    or one pinned to anything else, is not verified.
  * 2. The certificate covers the name.
  * 3. A successful deploy carried it: every deployment of the site's
  *    environment is `applied`, and each one was queued after the pin (and the
@@ -27,11 +29,6 @@ import {
 } from '../../db/schema.ts'
 import { compareText } from './order.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
-import {
-  certificateCoversAll,
-  originCertificateIsDue,
-  readProviderOrigin,
-} from './origin-certificate.ts'
 
 export type PinFacts = {
   source: string
@@ -78,16 +75,6 @@ function isPanelOrderedLibraryPair(pin: PinFacts): boolean {
 }
 
 function pinCoversAndIsPublic(pin: PinFacts, name: string, now: Date): boolean {
-  if (pin.source === 'provider_origin') {
-    const link = readProviderOrigin(pin.metadata)
-    return (
-      pin.status === 'ready' &&
-      pin.hasPair &&
-      link !== null &&
-      !originCertificateIsDue(pin.notAfter, now) &&
-      certificateCoversAll(link, [name])
-    )
-  }
   if (pin.source === 'lets_encrypt' || isPanelOrderedLibraryPair(pin)) {
     const expires = pin.notAfter ? Date.parse(pin.notAfter) : Number.NaN
     return (
