@@ -17,7 +17,12 @@ import {
   type ManagedReplicationHealth,
   parseManagedSlotRetention,
 } from '../../contracts/commands/schemas.ts'
-import { ageReplicationHealth, type ReplicationHealthView } from './replica-freshness.ts'
+import {
+  ageReplicationHealth,
+  REPLICA_DISPLAY_REFRESH_MS,
+  REPLICA_DISPLAY_STALE_MS,
+  type ReplicationHealthView,
+} from './replica-freshness.ts'
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
 import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -324,7 +329,12 @@ export function serializeManagedMemberForDisplay(
     const display = parseDisplayReplicationHealth(row.metadata)
     const forDisplay = selectReplicationForDisplay(measured, display)
     if (forDisplay !== undefined) {
-      out.replication = ageReplicationHealth(forDisplay, nowMs)
+      // A pushed reading is rewritten only every few minutes when nothing
+      // changed, so it gets the longer window; a probe reading keeps 120 s.
+      out.replication =
+        forDisplay === display
+          ? ageReplicationHealth(forDisplay, nowMs, REPLICA_DISPLAY_STALE_MS)
+          : ageReplicationHealth(forDisplay, nowMs)
     }
   }
   return out
@@ -917,19 +927,34 @@ export async function updateManagedMemberObservedReplication(
 export async function updateManagedMemberDisplayReplication(
   db: Db,
   memberId: string,
-  displayReplication: ManagedReplicationHealth
+  displayReplication: ManagedReplicationHealth,
+  options: { nowMs?: number; refreshMs?: number } = {}
 ): Promise<void> {
+  const nowIso = new Date(options.nowMs ?? Date.now()).toISOString()
+  const refreshSeconds = (options.refreshMs ?? REPLICA_DISPLAY_REFRESH_MS) / 1000
+  const reading = JSON.stringify(displayReplication)
   try {
+    // The skip is decided in the same statement: an unchanged reading (the
+    // observation time aside) whose stored copy is younger than the refresh
+    // interval matches no row, so nothing is written and nothing extra is read.
     await db.execute(
       sql`
         UPDATE ${replica}
         SET metadata = jsonb_set(
           COALESCE(metadata, '{}'::jsonb),
           '{replicationDisplay}',
-          ${JSON.stringify(displayReplication)}::jsonb
+          ${reading}::jsonb
         ),
         updated_at = NOW()
         WHERE id = ${memberId}::uuid
+          AND (
+            metadata -> 'replicationDisplay' IS NULL
+            OR metadata -> 'replicationDisplay' ->> 'observedAt' IS NULL
+            OR (metadata -> 'replicationDisplay') - 'observedAt'
+              IS DISTINCT FROM (${reading}::jsonb - 'observedAt')
+            OR (metadata -> 'replicationDisplay' ->> 'observedAt')::timestamptz
+              <= ${nowIso}::timestamptz - make_interval(secs => ${refreshSeconds})
+          )
       `
     )
   } catch (error) {

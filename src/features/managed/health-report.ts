@@ -9,6 +9,11 @@
  * another server's member. Like the on-demand probe it writes replication
  * only (never `replica.status`), drops `lastStreaming` (only meaningful at
  * probe time), and never trusts a reading time in the future.
+ *
+ * The report comes every 30 s but a reading that has not changed (the
+ * observation time aside) is rewritten only once the stored one is five
+ * minutes old; the display window for a pushed reading is longer than that
+ * (`replica-freshness.ts`).
  */
 
 import { inArray } from 'drizzle-orm'
@@ -74,7 +79,8 @@ export async function handleManagedHealthReport(
     await updateManagedMemberDisplayReplication(
       db,
       entry.memberId,
-      readingFromReport(entry, receivedAtMs)
+      readingFromReport(entry, receivedAtMs),
+      { nowMs: receivedAtMs }
     )
     stored += 1
   })

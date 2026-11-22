@@ -65,6 +65,7 @@ function harness() {
     },
   ]
   const written: Array<{ metadata: Record<string, unknown> }> = []
+  const statements: Array<{ text: string; params: unknown[] }> = []
   const db = {
     select: () => ({
       from: (table: unknown) => {
@@ -77,12 +78,13 @@ function harness() {
     execute: (query: SQL) => {
       const { sql: text, params } = dialect.sqlToQuery(query)
       assertEquals(text.includes("'{replicationDisplay}'"), true)
+      statements.push({ text, params })
       const display = JSON.parse(String(params[0])) as Record<string, unknown>
       written.push({ metadata: { replicationDisplay: display } })
       return Promise.resolve()
     },
   }
-  return { db: db as unknown as Db, written }
+  return { db: db as unknown as Db, written, statements }
 }
 
 test("a report stores the reading of the reporter's own replica and drops lastStreaming", async () => {
@@ -185,4 +187,30 @@ test('the wire check accepts a well-formed report and rejects malformed ones', (
   )
   assertEquals(frame([{ ...good, replication: { state: 'streaming', observedAt: 'x' } }]).ok, false)
   assertEquals(frame(Array.from({ length: 33 }, () => good)).ok, false)
+})
+
+test('the write is conditional in the same statement: changed state, or stored copy older than five minutes', async () => {
+  const h = harness()
+  await handleManagedHealthReport(h.db, {
+    reporterServerId: REPORTER,
+    members: [
+      {
+        managedId: MANAGED,
+        memberId: MEMBER_OURS,
+        replication: { state: 'streaming', observedAt: iso(-1000) },
+      },
+    ],
+    nowMs: NOW_MS,
+  })
+  const { text, params } = h.statements[0]!
+  const compact = text.replaceAll(/\s+/g, ' ')
+  // Never a second statement: the comparison lives in the UPDATE's WHERE.
+  assertEquals(h.statements.length, 1)
+  assertEquals(compact.includes('WHERE id = $'), true)
+  assertEquals(compact.includes("- 'observedAt' IS DISTINCT FROM"), true)
+  assertEquals(compact.includes('<= $'), true)
+  assertEquals(compact.includes('make_interval(secs => $'), true)
+  // Reading, member, receipt time and the five minute refresh in seconds.
+  assertEquals(params.includes(iso(0)), true)
+  assertEquals(params.includes(300), true)
 })

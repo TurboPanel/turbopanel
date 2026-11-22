@@ -1141,14 +1141,19 @@ reading is never made vaguer, and a far-future `observedAt` is not trusted.
 
 The promote gate and automatic failover read the stored probe-measured
 observation (`metadata.replication`) and apply their own freshness rules
-unchanged (120 s); they are unaffected by the 30 s health report push.
+unchanged (120 s); they are unaffected by the health report push.
 
 Fresh readings come from two sources:
 
 - The daemon's own push (`managed-health-report`, feature
   `managed-health-report-v1`, every 30 s) writes to a display-only field
   (`metadata.replicationDisplay`): only the reporting server's own replicas are
-  written, `lastStreaming` is dropped, a future time is clamped to receipt.
+  written, `lastStreaming` is dropped, a future time is clamped to receipt. The
+  write is one conditional `UPDATE`: a reading that differs from the stored one
+  (the observation time aside) is written at once, an unchanged one only when
+  the stored copy is 5 minutes old (`REPLICA_DISPLAY_REFRESH_MS`). A pushed
+  reading therefore has its own display window, `REPLICA_DISPLAY_STALE_MS`
+  (10 minutes), above the refresh interval; a probe reading keeps 120 s.
 - The on-demand probe and apply/lifecycle results write to
   `metadata.replication` (probe-measured). When a probe is answered with
   "engine not running" the replica is stored as `not_streaming` with the receipt
