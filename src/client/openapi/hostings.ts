@@ -311,8 +311,40 @@ export const hostingSchemas = {
       { $ref: '#/components/schemas/HostingNameCertificateChoice' },
       {
         type: 'object',
-        required: ['certificateOptions'],
+        required: ['certificateOptions', 'originCertificateIssue'],
         properties: {
+          originCertificateIssue: {
+            description:
+              'Why a name set to `cloudflare_origin` has no certificate yet; null when nothing went wrong or the name holds one. Shown instead of a silent wait. The scheduled retry tries again after `nextTryAt` (a save or a tunnel attach tries at once).',
+            oneOf: [
+              { type: 'null' },
+              {
+                type: 'object',
+                required: ['code', 'message', 'failedAt', 'attempts', 'nextTryAt'],
+                properties: {
+                  code: {
+                    type: 'string',
+                    enum: [
+                      'no_badge',
+                      'provider_error',
+                      'unsupported_provider',
+                      'zone_not_covered',
+                      'secrets_unavailable',
+                      'badge_cannot_certify',
+                      'origin_certificate_limit',
+                      'origin_certificate_names',
+                    ],
+                    description:
+                      "`no_badge`: no API token of the organization has certificate rights for the name's zone. `provider_error`: the provider refused or failed. The others are the issuing code's refusals.",
+                  },
+                  message: { type: 'string', description: 'Plain words, safe to show.' },
+                  failedAt: { type: 'string', format: 'date-time' },
+                  attempts: { type: 'integer', minimum: 1 },
+                  nextTryAt: { type: ['string', 'null'], format: 'date-time' },
+                },
+              },
+            ],
+          },
           certificateOptions: {
             type: 'object',
             description:
@@ -708,7 +740,7 @@ export const hostingPaths = {
     patch: {
       ...((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>),
       description:
-        "Pointing `tlsId` at a managed Let's Encrypt certificate, with nothing else the servers receive changed, sends it to the servers at once when the environment is deployed (the same hostings-only apply as use-letsencrypt); the answer then carries `needsDeploy`, true when a deploy is still needed to start it.",
+        "Pointing `tlsId` at a managed Let's Encrypt certificate, with nothing else the servers receive changed, sends it to the servers at once when the environment is deployed (the same hostings-only apply as use-letsencrypt); the answer then carries `needsDeploy`, true when a deploy is still needed to start it. The answer also carries `names`, the hosting's names as a read returns them (with `originCertificateIssue`), so a name set to `cloudflare_origin` shows at once whether it got a certificate or why not. `POST /hostings` answers `names` the same way.",
       responses: {
         ...(((basePaths[hostingIdPath] as Record<string, unknown>).patch as Record<string, unknown>)
           .responses as Record<string, unknown>),

@@ -673,6 +673,27 @@ impersonate any name under the zone, revoking it takes every site with it, it
 does not cover a name two labels down (`a.b.zone`), and names are added one at a
 time anyway.
 
+**One certificate at a time per organization.** `ensureOriginCertificate`
+asks the provider without holding any lock or transaction, then takes the
+organization's advisory lock (`organizationOriginLock`, key
+`origin-certificate-issue:<organization id>`) to re-check that no certificate
+already covers the names and to store the pair. When another caller stored one
+first, theirs is used and the extra certificate just issued is revoked at the
+provider (the same when storing fails), so a double click or a save racing the
+manual route leaves one certificate and nothing stray at the provider. The
+manual route and the name-choice path both go through it.
+
+**Choosing it issues it.** A name whose stored choice is `cloudflare_origin` with
+no pin is issued a certificate by `ensureNameOriginCertificates`
+(`src/client/hostings/name-origin-certificates.ts`, rules in
+`src/features/hostings/AGENTS.md`): on a hosting save, when a doorway attaches
+the name to a tunnel (`POST .../tunnels/:tunnelId/hostnames`), and from the
+hourly Let's Encrypt tick. It calls `ensureOriginCertificate` per zone with a
+token of the same organization picked by `pickBadges`, so the manual route and
+this path issue the same way and reuse each other's certificates. When no token
+or the provider refuses, the reason sits on the hosting (`names[].originCertificateIssue`)
+and the name keeps its choice, unverified, until a retry succeeds.
+
 `origin-certificate.ts` keeps the issued pairs in the organization certificate
 library (`tls`, source `provider_origin`), one row per certificate. The key is
 an ECDSA P-256 key made in the panel (`mintCertificateRequest`); only the
@@ -766,7 +787,7 @@ provider_origin_managed`, `400 provider_origin_unsupported`). Deleting one from
   of `providerOrigin` so rebuilding the link never drops it, and never copied
   to the public row). The sweep skips rows whose time has not come. A provider
   answer of 429 or 503 with `Retry-After` (`TunnelProviderError.retryAfterMs`)
-  is used as the wait as given, does not count as an attempt, and holds back
+  is used as the wait (at least a minute, at most 6 hours), does not count as an attempt, and holds back
   every other row of the same API Token for that long. A renewal clears it.
 - Deleting an organization removes the rows without revoking them at the
   provider.

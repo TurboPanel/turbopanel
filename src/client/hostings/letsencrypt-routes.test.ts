@@ -1001,7 +1001,7 @@ test('PATCH /hostings: an uploaded pick, or a pick saved with other edits, waits
     const upload = await insertCertificate(f, { source: 'upload', status: 'ready' })
     const uploaded = await f.call('PATCH', `/hostings/${f.hostingId}`, { tlsId: upload })
     assertEquals(uploaded.status, 200)
-    assertEquals(await uploaded.json(), { ok: true })
+    assertEquals(await uploaded.json(), { ok: true, names: [] })
     assertEquals(calls.length, 0)
 
     const managed = await insertCertificate(f, { source: 'lets_encrypt', status: 'automatic' })

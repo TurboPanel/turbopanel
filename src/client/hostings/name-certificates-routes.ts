@@ -36,6 +36,10 @@ import {
   isHostnameCertificate,
 } from '../../features/hostings/name-certificate-vocabulary.ts'
 import type { HostnameChoice } from '../../features/servers/hostname-records.ts'
+import {
+  type NameOriginIssue,
+  readNameOriginIssues,
+} from '../../features/hostings/name-origin-issues.ts'
 import { loadDnsIssuance } from '../../features/hostings/dns-issuance.ts'
 import { loadAcmeEnabled } from './letsencrypt-store.ts'
 import { parseOptionalTlsId } from './routes-helpers.ts'
@@ -228,9 +232,21 @@ export async function refuseUnavailableDnsChoices(
 /** One served name as the hosting read shows it. */
 export type HostingNameRead = NameCertificate & {
   certificateOptions: NameCertificateOptions
+  /**
+   * Why a name set to the Cloudflare origin certificate has none yet (no API
+   * token can issue for its zone, or the provider refused); null when nothing
+   * went wrong or the name holds its certificate.
+   */
+  originCertificateIssue: NameOriginIssueRead | null
 }
 
-type HostingForNames = { id: string; serviceId: string; options: unknown }
+/** The part of a recorded reason the read shows. */
+export type NameOriginIssueRead = Pick<
+  NameOriginIssue,
+  'code' | 'message' | 'failedAt' | 'attempts' | 'nextTryAt'
+>
+
+type HostingForNames = { id: string; serviceId: string; options: unknown; metadata?: unknown }
 
 type DoorwayReach = Map<string, boolean>
 
@@ -325,6 +341,7 @@ export async function loadHostingNameReads(
     const bind = resolveHostingBind(options)
     const isHttp = resolveHostingProtocol(options) === 'http'
     const doorwayReach = reach.get(row.id)
+    const issues = readNameOriginIssues(row.metadata)
     const names = [...(stored.get(row.id) ?? [])].toSorted((a, b) =>
       compareHostnames(a.hostname, b.hostname)
     )
@@ -339,8 +356,14 @@ export async function loadHostingNameReads(
         const own =
           doorwayReach?.get(name.hostname) ??
           (sibling === null ? undefined : doorwayReach?.get(sibling))
+        // Only a name that still waits for its certificate shows a reason.
+        const issue =
+          name.certificate === 'cloudflare_origin' && name.tlsId === null
+            ? issues[name.hostname]
+            : undefined
         return {
           ...name,
+          originCertificateIssue: issue ? { ...issue } : null,
           certificateOptions: nameCertificateOptions({
             hostname: name.hostname,
             reach: reachOf(own),

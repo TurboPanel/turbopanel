@@ -40,6 +40,7 @@ import {
 } from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { mintSelfSignedCertificate } from '../../lib/tls/index.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { insertBadge, insertCarrier, sealToken } from '../../features/tunnels/records.ts'
 import {
@@ -102,6 +103,8 @@ const provider = {
   nameReads: 0,
   /** The tunnel secrets sent to rotate a run token. */
   rotationSecrets: [] as string[],
+  /** The names of every origin certificate asked for. */
+  certificateRequests: [] as string[][],
 }
 
 /** A command queue for the tests that need one; most routes run without it. */
@@ -126,6 +129,16 @@ const fakeProvider: typeof fetch = async (input, init) => {
     if (provider.failRoutes) return refused(500, 'routes failed')
     provider.routeBodies.push(JSON.parse(String(init?.body)))
     return ok({})
+  }
+  if (path === '/certificates' && method === 'POST') {
+    const sent = JSON.parse(String(init?.body)) as { hostnames: string[] }
+    provider.certificateRequests.push(sent.hostnames)
+    const minted = await mintSelfSignedCertificate(sent.hostnames, { validDays: 365 })
+    return ok({
+      id: `cert-ext-${provider.certificateRequests.length}`,
+      certificate: minted.certificatePem,
+      expires_on: minted.parsed.notAfter.toISOString().slice(0, 19).replace('T', ' '),
+    })
   }
   if (path === '/zones') {
     const account = url.searchParams.get('account.id') ?? ACCOUNT
@@ -254,6 +267,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
   provider.nameRecordsLater = null
   provider.nameReads = 0
   provider.rotationSecrets = []
+  provider.certificateRequests = []
   testQueue = null
   const db = createDenoDb()
   const secretsConfig = parseTestSecretsConfig('deno')
@@ -1268,7 +1282,11 @@ async function insertHosting(
 async function addCarrier(
   f: Fixture,
   account: string,
-  capabilities: { tunnels: boolean; dns: { id: string; name: string }[] }
+  capabilities: {
+    tunnels: boolean
+    dns: { id: string; name: string }[]
+    certificates?: { id: string; name: string }[]
+  }
 ): Promise<string> {
   const owner = await insertCarrier(f.db, {
     organizationId: f.orgA,
@@ -1298,6 +1316,45 @@ async function addCarrier(
   })
   return owner.id
 }
+
+test('adding a tunnel name that chose the origin certificate issues and pins it', async () => {
+  await withFixture(async (f) => {
+    // A second token of the organization holds certificate rights for the zone.
+    await addCarrier(f, 'c'.repeat(32), {
+      tunnels: false,
+      dns: [],
+      certificates: [{ id: 'zone-1', name: 'example.com' }],
+    })
+    const id = await makeTunnel(f)
+    const site = await insertHosting(f, f.orgA)
+    await f.db.insert(hostname).values({
+      hostingId: site,
+      routingOrganizationId: f.orgA,
+      hostname: 'origin.example.com',
+      certificate: 'cloudflare_origin',
+    })
+    const added = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgA}/tunnels/${id}/hostnames`,
+      f.managerCookie,
+      { hostname: 'origin.example.com' }
+    )
+    assertEquals(added.status, 201, added.text)
+    assertEquals(provider.certificateRequests, [['origin.example.com']])
+    const [row] = await f.db
+      .select({ tlsId: hostname.tlsId })
+      .from(hostname)
+      .where(and(eq(hostname.hostingId, site), eq(hostname.hostname, 'origin.example.com')))
+    assert(row?.tlsId)
+    const [pinned] = await f.db.select().from(tls).where(eq(tls.id, row.tlsId))
+    assertEquals(pinned?.source, 'provider_origin')
+    f.cleanup.push(async () => {
+      await f.db.update(hostname).set({ tlsId: null }).where(eq(hostname.hostingId, site))
+      await f.db.delete(tls).where(eq(tls.organizationId, f.orgA))
+    })
+  })
+})
 
 test("another organization's manager cannot reach a tunnel or a hostname by id", async () => {
   await withFixture(async (f) => {

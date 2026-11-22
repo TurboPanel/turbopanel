@@ -18,7 +18,13 @@ import {
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
 import { ensureNameHttpOrders } from './name-http-orders.ts'
-import { environmentOfHosting, hostingRemovalUpdate } from './letsencrypt-apply.ts'
+import { issueNameOriginCertificates } from './name-origin-certificates.ts'
+import {
+  environmentOfHosting,
+  type HostingApplyDeps,
+  hostingRemovalUpdate,
+} from './letsencrypt-apply.ts'
+import type { TunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
 import { pinHostingNames, syncHostingPin } from '../../features/hostings/name-certificates.ts'
 import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
 import {
@@ -283,7 +289,32 @@ async function refusePatchChoices(
   )
 }
 
-export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+/** The name states a save answers with (certificate, pin, and why an origin certificate is missing). */
+async function currentNames(db: Db, organizationId: string, id: string) {
+  const [row] = await db
+    .select({
+      id: hosting.id,
+      serviceId: hosting.serviceId,
+      options: hosting.options,
+      metadata: hosting.metadata,
+    })
+    .from(hosting)
+    .where(eq(hosting.id, id))
+    .limit(1)
+  return row ? ((await loadHostingNameReads(db, organizationId, [row])).get(id) ?? []) : []
+}
+
+/** Test seams: the provider adapters and the hostings-only apply. */
+export type HostingRouteDeps = {
+  registry?: TunnelAdapterRegistry
+  applyDeps?: HostingApplyDeps
+}
+
+export function registerHostingRoutes(
+  router: Hono<AppEnv>,
+  opts: AuthRouteOpts,
+  deps: HostingRouteDeps = {}
+) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for hosting routes')
   }
@@ -354,7 +385,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   router.post('/hostings', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, organizationId } = sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -398,8 +429,15 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     try {
       const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks, choices)
+      // A name that chose the origin certificate gets it now, after the save committed.
+      await issueNameOriginCertificates(c, db, {
+        hostingId: id,
+        organizationId,
+        actor: { userId: session.userId, email: session.email ?? null },
+        ...deps,
+      })
       nudgeTunnelRoutesAfterResponse(c, organizationId)
-      return c.json({ ok: true as const, id })
+      return c.json({ ok: true as const, id, names: await currentNames(db, organizationId, id) })
     } catch (err) {
       if (isHostnameUniqueViolation(err)) {
         return c.json({ error: 'hostname_in_use' }, 409)
@@ -421,7 +459,12 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (body instanceof Response) return body
 
     const [existingHosting] = await db
-      .select({ ipId: hosting.ipId, options: hosting.options, serviceId: hosting.serviceId })
+      .select({
+        ipId: hosting.ipId,
+        options: hosting.options,
+        serviceId: hosting.serviceId,
+        updatedAt: hosting.updatedAt,
+      })
       .from(hosting)
       .where(eq(hosting.id, id))
       .limit(1)
@@ -460,8 +503,15 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     if (conflict) return conflict
 
+    await issueNameOriginCertificates(c, db, {
+      hostingId: id,
+      organizationId,
+      actor: { userId: session.userId, email: session.email ?? null },
+      before: existingHosting,
+      ...deps,
+    })
     nudgeTunnelRoutesAfterResponse(c, organizationId)
-    return c.json({ ok: true as const })
+    return c.json({ ok: true as const, names: await currentNames(db, organizationId, id) })
   })
 
   router.delete('/hostings/:id', async (c) => {

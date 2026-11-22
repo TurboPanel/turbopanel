@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { createDenoDb } from '../../db/connection.ts'
+import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
@@ -49,7 +49,23 @@ const dbUrl = getDatabaseUrl()
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+// Every test opens its own pool; close them after the test so the database's
+// connection limit is not eaten by pools nothing uses any more.
+const openPools: Db[] = []
+function openDb() {
+  const db = createDenoDb()
+  openPools.push(db)
+  return db
+}
+function test(name: string, fn: () => Promise<void> | void): void {
+  Deno.test(name, async () => {
+    try {
+      await fn()
+    } finally {
+      await Promise.all(openPools.splice(0).map((db) => endDbConnection(db)))
+    }
+  })
+}
 
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
@@ -67,7 +83,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
     return
   }
 
-  const db = createDenoDb()
+  const db = openDb()
   const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
@@ -218,7 +234,7 @@ test('PATCH /hostings rejects public bind with non-public ip scope', async () =>
 test('PATCH /hostings returns 404 when ipId belongs to another org', async () => {
   if (!dbUrl) return
 
-  const db = createDenoDb()
+  const db = openDb()
   const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
@@ -367,7 +383,7 @@ async function withHostingFixtures(
 ): Promise<void> {
   if (!dbUrl) return
 
-  const db = createDenoDb()
+  const db = openDb()
   const { app, secrets } = await createHostingTestApp(db)
 
   const [orgRow] = await db
