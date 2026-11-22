@@ -303,6 +303,7 @@ import {
 } from '../../features/managed/routes-helpers.ts'
 import {
   buildConnectionPayload,
+  isManagedNeverProvisioned,
   parseManagedResidual,
   serializeManagedRow,
 } from '../../features/managed/serialize.ts'
@@ -901,7 +902,11 @@ async function clearIncompleteManagedCreate(
   fallbackServerId: string | null,
   userId: string
 ): Promise<Response | null> {
-  if (existing.status === 'provisioning') {
+  // A `failed` row whose first apply never reported an address has nothing
+  // running: clear it too, so a retry gets a fresh create instead of
+  // `alreadyProvisioned` for a database that does not exist. A failed row that
+  // once provisioned keeps its data and stays "already provisioned".
+  if (existing.status === 'provisioning' || isManagedNeverProvisioned(existing)) {
     await deleteManagedCompensation(c, db, {
       userId,
       managedId: existing.id,

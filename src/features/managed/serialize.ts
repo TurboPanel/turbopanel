@@ -29,6 +29,21 @@ export function parseManagedResidual(value: unknown): ManagedResidualMetadata {
   }
 }
 
+/**
+ * True for a cluster whose first apply never finished: still `provisioning`, or
+ * `failed` before any apply reported a listener address. A successful primary
+ * apply is the only thing that records `metadata.host`, so a failed row that
+ * has one ran before and its data may exist; a failed row without one has
+ * nothing running and is safe to retry from scratch.
+ */
+export function isManagedNeverProvisioned(row: {
+  status: string | null
+  metadata: unknown
+}): boolean {
+  if (row.status !== 'provisioning' && row.status !== 'failed') return false
+  return parseManagedResidual(row.metadata).host === undefined
+}
+
 export function serializeManagedRow(
   row: {
     id: string

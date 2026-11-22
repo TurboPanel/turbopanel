@@ -10,6 +10,7 @@ import type { ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { postgresEngineSpec } from '../managed/postgres.ts'
 import {
+  hasUnprovisionedBoundManaged,
   listBindingEmittedKeys,
   loadBindingOwnedKeysForService,
   materializeBinding,
@@ -451,4 +452,43 @@ test('reapplyBindingOwnedVariables and loadBindingOwnedKeysForService', async ()
 
   const keys = await loadBindingOwnedKeysForService(db, 'svc')
   assertEquals(keys.has('DATABASE_URL'), true)
+})
+
+function boundManagedDb(rows: Array<{ status: string; metadata: unknown }>): Db {
+  const chain: {
+    innerJoin: () => typeof chain
+    where: () => Promise<unknown[]>
+  } = { innerJoin: () => chain, where: () => Promise.resolve(rows) }
+  return { select: () => ({ from: () => chain }) } as unknown as Db
+}
+
+test('hasUnprovisionedBoundManaged flags a failed or provisioning cluster that never reported a host', async () => {
+  assertEquals(
+    await hasUnprovisionedBoundManaged(boundManagedDb([{ status: 'failed', metadata: {} }]), [
+      'svc',
+    ]),
+    true
+  )
+  assertEquals(
+    await hasUnprovisionedBoundManaged(
+      boundManagedDb([{ status: 'provisioning', metadata: { error: 'x' } }]),
+      ['svc']
+    ),
+    true
+  )
+})
+
+test('hasUnprovisionedBoundManaged lets a ready cluster, or a failed one that once had a host, through', async () => {
+  assertEquals(
+    await hasUnprovisionedBoundManaged(
+      boundManagedDb([
+        { status: 'ready', metadata: { host: 'db.example.net', port: 5432 } },
+        { status: 'failed', metadata: { host: 'db.example.net', port: 5432 } },
+        { status: 'applying', metadata: {} },
+      ]),
+      ['svc']
+    ),
+    false
+  )
+  assertEquals(await hasUnprovisionedBoundManaged(boundManagedDb([]), []), false)
 })

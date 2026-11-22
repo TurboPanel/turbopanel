@@ -1214,6 +1214,49 @@ test('POST create returns alreadyProvisioned for a finished row', async () => {
   assertEquals(body.alreadyProvisioned, true)
 })
 
+test('POST create keeps a failed row that once reported an address as already provisioned', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [
+        managedRow({
+          status: 'failed',
+          metadata: { rootLoginId: LOGIN_ID, host: 'db.example.net', port: 5432 },
+        }),
+      ],
+    }),
+  })
+  const res = await app.request(envPath(), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assertEquals(res.status, 200)
+  assertEquals((await jsonOf(res)).alreadyProvisioned, true)
+})
+
+test('POST create clears a failed first apply instead of reporting alreadyProvisioned', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [
+        managedRow({
+          status: 'failed',
+          metadata: { rootLoginId: LOGIN_ID, error: 'managed.apply compose up failed' },
+        }),
+      ],
+      envRows: [envRow({ serverId: null })],
+    }),
+  })
+  await expectJson(
+    await app.request(envPath(), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    409,
+    { error: 'server_placement_required' }
+  )
+})
+
 test('POST create clears a provisioning row then requires placement', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
