@@ -1,3 +1,4 @@
+Task check:types sh scripts/check-types.sh
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -900,9 +901,19 @@ async function clearIncompleteManagedCreate(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
   existing: ManagedRow,
-  fallbackServerId: string | null,
+  ctx: ManagedContext,
   userId: string
 ): Promise<Response | null> {
+  const retryState = managedRetryState(existing, Date.now())
+  // A retry in place is moving this row right now: never read it as an
+  // abandoned create (that would delete it and its bindings).
+  if (retryState === 'running') return c.json({ error: 'managed_busy' }, 409)
+  if (
+    retryState === 'stale' ||
+    (existing.status === 'failed' && isManagedNeverProvisioned(existing))
+  ) {
+    return await retryFailedManagedCreate(c, db, { existing, ctx, userId })
+  }
   // A create that never reached its first apply: nothing ran, nothing is bound.
   if (existing.status === 'provisioning') {
     await deleteManagedCompensation(c, db, {
@@ -912,7 +923,7 @@ async function clearIncompleteManagedCreate(
     })
     return null
   }
-  const serverId = resolveManagedServerId(existing, fallbackServerId)
+  const serverId = resolveManagedServerId(existing, ctx.serverId)
   return c.json({
     ok: true as const,
     alreadyProvisioned: true as const,
@@ -2653,30 +2664,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const { db, environmentId, auth, ctx } = scope
 
     const existing = await findManagedForEnvironment(db, environmentId)
-    const retryState = existing ? managedRetryState(existing, Date.now()) : null
-    // A retry in place is moving this row right now: never read it as an
-    // abandoned create (that would delete it and its bindings).
-    if (existing && retryState === 'running') return c.json({ error: 'managed_busy' }, 409)
-    if (
-      existing &&
-      (retryState === 'stale' ||
-        (existing.status === 'failed' && isManagedNeverProvisioned(existing)))
-    ) {
-      return await retryFailedManagedCreate(c, db, { existing, ctx, userId: auth.userId })
-    }
     if (existing) {
       // Incomplete creates never enqueued apply — remove so a fresh show-once
       // password can be issued. Successful creates leave status beyond
       // provisioning. This is not itself a create, so it displays whichever
       // server id is known (`managed.server_id`, falling back to the
       // environment's current placement) rather than hard-requiring one.
-      const idempotent = await clearIncompleteManagedCreate(
-        c,
-        db,
-        existing,
-        ctx.serverId,
-        auth.userId
-      )
+      const idempotent = await clearIncompleteManagedCreate(c, db, existing, ctx, auth.userId)
       if (idempotent) return idempotent
     }
 
