@@ -221,7 +221,7 @@ async function findMemberPinLeave(
 ): Promise<MemberPin | null> {
   const member = memberPinOf(existing)
   if (!member) return null
-  if (after && after.serverId === member.serverId && after.datacenterId === member.datacenterId) {
+  if (after?.serverId === member.serverId && after?.datacenterId === member.datacenterId) {
     return null
   }
   return (await otherMemberPinExists(db, organizationId, member, id)) ? null : member
