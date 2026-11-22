@@ -1,11 +1,12 @@
 import { and, eq, inArray, ne, type SQL } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { type OrgRequest, resolveOrgRequest } from '../org-request.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { type Db, getDb } from '../../db/connection.ts'
+import type { Db } from '../../db/connection.ts'
 import { hosting, ip, network } from '../../db/schema.ts'
 import { findLanPairChangeRefusal } from '../../features/fabric/lan-pair-guard.ts'
 import { pruneClientAddressesWithoutPin } from '../../features/net/client-addresses.ts'
@@ -45,7 +46,6 @@ import {
   assertCanManageOr403,
   assertCanReadOr403,
   buildPatchUpdateFields,
-  getOrgId,
   parseDescription,
   parseJsonbObject,
   parseJsonBody,
@@ -386,6 +386,34 @@ async function buildIpPatchFields(
   return patchFields
 }
 
+/**
+ * The preamble of every `/ips/:id` handler: {@link resolveOrgRequest}, then
+ * `404` unless the ip belongs to the request's organization, then the access
+ * check, `read` for `ip` read, `manage` for `organization:manage` on it. Same
+ * responses, same order as the handlers wrote inline.
+ */
+async function resolveIpRequest(
+  c: Context<AppEnv>,
+  access: 'read' | 'manage'
+): Promise<(OrgRequest & { id: string }) | Response> {
+  const scope = await resolveOrgRequest(c)
+  if (scope instanceof Response) return scope
+
+  const id = c.req.param('id') ?? ''
+  const entityOrgId = await resolveEntityOrganizationId(scope.db, 'ip', id)
+  if (entityOrgId !== scope.organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const denied =
+    access === 'read'
+      ? await assertCanReadOr403(c, 'ip', id)
+      : await assertCanOr403(c, 'organization:manage', 'ip', id)
+  if (denied) return denied
+
+  return { ...scope, id }
+}
+
 export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for ip routes')
@@ -396,15 +424,9 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   router.use('/ips/:id', createSessionMiddleware(secrets))
 
   router.get('/ips', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
 
     const manageDenied = await assertCanManageOr403(c, 'organization', organizationId)
     if (manageDenied) return manageDenied
@@ -432,24 +454,9 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.get('/ips/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'ip', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanReadOr403(c, 'ip', id)
-    if (denied) return denied
+    const scope = await resolveIpRequest(c, 'read')
+    if (scope instanceof Response) return scope
+    const { db, id } = scope
 
     const [row] = await db.select(IP_SELECT).from(ip).where(eq(ip.id, id)).limit(1)
 
@@ -459,15 +466,9 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.post('/ips', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, organizationId } = scope
 
     const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
@@ -507,24 +508,9 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.patch('/ips/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'ip', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'ip', id)
-    if (denied) return denied
+    const scope = await resolveIpRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId, id } = scope
 
     const [existingIp] = await db
       .select({
@@ -570,24 +556,9 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   router.delete('/ips/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'ip', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'ip', id)
-    if (denied) return denied
+    const scope = await resolveIpRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId, id } = scope
 
     const [hostingRow] = await db
       .select({ id: hosting.id })
