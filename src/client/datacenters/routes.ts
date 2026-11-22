@@ -34,6 +34,7 @@ import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.t
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { fanOutDatacenterRoutingChange } from './routing-fanout.ts'
+import { fanOutDatacenterMembershipChange, lanPairRefusalResponse } from './membership-fanout.ts'
 import { reconcileServerNetworking } from '../../features/fabric/server-networking.ts'
 import {
   findLanPairChangeRefusal,
@@ -102,14 +103,6 @@ export {
   resolveOrCreateSubnetForAddress,
   resolveSeededFields,
 } from './create-input.ts'
-
-/**
- * 409 `lan_pair_in_use`: the change would cut a container network that runs
- * over a trusted LAN with no tunnel while TurboFabric is not running for it.
- */
-function lanPairRefusalResponse(c: Context, refusal: LanPairRefusal): Response {
-  return c.json({ error: 'lan_pair_in_use', ...refusal }, 409)
-}
 
 /** Refuse marking a datacenter untrusted while a LAN-only container network needs it. */
 async function refuseUntrustingLanPairs(
@@ -251,36 +244,6 @@ function parseDatacenterPatchFields(
     patchFields.options = parseDatacenterOptions(optionsResult)
   }
   return patchFields
-}
-
-/**
- * A server joined or left a datacenter: which pairs share a trusted LAN may
- * have changed, so peer lists and LAN routes are re-planned
- * (`reconcileServerNetworking`). Skipped without a queue or secrets; failures
- * are logged, the membership change already succeeded.
- */
-async function fanOutDatacenterMembershipChange(
-  c: Context<AppEnv>,
-  db: Db,
-  organizationId: string,
-  actorId: string
-): Promise<void> {
-  const commandQueue = getCommandQueue(c)
-  const secretsConfig = c.get('secretsConfig')
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  if (!commandQueue || isNoopCommandQueue(commandQueue) || !secretsConfig) return
-  try {
-    await reconcileServerNetworking({
-      db,
-      commandQueue,
-      actor: { type: 'user', id: actorId },
-      organizationId,
-      secrets: { secretsConfig, ...(dataEncryptionSecrets ? { dataEncryptionSecrets } : {}) },
-    })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    compatLogWarn('datacenters', `networking fan-out failed after a membership change: ${message}`)
-  }
 }
 
 /**

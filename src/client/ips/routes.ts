@@ -1,12 +1,19 @@
-import { and, eq, inArray, type SQL } from "drizzle-orm";
-import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import type { AuthRouteOpts } from "../authn/http.ts";
-import { createSessionMiddleware } from "../authn/middleware.ts";
-import { assertCanOr403, listVisible } from "../authz/index.ts";
-import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { type Db, getDb } from "../../db/connection.ts";
-import { hosting, ip, network } from "../../db/schema.ts";
+import { and, eq, inArray, type SQL } from 'drizzle-orm'
+import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import type { AuthRouteOpts } from '../authn/http.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
+import { assertCanOr403, listVisible } from '../authz/index.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { type Db, getDb } from '../../db/connection.ts'
+import { hosting, ip, network } from '../../db/schema.ts'
+import { findLanPairChangeRefusal } from '../../features/fabric/lan-pair-guard.ts'
+import { pruneClientAddressesWithoutPin } from '../../features/net/client-addresses.ts'
+import {
+  fanOutDatacenterMembershipChange,
+  lanPairRefusalResponse,
+} from '../datacenters/membership-fanout.ts'
+import { nudgeTunnelRoutesAfterResponse } from '../organizations/tunnel-nudge.ts'
 import {
   applyJsonbPatchFields,
   assertDatacenterMembershipNetwork,
@@ -25,13 +32,13 @@ import {
   rejectImmutableIpPatchFields,
   serializeIpRow,
   UUID_RE,
-} from "./ip-create-validation.ts";
+} from './ip-create-validation.ts'
 
 export {
   assertIpScopeFkRules,
   isIpAddressUniqueViolation,
   parseCreateIpAddress,
-} from "./ip-create-validation.ts";
+} from './ip-create-validation.ts'
 
 import {
   assertCanCreateOr403,
@@ -42,7 +49,7 @@ import {
   parseDescription,
   parseJsonbObject,
   parseJsonBody,
-} from "../shared.ts";
+} from '../shared.ts'
 
 const IP_SELECT = {
   id: ip.id,
@@ -58,38 +65,38 @@ const IP_SELECT = {
   options: ip.options,
   createdAt: ip.createdAt,
   updatedAt: ip.updatedAt,
-};
+}
 
 const IP_SCOPE_FK_FIELDS = [
-  ["datacenterId", "datacenter"],
-  ["networkId", "network"],
-  ["serverId", "server"],
-] as const;
+  ['datacenterId', 'datacenter'],
+  ['networkId', 'network'],
+  ['serverId', 'server'],
+] as const
 
-type IpScopeFkField = (typeof IP_SCOPE_FK_FIELDS)[number][0];
-type IpScopeFkKind = (typeof IP_SCOPE_FK_FIELDS)[number][1];
+type IpScopeFkField = (typeof IP_SCOPE_FK_FIELDS)[number][0]
+type IpScopeFkKind = (typeof IP_SCOPE_FK_FIELDS)[number][1]
 
 type CreateIpFields = {
-  address: string;
-  allocation: string;
-  scope: string;
-  description: string | null;
-  metadata: Record<string, unknown> | null;
-  options: Record<string, unknown> | null;
-} & IpScopeFks;
+  address: string
+  allocation: string
+  scope: string
+  description: string | null
+  metadata: Record<string, unknown> | null
+  options: Record<string, unknown> | null
+} & IpScopeFks
 
 async function assertSameOrgEntity(
   c: Context,
   db: Db,
   kind: Parameters<typeof resolveEntityOrganizationId>[1],
   entityId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<Response | null> {
-  const entityOrgId = await resolveEntityOrganizationId(db, kind, entityId);
+  const entityOrgId = await resolveEntityOrganizationId(db, kind, entityId)
   if (entityOrgId !== organizationId) {
-    return c.json({ error: "Not found" }, 404);
+    return c.json({ error: 'Not found' }, 404)
   }
-  return null;
+  return null
 }
 
 async function validateOptionalScopeFk(
@@ -98,41 +105,34 @@ async function validateOptionalScopeFk(
   organizationId: string,
   body: Record<string, unknown>,
   field: IpScopeFkField,
-  kind: IpScopeFkKind,
+  kind: IpScopeFkKind
 ): Promise<string | null | undefined | Response> {
-  if (body[field] === undefined) return undefined;
-  const parsed = parseScopeFkUuid(body[field]);
+  if (body[field] === undefined) return undefined
+  const parsed = parseScopeFkUuid(body[field])
   if (!parsed.ok) {
-    return c.json({ error: "Invalid request" }, 400);
+    return c.json({ error: 'Invalid request' }, 400)
   }
-  if (parsed.value === null) return null;
-  if (parsed.value === undefined) return undefined;
-  const id = parsed.value;
-  const denied = await assertSameOrgEntity(c, db, kind, id, organizationId);
-  if (denied) return denied;
-  return id;
+  if (parsed.value === null) return null
+  if (parsed.value === undefined) return undefined
+  const id = parsed.value
+  const denied = await assertSameOrgEntity(c, db, kind, id, organizationId)
+  if (denied) return denied
+  return id
 }
 
 async function resolveIpScopeFks(
   c: Context,
   db: Db,
   organizationId: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<IpScopeFks | Response> {
-  const result: IpScopeFks = {};
+  const result: IpScopeFks = {}
   for (const [field, kind] of IP_SCOPE_FK_FIELDS) {
-    const value = await validateOptionalScopeFk(
-      c,
-      db,
-      organizationId,
-      body,
-      field,
-      kind,
-    );
-    if (value instanceof Response) return value;
-    if (value !== undefined) result[field] = value;
+    const value = await validateOptionalScopeFk(c, db, organizationId, body, field, kind)
+    if (value instanceof Response) return value
+    if (value !== undefined) result[field] = value
   }
-  return result;
+  return result
 }
 
 async function assertMembershipPinNetwork(
@@ -141,17 +141,16 @@ async function assertMembershipPinNetwork(
   organizationId: string,
   scope: string,
   address: string,
-  scopeFks: IpScopeFks,
+  scopeFks: IpScopeFks
 ): Promise<Response | null> {
-  if (scope !== "datacenter") return null;
-  const hasServer = scopeFks.serverId !== undefined &&
-    scopeFks.serverId !== null;
-  if (!hasServer) return null;
+  if (scope !== 'datacenter') return null
+  const hasServer = scopeFks.serverId !== undefined && scopeFks.serverId !== null
+  if (!hasServer) return null
 
-  const datacenterId = scopeFks.datacenterId;
-  const networkId = scopeFks.networkId;
+  const datacenterId = scopeFks.datacenterId
+  const networkId = scopeFks.networkId
   if (!datacenterId || !networkId) {
-    return c.json({ error: "Invalid request" }, 400);
+    return c.json({ error: 'Invalid request' }, 400)
   }
 
   const [row] = await db
@@ -161,20 +160,48 @@ async function assertMembershipPinNetwork(
       cidr: network.cidr,
     })
     .from(network)
-    .where(
-      and(
-        eq(network.id, networkId),
-        eq(network.organizationId, organizationId),
-      ),
-    )
-    .limit(1);
+    .where(and(eq(network.id, networkId), eq(network.organizationId, organizationId)))
+    .limit(1)
 
-  return assertDatacenterMembershipNetwork(
-    c,
-    address,
-    datacenterId,
-    row ?? null,
-  );
+  return assertDatacenterMembershipNetwork(c, address, datacenterId, row ?? null)
+}
+
+/** The datacenter and server a pin row makes a member of, or null for any other row. */
+function memberPinOf(row: {
+  scope: string
+  serverId?: string | null
+  datacenterId?: string | null
+}): { datacenterId: string; serverId: string } | null {
+  if (row.scope !== 'datacenter' || !row.serverId || !row.datacenterId) {
+    return null
+  }
+  return { datacenterId: row.datacenterId, serverId: row.serverId }
+}
+
+/**
+ * A datacenter member pin is what makes a server a member of that datacenter,
+ * so removing it, or moving it to another server or datacenter, ends the
+ * membership exactly like `DELETE /datacenters/:id/members/:serverId`: the
+ * same 409 `lan_pair_in_use` refusal applies. Null when the row is not a
+ * member pin, keeps its datacenter and server, or the change is fine.
+ */
+async function refuseMemberPinLeave(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  existing: Pick<ExistingIpScope, 'scope' | 'serverId' | 'datacenterId'>,
+  after: Pick<IpScopeFks, 'serverId' | 'datacenterId'> | null
+): Promise<Response | null> {
+  const member = memberPinOf(existing)
+  if (!member) return null
+  if (after && after.serverId === member.serverId && after.datacenterId === member.datacenterId) {
+    return null
+  }
+  const refusal = await findLanPairChangeRefusal(db, {
+    organizationId,
+    change: { kind: 'leave_datacenter', ...member },
+  })
+  return refusal ? lanPairRefusalResponse(c, refusal) : null
 }
 
 async function appendOrgScopedIdFilter(
@@ -182,91 +209,75 @@ async function appendOrgScopedIdFilter(
   db: Db,
   organizationId: string,
   conditions: SQL[],
-  queryKey: "datacenterId" | "serverId" | "networkId",
-  kind: "datacenter" | "server" | "network",
+  queryKey: 'datacenterId' | 'serverId' | 'networkId',
+  kind: 'datacenter' | 'server' | 'network'
 ): Promise<Response | null> {
-  const raw = c.req.query(queryKey)?.trim();
-  if (!raw) return null;
-  if (!UUID_RE.test(raw)) return c.json({ error: "Invalid request" }, 400);
-  const denied = await assertSameOrgEntity(c, db, kind, raw, organizationId);
-  if (denied) return denied;
-  conditions.push(eq(ip[queryKey], raw));
-  return null;
+  const raw = c.req.query(queryKey)?.trim()
+  if (!raw) return null
+  if (!UUID_RE.test(raw)) return c.json({ error: 'Invalid request' }, 400)
+  const denied = await assertSameOrgEntity(c, db, kind, raw, organizationId)
+  if (denied) return denied
+  conditions.push(eq(ip[queryKey], raw))
+  return null
 }
 
 async function buildIpListConditions(
   c: Context,
   db: Db,
   organizationId: string,
-  visibleIds: string[],
+  visibleIds: string[]
 ): Promise<SQL[] | Response> {
-  const conditions: SQL[] = [
-    inArray(ip.id, visibleIds),
-    eq(ip.organizationId, organizationId),
-  ];
+  const conditions: SQL[] = [inArray(ip.id, visibleIds), eq(ip.organizationId, organizationId)]
 
-  for (
-    const [queryKey, kind] of [
-      ["datacenterId", "datacenter"],
-      ["serverId", "server"],
-      ["networkId", "network"],
-    ] as const
-  ) {
-    const denied = await appendOrgScopedIdFilter(
-      c,
-      db,
-      organizationId,
-      conditions,
-      queryKey,
-      kind,
-    );
-    if (denied) return denied;
+  for (const [queryKey, kind] of [
+    ['datacenterId', 'datacenter'],
+    ['serverId', 'server'],
+    ['networkId', 'network'],
+  ] as const) {
+    const denied = await appendOrgScopedIdFilter(c, db, organizationId, conditions, queryKey, kind)
+    if (denied) return denied
   }
 
-  const scopeFilter = parseEnumQueryFilter(c, "scope", IP_SCOPES);
-  if (scopeFilter instanceof Response) return scopeFilter;
-  if (scopeFilter) conditions.push(eq(ip.scope, scopeFilter));
+  const scopeFilter = parseEnumQueryFilter(c, 'scope', IP_SCOPES)
+  if (scopeFilter instanceof Response) return scopeFilter
+  if (scopeFilter) conditions.push(eq(ip.scope, scopeFilter))
 
-  const allocationFilter = parseEnumQueryFilter(
-    c,
-    "allocation",
-    IP_ALLOCATIONS,
-  );
-  if (allocationFilter instanceof Response) return allocationFilter;
-  if (allocationFilter) conditions.push(eq(ip.allocation, allocationFilter));
+  const allocationFilter = parseEnumQueryFilter(c, 'allocation', IP_ALLOCATIONS)
+  if (allocationFilter instanceof Response) return allocationFilter
+  if (allocationFilter) conditions.push(eq(ip.allocation, allocationFilter))
 
-  return conditions;
+  return conditions
 }
 
 async function parseCreateIpFields(
   c: Context,
   db: Db,
   organizationId: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<CreateIpFields | Response> {
-  const addressFields = parseCreateIpAddress(c, body);
-  if (addressFields instanceof Response) return addressFields;
+  const addressFields = parseCreateIpAddress(c, body)
+  if (addressFields instanceof Response) return addressFields
 
-  const enums = parseCreateIpEnums(c, body);
-  if (enums instanceof Response) return enums;
+  const enums = parseCreateIpEnums(c, body)
+  if (enums instanceof Response) return enums
 
-  let description: string | null;
+  let description: string | null
   try {
-    description = parseDescription(body);
+    description = parseDescription(body)
   } catch {
-    return c.json({ error: "Invalid request" }, 400);
+    return c.json({ error: 'Invalid request' }, 400)
   }
 
-  const metadata = parseJsonbObject(c, body, "metadata");
-  if (metadata instanceof Response) return metadata;
-  const options = parseJsonbObject(c, body, "options");
-  if (options instanceof Response) return options;
+  const metadata = parseJsonbObject(c, body, 'metadata')
+  if (metadata instanceof Response) return metadata
+  const options = parseJsonbObject(c, body, 'options')
+  if (options instanceof Response) return options
 
-  const scopeFks = await resolveIpScopeFks(c, db, organizationId, body);
-  if (scopeFks instanceof Response) return scopeFks;
+  const scopeFks = await resolveIpScopeFks(c, db, organizationId, body)
+  if (scopeFks instanceof Response) return scopeFks
 
-  const scopeDenied = assertIpScopeFkRules(c, enums.scope, scopeFks);
-  if (scopeDenied) return scopeDenied;
+  const scopeDenied = assertIpScopeFkRules(c, enums.scope, scopeFks)
+  if (scopeDenied) return scopeDenied
 
   const membershipDenied = await assertMembershipPinNetwork(
     c,
@@ -274,9 +285,9 @@ async function parseCreateIpFields(
     organizationId,
     enums.scope,
     addressFields.address,
-    scopeFks,
-  );
-  if (membershipDenied) return membershipDenied;
+    scopeFks
+  )
+  if (membershipDenied) return membershipDenied
 
   return {
     ...addressFields,
@@ -285,7 +296,7 @@ async function parseCreateIpFields(
     metadata,
     options,
     ...scopeFks,
-  };
+  }
 }
 
 async function buildIpPatchFields(
@@ -293,33 +304,33 @@ async function buildIpPatchFields(
   db: Db,
   organizationId: string,
   body: Record<string, unknown>,
-  existing: ExistingIpScope,
+  existing: ExistingIpScope
 ): Promise<IpPatchFields | Response> {
-  const immutableDenied = rejectImmutableIpPatchFields(c, body);
-  if (immutableDenied) return immutableDenied;
+  const immutableDenied = rejectImmutableIpPatchFields(c, body)
+  if (immutableDenied) return immutableDenied
 
-  let patchFields: IpPatchFields;
+  let patchFields: IpPatchFields
   try {
-    const { name, ...rest } = buildPatchUpdateFields(body);
+    const { name, ...rest } = buildPatchUpdateFields(body)
     if (name !== undefined) {
-      return c.json({ error: "Invalid request" }, 400);
+      return c.json({ error: 'Invalid request' }, 400)
     }
-    patchFields = rest;
+    patchFields = rest
   } catch {
-    return c.json({ error: "Invalid request" }, 400);
+    return c.json({ error: 'Invalid request' }, 400)
   }
 
-  const jsonbDenied = applyJsonbPatchFields(c, body, patchFields);
-  if (jsonbDenied) return jsonbDenied;
+  const jsonbDenied = applyJsonbPatchFields(c, body, patchFields)
+  if (jsonbDenied) return jsonbDenied
 
-  const scopeFks = await resolveIpScopeFks(c, db, organizationId, body);
-  if (scopeFks instanceof Response) return scopeFks;
+  const scopeFks = await resolveIpScopeFks(c, db, organizationId, body)
+  if (scopeFks instanceof Response) return scopeFks
 
-  const finalScopeFks = mergeIpScopeFks(existing, scopeFks);
+  const finalScopeFks = mergeIpScopeFks(existing, scopeFks)
 
   // Reuse create-time scope/FK rules against the post-patch shape.
-  const scopeDenied = assertIpScopeFkRules(c, existing.scope, finalScopeFks);
-  if (scopeDenied) return scopeDenied;
+  const scopeDenied = assertIpScopeFkRules(c, existing.scope, finalScopeFks)
+  if (scopeDenied) return scopeDenied
 
   const membershipDenied = await assertMembershipPinNetwork(
     c,
@@ -327,123 +338,106 @@ async function buildIpPatchFields(
     organizationId,
     existing.scope,
     existing.address,
-    finalScopeFks,
-  );
-  if (membershipDenied) return membershipDenied;
+    finalScopeFks
+  )
+  if (membershipDenied) return membershipDenied
 
-  Object.assign(patchFields, scopeFks);
+  Object.assign(patchFields, scopeFks)
 
-  return patchFields;
+  return patchFields
 }
 
 export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError("session secrets are required for ip routes");
+    throw new TypeError('session secrets are required for ip routes')
   }
-  const secrets = opts.secrets;
+  const secrets = opts.secrets
 
-  router.use("/ips", createSessionMiddleware(secrets));
-  router.use("/ips/:id", createSessionMiddleware(secrets));
+  router.use('/ips', createSessionMiddleware(secrets))
+  router.use('/ips/:id', createSessionMiddleware(secrets))
 
-  router.get("/ips", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/ips', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const manageDenied = await assertCanManageOr403(
-      c,
-      "organization",
-      organizationId,
-    );
-    if (manageDenied) return manageDenied;
+    const manageDenied = await assertCanManageOr403(c, 'organization', organizationId)
+    if (manageDenied) return manageDenied
 
     const visibleIds = await listVisible(db, {
-      kind: "ip",
+      kind: 'ip',
       userId: session.userId,
       organizationId,
-    });
+    })
 
     if (visibleIds.length === 0) {
-      return c.json({ ips: [] });
+      return c.json({ ips: [] })
     }
 
-    const conditions = await buildIpListConditions(
-      c,
-      db,
-      organizationId,
-      visibleIds,
-    );
-    if (conditions instanceof Response) return conditions;
+    const conditions = await buildIpListConditions(c, db, organizationId, visibleIds)
+    if (conditions instanceof Response) return conditions
 
     const rows = await db
       .select(IP_SELECT)
       .from(ip)
       .where(and(...conditions))
-      .orderBy(ip.createdAt);
+      .orderBy(ip.createdAt)
 
-    return c.json({ ips: rows.map((row) => serializeIpRow(row)) });
-  });
+    return c.json({ ips: rows.map((row) => serializeIpRow(row)) })
+  })
 
-  router.get("/ips/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/ips/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const id = c.req.param("id");
-    const entityOrgId = await resolveEntityOrganizationId(db, "ip", id);
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'ip', id)
     if (entityOrgId !== organizationId) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanReadOr403(c, "ip", id);
-    if (denied) return denied;
+    const denied = await assertCanReadOr403(c, 'ip', id)
+    if (denied) return denied
 
-    const [row] = await db
-      .select(IP_SELECT)
-      .from(ip)
-      .where(eq(ip.id, id))
-      .limit(1);
+    const [row] = await db.select(IP_SELECT).from(ip).where(eq(ip.id, id)).limit(1)
 
-    if (!row) return c.json({ error: "Not found" }, 404);
+    if (!row) return c.json({ error: 'Not found' }, 404)
 
-    return c.json({ ip: serializeIpRow(row) });
-  });
+    return c.json({ ip: serializeIpRow(row) })
+  })
 
-  router.post("/ips", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/ips', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const denied = await assertCanCreateOr403(
-      c,
-      "organization",
-      organizationId,
-    );
-    if (denied) return denied;
+    const denied = await assertCanCreateOr403(c, 'organization', organizationId)
+    if (denied) return denied
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
-    const fields = await parseCreateIpFields(c, db, organizationId, body);
-    if (fields instanceof Response) return fields;
+    const fields = await parseCreateIpFields(c, db, organizationId, body)
+    if (fields instanceof Response) return fields
 
     try {
       const id = await db.transaction(async (tx) => {
@@ -455,49 +449,43 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
             allocation: fields.allocation,
             scope: fields.scope,
             description: fields.description,
-            ...(fields.datacenterId !== undefined
-              ? { datacenterId: fields.datacenterId }
-              : {}),
-            ...(fields.networkId !== undefined
-              ? { networkId: fields.networkId }
-              : {}),
-            ...(fields.serverId !== undefined
-              ? { serverId: fields.serverId }
-              : {}),
+            ...(fields.datacenterId !== undefined ? { datacenterId: fields.datacenterId } : {}),
+            ...(fields.networkId !== undefined ? { networkId: fields.networkId } : {}),
+            ...(fields.serverId !== undefined ? { serverId: fields.serverId } : {}),
             ...(fields.metadata !== null ? { metadata: fields.metadata } : {}),
             ...(fields.options !== null ? { options: fields.options } : {}),
           })
-          .returning({ id: ip.id });
-        return inserted.id;
-      });
-      return c.json({ ok: true as const, id });
+          .returning({ id: ip.id })
+        return inserted.id
+      })
+      return c.json({ ok: true as const, id })
     } catch (err) {
       if (isIpAddressUniqueViolation(err)) {
-        return c.json({ error: "ip_address_in_use" }, 409);
+        return c.json({ error: 'ip_address_in_use' }, 409)
       }
-      throw err;
+      throw err
     }
-  });
+  })
 
-  router.patch("/ips/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.patch('/ips/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const id = c.req.param("id");
-    const entityOrgId = await resolveEntityOrganizationId(db, "ip", id);
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'ip', id)
     if (entityOrgId !== organizationId) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, "organization:manage", "ip", id);
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:manage', 'ip', id)
+    if (denied) return denied
 
     const [existingIp] = await db
       .select({
@@ -509,57 +497,84 @@ export function registerIpRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       })
       .from(ip)
       .where(eq(ip.id, id))
-      .limit(1);
-    if (!existingIp) return c.json({ error: "Not found" }, 404);
+      .limit(1)
+    if (!existingIp) return c.json({ error: 'Not found' }, 404)
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
-    const patchFields = await buildIpPatchFields(
-      c,
-      db,
-      organizationId,
-      body,
-      existingIp,
-    );
-    if (patchFields instanceof Response) return patchFields;
+    const patchFields = await buildIpPatchFields(c, db, organizationId, body, existingIp)
+    if (patchFields instanceof Response) return patchFields
 
-    await db.update(ip).set(patchFields).where(eq(ip.id, id));
+    const after = mergeIpScopeFks(existingIp, patchFields)
+    const leaveDenied = await refuseMemberPinLeave(c, db, organizationId, existingIp, after)
+    if (leaveDenied) return leaveDenied
 
-    return c.json({ ok: true as const });
-  });
+    await db.update(ip).set(patchFields).where(eq(ip.id, id))
 
-  router.delete("/ips/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
-
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
-
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
-
-    const id = c.req.param("id");
-    const entityOrgId = await resolveEntityOrganizationId(db, "ip", id);
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: "Not found" }, 404);
+    const before = memberPinOf(existingIp)
+    const next = memberPinOf({ scope: existingIp.scope, ...after })
+    if (before?.datacenterId !== next?.datacenterId || before?.serverId !== next?.serverId) {
+      if (before) await pruneClientAddressesWithoutPin(db, [before.serverId])
+      await fanOutDatacenterMembershipChange(c, db, organizationId, session.userId)
+      nudgeTunnelRoutesAfterResponse(c, organizationId)
     }
 
-    const denied = await assertCanOr403(c, "organization:manage", "ip", id);
-    if (denied) return denied;
+    return c.json({ ok: true as const })
+  })
+
+  router.delete('/ips/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
+
+    const id = c.req.param('id')
+    const entityOrgId = await resolveEntityOrganizationId(db, 'ip', id)
+    if (entityOrgId !== organizationId) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+
+    const denied = await assertCanOr403(c, 'organization:manage', 'ip', id)
+    if (denied) return denied
 
     const [hostingRow] = await db
       .select({ id: hosting.id })
       .from(hosting)
       .where(eq(hosting.ipId, id))
-      .limit(1);
+      .limit(1)
     if (hostingRow) {
-      return c.json({ error: "ip_in_use" }, 409);
+      return c.json({ error: 'ip_in_use' }, 409)
     }
 
-    await db.delete(ip).where(eq(ip.id, id));
+    const [existingIp] = await db
+      .select({
+        scope: ip.scope,
+        serverId: ip.serverId,
+        datacenterId: ip.datacenterId,
+      })
+      .from(ip)
+      .where(eq(ip.id, id))
+      .limit(1)
+    if (!existingIp) return c.json({ error: 'Not found' }, 404)
 
-    return c.json({ ok: true as const });
-  });
+    const leaveDenied = await refuseMemberPinLeave(c, db, organizationId, existingIp, null)
+    if (leaveDenied) return leaveDenied
+
+    await db.delete(ip).where(eq(ip.id, id))
+
+    const member = memberPinOf(existingIp)
+    if (member) {
+      await pruneClientAddressesWithoutPin(db, [member.serverId])
+      await fanOutDatacenterMembershipChange(c, db, organizationId, session.userId)
+      nudgeTunnelRoutesAfterResponse(c, organizationId)
+    }
+
+    return c.json({ ok: true as const })
+  })
 }
