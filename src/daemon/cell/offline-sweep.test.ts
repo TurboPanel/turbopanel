@@ -1662,6 +1662,7 @@ const IDLE_GATES_ROW = {
   httpCertificates: false,
   httpCertificatesActive: false,
   tunnels: false,
+  tunnelsUrgent: false,
   networkProbe: false,
   upgradeRunActive: false,
 }
@@ -2195,6 +2196,27 @@ it('gates: an urgent reconcile (reconnect or a container not running) runs every
   const urgent = countingIdleDb({ connectedServer: true, reconcileUrgent: true })
   await runTickCapturingTrace(commandQueueEnv(), urgent.db, tlsRenewal, at)
   assertEquals(urgent.statementCount() > routine.statementCount(), true)
+})
+
+it('gates: the tunnel sweeps skip the minutes between their slots and run on the slot or while urgent', async () => {
+  const tlsRenewal = await testTlsRenewal()
+  // The registry slot is minute 4 of a 5 minute window; CATCH_UP_MINUTE is on minute 0.
+  const slot = CATCH_UP_MINUTE + 4 * 60_000
+  const between = CATCH_UP_MINUTE + 60_000
+  const cost = async (at: number, gates: Partial<typeof IDLE_GATES_ROW>): Promise<number> => {
+    const counted = countingIdleDb(gates)
+    await runTickCapturingTrace(commandQueueEnv(), counted.db, tlsRenewal, at)
+    return counted.statementCount()
+  }
+  // Between slots a tunnel organization costs nothing over an idle one.
+  assertEquals(await cost(between, { tunnels: true }), await cost(between, {}))
+  // On the slot the sweeps read the database.
+  assertEquals((await cost(slot, { tunnels: true })) > (await cost(slot, {})), true)
+  // An urgent gate runs them between slots too.
+  assertEquals(
+    (await cost(between, { tunnels: true, tunnelsUrgent: true })) > (await cost(between, {})),
+    true
+  )
 })
 
 it('gates: an unreadable gate is traced and opens every family', async () => {

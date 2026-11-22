@@ -73,11 +73,16 @@ member there, a widened CHECK (forward migration) and one adapter.
   secret (`deleteTunnelRecord`), and `tunnel.secret_id` is SET NULL.
 - **Periodic sweeps (`sweeps.ts`).** The five tunnel sweeps (routes,
   connectors, removal, daily token recheck, connector status) are one ordered
-  list, `TUNNEL_SWEEPS`, and both schedulers run that list every minute: the
+  list, `TUNNEL_SWEEPS`, and both schedulers run that list on the `tunnelSweeps`
+  job cadence (5 minutes by default, `TURBOPANEL_JOB_CADENCES`), and every
+  minute while the `tunnelsUrgent` gate is true (a tunnel being removed, a
+  run-token rotation under way, or a portal under 10 minutes old that no status
+  answer covers yet; `src/daemon/cell/cron-gates.ts`). Every user change sends
+  its tables directly (`nudgeTunnelRoutes`), so the sweep is the repair path. The
   hosted cron (`runQueuedCronSweeps` in `src/daemon/cell/offline-sweep.ts`,
   behind the secrets bundle like leaf renewal) and the self-hosted
   job tick in `src/platform/deno/server.ts`
-  (`runSelfHostedTunnelSweeps`, gated by the `tunnels` flag, fresh database
+  (`runSelfHostedTunnelSweeps`, gated by the `tunnels` flag and the cadence, fresh database
   client per tick, skipped while the command queue is the no-op one). Each sweep fails alone and
   throttles itself from the database, so the minute tick is cheap. The status sweep asks a server
   at most every 10 minutes, except that a server with a portal made in the last

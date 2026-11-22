@@ -59,6 +59,13 @@ const latency = () => ({ kind: 'latency', everyMinutes: 1, offset: 0, min: 1, ma
  * - The reconcile-family jobs are repair or retry passes (each with its own
  *   throttle of five minutes or more, or working on expiry-scale dates) and run
  *   only while their gate has a candidate. One minute apart so they do not pile up.
+ * - `tunnelSweeps`: the tunnel routes, connectors, removal, rotation, token
+ *   recheck and status sweeps (`features/tunnels/sweeps.ts`). Every user change
+ *   to a tunnel, name, site or server sends its tables directly
+ *   (`nudgeTunnelRoutes`), so the sweep only repairs what a send missed, and its
+ *   own throttles are ten minutes or more. A removal, a run-token rotation under
+ *   way or a portal not yet answered still runs it every minute
+ *   (`tunnelsUrgent` gate).
  * - `executionLogs`, `historyPrune`, `notificationPrune`, `tierNotices`:
  *   retention deletes and a notice; none has a reader that depends on the grain.
  * - `edgeTrust`, `heartbeatRefresh`, `ingressTick`: self-hosted only (Workers never
@@ -95,6 +102,7 @@ export const CRON_CADENCES = {
   tierNotices: housekeeping(60, 0),
   edgeTrust: housekeeping(5, 3),
   heartbeatRefresh: housekeeping(5, 1),
+  tunnelSweeps: housekeeping(5, 4),
   ingressTick: housekeeping(1, 0, 60),
   upgradeTick: housekeeping(15, 0),
   upgradeCheck: housekeeping(60, 0, 60),

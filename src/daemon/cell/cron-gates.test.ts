@@ -5,7 +5,7 @@
  */
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
-import { server, tls } from '../../db/schema.ts'
+import { server, tls, tunnel } from '../../db/schema.ts'
 import { withFolderFixtures } from '../../test-fixtures/folder-world.test.support.ts'
 import { ALL_GATES_OPEN, loadCronGates } from './cron-gates.ts'
 
@@ -48,6 +48,45 @@ test('the gate query runs on real Postgres and wakes the families that have a ca
       assertEquals(errors, [])
     } finally {
       await ctx.db.delete(tls).where(eq(tls.id, row!.id))
+    }
+  })
+})
+
+test('tunnelsUrgent turns on for a removal or a rotation under way and off for a steady tunnel', async () => {
+  await withFolderFixtures(async (ctx) => {
+    const errors: unknown[] = []
+    const read = () => loadCronGates(ctx.db, { onError: (err) => errors.push(err) })
+    const [row] = await ctx.db
+      .insert(tunnel)
+      .values({
+        organizationId: ctx.organizationId,
+        routingOrganizationId: ctx.organizationId,
+        name: 'gate-tunnel',
+        provider: 'cloudflare',
+        status: 'live',
+      })
+      .returning({ id: tunnel.id })
+    try {
+      const steady = await read()
+      assertEquals([steady.tunnels, steady.tunnelsUrgent], [true, false])
+
+      await ctx.db.update(tunnel).set({ status: 'removing' }).where(eq(tunnel.id, row!.id))
+      assertEquals((await read()).tunnelsUrgent, true)
+
+      await ctx.db
+        .update(tunnel)
+        .set({ status: 'live', metadata: { runTokenRotation: { phase: 'rolling' } } })
+        .where(eq(tunnel.id, row!.id))
+      assertEquals((await read()).tunnelsUrgent, true)
+
+      await ctx.db
+        .update(tunnel)
+        .set({ metadata: { runTokenRotation: { phase: 'done' } } })
+        .where(eq(tunnel.id, row!.id))
+      assertEquals((await read()).tunnelsUrgent, false)
+      assertEquals(errors, [])
+    } finally {
+      await ctx.db.delete(tunnel).where(eq(tunnel.id, row!.id))
     }
   })
 })

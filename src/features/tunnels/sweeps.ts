@@ -7,8 +7,10 @@
  * Each sweep decides for itself, from the database, whether there is work: an
  * unchanged table or connector list is not sent again, a removal waits out its
  * own back-off, a token is checked once a day and a server is asked for its
- * connector status at most every ten minutes. Calling them every minute is
- * therefore cheap.
+ * connector status at most every ten minutes. Both schedulers call the list on
+ * the `tunnelSweeps` job cadence (5 minutes by default) and every minute while
+ * the `tunnelsUrgent` gate is true; user changes send their tables directly
+ * (`nudgeTunnelRoutes`), so the list is the repair path.
  */
 import type { Db } from '../../db/connection.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'

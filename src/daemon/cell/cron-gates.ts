@@ -79,6 +79,12 @@ export type CronGates = {
   httpCertificatesActive: boolean
   /** A tunnel, portal or badge, or a server still carrying tunnel routes or connectors. */
   tunnels: boolean
+  /**
+   * Tunnel work that should not wait for the routine slot: a tunnel being
+   * removed, a run-token rotation under way, or a portal made in the last ten
+   * minutes that no status answer has covered yet.
+   */
+  tunnelsUrgent: boolean
   /** Two or more trusted networks: the only case the probe has work. */
   networkProbe: boolean
   /** A pending or running upgrade run: the self-hosted upgrade tick then runs every minute. */
@@ -97,6 +103,7 @@ export const ALL_GATES_OPEN: CronGates = {
   httpCertificates: true,
   httpCertificatesActive: true,
   tunnels: true,
+  tunnelsUrgent: true,
   networkProbe: true,
   upgradeRunActive: true,
 }
@@ -114,6 +121,8 @@ export async function loadCronGates(
   const reconnectedSince = new Date(
     (options.now ?? new Date()).getTime() - 6 * 60_000
   ).toISOString()
+  // The status sweep's own window for a portal it asks about again soon.
+  const newPortalSince = new Date((options.now ?? new Date()).getTime() - 10 * 60_000).toISOString()
   try {
     const rows = (await db.execute(sql`
       select
@@ -149,6 +158,10 @@ export async function loadCronGates(
           or exists (select 1 from ${portal})
           or exists (select 1 from ${badge})
           or exists (select 1 from ${server} where ${server.metadata} -> 'tunnelRoutes' is not null or ${server.metadata} -> 'tunnelConnectors' is not null)) as "tunnels",
+        (exists (select 1 from ${tunnel} where ${tunnel.status} = 'removing'
+          or (${tunnel.metadata} -> 'runTokenRotation' ->> 'phase') in ('starting', 'rolling', 'finishing'))
+          or exists (select 1 from ${portal} where ${portal.lastSeenAt} is null
+            and ${portal.createdAt} > ${newPortalSince}::timestamptz)) as "tunnelsUrgent",
         (select count(*) from ${datacenter} where ${datacenter.isTrusted}) >= 2 as "networkProbe",
         exists (select 1 from ${upgrade} where ${upgrade.status} in ('pending', 'running')) as "upgradeRunActive"
     `)) as unknown as Record<string, unknown>[]
