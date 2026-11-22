@@ -3413,6 +3413,20 @@ export class DaemonCellObject {
     return false
   }
 
+  /** The daemon's reports in order: generic reports, terminal reports, certificates, progress. */
+  async #handleDaemonReport(
+    attachment: { connectionId: string; serverId: string },
+    parsed: DaemonMessage,
+    signature: ReportSignature
+  ): Promise<boolean> {
+    return (
+      (await this.#handleReportInbound(attachment, parsed)) ||
+      (await this.#handleShellReport(attachment, parsed, signature)) ||
+      (await this.#handleAcmeInbound(attachment, parsed)) ||
+      (await this.#handleProgressInbound(attachment, parsed))
+    )
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -3466,13 +3480,7 @@ export class DaemonCellObject {
         return
       }
 
-      if (await this.#handleReportInbound(attachment, parsed)) return
-
-      if (await this.#handleShellReport(attachment, parsed, validated.signature)) return
-
-      if (await this.#handleAcmeInbound(attachment, parsed)) return
-
-      if (await this.#handleProgressInbound(attachment, parsed)) return
+      if (await this.#handleDaemonReport(attachment, parsed, validated.signature)) return
 
       await this.#recordInboundRepairingPresence(
         attachment,
