@@ -1234,18 +1234,33 @@ test('POST create keeps a failed row that once reported an address as already pr
   assertEquals((await jsonOf(res)).alreadyProvisioned, true)
 })
 
-test('POST create clears a failed first apply instead of reporting alreadyProvisioned', async () => {
-  const { app, cookie } = await buildApp({
-    db: fakeDb({
-      managedRows: [
-        managedRow({
-          status: 'failed',
-          metadata: { rootLoginId: LOGIN_ID, error: 'managed.apply compose up failed' },
-        }),
-      ],
-      envRows: [envRow({ serverId: null })],
-    }),
+test('POST create retries a failed first apply in place: never deletes the row or its bindings', async () => {
+  const deleted: unknown[] = []
+  const updated: unknown[] = []
+  const base = fakeDb({
+    managedRows: [
+      managedRow({
+        status: 'failed',
+        serverId: null,
+        metadata: { rootLoginId: LOGIN_ID, error: 'managed.apply compose up failed' },
+      }),
+    ],
+    loginRows: [loginRow({ role: 'root' })],
+    envRows: [envRow({ serverId: null })],
   })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deleted.push(table)
+      return base.delete(table as never)
+    },
+    update: (table: unknown) => {
+      updated.push(table)
+      return base.update(table as never)
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db })
+  // No placement to retry on: refused before anything is touched.
   await expectJson(
     await app.request(envPath(), {
       method: 'POST',
@@ -1255,6 +1270,8 @@ test('POST create clears a failed first apply instead of reporting alreadyProvis
     409,
     { error: 'server_placement_required' }
   )
+  assertEquals(deleted, [])
+  assertEquals(updated.includes(managed), false)
 })
 
 test('POST create clears a provisioning row then requires placement', async () => {

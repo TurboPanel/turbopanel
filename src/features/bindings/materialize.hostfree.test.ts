@@ -3,6 +3,8 @@
  */
 
 import { assertEquals } from '@std/assert'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import type { SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
@@ -454,24 +456,44 @@ test('reapplyBindingOwnedVariables and loadBindingOwnedKeysForService', async ()
   assertEquals(keys.has('DATABASE_URL'), true)
 })
 
-function boundManagedDb(rows: Array<{ status: string; metadata: unknown }>): Db {
+interface BoundManagedFixture {
+  serviceId: string
+  status: string
+  metadata: unknown
+}
+
+/**
+ * A db holding one row per (binding, login, managed) chain. The query's `where`
+ * is rendered to SQL and its parameters read back, so only the chains of the
+ * service ids the code asked about come out: a query that drops the filter
+ * returns the other services' rows and the tests fail.
+ */
+function boundManagedDb(chains: BoundManagedFixture[]): Db {
+  const dialect = new PgDialect()
   const chain: {
     innerJoin: () => typeof chain
-    where: () => Promise<unknown[]>
-  } = { innerJoin: () => chain, where: () => Promise.resolve(rows) }
+    where: (clause: SQL) => Promise<unknown[]>
+  } = {
+    innerJoin: () => chain,
+    where: (clause) => {
+      const asked = new Set(dialect.sqlToQuery(clause).params)
+      return Promise.resolve(chains.filter((row) => asked.has(row.serviceId)))
+    },
+  }
   return { select: () => ({ from: () => chain }) } as unknown as Db
 }
 
 test('hasUnprovisionedBoundManaged flags a failed or provisioning cluster that never reported a host', async () => {
   assertEquals(
-    await hasUnprovisionedBoundManaged(boundManagedDb([{ status: 'failed', metadata: {} }]), [
-      'svc',
-    ]),
+    await hasUnprovisionedBoundManaged(
+      boundManagedDb([{ serviceId: 'svc', status: 'failed', metadata: {} }]),
+      ['svc']
+    ),
     true
   )
   assertEquals(
     await hasUnprovisionedBoundManaged(
-      boundManagedDb([{ status: 'provisioning', metadata: { error: 'x' } }]),
+      boundManagedDb([{ serviceId: 'svc', status: 'provisioning', metadata: { error: 'x' } }]),
       ['svc']
     ),
     true
@@ -482,13 +504,22 @@ test('hasUnprovisionedBoundManaged lets a ready cluster, or a failed one that on
   assertEquals(
     await hasUnprovisionedBoundManaged(
       boundManagedDb([
-        { status: 'ready', metadata: { host: 'db.example.net', port: 5432 } },
-        { status: 'failed', metadata: { host: 'db.example.net', port: 5432 } },
-        { status: 'applying', metadata: {} },
+        { serviceId: 'svc', status: 'ready', metadata: { host: 'db.example.net', port: 5432 } },
+        { serviceId: 'svc', status: 'failed', metadata: { host: 'db.example.net', port: 5432 } },
+        { serviceId: 'svc', status: 'applying', metadata: {} },
       ]),
       ['svc']
     ),
     false
   )
   assertEquals(await hasUnprovisionedBoundManaged(boundManagedDb([]), []), false)
+})
+
+test('hasUnprovisionedBoundManaged only looks at the services it is asked about', async () => {
+  const db = boundManagedDb([
+    { serviceId: 'other', status: 'failed', metadata: {} },
+    { serviceId: 'svc', status: 'ready', metadata: { host: 'db.example.net', port: 5432 } },
+  ])
+  assertEquals(await hasUnprovisionedBoundManaged(db, ['svc']), false)
+  assertEquals(await hasUnprovisionedBoundManaged(db, ['other']), true)
 })

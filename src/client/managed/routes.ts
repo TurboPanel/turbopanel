@@ -902,11 +902,8 @@ async function clearIncompleteManagedCreate(
   fallbackServerId: string | null,
   userId: string
 ): Promise<Response | null> {
-  // A `failed` row whose first apply never reported an address has nothing
-  // running: clear it too, so a retry gets a fresh create instead of
-  // `alreadyProvisioned` for a database that does not exist. A failed row that
-  // once provisioned keeps its data and stays "already provisioned".
-  if (existing.status === 'provisioning' || isManagedNeverProvisioned(existing)) {
+  // A create that never reached its first apply: nothing ran, nothing is bound.
+  if (existing.status === 'provisioning') {
     await deleteManagedCompensation(c, db, {
       userId,
       managedId: existing.id,
@@ -919,6 +916,101 @@ async function clearIncompleteManagedCreate(
     ok: true as const,
     alreadyProvisioned: true as const,
     managed: serializeManagedRow(existing, serverId),
+  })
+}
+
+/**
+ * Retries the first apply of a `failed` row that never reported an address, in
+ * place: the row id, its logins and the service bindings stay, so a service
+ * bound to this database keeps its variables. The root password is rotated so
+ * a fresh show-once value can be returned (the failed create already showed
+ * the old one). Any failure puts the row and the password back as they were.
+ */
+async function retryFailedManagedCreate(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  params: {
+    existing: ManagedRow
+    ctx: ManagedContext
+    userId: string
+    dataEncryptionSecrets: DerivedSecretsConfig
+  }
+): Promise<Response> {
+  const { existing, ctx, userId, dataEncryptionSecrets } = params
+  const residual = parseManagedResidual(existing.metadata)
+  const rootLoginId = residual.rootLoginId
+  const rootLogin = rootLoginId ? await findManagedLogin(db, existing.id, rootLoginId) : undefined
+  if (!rootLogin) return c.json({ error: 'Not found' }, 404)
+
+  const options = await loadManagedOptions(db, ctx.spec, existing)
+  if (!options) return c.json({ error: 'Invalid managed options' }, 400)
+
+  const targetServerId = resolveManagedTargetServerId(c, existing.serverId ?? ctx.serverId)
+  if (targetServerId instanceof Response) return targetServerId
+
+  // Back to `provisioning`, only from `failed`: a second retry racing this one
+  // finds the row already moved and stops here.
+  const { error: _previousError, ...metadataWithoutError } =
+    (existing.metadata as Record<string, unknown> | null) ?? {}
+  const [moved] = await db
+    .update(managed)
+    .set({
+      status: 'provisioning',
+      metadata: metadataWithoutError,
+      updatedAt: new Date().toISOString(),
+    })
+    .where(and(eq(managed.id, existing.id), eq(managed.status, 'failed')))
+    .returning(MANAGED_RETURNING)
+  if (!moved) return c.json({ error: 'managed_busy' }, 409)
+
+  const previousPassword = rootLogin.password
+  const restoreFailed = async () => {
+    await rollBackLoginRotation(db, dataEncryptionSecrets, {
+      loginId: rootLogin.id,
+      previousPassword,
+    })
+    await db
+      .update(managed)
+      .set({
+        status: 'failed',
+        metadata: existing.metadata,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(and(eq(managed.id, existing.id), eq(managed.status, 'provisioning')))
+  }
+
+  const { plaintext } = await rotateLoginPassword(db, dataEncryptionSecrets, rootLogin.id)
+  const materialized = await materializeBindingsForLogin(db, dataEncryptionSecrets, rootLogin.id)
+  if (!('ok' in materialized)) {
+    await restoreFailed()
+    return c.json({ error: materialized.kind }, 422)
+  }
+
+  const prepared = await prepareApplyForManaged(c, db, ctx, moved, options, targetServerId)
+  if (prepared instanceof Response) {
+    await restoreFailed()
+    return prepared
+  }
+  const enqueued = await enqueuePreparedManagedApply(c, db, prepared.commandQueue, {
+    userId,
+    managedId: existing.id,
+    members: prepared.members,
+  })
+  if (enqueued instanceof Response) {
+    await restoreFailed()
+    return enqueued
+  }
+
+  const primary = pickPrimaryCommandResult(enqueued)
+  return c.json({
+    ok: true as const,
+    retried: true as const,
+    managed: serializeManagedRow(moved, targetServerId),
+    commandId: primary?.commandId,
+    serverId: primary?.serverId ?? targetServerId,
+    results: enqueued,
+    rootPassword: plaintext,
+    rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
   })
 }
 
@@ -2554,6 +2646,18 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const { db, environmentId, auth, ctx } = scope
 
     const existing = await findManagedForEnvironment(db, environmentId)
+    if (existing?.status === 'failed' && isManagedNeverProvisioned(existing)) {
+      const dataEncryptionSecretsForRetry = c.get('dataEncryptionSecrets')
+      if (!dataEncryptionSecretsForRetry) {
+        return c.json({ error: 'Encryption unavailable' }, 503)
+      }
+      return await retryFailedManagedCreate(c, db, {
+        existing,
+        ctx,
+        userId: auth.userId,
+        dataEncryptionSecrets: dataEncryptionSecretsForRetry,
+      })
+    }
     if (existing) {
       // Incomplete creates never enqueued apply — remove so a fresh show-once
       // password can be issued. Successful creates leave status beyond

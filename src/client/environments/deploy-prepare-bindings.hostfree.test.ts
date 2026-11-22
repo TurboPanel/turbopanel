@@ -4,6 +4,8 @@
  */
 
 import { assertEquals } from '@std/assert'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import type { SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { resolveBindingMaterializationOutcome } from './deploy-prepare.ts'
 
@@ -15,15 +17,36 @@ import { resolveBindingMaterializationOutcome } from './deploy-prepare.ts'
  */
 const test = Deno.test.bind(Deno)
 
-function boundManagedDb(rows: Array<{ status: string; metadata: unknown }>): Db {
+interface BoundManagedFixture {
+  serviceId: string
+  status: string
+  metadata: unknown
+}
+
+/**
+ * A db holding one row per (binding, login, managed) chain. The query's `where`
+ * is rendered to SQL and its parameters read back, so only the chains of the
+ * service ids the code asked about come out: a query that drops the filter
+ * returns the other services' rows and the tests fail.
+ */
+function boundManagedDb(chains: BoundManagedFixture[]): Db {
+  const dialect = new PgDialect()
   const chain: {
     innerJoin: () => typeof chain
-    where: () => Promise<unknown[]>
-  } = { innerJoin: () => chain, where: () => Promise.resolve(rows) }
+    where: (clause: SQL) => Promise<unknown[]>
+  } = {
+    innerJoin: () => chain,
+    where: (clause) => {
+      const asked = new Set(dialect.sqlToQuery(clause).params)
+      return Promise.resolve(chains.filter((row) => asked.has(row.serviceId)))
+    },
+  }
   return { select: () => ({ from: () => chain }) } as unknown as Db
 }
 
-const failedFirstApply = [{ status: 'failed', metadata: { error: 'compose up failed' } }]
+const failedFirstApply = [
+  { serviceId: 'svc', status: 'failed', metadata: { error: 'compose up failed' } },
+]
 
 test('deploy refuses a service bound to a database that failed to provision', async () => {
   const outcome = await resolveBindingMaterializationOutcome(
@@ -47,7 +70,10 @@ test('preview only warns about a database that failed to provision', async () =>
 
 test('deploy goes on when the bound database is provisioned', async () => {
   const outcome = await resolveBindingMaterializationOutcome(
-    boundManagedDb([{ status: 'ready', metadata: { host: 'db.example.net', port: 5432 } }]),
+    boundManagedDb([
+      { serviceId: 'svc', status: 'ready', metadata: { host: 'db.example.net', port: 5432 } },
+      { serviceId: 'unrelated', status: 'failed', metadata: {} },
+    ]),
     undefined,
     ['svc'],
     'deploy'
