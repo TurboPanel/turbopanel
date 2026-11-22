@@ -26,6 +26,22 @@ import { updateManagedMemberDisplayReplication } from './members.ts'
 
 export type ManagedHealthReportOutcome = { stored: number; ignored: number }
 
+const DISPLAY_NUMBER_FIELDS = ['lagBytes', 'lagSeconds', 'receiveLagBytes'] as const
+const DISPLAY_TEXT_FIELDS = ['receivedLsn', 'replayLsn', 'receivedGtid', 'executedGtid'] as const
+
+/** The fields `parseDisplayReplicationHealth` (members.ts) reads, and nothing else. */
+function pickDisplayFields(source: ManagedReplicationHealth): ManagedReplicationHealth {
+  const out: ManagedReplicationHealth = { state: source.state, observedAt: source.observedAt }
+  for (const key of DISPLAY_NUMBER_FIELDS) {
+    if (source[key] !== undefined) out[key] = source[key]
+  }
+  for (const key of DISPLAY_TEXT_FIELDS) {
+    if (source[key] !== undefined) out[key] = source[key]
+  }
+  if (source.fullyApplied !== undefined) out.fullyApplied = source.fullyApplied
+  return out
+}
+
 function readingFromReport(
   entry: ManagedHealthReportMember,
   receivedAtMs: number
@@ -34,8 +50,10 @@ function readingFromReport(
   if (entry.down || !entry.replication) {
     return { state: 'not_streaming', observedAt: receivedAt }
   }
-  const reading = { ...entry.replication }
-  delete reading.lastStreaming
+  // Keep only what the display reads. The daemon's own bookkeeping
+  // (receiptAgeSeconds, receiptAgeLimitSeconds, lastStreaming, slot retention)
+  // changes on every read and would make every report look changed.
+  const reading = pickDisplayFields(entry.replication)
   const observedMs = Date.parse(reading.observedAt)
   // A daemon clock ahead of ours must not make a reading look newer than it is.
   return observedMs > receivedAtMs ? { ...reading, observedAt: receivedAt } : reading

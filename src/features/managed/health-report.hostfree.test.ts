@@ -207,10 +207,41 @@ test('the write is conditional in the same statement: changed state, or stored c
   // Never a second statement: the comparison lives in the UPDATE's WHERE.
   assertEquals(h.statements.length, 1)
   assertEquals(compact.includes('WHERE id = $'), true)
-  assertEquals(compact.includes("- 'observedAt' IS DISTINCT FROM"), true)
+  assertEquals(compact.includes('IS DISTINCT FROM'), true)
+  assertEquals(compact.includes('jsonb_typeof('), true)
   assertEquals(compact.includes('<= $'), true)
   assertEquals(compact.includes('make_interval(secs => $'), true)
   // Reading, member, receipt time and the five minute refresh in seconds.
   assertEquals(params.includes(iso(0)), true)
   assertEquals(params.includes(300), true)
+})
+
+test('daemon-internal receipt fields never reach the stored reading, so reports differing only in them match', async () => {
+  const realistic = (receiptAgeSeconds: number) => ({
+    state: 'streaming',
+    observedAt: iso(-1000),
+    lagBytes: 0,
+    receiveLagBytes: 0,
+    receivedLsn: '0/5000148',
+    replayLsn: '0/5000148',
+    receiptAgeSeconds,
+    receiptAgeLimitSeconds: 5,
+    lastStreaming: { at: iso(-1000), ageMs: 5 },
+  })
+  const storedFor = async (receiptAgeSeconds: number) => {
+    const h = harness()
+    await handleManagedHealthReport(h.db, {
+      reporterServerId: REPORTER,
+      members: [
+        { managedId: MANAGED, memberId: MEMBER_OURS, replication: realistic(receiptAgeSeconds) },
+      ],
+      nowMs: NOW_MS,
+    })
+    return h.written[0]!.metadata.replicationDisplay as Record<string, unknown>
+  }
+  const first = await storedFor(0.123456)
+  assertEquals('receiptAgeSeconds' in first, false)
+  assertEquals('receiptAgeLimitSeconds' in first, false)
+  assertEquals(first, await storedFor(2.718281))
+  assertEquals(first.receivedLsn, '0/5000148')
 })

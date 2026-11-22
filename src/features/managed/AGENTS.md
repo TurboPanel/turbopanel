@@ -1149,8 +1149,10 @@ Fresh readings come from two sources:
   `managed-health-report-v1`, every 30 s) writes to a display-only field
   (`metadata.replicationDisplay`): only the reporting server's own replicas are
   written, `lastStreaming` is dropped, a future time is clamped to receipt. The
-  write is one conditional `UPDATE`: a reading that differs from the stored one
-  (the observation time aside) is written at once, an unchanged one only when
+  write is one conditional `UPDATE`: only the fields the display reads are stored
+  (never the daemon's `receiptAge*` bookkeeping); a reading that differs from
+  the stored one is written at once (observation time, WAL / GTID positions
+  ignored, lag compared per 1 MiB / 10 s), an unchanged one only when
   the stored copy is 5 minutes old (`REPLICA_DISPLAY_REFRESH_MS`). A pushed
   reading therefore has its own display window, `REPLICA_DISPLAY_STALE_MS`
   (10 minutes), above the refresh interval; a probe reading keeps 120 s.

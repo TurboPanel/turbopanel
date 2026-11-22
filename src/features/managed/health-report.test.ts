@@ -18,6 +18,7 @@ import {
   server,
   workspace,
 } from '../../db/schema.ts'
+import type { ManagedHealthReportMember } from '../../contracts/cell-protocol.ts'
 import { handleManagedHealthReport } from './health-report.ts'
 import { REPLICA_DISPLAY_REFRESH_MS } from './replica-freshness.ts'
 
@@ -133,14 +134,23 @@ async function stored(db: Db, memberId: string) {
 
 test('an unchanged reading is skipped, a changed one is written, an old unchanged one is written again', async () => {
   await withMember(async ({ db, managedId, memberId, serverId }) => {
-    const report = (nowMs: number, state: string, lagBytes = 0) =>
+    const report = (nowMs: number, state: string, extra: Record<string, unknown> = {}) =>
       handleManagedHealthReport(db, {
         reporterServerId: serverId,
         members: [
           {
             managedId,
             memberId,
-            replication: { state, observedAt: new Date(nowMs - 1000).toISOString(), lagBytes },
+            replication: {
+              state,
+              observedAt: new Date(nowMs - 1000).toISOString(),
+              lagBytes: 0,
+              receivedLsn: '0/5000148',
+              replayLsn: '0/5000148',
+              receiptAgeSeconds: 0.25,
+              receiptAgeLimitSeconds: 5,
+              ...extra,
+            } as ManagedHealthReportMember['replication'],
           },
         ],
         nowMs,
@@ -174,5 +184,55 @@ test('an unchanged reading is skipped, a changed one is written, an old unchange
       (await stored(db, memberId)).display?.observedAt,
       new Date(at - 1000).toISOString()
     )
+  })
+})
+
+test('moving positions, daemon-internal fields and lag jitter inside a bucket do not force a write', async () => {
+  await withMember(async ({ db, managedId, memberId, serverId }) => {
+    const report = (nowMs: number, reading: Record<string, unknown>) =>
+      handleManagedHealthReport(db, {
+        reporterServerId: serverId,
+        members: [
+          {
+            managedId,
+            memberId,
+            replication: {
+              state: 'streaming',
+              observedAt: new Date(nowMs - 1000).toISOString(),
+              ...reading,
+            } as ManagedHealthReportMember['replication'],
+          },
+        ],
+        nowMs,
+      })
+    await report(NOW_MS, {
+      lagBytes: 1000,
+      receiveLagBytes: 1000,
+      receivedLsn: '0/5000148',
+      replayLsn: '0/5000148',
+      receiptAgeSeconds: 0.25,
+      receiptAgeLimitSeconds: 5,
+    })
+    const first = await stored(db, memberId)
+
+    // Only receiptAgeSeconds, the WAL positions and lag inside the same MiB moved: skipped.
+    await report(NOW_MS + 30_000, {
+      lagBytes: 5000,
+      receiveLagBytes: 70_000,
+      receivedLsn: '0/5000200',
+      replayLsn: '0/5000200',
+      receiptAgeSeconds: 3.141592,
+      receiptAgeLimitSeconds: 5,
+    })
+    const skipped = await stored(db, memberId)
+    assertEquals(skipped.display, first.display)
+    assertEquals(skipped.updatedAt, first.updatedAt)
+    assertEquals('receiptAgeSeconds' in (skipped.display ?? {}), false)
+
+    // Lag in another MiB bucket is a change: written with the exact value.
+    await report(NOW_MS + 60_000, { lagBytes: 5_000_000, receivedLsn: '0/6000000' })
+    const moved = await stored(db, memberId)
+    assertEquals(moved.display?.lagBytes, 5_000_000)
+    assertEquals(moved.display?.receivedLsn, '0/6000000')
   })
 })
