@@ -14,6 +14,7 @@ import { command, ip, portal, server, tunnel } from '../../db/schema.ts'
 import { parseTunnelStatusResult } from '../../contracts/commands/tunnel-status.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { gapStillRunning } from '../../lib/slot-gap.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
@@ -173,9 +174,11 @@ export async function pollServerTunnelStatus(
     // An answered question waits out the gap (short while a new connector is unheard);
     // an unanswered one waits out its own life.
     const quick =
-      answered && age < TUNNEL_STATUS_POLL_GAP_MS && age >= TUNNEL_STATUS_NEW_PORTAL_GAP_MS
+      answered &&
+      gapStillRunning(age, TUNNEL_STATUS_POLL_GAP_MS) &&
+      age >= TUNNEL_STATUS_NEW_PORTAL_GAP_MS
     const unheard = quick && (await hasUnheardPortal(db, row.id, nowMs))
-    if (age < statusGapMs(answered, unheard)) {
+    if (gapStillRunning(age, statusGapMs(answered, unheard))) {
       return recorded ? 'recorded' : 'waiting'
     }
   }

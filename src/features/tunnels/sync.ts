@@ -20,6 +20,7 @@ import { command, server, tunnel } from '../../db/schema.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { gapStillRunning } from '../../lib/slot-gap.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -112,7 +113,9 @@ export function lastSendIsSettled(
   const open = ['queued', 'dispatching', 'sent', 'acked', 'running']
   // Still moving: wait for it, unless it has been stuck for too long.
   return Boolean(
-    row && open.includes(row.status) && nowMs - Date.parse(state.sentAt) < TUNNEL_ROUTES_STALE_MS
+    row &&
+    open.includes(row.status) &&
+    gapStillRunning(nowMs - Date.parse(state.sentAt), TUNNEL_ROUTES_STALE_MS)
   )
 }
 
@@ -220,7 +223,7 @@ async function isAlreadyCurrent(
   if (sent.stateHash !== stateHash) return false
   const last = await loadLastSend(db, sent)
   if (lastSendIsSettled(last, sent, Date.now())) return true
-  if (Date.now() - Date.parse(sent.sentAt) < resendGapAfter(last)) return true
+  if (gapStillRunning(Date.now() - Date.parse(sent.sentAt), resendGapAfter(last))) return true
   compatLogWarn(
     'tunnel-sync',
     `server ${serverId}: the last forwarding table was not applied (${describeUnsettled(last)}); sending it again`

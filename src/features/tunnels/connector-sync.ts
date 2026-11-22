@@ -24,6 +24,7 @@ import { resealSecretForDaemon } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { gapStillRunning } from '../../lib/slot-gap.ts'
 import type { TunnelConnectorsCommandPayload } from '../../contracts/commands/tunnel-connectors.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
@@ -211,9 +212,9 @@ function isAlreadyCurrent(
   if (confirmed) return true
   const open = ['queued', 'dispatching', 'sent', 'acked', 'running']
   if (last && open.includes(last.status)) {
-    return Date.now() - Date.parse(sent.sentAt) < TUNNEL_CONNECTORS_STALE_MS
+    return gapStillRunning(Date.now() - Date.parse(sent.sentAt), TUNNEL_CONNECTORS_STALE_MS)
   }
-  return Date.now() - Date.parse(sent.sentAt) < TUNNEL_CONNECTORS_RESEND_GAP_MS
+  return gapStillRunning(Date.now() - Date.parse(sent.sentAt), TUNNEL_CONNECTORS_RESEND_GAP_MS)
 }
 
 /**

@@ -24,6 +24,7 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import {
   pollServerTunnelStatus,
+  readAskedState,
   runTunnelStatusPollTick,
   TUNNEL_STATUS_NEW_PORTAL_GAP_MS,
 } from './status-poll.ts'
@@ -167,6 +168,26 @@ test('a question that was never answered is asked again once it is stale', async
     await pollServerTunnelStatus(c.db, c.queue, await c.row())
     await ageQuestion(c.db, c.serverId)
     assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'asked')
+    assertEquals(c.queued.length, 2)
+  })
+})
+
+test('an answered question is asked again on the slot ten minutes on, with a few seconds of jitter', async () => {
+  await withServer({ features: [TUNNEL_STATUS_FEATURE] }, async (c) => {
+    await pollServerTunnelStatus(c.db, c.queue, await c.row())
+    await c.db
+      .update(command)
+      .set({ status: 'succeeded', resultSummary: answer(c.externalId) })
+      .where(eq(command.id, c.queued[0]!.commandId))
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row()), 'recorded')
+    const sentAt = Date.parse(readAskedState((await c.row()).metadata)!.sentAt)
+
+    // The slot five minutes on: still inside the gap.
+    const half = sentAt + 5 * 60_000 + 7_000
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row(), half), 'waiting')
+    // The slot ten minutes on, the last run having been a few seconds into its slot: asked.
+    const slot = sentAt + 10 * 60_000 - 15_000
+    assertEquals(await pollServerTunnelStatus(c.db, c.queue, await c.row(), slot), 'asked')
     assertEquals(c.queued.length, 2)
   })
 })
