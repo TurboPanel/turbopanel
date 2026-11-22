@@ -5,6 +5,7 @@
  * errors already scrubbed of tokens.
  */
 import type { Context, Hono } from 'hono'
+import { issueNameOriginCertificates } from '../hostings/name-origin-certificates.ts'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -366,6 +367,16 @@ function addDoorwayResponse(registry: TunnelAdapterRegistry) {
         // What the replaced records were: once replaced, this is the only record of them.
         ...replacedOf(created.metadata),
       })
+      // A name set to the origin certificate that now rides this tunnel gets it.
+      const session = c.get('session')
+      if (created.hostingId && session) {
+        await issueNameOriginCertificates(c, scope.db, {
+          hostingId: created.hostingId,
+          organizationId: scope.organizationId,
+          actor: { userId: session.userId, email: session.email ?? null },
+          registry,
+        })
+      }
       nudgeServers(c, scope)
       return c.json({ hostname: toApiDoorway(created) }, 201)
     } catch (err) {

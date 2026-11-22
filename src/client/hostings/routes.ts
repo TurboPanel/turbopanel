@@ -18,6 +18,7 @@ import {
   replaceHostingHostnames,
 } from '../../features/servers/hostname-records.ts'
 import { ensureNameHttpOrders } from './name-http-orders.ts'
+import { issueNameOriginCertificates } from './name-origin-certificates.ts'
 import { environmentOfHosting, hostingRemovalUpdate } from './letsencrypt-apply.ts'
 import { pinHostingNames, syncHostingPin } from '../../features/hostings/name-certificates.ts'
 import { parseHostingOptions, readHostingWwwMode } from '../../features/hostings/hosting-options.ts'
@@ -354,7 +355,7 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   router.post('/hostings', async (c) => {
     const sessionOrg = await requireDbSessionAndOrg(c)
     if (sessionOrg instanceof Response) return sessionOrg
-    const { db, organizationId } = sessionOrg
+    const { db, session, organizationId } = sessionOrg
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -398,6 +399,12 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     try {
       const id = await insertHostingFromCreate(db, fields, serviceId, organizationId, fks, choices)
+      // A name that chose the origin certificate gets it now, after the save committed.
+      await issueNameOriginCertificates(c, db, {
+        hostingId: id,
+        organizationId,
+        actor: { userId: session.userId, email: session.email ?? null },
+      })
       nudgeTunnelRoutesAfterResponse(c, organizationId)
       return c.json({ ok: true as const, id })
     } catch (err) {
@@ -460,6 +467,11 @@ export function registerHostingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     })
     if (conflict) return conflict
 
+    await issueNameOriginCertificates(c, db, {
+      hostingId: id,
+      organizationId,
+      actor: { userId: session.userId, email: session.email ?? null },
+    })
     nudgeTunnelRoutesAfterResponse(c, organizationId)
     return c.json({ ok: true as const })
   })

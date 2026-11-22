@@ -67,6 +67,27 @@ the typed names plus the `www` names the www mode adds (`hostingRoutingNames`).
   end it and tell the helpers), after which the row is cleaned up as usual. A
   per-name row never becomes `hosting.tls_id` (`syncHostingPin` skips it), so
   names added later and the whole-site flow never reach it.
+- A name saved as `cloudflare_origin` with no pin gets its certificate from
+  `ensureNameOriginCertificates` (`src/client/hostings/name-origin-certificates.ts`),
+  the counterpart for the origin certificate. Unlike the Let's Encrypt order it
+  calls the provider, so it runs after the save committed
+  (`issueNameOriginCertificates`: `POST`/`PATCH /hostings`, and a doorway add
+  that attaches the name to a tunnel), under an advisory lock per organization,
+  re-reading the waiting names under it, so a second caller issues nothing.
+  Names of one zone share one certificate: the organization's own carriers are
+  searched, the longest matching zone wins, the token comes from `pickBadges`
+  on its recorded certificate rights, and `ensureOriginCertificate` reuses a
+  covering certificate or issues one (audit `origin_certificate.issue`, the
+  same as the manual route). The name is then pinned with `hostname.tls_id` and
+  the hostings-only apply is queued. A name that cannot get one (no token for
+  the zone, a refusal, a provider failure) records why on `hosting.metadata`
+  (`nameOriginIssues`, `name-origin-issues.ts`, one entry per name with
+  `attempts` and `nextTryAt`; no table) and the hosting read shows it as
+  `names[].originCertificateIssue`. A save or attach retries at once; the
+  hourly Let's Encrypt tick (`sweepNameOriginCertificates`) retries names whose
+  `nextTryAt` has passed (15 minutes with no token, else the doubling back-off
+  of the origin sweep, or the provider's own wait). The entry goes when the
+  name is pinned or leaves the choice. A compose-owned site is left alone.
 - The library "in use" read and the delete guard look at `hostname.tls_id`
   (`certificateIdsPinnedBy`, `notPinnedBySiteCondition`).
 - Deploy preparation (`src/client/environments/deploy-prepare.ts`) judges the

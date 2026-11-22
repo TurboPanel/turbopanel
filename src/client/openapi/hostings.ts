@@ -311,8 +311,40 @@ export const hostingSchemas = {
       { $ref: '#/components/schemas/HostingNameCertificateChoice' },
       {
         type: 'object',
-        required: ['certificateOptions'],
+        required: ['certificateOptions', 'originCertificateIssue'],
         properties: {
+          originCertificateIssue: {
+            description:
+              'Why a name set to `cloudflare_origin` has no certificate yet; null when nothing went wrong or the name holds one. Shown instead of a silent wait. The scheduled retry tries again after `nextTryAt` (a save or a tunnel attach tries at once).',
+            oneOf: [
+              { type: 'null' },
+              {
+                type: 'object',
+                required: ['code', 'message', 'failedAt', 'attempts', 'nextTryAt'],
+                properties: {
+                  code: {
+                    type: 'string',
+                    enum: [
+                      'no_badge',
+                      'provider_error',
+                      'unsupported_provider',
+                      'zone_not_covered',
+                      'secrets_unavailable',
+                      'badge_cannot_certify',
+                      'origin_certificate_limit',
+                      'origin_certificate_names',
+                    ],
+                    description:
+                      "`no_badge`: no API token of the organization has certificate rights for the name's zone. `provider_error`: the provider refused or failed. The others are the issuing code's refusals.",
+                  },
+                  message: { type: 'string', description: 'Plain words, safe to show.' },
+                  failedAt: { type: 'string', format: 'date-time' },
+                  attempts: { type: 'integer', minimum: 1 },
+                  nextTryAt: { type: ['string', 'null'], format: 'date-time' },
+                },
+              },
+            ],
+          },
           certificateOptions: {
             type: 'object',
             description:

@@ -34,8 +34,10 @@ import { runStoredPairSweepTick } from '../tls/stored-pair.ts'
 import { systemRotationContext } from '../tls/system-context.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
+import type { TunnelAdapterRegistry } from '../../features/tunnels/registry.ts'
 import { runOriginCertificateSweepTick } from '../../features/tunnels/origin-certificate-sweep.ts'
 import { createLetsEncryptStore, loadAcmeEnabled } from './letsencrypt-store.ts'
+import { sweepNameOriginCertificates } from './name-origin-certificates.ts'
 import { type HostingApplyDeps, queueHostingCertificateApply } from './letsencrypt-apply.ts'
 
 /** Waiting hostings looked at per tick (each one costs a DNS lookup or two). */
@@ -102,7 +104,11 @@ function pinSender(
  */
 async function sweepOriginCertificatesToo(
   db: Db,
-  deps: { now?: () => Date; apply?: HostingLetsEncryptSweepApply },
+  deps: {
+    now?: () => Date
+    apply?: HostingLetsEncryptSweepApply
+    registry?: TunnelAdapterRegistry
+  },
   sendPin: (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean>
 ): Promise<void> {
   const secrets = deps.apply?.dataEncryptionSecrets
@@ -110,6 +116,7 @@ async function sweepOriginCertificatesToo(
   try {
     const done = await runOriginCertificateSweepTick(db, secrets, {
       ...(deps.now ? { now: deps.now() } : {}),
+      ...(deps.registry ? { registry: deps.registry } : {}),
     })
     await forEachSequential(done.repinned, async ({ hostingId, organizationId }) => {
       const [site] = await db
@@ -121,6 +128,33 @@ async function sweepOriginCertificatesToo(
     })
   } catch (err) {
     logWarn('tls', `origin certificate sweep failed: ${err instanceof Error ? err.message : err}`)
+  }
+  await retryNameOriginCertificates(db, deps, secrets, sendPin)
+}
+
+/**
+ * Names set to the Cloudflare origin certificate that have no pin yet (the
+ * issue failed or was never tried) get another go, honouring the back-off each
+ * recorded. A site that gained a certificate gets its hostings-only apply. A
+ * failure here must not hide the result of the tick.
+ */
+async function retryNameOriginCertificates(
+  db: Db,
+  deps: { now?: () => Date; registry?: TunnelAdapterRegistry },
+  secrets: DerivedSecretsConfig,
+  sendPin: (hostingId: string, organizationId: string, editedAt: string) => Promise<boolean>
+): Promise<void> {
+  try {
+    const done = await sweepNameOriginCertificates(db, {
+      secrets,
+      ...(deps.now ? { now: deps.now() } : {}),
+      ...(deps.registry ? { registry: deps.registry } : {}),
+    })
+    await forEachSequential(done.pinned, ({ hostingId, organizationId, editedAt }) =>
+      sendPin(hostingId, organizationId, editedAt).then(() => undefined)
+    )
+  } catch (err) {
+    logWarn('tls', `origin certificate retry failed: ${err instanceof Error ? err.message : err}`)
   }
 }
 
@@ -188,6 +222,8 @@ export async function runHostingLetsEncryptSweepTick(
     signal?: AbortSignal
     /** Test seam for {@link HOSTING_LETS_ENCRYPT_SWEEP_DEADLINE_MS}. */
     deadlineMs?: number
+    /** The provider adapters; tests stand in for the provider. */
+    registry?: TunnelAdapterRegistry
   } = {}
 ): Promise<HostingLetsEncryptSweepResult> {
   const deadline = AbortSignal.timeout(deps.deadlineMs ?? HOSTING_LETS_ENCRYPT_SWEEP_DEADLINE_MS)

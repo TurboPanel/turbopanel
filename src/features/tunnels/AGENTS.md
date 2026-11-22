@@ -673,6 +673,17 @@ impersonate any name under the zone, revoking it takes every site with it, it
 does not cover a name two labels down (`a.b.zone`), and names are added one at a
 time anyway.
 
+**Choosing it issues it.** A name whose stored choice is `cloudflare_origin` with
+no pin is issued a certificate by `ensureNameOriginCertificates`
+(`src/client/hostings/name-origin-certificates.ts`, rules in
+`src/features/hostings/AGENTS.md`): on a hosting save, when a doorway attaches
+the name to a tunnel (`POST .../tunnels/:tunnelId/hostnames`), and from the
+hourly Let's Encrypt tick. It calls `ensureOriginCertificate` per zone with a
+token of the same organization picked by `pickBadges`, so the manual route and
+this path issue the same way and reuse each other's certificates. When no token
+or the provider refuses, the reason sits on the hosting (`names[].originCertificateIssue`)
+and the name keeps its choice, unverified, until a retry succeeds.
+
 `origin-certificate.ts` keeps the issued pairs in the organization certificate
 library (`tls`, source `provider_origin`), one row per certificate. The key is
 an ECDSA P-256 key made in the panel (`mintCertificateRequest`); only the
