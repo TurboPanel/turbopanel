@@ -125,7 +125,7 @@ High Availability (Workers) must not contain any of it.
   tunnel row stored with an older version (`tunnelRulesStale`), so installs
   already connected pick the change up.
   A locally managed tunnel is refused with cause `tunnel-locally-managed`;
-  verifying the loopback hop with `caPool` is a later step. `noTLSVerify` drops for a name whose ACME
+  verifying the loopback hop or a provider origin certificate with `caPool` is a later step. `noTLSVerify` drops for a name whose ACME
   pair (DNS-01 or HTTP-01) is issued and unexpired (`originCertVerifiable`);
   the ingress tick re-applies a name whose stored `originVerified` no longer
   matches, so issue, expiry and fallback rebuild the rules. The CNAME is proxied; another record on the

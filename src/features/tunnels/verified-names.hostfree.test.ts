@@ -100,20 +100,9 @@ function originPin(over: Record<string, unknown> = {}) {
   }
 }
 
-test('a ready origin certificate that covers the name verifies it', () => {
-  assertEquals(nameIsVerified(facts({ pin: originPin() }), NOW), true)
-})
-
-test('an origin certificate that is due, unpaired, not ready or for other names does not verify', () => {
-  assertEquals(
-    nameIsVerified(facts({ pin: originPin({ notAfter: '2026-11-25T00:00:00.000Z' }) }), NOW),
-    false
-  )
-  assertEquals(nameIsVerified(facts({ pin: originPin({ hasPair: false }) }), NOW), false)
-  assertEquals(nameIsVerified(facts({ pin: originPin({ status: 'pending' }) }), NOW), false)
-  const other = originPin()
-  ;(other.metadata.providerOrigin as { hostnames: string[] }).hostnames = ['b.example.com']
-  assertEquals(nameIsVerified(facts({ pin: other }), NOW), false)
+test('a provider origin certificate never verifies a name (the connector has no caPool)', () => {
+  assertEquals(nameIsVerified(facts({ pin: originPin() }), NOW), false)
+  assertEquals(nameIsVerified(facts({ pin: lePin() }), NOW), true)
 })
 
 test('a pair from the test directory never verifies a name', () => {
