@@ -1350,6 +1350,18 @@ export class DaemonCellObject {
     }
   }
 
+  /** The session a report is about, from its socket, its pending open or its ended record. */
+  #knownShellMeta(
+    sid: string,
+    socket: WebSocket | undefined,
+    pending: PendingShellOpen | null | undefined
+  ): ShellSessionMeta | null {
+    const socketMeta = socket ? this.#shellMetaOf(socket) : null
+    if (socketMeta) return socketMeta
+    if (pending) return this.#shellMetaFromPending(pending)
+    return this.#endedShell.get(sid)?.meta ?? null
+  }
+
   /** `shell-opened` / `shell-closed` / `shell-error` from the daemon; false for any other type. */
   async #handleShellReport(
     attachment: { connectionId: string; serverId: string },
@@ -1369,14 +1381,10 @@ export class DaemonCellObject {
       )
       return true
     }
-    const nowMs = Date.now()
     const sid = parsed.sid
     const socket = this.#shellSockets(sid)[0]
-    const socketMeta = socket ? this.#shellMetaOf(socket) : null
-    const pending = this.#pendingShell.get(sid, nowMs)
-    const ended = this.#endedShell.get(sid)
-    const meta =
-      socketMeta ?? (pending ? this.#shellMetaFromPending(pending) : (ended?.meta ?? null))
+    const pending = this.#pendingShell.get(sid, Date.now())
+    const meta = this.#knownShellMeta(sid, socket, pending)
     if (!meta) {
       // Nothing here remembers the session (evicted, deployed over): its open row
       // may still owe a close row, found by sid on this server only.

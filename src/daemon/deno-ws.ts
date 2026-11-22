@@ -1492,6 +1492,18 @@ export function registerDaemonWebSocket<E extends Env>(
         return null
       }
 
+      /** Terminal reports belong to the hub, not the cell. */
+      const handledByShellHub = async (
+        message: DaemonMessage,
+        signature: ReportSignature
+      ): Promise<boolean> =>
+        Boolean(
+          options.shellHub &&
+          connectionId &&
+          isShellReport(message) &&
+          (await options.shellHub.onDaemonReport(payload.sub, connectionId, message, signature))
+        )
+
       const handleInboundMessageBody = async (
         raw: string,
         ws: WSContext<WebSocket>
@@ -1530,20 +1542,7 @@ export function registerDaemonWebSocket<E extends Env>(
           type: message.type,
         })
 
-        // Terminal reports belong to the hub, not the cell.
-        if (
-          options.shellHub &&
-          connectionId &&
-          isShellReport(message) &&
-          (await options.shellHub.onDaemonReport(
-            payload.sub,
-            connectionId,
-            message,
-            validated.signature
-          ))
-        ) {
-          return
-        }
+        if (await handledByShellHub(message, validated.signature)) return
 
         await dispatchDaemonInboundMessage({
           cell: registry.getCell(payload.sub),

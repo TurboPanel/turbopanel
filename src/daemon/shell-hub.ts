@@ -112,7 +112,7 @@ export class ShellHub {
       this.#pending.delete(open.sid)
       finishes.push(this.#finish(this.#metaOf(open), lost))
     }
-    for (const live of [...this.#live.values()]) {
+    for (const live of this.#live.values()) {
       if (live.meta.daemonConnectionId !== connectionId) continue
       this.#live.delete(live.meta.sid)
       live.browser.send(
@@ -126,7 +126,7 @@ export class ShellHub {
       live.browser.close(SHELL_CLOSE.daemonLost, 'daemon_lost')
       finishes.push(this.#finish(live.meta, lost))
     }
-    for (const ended of [...this.#ended.values()]) {
+    for (const ended of this.#ended.values()) {
       if (!ended.audited && ended.meta.daemonConnectionId === connectionId) {
         finishes.push(this.#finish(ended.meta, lost))
       }
