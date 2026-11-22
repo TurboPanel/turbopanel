@@ -3372,6 +3372,47 @@ export class DaemonCellObject {
     return true
   }
 
+  /** Certificate issuance results from the daemon; false for any other type. */
+  async #handleAcmeInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: DaemonMessage
+  ): Promise<boolean> {
+    if (parsed.type === 'acme-issuance-event') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb('acme-issuance-event', attachment.serverId, async (db) => {
+        await handleAcmeIssuanceEvent(
+          db,
+          {
+            serverId: attachment.serverId,
+            hostname: parsed.hostname,
+            ok: parsed.ok,
+            at: parsed.at,
+            ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
+            ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
+          },
+          {
+            onNewFailure: async (failure) =>
+              emitCertificateRenewalFailed(db, await this.#dataEncryptionSecrets(), failure),
+          }
+        )
+      })
+      return true
+    }
+
+    if (parsed.type === 'instance-acme-issuance-event') {
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
+      await this.#withProjectionDb(
+        'instance-acme-issuance-event',
+        attachment.serverId,
+        async (db) => {
+          await recordInstanceAcmeIssuanceFromServer(db, attachment.serverId, parsed)
+        }
+      )
+      return true
+    }
+    return false
+  }
+
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as {
       connectionId: string
@@ -3429,39 +3470,7 @@ export class DaemonCellObject {
 
       if (await this.#handleShellReport(attachment, parsed, validated.signature)) return
 
-      if (parsed.type === 'acme-issuance-event') {
-        await this.#recordInboundRepairingPresence(attachment, parsed.at)
-        await this.#withProjectionDb('acme-issuance-event', attachment.serverId, async (db) => {
-          await handleAcmeIssuanceEvent(
-            db,
-            {
-              serverId: attachment.serverId,
-              hostname: parsed.hostname,
-              ok: parsed.ok,
-              at: parsed.at,
-              ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
-              ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
-            },
-            {
-              onNewFailure: async (failure) =>
-                emitCertificateRenewalFailed(db, await this.#dataEncryptionSecrets(), failure),
-            }
-          )
-        })
-        return
-      }
-
-      if (parsed.type === 'instance-acme-issuance-event') {
-        await this.#recordInboundRepairingPresence(attachment, parsed.at)
-        await this.#withProjectionDb(
-          'instance-acme-issuance-event',
-          attachment.serverId,
-          async (db) => {
-            await recordInstanceAcmeIssuanceFromServer(db, attachment.serverId, parsed)
-          }
-        )
-        return
-      }
+      if (await this.#handleAcmeInbound(attachment, parsed)) return
 
       if (await this.#handleProgressInbound(attachment, parsed)) return
 
