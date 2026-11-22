@@ -446,6 +446,14 @@ export type ServerOptions = {
    */
   networkSharesSince?: string
   /**
+   * Web terminal settings. `container` allows terminals inside tenant
+   * containers on this server. Off when omitted, and off always wins: it is
+   * checked before any permission, for a platform admin too. It changes only
+   * through `PUT /servers/:id/terminal`, never through the generic options
+   * patch, because turning it off also ends every open session.
+   */
+  terminal?: { container?: boolean }
+  /**
    * Desired state for Docker-hosting provisioning; consumed by later phases to
    * choose self-heal vs report-only.
    */
@@ -2069,6 +2077,9 @@ function assignWebServerSettings(options: ServerOptions, value: Record<string, u
     !Number.isNaN(Date.parse(value.networkSharesSince))
   ) {
     options.networkSharesSince = value.networkSharesSince
+  }
+  if (isRecord(value.terminal) && typeof value.terminal.container === 'boolean') {
+    options.terminal = { container: value.terminal.container }
   }
 }
 

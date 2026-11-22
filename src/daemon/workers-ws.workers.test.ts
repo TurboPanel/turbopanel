@@ -2,14 +2,16 @@
 import { describe, expect, it } from 'vitest'
 import { Hono } from 'hono'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
-import { parseSecretsEnv } from '../lib/secrets/secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../lib/secrets/secrets.ts'
 import type { Db } from '../db/connection.ts'
 import type { AppEnv } from '../app/app.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   buildWorkersDaemonCellForwardHeaders,
   registerWorkersDaemonWebSocket,
+  registerWorkersShellWebSocket,
 } from './workers-ws.ts'
+import { SHELL_TICKET_PURPOSE, signShellTicket } from '../features/terminal/ticket.ts'
 import { DAEMON_WS_PATH } from '../app/surfaces.ts'
 
 const CELL_SERVER_ID_HEADER = 'X-Turbopanel-Cell-Server-Id'
@@ -434,5 +436,107 @@ describe('registerWorkersDaemonWebSocket key revocation', () => {
   it('allows an active, current key', async () => {
     const response = await connectWith(createMockDb())
     expect(response.status).toBe(200)
+  })
+})
+
+describe('registerWorkersShellWebSocket', () => {
+  const SID = '11111111-2222-4333-8444-555555555555'
+  const claims = {
+    sid: SID,
+    userId: 'user-1',
+    authSessionId: 'auth-1',
+    serverId: 'test-srv-shell-ws',
+    orgId: 'org-1',
+  }
+
+  async function shellApp(options: { withKeyring?: boolean; db?: Db | null } = {}) {
+    const keyring = await deriveSecretsConfig(
+      parseSecretsEnv(`1:${TEST_SECRET}`, 'workers'),
+      SHELL_TICKET_PURPOSE
+    )
+    const app = new Hono<{ Variables: AppEnv['Variables']; Bindings: CloudflareBindings }>()
+    app.use('*', async (c, next) => {
+      if (options.db !== null) c.set('db', options.db ?? createMockDb({ locationHint: 'enam' }))
+      await next()
+    })
+    registerWorkersShellWebSocket(app as unknown as Hono, {
+      ...(options.withKeyring === false ? {} : { ticketSecrets: keyring }),
+      corsOrigins: 'https://ui.example.net',
+    })
+    return { app, keyring }
+  }
+
+  const url = `https://panel.example.net/ws/client/v1/shell/${SID}`
+
+  function upgrade(ticket: string | null, extra: Record<string, string> = {}) {
+    const protocols = ticket ? `tp-shell.v1, tp-ticket.${ticket}` : 'tp-shell.v1'
+    return new Request(url, {
+      headers: {
+        Upgrade: 'websocket',
+        Origin: 'https://panel.example.net',
+        'Sec-WebSocket-Protocol': protocols,
+        ...extra,
+      },
+    })
+  }
+
+  it('answers 426 without an upgrade and 503 without a ticket keyring', async () => {
+    const { app } = await shellApp()
+    const { env } = createForwardCaptureEnv()
+    expect((await app.fetch(new Request(url), env)).status).toBe(426)
+    const bare = await shellApp({ withKeyring: false })
+    expect((await bare.app.fetch(upgrade('x'), env)).status).toBe(503)
+  })
+
+  it('refuses a missing or bad ticket and a foreign origin without waking the cell', async () => {
+    const { app, keyring } = await shellApp()
+    const capture = createForwardCaptureEnv()
+    expect((await app.fetch(upgrade(null), capture.env)).status).toBe(401)
+    expect((await app.fetch(upgrade('tpshell.v1.bad.bad'), capture.env)).status).toBe(401)
+    const { ticket } = await signShellTicket(keyring, claims)
+    const foreign = upgrade(ticket, { Origin: 'https://evil.example.org' })
+    expect((await app.fetch(foreign, capture.env)).status).toBe(403)
+    expect(capture.getForwardedRequest()).toBeUndefined()
+  })
+
+  it('answers 503 when there is no database', async () => {
+    const { app, keyring } = await shellApp({ db: null })
+    const { ticket } = await signShellTicket(keyring, claims)
+    const { env } = createForwardCaptureEnv()
+    expect((await app.fetch(upgrade(ticket), env)).status).toBe(503)
+  })
+
+  it('forwards with stamped headers, one subprotocol and no client cell headers', async () => {
+    const { app, keyring } = await shellApp()
+    const { ticket } = await signShellTicket(keyring, claims)
+    const capture = createForwardCaptureEnv()
+    const response = await app.fetch(
+      upgrade(ticket, {
+        [CELL_SERVER_ID_HEADER]: 'attacker-server',
+        'X-Turbopanel-Cell-Shell-User': 'attacker',
+        'X-Turbopanel-Cell-Geo': '{}',
+        [REAL_IP_HEADER]: '198.51.100.1',
+      }),
+      capture.env
+    )
+    expect(response.status).toBe(200)
+    const forwarded = capture.getForwardedRequest()!
+    expect(forwarded.headers.get('Sec-WebSocket-Protocol')).toBe('tp-shell.v1')
+    expect(forwarded.headers.get(CELL_SERVER_ID_HEADER)).toBe(claims.serverId)
+    expect(forwarded.headers.get('X-Turbopanel-Cell-Shell-Sid')).toBe(SID)
+    expect(forwarded.headers.get('X-Turbopanel-Cell-Shell-User')).toBe('user-1')
+    expect(forwarded.headers.get('X-Turbopanel-Cell-Shell-AuthSession')).toBe('auth-1')
+    expect(forwarded.headers.get('X-Turbopanel-Cell-Geo')).toBeNull()
+    expect(forwarded.headers.get(REAL_IP_HEADER)).toBeNull()
+    expect(capture.getByNameArg()).toBe(claims.serverId)
+    expect(capture.getByNameOptions()).toEqual({ locationHint: 'enam' })
+  })
+
+  it('uses the default placement when the server has no location hint', async () => {
+    const { app, keyring } = await shellApp({ db: createMockDb() })
+    const { ticket } = await signShellTicket(keyring, claims)
+    const capture = createForwardCaptureEnv()
+    await app.fetch(upgrade(ticket), capture.env)
+    expect(capture.getByNameOptions()).toBeUndefined()
   })
 })

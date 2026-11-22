@@ -82,7 +82,8 @@ export function validatePermissionEntityCompatibility(
 
   if (
     (isSystemPermissionKey(permissionKey) ||
-      permissionKey === 'environments.deploy_network_shares') &&
+      permissionKey === 'environments.deploy_network_shares' ||
+      permissionKey === 'terminal:container') &&
     entityType !== 'organization'
   ) {
     return {

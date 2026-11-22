@@ -138,6 +138,7 @@ export function createApp({
   twoFactorChallengeSecrets,
   backupCodeVerifierSecrets,
   webauthnChallengeSecrets,
+  shellTicketSecrets,
   platformEnv,
   getPlatformEnv,
   registerBilling,
@@ -183,6 +184,8 @@ export function createApp({
   backupCodeVerifierSecrets?: DerivedSecretsConfig
   /** HMAC keyring for WebAuthn ceremony challenges — forwarded to client auth routes. */
   webauthnChallengeSecrets?: DerivedSecretsConfig
+  /** HMAC keyring for web terminal tickets — forwarded to client routes. */
+  shellTicketSecrets?: DerivedSecretsConfig
   /**
    * Process / binding env for `/api/health` revision and settings.
    * Registered before the health route so Deno does not observe `unknown`
@@ -279,6 +282,7 @@ export function createApp({
       twoFactorChallengeSecrets,
       backupCodeVerifierSecrets,
       webauthnChallengeSecrets,
+      shellTicketSecrets,
       runtime: resolvedRuntime,
       signupEnvOverride,
       emailFrom,

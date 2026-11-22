@@ -1,7 +1,10 @@
 import type { Env, Hono } from 'hono'
 import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { getDb } from '../db/connection.ts'
-import { DAEMON_WS_PATH } from '../app/surfaces.ts'
+import { CLIENT_WS_PATH, DAEMON_WS_PATH } from '../app/surfaces.ts'
+import { parseCorsOrigins } from '../app/cors.ts'
+import { authenticateShellUpgrade } from '../features/terminal/upgrade.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import {
   getServerDaemonStateByServerId,
@@ -31,6 +34,11 @@ export const CELL_DAEMON_KEY_HEADER = 'X-Turbopanel-Cell-Daemon-Key'
  */
 export const CELL_REPORTS_SIGNED_HEADER = 'X-Turbopanel-Cell-Reports-Signed'
 
+/** Who a browser's terminal socket belongs to; stamped by the route, read by the cell. */
+export const CELL_SHELL_SID_HEADER = 'X-Turbopanel-Cell-Shell-Sid'
+export const CELL_SHELL_USER_HEADER = 'X-Turbopanel-Cell-Shell-User'
+export const CELL_SHELL_AUTH_SESSION_HEADER = 'X-Turbopanel-Cell-Shell-AuthSession'
+
 /** Internal headers stamped by the Workers isolate — never pass through from clients. */
 const INTERNAL_CELL_FORWARD_HEADERS = [
   CELL_SERVER_ID_HEADER,
@@ -39,6 +47,11 @@ const INTERNAL_CELL_FORWARD_HEADERS = [
   CELL_TRUST_LEVEL_HEADER,
   CELL_DAEMON_KEY_HEADER,
   CELL_REPORTS_SIGNED_HEADER,
+  // The cell treats a request carrying the sid header as a browser terminal
+  // socket, so a daemon's upgrade must never be able to set it.
+  CELL_SHELL_SID_HEADER,
+  CELL_SHELL_USER_HEADER,
+  CELL_SHELL_AUTH_SESSION_HEADER,
 ] as const
 
 export type WorkersDaemonWebSocketOptions = {
@@ -186,6 +199,69 @@ export function registerWorkersDaemonWebSocket<E extends Env>(
         : {}),
     })
 
+    return stub.fetch(new Request(c.req.raw, { headers }))
+  })
+}
+
+export type WorkersShellWebSocketOptions = {
+  /** The `shell-ticket` keyring; without it the route answers 503. */
+  ticketSecrets?: DerivedSecretsConfig
+  /** `TURBOPANEL_UI_CORS_ORIGINS`: UI origins other than the panel's own that may connect. */
+  corsOrigins?: string
+}
+
+/**
+ * Browser terminal socket: `GET /ws/client/v1/shell/:sid`.
+ *
+ * Checks the ticket and the `Origin`, drops every client-supplied
+ * `X-Turbopanel-Cell-*` header, stamps who the socket is for and forwards to
+ * the server's cell, which accepts it only against a pending open it holds for
+ * this sid. The forwarded protocol offer is rewritten to `tp-shell.v1` alone,
+ * so the ticket never reaches the cell.
+ */
+export function registerWorkersShellWebSocket<E extends Env>(
+  app: Hono<E>,
+  options: WorkersShellWebSocketOptions
+): void {
+  app.get(`${CLIENT_WS_PATH}/shell/:sid`, async (c) => {
+    if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
+      return c.text('Expected WebSocket', 426)
+    }
+    if (!options.ticketSecrets) return new Response('Service Unavailable', { status: 503 })
+    const verdict = await authenticateShellUpgrade({
+      sid: c.req.param('sid'),
+      origin: c.req.header('Origin'),
+      protocolHeader: c.req.header('Sec-WebSocket-Protocol'),
+      requestUrl: c.req.url,
+      configuredOrigins: parseCorsOrigins(options.corsOrigins),
+      keyring: options.ticketSecrets,
+    })
+    if (!verdict.ok) return new Response('Refused', { status: verdict.status })
+
+    const db = getDb(c)
+    if (db === undefined) return new Response('Database unavailable', { status: 503 })
+
+    const { claims } = verdict
+    const locationHint = await resolveCellLocationHint(db, claims.serverId)
+    const env = c.env as CloudflareBindings
+    const stub = locationHint
+      ? env.DAEMON_CELL.getByName(claims.serverId, {
+          locationHint: locationHint as DurableObjectLocationHint,
+        })
+      : env.DAEMON_CELL.getByName(claims.serverId)
+
+    // Nothing the client sent under the cell's header prefix, or its claimed address, survives.
+    const headers = new Headers()
+    for (const [name, value] of c.req.raw.headers) {
+      const lower = name.toLowerCase()
+      if (lower.startsWith('x-turbopanel-cell-') || lower === REAL_IP_HEADER.toLowerCase()) continue
+      headers.append(name, value)
+    }
+    headers.set('Sec-WebSocket-Protocol', 'tp-shell.v1')
+    headers.set(CELL_SERVER_ID_HEADER, claims.serverId)
+    headers.set(CELL_SHELL_SID_HEADER, claims.sid)
+    headers.set(CELL_SHELL_USER_HEADER, claims.userId)
+    headers.set(CELL_SHELL_AUTH_SESSION_HEADER, claims.authSessionId)
     return stub.fetch(new Request(c.req.raw, { headers }))
   })
 }

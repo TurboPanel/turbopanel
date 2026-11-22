@@ -54,6 +54,7 @@ import { registerDatacenterRoutes } from './datacenters/routes.ts'
 import { registerIpRoutes } from './ips/routes.ts'
 import { registerProjectRoutes } from './projects/routes.ts'
 import { registerServerRoutes } from './servers/routes.ts'
+import { registerTerminalRoutes } from './terminal/routes.ts'
 import { registerSystemRoutes } from './system/routes.ts'
 import { registerServiceRoutes } from './services/routes.ts'
 import { registerTeamRoutes } from './teams/routes.ts'
@@ -165,6 +166,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   // Ahead of the generic server and organization routes, like principal defaults.
   registerPhpModeRoutes(client, opts)
   registerServerRoutes(client, opts)
+  registerTerminalRoutes(client, opts)
   registerSystemRoutes(client, opts)
   registerNetworkRoutes(client, opts)
   registerDatacenterRoutes(client, opts)

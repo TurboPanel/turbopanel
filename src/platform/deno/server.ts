@@ -122,6 +122,7 @@ import { setPublicTlsProbe } from '../../features/install/install-trust.ts'
 import { createPublicTlsProbe } from './public-tls-probe.ts'
 import { serverDialOrigins } from '../../lib/panel-identity/urls.ts'
 import { type DevHostStatusSink, registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+import { ShellHub, withShellHub } from '../../daemon/shell-hub.ts'
 import { confirmOnNameservers } from './dns-confirm.ts'
 import { createHeartbeatReader } from './heartbeat-reader.ts'
 import {
@@ -158,6 +159,7 @@ import {
 import { createDurableAuthRateLimiter } from '../../client/authn/auth-rate-limit.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from '../../client/authn/email-otp.ts'
 import { WEBAUTHN_CHALLENGE_PURPOSE } from '../../client/authn/passkeys.ts'
+import { SHELL_TICKET_PURPOSE } from '../../features/terminal/ticket.ts'
 import {
   BACKUP_CODE_VERIFIER_PURPOSE,
   TWO_FACTOR_CHALLENGE_PURPOSE,
@@ -490,6 +492,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secretsConfig,
     WEBAUTHN_CHALLENGE_PURPOSE
   )
+  const shellTicketSecrets = await deriveSecretsConfig(secretsConfig, SHELL_TICKET_PURPOSE)
   const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
   const challengeSigningSecrets = await deriveSecretsConfig(
     secretsConfig,
@@ -527,7 +530,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     from: emailSettings.from,
     consoleBaseUrl: await resolveSelfHostedConsoleBaseUrl(db).catch(() => null),
   })
-  const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
+  // Terminals live in this process: the hub holds the pending opens and relays the frames.
+  const shellHub = new ShellHub({ db })
+  const daemonCellRegistry = withShellHub(createRedisDaemonCellRegistry({ db }), shellHub)
   const queryCache = createRedisQueryCache({
     client: daemonCellRegistry.client,
     db,
@@ -675,6 +680,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     twoFactorChallengeSecrets,
     backupCodeVerifierSecrets,
     webauthnChallengeSecrets,
+    shellTicketSecrets,
     runtime: 'deno',
     corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
     signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
@@ -771,6 +777,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     dataEncryptionSecrets,
     confirmDnsRecord: confirmOnNameservers,
     daemonCellRegistry,
+    shellHub,
+    shellTicketSecrets,
+    corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
     connectLimiter: daemonConnectLimiter,
     inboundMessageLimit: inboundLimits.limit,
     inboundMessageWindowMs: inboundLimits.windowMs,
@@ -846,6 +855,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       name: 'cell maintain',
       scope: 'local',
       run: () => daemonCellRegistry.maintain(),
+    },
+    {
+      name: 'terminal reap',
+      scope: 'local',
+      run: () => Promise.resolve(shellHub.reap()),
     },
     {
       name: 'co-located self repair',

@@ -23,12 +23,14 @@ import {
   setDaemonCellPanelIdentityBindingForTests,
   setDaemonCellUnsignedSessionsAllowedForTests,
   setDaemonCellProjectionDbFactoryForTests,
+  setDaemonCellShellBudgetForTests,
   setDaemonJwtKeyringFactoryForTests,
   setForceAlarmErrorForTests,
   setForceAutoResponseAgeMsForTests,
   setForceOutboxSendErrorForTests,
 } from './cell/do.ts'
 import { createDurableObjectDaemonCellRegistry } from './cell/do-registry.ts'
+import type { ShellOpenRequest } from '../contracts/cell.ts'
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -4734,5 +4736,400 @@ describe('signed daemon session', () => {
       expect(await requestStatus(stub, serverId, unsignedId)).toBe('failed')
     })
     ws.close(1000, 'test done')
+  })
+  describe('terminal sessions', () => {
+    const SID = '11111111-2222-4333-8444-555555555555'
+    const SID_2 = '99999999-2222-4333-8444-555555555555'
+
+    function shellRequest(sid: string): ShellOpenRequest {
+      return {
+        sid,
+        orgId: 'org-1',
+        userId: 'user-1',
+        authSessionId: 'auth-1',
+        userLabel: 'user@example.net',
+        kind: 'container',
+        containerId: 'abc123',
+        loginUser: '',
+        cols: 80,
+        rows: 24,
+        keySealed: 'sealed',
+        idleSec: 900,
+        maxSec: 3600,
+        windowBytes: 262144,
+        maxFrameBytes: 16384,
+      }
+    }
+
+    function sizeOf(data: string | ArrayBuffer | Blob): number {
+      if (typeof data === 'string') return data.length
+      return data instanceof Blob ? data.size : data.byteLength
+    }
+
+    function shellFrame(sid: string, dir: number, size = 64): ArrayBuffer {
+      const out = new Uint8Array(size)
+      out[0] = 1
+      const hex = sid.replaceAll('-', '')
+      for (let i = 0; i < 16; i++) out[1 + i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+      out[17] = dir
+      return out.buffer
+    }
+
+    /** A signed daemon socket that is attached and signs its reports. */
+    async function signedDaemon(serverId: string) {
+      setDaemonCellPanelIdentityBindingForTests(await fixtureBindingJson())
+      const stub = env.DAEMON_CELL.getByName(serverId)
+      const daemonKey = await testDaemonKey()
+      const keyId = crypto.randomUUID()
+      const { ws } = await openDaemonWebSocket(stub, serverId, keyId, {
+        firstFrame: null,
+        daemonKeyX: String(daemonKey.publicJwk.x),
+      })
+      const inbox: (string | ArrayBuffer)[] = []
+      let first: ((frames: string[]) => void) | null = null
+      const early: string[] = []
+      ws.addEventListener('message', (event) => {
+        if (first && typeof event.data === 'string') {
+          early.push(event.data)
+          if (early.length === 2) first(early)
+          return
+        }
+        inbox.push(event.data as string | ArrayBuffer)
+      })
+      const helloFrames = new Promise<string[]>((resolve) => {
+        first = resolve
+      })
+      ws.send(JSON.stringify({ type: 'hello-nonce', nonce: NONCE }))
+      const [helloRaw] = await helloFrames
+      first = null
+      const { sessionId } = JSON.parse(splitSignature(helloRaw!)!.unsigned) as {
+        sessionId: string
+      }
+      const attach = await attachProofFor(helloRaw!, daemonKey, serverId, keyId)
+      ws.send(presenceHello({ features: ['signed-reports-v1'], attach }))
+      await vi.waitFor(async () => {
+        const attachment = (await readAttachment(stub)) as { awaitingAttach?: boolean }
+        expect(attachment.awaitingAttach).toBe(false)
+      })
+      const report = async (body: Record<string, unknown>) => {
+        const unsigned = JSON.stringify({
+          ...body,
+          at: new Date().toISOString(),
+          sessionId,
+          iat: Math.floor(Date.now() / 1000),
+          kid: keyId,
+        })
+        ws.send(
+          appendSignature(
+            unsigned,
+            await daemonKey.sign(reportSigningInput(String(body.type), unsigned))
+          )
+        )
+      }
+      const nextText = async (type: string): Promise<Record<string, unknown>> => {
+        let found: Record<string, unknown> | null = null
+        await vi.waitFor(() => {
+          for (const frame of inbox) {
+            if (typeof frame !== 'string') continue
+            const text = splitSignature(frame)?.unsigned ?? frame
+            try {
+              const parsed = JSON.parse(text) as Record<string, unknown>
+              if (parsed.type === type) {
+                found = parsed
+                inbox.splice(inbox.indexOf(frame), 1)
+                return
+              }
+            } catch {
+              // not json
+            }
+          }
+          throw new Error(`no ${type} frame yet`)
+        })
+        return found!
+      }
+      const nextBinary = async (): Promise<ArrayBuffer> => {
+        let found: ArrayBuffer | null = null
+        await vi.waitFor(() => {
+          const at = inbox.findIndex((frame) => typeof frame !== 'string')
+          if (at < 0) throw new Error('no binary frame yet')
+          found = inbox.splice(at, 1)[0] as ArrayBuffer
+        })
+        return found!
+      }
+      return { ws, stub, report, nextText, nextBinary }
+    }
+
+    function browserUpgrade(stub: DurableObjectStub, sid: string, user = 'user-1') {
+      return stub.fetch('https://do.internal/ws/client/v1/shell/' + sid, {
+        headers: {
+          Upgrade: 'websocket',
+          [CELL_HEADER]: 'x',
+          'X-Turbopanel-Cell-Shell-Sid': sid,
+          'X-Turbopanel-Cell-Shell-User': user,
+          'X-Turbopanel-Cell-Shell-AuthSession': 'auth-1',
+        },
+      })
+    }
+
+    function textInbox(ws: WebSocket) {
+      const frames: (string | ArrayBuffer)[] = []
+      const closes: { code: number; reason: string }[] = []
+      ws.addEventListener('message', (event) => frames.push(event.data as string | ArrayBuffer))
+      ws.addEventListener('close', (event) =>
+        closes.push({ code: event.code, reason: event.reason })
+      )
+      return { frames, closes }
+    }
+
+    /** A projection db that also records every audit insert. */
+    function auditRecorder() {
+      const rows: Array<Record<string, unknown>> = []
+      const db = {
+        ...createProjectionRecordingDb().db,
+        insert: () => ({
+          values: (row: Record<string, unknown>) => {
+            rows.push(row)
+            return Promise.resolve()
+          },
+        }),
+      } as unknown as Db
+      setDaemonCellProjectionDbFactoryForTests(() => db)
+      return rows
+    }
+
+    it('opens, relays both ways, lists, and ends on the daemon report', async () => {
+      const serverId = 'test-srv-shell-flow'
+      const auditRows = auditRecorder()
+      const daemon = await signedDaemon(serverId)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+
+      expect(await cell.shellOpen?.(shellRequest(SID))).toMatchObject({ ok: true })
+      expect(await cell.shellOpen?.(shellRequest(SID))).toEqual({
+        ok: false,
+        code: 'duplicate_sid',
+      })
+      const open = await daemon.nextText('shell-open')
+      expect(open).toMatchObject({ sid: SID, kind: 'container', cols: 80, rows: 24 })
+      expect(await cell.shellList?.()).toMatchObject([{ sid: SID, state: 'pending' }])
+
+      // Another user's connect is refused, and spends the single-use pending open.
+      expect((await browserUpgrade(daemon.stub, SID, 'someone-else')).status).toBe(403)
+      expect(await cell.shellList?.()).toEqual([])
+      expect(await cell.shellOpen?.(shellRequest(SID))).toMatchObject({ ok: true })
+      await daemon.nextText('shell-open')
+      // The daemon answers before the browser is there: the outcome waits for it.
+      await daemon.report({ type: 'shell-opened', sid: SID, shell: '/bin/sh', user: 'app' })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const response = await browserUpgrade(daemon.stub, SID)
+      expect(response.status).toBe(101)
+      expect(response.headers.get('Sec-WebSocket-Protocol')).toBe('tp-shell.v1')
+      const browser = response.webSocket!
+      browser.accept()
+      const seen = textInbox(browser)
+      await vi.waitFor(() => expect(seen.frames.length).toBeGreaterThan(0))
+      expect(JSON.parse(String(seen.frames[0]))).toMatchObject({ type: 'opened', sid: SID })
+      expect(await browserUpgrade(daemon.stub, SID)).toMatchObject({ status: 410 })
+      expect(await cell.shellList?.()).toMatchObject([{ sid: SID, state: 'connected' }])
+
+      // Browser to daemon, and back.
+      browser.send(shellFrame(SID, 0))
+      expect(sizeOf(await daemon.nextBinary())).toBe(64)
+      daemon.ws.send(shellFrame(SID, 1))
+      await vi.waitFor(() => expect(seen.frames).toHaveLength(2))
+      expect(sizeOf(seen.frames[1]!)).toBe(64)
+      // A daemon frame for another session, or the wrong way round, goes nowhere.
+      daemon.ws.send(shellFrame(SID_2, 1))
+      daemon.ws.send(shellFrame(SID, 0))
+      // Text on the terminal socket is a protocol error: closes it.
+      browser.send('hello')
+      await vi.waitFor(() => expect(seen.closes[0]?.code).toBeDefined())
+      expect(seen.frames).toHaveLength(2)
+      await daemon.nextText('shell-kill')
+
+      await daemon.report({
+        type: 'shell-closed',
+        sid: SID,
+        reason: 'client',
+        exitCode: 0,
+        durationMs: 5,
+        bytesIn: 1,
+        bytesOut: 2,
+      })
+      await vi.waitFor(async () => expect(await cell.shellList?.()).toEqual([]))
+      const closes = auditRows.filter((row) => row.action === 'server.terminal.close')
+      expect(closes.filter((row) => (row.context as { sid: string }).sid === SID)).toMatchObject([
+        { context: { sid: SID, reason: 'client', confirmed: false } },
+      ])
+      daemon.ws.close(1000, 'test done')
+    })
+
+    it('kills one session or all, tells the daemon, and tells the browser', async () => {
+      const serverId = 'test-srv-shell-kill'
+      const daemon = await signedDaemon(serverId)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+      await cell.shellOpen?.(shellRequest(SID))
+      await daemon.nextText('shell-open')
+      const browser = (await browserUpgrade(daemon.stub, SID)).webSocket!
+      browser.accept()
+      const seen = textInbox(browser)
+      await cell.shellOpen?.(shellRequest(SID_2))
+      await daemon.nextText('shell-open')
+
+      expect(await cell.shellKill?.({ sid: SID, reason: 'revoked' })).toBe(1)
+      expect(await daemon.nextText('shell-kill')).toMatchObject({ sid: SID, reason: 'revoked' })
+      await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
+      expect(JSON.parse(String(seen.frames.at(-1)))).toMatchObject({
+        type: 'closed',
+        reason: 'kill',
+      })
+      expect(await cell.shellKill?.({ all: true, reason: 'switch-off' })).toBe(1)
+      expect(await daemon.nextText('shell-kill')).toMatchObject({ all: true })
+      expect(await cell.shellList?.()).toEqual([])
+      daemon.ws.close(1000, 'test done')
+    })
+
+    it('a daemon error report fails the pending open; a foreign report is ignored', async () => {
+      const serverId = 'test-srv-shell-error'
+      const daemon = await signedDaemon(serverId)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+      await cell.shellOpen?.(shellRequest(SID))
+      await daemon.nextText('shell-open')
+      await daemon.report({ type: 'shell-error', sid: SID_2, code: 'no_shell' })
+      expect(await cell.shellList?.()).toMatchObject([{ sid: SID, state: 'pending' }])
+      await daemon.report({ type: 'shell-error', sid: SID, code: 'no_shell' })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const browser = (await browserUpgrade(daemon.stub, SID)).webSocket!
+      browser.accept()
+      const seen = textInbox(browser)
+      await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
+      expect(JSON.parse(String(seen.frames[0]))).toEqual({
+        type: 'error',
+        sid: SID,
+        code: 'no_shell',
+      })
+      expect(await cell.shellList?.()).toEqual([])
+      daemon.ws.close(1000, 'test done')
+    })
+
+    it('a browser that closes ends the session on the daemon; a lost daemon ends the browser', async () => {
+      const serverId = 'test-srv-shell-close'
+      const daemon = await signedDaemon(serverId)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+      await cell.shellOpen?.(shellRequest(SID))
+      await daemon.nextText('shell-open')
+      const first = (await browserUpgrade(daemon.stub, SID)).webSocket!
+      first.accept()
+      first.close(1000, 'bye')
+      expect(await daemon.nextText('shell-kill')).toMatchObject({ sid: SID })
+
+      await cell.shellOpen?.(shellRequest(SID_2))
+      await daemon.nextText('shell-open')
+      const second = (await browserUpgrade(daemon.stub, SID_2)).webSocket!
+      second.accept()
+      const seen = textInbox(second)
+      daemon.ws.close(1000, 'daemon gone')
+      await vi.waitFor(() => expect(seen.closes).toHaveLength(1))
+      expect(JSON.parse(String(seen.frames.at(-1)))).toMatchObject({
+        type: 'closed',
+        reason: 'daemon-restart',
+        confirmed: false,
+      })
+    })
+
+    it('a replacement daemon ends the old connection sessions as unconfirmed and serves new ones', async () => {
+      const serverId = 'test-srv-shell-replace'
+      const auditRows = auditRecorder()
+      const first = await signedDaemon(serverId)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+      await cell.shellOpen?.(shellRequest(SID))
+      await first.nextText('shell-open')
+      const oldBrowser = (await browserUpgrade(first.stub, SID)).webSocket!
+      oldBrowser.accept()
+      const oldSeen = textInbox(oldBrowser)
+
+      const second = await signedDaemon(serverId)
+      await vi.waitFor(() => expect(oldSeen.closes).toHaveLength(1))
+      expect(JSON.parse(String(oldSeen.frames.at(-1)))).toMatchObject({
+        type: 'closed',
+        reason: 'daemon-restart',
+        confirmed: false,
+      })
+      await vi.waitFor(() =>
+        expect(auditRows.filter((row) => row.action === 'server.terminal.close')).toMatchObject([
+          { context: { sid: SID, reason: 'daemon-restart', confirmed: false } },
+        ])
+      )
+
+      // The replacement did not touch shell sockets that belong to it.
+      expect(await cell.shellOpen?.(shellRequest(SID_2))).toMatchObject({ ok: true })
+      await second.nextText('shell-open')
+      const newBrowser = (await browserUpgrade(second.stub, SID_2)).webSocket!
+      newBrowser.accept()
+      const newSeen = textInbox(newBrowser)
+      newBrowser.send(shellFrame(SID_2, 0))
+      expect(sizeOf(await second.nextBinary())).toBe(64)
+      expect(newSeen.closes).toHaveLength(0)
+      second.ws.close(1000, 'test done')
+    })
+
+    it('closes only the shell socket with 4429 when the daemon output budget is spent', async () => {
+      const serverId = 'test-srv-shell-budget'
+      const daemon = await signedDaemon(serverId)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+      await cell.shellOpen?.(shellRequest(SID))
+      await daemon.nextText('shell-open')
+      const browser = (await browserUpgrade(daemon.stub, SID)).webSocket!
+      browser.accept()
+      const seen = textInbox(browser)
+      setDaemonCellShellBudgetForTests({ windowMs: 60_000, maxMessages: 5, maxBytes: 1_000_000 })
+      try {
+        for (let i = 0; i < 8; i++) daemon.ws.send(shellFrame(SID, 1, 64))
+        await vi.waitFor(() => expect(seen.closes.map((c) => c.code)).toContain(4429))
+      } finally {
+        setDaemonCellShellBudgetForTests(null)
+      }
+      // The daemon's own socket is still usable.
+      expect(await cell.shellOpen?.(shellRequest(SID_2))).toMatchObject({ ok: true })
+      expect(await daemon.nextText('shell-open')).toMatchObject({ sid: SID_2 })
+      daemon.ws.close(1000, 'test done')
+    })
+
+    it('caps the audit lookups for unknown sids per daemon connection', async () => {
+      const serverId = 'test-srv-shell-late-cap'
+      const daemon = await signedDaemon(serverId)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      try {
+        for (let n = 0; n < 34; n++) {
+          await daemon.report({
+            type: 'shell-closed',
+            sid: `33333333-2222-4333-8444-${String(n).padStart(12, '0')}`,
+            reason: 'exit',
+            durationMs: 1,
+            bytesIn: 0,
+            bytesOut: 0,
+          })
+        }
+        await vi.waitFor(() => {
+          const dropped = warn.mock.calls.filter((call) =>
+            String(call[0]).includes('shell-late-close-dropped')
+          )
+          expect(dropped).toHaveLength(2)
+        })
+      } finally {
+        warn.mockRestore()
+      }
+      daemon.ws.close(1000, 'test done')
+    })
+
+    it('refuses a bad sid, and opens only against a signed daemon', async () => {
+      const stub = env.DAEMON_CELL.getByName('test-srv-shell-refuse')
+      expect((await browserUpgrade(stub, 'not-a-sid')).status).toBe(400)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell('test-srv-shell-refuse')
+      expect(await cell.shellOpen?.(shellRequest(SID))).toEqual({
+        ok: false,
+        code: 'daemon_offline',
+      })
+    })
   })
 })

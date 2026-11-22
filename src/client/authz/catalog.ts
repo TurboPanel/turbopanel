@@ -19,6 +19,13 @@ export const PERMISSIONS = [
    * grant of this key. Organization-scoped only.
    */
   'environments.deploy_network_shares',
+  /**
+   * Open a web terminal in a tenant container on a server. Owners and managers
+   * hold it implicitly; any other member needs an organization grant of this
+   * key. Only a superadmin bypasses it (not a platform admin), and the server's
+   * own Terminal switch still has to be on. Organization-scoped only.
+   */
+  'terminal:container',
 ] as const
 
 export type PermissionKey = (typeof PERMISSIONS)[number]
@@ -109,6 +116,7 @@ export const PERMISSION_DISPLAY_NAMES: Record<PermissionKey, string> = {
   'system:operate': 'System operate',
   'system:manage': 'System administer',
   'environments.deploy_network_shares': 'Deploy network shares',
+  'terminal:container': 'Open container terminals',
 }
 
 const PERMISSION_KEY_SET = new Set<string>(PERMISSIONS)

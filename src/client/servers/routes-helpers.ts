@@ -225,6 +225,9 @@ function parseServerPatchOptions(
   // Likewise the external-access setting: it only changes through its own route,
   // which also tells the server.
   delete options.managedExternalAccess
+  // The web terminal switch changes only through its own route, which also ends
+  // every open session when it turns off.
+  delete options.terminal
   if ('sshPort' in raw) {
     const sshPort = parseSshPortInput(raw.sshPort)
     if (!sshPort.ok) {

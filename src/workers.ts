@@ -28,7 +28,10 @@ import { registerStripeWebhookRoutes } from './webhook/billing/stripe.ts'
 import { registerBillingRoutes } from './client/billing/routes.ts'
 import { getWorkersClientOpenApiSpec } from './client/openapi/workers.ts'
 import { resolveBillingConfig } from './features/billing/config.ts'
-import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
+import {
+  registerWorkersDaemonWebSocket,
+  registerWorkersShellWebSocket,
+} from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './features/email/mailgun/workers-queue.ts'
 import type { EmailJob, EmailQueue } from './features/email/types.ts'
 import { isNoopEmailQueue } from './features/email/noop-queue.ts'
@@ -113,6 +116,7 @@ import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 import { WEBAUTHN_CHALLENGE_PURPOSE } from './client/authn/passkeys.ts'
+import { SHELL_TICKET_PURPOSE } from './features/terminal/ticket.ts'
 import {
   BACKUP_CODE_VERIFIER_PURPOSE,
   TWO_FACTOR_CHALLENGE_PURPOSE,
@@ -128,6 +132,7 @@ let cachedOtpVerifierSecrets: DerivedSecretsConfig | null = null
 let cachedTwoFactorChallengeSecrets: DerivedSecretsConfig | null = null
 let cachedBackupCodeVerifierSecrets: DerivedSecretsConfig | null = null
 let cachedWebauthnChallengeSecrets: DerivedSecretsConfig | null = null
+let cachedShellTicketSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
@@ -154,6 +159,7 @@ export function resetWorkerAppCachesForTests(): void {
   cachedTwoFactorChallengeSecrets = null
   cachedBackupCodeVerifierSecrets = null
   cachedWebauthnChallengeSecrets = null
+  cachedShellTicketSecrets = null
   cachedDaemonJwtKeyring = null
   cachedChallengeSigningSecrets = null
   cachedDataEncryptionSecrets = null
@@ -266,6 +272,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     twoFactorChallengeSecrets,
     backupCodeVerifierSecrets,
     webauthnChallengeSecrets,
+    shellTicketSecrets,
     daemonJwtKeyring,
     challengeSigningSecrets,
     dataEncryptionSecrets,
@@ -275,6 +282,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     deriveSecretsConfig(secretsConfig, TWO_FACTOR_CHALLENGE_PURPOSE),
     deriveSecretsConfig(secretsConfig, BACKUP_CODE_VERIFIER_PURPOSE),
     deriveSecretsConfig(secretsConfig, WEBAUTHN_CHALLENGE_PURPOSE),
+    deriveSecretsConfig(secretsConfig, SHELL_TICKET_PURPOSE),
     deriveDaemonJwtKeyring(secretsConfig),
     deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing'),
     deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption'),
@@ -284,6 +292,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   cachedTwoFactorChallengeSecrets = twoFactorChallengeSecrets
   cachedBackupCodeVerifierSecrets = backupCodeVerifierSecrets
   cachedWebauthnChallengeSecrets = webauthnChallengeSecrets
+  cachedShellTicketSecrets = shellTicketSecrets
   cachedDaemonJwtKeyring = daemonJwtKeyring
   cachedChallengeSigningSecrets = challengeSigningSecrets
   cachedDataEncryptionSecrets = dataEncryptionSecrets
@@ -327,6 +336,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     twoFactorChallengeSecrets: cachedTwoFactorChallengeSecrets ?? undefined,
     backupCodeVerifierSecrets: cachedBackupCodeVerifierSecrets ?? undefined,
     webauthnChallengeSecrets: cachedWebauthnChallengeSecrets ?? undefined,
+    shellTicketSecrets: cachedShellTicketSecrets ?? undefined,
     runtime: 'workers',
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
@@ -365,6 +375,10 @@ async function initWorkerApp(env: CloudflareBindings) {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
     panelIdentity: () => Promise.resolve(cachedPanelIdentity),
+  })
+  registerWorkersShellWebSocket(daemonRoutes, {
+    ticketSecrets: cachedShellTicketSecrets ?? undefined,
+    corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
   })
   // Unversioned, session-free surface: mounted on the top-level app rather than
   // under CLIENT_API_PREFIX, and authenticating itself (see

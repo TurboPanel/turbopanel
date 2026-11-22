@@ -162,6 +162,46 @@ export type CellEnqueueOptions = {
   ackedTtlSeconds?: number
 }
 
+/** One web terminal open, as the control plane hands it to a cell (`shell-open` plus who it is for). */
+export type ShellOpenRequest = {
+  sid: string
+  orgId: string
+  userId: string
+  authSessionId: string
+  userLabel: string
+  kind: 'container' | 'host'
+  containerId: string
+  loginUser: string
+  cols: number
+  rows: number
+  keySealed: string
+  idleSec: number
+  maxSec: number
+  windowBytes: number
+  maxFrameBytes: number
+}
+
+export type ShellOpenResult =
+  | { ok: true; expiresAtMs: number }
+  | {
+      ok: false
+      code: 'daemon_offline' | 'daemon_elsewhere' | 'unverified' | 'duplicate_sid' | 'send_failed'
+    }
+
+export type ShellKillReason = 'revoked' | 'switch-off' | 'admin' | 'expired'
+
+/** A terminal session the cell knows: waiting for its browser, or connected. */
+export type ShellSessionInfo = {
+  sid: string
+  userId: string
+  kind: 'container' | 'host'
+  containerId: string
+  loginUser: string
+  state: 'pending' | 'connected'
+  openedAtMs: number
+  maxAtMs: number
+}
+
 export interface DaemonCell {
   attachDaemonSocket(meta: {
     keyId: string
@@ -247,6 +287,17 @@ export interface DaemonCell {
    * daemon's `hello` for a frame lost with a closing connection.
    */
   redeliverSent?(outbound: DaemonOutboundEnvelope): Promise<boolean>
+
+  /**
+   * Optional (feature `terminal-container-v1`) — open one web terminal on the
+   * connected daemon: remember the pending open (30 s) and send the signed
+   * `shell-open`. Backends without a shell hub omit it.
+   */
+  shellOpen?(request: ShellOpenRequest): Promise<ShellOpenResult>
+  /** Optional — end one session (`sid`) or every session (`all`); returns how many were known. */
+  shellKill?(params: { sid?: string; all?: true; reason: ShellKillReason }): Promise<number>
+  /** Optional — the sessions this cell knows, pending or connected. */
+  shellList?(): Promise<ShellSessionInfo[]>
 }
 
 export interface DaemonCellRegistry {

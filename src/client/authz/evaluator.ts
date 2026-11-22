@@ -708,6 +708,9 @@ export async function can(
   } else if (permissionKey === 'environments.deploy_network_shares') {
     // Owners and managers hold it by default; anyone else needs the exact grant.
     orgPermissionFilter = sql`ag.permission IN ('organization:own', 'organization:manage', 'environments.deploy_network_shares')`
+  } else if (permissionKey === 'terminal:container') {
+    // Owners and managers hold it by default; anyone else needs the exact grant.
+    orgPermissionFilter = sql`ag.permission IN ('organization:own', 'organization:manage', 'terminal:container')`
   } else {
     orgPermissionFilter = sql`ag.permission IN ('organization:own', 'organization:manage')`
   }
@@ -728,7 +731,7 @@ export async function can(
   // Other keys (including system:read / system:operate) keep org grant hits
   // plus the broad platform-admin bypass.
   const platformAdminRoleFilter =
-    permissionKey === 'system:manage'
+    permissionKey === 'system:manage' || permissionKey === 'terminal:container'
       ? sql`role = 'superadmin'`
       : sql`role IN ('superadmin', 'admin')`
 
