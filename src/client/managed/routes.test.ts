@@ -800,6 +800,44 @@ test('POST create retries a failed first apply in place and keeps the bindings',
       })
       const queuedBefore = commandQueue.envelopes.length
 
+      // A retry whose apply cannot be queued puts the row and the root
+      // password back and drops nothing.
+      const [before] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      const enqueue = commandQueue.enqueue
+      commandQueue.enqueue = () => {
+        throw new Error('queue unavailable')
+      }
+      const refused = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      commandQueue.enqueue = enqueue
+      assertEquals(refused.status, 503)
+      const [restored] = await db
+        .select({ status: managed.status, metadata: managed.metadata })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+      assertEquals(restored!.status, 'failed')
+      assertEquals((restored!.metadata as { error?: string }).error, 'compose up failed')
+      const [after] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      assertEquals(after!.password, before!.password)
+      assertEquals(
+        (
+          await db
+            .select({ id: binding.id })
+            .from(binding)
+            .where(eq(binding.serviceId, consumer!.id))
+        ).length,
+        1
+      )
+
       const retry = await app.request(`/environments/${environmentId}/managed`, {
         method: 'POST',
         headers,

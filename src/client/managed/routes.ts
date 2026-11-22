@@ -976,7 +976,13 @@ async function retryFailedManagedCreate(
         metadata: existing.metadata,
         updatedAt: new Date().toISOString(),
       })
-      .where(and(eq(managed.id, existing.id), eq(managed.status, 'provisioning')))
+      // A refused enqueue already flips the row to `failed` itself.
+      .where(
+        and(
+          eq(managed.id, existing.id),
+          inArray(managed.status, ['provisioning', 'applying', 'failed'])
+        )
+      )
   }
 
   const { plaintext } = await rotateLoginPassword(db, dataEncryptionSecrets, rootLogin.id)
