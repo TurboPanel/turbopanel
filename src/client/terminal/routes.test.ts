@@ -19,6 +19,8 @@ import {
   project,
   server,
   service,
+  team,
+  teammate,
   user,
   workspace,
 } from '../../db/schema.ts'
@@ -83,6 +85,19 @@ function createFakeRegistry(options: FakeCellOptions) {
   return { registry, opened, killed }
 }
 
+/** The database with every insert into the audit table failing. */
+function failingAuditDb(db: ReturnType<typeof createDenoDb>): ReturnType<typeof createDenoDb> {
+  return new Proxy(db, {
+    get(target, prop) {
+      if (prop !== 'insert') return Reflect.get(target, prop, target) as unknown
+      return (table: unknown) =>
+        table === audit
+          ? { values: () => Promise.reject(new Error('audit down')) }
+          : target.insert(table as never)
+    },
+  })
+}
+
 type Fixtures = {
   db: ReturnType<typeof createDenoDb>
   app: Hono<AppEnv>
@@ -106,6 +121,11 @@ async function withTerminalFixtures(
     containerStatus?: string
     containerRole?: string
     withTicketSecrets?: boolean
+    /** What the caller holds on the organization; default is a manager grant. */
+    callerGrant?: 'manage' | 'terminal' | 'none'
+    userRole?: 'user' | 'admin' | 'superadmin'
+    /** Every audit insert fails (the open must then be refused). */
+    failAudit?: boolean
   },
   fn: (ctx: Fixtures) => Promise<void>
 ): Promise<void> {
@@ -119,7 +139,7 @@ async function withTerminalFixtures(
   const { registry, opened, killed } = createFakeRegistry(options)
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
-    c.set('db', db)
+    c.set('db', options.failAudit ? failingAuditDb(db) : db)
     c.set('daemonCellRegistry', registry)
     return next()
   })
@@ -140,16 +160,29 @@ async function withTerminalFixtures(
   const userEmail = `terminal-${crypto.randomUUID()}@example.com`
   const [usr] = await db
     .insert(user)
-    .values({ email: userEmail, isEmailVerified: true, role: 'user' })
+    .values({ email: userEmail, isEmailVerified: true, role: options.userRole ?? 'user' })
     .returning({ id: user.id })
   const userId = usr!.id
-  await db.insert(grant).values({
-    entityType: 'organization',
-    entityId: organizationId,
-    actorType: 'user',
-    actorId: userId,
-    permission: 'organization:manage',
-  })
+  const callerGrant = options.callerGrant ?? 'manage'
+  if (callerGrant !== 'none') {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: userId,
+      permission: callerGrant === 'manage' ? 'organization:manage' : 'terminal:container',
+    })
+  }
+  // A caller without a manager grant is a plain team member: in the organization, nothing more.
+  let teamId: string | undefined
+  if (callerGrant !== 'manage') {
+    const [tm] = await db
+      .insert(team)
+      .values({ name: 'Terminal Team', organizationId })
+      .returning({ id: team.id })
+    teamId = tm!.id
+    await db.insert(teammate).values({ teamId, userId })
+  }
   const [ws] = await db
     .insert(workspace)
     .values({ name: 'Terminal Workspace', organizationId })
@@ -228,6 +261,10 @@ async function withTerminalFixtures(
     await db.delete(environment).where(eq(environment.id, env!.id))
     await db.delete(project).where(eq(project.id, prj!.id))
     await db.delete(server).where(eq(server.id, serverId))
+    if (teamId) {
+      await db.delete(teammate).where(eq(teammate.teamId, teamId))
+      await db.delete(team).where(eq(team.id, teamId))
+    }
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
     await db.delete(user).where(eq(user.id, userId))
@@ -340,9 +377,11 @@ test('open answers 409 for a stopped container and for a daemon without the feat
 
 test('open answers 404 for an unknown container and for a non-service role', async () => {
   await withTerminalFixtures({}, async (ctx) => {
+    // The permission is checked on the container first, so an id that matches
+    // nothing is a 403 and says nothing about what exists.
     const res = await postOpen(ctx, { containerId: crypto.randomUUID() })
-    assertEquals(res.status, 404)
-    assertEquals(((await res.json()) as { code: string }).code, 'container_not_found')
+    assertEquals(res.status, 403)
+    await res.body?.cancel()
   })
   await withTerminalFixtures({ containerRole: 'ingress' }, async (ctx) => {
     const res = await postOpen(ctx, { containerId: ctx.containerRowId })
@@ -482,5 +521,50 @@ test('PUT /terminal flips the switch, audits it and ends open sessions when turn
       'server.terminal_settings.update',
       'server.terminal_settings.update',
     ])
+  })
+})
+
+test('the permission comes from the evaluator: grant, exact grant, admin and superadmin', async () => {
+  await withTerminalFixtures({ callerGrant: 'none' }, async (ctx) => {
+    const res = await postOpen(ctx, { containerId: ctx.containerRowId })
+    assertEquals(res.status, 403)
+    await res.body?.cancel()
+    assertEquals(ctx.opened.length, 0)
+    assertEquals(await auditActions(ctx), [])
+  })
+  await withTerminalFixtures({ callerGrant: 'terminal' }, async (ctx) => {
+    const res = await postOpen(ctx, { containerId: ctx.containerRowId })
+    assertEquals(res.status, 201)
+    await res.body?.cancel()
+  })
+  await withTerminalFixtures({ callerGrant: 'none', userRole: 'admin' }, async (ctx) => {
+    const res = await postOpen(ctx, { containerId: ctx.containerRowId })
+    assertEquals(res.status, 403)
+    await res.body?.cancel()
+  })
+  await withTerminalFixtures({ callerGrant: 'none', userRole: 'superadmin' }, async (ctx) => {
+    const res = await postOpen(ctx, { containerId: ctx.containerRowId })
+    assertEquals(res.status, 201)
+    await res.body?.cancel()
+  })
+})
+
+test('an audit write that fails refuses the open before the daemon hears of it', async () => {
+  await withTerminalFixtures({ failAudit: true }, async (ctx) => {
+    const res = await postOpen(ctx, { containerId: ctx.containerRowId })
+    assertEquals(res.status, 500)
+    assertEquals(((await res.json()) as { code: string }).code, 'audit_failed')
+    assertEquals(ctx.opened.length, 0)
+  })
+})
+
+test('a container that belongs to another organization is refused', async () => {
+  await withTerminalFixtures({}, async (other) => {
+    await withTerminalFixtures({}, async (ctx) => {
+      const res = await postOpen(ctx, { containerId: other.containerRowId })
+      assertEquals(res.status, 403)
+      await res.body?.cancel()
+      assertEquals(ctx.opened.length, 0)
+    })
   })
 })

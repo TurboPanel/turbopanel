@@ -23,6 +23,7 @@ import {
   setDaemonCellPanelIdentityBindingForTests,
   setDaemonCellUnsignedSessionsAllowedForTests,
   setDaemonCellProjectionDbFactoryForTests,
+  setDaemonCellShellBudgetForTests,
   setDaemonJwtKeyringFactoryForTests,
   setForceAlarmErrorForTests,
   setForceAutoResponseAgeMsForTests,
@@ -4880,8 +4881,25 @@ describe('signed daemon session', () => {
       return { frames, closes }
     }
 
+    /** A projection db that also records every audit insert. */
+    function auditRecorder() {
+      const rows: Array<Record<string, unknown>> = []
+      const db = {
+        ...createProjectionRecordingDb().db,
+        insert: () => ({
+          values: (row: Record<string, unknown>) => {
+            rows.push(row)
+            return Promise.resolve()
+          },
+        }),
+      } as unknown as Db
+      setDaemonCellProjectionDbFactoryForTests(() => db)
+      return rows
+    }
+
     it('opens, relays both ways, lists, and ends on the daemon report', async () => {
       const serverId = 'test-srv-shell-flow'
+      const auditRows = auditRecorder()
       const daemon = await signedDaemon(serverId)
       const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
 
@@ -4939,6 +4957,10 @@ describe('signed daemon session', () => {
         bytesOut: 2,
       })
       await vi.waitFor(async () => expect(await cell.shellList?.()).toEqual([]))
+      const closes = auditRows.filter((row) => row.action === 'server.terminal.close')
+      expect(closes.filter((row) => (row.context as { sid: string }).sid === SID)).toMatchObject([
+        { context: { sid: SID, reason: 'client', confirmed: false } },
+      ])
       daemon.ws.close(1000, 'test done')
     })
 
@@ -5013,6 +5035,64 @@ describe('signed daemon session', () => {
         reason: 'daemon-restart',
         confirmed: false,
       })
+    })
+
+    it('a replacement daemon ends the old connection sessions as unconfirmed and serves new ones', async () => {
+      const serverId = 'test-srv-shell-replace'
+      const auditRows = auditRecorder()
+      const first = await signedDaemon(serverId)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+      await cell.shellOpen?.(shellRequest(SID))
+      await first.nextText('shell-open')
+      const oldBrowser = (await browserUpgrade(first.stub, SID)).webSocket!
+      oldBrowser.accept()
+      const oldSeen = textInbox(oldBrowser)
+
+      const second = await signedDaemon(serverId)
+      await vi.waitFor(() => expect(oldSeen.closes).toHaveLength(1))
+      expect(JSON.parse(String(oldSeen.frames.at(-1)))).toMatchObject({
+        type: 'closed',
+        reason: 'daemon-restart',
+        confirmed: false,
+      })
+      await vi.waitFor(() =>
+        expect(auditRows.filter((row) => row.action === 'server.terminal.close')).toMatchObject([
+          { context: { sid: SID, reason: 'daemon-restart', confirmed: false } },
+        ])
+      )
+
+      // The replacement did not touch shell sockets that belong to it.
+      expect(await cell.shellOpen?.(shellRequest(SID_2))).toMatchObject({ ok: true })
+      await second.nextText('shell-open')
+      const newBrowser = (await browserUpgrade(second.stub, SID_2)).webSocket!
+      newBrowser.accept()
+      const newSeen = textInbox(newBrowser)
+      newBrowser.send(shellFrame(SID_2, 0))
+      expect(sizeOf(await second.nextBinary())).toBe(64)
+      expect(newSeen.closes).toHaveLength(0)
+      second.ws.close(1000, 'test done')
+    })
+
+    it('closes only the shell socket with 4429 when the daemon output budget is spent', async () => {
+      const serverId = 'test-srv-shell-budget'
+      const daemon = await signedDaemon(serverId)
+      const cell = createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+      await cell.shellOpen?.(shellRequest(SID))
+      await daemon.nextText('shell-open')
+      const browser = (await browserUpgrade(daemon.stub, SID)).webSocket!
+      browser.accept()
+      const seen = textInbox(browser)
+      setDaemonCellShellBudgetForTests({ windowMs: 60_000, maxMessages: 5, maxBytes: 1_000_000 })
+      try {
+        for (let i = 0; i < 8; i++) daemon.ws.send(shellFrame(SID, 1, 64))
+        await vi.waitFor(() => expect(seen.closes.map((c) => c.code)).toContain(4429))
+      } finally {
+        setDaemonCellShellBudgetForTests(null)
+      }
+      // The daemon's own socket is still usable.
+      expect(await cell.shellOpen?.(shellRequest(SID_2))).toMatchObject({ ok: true })
+      expect(await daemon.nextText('shell-open')).toMatchObject({ sid: SID_2 })
+      daemon.ws.close(1000, 'test done')
     })
 
     it('refuses a bad sid, and opens only against a signed daemon', async () => {

@@ -17,7 +17,7 @@
  * - **No secrets in `context`.** Record the fact and the identifiers, never
  *   the credential that changed; the same rule `setting` rows follow.
  */
-import { and, desc, eq, lt } from 'drizzle-orm'
+import { and, desc, eq, gt, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { audit } from '../../db/schema.ts'
 import { logWarn } from '../../lib/logger.ts'
@@ -276,4 +276,58 @@ export async function recordAuditOrThrow(db: Db, entry: AuditEntry): Promise<voi
     targetId: entry.targetId ?? null,
     context: entry.context ?? null,
   })
+}
+
+/** A terminal open row whose session may still owe its close row. */
+export type TerminalOpenAudit = {
+  organizationId: string | null
+  actorUserId: string | null
+  context: Record<string, unknown>
+  /** A `server.terminal.close` row for the same sid already exists. */
+  closed: boolean
+}
+
+/** How far back a late daemon report may look for its open row (a session lasts at most 8 h). */
+const TERMINAL_OPEN_LOOKBACK_HOURS = 12
+
+/**
+ * The open row of one terminal session on one server, by sid, for a daemon
+ * report that arrives when the control plane no longer remembers the session.
+ * The sid is a random UUID the control plane minted; the server id keeps one
+ * daemon from closing another server's session. Null when there is no such row.
+ */
+export async function findTerminalOpenAudit(
+  db: Db,
+  serverId: string,
+  sid: string
+): Promise<TerminalOpenAudit | null> {
+  const since = sql`now() - make_interval(hours => ${TERMINAL_OPEN_LOOKBACK_HOURS})`
+  const rows = await db
+    .select({
+      action: audit.action,
+      organizationId: audit.organizationId,
+      actorUserId: audit.actorUserId,
+      context: audit.context,
+    })
+    .from(audit)
+    .where(
+      and(
+        eq(audit.targetId, serverId),
+        gt(audit.createdAt, since),
+        sql`${audit.context}->>'sid' = ${sid}`,
+        sql`${audit.action} in ('server.terminal.open', 'server.terminal.close')`
+      )
+    )
+  const open = rows.find((row) => row.action === 'server.terminal.open')
+  if (!open) return null
+  const context =
+    open.context && typeof open.context === 'object'
+      ? (open.context as Record<string, unknown>)
+      : {}
+  return {
+    organizationId: open.organizationId,
+    actorUserId: open.actorUserId,
+    context,
+    closed: rows.some((row) => row.action === 'server.terminal.close'),
+  }
 }

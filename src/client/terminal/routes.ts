@@ -88,7 +88,7 @@ export function registerTerminalRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       return c.json({ error: 'Not found' }, 404)
     }
     const [holdsPermission, containerFacts, presence] = await Promise.all([
-      can(db, session.userId, 'terminal:container', 'server', serverId),
+      can(db, session.userId, 'terminal:container', 'container', containerRowId),
       loadTerminalContainerFacts(db, { serverId, organizationId, containerRowId }),
       resolveFleetPresence(db, registry, [serverId]),
     ])

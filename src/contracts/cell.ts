@@ -183,7 +183,10 @@ export type ShellOpenRequest = {
 
 export type ShellOpenResult =
   | { ok: true; expiresAtMs: number }
-  | { ok: false; code: 'daemon_offline' | 'unverified' | 'duplicate_sid' | 'send_failed' }
+  | {
+      ok: false
+      code: 'daemon_offline' | 'daemon_elsewhere' | 'unverified' | 'duplicate_sid' | 'send_failed'
+    }
 
 export type ShellKillReason = 'revoked' | 'switch-off' | 'admin' | 'expired'
 

@@ -36,6 +36,13 @@ export const SHELL_MAX_FRAME_BYTES_DEFAULT = 16 * 1024
 
 /** A pending open is good for this long: the browser must connect inside it. */
 export const SHELL_PENDING_TTL_MS = 30_000
+/**
+ * Daemon output that arrives before the browser does (the shell prompt) is held,
+ * up to this many frames and bytes, and sent in order when the browser connects.
+ * Past either bound the session is ended.
+ */
+export const SHELL_EARLY_MAX_FRAMES = 64
+export const SHELL_EARLY_MAX_BYTES = 1024 * 1024
 /** An ended session stays known this long, so a late `shell-closed` still finds it. */
 export const SHELL_ENDED_TTL_MS = 5 * 60_000
 
@@ -185,11 +192,20 @@ export type PendingShellOpen = {
   outcome?: ShellControlFrame
   /** The close audit row for this session was written. */
   audited?: boolean
+  /** Daemon frames that arrived before the browser, in order. */
+  early?: ArrayBuffer[]
+  earlyBytes?: number
 }
 
 /** Pending opens by sid, each good for {@link SHELL_PENDING_TTL_MS}. Single use. */
 export class PendingShellOpens {
   readonly #byId = new Map<string, PendingShellOpen>()
+  readonly #onExpire?: (open: PendingShellOpen) => void
+
+  /** `onExpire` is told of each open the TTL dropped, so its session can be ended. */
+  constructor(onExpire?: (open: PendingShellOpen) => void) {
+    this.#onExpire = onExpire
+  }
 
   add(open: PendingShellOpen, nowMs: number): void {
     this.#sweep(nowMs)
@@ -214,6 +230,23 @@ export class PendingShellOpens {
     return open
   }
 
+  /**
+   * Hold one daemon frame for a browser that has not connected yet. `overflow`
+   * means a bound was crossed (the caller ends the session); `unknown` that no
+   * open is pending for the sid.
+   */
+  bufferEarly(sid: string, frame: ArrayBuffer, nowMs: number): 'buffered' | 'overflow' | 'unknown' {
+    const open = this.get(sid, nowMs)
+    if (!open) return 'unknown'
+    const frames = open.early ?? []
+    const bytes = (open.earlyBytes ?? 0) + frame.byteLength
+    if (frames.length >= SHELL_EARLY_MAX_FRAMES || bytes > SHELL_EARLY_MAX_BYTES) return 'overflow'
+    frames.push(frame)
+    open.early = frames
+    open.earlyBytes = bytes
+    return 'buffered'
+  }
+
   list(nowMs: number): PendingShellOpen[] {
     this.#sweep(nowMs)
     return [...this.#byId.values()]
@@ -229,7 +262,9 @@ export class PendingShellOpens {
 
   #sweep(nowMs: number): void {
     for (const [sid, open] of this.#byId) {
-      if (open.expiresAtMs <= nowMs) this.#byId.delete(sid)
+      if (open.expiresAtMs > nowMs) continue
+      this.#byId.delete(sid)
+      this.#onExpire?.(open)
     }
   }
 }

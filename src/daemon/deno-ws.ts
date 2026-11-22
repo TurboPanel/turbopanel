@@ -71,6 +71,10 @@ import {
   onDaemonUpdateResult,
 } from './cell/control-plane-monitor.ts'
 import { CLIENT_WS_PATH, DAEMON_WS_PATH, DEVELOPER_WS_PATH } from '../app/surfaces.ts'
+import { looksLikeShellFrame } from '../contracts/shell-relay.ts'
+import { isShellReport } from '../features/terminal/reports.ts'
+import type { ShellHub } from './shell-hub.ts'
+import { registerShellWebSocket } from './shell-ws.ts'
 import { resolveSelfHostedGeo } from '../features/geo/self-hosted-geo-provider.ts'
 import {
   DIRECT_ATTACH_SENTINEL,
@@ -176,6 +180,12 @@ export async function wsMessageDataToString(
   if (typeof data === 'string') return data
   if (data instanceof Blob) return await data.text()
   return new TextDecoder().decode(data)
+}
+
+/** A binary WebSocket message as one buffer (Deno hands over a Blob unless told otherwise). */
+export async function wsBinaryToBuffer(data: Blob | ArrayBufferLike): Promise<ArrayBuffer> {
+  if (data instanceof Blob) return await data.arrayBuffer()
+  return data instanceof ArrayBuffer ? data : new Uint8Array(data).slice().buffer
 }
 
 export function isClosedConnectionError(err: unknown): boolean {
@@ -1066,6 +1076,12 @@ export type DaemonWebSocketOptions = {
   /** Reads a challenge record back for the DNS relay; the Deno panel asks the nameservers. */
   confirmDnsRecord?: DnsConfirm
   daemonCellRegistry?: DaemonCellRegistry
+  /** Web terminals (feature `terminal-container-v1`); without it the shell route answers 501. */
+  shellHub?: ShellHub
+  /** The `shell-ticket` keyring for the browser's terminal socket. */
+  shellTicketSecrets?: DerivedSecretsConfig
+  /** `TURBOPANEL_UI_CORS_ORIGINS`: UI origins other than the panel's own that may open a terminal. */
+  corsOrigins?: string
   connectLimiter?: RateLimiter
   inboundMessageLimit?: number
   inboundMessageWindowMs?: number
@@ -1514,6 +1530,21 @@ export function registerDaemonWebSocket<E extends Env>(
           type: message.type,
         })
 
+        // Terminal reports belong to the hub, not the cell.
+        if (
+          options.shellHub &&
+          connectionId &&
+          isShellReport(message) &&
+          (await options.shellHub.onDaemonReport(
+            payload.sub,
+            connectionId,
+            message,
+            validated.signature
+          ))
+        ) {
+          return
+        }
+
         await dispatchDaemonInboundMessage({
           cell: registry.getCell(payload.sub),
           db,
@@ -1530,6 +1561,19 @@ export function registerDaemonWebSocket<E extends Env>(
           onDevHostStatus: options.onDevHostStatus,
           handleManagedHaEvent: options.handleManagedHaEvent,
           reply: (answer) => replyToDaemon(ws, answer),
+        })
+      }
+
+      /** The daemon's socket is gone: its terminal sessions end with it. */
+      const endHubSessions = (): void => {
+        if (!options.shellHub || !connectionId) return
+        options.shellHub.detachDaemon(payload.sub, connectionId).catch((err) => {
+          daemonCellLog(
+            'WARN',
+            payload.sub,
+            connectionId,
+            `terminal cleanup failed: ${String(err)}`
+          )
         })
       }
 
@@ -1602,9 +1646,24 @@ export function registerDaemonWebSocket<E extends Env>(
           // The `version` frame and the outbox pump wait for the daemon's
           // first frame (`openSession`).
           attachReady = true
+          options.shellHub?.attachDaemon(payload.sub, {
+            connectionId: connectionId ?? '',
+            ready: () => phase === 'signed' && awaitingAttach === undefined,
+            send: (message) => senderFor(ws).send(message),
+            sendBinary: (frame) => ws.send(frame),
+          })
           await forEachSequential(pendingMessages.splice(0), (raw) => handleInboundMessage(raw, ws))
         },
         async onMessage(event, ws) {
+          // A terminal frame is relayed ahead of the text path's flood cap (its own
+          // per-session budget applies); it is opaque binary, never parsed as text.
+          if (options.shellHub && typeof event.data !== 'string') {
+            const frame = await wsBinaryToBuffer(event.data)
+            if (looksLikeShellFrame(new Uint8Array(frame))) {
+              if (connectionId && attachReady) options.shellHub.onDaemonFrame(connectionId, frame)
+              return
+            }
+          }
           const raw = await wsMessageDataToString(event.data)
           const gateKey = connectionId ?? identityAddress
           if (!inboundGate.allow(gateKey)) {
@@ -1631,6 +1690,7 @@ export function registerDaemonWebSocket<E extends Env>(
         },
         onClose() {
           pumpControl.abort = true
+          endHubSessions()
           if (connectionId) {
             inboundGate.release(connectionId)
           } else {
@@ -1653,6 +1713,7 @@ export function registerDaemonWebSocket<E extends Env>(
         },
         onError() {
           pumpControl.abort = true
+          endHubSessions()
           if (connectionId) {
             inboundGate.release(connectionId)
           } else {
@@ -1685,11 +1746,17 @@ export function registerDaemonWebSocket<E extends Env>(
   registerStubWebSocket(app, CLIENT_WS_PATH, 'client', (c) =>
     authorizeClientUpgrade(c, options.sessionSecrets)
   )
-  // The self-hosted runtime has no terminal hub yet (the Durable Object path
-  // serves it); the open route already refuses with `terminal_unsupported`.
-  app.get(`${CLIENT_WS_PATH}/shell/:sid`, (c) =>
-    c.json({ ok: false, error: 'terminal_unsupported' }, 501)
-  )
+  if (options.shellHub) {
+    registerShellWebSocket(app, {
+      hub: options.shellHub,
+      ticketSecrets: options.shellTicketSecrets,
+      corsOrigins: options.corsOrigins,
+    })
+  } else {
+    app.get(`${CLIENT_WS_PATH}/shell/:sid`, (c) =>
+      c.json({ ok: false, error: 'terminal_unsupported' }, 501)
+    )
+  }
 }
 
 /**

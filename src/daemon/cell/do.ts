@@ -199,10 +199,17 @@ import {
   SHELL_PROTOCOL,
   ShellBudget,
   type PendingShellOpen,
-  type ShellControlFrame,
   type ShellSessionMeta,
 } from '../../contracts/shell-relay.ts'
-import { recordAudit } from '../../features/audit/audit-records.ts'
+import { findTerminalOpenAudit, recordAudit } from '../../features/audit/audit-records.ts'
+import {
+  lateShellCloseAuditEntry,
+  type ShellCloseDetail,
+  type ShellReport,
+  shellCloseAuditEntry,
+  shellReportCloseDetail,
+  shellReportFrame,
+} from '../../features/terminal/reports.ts'
 export { classifyDaemonCellSqlStorageOp }
 
 /**
@@ -249,7 +256,6 @@ function createInitialCellDiagnostics(): CellDiagnostics {
   }
 }
 
-/** Coerce an unknown RPC body field to a string; non-strings become "". */
 function isValidShellOpenRequest(value: unknown): value is ShellOpenRequest {
   const r = value as Partial<ShellOpenRequest> | null
   if (!r || typeof r !== 'object') return false
@@ -274,6 +280,7 @@ function isValidShellOpenRequest(value: unknown): value is ShellOpenRequest {
   )
 }
 
+/** Coerce an unknown RPC body field to a string; non-strings become "". */
 function rpcString(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
@@ -372,47 +379,6 @@ type ShellSocketAttachment = {
   meta: ShellSessionMeta
 }
 
-type ShellCloseDetail = {
-  reason: string
-  confirmed: boolean
-  exitCode?: number
-  durationMs?: number
-  bytesIn?: number
-  bytesOut?: number
-}
-
-type ShellReport = Extract<DaemonMessage, { type: 'shell-opened' | 'shell-closed' | 'shell-error' }>
-
-/** What the browser's terminal socket is told for one daemon report. */
-function shellReportFrame(report: ShellReport): ShellControlFrame {
-  if (report.type === 'shell-opened') {
-    return { type: 'opened', sid: report.sid, shell: report.shell, user: report.user }
-  }
-  if (report.type === 'shell-error') return { type: 'error', sid: report.sid, code: report.code }
-  return {
-    type: 'closed',
-    sid: report.sid,
-    reason: report.reason,
-    ...(report.exitCode === undefined ? {} : { exitCode: report.exitCode }),
-    confirmed: true,
-  }
-}
-
-/** What the close audit row records for a session the daemon ended (never `shell-opened`). */
-function shellReportCloseDetail(
-  report: Exclude<ShellReport, { type: 'shell-opened' }>
-): ShellCloseDetail {
-  if (report.type === 'shell-error') return { reason: `error:${report.code}`, confirmed: true }
-  return {
-    reason: report.reason,
-    confirmed: true,
-    ...(report.exitCode === undefined ? {} : { exitCode: report.exitCode }),
-    durationMs: report.durationMs,
-    bytesIn: report.bytesIn,
-    bytesOut: report.bytesOut,
-  }
-}
-
 /** An ended session kept briefly so a late daemon report still finds who it was. */
 type EndedShellSession = { meta: ShellSessionMeta; atMs: number; audited: boolean }
 
@@ -444,6 +410,7 @@ let projectionDbFactoryForTests: ProjectionDbFactory | null = null
 let daemonJwtKeyringFactoryForTests: DaemonJwtKeyringFactory | null = null
 let forceOutboxSendErrorForTests: Error | null = null
 let panelIdentityBindingForTests: string | null = null
+let shellDaemonBudgetForTests: typeof SHELL_DAEMON_BUDGET | null = null
 let unsignedSessionsAllowedForTests = false
 let forceAlarmErrorForTests: Error | null = null
 /** When set, `#collectStaleDemotions` treats auto-response age as this many ms. */
@@ -454,6 +421,11 @@ export function setDaemonCellProjectionDbFactoryForTests(
   factory: ProjectionDbFactory | null
 ): void {
   projectionDbFactoryForTests = factory
+}
+
+/** Test-only seam: a small daemon-output budget so the close path runs without a flood. */
+export function setDaemonCellShellBudgetForTests(limits: typeof SHELL_DAEMON_BUDGET | null): void {
+  shellDaemonBudgetForTests = limits
 }
 
 /** Test-only seam: the `TURBOPANEL_IDENTITY_KEYS` value a cell reads (null = the env binding). */
@@ -703,9 +675,10 @@ export class DaemonCellObject {
    * (410), so the user opens again. Connected sessions live in the socket
    * attachments and survive hibernation.
    */
-  readonly #pendingShell = new PendingShellOpens()
+  readonly #pendingShell = new PendingShellOpens((open) => this.#onPendingShellExpired(open))
   readonly #endedShell = new Map<string, EndedShellSession>()
   readonly #shellBudgets = new WeakMap<WebSocket, ShellBudget>()
+  /** The daemon's output budget per session, so one runaway session closes only its own socket. */
   readonly #daemonShellBudgets = new Map<string, ShellBudget>()
   /** Per-connection inbound message counters (in-memory; no timers). */
   readonly #inboundRate = new Map<string, { windowStartMs: number; count: number }>()
@@ -1018,25 +991,7 @@ export class DaemonCellObject {
   /** The close audit row for one session; the open row was written by the control plane. */
   async #auditShellClose(meta: ShellSessionMeta, detail: ShellCloseDetail): Promise<void> {
     await this.#withProjectionDb('shell-close-audit', meta.serverId, (db) =>
-      recordAudit(db, {
-        organizationId: meta.orgId,
-        actorUserId: meta.userId,
-        action: 'server.terminal.close',
-        targetType: 'server',
-        targetId: meta.serverId,
-        context: {
-          sid: meta.sid,
-          kind: meta.kind,
-          containerId: meta.containerId,
-          loginUser: meta.loginUser,
-          reason: detail.reason,
-          confirmed: detail.confirmed,
-          durationMs: detail.durationMs ?? Math.max(0, Date.now() - meta.openedAtMs),
-          ...(detail.exitCode === undefined ? {} : { exitCode: detail.exitCode }),
-          ...(detail.bytesIn === undefined ? {} : { bytesIn: detail.bytesIn }),
-          ...(detail.bytesOut === undefined ? {} : { bytesOut: detail.bytesOut }),
-        },
-      })
+      recordAudit(db, shellCloseAuditEntry(meta, detail))
     )
   }
 
@@ -1188,6 +1143,35 @@ export class DaemonCellObject {
     return unconfirmed.length
   }
 
+  /** The TTL dropped a pending open: the daemon's session must not outlive it. */
+  #onPendingShellExpired(open: PendingShellOpen): void {
+    this.#ctx.waitUntil(this.#endPendingShell(open, 'expired', 'expired'))
+  }
+
+  /**
+   * End a session whose browser never took it (or whose early output overflowed):
+   * tell the daemon, and write the close row now so the open row never dangles.
+   */
+  async #endPendingShell(
+    open: PendingShellOpen,
+    closeReason: string,
+    killReason: ShellKillReason
+  ): Promise<void> {
+    this.#pendingShell.delete(open.sid)
+    this.#daemonShellBudgets.delete(open.sid)
+    const meta = this.#shellMetaFromPending(open)
+    this.#rememberEndedShell(meta)
+    const daemon = this.#daemonSocketByConnection(open.daemonConnectionId)
+    if (daemon) {
+      try {
+        await this.#sendToDaemon(daemon, { type: 'shell-kill', sid: open.sid, reason: killReason })
+      } catch {
+        // The daemon's own pending timeout ends it; the row is written either way.
+      }
+    }
+    await this.#finishShellSession(meta, { reason: closeReason, confirmed: false })
+  }
+
   #shellList(serverId: string): ShellSessionInfo[] {
     const nowMs = Date.now()
     const out: ShellSessionInfo[] = []
@@ -1231,6 +1215,8 @@ export class DaemonCellObject {
     const pending = this.#pendingShell.take(sid, nowMs)
     if (!pending) return new Response('Gone', { status: 410 })
     if (pending.userId !== userId || pending.authSessionId !== authSessionId) {
+      // The take spent the open: end the daemon's session and close its audit row.
+      this.#ctx.waitUntil(this.#endPendingShell(pending, 'client', 'revoked'))
       return new Response('Forbidden', { status: 403 })
     }
     if (!this.#daemonSocketByConnection(pending.daemonConnectionId)) {
@@ -1260,6 +1246,10 @@ export class DaemonCellObject {
         this.#closeQuietly(server, SHELL_CLOSE.failed, 'failed')
         this.#rememberEndedShell(meta)
       }
+    }
+    // Output the daemon sent before the browser arrived, in the order it came.
+    if (!pending.outcome || pending.outcome.type === 'opened') {
+      for (const frame of pending.early ?? []) this.#sendQuietly(server, frame)
     }
     return new Response(null, {
       status: 101,
@@ -1314,30 +1304,50 @@ export class DaemonCellObject {
   }
 
   /** A binary frame from the daemon: only for a session that runs on this very connection. */
-  #relayDaemonShellFrame(ws: WebSocket, connectionId: string, frame: ArrayBuffer): void {
+  #relayDaemonShellFrame(connectionId: string, frame: ArrayBuffer): void {
     const bytes = new Uint8Array(frame)
     const header = peekShellFrame(bytes)
     if (!header) return
-    let budget = this.#daemonShellBudgets.get(connectionId)
-    if (!budget) {
-      budget = new ShellBudget(SHELL_DAEMON_BUDGET)
-      this.#daemonShellBudgets.set(connectionId, budget)
-    }
-    if (!budget.take(bytes.length, Date.now())) {
-      this.#closeQuietly(ws, SHELL_CLOSE.budget, 'shell_budget')
-      return
-    }
+    const nowMs = Date.now()
     const target = this.#shellSockets(header.sid)[0]
-    if (!target) return
-    const meta = this.#shellMetaOf(target)
-    if (meta?.daemonConnectionId !== connectionId) return
+    const socketMeta = target ? this.#shellMetaOf(target) : null
+    const pending = socketMeta ? null : this.#pendingShell.get(header.sid, nowMs)
+    const session = socketMeta ?? pending
+    if (session?.daemonConnectionId !== connectionId) return
     const verdict = checkShellFrame(bytes, {
       dir: SHELL_DIR_TO_BROWSER,
-      sid: meta.sid,
-      maxFrameBytes: meta.maxFrameBytes,
+      sid: session.sid,
+      maxFrameBytes: session.maxFrameBytes,
     })
     if (!verdict.ok) return
-    this.#sendQuietly(target, frame)
+    let budget = this.#daemonShellBudgets.get(session.sid)
+    if (!budget) {
+      budget = new ShellBudget(shellDaemonBudgetForTests ?? SHELL_DAEMON_BUDGET)
+      this.#daemonShellBudgets.set(session.sid, budget)
+    }
+    const withinBudget = budget.take(bytes.length, nowMs)
+    if (target) {
+      // Only the offending session's socket closes; the daemon's control socket stays.
+      if (withinBudget) this.#sendQuietly(target, frame)
+      else this.#closeQuietly(target, SHELL_CLOSE.budget, 'shell_budget')
+    } else if (pending) {
+      this.#holdEarlyShellFrame(pending, frame, withinBudget, nowMs)
+    }
+  }
+
+  /** Output that beat the browser here is held, bounded; past the bound the session ends. */
+  #holdEarlyShellFrame(
+    pending: PendingShellOpen,
+    frame: ArrayBuffer,
+    withinBudget: boolean,
+    nowMs: number
+  ): void {
+    const held = withinBudget
+      ? this.#pendingShell.bufferEarly(pending.sid, frame, nowMs)
+      : 'overflow'
+    if (held === 'overflow') {
+      this.#ctx.waitUntil(this.#endPendingShell(pending, 'early-overflow', 'revoked'))
+    }
   }
 
   /** `shell-opened` / `shell-closed` / `shell-error` from the daemon; false for any other type. */
@@ -1367,9 +1377,15 @@ export class DaemonCellObject {
     const ended = this.#endedShell.get(sid)
     const meta =
       socketMeta ?? (pending ? this.#shellMetaFromPending(pending) : (ended?.meta ?? null))
+    if (!meta) {
+      // Nothing here remembers the session (evicted, deployed over): its open row
+      // may still owe a close row, found by sid on this server only.
+      if (parsed.type !== 'shell-opened') await this.#closeAuditOfUnknownShell(attachment, parsed)
+      return true
+    }
     // A report only counts for a session that runs on the connection it came in on.
     if (
-      meta?.serverId !== attachment.serverId ||
+      meta.serverId !== attachment.serverId ||
       meta.daemonConnectionId !== attachment.connectionId
     ) {
       return true
@@ -1392,8 +1408,23 @@ export class DaemonCellObject {
     return true
   }
 
+  /** A close report for a sid this cell no longer knows: close its open audit row, once. */
+  async #closeAuditOfUnknownShell(
+    attachment: { serverId: string },
+    report: Exclude<ShellReport, { type: 'shell-opened' }>
+  ): Promise<void> {
+    if (!isShellSid(report.sid)) return
+    const detail = shellReportCloseDetail(report)
+    await this.#withProjectionDb('shell-late-close', attachment.serverId, async (db) => {
+      const open = await findTerminalOpenAudit(db, attachment.serverId, report.sid)
+      if (!open || open.closed) return
+      await recordAudit(db, lateShellCloseAuditEntry(attachment.serverId, report.sid, open, detail))
+    })
+  }
+
   /** A browser's terminal socket closed: tell the daemon, unless the session already ended. */
   async #cleanupShellSocket(meta: ShellSessionMeta): Promise<void> {
+    this.#daemonShellBudgets.delete(meta.sid)
     if (this.#isShellEndedHere(meta.sid)) return
     this.#rememberEndedShell(meta)
     const daemon = this.#daemonSocketByConnection(meta.daemonConnectionId)
@@ -1419,7 +1450,6 @@ export class DaemonCellObject {
    * end as unconfirmed.
    */
   async #endShellSessionsOfConnection(connectionId: string): Promise<void> {
-    this.#daemonShellBudgets.delete(connectionId)
     const nowMs = Date.now()
     const lost = { reason: 'daemon-restart', confirmed: false } as const
     // Each finish claims its sid before its first await, so the ended-map pass
@@ -1428,11 +1458,13 @@ export class DaemonCellObject {
     for (const open of this.#pendingShell.list(nowMs)) {
       if (open.daemonConnectionId !== connectionId) continue
       this.#pendingShell.delete(open.sid)
+      this.#daemonShellBudgets.delete(open.sid)
       finishes.push(this.#finishShellSession(this.#shellMetaFromPending(open), lost))
     }
     for (const ws of this.#shellSockets()) {
       const meta = this.#shellMetaOf(ws)
       if (meta?.daemonConnectionId !== connectionId) continue
+      this.#daemonShellBudgets.delete(meta.sid)
       this.#sendQuietly(
         ws,
         controlFrameText({
@@ -1454,6 +1486,8 @@ export class DaemonCellObject {
 
   /** Close terminal sockets past their hard maximum age (the cron's liveness visit calls this). */
   #reapExpiredShellSockets(nowMs: number): void {
+    // Listing sweeps the pending opens; each one past its TTL is ended.
+    this.#pendingShell.list(nowMs)
     for (const ws of this.#shellSockets()) {
       const meta = this.#shellMetaOf(ws)
       if (meta && nowMs >= meta.maxAtMs) this.#closeQuietly(ws, SHELL_CLOSE.expired, 'expired')
@@ -3368,7 +3402,7 @@ export class DaemonCellObject {
       return true
     }
     if (typeof message === 'string' || !looksLikeShellFrame(new Uint8Array(message))) return false
-    this.#relayDaemonShellFrame(ws, connectionId, message)
+    this.#relayDaemonShellFrame(connectionId, message)
     return true
   }
 

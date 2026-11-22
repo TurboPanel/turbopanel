@@ -122,7 +122,7 @@ export function shellWsPath(sid: string): string {
 }
 
 export async function openTerminalSession(input: OpenTerminalInput): Promise<OpenTerminalResult> {
-  // The self-hosted runtime has no terminal hub yet: refuse before any audit row.
+  // A cell without the terminal methods cannot relay one: refuse before any audit row.
   const cell = input.registry.getCell(input.serverId)
   if (!cell.shellOpen) return { ok: false, status: 501, code: 'terminal_unsupported' }
   const sealing = await getDaemonSealingKey(input.db, input.serverId)

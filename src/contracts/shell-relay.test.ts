@@ -6,6 +6,8 @@ import {
   isShellSid,
   PendingShellOpens,
   SHELL_DIR_TO_BROWSER,
+  SHELL_EARLY_MAX_BYTES,
+  SHELL_EARLY_MAX_FRAMES,
   SHELL_DIR_TO_DAEMON,
   SHELL_FRAME_OVERHEAD_BYTES,
   SHELL_HEADER_BYTES,
@@ -122,4 +124,30 @@ test('control frames are plain JSON text', () => {
     sid: SID,
     code: 'no_shell',
   })
+})
+
+test('pending opens: early frames are held in order and bounded by count and bytes', () => {
+  const pending = new PendingShellOpens()
+  pending.add({ sid: SID, expiresAtMs: 50_000 } as PendingShellOpen, 0)
+  assertEquals(pending.bufferEarly(SID, new ArrayBuffer(8), 10), 'buffered')
+  assertEquals(pending.bufferEarly('nope', new ArrayBuffer(8), 10), 'unknown')
+  for (let i = 1; i < SHELL_EARLY_MAX_FRAMES; i++) pending.bufferEarly(SID, new ArrayBuffer(1), 10)
+  assertEquals(pending.bufferEarly(SID, new ArrayBuffer(1), 10), 'overflow')
+
+  const big = new PendingShellOpens()
+  big.add({ sid: SID, expiresAtMs: 50_000 } as PendingShellOpen, 0)
+  assertEquals(big.bufferEarly(SID, new ArrayBuffer(SHELL_EARLY_MAX_BYTES), 10), 'buffered')
+  assertEquals(big.bufferEarly(SID, new ArrayBuffer(1), 10), 'overflow')
+})
+
+test('pending opens: a ttl drop is reported to the owner', () => {
+  const dropped: string[] = []
+  const pending = new PendingShellOpens((open) => dropped.push(open.sid))
+  pending.add({ sid: SID, expiresAtMs: 5000 } as PendingShellOpen, 0)
+  pending.list(6000)
+  assertEquals(dropped, [SID])
+  pending.add({ sid: SID, expiresAtMs: 50_000 } as PendingShellOpen, 0)
+  pending.take(SID, 10)
+  pending.list(60_000)
+  assertEquals(dropped, [SID])
 })
