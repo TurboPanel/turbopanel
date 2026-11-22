@@ -27,6 +27,7 @@ import {
   ip,
   leaf,
   managed,
+  notificationChannel,
   notificationDelivery,
   notificationEvent,
   portal,
@@ -38,6 +39,11 @@ import {
   upgrade,
 } from '../../db/schema.ts'
 import { systemReconcileRepairableExists } from '../../features/system/reconcile.ts'
+import { STALE_COMMAND_GRACE_MS } from '../../features/commands/stale-sweep.ts'
+import {
+  FAN_OUT_SWEEP_GRACE_MS,
+  FAN_OUT_SWEEP_MAX_AGE_MS,
+} from '../../features/notifications/emit.ts'
 
 // The job table and `isDue` live in `src/jobs/registry.ts` (shared with the
 // self-hosted runtime); re-exported here for the tick's existing importers.
@@ -51,10 +57,24 @@ export {
 } from '../../jobs/registry.ts'
 
 export type CronGates = {
-  /** An open command, an unfinished recovery or a managed row `applying`. */
+  /**
+   * A command open for longer than the stale grace, an unfinished recovery or a
+   * managed row `applying` for longer than the grace. A younger command or row is
+   * not a candidate for the stale sweep, so it does not open the gate.
+   */
   commandRecoveryWork: boolean
-  /** A pending, failed or held delivery, or an event not yet fanned out. */
+  /**
+   * A pending or failed delivery whose retry time has passed (on a channel the
+   * retry sweep can send to), or an event left unfanned past the fan-out grace.
+   * A delivery waiting out its back-off does not count until it is due.
+   */
   notificationWork: boolean
+  /**
+   * A held delivery (digest or quiet hours) on a channel the digest sweep reads.
+   * The digest sweep also needs its registry slot (`notificationDigests`): the
+   * windows it closes are an hour or a day long.
+   */
+  notificationHeld: boolean
   /** A connected server: the reconnect-repair sweeps start from one. */
   connectedServer: boolean
   /**
@@ -94,6 +114,7 @@ export type CronGates = {
 export const ALL_GATES_OPEN: CronGates = {
   commandRecoveryWork: true,
   notificationWork: true,
+  notificationHeld: true,
   connectedServer: true,
   reconcileUrgent: true,
   hostingPending: true,
@@ -122,17 +143,37 @@ export async function loadCronGates(
     (options.now ?? new Date()).getTime() - 6 * 60_000
   ).toISOString()
   // The status sweep's own window for a portal it asks about again soon.
+  // Nothing younger than the stale grace can be a stale command or managed row.
+  const staleBefore = new Date(
+    (options.now ?? new Date()).getTime() - STALE_COMMAND_GRACE_MS
+  ).toISOString()
+  const unfannedBefore = new Date(
+    (options.now ?? new Date()).getTime() - FAN_OUT_SWEEP_GRACE_MS
+  ).toISOString()
+  const unfannedAfter = new Date(
+    (options.now ?? new Date()).getTime() - FAN_OUT_SWEEP_MAX_AGE_MS
+  ).toISOString()
   const newPortalSince = new Date((options.now ?? new Date()).getTime() - 10 * 60_000).toISOString()
   try {
     const rows = (await db.execute(sql`
       select
-        (exists (select 1 from ${command} where ${command.status} in ('queued', 'dispatching', 'sent', 'acked', 'running'))
+        (exists (select 1 from ${command} where ${command.status} in ('queued', 'dispatching', 'sent', 'acked', 'running')
+            and ${command.updatedAt} < ${staleBefore}::timestamptz)
           or exists (select 1 from ${recovery} where ${recovery.state} not in ('completed', 'failed', 'blocked'))
           or exists (select 1 from ${recovery} where ${recovery.state} = 'blocked'
             and coalesce(${recovery.metadata} -> 'abortRestartTodo', '[]'::jsonb) <> '[]'::jsonb)
-          or exists (select 1 from ${managed} where ${managed.status} = 'applying')) as "commandRecoveryWork",
-        (exists (select 1 from ${notificationDelivery} where ${notificationDelivery.status} in ('pending', 'failed', 'held'))
-          or exists (select 1 from ${notificationEvent} where ${notificationEvent.fannedOutAt} is null)) as "notificationWork",
+          or exists (select 1 from ${managed} where ${managed.status} = 'applying'
+            and ${managed.updatedAt} < ${staleBefore}::timestamptz)) as "commandRecoveryWork",
+        (exists (select 1 from ${notificationDelivery} where ${notificationDelivery.status} in ('pending', 'failed')
+            and ${notificationDelivery.nextAttemptAt} < ${at}::timestamptz
+            and exists (select 1 from ${notificationChannel} where ${notificationChannel.id} = ${notificationDelivery.channelId}
+              and ${notificationChannel.disabledAt} is null and ${notificationChannel.kind} <> 'push'))
+          or exists (select 1 from ${notificationEvent} where ${notificationEvent.fannedOutAt} is null
+            and ${notificationEvent.createdAt} < ${unfannedBefore}::timestamptz
+            and ${notificationEvent.createdAt} > ${unfannedAfter}::timestamptz)) as "notificationWork",
+        exists (select 1 from ${notificationDelivery} where ${notificationDelivery.status} = 'held'
+          and exists (select 1 from ${notificationChannel} where ${notificationChannel.id} = ${notificationDelivery.channelId}
+            and ${notificationChannel.disabledAt} is null and ${notificationChannel.kind} <> 'push')) as "notificationHeld",
         (exists (select 1 from ${tls}) or exists (select 1 from ${leaf}) or exists (select 1 from ${changeover})) as "certificates",
         exists (select 1 from ${server} where ${server.isConnected}) as "connectedServer",
         exists (select 1 from ${server} srv where srv.is_connected

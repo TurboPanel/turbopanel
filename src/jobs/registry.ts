@@ -66,6 +66,11 @@ const latency = () => ({ kind: 'latency', everyMinutes: 1, offset: 0, min: 1, ma
  *   own throttles are ten minutes or more. A removal, a run-token rotation under
  *   way or a portal not yet answered still runs it every minute
  *   (`tunnelsUrgent` gate).
+ * - `notificationDigests`: the digest sweep, which sends each channel's closed
+ *   hourly or daily window (or quiet hours) as one summary. A window is an hour
+ *   or more long, so a summary leaving up to five minutes after its window
+ *   closes is within the grain; no user action sends one. It runs only while a
+ *   delivery is held (`notificationHeld` gate).
  * - `executionLogs`, `historyPrune`, `notificationPrune`, `tierNotices`:
  *   retention deletes and a notice; none has a reader that depends on the grain.
  * - `edgeTrust`, `heartbeatRefresh`, `ingressTick`: self-hosted only (Workers never
@@ -103,6 +108,7 @@ export const CRON_CADENCES = {
   edgeTrust: housekeeping(5, 3),
   heartbeatRefresh: housekeeping(5, 1),
   tunnelSweeps: housekeeping(5, 4),
+  notificationDigests: housekeeping(5, 3),
   ingressTick: housekeeping(1, 0, 60),
   upgradeTick: housekeeping(15, 0),
   upgradeCheck: housekeeping(60, 0, 60),

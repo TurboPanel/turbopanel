@@ -942,7 +942,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     {
       name: 'notification digest sweep',
       scope: 'shared',
-      due: (ctx) => ctx.gates.notificationWork,
+      due: (ctx) => ctx.gates.notificationHeld && ctx.isDue('notificationDigests'),
       run: async () => {
         await sendDueDigests(db, {
           secrets: dataEncryptionSecrets,
