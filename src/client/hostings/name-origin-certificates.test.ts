@@ -5,7 +5,7 @@
  * fails. The provider is a fake. Skips without TURBOPANEL_DATABASE_URL.
  */
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
-import { assert, assertEquals, assertRejects } from '@std/assert'
+import { assert, assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { type Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -419,7 +419,7 @@ test('no token with certificate rights records the reason on the name', async ()
     const issue = await readIssue(w)
     assertEquals(issue?.code, 'no_badge')
     assertEquals(issue?.attempts, 1)
-    assertEquals(Date.parse(issue!.nextTryAt!) - Date.parse(issue!.failedAt), NO_BADGE_RETRY_MS)
+    assertEquals(Date.parse(issue!.nextTryAt!) - Date.parse(issue!.failedAt!), NO_BADGE_RETRY_MS)
   })
 })
 
@@ -447,7 +447,7 @@ test('a provider failure is recorded and the tick retries it after the back-off'
     const early = await sweepNameOriginCertificates(w.db, {
       secrets: w.secrets,
       registry: w.fake.registry,
-      onlyHostingIds: [w.hostingId],
+      testOnlyHostingIds: [w.hostingId],
     })
     assertEquals(early.pinned, [])
     assertEquals(w.fake.issued.length, 0)
@@ -456,7 +456,7 @@ test('a provider failure is recorded and the tick retries it after the back-off'
     await runHostingLetsEncryptSweepTick(w.db, {
       now: () => after,
       registry: w.fake.registry,
-      nameOriginHostingIds: [w.hostingId],
+      testNameOriginHostingIds: [w.hostingId],
       originSweepOrganizationIds: [w.organizationId],
       apply: {
         commandQueue: w.applyDeps.commandQueue!,
@@ -487,6 +487,48 @@ test('a refused request backs off longer on every failure', async () => {
     const issue = await issueOf(w)
     assertEquals(issue?.attempts, 2)
     assertEquals(Date.parse(issue!.nextTryAt!) - at.getTime(), 2 * 3_600_000)
+  })
+})
+
+test('a name that waits before its first attempt reads as queued, never as nothing', async () => {
+  await withWorld({}, async (w) => {
+    const queued = await readIssue(w)
+    assertEquals(queued?.code, 'queued')
+    assertEquals(queued?.attempts, 0)
+    assertEquals(queued?.failedAt, null)
+    assertEquals(queued?.nextTryAt, null)
+    await route(w)
+    assertEquals(await readIssue(w), null)
+  })
+})
+
+test('an error that is neither a refusal nor the provider is recorded with a bounded next try', async () => {
+  await withWorld({}, async (w) => {
+    w.fake.failWith.error = new Error('socket exploded with secret-material')
+    const first = await route(w)
+    assertEquals(first.failed, [NAME])
+    const issue = await issueOf(w)
+    assertEquals(issue?.attempts, 1)
+    assert(issue?.nextTryAt != null)
+    assert(!issue.message.includes('secret-material'))
+    assertEquals(Date.parse(issue.nextTryAt) - Date.parse(issue.failedAt!), 3_600_000)
+    // The scheduled retry leaves it alone until the back-off passes, then doubles it.
+    const early = await sweepNameOriginCertificates(w.db, {
+      secrets: w.secrets,
+      registry: w.fake.registry,
+      testOnlyHostingIds: [w.hostingId],
+    })
+    assertEquals(early.tried, 0)
+    const at = new Date(Date.now() + 2 * 3_600_000)
+    await ensureNameOriginCertificates(w.db, w.hostingId, w.organizationId, {
+      secrets: w.secrets,
+      registry: w.fake.registry,
+      respectBackoff: true,
+      now: at,
+    })
+    const again = await issueOf(w)
+    assertEquals(again?.attempts, 2)
+    assertEquals(Date.parse(again!.nextTryAt!) - at.getTime(), 2 * 3_600_000)
   })
 })
 
@@ -643,12 +685,15 @@ test('a certificate another caller stored meanwhile is used and the extra one is
 test('a certificate that cannot be stored is revoked at the provider', async () => {
   await withWorld({}, async (w) => {
     w.fake.brokenCertificate.on = true
-    await assertRejects(() =>
-      ensureNameOriginCertificates(w.db, w.hostingId, w.organizationId, {
-        secrets: w.secrets,
-        registry: w.fake.registry,
-      })
-    )
+    // An error nobody foresaw no longer aborts the sweep: it is recorded with a bounded next try.
+    const outcome = await ensureNameOriginCertificates(w.db, w.hostingId, w.organizationId, {
+      secrets: w.secrets,
+      registry: w.fake.registry,
+    })
+    assertEquals(outcome.failed, [NAME])
+    const issue = await issueOf(w)
+    assertEquals(issue?.code, 'provider_error')
+    assertEquals(issue?.nextTryAt === null, false)
     assertEquals(w.fake.revoked, ['ext-1'])
     assertEquals(
       (await w.db.select().from(tls).where(eq(tls.organizationId, w.organizationId))).length,
@@ -714,8 +759,8 @@ test('the retry goes to the most overdue name first, never the same few', async 
         secrets: w.secrets,
         registry: w.fake.registry,
         now,
-        onlyHostingIds: only,
-        batch: 1,
+        testOnlyHostingIds: only,
+        testBatch: 1,
       })
     // Never tried first, then the earliest retry time, then the next; each pass moves on.
     assertEquals((await pass()).tried, 1)

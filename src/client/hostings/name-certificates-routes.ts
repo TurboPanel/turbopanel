@@ -234,17 +234,29 @@ export type HostingNameRead = NameCertificate & {
   certificateOptions: NameCertificateOptions
   /**
    * Why a name set to the Cloudflare origin certificate has none yet (no API
-   * token can issue for its zone, or the provider refused); null when nothing
-   * went wrong or the name holds its certificate.
+   * token can issue for its zone, or the provider refused). A name that waits
+   * and has not been tried yet reads as `queued`; null only when the name holds
+   * its certificate or does not ask for the origin certificate.
    */
   originCertificateIssue: NameOriginIssueRead | null
 }
 
 /** The part of a recorded reason the read shows. */
-export type NameOriginIssueRead = Pick<
-  NameOriginIssue,
-  'code' | 'message' | 'failedAt' | 'attempts' | 'nextTryAt'
->
+export type NameOriginIssueRead = Pick<NameOriginIssue, 'message' | 'attempts' | 'nextTryAt'> & {
+  /** `queued` is read-only state: no attempt has been recorded for the name yet. */
+  code: NameOriginIssue['code'] | 'queued'
+  /** When the last attempt failed; null for `queued`. */
+  failedAt: string | null
+}
+
+/** Shown while a name waits for its certificate and the first attempt has not run. */
+const QUEUED_ISSUE: NameOriginIssueRead = {
+  code: 'queued',
+  message: 'The certificate is queued and will be requested shortly.',
+  failedAt: null,
+  attempts: 0,
+  nextTryAt: null,
+}
 
 type HostingForNames = { id: string; serviceId: string; options: unknown; metadata?: unknown }
 
@@ -359,7 +371,7 @@ export async function loadHostingNameReads(
         // Only a name that still waits for its certificate shows a reason.
         const issue =
           name.certificate === 'cloudflare_origin' && name.tlsId === null
-            ? issues[name.hostname]
+            ? (issues[name.hostname] ?? QUEUED_ISSUE)
             : undefined
         return {
           ...name,

@@ -1963,6 +1963,52 @@ test('a name is verified only with a pinned public pair that covers it and a dep
   })
 })
 
+test('a name moved from a verified public pair to a provider origin certificate skips verification again and its route is written again', async () => {
+  await withFixture(async (f) => {
+    const r = await reachFixture(f, 'datacenter')
+    const name = 'reach.example.com'
+    const future = new Date(Date.now() + 60 * 86_400_000).toISOString()
+    const deps = { secrets: f.secrets, registry: createTunnelAdapterRegistry(fakeProvider) }
+    await runVerifiedNamesSweepTick(f.db, deps)
+    await pinPublicPair(f, r.site, name, future)
+    await applyDeploy(f, r.site, 'applied')
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 1)
+    assert(JSON.stringify(provider.routeBodies.at(-1)).includes('"noTLSVerify":false'))
+    assertEquals(await loadVerifiedNames(f.db, r.id, new Date()), [name])
+    // The name now asks for the provider's origin certificate, which the connector cannot verify.
+    const [origin] = await f.db
+      .insert(tls)
+      .values({
+        organizationId: f.orgA,
+        source: 'provider_origin',
+        status: 'ready',
+        notAfter: future,
+        certificatePem: 'certificate',
+        privateKeyPem: 'key',
+        metadata: { dnsNames: [name] },
+      })
+      .returning({ id: tls.id })
+    f.cleanup.push(async () => {
+      await f.db.update(hostname).set({ tlsId: null }).where(eq(hostname.tlsId, origin!.id))
+      await f.db.delete(tls).where(eq(tls.id, origin!.id))
+    })
+    await f.db
+      .update(hostname)
+      .set({ certificate: 'cloudflare_origin', tlsId: origin!.id })
+      .where(and(eq(hostname.hostingId, r.site), eq(hostname.hostname, name)))
+    await applyDeploy(f, r.site, 'applied')
+    assertEquals(await loadVerifiedNames(f.db, r.id, new Date()), [])
+    const before = provider.routeBodies.length
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 1)
+    assertEquals(provider.routeBodies.length, before + 1)
+    const pushed = JSON.stringify(provider.routeBodies.at(-1))
+    assert(pushed.includes('"noTLSVerify":true'))
+    assert(!pushed.includes('"noTLSVerify":false'))
+    // Nothing more to write once the route matches.
+    assertEquals((await runVerifiedNamesSweepTick(f.db, deps)).pushed, 0)
+  })
+})
+
 test('the sweep writes the verified set once, then leaves the tunnel alone, and retries a failed write after a wait', async () => {
   await withFixture(async (f) => {
     const r = await reachFixture(f, 'datacenter')

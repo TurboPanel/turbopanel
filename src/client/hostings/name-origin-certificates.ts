@@ -176,7 +176,7 @@ function planNames(
   return { groups: [...groups.values()], unplaced }
 }
 
-/** Turn a failed issue into a reason; an error that is not the provider's or a refusal is not ours to hide. */
+/** Turn a failed issue into a reason; null for an error that is neither the provider's nor a refusal. */
 function classify(err: unknown): Failure | null {
   if (err instanceof OriginCertificateRefusal) {
     const code = REFUSAL_CODES.has(err.error)
@@ -188,6 +188,25 @@ function classify(err: unknown): Failure | null {
     return { code: 'provider_error', message: err.message, error: err }
   }
   return null
+}
+
+/**
+ * An error that is neither a refusal nor the provider's. It is still recorded,
+ * with a fixed message (the raw text may carry secrets) and the same bounded
+ * back-off as any other failure, so the name never waits with no next try and
+ * the retry queue is not held by a name that fails the same way every pass.
+ */
+function unexpectedFailure(err: unknown): Failure {
+  logWarn(
+    'tls',
+    `origin certificate issue failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`
+  )
+  return {
+    code: 'provider_error',
+    message:
+      'The certificate could not be issued because of an unexpected error. It is tried again later.',
+    error: err,
+  }
 }
 
 function noBadgeIssue(name: string, previous: NameOriginIssue | undefined, now: Date) {
@@ -270,8 +289,7 @@ async function runGroups(
         })
       }
     } catch (err) {
-      const failure = classify(err)
-      if (failure === null) throw err
+      const failure = classify(err) ?? unexpectedFailure(err)
       for (const name of group.names) state.failures.set(name, failure)
     }
   })
@@ -569,9 +587,10 @@ export type NameOriginSweepDeps = {
   secrets: DerivedSecretsConfig | null
   registry?: TunnelAdapterRegistry
   now?: Date
-  /** Test seams: look only at these hostings, and take this many per pass. */
-  onlyHostingIds?: readonly string[]
-  batch?: number
+  /** TEST ONLY, never set by production callers: look only at these hostings. */
+  testOnlyHostingIds?: readonly string[]
+  /** TEST ONLY, never set by production callers: take this many hostings per pass. */
+  testBatch?: number
 }
 
 /**
@@ -605,7 +624,9 @@ export async function sweepNameOriginCertificates(
         eq(hostname.certificate, 'cloudflare_origin'),
         isNull(hostname.tlsId),
         sql`(${nextTry} is null or ${nextTry} <= ${now.toISOString()}::timestamptz)`,
-        ...(deps.onlyHostingIds ? [inArray(hostname.hostingId, [...deps.onlyHostingIds])] : [])
+        ...(deps.testOnlyHostingIds
+          ? [inArray(hostname.hostingId, [...deps.testOnlyHostingIds])]
+          : [])
       )
     )
     .orderBy(
@@ -620,7 +641,7 @@ export async function sweepNameOriginCertificates(
     if (nameOriginIssueWaiting(issue, now) || due.has(row.hostingId)) continue
     due.set(row.hostingId, { organizationId: row.organizationId, updatedAt: row.updatedAt })
   }
-  const batch = deps.batch ?? NAME_ORIGIN_SWEEP_BATCH
+  const batch = deps.testBatch ?? NAME_ORIGIN_SWEEP_BATCH
   await forEachSequential([...due].slice(0, batch), async ([id, site]) => {
     out.tried += 1
     try {
