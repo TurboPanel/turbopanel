@@ -1,5 +1,5 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
-import { assertEquals, assertMatch } from '@std/assert'
+import { assert, assertEquals, assertMatch } from '@std/assert'
 import { loadFirewallFacts } from '../../features/firewall/facts.ts'
 import { listAuditForOrganization } from '../../features/audit/audit-records.ts'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
@@ -28,6 +28,8 @@ import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
 import { emptyComposeDocument } from '../../features/compose/index.ts'
 import type { ComposeDocument } from '../../features/compose/types.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
+import { mariadbEngineSpec } from '../../features/managed/mariadb.ts'
+import { engineLoginNameForPrincipal } from '../../features/managed/routes-helpers.ts'
 import {
   backup,
   binding,
@@ -3918,6 +3920,74 @@ test('POST managed user for an existing principal reuses its name, lists it with
         .where(eq(principal.id, ownerId))
       assertEquals(ownerStays?.id, ownerId)
       await db.delete(principal).where(eq(principal.id, ownerId))
+    }
+  )
+})
+
+test('POST managed user for a hyphenated principal gets a mapped engine name and refuses a taken one', async () => {
+  await withManagedFixtures(
+    { engine: 'mariadb' },
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const ready = () =>
+        db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      await ready()
+
+      const applied = 'utptest-inv_4ui81886gzx'
+      const [owner] = await db
+        .insert(principal)
+        .values({
+          organizationId,
+          username: 'utptest-inv',
+          appliedUsername: applied,
+          options: { nameScheme: 'partial' },
+        })
+        .returning({ id: principal.id })
+      const mapped = engineLoginNameForPrincipal(mariadbEngineSpec, applied)
+      assert(mapped !== null && mapped !== applied)
+
+      // Another Linux user already holds the mapped name: refused, nothing saved.
+      const [squatter] = await db
+        .insert(principal)
+        .values({ organizationId, username: mapped, appliedUsername: mapped })
+        .returning({ id: principal.id })
+      const taken = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ principalId: owner!.id, databases: ['defaultdb'] }),
+      })
+      assertEquals(taken.status, 409)
+      assertEquals(await taken.json(), { error: 'username_in_use' })
+      await db.delete(principal).where(eq(principal.id, squatter!.id))
+
+      await ready()
+      const ok = await app.request(`/environments/${environmentId}/managed/users`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ principalId: owner!.id, databases: ['defaultdb'] }),
+      })
+      assertEquals(ok.status, 200)
+      const body = (await ok.json()) as {
+        user: { principalId: string; username: string; appliedUsername: string }
+      }
+      assertEquals(body.user.principalId, owner!.id)
+      assertEquals(body.user.username, 'utptest-inv')
+      assertEquals(body.user.appliedUsername, mapped)
+
+      await db.delete(login).where(eq(login.managedId, created.managed.id))
+      await db.delete(principal).where(eq(principal.id, owner!.id))
     }
   )
 })

@@ -1103,7 +1103,7 @@ export const managedSchemas = {
       principalId: {
         type: 'string',
         description:
-          "Create a login for an existing site owner Linux user of the organization instead of a new name. The engine role takes the principal's own name, so it must be a valid role name for the engine (422 `principal_name_does_not_fit` or `principal_name_reserved` otherwise); 404 `principal_not_found` for an unknown principal; 409 `managed_login_exists` when it already has a login on this cluster.",
+          "Create a login for an existing site owner Linux user of the organization instead of a new name. The engine role takes the principal's own name when the engine accepts it; a name with a hyphen (or any character an engine role name cannot hold) gets a deterministic mapped name instead (letters, digits and underscores, plus a short suffix), shown as the login's `appliedUsername` (422 `principal_name_does_not_fit` or `principal_name_reserved` when no valid name can be built; 409 `username_in_use` when the name is held by another account); 404 `principal_not_found` for an unknown principal; 409 `managed_login_exists` when it already has a login on this cluster.",
       },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: {

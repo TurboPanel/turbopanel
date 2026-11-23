@@ -254,6 +254,7 @@ import {
   canHardDeleteManaged,
   connectionListenerFromAccess,
   DATABASE_ADMIN_PRIVILEGE,
+  engineLoginNameForPrincipal,
   evaluateExistingPrincipalLoginName,
   evaluateManagedDatabaseDelete,
   evaluateManagedLoginDropGuard,
@@ -1837,9 +1838,11 @@ async function createLoginWithNewName(
 
 /**
  * A login for an existing principal: the engine role takes the principal's
- * applied name (the one allowed overlap in the organization's name pool), so
- * only the cluster itself and the shared frontend of other organizations'
- * clusters are checked for that name.
+ * applied name, or its mapped name when the engine does not accept it as-is
+ * (the one allowed overlap in the organization's name pool). An unmapped
+ * name is checked only against the cluster itself and the shared frontend of
+ * other organizations' clusters; a mapped name is a new name, so it is also
+ * checked against every Linux user of the pool, this principal included.
  */
 async function createLoginForExistingPrincipal(
   tx: Db,
@@ -1850,7 +1853,15 @@ async function createLoginForExistingPrincipal(
   if (existingLogins.some((entry) => entry.principalId === target.id)) {
     return { ok: false, error: 'managed_login_exists', status: 409 }
   }
-  const key = target.appliedUsername.toLowerCase()
+  // The engine role is the principal's applied name when the engine takes it,
+  // else a deterministic mapped name (`engineLoginNameForPrincipal`).
+  const engineName = engineLoginNameForPrincipal(params.ctx.spec, target.appliedUsername)
+  if (engineName === null) {
+    // The create request already refused this name with a 422.
+    throw new TypeError(`no engine login name for principal ${target.id}`)
+  }
+  const mapped = engineName !== target.appliedUsername
+  const key = engineName.toLowerCase()
   if (
     existingLogins.some(
       (entry) => entry.username === target.username || entry.appliedUsername.toLowerCase() === key
@@ -1859,22 +1870,13 @@ async function createLoginForExistingPrincipal(
     return { ok: false, error: 'managed_user_exists', status: 409 }
   }
   if (
-    (await isManagedUsernameTaken(tx, owningOrgIds, target.appliedUsername, target.id)) ||
-    (await isManagedLoginNameTaken(
-      tx,
-      owningOrgIds,
-      target.appliedUsername,
-      undefined,
-      target.id
-    )) ||
+    // A mapped name is a new name in the pool: no principal (not even this
+    // one) may hold it as a Linux user. An unmapped name is the principal's own.
+    (await isManagedUsernameTaken(tx, owningOrgIds, engineName, mapped ? undefined : target.id)) ||
+    (await isManagedLoginNameTaken(tx, owningOrgIds, engineName, undefined, target.id)) ||
     // The principal's own name is the allowed overlap across engines, but not
     // inside one protocol family on one server (one shared frontend namespace).
-    (await isManagedLoginNameTakenInFamily(
-      tx,
-      managedId,
-      params.ctx.spec.engine,
-      target.appliedUsername
-    ))
+    (await isManagedLoginNameTakenInFamily(tx, managedId, params.ctx.spec.engine, engineName))
   ) {
     return { ok: false, error: USERNAME_IN_USE_ERROR, status: 409 }
   }
@@ -1883,7 +1885,7 @@ async function createLoginForExistingPrincipal(
     managedId,
     principalId: target.id,
     username: target.username,
-    appliedUsername: target.appliedUsername,
+    appliedUsername: engineName,
     ...settings,
     nameScheme,
   })
@@ -1893,7 +1895,7 @@ async function createLoginForExistingPrincipal(
     loginId: created.loginId,
     password: created.password,
     username: target.username,
-    appliedUsername: target.appliedUsername,
+    appliedUsername: engineName,
     nameScheme,
   }
 }
