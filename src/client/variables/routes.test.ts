@@ -336,6 +336,65 @@ test('PATCH /variables/:id rejects secret to non-secret without replacement valu
   )
 })
 
+test('POST and PATCH /variables refuse a build variable the build would drop', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const refused = await postVariable(app, cookie, organizationId, {
+        environmentId,
+        key: 'PATH',
+        value: '/tmp',
+        forBuild: true,
+      })
+      assertEquals(refused.status, 400)
+      const refusedBody = (await refused.json()) as { error: string }
+      assertEquals(refusedBody.error.startsWith('PATH cannot be set for a build:'), true)
+
+      // Runtime-only is fine, and so is a lower-case name for a build.
+      const runtimeOnly = await postVariable(app, cookie, organizationId, {
+        environmentId,
+        key: 'PATH',
+        value: '/tmp',
+        forBuild: false,
+      })
+      assertEquals(runtimeOnly.status, 200)
+      const { id } = (await runtimeOnly.json()) as { id: string }
+      const lower = await postVariable(app, cookie, organizationId, {
+        environmentId,
+        key: 'tp_bv_lower',
+        value: 'x',
+        forBuild: true,
+      })
+      assertEquals(lower.status, 200)
+
+      const patch = (body: Record<string, unknown>) =>
+        app.request(`/variables/${id}`, {
+          method: 'PATCH',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(body),
+        })
+      const patched = await patch({ forBuild: true })
+      assertEquals(patched.status, 400)
+      assertEquals(
+        ((await patched.json()) as { error: string }).error.startsWith(
+          'PATH cannot be set for a build:'
+        ),
+        true
+      )
+      const rows = await db
+        .select({ isForBuild: variable.isForBuild })
+        .from(variable)
+        .where(eq(variable.id, id))
+      assertEquals(rows[0]!.isForBuild, false)
+      assertEquals((await patch({ description: 'still editable' })).status, 200)
+    }
+  )
+})
+
 function postVariable(
   app: Hono<AppEnv>,
   cookie: string,
