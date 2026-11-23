@@ -79,6 +79,50 @@ test('Deno and Workers bindings outside the runtime folders are new violations',
   assertEquals(result.text.includes('a.test.ts'), false)
 })
 
+test('every Deno and cloudflare form is detected outside the runtime folders', async () => {
+  const forms: Record<string, string> = {
+    'src/lib/typeof.ts': "export const a = typeof Deno === 'undefined'\n",
+    'src/lib/optional.ts': 'export const b = (globalThis as any).Deno?.env\n',
+    'src/lib/dynamic.ts': "export const c = () => import('cloudflare:workers')\n",
+    'src/lib/bare.ts': "import 'cloudflare:test'\n",
+    'src/lib/reexport.ts': "export { env } from 'cloudflare:workers'\n",
+    'src/lib/template.ts': 'export const d = `${Deno.cwd()}`\n',
+    'src/developer/surface.ts': 'export const e = Deno.cwd()\n',
+  }
+  const result = await runInTree(forms)
+  assertEquals(result.code, 1)
+  for (const file of Object.keys(forms)) {
+    assertStringIncludes(result.text, `runtime: ${file} is a new violation`)
+  }
+})
+
+test('runtime folders and type-only Deno use are not violations', async () => {
+  const result = await runInTree({
+    'src/app/deno/a.ts': 'export const a = Deno.cwd()\n',
+    'src/app/workers/a.ts': "import 'cloudflare:workers'\n",
+    'src/features/f/deno/a.ts': 'export const a = Deno.cwd()\n',
+    'src/features/f/workers/a.ts': "import 'cloudflare:workers'\n",
+    'src/lib/types.ts': 'export function f(x: Deno.FsFile, y?: Array<Deno.Command>): void {}\n',
+  })
+  assertEquals(result.code, 0, result.text)
+})
+
+test('strings, comments and local declarations do not trigger the runtime rule', async () => {
+  const result = await runInTree({
+    'src/lib/a.ts': "export const a = '**/*.ts'\nexport const b = 'Deno.env'\n",
+    'src/lib/b.ts': 'export const t = `Deno.env ${1 + 1} Deno`\n',
+    'src/lib/c.ts': 'export class Queue {}\nexport const q = new Queue()\n',
+    'src/lib/d.ts': "export const g = '/*'\n// Deno.cwd()\n/* Deno.cwd() */\n",
+  })
+  assertEquals(result.code, 0, result.text)
+  // A real use after a string holding a block-comment opener is still seen.
+  const after = await runInTree({
+    'src/lib/e.ts': "export const g = '**/*.ts'\nexport const h = Deno.cwd()\n",
+  })
+  assertEquals(after.code, 1)
+  assertStringIncludes(after.text, 'runtime: src/lib/e.ts is a new violation')
+})
+
 test('an oversized source file fails, a baselined one passes, and growth fails', async () => {
   const files = { 'src/lib/big.ts': bigFile(1501), 'src/lib/big.test.ts': bigFile(2000) }
   const fresh = await runInTree(files)
@@ -91,6 +135,34 @@ test('an oversized source file fails, a baselined one passes, and growth fails',
   const grown = await runInTree(files, { size: { 'src/lib/big.ts': 1500 } })
   assertEquals(grown.code, 1)
   assertStringIncludes(grown.text, 'grew to 1501 lines')
+})
+
+test('a baselined file that shrank must be lowered, and prune lowers it', async () => {
+  const files = { 'src/lib/big.ts': bigFile(1600) }
+  const shrunk = await runInTree(files, { size: { 'src/lib/big.ts': 1700 } })
+  assertEquals(shrunk.code, 1)
+  assertStringIncludes(shrunk.text, 'shrank to 1600 lines (baseline 1700)')
+
+  const root = await Deno.makeTempDir({ prefix: 'tp-source-layout-shrink-' })
+  try {
+    await Deno.mkdir(join(root, 'scripts'), { recursive: true })
+    await Deno.mkdir(join(root, 'src/lib'), { recursive: true })
+    await Deno.copyFile(scriptPath, join(root, 'scripts/check-source-layout.mjs'))
+    const baselinePath = join(root, 'scripts/source-layout-baseline.json')
+    await Deno.writeTextFile(baselinePath, JSON.stringify({ size: { 'src/lib/big.ts': 1700 } }))
+    await Deno.writeTextFile(join(root, 'src/lib/big.ts'), files['src/lib/big.ts'])
+    const run = (...args: string[]) =>
+      new Deno.Command('node', {
+        args: [join(root, 'scripts/check-source-layout.mjs'), ...args],
+        stdout: 'piped',
+        stderr: 'piped',
+      }).output()
+    assertEquals((await run('--prune')).code, 0)
+    assertEquals(JSON.parse(await Deno.readTextFile(baselinePath)).size, { 'src/lib/big.ts': 1600 })
+    assertEquals((await run()).code, 0)
+  } finally {
+    await Deno.remove(root, { recursive: true })
+  }
 })
 
 test('a new index.ts barrel fails', async () => {

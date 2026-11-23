@@ -3,12 +3,15 @@
  * Source layout lint with a ratchet baseline (CI guard).
  *
  * Rules, all over `src/**`:
- *   - `runtime`: no `Deno.*` use and no Workers binding (`cloudflare:*`
- *     imports, `DurableObject*`, `KVNamespace`, `R2Bucket`, `D1Database`,
- *     `Hyperdrive`, `Fetcher`, `Queue`) in a non-test source file outside the
- *     runtime folders (`src/platform/`, `src/developer/`, `src/cli/`,
- *     `src/test-fixtures/`) and the entry files (`src/deno.ts`,
- *     `src/deno-dev.ts`, `src/workers.ts`, `src/workers-vitest.ts`).
+ *   - `runtime`: no use of the `Deno` global (calls, `typeof Deno`,
+ *     `globalThis.Deno?.`; type-only `Deno.Type` is fine) and no Workers
+ *     binding (`cloudflare:` imports in any form, `DurableObject*`,
+ *     `KVNamespace`, `R2Bucket`, `D1Database`, `Hyperdrive`, `Fetcher`,
+ *     `Queue`) in a non-test source file outside the runtime folders
+ *     (`src/platform/`, `src/cli/`, `src/test-fixtures/`, `src/app/deno/`,
+ *     `src/app/workers/`, `src/features/<name>/deno|workers/`) and the entry
+ *     files (`src/deno.ts`, `src/deno-dev.ts`, `src/workers.ts`,
+ *     `src/workers-vitest.ts`). Comments and string contents are ignored.
  *   - `size`: a non-test source file has at most MAX_LINES lines.
  *   - `barrel`: `index.ts` / `index.tsx` files are barrels; none may be added.
  *   - `test-name`: a test file is `<name>.<kind>.ts` with `<name>` free of
@@ -17,9 +20,10 @@
  * Every violation that exists today is listed in
  * `scripts/source-layout-baseline.json`. The check fails on a violation that
  * is not listed (or an oversized file that grew), and on a listed entry that
- * is fixed, so the baseline only shrinks. Run
- * `node scripts/check-source-layout.mjs --prune` to drop fixed entries; it
- * never adds one.
+ * is fixed, and on an oversized file whose size is below its recorded count,
+ * so the baseline only shrinks. Run `node scripts/check-source-layout.mjs
+ * --prune` to drop fixed entries and lower recorded counts; it never adds
+ * one.
  *
  * Usage:
  *   node scripts/check-source-layout.mjs
@@ -34,7 +38,16 @@ const SRC = path.join(ROOT, 'src')
 const BASELINE = path.join(ROOT, 'scripts/source-layout-baseline.json')
 
 const MAX_LINES = 1500
-const RUNTIME_DIRS = ['src/platform/', 'src/developer/', 'src/cli/', 'src/test-fixtures/']
+// Runtime places that exist today: platform/, cli/, test-fixtures/, app/deno,
+// app/workers and features/<name>/deno|workers (REPORT target layout).
+const RUNTIME_DIRS = [
+  'src/platform/',
+  'src/cli/',
+  'src/test-fixtures/',
+  'src/app/deno/',
+  'src/app/workers/',
+]
+const RUNTIME_DIR_PATTERN = /^src\/features\/[^/]+\/(?:deno|workers)\//
 const RUNTIME_FILES = new Set([
   'src/deno.ts',
   'src/deno-dev.ts',
@@ -52,8 +65,11 @@ const TEST_KINDS = [
 ]
 const RULES = ['runtime', 'size', 'barrel', 'test-name']
 const SKIP_DIR_NAMES = new Set(['.git', 'node_modules', 'dist', 'coverage', '.wrangler', '.local'])
-const RUNTIME_PATTERN =
-  /\bDeno\.|from\s+['"]cloudflare:|\b(?:DurableObject\w*|KVNamespace|R2Bucket|D1Database|Hyperdrive|Fetcher|Queue)\b(?=\s*[<,;)>=|\s])/
+const CLOUDFLARE_IMPORT = /\b(?:from|import)\s*\(?\s*['"]cloudflare:/
+const BINDING_PATTERN =
+  /(?<![.\w])(?:DurableObject\w*|KVNamespace|R2Bucket|D1Database|Hyperdrive|Fetcher|Queue)\b(?=\s*[<,;)>=|\s])/g
+const DECLARATION_BEFORE = /\b(?:class|interface|type|function|const|let|var|enum)\s+$/
+const TYPE_POSITION_BEFORE = /(?:[:<|&]|\b(?:as|extends|implements))\s*$/
 
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out
@@ -68,8 +84,79 @@ function walk(dir, out = []) {
   return out
 }
 
-function stripComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:'"`\\])\/\/.*$/gm, '$1')
+/**
+ * Single pass over source text. Returns the text with comments removed
+ * (`code`, strings intact, used for module specifiers) and with comments
+ * removed and string / template literal contents blanked (`bare`, used for
+ * identifier matches). `${...}` inside a template stays code.
+ */
+export function scan(text) {
+  let code = ''
+  let bare = ''
+  const templates = [] // brace depth at each open `${`
+  let depth = 0
+  let i = 0
+  const emit = (c, b) => {
+    code += c
+    bare += b
+  }
+  while (i < text.length) {
+    const ch = text[i]
+    const next = text[i + 1]
+    if (ch === '/' && next === '/') {
+      while (i < text.length && text[i] !== '\n') i++
+    } else if (ch === '/' && next === '*') {
+      const end = text.indexOf('*/', i + 2)
+      i = end === -1 ? text.length : end + 2
+    } else if (ch === "'" || ch === '"') {
+      let j = i + 1
+      while (j < text.length && text[j] !== ch && text[j] !== '\n') j += text[j] === '\\' ? 2 : 1
+      emit(text.slice(i, j + 1), ch + ch)
+      i = j + 1
+    } else if (ch === '`' || (ch === '}' && templates.at(-1) === depth)) {
+      if (ch === '}') templates.pop()
+      let j = i + 1
+      let raw = ch
+      while (j < text.length && text[j] !== '`' && !(text[j] === '$' && text[j + 1] === '{')) {
+        raw += text.slice(j, j + (text[j] === '\\' ? 2 : 1))
+        j += text[j] === '\\' ? 2 : 1
+      }
+      if (text[j] === '$') {
+        templates.push(depth)
+        emit(raw + '${', ch === '`' ? '`${' : '${')
+        j += 2
+      } else {
+        emit(raw + '`', ch === '`' ? '``' : '`')
+        j += 1
+      }
+      i = j
+    } else {
+      if (ch === '{') depth++
+      else if (ch === '}') depth--
+      emit(ch, ch)
+      i++
+    }
+  }
+  return { code, bare }
+}
+
+function usesDeno(bare) {
+  for (const m of bare.matchAll(/\bDeno\b/g)) {
+    const before = bare.slice(0, m.index)
+    const after = bare.slice(m.index + 4)
+    // Type-only use: `x: Deno.Type`, `<Deno.Type>`, `as Deno.Type`.
+    if (/^\.[A-Z]/.test(after) && TYPE_POSITION_BEFORE.test(before)) continue
+    return true
+  }
+  return false
+}
+
+function usesWorkersBinding({ code, bare }) {
+  if (CLOUDFLARE_IMPORT.test(code)) return true
+  for (const m of bare.matchAll(BINDING_PATTERN)) {
+    if (!DECLARATION_BEFORE.test(bare.slice(0, m.index))) return true
+  }
+  return false
 }
 
 function testKind(name) {
@@ -98,8 +185,13 @@ export function collectViolations(root = ROOT) {
     const text = fs.readFileSync(abs, 'utf8')
     const lines = text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length
     if (lines > MAX_LINES) found.size[rel] = lines
-    const inRuntimeArea = RUNTIME_FILES.has(rel) || RUNTIME_DIRS.some((d) => rel.startsWith(d))
-    if (!inRuntimeArea && RUNTIME_PATTERN.test(stripComments(text))) found.runtime.push(rel)
+    const inRuntimeArea =
+      RUNTIME_FILES.has(rel) ||
+      RUNTIME_DIRS.some((d) => rel.startsWith(d)) ||
+      RUNTIME_DIR_PATTERN.test(rel)
+    if (inRuntimeArea) continue
+    const scanned = scan(text)
+    if (usesDeno(scanned.bare) || usesWorkersBinding(scanned)) found.runtime.push(rel)
   }
   return found
 }
@@ -123,6 +215,11 @@ export function compare(found, base) {
           errors.push(
             `size: ${file} grew to ${lines} lines (baseline ${allowed}); it may only shrink.`
           )
+        } else if (lines < allowed) {
+          errors.push(
+            `size: ${file} shrank to ${lines} lines (baseline ${allowed}); run --prune to lower the baseline.`
+          )
+          prunable.size[file] = lines
         } else {
           prunable.size[file] = lines
         }

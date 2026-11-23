@@ -102,11 +102,14 @@ src/
 `pnpm check:source-layout` (`scripts/check-source-layout.mjs`, wired into
 `pnpm test:hook`, `pnpm verify:ci` and CI) enforces four rules over `src/`:
 
-- `runtime`: no `Deno.*` and no Workers binding (`cloudflare:*` imports,
-  `DurableObject*`, `KVNamespace`, `R2Bucket`, `D1Database`, `Hyperdrive`,
-  `Fetcher`, `Queue`) in a non-test file outside `src/platform/`,
-  `src/developer/`, `src/cli/`, `src/test-fixtures/` and the entry files
+- `runtime`: no use of the `Deno` global (calls, `typeof Deno`,
+  `globalThis.Deno?.`; type-only `Deno.Type` is fine) and no Workers binding
+  (`cloudflare:` imports in any form, `DurableObject*`, `KVNamespace`,
+  `R2Bucket`, `D1Database`, `Hyperdrive`, `Fetcher`, `Queue`) in a non-test file
+  outside `src/platform/`, `src/cli/`, `src/test-fixtures/`, `src/app/deno/`,
+  `src/app/workers/`, `src/features/<name>/deno|workers/` and the entry files
   (`src/deno.ts`, `src/deno-dev.ts`, `src/workers.ts`, `src/workers-vitest.ts`).
+  Comments and string contents are ignored.
 - `size`: at most 1,500 lines per non-test source file.
 - `barrel`: no new `index.ts`. Do not add re-export barrels; import the module.
 - `test-name`: a test file is `<name>.<kind>.ts` where `<name>` has no dots and
@@ -124,5 +127,6 @@ shrinks:
   1,500 lines, renamed, deleted) also fails until it is removed. Run
   `node scripts/check-source-layout.mjs --prune` to drop fixed entries (it never
   adds one) and commit the smaller file with the fix.
-- When you split an oversized file but it is still over 1,500 lines, lower its
-  recorded number by hand in the same change.
+- A baselined file that shrank but is still over 1,500 lines also fails until
+  its recorded count is lowered, so it cannot grow back. `--prune` lowers the
+  counts; commit the result with the change.
