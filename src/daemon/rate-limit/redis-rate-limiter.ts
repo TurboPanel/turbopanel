@@ -64,8 +64,12 @@ export const DEFAULT_GITHUB_WEBHOOK_RATE_PERIOD_SECONDS = 60
 /** GitLab's own bucket — same sizing, independent budget. */
 export const DEFAULT_GITLAB_WEBHOOK_RATE_LIMIT = 120
 export const DEFAULT_GITLAB_WEBHOOK_RATE_PERIOD_SECONDS = 60
-/** Stripe delivery volume is far below a push fan-out — a modest budget. */
-export const DEFAULT_STRIPE_WEBHOOK_RATE_LIMIT = 60
+/**
+ * The billing provider's events (`/webhook/stripe`): same value as Wrangler
+ * `STRIPE_WEBHOOK_RATE_LIMITER` (600 a minute per source address), so a burst of
+ * delivered events is not delayed on either runtime.
+ */
+export const DEFAULT_STRIPE_WEBHOOK_RATE_LIMIT = 600
 export const DEFAULT_STRIPE_WEBHOOK_RATE_PERIOD_SECONDS = 60
 
 const MIN_BUCKET_TTL_MS = 1_000
