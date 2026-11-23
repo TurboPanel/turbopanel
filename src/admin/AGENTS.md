@@ -30,9 +30,8 @@ memberCount, serverCount, projectCount, isRoot }] }`. Admin or superadmin (the
   (202 `{ ok, runId }`, 200 `{ ok, upToDate }`, 409 `run_active` / `paused` /
   `update_blocked`, 429 `check_too_soon` (once a minute), 503
   `release_unreachable`, 403 `development` on a development install; contract in
-  `src/features/upgrades/AGENTS.md`). The old manual
-  `POST /instance/updates/instance`, `/daemon` and the other start, retry and
-  cancel routes stay retired and answer 410 `updates_automatic`. Development installs only:
+  `src/features/upgrades/AGENTS.md`). There are no manual start, retry or
+  cancel routes (an update starts itself or with Update Now). Development installs only:
   `GET /instance/updates/development` and
   `POST /instance/updates/development/push` (`{ force?: boolean }`, 202 with the
   job, 409 `job_running` while one is active), superadmin, audited as
@@ -69,8 +68,7 @@ pendingDaemonChanges, host }` (remote servers only; the job lives in memory and 
   which also mounts `GET /api/developer/v1/dev-host/status` and the two
   actions for the Developer Console behind the developer access middleware; `GET /instance/identity` is the Panel Identity read (public fingerprints of the control
   plane's current, next and sealing keys, the install address, and each server's pinned-by state,
-  `none` until the server pin column exists); `PUT /instance/identity/next` answers 410
-  `next_key_retired` on both runtimes (the offline next key is retired). Key changes are
+  `none` until the server pin column exists); there is no offline next key route. Key changes are
   `key-rotation-routes.ts`: `GET /instance/identity/rotation`, `POST /instance/identity/statements/prepare`
   (exact statement bytes + WebAuthn challenge), `POST /instance/identity/statements` (assertions, checked
   like a server checks them, then signed by the replaced key unless it is a revoke, and stored), `GET /instance/identity/statements/:keyset` (download) and

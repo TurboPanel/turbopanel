@@ -88,7 +88,7 @@ export const installOpenApiPaths: Record<string, unknown> = {
       },
     },
   },
-  '/api/install/v1/': {
+  '/api/install/v1': {
     post: {
       tags: ['Install'],
       summary: 'Complete initial install (install step 2)',
