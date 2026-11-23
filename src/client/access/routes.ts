@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray, or } from 'drizzle-orm'
 import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -20,7 +20,8 @@ import {
 } from '../authz/index.ts'
 import { getPermissionCatalog } from '../authz/catalog.ts'
 import { getDb, type Db } from '../../db/connection.ts'
-import { grant, invitation } from '../../db/schema.ts'
+import { grant, invitation, teammate } from '../../db/schema.ts'
+import { canAccessOrganization } from '../org-context.ts'
 import { getOrgId } from '../shared.ts'
 import { acceptInvitationForUser } from './invitation-accept.ts'
 import {
@@ -74,6 +75,35 @@ async function assertCanManageAccessOr403(
   }
 
   return assertOrgOwnerOr403(c, entity.entityType, entity.entityId)
+}
+
+/**
+ * Whether the caller can see an entity at all: access to its organization, or
+ * any grant of their own (or one of their teams) on the entity itself.
+ */
+async function callerCanSeeEntity(
+  db: Db,
+  userId: string,
+  entity: { entityType: string; entityId: string; organizationId: string }
+): Promise<boolean> {
+  if (await canAccessOrganization(db, userId, entity.organizationId)) return true
+  const teamIds = (
+    await db.select({ teamId: teammate.teamId }).from(teammate).where(eq(teammate.userId, userId))
+  ).map((row) => row.teamId)
+  const actorMatch = teamIds.length
+    ? or(
+        and(eq(grant.actorType, 'user'), eq(grant.actorId, userId)),
+        and(eq(grant.actorType, 'team'), inArray(grant.actorId, teamIds))
+      )
+    : and(eq(grant.actorType, 'user'), eq(grant.actorId, userId))
+  const rows = await db
+    .select({ id: grant.id })
+    .from(grant)
+    .where(
+      and(eq(grant.entityType, entity.entityType), eq(grant.entityId, entity.entityId), actorMatch)
+    )
+    .limit(1)
+  return rows.length > 0
 }
 
 async function parseCreateAccessBody(
@@ -172,13 +202,8 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: validated.error }, validated.status)
     }
 
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-
-    // An entity in another organization answers exactly like an unknown id, so
-    // the check cannot probe which ids exist elsewhere.
     const entity = await resolveEntityById(db, validated.resourceId)
-    if (entity?.organizationId !== orgResult) {
+    if (!entity) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -189,6 +214,13 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       entity.entityType,
       entity.entityId
     )
+
+    // A caller who cannot see the entity (no access to its organization and no
+    // grant on it) gets the same 404 as an unknown id, so the check cannot
+    // probe which ids exist elsewhere.
+    if (!allowed && !(await callerCanSeeEntity(db, session.userId, entity))) {
+      return c.json({ error: 'Not found' }, 404)
+    }
 
     return c.json({ allowed })
   })
