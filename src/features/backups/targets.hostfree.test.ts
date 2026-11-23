@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertNotEquals } from '@std/assert'
-import { endpointRefusal } from './endpoint-guard.ts'
+import { endpointRefusal, ipv6Class } from './endpoint-guard.ts'
 import { type BackupTargetRow, parseTargetBody, toApiTarget } from './targets.ts'
 import {
   parseBackupCopyTarget,
@@ -105,6 +105,60 @@ test('endpoint rules: https, or http on a private address; never loopback or met
   ]) {
     assertEquals(typeof endpointRefusal(bad), 'string', bad)
   }
+})
+
+test('endpoint rules: loopback and link-local written as IPv6 are refused', () => {
+  for (const bad of [
+    '[::ffff:127.0.0.1]',
+    '[::ffff:7f00:1]',
+    '[::ffff:a9fe:a9fe]',
+    '[::ffff:169.254.169.254]',
+    '[0:0:0:0:0:ffff:7f00:1]',
+    '[::127.0.0.1]',
+    '[::7f00:1]',
+    '[64:ff9b::7f00:1]',
+    '[64:ff9b::a9fe:a9fe]',
+    '[::ffff:0.0.0.0]',
+  ]) {
+    assertEquals(typeof endpointRefusal(`https://${bad}`), 'string', bad)
+    assertEquals(typeof endpointRefusal(`http://${bad}`), 'string', bad)
+  }
+  assertEquals(endpointRefusal('https://[2001:db8::1]:9000'), null)
+  assertEquals(endpointRefusal('https://[::ffff:8.8.8.8]'), null)
+  assertEquals(endpointRefusal('http://[::ffff:10.0.0.5]:9000'), null)
+  assertEquals(typeof endpointRefusal('http://[::ffff:8.8.8.8]'), 'string')
+})
+
+test('endpoint rules: an IPv6 literal that cannot be read is refused', () => {
+  for (const host of [
+    '[1::2::3]',
+    '[1:2:3:4:5:6:7]',
+    '[1:2:3:4:5:6:7:8:9]',
+    '[1:2:3:4::5:6:7:8]',
+    '[g::1]',
+    '[::12345]',
+    '[::ffff:300.1.1.1]',
+  ]) {
+    assertEquals(ipv6Class(host), 'loopback', host)
+  }
+})
+
+test('endpoint rules: a dotted-quad tail is read as two groups', () => {
+  assertEquals(ipv6Class('[::ffff:127.0.0.1]'), 'loopback')
+  assertEquals(ipv6Class('[::ffff:10.1.2.3]'), 'private')
+  assertEquals(ipv6Class('[::ffff:8.8.8.8]'), 'other')
+  assertEquals(ipv6Class('[64:ff9b::192.168.1.1]'), 'private')
+})
+
+test('endpoint rules: all of fe80::/10 is link-local, and fec0:: is not', () => {
+  for (const url of ['https://[fe80::1]', 'https://[fe9a::1]', 'https://[febf::1]']) {
+    assertEquals(typeof endpointRefusal(url), 'string', url)
+  }
+  assertEquals(ipv6Class('[fec0::1]'), 'other')
+  assertEquals(ipv6Class('[::]'), 'loopback')
+  assertEquals(ipv6Class('[::1]'), 'loopback')
+  assertEquals(ipv6Class('[fd00:ec2::254]'), 'loopback')
+  assertEquals(ipv6Class('[fd12::1]'), 'private')
 })
 
 test('the API shape never carries the secret key', () => {
