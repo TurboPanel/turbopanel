@@ -7,7 +7,6 @@
 export const HAND_BUILT_ERROR_BASELINE: Record<string, number> = {
   'src/admin/instance-access-routes.ts': 5,
   'src/admin/instance-hostname-routes.ts': 11,
-  'src/admin/instance-identity-routes.ts': 1,
   'src/admin/instance-updates-routes.ts': 15,
   'src/admin/key-rotation-routes.ts': 1,
   'src/admin/mail-dead-letter-routes.ts': 3,
@@ -149,7 +148,7 @@ export const HAND_BUILT_ERROR_BASELINE: Record<string, number> = {
   'src/developer/dev-sync.ts': 7,
   'src/developer/development-updates-routes.ts': 4,
   'src/developer/metrics-duckdb-ui-routes.ts': 2,
-  'src/developer/routes-core.ts': 18,
+  'src/developer/routes-core.ts': 13,
   'src/developer/system-routes.ts': 1,
   'src/developer/tunnel-token-handler.ts': 4,
   'src/developer/update-routes.ts': 7,
