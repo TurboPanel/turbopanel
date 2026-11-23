@@ -63,6 +63,8 @@ import {
   syncForgeHandler,
 } from '../client/forges/handlers.ts'
 import {
+  EMAIL_PROVIDER_UNSUPPORTED_ON_WORKERS,
+  emailProviderUnsupportedOnWorkers,
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
   invalidEmailSettingUpdate,
@@ -506,6 +508,12 @@ export function registerAdminRoutes(
 
     const invalidUpdate = invalidEmailSettingUpdate(updates)
     if (invalidUpdate) return c.json({ error: invalidUpdate }, 400)
+    if (opts.runtime === 'workers') {
+      const unsupported = emailProviderUnsupportedOnWorkers(updates)
+      if (unsupported) {
+        return c.json({ error: unsupported, code: EMAIL_PROVIDER_UNSUPPORTED_ON_WORKERS }, 422)
+      }
+    }
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     // DB-backed secret writes must be sealed at rest — require an encryption key,

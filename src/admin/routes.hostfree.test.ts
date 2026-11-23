@@ -566,6 +566,36 @@ test('GET/PUT /settings/email cover db/validation/encryption branches', async ()
   assertEquals(secretWrite.status, 503)
 })
 
+test('PUT /settings/email refuses an SMTP provider on Workers with a stable code', async () => {
+  const workers = await buildApp({ runtime: 'workers' })
+  for (const provider of ['smtp', 'SMTP', 'mailpit-smtp', 'mailpit']) {
+    const res = await workers.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+      method: 'PUT',
+      headers: { Cookie: workers.cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ PROVIDER: provider }),
+    })
+    assertEquals(res.status, 422, provider)
+    const body = await jsonBody<{ error: string; code: string }>(res)
+    assertEquals(body.code, 'email_provider_unsupported_on_workers', provider)
+  }
+  for (const provider of ['mailgun', 'mailpit-api']) {
+    const ok = await workers.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+      method: 'PUT',
+      headers: { Cookie: workers.cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ PROVIDER: provider }),
+    })
+    assertEquals(ok.status, 200, provider)
+  }
+  // Self-hosted keeps SMTP.
+  const deno = await buildApp()
+  const smtp = await deno.app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+    method: 'PUT',
+    headers: { Cookie: deno.cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ PROVIDER: 'smtp' }),
+  })
+  assertEquals(smtp.status, 200)
+})
+
 test('GET/PUT /settings/auth-providers cover db/validation/encryption branches', async () => {
   const { app, cookie } = await buildApp()
   const get = await app.request(`${ADMIN_API_PREFIX}/settings/auth-providers`, {

@@ -18,11 +18,7 @@ import {
   resetWorkersBindingWarningsForTests,
   setWorkersDbFactoryForTests,
 } from './platform/workers/workers-bindings.ts'
-import workers, {
-  getLazyEmailQueueResolveCallsForTests,
-  getWorkerAppRoutePathsForTests,
-  resetWorkerAppCachesForTests,
-} from './workers.ts'
+import workers, { getWorkerAppRoutePathsForTests, resetWorkerAppCachesForTests } from './workers.ts'
 import { takeLastOfflineSweepScheduledTimeForTests } from './daemon/cell/offline-sweep.ts'
 
 function mockDb(label: string): Db {
@@ -382,54 +378,19 @@ describe('workers.ts entry handlers', () => {
     }
   }, 30_000)
 
-  it('a rate-limited auth request never resolves the email queue', async () => {
-    // No CLIENT_AUTH_RATE_LIMITER binding and not a dev surface -> the auth
-    // limiter fails closed (429) before the route body even runs. The lazy
-    // email-queue resolver (Comment 1) must never be reached on this path.
-    const ctx = fakeExecutionContext()
-    const response = await workers.fetch(
-      new Request(`https://panel.example.com${CLIENT_API_PREFIX}/auth/sign-in`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
-      }),
-      workersTestEnv(),
-      ctx
-    )
-    expect(response.status).toBe(429)
-    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
-    await Promise.all(ctx.waitUntilPromises)
-  }, 30_000)
-
-  it('a rate-limited webhook request never resolves the email queue', async () => {
-    // No GITHUB_WEBHOOK_RATE_LIMITER binding and not a dev surface -> the
-    // webhook gate's rate limit step (the first step) fails closed before
-    // any signature verification or DB work.
-    const ctx = fakeExecutionContext()
-    const response = await workers.fetch(
-      new Request(`https://panel.example.com${GITHUB_WEBHOOK_PATH}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-      }),
-      workersTestEnv(),
-      ctx
-    )
-    expect(response.status).toBe(429)
-    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
-    await Promise.all(ctx.waitUntilPromises)
-  }, 30_000)
-
-  it('a plain health check never resolves the email queue', async () => {
-    const ctx = fakeExecutionContext()
-    const response = await workers.fetch(
-      new Request(`https://panel.example.com${HEALTH_PATH}`),
-      workersTestEnv(),
-      ctx
-    )
-    expect(response.status).toBe(200)
-    expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
-    await Promise.all(ctx.waitUntilPromises)
+  it('fetch refuses to start without the mail queue binding, outside and inside dev', async () => {
+    for (const overrides of [{}, { TURBOPANEL_DEV_SURFACE: '1' }]) {
+      resetWorkerAppCachesForTests()
+      const ctx = fakeExecutionContext()
+      const testEnv = workersTestEnv({
+        ...overrides,
+        TURBOPANEL_EMAIL_QUEUE: undefined,
+      })
+      await expect(
+        workers.fetch(new Request(`https://panel.example.com${HEALTH_PATH}`), testEnv, ctx)
+      ).rejects.toThrow('TURBOPANEL_EMAIL_QUEUE is not bound')
+    }
+    resetWorkerAppCachesForTests()
   }, 30_000)
 
   it('queue retries transient process failures', async () => {

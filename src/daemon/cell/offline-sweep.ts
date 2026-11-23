@@ -161,7 +161,8 @@ import {
   queryRecentlyActiveServerIds,
 } from '../metrics/backends/cloudflare/sql-api.ts'
 import { endOfflineSweep, tryBeginOfflineSweep } from './offline-sweep-lease.ts'
-import { resolveWorkersEmailQueue } from '../../features/email/mailgun/workers-queue.ts'
+import { createWorkersQueuedEmailQueue } from '../../features/email/workers-mail-queue.ts'
+import type { EmailQueue } from '../../features/email/types.ts'
 import { resolveEmailSettings } from '../../features/settings/email-settings.ts'
 import { prunePeaks } from '../../features/servers/peak.ts'
 import { sweepTierNotices } from '../../features/tiers/tier-notice-sweep.ts'
@@ -1594,6 +1595,19 @@ function workersNotificationEmail(
   return cachedForEnv(env, () => resolveWorkersNotificationEmail(env, db, tlsRenewal))
 }
 
+/**
+ * The mail queue a sweep enqueues to: the platform mail queue, so a sweep's
+ * notice gets the same retry and dead-letter path as a request's mail. The
+ * Worker refuses to start without the binding, so it is there; if a test or a
+ * caller reaches this without it, fail instead of sending directly.
+ */
+function resolveSweepEmailQueue(env: CloudflareBindings): EmailQueue {
+  if (!env.TURBOPANEL_EMAIL_QUEUE) {
+    throw new Error('TURBOPANEL_EMAIL_QUEUE is not bound')
+  }
+  return createWorkersQueuedEmailQueue(env.TURBOPANEL_EMAIL_QUEUE)
+}
+
 async function resolveWorkersNotificationEmail(
   env: CloudflareBindings,
   db: Db,
@@ -1601,7 +1615,7 @@ async function resolveWorkersNotificationEmail(
 ): Promise<EmitEmail | undefined> {
   const platformEnv = env as unknown as Record<string, string | undefined>
   try {
-    const queue = await resolveWorkersEmailQueue(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
+    const queue = resolveSweepEmailQueue(env)
     const settings = await resolveEmailSettings(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
     return {
       queue,
@@ -1620,11 +1634,7 @@ async function sweepTierNoticesPhase(
   opts: RunOfflineSweepOpts
 ): Promise<void> {
   const platformEnv = env as unknown as Record<string, string | undefined>
-  const emailQueue = await resolveWorkersEmailQueue(
-    db,
-    platformEnv,
-    tlsRenewal?.dataEncryptionSecrets
-  )
+  const emailQueue = resolveSweepEmailQueue(env)
   await sweepTierNotices({
     db,
     emailQueue,

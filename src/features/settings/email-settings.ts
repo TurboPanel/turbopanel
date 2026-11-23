@@ -609,6 +609,29 @@ export function invalidEmailSettingUpdate(
   return undefined
 }
 
+/** Stable `code` of the refusal below, for the Admin UI. */
+export const EMAIL_PROVIDER_UNSUPPORTED_ON_WORKERS = 'email_provider_unsupported_on_workers'
+
+/**
+ * Workers has no SMTP path (no raw sockets), so an SMTP provider would resolve
+ * to a no-op queue and every mail would be dropped. Refuse it at save time on
+ * Workers instead; the provider is read the same way as the stored value
+ * (`parseProvider`), so the deprecated `mailpit` alias is refused too.
+ */
+export function emailProviderUnsupportedOnWorkers(
+  updates: Record<string, string | null>
+): string | undefined {
+  for (const [key, value] of Object.entries(updates)) {
+    if (typeof value !== 'string' || value.trim() === '') continue
+    if (resolveShortKeyFromInput(key) !== 'PROVIDER') continue
+    const provider = parseProvider(value)
+    if (provider === 'smtp' || provider === 'mailpit-smtp') {
+      return 'This hosted control plane cannot send mail over SMTP. Use mailgun.'
+    }
+  }
+  return undefined
+}
+
 function resolveShortKeyFromInput(key: string): EmailSettingShortKey | null {
   const trimmed = key.trim()
   if (!trimmed) return null

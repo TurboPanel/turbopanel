@@ -137,12 +137,9 @@ export async function settleEmailMessage(input: {
     }
     return 'dead'
   }
-  const outcome = await deliverEmailJob(
-    job,
-    input.sender,
-    Math.max(1, message.attempts),
-    input.random
-  )
+  // One count for the decision and the log line, never below 1.
+  const attempt = Math.max(1, message.attempts)
+  const outcome = await deliverEmailJob(job, input.sender, attempt, input.random)
   if (outcome.kind === 'sent') {
     message.ack()
     return 'sent'
@@ -150,7 +147,7 @@ export async function settleEmailMessage(input: {
   if (outcome.kind === 'retry') {
     compatLogWarn(
       'email',
-      `${job.type} failed (attempt ${message.attempts}), retrying in ${outcome.delayMs}ms: ${outcome.reason}`
+      `${job.type} failed (attempt ${attempt}), retrying in ${outcome.delayMs}ms: ${outcome.reason}`
     )
     message.retry({ delaySeconds: outcome.delayS })
     return 'retry'

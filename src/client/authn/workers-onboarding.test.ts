@@ -31,6 +31,7 @@ import {
   team,
   teammate,
   user,
+  verification,
   workspace,
 } from '../../db/schema.ts'
 import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
@@ -499,6 +500,49 @@ it('Deno sign-up rejects when verification is required but the queue is noop', a
     const userRows = await db.select({ id: user.id }).from(user).where(eq(user.email, email))
     if (userRows.length !== 0) {
       throw new Error(`expected no user row after noop queue rejection, got ${userRows.length}`)
+    }
+  } finally {
+    await cleanupUser(db, email)
+  }
+})
+
+it('Deno sign-up removes the new user when the verification email cannot be queued', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('Deno enqueue failure test')
+    return
+  }
+
+  const db = createDenoDb()
+  if (!(await isInstanceInstalled(db))) {
+    console.warn('Skipping Deno enqueue failure test: instance not installed')
+    return
+  }
+
+  const email = `deno-enqueue-fail-${crypto.randomUUID()}@example.com`
+  const app = await createAuthRouteApp(db, 'deno', '1', {
+    platformEnv: MAILGUN_PLATFORM_ENV,
+    emailQueue: new FailingEmailQueue(),
+  })
+
+  try {
+    const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password: 'password1!' }),
+    })
+    if (res.status !== 503) {
+      throw new Error(`expected 503, got ${res.status}: ${await res.text()}`)
+    }
+    const userRows = await db.select({ id: user.id }).from(user).where(eq(user.email, email))
+    if (userRows.length !== 0) {
+      throw new Error(`expected no user row after enqueue failure, got ${userRows.length}`)
+    }
+    const tokenRows = await db
+      .select({ id: verification.id })
+      .from(verification)
+      .where(eq(verification.identifier, email))
+    if (tokenRows.length !== 0) {
+      throw new Error(`expected no verification token after enqueue failure`)
     }
   } finally {
     await cleanupUser(db, email)
