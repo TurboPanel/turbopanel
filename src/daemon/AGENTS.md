@@ -121,6 +121,29 @@ plane). Their shapes and validators are in `src/contracts/cell-protocol.ts`.
   rate-limit answer should keep the words `rateLimited`, so the panel waits an
   hour); answer every `acme-proof-forward` with `-ready` or `-failed`.
 
+### What `POST /api/daemon/v1/tls/issued` accepts
+
+A reported pair is checked in `src/client/tls/issued-certificate.ts` before
+anything is written. Besides the parse, name, key and placement checks, the
+leaf's validity window must be one a public authority issues: it may not end
+more than `MAX_ISSUED_LIFETIME_DAYS` (100) from now, last longer than that
+(plus a day), or start more than a day ahead (`implausible_validity`), and an
+issuer named `Caddy Local Authority` (the web server's own `tls internal` CA) is
+refused (`private_ca_certificate`). `replaces()` applies the same window check
+first, so a pair that fails it never wins, and a stored pair that ends further
+ahead than a real one could never blocks a plausible renewal.
+
+- The refusals are 4xx, which the daemon's capture treats as handled (no retry).
+  The daemon's `tp-host cert-export` already skips Caddy's `local` and staging
+  issuer directories, so a healthy daemon never reports either.
+- Staging leaves ordered through a request (`directory: 'staging'`) are not told
+  apart by issuer: they are 90-day leaves and pass the same window checks.
+- The issuer is not verified against a pinned set of authorities. Doing so needs a
+  product decision (the web server's default authorities, custom ACME directories,
+  self-hosted private CAs, rotating intermediates), so a leaf from any other
+  private CA that keeps a plausible window is still accepted for a row the server
+  pins. The issuer name check is a guard for the known case, not a trust check.
+
 ### The DNS proof (`acme-issue-dns-v1`)
 
 A daemon that also lists `acme-issue-dns-v1` can be asked for an order over the
