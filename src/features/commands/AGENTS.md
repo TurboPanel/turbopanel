@@ -252,7 +252,7 @@ in the execution-log store — there is no Postgres column for them. See
   (30 tries a second apart) does not stop the consumer either: start returns and
   the same loop keeps trying in the background, so a slow broker start never
   leaves the control plane accepting commands that nothing runs. The mailer
-  consumer (`lib/email/mailer/deno-mailer-consumer.ts`) follows the same rules.
+  consumer (`features/email/mailer/deno-mailer-consumer.ts`) follows the same rules.
   The producers (`platform/deno/commands/deno-amqp-queue.ts` and the email one)
   publish through `platform/deno/amqp-confirm-publisher.ts`, which applies the
   same listener rule: a lost connection or channel only drops the session, and
