@@ -152,7 +152,7 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
     organizationId: row.organizationId,
     names: namesOf(row.metadata),
     orderNames: await orderNamesOf(tx, row.id, row.metadata),
-    hasPair: holdsOwnPair(row.hasKey === true, readHttpIssuanceState(row.metadata)),
+    hasPair: holdsOwnPair(row.hasKey === true, readHttpIssuanceState(row.metadata), row.metadata),
     metadata: (row.metadata ?? {}) as Record<string, unknown>,
   }
 }
@@ -706,9 +706,20 @@ async function restateNoSiteMarker(db: Db, tlsId: string, now: Date): Promise<vo
     )
 }
 
-/** Whether the row holds a pair this flow ordered; a pair a server exported is not one. */
-function holdsOwnPair(hasKey: boolean, state: HttpIssuanceState | null): boolean {
-  return hasKey && state?.centralPair === true
+/**
+ * Whether the row holds a pair that counts as a renewal. On a DNS order only a pair this
+ * flow ordered does: a pair a server exported (its own web server's) is not one, so a
+ * failed order is retried. A row on the HTTP choice keeps whatever pair it holds, as the
+ * host's own web server manages it.
+ */
+function holdsOwnPair(
+  hasKey: boolean,
+  state: HttpIssuanceState | null,
+  metadata: unknown
+): boolean {
+  if (!hasKey) return false
+  const acme = ((metadata ?? {}) as { acme?: { challengeType?: unknown } }).acme
+  return acme?.challengeType !== 'dns-01' || state?.centralPair === true
 }
 
 /**
@@ -745,7 +756,7 @@ export async function startHttpIssuance(
   // address. None of them looks at DNS or at the servers.
   const meta = (peek.metadata ?? {}) as Record<string, unknown>
   // Only a pair the panel ordered is a renewal; one a server exported is not.
-  const ownPair = holdsOwnPair(peek.hasKey === true, previous)
+  const ownPair = holdsOwnPair(peek.hasKey === true, previous, peek.metadata)
   if (!due({ hasPair: ownPair, metadata: meta })) return 'not_due'
   const attempts = {
     attemptTimes: previous?.attemptTimes ?? [],

@@ -105,7 +105,8 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
   const central = sql`${h} ->> 'centralPair' = 'true'`
   // A DNS order whose row holds a pair the panel did not order (one a server's own web
   // server exported) is still owed its certificate, so a failed attempt is retried.
-  const foreignPairDns = sql`(coalesce(${tls.metadata} #>> '{acme,challengeType}', '') = 'dns-01' and not ${central})`
+  const dnsOrder = sql`(coalesce(${tls.metadata} #>> '{acme,challengeType}', '') = 'dns-01')`
+  const foreignPairDns = sql`(${dnsOrder} and not ${central})`
   const renewDue = sql`(${central} and coalesce(${h} ->> 'renewAt', '') <= ${at})`
   // Work already begun comes first, so an open request is advanced and a finished pair
   // delivered every minute however many rows are waiting. The rest rotate by a hash that
@@ -130,8 +131,8 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
       id: tls.id,
       metadata: tls.metadata,
       organizationId: tls.organizationId,
-      // Only a pair the panel ordered counts: a pair a server exported is not renewed here.
-      hasPair: sql<boolean>`(${tls.privateKeyPem} is not null and ${central})`,
+      // On a DNS order only a pair the panel ordered counts; a server's own pair on an HTTP row stays its own.
+      hasPair: sql<boolean>`(${tls.privateKeyPem} is not null and (${central} or not ${dnsOrder}))`,
       pinned: sql<boolean>`${pinnedBySite}`,
     })
     .from(tls)

@@ -447,7 +447,8 @@ async function writePair(
       isManagedRowMetadata(row.metadata) &&
       // A row with a wildcard name is ordered by the panel over DNS: a server's own web
       // server cannot issue it, so a leaf that does not cover every one of the row's names
-      // (its own single-name certificate) never lands on it. Other rows take a pair per
+      // (its own single-name certificate) never lands on it. A row that gains a name while a
+      // wildcard order is open has its pair refused until the request times out. Other rows take a pair per
       // name, as Caddy issues them.
       (!hasWildcardName(row.metadata.dnsNames) ||
         row.metadata.dnsNames.every((name) => coversHostname(parsed.dnsNames, name))) &&

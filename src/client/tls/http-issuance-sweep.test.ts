@@ -26,9 +26,12 @@ import {
   readHttpIssuanceState,
   withHttpIssuanceState,
 } from '../../features/tls/http-issuance/state.ts'
+import { startHttpIssuance } from '../../features/tls/http-issuance/orchestrator.ts'
+import { renewalDue } from '../../features/tls/http-issuance/progress.ts'
 import { removeUnusedSiteCertificates } from '../../features/tls/unused-letsencrypt.ts'
 import { ensureNameHttpOrders } from '../hostings/name-http-orders.ts'
 import {
+  buildHttpIssuanceDeps,
   httpIssuanceStaging,
   httpIssuanceEnabled,
   markUnpinnedLibraryOrders,
@@ -288,6 +291,48 @@ test('the sweep picks up exactly the rows with work to do', async () => {
         ids.twoNames,
       ].sort()
     )
+  } finally {
+    await w.cleanup()
+  }
+})
+
+test('a failed HTTP row with a server-captured pair and ends still pending is never started again; a DNS row is', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance sweep tests')
+  const w = await sweepWorld()
+  try {
+    const failed = {
+      phase: 'failed' as const,
+      endedAt: iso(-1000),
+      endsSentAt: null,
+      nextAttemptAt: iso(-1),
+      centralPair: false,
+      forwards: [{ serverId: 'b', outcome: 'ready' as const, reason: null, at: null }],
+    }
+    const http = await w.make('httpends', { key: true, state: failed })
+    const dns = await w.make('dnsends', {
+      key: true,
+      dns: true,
+      names: ['*.dnsends.example.com', 'dnsends.example.com'],
+      state: failed,
+    })
+    const rows = await selectHttpIssuanceCandidates(w.db, NOW, 100)
+    assertEquals(rows.find((r) => r.id === http)?.hasPair, true)
+    assertEquals(rows.find((r) => r.id === dns)?.hasPair, false)
+    const deps = buildHttpIssuanceDeps(w.db, {
+      registry: {} as never,
+      secrets: {} as never,
+      env: {},
+      now: () => NOW,
+      dnsLookup: async () => [],
+    })
+    const start = (id: string, state: HttpIssuanceState | null) =>
+      startHttpIssuance(deps, id, (facts) => (facts.hasPair ? renewalDue(state, NOW) : true))
+    const stateOf = async (id: string) => {
+      const [row] = await w.db.select().from(tls).where(eq(tls.id, id))
+      return readHttpIssuanceState(row!.metadata)
+    }
+    assertEquals(await start(http, await stateOf(http)), 'not_due')
+    assertEquals((await start(dns, await stateOf(dns))) === 'not_due', false)
   } finally {
     await w.cleanup()
   }
