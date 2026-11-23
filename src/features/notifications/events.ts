@@ -618,7 +618,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS
 
-/** The codes, in catalogue order — what the CHECK constraint and the rules vocabulary pin. */
+/** The codes, in catalogue order — what the rules vocabulary lists (event codes have no CHECK constraint). */
 export const NOTIFICATION_EVENTS = Object.keys(
   NOTIFICATION_EVENT_DEFINITIONS
 ) as readonly NotificationEvent[]

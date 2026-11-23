@@ -68,17 +68,20 @@
         "max_concurrency": 2
       },
       // Dead-letter consumers: record a redacted row, ack, tell admins (src/features/queues).
+      // 20 retries 5 minutes apart keep a message through about 100 minutes of database outage.
       {
         "queue": "dev-daemon-commands-dlq",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
-        "max_retries": 5
+        "max_retries": 20,
+        "retry_delay": 300
       },
       {
         "queue": "dev-system-email-dlq",
         "max_batch_size": 10,
         "max_batch_timeout": 5,
-        "max_retries": 5
+        "max_retries": 20,
+        "retry_delay": 300
       }
     ]
   },
@@ -248,17 +251,20 @@
             "max_concurrency": 2
           },
           // Dead-letter consumers: record a redacted row, ack, tell admins (src/features/queues).
+          // 20 retries 5 minutes apart keep a message through about 100 minutes of database outage.
           {
             "queue": "testing-daemon-commands-dlq",
             "max_batch_size": 10,
             "max_batch_timeout": 5,
-            "max_retries": 5
+            "max_retries": 20,
+            "retry_delay": 300
           },
           {
             "queue": "testing-system-email-dlq",
             "max_batch_size": 10,
             "max_batch_timeout": 5,
-            "max_retries": 5
+            "max_retries": 20,
+            "retry_delay": 300
           }
         ]
       },
@@ -438,17 +444,20 @@
             "max_concurrency": 2
           },
           // Dead-letter consumers: record a redacted row, ack, tell admins (src/features/queues).
+          // 20 retries 5 minutes apart keep a message through about 100 minutes of database outage.
           {
             "queue": "staging-daemon-commands-dlq",
             "max_batch_size": 10,
             "max_batch_timeout": 5,
-            "max_retries": 5
+            "max_retries": 20,
+            "retry_delay": 300
           },
           {
             "queue": "staging-system-email-dlq",
             "max_batch_size": 10,
             "max_batch_timeout": 5,
-            "max_retries": 5
+            "max_retries": 20,
+            "retry_delay": 300
           }
         ]
       },
@@ -605,17 +614,20 @@
             "max_concurrency": 2
           },
           // Dead-letter consumers: record a redacted row, ack, tell admins (src/features/queues).
+          // 20 retries 5 minutes apart keep a message through about 100 minutes of database outage.
           {
             "queue": "daemon-commands-dlq",
             "max_batch_size": 10,
             "max_batch_timeout": 5,
-            "max_retries": 5
+            "max_retries": 20,
+            "retry_delay": 300
           },
           {
             "queue": "system-email-dlq",
             "max_batch_size": 10,
             "max_batch_timeout": 5,
-            "max_retries": 5
+            "max_retries": 20,
+            "retry_delay": 300
           }
         ]
       },

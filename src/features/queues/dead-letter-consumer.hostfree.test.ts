@@ -22,7 +22,7 @@ function message(body: unknown, id = 'msg-1', attempts = 4) {
     attempts,
     timestamp: new Date('2026-11-23T10:00:00.000Z'),
     ack: () => calls.push('ack'),
-    retry: () => calls.push('retry'),
+    retry: (options) => calls.push(options === undefined ? 'retry' : 'retry-delayed'),
   }
   return { m, calls }
 }
@@ -95,6 +95,18 @@ test('redactError removes urls and long tokens and cuts the length', () => {
   assertEquals(out.includes('https'), false)
   assertEquals(out.includes('aaaa'), false)
   assertEquals(out.length <= 160, true)
+})
+
+test('redactError scrubs scheme-less urls, 20-character tokens and long address runs', () => {
+  const out = redactError(
+    'failed host.example.net/path?x=1 and api.example.net ' +
+      'token abcdefghij0123456789 mail a.b+c@mail.example.net ' +
+      `${'a@'.repeat(200)}`
+  )
+  assertEquals(out.includes('example.net'), false)
+  assertEquals(out.includes('abcdefghij'), false)
+  assertEquals(out.includes('@mail'), false)
+  assertEquals(redactError('gave up after 6 attempts'), 'gave up after 6 attempts')
 })
 
 function fakeDeps(outcomes: RecordOutcome[]) {

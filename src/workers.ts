@@ -480,7 +480,7 @@ async function consumeDeadLetterQueue(
   const db = resolveWorkersDb(env)
   try {
     if (!db) {
-      batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
+      batch.retryAll()
       return
     }
     await consumeDeadLetterBatch(kind, batch.messages, {
@@ -505,7 +505,7 @@ async function consumeDeadLetterQueue(
       },
     })
   } catch {
-    batch.retryAll({ delaySeconds: REDELIVER_DELAY_SECONDS })
+    batch.retryAll()
   } finally {
     if (db) await endDbConnection(db).catch(() => {})
   }

@@ -78,9 +78,10 @@ function idOf(value: unknown): string | null {
 /** Strips addresses and anything that looks like a token or a URL, then cuts it short. */
 export function redactError(text: string): string {
   const cleaned = text
-    .replace(/[^\s@]+@[^\s@]+/g, '[address]')
+    .replace(/[\w.+-]{1,64}@[\w.-]{1,255}/g, '[address]')
     .replace(/\bhttps?:\/\/\S+/gi, '[url]')
-    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[redacted]')
+    .replace(/\b(?:[a-z0-9-]{1,63}\.){1,8}[a-z]{2,24}(?:\/\S{0,200})?/gi, '[url]')
+    .replace(/\b[A-Za-z0-9_-]{20,}\b/g, '[redacted]')
     .replace(/\s+/g, ' ')
     .trim()
   return cleaned.length > MAX_ERROR_LENGTH ? `${cleaned.slice(0, MAX_ERROR_LENGTH - 1)}…` : cleaned
@@ -218,7 +219,8 @@ export async function settleDeadLetter(
       'dead-letter',
       `could not record a ${queue} dead letter: ${error instanceof Error ? error.name : 'unknown'}`
     )
-    message.retry({ delaySeconds: 60 })
+    // No delay given: the consumer's `retry_delay` in wrangler.jsonc applies.
+    message.retry()
     return 'retry'
   }
   if (!outcome.recorded) {
