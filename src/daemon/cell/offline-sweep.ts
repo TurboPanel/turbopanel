@@ -1616,7 +1616,12 @@ async function resolveWorkersNotificationEmail(
   const platformEnv = env as unknown as Record<string, string | undefined>
   try {
     const queue = resolveSweepEmailQueue(env)
-    const settings = await resolveEmailSettings(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
+    const settings = await resolveEmailSettings(
+      db,
+      platformEnv,
+      tlsRenewal?.dataEncryptionSecrets,
+      'workers'
+    )
     return {
       queue,
       from: settings.from,

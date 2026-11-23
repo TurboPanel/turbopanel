@@ -9,9 +9,9 @@
  * The queue consumer (`consumeEmailBatch` in `src/workers.ts`, one
  * `settleEmailMessage` per message)
  * resolves the current mail settings, sends, and acks, retries or dead-letters
- * each message. Without the `TURBOPANEL_EMAIL_QUEUE` binding the Worker keeps
- * sending directly from the request (`mailgun/workers-queue.ts`), so an
- * environment whose queues do not exist yet keeps working.
+ * each message. The `TURBOPANEL_EMAIL_QUEUE` binding is required: the Worker
+ * fails to start without it, so no request or sweep sends directly. Direct
+ * sending (`mailgun/workers-queue.ts`) only happens inside the consumer.
  */
 import { parseEmailJob } from './mailer/parse-email-job.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'

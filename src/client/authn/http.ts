@@ -579,6 +579,9 @@ async function enqueueSignupVerification(
   }
 }
 
+/** Seconds a sign-up refused for want of mail delivery asks the client to wait. */
+const SIGNUP_MAIL_RETRY_AFTER_SECONDS = 60
+
 /**
  * The one rule, on both runtimes, for a sign-up whose verification email could
  * not be sent: the new account is removed again. The user cannot sign in until
@@ -592,9 +595,12 @@ async function discardUnverifiedSignup(
   target: Pick<SignupVerificationTarget, 'trimmedEmail' | 'userId'>
 ): Promise<void> {
   try {
-    await db.delete(verification).where(eq(verification.identifier, target.trimmedEmail))
-    await db.delete(account).where(eq(account.userId, target.userId))
-    await db.delete(user).where(eq(user.id, target.userId))
+    // One transaction: a failure partway leaves the user as it was, never a
+    // half-removed one. The account row goes with the user (`account_user_id_user_id_fk`).
+    await db.transaction(async (tx) => {
+      await tx.delete(verification).where(eq(verification.identifier, target.trimmedEmail))
+      await tx.delete(user).where(eq(user.id, target.userId))
+    })
   } catch (err) {
     compatLogError('auth', `could not remove the sign-up whose verification email failed: ${err}`)
   }
@@ -670,7 +676,7 @@ async function resolveSignupGate(
     platformEnv ??
     (opts.runtime === 'deno' && typeof Deno !== 'undefined' ? Deno.env.toObject() : {})
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  const emailSettings = await resolveEmailSettings(db, env, dataEncryptionSecrets)
+  const emailSettings = await resolveEmailSettings(db, env, dataEncryptionSecrets, opts.runtime)
   const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, opts.runtime)
   // The injected context queue: Deno AMQP, or on Workers the platform mail
   // queue (retried and dead-lettered by its consumer). There is no direct-send
@@ -679,6 +685,15 @@ async function resolveSignupGate(
   const emailFrom =
     emailSettings.from || c.get('emailFrom') || opts.emailFrom || 'noreply@turbopanel.local'
   return { ok: true, emailVerificationEnabled, emailQueue, emailFrom }
+}
+
+/** The answer for a sign-up whose verification email could not be sent. */
+function signupMailUnavailable(c: Context): Response {
+  return c.json(
+    { ok: false, error: 'Could not send verification email. Please try again later.' },
+    503,
+    { 'Retry-After': String(SIGNUP_MAIL_RETRY_AFTER_SECONDS) }
+  )
 }
 
 async function deliverSignupVerification(
@@ -693,7 +708,8 @@ async function deliverSignupVerification(
       'email',
       `verification email not sent for ${target.trimmedEmail}: email queue unavailable`
     )
-    return null
+    await discardUnverifiedSignup(db, target)
+    return signupMailUnavailable(c)
   }
 
   try {
@@ -702,10 +718,7 @@ async function deliverSignupVerification(
   } catch (err) {
     compatLogWarn('email', `verification email could not be sent: ${err}`)
     await discardUnverifiedSignup(db, target)
-    return c.json(
-      { ok: false, error: 'Could not send verification email. Please try again later.' },
-      503
-    )
+    return signupMailUnavailable(c)
   }
 }
 

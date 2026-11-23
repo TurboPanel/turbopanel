@@ -1024,11 +1024,37 @@ test('Workers sign-up returns 503 and removes the new account when the verificat
       body: JSON.stringify({ email: 'enqueue-fail@example.com', password: 'Sup3r-secret!' }),
     })
     assertEquals(res.status, 503)
+    assertEquals(res.headers.get('Retry-After'), '60')
     const body = await readJsonBody<{ error: string }>(res)
     assertEquals(body.error.includes('verification email'), true)
     // No half-created account: the address can sign up again.
     assertEquals(state.users.length, 0)
   }
+})
+
+test('Workers sign-up with no mail queue answers 503 and creates no account', async () => {
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, true)
+  const { app } = await buildAuthApp({
+    db: createMockAuthDb(state),
+    runtime: 'workers',
+    signupEnvOverride: '1',
+    platformEnv: {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-test',
+      TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'example.com',
+      TURBOPANEL_SYSTEM_EMAIL__FROM: 'noreply@example.com',
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.24' },
+    body: JSON.stringify({ email: 'no-queue@example.com', password: 'Sup3r-secret!' }),
+  })
+  // Refused before any account is made (and before the duplicate check).
+  assertEquals(res.status, 503)
+  assertEquals(state.users.length, 0)
 })
 
 test('sign-up treats unique-violation races as a successful duplicate', async () => {
