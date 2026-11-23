@@ -117,10 +117,10 @@ test('regex literals do not hide a later Deno use', async () => {
     'src/lib/r5.ts': 'export const f = (s: string) => /`/.test(s)\nexport const b = Deno.cwd()\n',
     'src/lib/r6.ts':
       'export const f = (s: string) => 1 + /`/.test(s) ? await /`/ : 0\nexport const b = Deno.cwd()\n',
-    'src/lib/r7.ts': 'let i = 0\ni++ / 2\nexport const b = Deno.cwd() / 2\n',
-    'src/lib/r8.ts': 'let a = 0\na-- / 2\nexport const b = Deno.cwd() / 2\n',
-    'src/lib/r9.ts': 'export const x = o.in / 2\nexport const b = Deno.cwd() / 2\n',
-    'src/lib/r10.ts': 'export const x = o.of / 2\nexport const b = Deno.cwd() / 2\n',
+    'src/lib/r7.ts': 'let i = 0\nexport const x = i++ / 2; export const b = Deno.cwd() / 2\n',
+    'src/lib/r8.ts': 'let a = 0\nexport const x = a-- / 2; export const b = Deno.cwd() / 2\n',
+    'src/lib/r9.ts': 'export const x = o.in / 2; export const b = Deno.cwd() / 2\n',
+    'src/lib/r10.ts': 'export const x = o.of / 2; export const b = Deno.cwd() / 2\n',
     'src/lib/r4.ts': 'export const a = /[/]`/.test(s) && Deno.cwd()\n',
   }
   const result = await runInTree(bodies)
