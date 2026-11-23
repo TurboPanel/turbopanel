@@ -60,7 +60,14 @@ binding secret; Metabase reads `MB_DB_USER_FILE` / `MB_DB_PASS_FILE` (its Docker
 page, "Use Docker Secrets", lists `MB_DB_USER`, `MB_DB_PASS` and
 `MB_DB_CONNECTION_URI`), and the preset uses `MB_DB_TYPE=mysql` for both
 MySQL-family engines (its application database page says "MySQL or MariaDB" with
-that value). A preset name equal to one of the binding's own prefixed names (prefix
+that value). The Metabase preset also adds `MB_DB_CONNECTION_URI`, a JDBC URL
+with the TLS flags and no credentials (the binding's own URL spells TLS for
+libpq / libmysql, which JDBC ignores): Postgres `sslmode=<mode>` plus
+`sslrootcert=<CA file>` in the verify modes, MySQL family (Metabase ships only
+the MariaDB 2.x driver, which ignores `sslMode`) `useSsl=true` with
+`trustServerCertificate=true`, or `serverSslCert=<CA file>` in the verify modes
+(`verify-ca` adds `disableSslHostnameVerification=true`). A verify mode with no
+CA file leaves the row out. A preset name equal to one of the binding's own prefixed names (prefix
 `DB` with WordPress) is refused as `binding_key_conflict`.
 
 **Delivery by service kind** (`src/features/bindings/host-run.ts`,

@@ -153,8 +153,49 @@ test('metabase preset uses mysql for both MySQL-family engines', () => {
     'MB_DB_DBNAME',
     'MB_DB_USER',
     'MB_DB_PASS',
+    'MB_DB_CONNECTION_URI',
   ])
   assertEquals(rows.get('MB_DB_PASS')?.isSecret, true)
+})
+
+test('metabase preset: a JDBC URI carries the TLS flags, no credentials', () => {
+  const uri = (engine: string, mode: ManagedSslMode, delivery: BindingDelivery = 'container') =>
+    render('metabase', engine, delivery, mode).get('MB_DB_CONNECTION_URI')
+  const CA_PATH = '/run/secrets/DATABASE_CA_CERT'
+  const base = 'mysql://db.internal:5432/appdb?'
+  const encrypt = 'useSsl=true&trustServerCertificate=true'
+  for (const engine of ['mysql', 'mariadb']) {
+    for (const mode of ['allow', 'prefer', 'require'] as const) {
+      assertEquals(uri(engine, mode)?.value, `${base}${encrypt}`)
+    }
+    assertEquals(uri(engine, 'verify-full')?.value, `${base}useSsl=true&serverSslCert=${CA_PATH}`)
+    assertEquals(
+      uri(engine, 'verify-ca')?.value,
+      `${base}useSsl=true&serverSslCert=${CA_PATH}&disableSslHostnameVerification=true`
+    )
+    assertEquals(uri(engine, 'verify-full', 'host-node'), undefined)
+    assertEquals(uri(engine, 'verify-ca', 'host-node'), undefined)
+  }
+  assertEquals(uri('mariadb', 'require')?.isSecret, false)
+  assertEquals(
+    uri('postgres', 'require')?.value,
+    'postgres://db.internal:5432/appdb?sslmode=require'
+  )
+  assertEquals(
+    uri('postgres', 'verify-full')?.value,
+    'postgres://db.internal:5432/appdb?sslmode=verify-full&sslrootcert=/run/secrets/DATABASE_CA_CERT'
+  )
+  // No CA file on a native app: a verify mode is left out, never weakened.
+  assertEquals(uri('postgres', 'verify-ca', 'host-node'), undefined)
+  assertEquals(
+    uri('postgres', 'require', 'host-node')?.value,
+    'postgres://127.0.0.1:5432/appdb?sslmode=require'
+  )
+  assertEquals(uri('mariadb', 'disable'), undefined)
+  for (const engine of ['postgres', 'mysql', 'mariadb']) {
+    const value = uri(engine, 'require')?.value ?? ''
+    assertEquals(value.includes('appuser') || value.includes('pw@'), false)
+  }
 })
 
 test('uptime kuma preset: TLS switch follows the mode, CA text not on a site', () => {
