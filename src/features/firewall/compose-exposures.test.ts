@@ -58,7 +58,9 @@ test('an empty Base with services in the environment derives each port with its 
       .values({ organizationId, name: 'Compose Exposure Server', isConnected: true })
       .returning({ id: server.id })
     const serverId = srv!.id
-    await db.insert(fabric).values({ organizationId, name: 'Exposure Fabric', cidr: '10.250.0.0/16' })
+    await db
+      .insert(fabric)
+      .values({ organizationId, name: 'Exposure Fabric', cidr: '10.250.0.0/16' })
     const [ws] = await db
       .insert(workspace)
       .values({ name: 'Compose Exposure Workspace', organizationId })
@@ -153,5 +155,8 @@ test('reachOfHostIp checks the fabric range first, then the datacenter, and keep
   assertEquals(reachOfHostIp('100.64.1.2', sets), 'public')
   assertEquals(reachOfHostIp('fd00:2::5', sets), 'public')
   assertEquals(reachOfHostIp('169.254.1.2', sets), 'public')
-  assertEquals(reachOfHostIp('169.254.1.2', { ...sets, datacenter: ['169.254.0.0/16'] }), 'datacenter')
+  assertEquals(
+    reachOfHostIp('169.254.1.2', { ...sets, datacenter: ['169.254.0.0/16'] }),
+    'datacenter'
+  )
 })
