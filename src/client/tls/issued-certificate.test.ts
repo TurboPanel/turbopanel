@@ -26,7 +26,12 @@ import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.
 import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import { issueLeafCertificate, mintOrganizationCa } from '../../lib/tls/self-signed.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
-import { REFUSAL_MESSAGE, replaces, storeIssuedCertificate } from './issued-certificate.ts'
+import {
+  implausibleValidity,
+  REFUSAL_MESSAGE,
+  replaces,
+  storeIssuedCertificate,
+} from './issued-certificate.ts'
 import { handleIssueEvent } from '../../features/tls/http-issuance/events.ts'
 import {
   type HttpIssuanceState,
@@ -606,6 +611,58 @@ test('replaces(): an implausible pair never wins; a stored pair ending implausib
   assertEquals(replaces(far(36_500), true, real.parsed, now), true)
   assertEquals(replaces(far(99), true, real.parsed, now), false)
   assertEquals(replaces(far(30), true, real.parsed, now), true)
+})
+
+test('implausibleValidity(): exact limits of the end, the lifetime and the start', async () => {
+  const DAY = 86_400_000
+  const now = new Date()
+  const t = now.getTime()
+  const base = (await issuedPair([HOST], 90)).parsed
+  const win = (notBefore: number, notAfter: number) =>
+    implausibleValidity(
+      { ...base, notBefore: new Date(notBefore), notAfter: new Date(notAfter) },
+      now
+    )
+  // End: exactly 100 days ahead is fine, one millisecond more is not.
+  assertEquals(win(t - 1000, t + 100 * DAY), false)
+  assertEquals(win(t - 1000, t + 100 * DAY + 1), true)
+  // Lifetime: exactly 101 days is fine, one millisecond more is not (end kept near now).
+  assertEquals(win(t + 50 * DAY - 101 * DAY, t + 50 * DAY), false)
+  assertEquals(win(t + 50 * DAY - 101 * DAY - 1, t + 50 * DAY), true)
+  // Start: exactly a day ahead is fine, one millisecond more is not.
+  assertEquals(win(t + DAY, t + 30 * DAY), false)
+  assertEquals(win(t + DAY + 1, t + 30 * DAY), true)
+})
+
+test('replaces(): a shifted clock exercises the start and lifetime checks on their own', async () => {
+  const DAY = 86_400_000
+  const real = Date.now()
+  const none = { names: undefined, notAfter: null }
+  // Start in the future (end and lifetime fine): now two days early is refused, an hour early is fine.
+  const ninety = (await issuedPair([HOST], 90)).parsed
+  assertEquals(replaces(none, false, ninety, new Date(real - 2 * DAY)), false)
+  assertEquals(replaces(none, false, ninety, new Date(real - 3_600_000)), true)
+  // Lifetime: a 140-day leaf seen 50 days in (end 90 days ahead) is refused on lifetime alone.
+  const long = (await issuedPair([HOST], 140)).parsed
+  assertEquals(replaces(none, false, long, new Date(real + 50 * DAY)), false)
+  // A 100-day leaf seen right away is accepted.
+  const hundred = (await issuedPair([HOST], 100)).parsed
+  assertEquals(replaces(none, false, hundred, new Date()), true)
+})
+
+test('replaces(): a stored pair with an over-long lifetime but a near end is replaced', async () => {
+  const DAY = 86_400_000
+  const now = new Date()
+  const real = (await issuedPair([HOST], 90)).parsed
+  const stored = (lifetimeDays: number) => ({
+    names: [HOST],
+    notBefore: new Date(now.getTime() + 20 * DAY - lifetimeDays * DAY).toISOString(),
+    notAfter: new Date(now.getTime() + 20 * DAY).toISOString(),
+  })
+  // Ends in 20 days, so a 90-day leaf is later; an over-long stored one is replaced even if the new end were earlier.
+  const sooner = { ...real, notAfter: new Date(now.getTime() + 10 * DAY) }
+  assertEquals(replaces(stored(3650), true, sooner, now), true)
+  assertEquals(replaces(stored(90), true, sooner, now), false)
 })
 
 test('replaces(): a later pair that covers more names than the stored one renews it', async () => {

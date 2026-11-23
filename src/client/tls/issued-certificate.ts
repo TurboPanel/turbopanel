@@ -224,8 +224,14 @@ const INTERNAL_CA_ISSUER = /caddy local authority/i
  * long or starts in the future. An already expired pair is a separate refusal.
  */
 export function implausibleValidity(parsed: ParsedCertificate, now: Date): boolean {
-  const notAfter = parsed.notAfter.getTime()
-  const notBefore = parsed.notBefore.getTime()
+  return implausibleWindow(parsed.notBefore.getTime(), parsed.notAfter.getTime(), now)
+}
+
+/**
+ * The window check on bare timestamps, shared by the incoming leaf and the
+ * stored pair. `notBefore` is NaN when it is not known (only the end is checked).
+ */
+function implausibleWindow(notBefore: number, notAfter: number, now: Date): boolean {
   const maxMs = MAX_ISSUED_LIFETIME_DAYS * DAY_MS
   return (
     notAfter > now.getTime() + maxMs ||
@@ -279,13 +285,14 @@ async function checkPair(
  * expiry, never overwrites a newer one. A pair that covers every stored name
  * (the same names, or more: a renewal that now also covers the www name a site
  * adds) is a renewal too. A pair whose validity window no public authority
- * issues never replaces anything, and a stored pair with such a window is
+ * issues never replaces anything, and a stored pair with such a window (by the
+ * same check) is
  * replaced by any plausible one. A certificate for a different name of a multi-name
  * row (Caddy issues one per name) does not overwrite a still-valid pair for
  * another name.
  */
 export function replaces(
-  stored: { names: string[] | undefined; notAfter: string | null },
+  stored: { names: string[] | undefined; notAfter: string | null; notBefore?: string | null },
   hasStoredPair: boolean,
   parsed: ParsedCertificate,
   now: Date
@@ -295,9 +302,11 @@ export function replaces(
   if (!hasStoredPair) return true
   const storedNotAfter = stored.notAfter === null ? Number.NaN : Date.parse(stored.notAfter)
   if (Number.isNaN(storedNotAfter)) return true
-  // A stored pair that ends further ahead than any real one could (kept from
-  // before the window was checked) must not block real renewals.
-  if (storedNotAfter > now.getTime() + MAX_ISSUED_LIFETIME_DAYS * DAY_MS) return true
+  // A stored pair whose window fails the same check (ends too far ahead, lasts
+  // too long, starts ahead; kept from before the check existed) must not block
+  // real renewals.
+  const storedNotBefore = stored.notBefore ? Date.parse(stored.notBefore) : Number.NaN
+  if (implausibleWindow(storedNotBefore, storedNotAfter, now)) return true
   const coversStored =
     stored.names === undefined ||
     stored.names.every((name) => coversHostname(parsed.dnsNames, name))
@@ -527,7 +536,13 @@ async function writePair(
       return
     }
     const storedNames = hasStoredPair ? metadata.acme?.storedNames : undefined
-    if (!replaces({ names: storedNames, notAfter: row.notAfter }, hasStoredPair, parsed, now)) {
+    const storedNotBefore = (metadata as { notBefore?: unknown }).notBefore
+    const storedPair = {
+      names: storedNames,
+      notAfter: row.notAfter,
+      notBefore: typeof storedNotBefore === 'string' ? storedNotBefore : null,
+    }
+    if (!replaces(storedPair, hasStoredPair, parsed, now)) {
       await noteCaptureOnly(tx, row, input, parsed, now)
       return
     }
