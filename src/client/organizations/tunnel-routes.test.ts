@@ -591,7 +591,7 @@ test('a hostname gets its route and its DNS name, and removing it takes both awa
     assertEquals(shown.status, 'live')
     assert(provider.calls.includes('POST /zones/zone-1/dns_records'))
     const sent = JSON.stringify(provider.routeBodies.at(-1))
-    assert(sent.includes('shop.example.com') && sent.includes('https://localhost'))
+    assert(sent.includes('shop.example.com') && sent.includes('https://127.0.0.1'))
 
     const dup = await call(
       f,
