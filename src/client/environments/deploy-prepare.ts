@@ -344,7 +344,7 @@ import {
 } from '../../features/compose/reserved-host-ports.ts'
 import {
   bridgeUdpReplyFindings,
-  hostNetworkServices,
+  hostNetworkPortServices,
 } from '../../features/compose/bridge-udp-reply.ts'
 import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 
@@ -1316,15 +1316,27 @@ export function bridgeUdpReplyWarnings(
 }
 
 /**
- * Warn about host networking: the service listens straight on the host, so the
- * published-port, reserved-port and bind-address checks do not see its ports.
+ * Warn about `ports:` entries under host networking: Docker ignores them there,
+ * the service listens on whatever it binds itself, and the panel's published-port
+ * checks do not describe that. A host-network service with no `ports:` stays quiet.
  */
 export function hostNetworkWarnings(services: Record<string, unknown>): DeployPrepareWarning[] {
-  return hostNetworkServices(services).map((service) => ({
+  return hostNetworkPortServices(services).map((service) => ({
     code: 'host_network_unchecked',
-    message: `Service "${service}" uses network_mode: host, so it listens directly on the server's addresses. Its ports are not checked against the reserved host ports (${describeReservedHostPorts()}) or the bind-address rules, and any ports: entries are ignored. Make sure it does not listen on a reserved port.`,
+    message: `Service "${service}" uses network_mode: host and lists ports:. Docker ignores the ports: entries under host networking, so the service listens on whatever it binds itself, directly on the server's addresses. Make sure it does not listen on a reserved host port (${describeReservedHostPorts()}).`,
     details: { composeServiceName: service },
   }))
+}
+
+/** Network-shape warnings for the effective compose document. */
+export function serviceNetworkWarnings(document: ComposeDocument): DeployPrepareWarning[] {
+  const services = composeServicesRecord(document)
+  const networks = isPlainObject(document.data.networks) ? document.data.networks : {}
+  return [
+    ...reservedHostPortWarnings(services),
+    ...bridgeUdpReplyWarnings(services, networks),
+    ...hostNetworkWarnings(services),
+  ]
 }
 
 /**
@@ -4257,14 +4269,7 @@ export async function prepareDeployCompose(
   // composeYaml today. Compile one runtime snapshot; daemons never see
   // project/environment/platform layers.
   const effective = split.containerDocument
-  warnings.push(...reservedHostPortWarnings(composeServicesRecord(effective)))
-  warnings.push(
-    ...bridgeUdpReplyWarnings(
-      composeServicesRecord(effective),
-      isPlainObject(effective.data.networks) ? effective.data.networks : {}
-    ),
-    ...hostNetworkWarnings(composeServicesRecord(effective))
-  )
+  warnings.push(...serviceNetworkWarnings(effective))
   const compiled = compileRuntimeCompose(effective, {
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,
