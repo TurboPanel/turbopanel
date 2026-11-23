@@ -9,6 +9,7 @@ import {
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { normalizeMailpitApiEnv, normalizeMailpitRuntimeEnv } from '../email/mailpit/env.ts'
 import { buildMailpitSmtpConfig } from '../email/mailpit/smtp-config.ts'
+import type { ApiErrorCode } from '../../lib/http/error-codes.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { parseExplicitSmtpConfig, type SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
@@ -49,6 +50,8 @@ export const EMAIL_SETTING_SHORT_KEYS = [
 export type EmailSettingShortKey = (typeof EMAIL_SETTING_SHORT_KEYS)[number]
 
 export type EmailProvider = 'smtp' | 'mailgun' | 'mailpit-api' | 'mailpit-smtp'
+
+export type EmailSettingsRuntime = 'deno' | 'workers'
 
 export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefined> = {
   PROVIDER: 'smtp',
@@ -373,17 +376,30 @@ async function loadEmailSettingDbValues(
   return out
 }
 
+/**
+ * The schema as one runtime sees it. Workers has no SMTP path, so its
+ * `PROVIDER` default is `mailgun` (what the Admin UI then reports and echoes
+ * back on a save with no change); self-hosted keeps `smtp`.
+ */
+export function emailSettingsSchemaFor(
+  runtime: EmailSettingsRuntime
+): Record<EmailSettingShortKey, string | undefined> {
+  if (runtime === 'workers') return { ...EMAIL_SETTINGS_SCHEMA, PROVIDER: 'mailgun' }
+  return EMAIL_SETTINGS_SCHEMA
+}
+
 async function createEmailSettingsResolver(
   db: Db | undefined,
   env: Record<string, string | undefined>,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  runtime: EmailSettingsRuntime
 ): Promise<SettingsResolver> {
   const dbValues = db
     ? await loadEmailSettingDbValues(db, dataEncryptionSecrets)
     : new Map<string, string>()
   return new SettingsResolver({
     prefix: EMAIL_SETTINGS_PREFIX,
-    keys: EMAIL_SETTINGS_SCHEMA,
+    keys: emailSettingsSchemaFor(runtime),
     env,
     dbValues,
   })
@@ -419,12 +435,13 @@ async function loadEmailSettingPresenceDbValues(db: Db): Promise<Map<string, str
 
 async function createEmailPresenceResolver(
   db: Db | undefined,
-  env: Record<string, string | undefined>
+  env: Record<string, string | undefined>,
+  runtime: EmailSettingsRuntime
 ): Promise<SettingsResolver> {
   const dbValues = db ? await loadEmailSettingPresenceDbValues(db) : new Map<string, string>()
   return new SettingsResolver({
     prefix: EMAIL_SETTINGS_PREFIX,
-    keys: EMAIL_SETTINGS_SCHEMA,
+    keys: emailSettingsSchemaFor(runtime),
     env,
     dbValues,
   })
@@ -442,9 +459,9 @@ async function createEmailPresenceResolver(
 export async function resolveEmailActivePresence(
   db: Db | undefined,
   env: Record<string, string | undefined>,
-  runtime: 'deno' | 'workers' = 'deno'
+  runtime: EmailSettingsRuntime = 'deno'
 ): Promise<boolean> {
-  const resolver = await createEmailPresenceResolver(db, normalizeMailpitApiEnv(env))
+  const resolver = await createEmailPresenceResolver(db, normalizeMailpitApiEnv(env), runtime)
   const provider = parseProvider(resolver.resolve('PROVIDER').value)
   if (provider === 'mailpit-api') {
     return runtime === 'workers' && resolver.resolve('MAILPIT_API_URL').value.trim() !== ''
@@ -470,10 +487,11 @@ export async function resolveEmailActivePresence(
 export async function resolveEmailSettings(
   db: Db | undefined,
   env: Record<string, string | undefined>,
-  dataEncryptionSecrets?: DerivedSecretsConfig
+  dataEncryptionSecrets?: DerivedSecretsConfig,
+  runtime: EmailSettingsRuntime = 'deno'
 ): Promise<ResolvedEmailSettings> {
   const runtimeEnv = normalizeMailpitRuntimeEnv(env)
-  const resolver = await createEmailSettingsResolver(db, runtimeEnv, dataEncryptionSecrets)
+  const resolver = await createEmailSettingsResolver(db, runtimeEnv, dataEncryptionSecrets, runtime)
 
   const keys = {} as Record<EmailSettingShortKey, EmailSettingMeta>
   for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {
@@ -568,12 +586,13 @@ export async function updateEmailSettings(
   db: Db,
   env: Record<string, string | undefined>,
   updates: Record<string, string | null>,
-  dataEncryptionSecrets?: DerivedSecretsConfig
+  dataEncryptionSecrets?: DerivedSecretsConfig,
+  runtime: EmailSettingsRuntime = 'deno'
 ): Promise<ResolvedEmailSettings> {
-  const resolver = await createEmailSettingsResolver(db, env, dataEncryptionSecrets)
+  const resolver = await createEmailSettingsResolver(db, env, dataEncryptionSecrets, runtime)
   const mutations = collectEmailSettingMutations(resolver, updates)
   await applyEmailSettingMutations(db, mutations, dataEncryptionSecrets)
-  return await resolveEmailSettings(db, env, dataEncryptionSecrets)
+  return await resolveEmailSettings(db, env, dataEncryptionSecrets, runtime)
 }
 
 /**
@@ -604,6 +623,41 @@ export function invalidEmailSettingUpdate(
     if (resolveShortKeyFromInput(key) !== 'SMTP_SECURITY') continue
     if (parseSmtpSecurityStrict(value) === undefined) {
       return `SMTP_SECURITY must be one of: ${SMTP_SECURITY_MODES.join(', ')}`
+    }
+  }
+  return undefined
+}
+
+/** Stable `code`s of the refusals below, for the Admin UI. */
+export const EMAIL_PROVIDER_UNSUPPORTED_ON_WORKERS =
+  'email_provider_unsupported_on_workers' as const
+export const EMAIL_PROVIDER_UNKNOWN = 'email_provider_unknown' as const
+
+/**
+ * Workers has no SMTP path (no raw sockets), so an SMTP provider would resolve
+ * to a no-op queue and every mail would be dropped. Refuse it at save time on
+ * Workers instead; the deprecated `mailpit` alias is refused too. A value that
+ * is no provider at all gets its own message instead of the SMTP one.
+ */
+export function emailProviderUnsupportedOnWorkers(
+  updates: Record<string, string | null>
+): { code: ApiErrorCode; message: string } | undefined {
+  for (const [key, value] of Object.entries(updates)) {
+    if (typeof value !== 'string' || value.trim() === '') continue
+    if (resolveShortKeyFromInput(key) !== 'PROVIDER') continue
+    const trimmed = value.trim().toLowerCase()
+    if (!isAllowedEmailSettingValue('PROVIDER', trimmed)) {
+      return {
+        code: EMAIL_PROVIDER_UNKNOWN,
+        message: 'Unknown email provider. Use mailgun.',
+      }
+    }
+    const provider = parseProvider(trimmed)
+    if (provider === 'smtp' || provider === 'mailpit-smtp') {
+      return {
+        code: EMAIL_PROVIDER_UNSUPPORTED_ON_WORKERS,
+        message: 'This hosted control plane cannot send mail over SMTP. Use mailgun.',
+      }
     }
   }
   return undefined

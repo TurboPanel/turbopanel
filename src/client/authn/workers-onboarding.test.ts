@@ -31,6 +31,7 @@ import {
   team,
   teammate,
   user,
+  verification,
   workspace,
 } from '../../db/schema.ts'
 import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
@@ -499,6 +500,117 @@ it('Deno sign-up rejects when verification is required but the queue is noop', a
     const userRows = await db.select({ id: user.id }).from(user).where(eq(user.email, email))
     if (userRows.length !== 0) {
       throw new Error(`expected no user row after noop queue rejection, got ${userRows.length}`)
+    }
+  } finally {
+    await cleanupUser(db, email)
+  }
+})
+
+it('Deno sign-up removes the new user when the verification email cannot be queued', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('Deno enqueue failure test')
+    return
+  }
+
+  const db = createDenoDb()
+  if (!(await isInstanceInstalled(db))) {
+    console.warn('Skipping Deno enqueue failure test: instance not installed')
+    return
+  }
+
+  const email = `deno-enqueue-fail-${crypto.randomUUID()}@example.com`
+  const app = await createAuthRouteApp(db, 'deno', '1', {
+    platformEnv: MAILGUN_PLATFORM_ENV,
+    emailQueue: new FailingEmailQueue(),
+  })
+
+  try {
+    const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password: 'password1!' }),
+    })
+    if (res.status !== 503) {
+      throw new Error(`expected 503, got ${res.status}: ${await res.text()}`)
+    }
+    const userRows = await db.select({ id: user.id }).from(user).where(eq(user.email, email))
+    if (userRows.length !== 0) {
+      throw new Error(`expected no user row after enqueue failure, got ${userRows.length}`)
+    }
+    const tokenRows = await db
+      .select({ id: verification.id })
+      .from(verification)
+      .where(eq(verification.identifier, email))
+    if (tokenRows.length !== 0) {
+      throw new Error(`expected no verification token after enqueue failure`)
+    }
+  } finally {
+    await cleanupUser(db, email)
+  }
+})
+
+it('a failure partway through removing an unverified sign-up leaves no half-deleted user', async () => {
+  if (!dbUrl) {
+    skipWithoutDatabase('rollback atomicity test')
+    return
+  }
+
+  const db = createDenoDb()
+
+  // The user delete (the second step of the rollback) fails after the
+  // verification delete went through; the transaction must undo that one too.
+  const failingUserDelete = new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop !== 'transaction') return Reflect.get(target, prop, receiver)
+      return (fn: (tx: unknown) => Promise<unknown>, config?: unknown) =>
+        (
+          target.transaction as (
+            f: (tx: unknown) => Promise<unknown>,
+            c?: unknown
+          ) => Promise<unknown>
+        )(
+          (tx) =>
+            fn(
+              new Proxy(tx as object, {
+                get(txTarget, txProp, txReceiver) {
+                  if (txProp !== 'delete') return Reflect.get(txTarget, txProp, txReceiver)
+                  return (table: unknown) => {
+                    if (table === user) throw new Error('simulated user delete failure')
+                    return (txTarget as typeof db).delete(table as typeof user)
+                  }
+                },
+              })
+            ),
+          config
+        )
+    },
+  }) as typeof db
+
+  const email = `workers-rollback-atomic-${crypto.randomUUID()}@example.com`
+  const app = await createAuthRouteApp(failingUserDelete, 'workers', '1', {
+    platformEnv: MAILGUN_PLATFORM_ENV,
+    emailQueue: new FailingEmailQueue(),
+  })
+
+  try {
+    const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email, password: 'password1!' }),
+    })
+    if (res.status !== 503) {
+      throw new Error(`expected 503, got ${res.status}: ${await res.text()}`)
+    }
+    const userRows = await db.select({ id: user.id }).from(user).where(eq(user.email, email))
+    const tokenRows = await db
+      .select({ id: verification.id })
+      .from(verification)
+      .where(eq(verification.identifier, email))
+    // All or nothing: the user and its token are both still there.
+    if (userRows.length !== 1 || tokenRows.length !== 1) {
+      throw new Error(
+        `expected user and token to both remain, got ${userRows.length} user and ${tokenRows.length} token rows`
+      )
     }
   } finally {
     await cleanupUser(db, email)

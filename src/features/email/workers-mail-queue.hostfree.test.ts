@@ -110,6 +110,29 @@ test('a job the provider refused for good, or out of tries, is dead-lettered and
   }
 })
 
+test('the dead-letter message says why: a refusal and running out of tries read differently', async () => {
+  const reasons: string[] = []
+  for (const [msgInput, error] of [
+    [message({ v: 1, job: OTP_JOB }), new EmailSendError('Mailgun 400: bad address', true)],
+    [message({ v: 1, job: OTP_JOB }, 6), new Error('Mailgun did not answer')],
+  ] as const) {
+    const dead = recordingBinding()
+    await settleEmailMessage({
+      message: msgInput.msg,
+      sender: failingSender(error),
+      deadLetterQueue: dead.binding,
+    })
+    const letter = dead.sent[0] as { body: unknown; reason: string; at: string }
+    assertEquals(letter.body, { v: 1, job: OTP_JOB })
+    assertEquals(Number.isNaN(Date.parse(letter.at)), false)
+    reasons.push(letter.reason)
+  }
+  assertEquals(reasons, [
+    'email-otp refused: Mailgun 400: bad address',
+    'email-otp gave up after 6 attempts: Mailgun did not answer',
+  ])
+})
+
 test('a dead-lettered job is counted for the Admin notice; a sent one is not', async () => {
   let counted = 0
   const onDeadLetter = () => {
