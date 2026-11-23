@@ -19,6 +19,7 @@ tests**). Package manager is pnpm; Deno tasks are in `deno.json`.
 - Types: `deno task check:types`, `pnpm check:workers-types`,
   `pnpm check:workers-bundle`.
 - Guards: `pnpm check:test-inventory`, `check:import-boundaries`,
+  `check:source-layout`,
   `check:vocabulary`, `check:ca-boundary`, `check:instance-acme-boundary`,
   `check:workers-acme-boundary`,
   `check:contract-drift`, `check:migration-*`, `check:metrics-boundaries`,
