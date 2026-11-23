@@ -9,8 +9,8 @@
 - Run `./console` from the
   [TurboPanel Development Environment](https://github.com/TurboPanel/dev)
   checkout. The console installs Deno, clones the daemon, and drives the full
-  dev stack via `scripts/bootstrap-orchestration.ts` +
-  `scripts/install-daemon-systemd.sh` (shared orchestration under
+  dev stack via `../turbopaneld/scripts/bootstrap-orchestration.ts` +
+  `../turbopaneld/scripts/install-daemon-systemd.sh` (shared orchestration under
   `/opt/turbopanel/vendor/` — not `orchestration/runtime/venv`).
 - Managed/co-located installs: secret-bearing runtime env lives in the instance
   config dir (`runtime.env`, `runtime.dev-vars`) — **never** in the git checkout
