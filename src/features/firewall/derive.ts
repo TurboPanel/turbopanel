@@ -163,14 +163,40 @@ function resolveEdictSources(edict: EdictFact, sets: FirewallSourceSets): Resolv
   return resolveWords(edict.sourceKind, sets)
 }
 
-function exposureRule(exposure: DerivedExposure, sources: string[]): FirewallCommandRule {
-  const id =
-    `d:${exposure.source}:${exposure.proto}:${exposure.ports}:${exposure.reach}`.replaceAll(
-      ID_UNSAFE,
-      '_'
-    )
+/** A short stable hash (FNV-1a, 32 bit) so a long or colliding rule id stays unique and readable. */
+function shortHash(text: string): string {
+  let hash = 0x811c9dc5
+  for (const char of text) {
+    hash = Math.imul(hash ^ (char.codePointAt(0) ?? 0), 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0')
+}
+
+function safeId(raw: string): string {
+  const id = raw.replaceAll(ID_UNSAFE, '_')
+  return id.length <= 64 ? id : `${id.slice(0, 55)}~${shortHash(raw).slice(0, 8)}`.slice(0, 64)
+}
+
+/** Everything that makes two exposures different rules, whatever their readable id. */
+function exposureSignature(exposure: DerivedExposure, sources: readonly string[]): string {
+  return JSON.stringify([
+    exposure.scope,
+    exposure.destination ?? null,
+    exposure.proto,
+    exposure.ports,
+    sources,
+  ])
+}
+
+function exposureRule(
+  exposure: DerivedExposure,
+  sources: string[],
+  suffix: string | undefined
+): FirewallCommandRule {
+  const destination = exposure.destination === undefined ? '' : `:${exposure.destination}`
+  const base = `d:${exposure.source}:${exposure.proto}:${exposure.ports}:${exposure.reach}${destination}`
   return {
-    id: id.slice(0, 64),
+    id: safeId(suffix === undefined ? base : `${base}:${suffix}`),
     scope: exposure.scope,
     action: 'accept',
     proto: exposure.proto,
@@ -187,7 +213,8 @@ function derivedRules(
   sets: FirewallSourceSets,
   notes: string[]
 ): FirewallCommandRule[] {
-  const byId = new Map<string, FirewallCommandRule>()
+  const bySignature = new Map<string, FirewallCommandRule>()
+  const usedIds = new Set<string>()
   for (const exposure of exposures) {
     const resolved = resolveReach(exposure, sets)
     if ('reason' in resolved) {
@@ -196,10 +223,16 @@ function derivedRules(
       )
       continue
     }
-    const rule = exposureRule(exposure, resolved.sources)
-    if (!byId.has(rule.id)) byId.set(rule.id, rule)
+    const signature = exposureSignature(exposure, resolved.sources)
+    if (bySignature.has(signature)) continue
+    let rule = exposureRule(exposure, resolved.sources, undefined)
+    // Two different rules that read the same (for example peer rules with
+    // different sources) must both be kept, so the second gets its own id.
+    if (usedIds.has(rule.id)) rule = exposureRule(exposure, resolved.sources, shortHash(signature))
+    usedIds.add(rule.id)
+    bySignature.set(signature, rule)
   }
-  return [...byId.values()].toSorted((a, b) => a.id.localeCompare(b.id))
+  return [...bySignature.values()].toSorted((a, b) => a.id.localeCompare(b.id))
 }
 
 function userRules(
