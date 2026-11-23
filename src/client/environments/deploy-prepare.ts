@@ -342,6 +342,10 @@ import {
   describeReservedHostPorts,
   reservedHostPortFindings,
 } from '../../features/compose/reserved-host-ports.ts'
+import {
+  bridgeUdpReplyFindings,
+  hostNetworkPortServices,
+} from '../../features/compose/bridge-udp-reply.ts'
 import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -388,6 +392,8 @@ export type DeployPrepareWarningCode =
   | 'node_version_unresolved'
   | 'storage_service_removed'
   | 'reserved_host_port'
+  | 'bridge_udp_reply_port'
+  | 'host_network_unchecked'
   | 'config_file_ownership_ignored'
   | 'cache_other_account'
   | 'cache_other_server'
@@ -1292,6 +1298,45 @@ export function reservedHostPortWarnings(
     message: `Service "${service}" publishes host port ${port}, which the platform reserves for its own services (reserved host ports: ${describeReservedHostPorts()}). The deploy will be refused; publish a different host port.`,
     details: { composeServiceName: service, port },
   }))
+}
+
+/**
+ * Warn about a published UDP port whose protocol answers from a new port (TFTP):
+ * the bridge NAT has no mapping for that reply, so the transfer times out.
+ */
+export function bridgeUdpReplyWarnings(
+  services: Record<string, unknown>,
+  networks: Record<string, unknown> = {}
+): DeployPrepareWarning[] {
+  return bridgeUdpReplyFindings(services, networks).map(({ service, protocol, port }) => ({
+    code: 'bridge_udp_reply_port',
+    message: `Service "${service}" publishes UDP port ${port} (${protocol}) on a bridge network. ${protocol} answers from a new port, which the bridge NAT does not map, so clients time out. Use network_mode: host, or attach the service to a macvlan or ipvlan network on the LAN.`,
+    details: { composeServiceName: service, protocol, port },
+  }))
+}
+
+/**
+ * Warn about `ports:` entries under host networking: Docker ignores them there,
+ * the service listens on whatever it binds itself, and the panel's published-port
+ * checks do not describe that. A host-network service with no `ports:` stays quiet.
+ */
+export function hostNetworkWarnings(services: Record<string, unknown>): DeployPrepareWarning[] {
+  return hostNetworkPortServices(services).map((service) => ({
+    code: 'host_network_unchecked',
+    message: `Service "${service}" uses network_mode: host and lists ports:. Docker ignores the ports: entries under host networking, so the service listens on whatever it binds itself, directly on the server's addresses. Make sure it does not listen on a reserved host port (${describeReservedHostPorts()}).`,
+    details: { composeServiceName: service },
+  }))
+}
+
+/** Network-shape warnings for the effective compose document. */
+export function serviceNetworkWarnings(document: ComposeDocument): DeployPrepareWarning[] {
+  const services = composeServicesRecord(document)
+  const networks = isPlainObject(document.data.networks) ? document.data.networks : {}
+  return [
+    ...reservedHostPortWarnings(services),
+    ...bridgeUdpReplyWarnings(services, networks),
+    ...hostNetworkWarnings(services),
+  ]
 }
 
 /**
@@ -4224,7 +4269,7 @@ export async function prepareDeployCompose(
   // composeYaml today. Compile one runtime snapshot; daemons never see
   // project/environment/platform layers.
   const effective = split.containerDocument
-  warnings.push(...reservedHostPortWarnings(composeServicesRecord(effective)))
+  warnings.push(...serviceNetworkWarnings(effective))
   const compiled = compileRuntimeCompose(effective, {
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,
