@@ -177,21 +177,19 @@ function stubDb(
   return traced as unknown as StubDb
 }
 
+/** `GET /v2/core/accounts/acct_1`: the customer-configured account the subscription names. */
+const ACCOUNT_FROM_STRIPE = {
+  id: 'acct_1',
+  object: 'v2.core.account',
+  metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ORG_ID },
+}
+
 const SUBSCRIPTION_FROM_STRIPE = {
   id: 'sub_1',
   object: 'subscription',
   status: 'active',
   schedule: null,
-  customer: {
-    id: 'cus_1',
-    object: 'customer',
-    metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ORG_ID },
-    tax_ids: {
-      object: 'list',
-      data: [{ value: 'DE123456789' }],
-      has_more: false,
-    },
-  },
+  customer_account: 'acct_1',
   items: {
     object: 'list',
     has_more: false,
@@ -237,6 +235,17 @@ function stripeFetchDouble(
     calls.push(`${url.pathname}${url.search}`)
     if (url.pathname === '/v1/subscriptions/sub_1') {
       return Promise.resolve(new Response(JSON.stringify(subscriptionFromStripe), { status: 200 }))
+    }
+    if (url.pathname === '/v2/core/accounts/acct_1') {
+      return Promise.resolve(new Response(JSON.stringify(ACCOUNT_FROM_STRIPE), { status: 200 }))
+    }
+    if (url.pathname === '/v1/tax_ids') {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ object: 'list', data: [{ value: 'DE123456789' }], has_more: false }),
+          { status: 200 }
+        )
+      )
     }
     if (url.pathname === '/v1/invoices/in_1') {
       return Promise.resolve(
@@ -499,7 +508,9 @@ test('a valid delivery answers 200 immediately, without awaiting the projection'
   // payload) and writes payer → subscription → seat, then prunes.
   await h.scheduled[0]!()
   assertEquals(h.stripeCalls, [
-    '/v1/subscriptions/sub_1?expand%5B0%5D=customer&expand%5B1%5D=customer.tax_ids',
+    '/v1/subscriptions/sub_1',
+    '/v2/core/accounts/acct_1',
+    '/v1/tax_ids?owner%5Btype%5D=customer&owner%5Bcustomer_account%5D=acct_1&limit=1',
   ])
   // The projection writes, then the entitlement sync takes and releases the
   // lease, then the delivery is marked projected.
@@ -515,7 +526,7 @@ test('a valid delivery answers 200 immediately, without awaiting the projection'
   ])
   const [, payerInsert, subInsert, seatInsert] = h.db.inserts
   assertEquals(payerInsert?.values.organizationId, ORG_ID)
-  assertEquals(payerInsert?.values.providerCustomerId, 'cus_1')
+  assertEquals(payerInsert?.values.providerCustomerId, 'acct_1')
   assertEquals(payerInsert?.values.taxId, 'DE123456789')
   assertEquals(subInsert?.values.providerSubscriptionId, 'sub_1')
   assertEquals(subInsert?.values.status, 'active')
@@ -673,7 +684,9 @@ test('pending_update_applied lands the intent the committed items now show; pend
     assertEquals(res.status, 200)
     await h.scheduled[0]!()
     assertEquals(h.stripeCalls, [
-      '/v1/subscriptions/sub_1?expand%5B0%5D=customer&expand%5B1%5D=customer.tax_ids',
+      '/v1/subscriptions/sub_1',
+      '/v2/core/accounts/acct_1',
+      '/v1/tax_ids?owner%5Btype%5D=customer&owner%5Bcustomer_account%5D=acct_1&limit=1',
     ])
     assertEquals(
       h.db.rows(subscriptionItem).map((row) => row.quantity),
@@ -802,7 +815,7 @@ function projectedDb(): MemoryDb {
         {
           id: 'payer-1',
           provider: 'stripe',
-          providerCustomerId: 'cus_1',
+          providerCustomerId: 'acct_1',
           organizationId: ORG_ID,
           userId: null,
           taxId: null,

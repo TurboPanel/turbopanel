@@ -127,24 +127,37 @@ const serverRow = (id: string, assignedTierId: string | null = null) => ({
   assignedTierId,
 })
 
-/** The subscription as the refetch returns it, with the parts under test overridable. */
-function stripeSubscription(overrides: Obj = {}, customerOverrides: Obj = {}): Obj {
+/**
+ * What the account and tax-id routes answer for the subscription most
+ * recently built by {@link stripeSubscription}. The projection fetches the
+ * v2 Account and the tax ids as two more calls, so `routedClient` serves them
+ * from here.
+ */
+const payerFixture: { account: Obj; taxIds: Obj[] } = { account: {}, taxIds: [] }
+
+/**
+ * The subscription as the refetch returns it, with the parts under test
+ * overridable. `accountOverrides` shapes the v2 Account the subscription's
+ * `customer_account` names; `tax_ids` there shapes the tax-id list.
+ */
+function stripeSubscription(overrides: Obj = {}, accountOverrides: Obj = {}): Obj {
+  const { tax_ids: taxIds, ...account } = {
+    tax_ids: [{ value: 'DE123456789' }],
+    ...accountOverrides,
+  }
+  payerFixture.account = {
+    id: 'acct_1',
+    object: 'v2.core.account',
+    metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ORG },
+    ...account,
+  }
+  payerFixture.taxIds = Array.isArray(taxIds) ? taxIds : []
   return {
     id: 'sub_1',
     object: 'subscription',
     status: 'active',
     schedule: null,
-    customer: {
-      id: 'cus_1',
-      object: 'customer',
-      metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ORG },
-      tax_ids: {
-        object: 'list',
-        data: [{ value: 'DE123456789' }],
-        has_more: false,
-      },
-      ...customerOverrides,
-    },
+    customer_account: 'acct_1',
     items: {
       object: 'list',
       has_more: false,
@@ -189,7 +202,13 @@ type Route = `${StripeCall['method']} ${string}`
 
 function routedClient(routes: Partial<Record<Route, (call: StripeCall) => unknown>>) {
   return createStripeClientDouble((call) => {
-    const handler = routes[`${call.method} ${call.path}` as Route]
+    const handler =
+      routes[`${call.method} ${call.path}` as Route] ??
+      (call.method === 'GET' && call.path === '/v2/core/accounts/acct_1'
+        ? () => payerFixture.account
+        : call.method === 'GET' && call.path === '/v1/tax_ids'
+          ? () => ({ object: 'list', data: payerFixture.taxIds, has_more: false })
+          : undefined)
     if (!handler) {
       throw new Error(`unexpected Stripe call ${call.method} ${call.path}`)
     }
@@ -247,8 +266,8 @@ function seatRows(db: MemoryDb) {
 
 test('T6 · every customer/subject/status skip answers its reason and writes no row', async () => {
   const cases: [string, Obj, Obj][] = [
-    ['customer_deleted', {}, { deleted: true }],
-    ['customer_missing', {}, { id: undefined }],
+    ['customer_deleted', {}, { closed: true }],
+    ['customer_missing', { customer_account: null }, {}],
     ['customer_subject_missing', {}, { metadata: {} }],
     [
       'customer_subject_missing',
@@ -278,8 +297,52 @@ test('T6 · every customer/subject/status skip answers its reason and writes no 
     const outcome = await projectSubscriptionById({ db, client, now: NOW }, 'sub_1')
     assertEquals(skipped(outcome), reason)
     assertEquals(rowCounts(db), { payer: 0, subscription: 0, seat: 0 }, reason)
-    assertEquals(client.calls.length, 1, reason)
+    // customer_missing stops after the subscription; a closed account or an
+    // unnamed subject after the account; only a missing status reads tax ids too.
+    const expectedCalls = reason === 'customer_missing' ? 1 : reason === 'status_missing' ? 3 : 2
+    assertEquals(client.calls.length, expectedCalls, reason)
   }
+})
+
+test('T6 · the payer is read from customer_account: the v2 Account for metadata, v1 tax ids owned by the account', async () => {
+  const db = emptyDb()
+  const client = routedClient({ [SUB_ROUTE]: () => stripeSubscription() })
+  projected(await projectSubscriptionById({ db, client, now: NOW }, 'sub_1'))
+  assertEquals(
+    client.calls.slice(0, 3).map((call) => `${call.method} ${call.path}`),
+    ['GET /v1/subscriptions/sub_1', 'GET /v2/core/accounts/acct_1', 'GET /v1/tax_ids']
+  )
+  // No `customer` expansion: the subscription's customer_account is not expandable.
+  assertEquals(client.calls[0]!.form, [])
+  assertEquals(client.calls[2]!.form, [
+    ['owner[type]', 'customer'],
+    ['owner[customer_account]', 'acct_1'],
+    ['limit', '1'],
+  ])
+  assertEquals(db.rows(payer)[0]?.providerCustomerId, 'acct_1')
+  assertEquals(db.rows(payer)[0]?.taxId, 'DE123456789')
+})
+
+test('T6 · an account Stripe no longer has (404) skips like a deleted customer; any other failure throws', async () => {
+  const gone = routedClient({
+    [SUB_ROUTE]: () => stripeSubscription(),
+    'GET /v2/core/accounts/acct_1': () => {
+      throw new StripeApiError({ status: 404, type: 'invalid_request_error', message: 'nope' })
+    },
+  })
+  assertEquals(
+    skipped(await projectSubscriptionById({ db: emptyDb(), client: gone, now: NOW }, 'sub_1')),
+    'customer_deleted'
+  )
+  const broken = routedClient({
+    [SUB_ROUTE]: () => stripeSubscription(),
+    'GET /v2/core/accounts/acct_1': () => {
+      throw new StripeApiError({ status: 500, type: 'api_error', message: 'down' })
+    },
+  })
+  await assertRejects(() =>
+    projectSubscriptionById({ db: emptyDb(), client: broken, now: NOW }, 'sub_1')
+  )
 })
 
 test('T6 · a subject id is accepted case-insensitively and stored lowercased', async () => {
@@ -344,7 +407,7 @@ test('T6 · an organization projection syncs entitlements: no tier is assigned t
   // Only the refetch: no schedule work on a ledger with nothing deferred.
   assertEquals(
     client.calls.map((c) => c.path),
-    ['/v1/subscriptions/sub_1']
+    ['/v1/subscriptions/sub_1', '/v2/core/accounts/acct_1', '/v1/tax_ids']
   )
 })
 
@@ -726,7 +789,12 @@ test('T7 · an invoice names its subscription directly (pre-basil, id or object)
     assertEquals(outcome.subscriptionId, db.rows(subscription)[0]?.id, label)
     assertEquals(
       client.calls.map((c) => `${c.method} ${c.path}`),
-      ['GET /v1/invoices/in_1', 'GET /v1/subscriptions/sub_1'],
+      [
+        'GET /v1/invoices/in_1',
+        'GET /v1/subscriptions/sub_1',
+        'GET /v2/core/accounts/acct_1',
+        'GET /v1/tax_ids',
+      ],
       label
     )
   }
@@ -763,7 +831,12 @@ test('T7 · checkout.session.completed reads the session first, then projects th
     )
     assertEquals(
       client.calls.map((c) => `${c.method} ${c.path}`),
-      ['GET /v1/checkout/sessions/cs_1', 'GET /v1/subscriptions/sub_1']
+      [
+        'GET /v1/checkout/sessions/cs_1',
+        'GET /v1/subscriptions/sub_1',
+        'GET /v2/core/accounts/acct_1',
+        'GET /v1/tax_ids',
+      ]
     )
     assertEquals(
       db.rows(subscriptionItem).map((row) => row.quantity),
@@ -797,7 +870,7 @@ test('T7 · every subscription event — pending_update_expired included — is 
     assertEquals(outcome.subscriptionId, db.rows(subscription)[0]?.id, type)
     assertEquals(
       client.calls.map((c) => `${c.method} ${c.path}`),
-      ['GET /v1/subscriptions/sub_1'],
+      ['GET /v1/subscriptions/sub_1', 'GET /v2/core/accounts/acct_1', 'GET /v1/tax_ids'],
       type
     )
     assertEquals(seatRows(db), [['si_1', S1, 2, 'price_S1']], type)

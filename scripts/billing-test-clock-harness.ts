@@ -506,7 +506,7 @@ export type ClockCustomerOpts = Readonly<{
 }>
 
 /**
- * A customer created **on the clock**, naming the scenario's organization
+ * A customer account (customer configuration) created **on the clock**, naming the scenario's organization
  * in metadata exactly as `checkout.ts` would, with a US address (automatic
  * tax needs a resolvable location) and a default card from a test token.
  */
@@ -514,17 +514,28 @@ export async function createClockCustomer(
   ctx: ScenarioContext,
   opts: ClockCustomerOpts = {}
 ): Promise<{ providerCustomerId: string; paymentMethodId: string }> {
-  const customer = await ctx.client.post<StripeObject>('/v1/customers', {
-    test_clock: ctx.clock.id,
-    name: `TurboPanel harness ${ctx.name}`,
-    email: `harness+${ctx.name}@example.invalid`,
+  const customer = await ctx.client.post<StripeObject>('/v2/core/accounts', {
+    display_name: `TurboPanel harness ${ctx.name}`,
+    contact_email: `harness+${ctx.name}@example.invalid`,
     metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ctx.organizationId },
-    address: {
-      line1: '510 Townsend St',
-      city: 'San Francisco',
-      state: 'CA',
-      postal_code: '94103',
-      country: 'US',
+    identity: {
+      country: 'us',
+      individual: {
+        given_name: `TurboPanel harness ${ctx.name}`,
+        address: {
+          line1: '510 Townsend St',
+          city: 'San Francisco',
+          state: 'CA',
+          postal_code: '94103',
+          country: 'us',
+        },
+      },
+    },
+    configuration: {
+      customer: {
+        test_clock: ctx.clock.id,
+        capabilities: { automatic_indirect_tax: { requested: true } },
+      },
     },
   })
   const providerCustomerId = str(customer.id)
@@ -549,7 +560,7 @@ export async function attachCard(
   const paymentMethodId = str(pm.id)
   check(paymentMethodId, 'payment method create returned no id')
   await ctx.client.post(`/v1/payment_methods/${encodeURIComponent(paymentMethodId)}/attach`, {
-    customer: providerCustomerId,
+    customer_account: providerCustomerId,
   })
   await ctx.client.post(`/v1/customers/${encodeURIComponent(providerCustomerId)}`, {
     invoice_settings: { default_payment_method: paymentMethodId },

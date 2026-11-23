@@ -24,6 +24,11 @@ export const STRIPE_WEBHOOK_SIGNING_SECRET_ENV = 'TURBOPANEL_STRIPE_WEBHOOK_SIGN
 /** Optional override of {@link DEFAULT_STRIPE_API_VERSION}. */
 export const STRIPE_API_VERSION_ENV = 'TURBOPANEL_STRIPE_API_VERSION'
 /**
+ * Optional `Stripe-Version` for `/v2` calls only (Accounts v2). Defaults to
+ * the v1 pin; a platform without Connect needs a `.preview` version here.
+ */
+export const STRIPE_ACCOUNTS_API_VERSION_ENV = 'TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION'
+/**
  * `1` shows Stripe's promotion-code field on Checkout; anything else (unset,
  * `0`) hides it. A plain `vars` entry so an operator can flip it per env.
  */
@@ -50,6 +55,8 @@ export type BillingConfig = Readonly<{
    */
   webhookSigningSecret: string | null
   apiVersion: string
+  /** `Stripe-Version` for `/v2` paths; the v1 `apiVersion` when absent. */
+  accountsApiVersion?: string
   /** Checkout offers the promotion-code field ({@link STRIPE_COUPON_ALLOWED_ENV}). */
   couponsAllowed?: boolean
 }>
@@ -57,6 +64,11 @@ export type BillingConfig = Readonly<{
 function nonBlank(value: string | undefined): string | null {
   const trimmed = value?.trim() ?? ''
   return trimmed.length > 0 ? trimmed : null
+}
+
+function accountsVersion(env: Record<string, string | undefined> | undefined) {
+  const version = nonBlank(env?.[STRIPE_ACCOUNTS_API_VERSION_ENV])
+  return version ? { accountsApiVersion: version } : {}
 }
 
 /**
@@ -73,6 +85,7 @@ export function resolveBillingConfig(
     secretKey,
     webhookSigningSecret: nonBlank(env?.[STRIPE_WEBHOOK_SIGNING_SECRET_ENV]),
     apiVersion: nonBlank(env?.[STRIPE_API_VERSION_ENV]) ?? DEFAULT_STRIPE_API_VERSION,
+    ...accountsVersion(env),
     couponsAllowed: env?.[STRIPE_COUPON_ALLOWED_ENV]?.trim() === '1',
   }
 }

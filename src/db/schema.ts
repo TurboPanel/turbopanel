@@ -1329,7 +1329,7 @@ export const payer = pgTable(
     userId: uuid('user_id'),
     /** `stripe` today; `apple` reserved. */
     provider: text().notNull(),
-    /** Provider-side customer id (Stripe `cus_…`). */
+    /** Provider-side customer id: the Stripe v2 Account id (`acct_…`) since billing moved to Accounts v2; the column name predates that. */
     providerCustomerId: text('provider_customer_id').notNull(),
     /** Tax id as the provider reports it; presence only, never validated here. */
     taxId: text('tax_id'),

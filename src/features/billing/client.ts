@@ -10,8 +10,10 @@
  *
  * Three rules every request follows:
  *
- *  - `Authorization: Bearer <secret key>`, `Stripe-Version: <pinned>` and
- *    `Content-Type: application/x-www-form-urlencoded` on every call. The
+ *  - `Authorization: Bearer <secret key>`, `Stripe-Version: <pinned>` and a
+ *    `Content-Type` on every call: form encoding for `/v1`, JSON for `/v2`
+ *    (Accounts v2 takes and returns JSON; `config.accountsApiVersion` may
+ *    override the version for `/v2` only). The
  *    version pin is what keeps response shapes stable across account
  *    dashboard changes — see `config.ts`.
  *  - **Every mutating call carries an `Idempotency-Key`.** Not optional: the
@@ -29,11 +31,7 @@
 
 import { encodeStripeForm, type StripeFormValue } from './form-encode.ts'
 import type { BillingConfig } from './config.ts'
-import {
-  StripeApiError,
-  stripeErrorFromResponse,
-  stripeTransportError,
-} from './errors.ts'
+import { StripeApiError, stripeErrorFromResponse, stripeTransportError } from './errors.ts'
 
 export const STRIPE_API_BASE_URL = 'https://api.stripe.com'
 /** Per-request ceiling. Stripe's own p99 is well under this. */
@@ -63,13 +61,13 @@ export type StripeClient = {
   post<T = Record<string, unknown>>(
     path: string,
     body?: StripeFormParams,
-    opts?: StripeMutationOpts,
+    opts?: StripeMutationOpts
   ): Promise<T>
   del<T = Record<string, unknown>>(path: string, opts?: StripeMutationOpts): Promise<T>
   listAll<T = Record<string, unknown>>(
     path: string,
     query?: StripeFormParams,
-    opts?: { maxPages?: number },
+    opts?: { maxPages?: number }
   ): Promise<T[]>
 }
 
@@ -93,7 +91,7 @@ function idOf(item: unknown): string | null {
 
 export function createStripeClient(
   config: BillingConfig,
-  opts: StripeClientOpts = {},
+  opts: StripeClientOpts = {}
 ): StripeClient {
   const baseUrl = (opts.baseUrl ?? STRIPE_API_BASE_URL).replace(/\/$/, '')
   const timeoutMs = opts.timeoutMs ?? STRIPE_REQUEST_TIMEOUT_MS
@@ -102,23 +100,26 @@ export function createStripeClient(
     method: 'GET' | 'POST' | 'DELETE',
     path: string,
     params: StripeFormParams | undefined,
-    idempotencyKey: string | null,
+    idempotencyKey: string | null
   ): Promise<T> {
+    const isV2 = stripePath(path).startsWith('/v2/')
     const headers: Record<string, string> = {
       Authorization: `Bearer ${config.secretKey}`,
-      'Stripe-Version': config.apiVersion,
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Stripe-Version': isV2 ? (config.accountsApiVersion ?? config.apiVersion) : config.apiVersion,
+      'Content-Type': isV2 ? 'application/json' : 'application/x-www-form-urlencoded',
       Accept: 'application/json',
     }
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
 
-    const encoded = encodeStripeForm(params)
-    let url = `${baseUrl}${stripePath(path)}`
+    // `/v2` reads still take a query string (arrays as `include[0]=...`,
+    // which the form encoder spells); only mutating bodies are JSON.
+    let url = `${baseUrl}${path}`
     let body: string | undefined
     if (method === 'GET' || method === 'DELETE') {
+      const encoded = encodeStripeForm(params)
       if (encoded.length > 0) url += `?${encoded}`
     } else {
-      body = encoded
+      body = isV2 ? JSON.stringify(params ?? {}) : encodeStripeForm(params)
     }
 
     // Resolved per call, never captured at module load (Workers 10021), and
@@ -159,7 +160,7 @@ export function createStripeClient(
     async listAll<T>(
       path: string,
       query: StripeFormParams = {},
-      listOpts: { maxPages?: number } = {},
+      listOpts: { maxPages?: number } = {}
     ): Promise<T[]> {
       const maxPages = listOpts.maxPages ?? STRIPE_LIST_MAX_PAGES
       const out: T[] = []

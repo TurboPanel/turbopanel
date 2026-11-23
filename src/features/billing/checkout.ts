@@ -1,8 +1,8 @@
 /**
  * Hosted Checkout — the **first** purchase only (C14).
  *
- * The customer is created first, so `metadata[turbopanel_organization_id]`
- * exists before Stripe emits `checkout.session.completed` and the
+ * The customer (a v2 Account with the customer configuration) is created
+ * first, so `metadata[turbopanel_organization_id]` exists before Stripe emits `checkout.session.completed` and the
  * projection can resolve its subject. Every later quantity or tier change
  * goes through `subscriptions.ts` / `schedules.ts`, never a second
  * Checkout.
@@ -14,7 +14,7 @@
  * tax-id collection on, and
  * `customer_update[address|name]=auto` so Checkout may write what it
  * collects onto the existing customer — Stripe requires both when a
- * `customer` is passed with `tax_id_collection`.
+ * `customer_account` is passed with `tax_id_collection`.
  *
  * Workers-bundleable: nothing at module load.
  */
@@ -175,7 +175,7 @@ export async function createCheckoutSession(
     '/v1/checkout/sessions',
     {
       mode: 'subscription',
-      customer: input.providerCustomerId,
+      customer_account: input.providerCustomerId,
       line_items: [{ price: input.providerPriceId, quantity: input.quantity }],
       automatic_tax: { enabled: true },
       tax_id_collection: { enabled: true },
@@ -281,7 +281,7 @@ export async function openCheckoutSession(
   input: OpenCheckoutInput
 ): Promise<OpenCheckoutOutcome> {
   const { nowMs } = input
-  const listQuery = { customer: input.providerCustomerId }
+  const listQuery = { customer_account: input.providerCustomerId }
   const recentlyPaid = await client.listAll<StripeObject>('/v1/checkout/sessions', {
     ...listQuery,
     status: 'complete',

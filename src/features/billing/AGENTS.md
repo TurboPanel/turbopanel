@@ -15,14 +15,14 @@ src/features/billing/
 ├── form-encode.ts        Stripe's bracket-syntax form encoding (pure)
 ├── errors.ts             StripeApiError, permanent vs transient
 ├── webhook-signature.ts  Stripe-Signature over raw bytes, tolerance, multi-v1
-├── customer-subject.ts   customer.metadata → organization or user
+├── customer-subject.ts   account metadata → organization or user
 ├── quantity-lock.ts      the per-organization mutation lease
 ├── pending-changes.ts    the per-organization deferred-quantity ledger (a `setting` row)
 ├── subscriptions.ts      the mutation surface — the only module that changes items
 ├── schedules.ts          deferred changes: subscription-schedule phases, `mutateSubscription`
 ├── entitlements.ts       landed intents → derived server assignment → schedule rebuild, under the lease
 ├── seat-increase.ts      an immediate change's idempotency key + params, persisted before Stripe
-├── checkout.ts           first purchase (hosted Checkout, Stripe is the only record of open sessions) + customer creation
+├── checkout.ts           first purchase (hosted Checkout, Stripe is the only record of open sessions) + customer account creation
 ├── portal.ts             Customer Portal: invoices and payment methods only
 ├── reconcile.ts          maintenance phase: purchased vs held vs covered, alert only
 └── test-clock.ts         /v1/test_helpers/test_clocks, for the live harness only
@@ -134,12 +134,35 @@ direction does not exist.
 
 ## Which subject a customer is
 
-A Stripe `Customer` names its TurboPanel subject in `metadata`:
+A Stripe **v2 Account** with the `customer` configuration is the customer. It
+names its TurboPanel subject in `metadata`:
 `turbopanel_organization_id` **or** `turbopanel_user_id`, exactly one
 (`customer-subject.ts`). The projection reads it from the **refetched**
-customer, never the event payload. A customer naming neither, both, or a
-malformed id is logged and skipped. This is the same exactly-one rule
-`payer_subject_check` enforces at the table.
+account (`GET /v2/core/accounts/{id}`), never the event payload. An account
+naming neither, both, or a malformed id is logged and skipped. This is the same
+exactly-one rule `payer_subject_check` enforces at the table.
+
+Accounts v2 is the only customer model; there is no `Customer` object and no
+dual path:
+
+- `payer.provider_customer_id` now holds the **account id** (`acct_...`). The
+  column name predates Accounts v2 and is unchanged (no migration); a rename is
+  a separate, owner-approved follow-up.
+- Every v1 call that took `customer` takes `customer_account` instead
+  (subscription create, Checkout session and its lists, portal session, tax id
+  list).
+- A subscription's `customer_account` is a plain string and is not expandable,
+  so the projection fetches the account and its tax ids
+  (`GET /v1/tax_ids?owner[type]=customer&owner[customer_account]=...`)
+  separately. An account that is 404 or `closed` skips as `customer_deleted`.
+- `/v2/*` calls (`client.ts`) send a JSON body with `Content-Type:
+application/json` and a required `Stripe-Version`. That is the v1 pin unless
+  `TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION` names a different one (a platform
+  outside Connect needs a `.preview` version while Accounts v2 is in preview).
+  v1 calls are unchanged: form bodies, the v1 pin.
+- No new event destination is needed: `customer.subscription.*` and `invoice.*`
+  remain v1 snapshot events, and the projection refetches before reading. v2
+  account events (thin events) are not consumed.
 
 ## The quantity lease
 
