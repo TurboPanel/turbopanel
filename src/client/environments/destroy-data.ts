@@ -35,6 +35,7 @@ import {
   confirmNameMatches,
 } from '../confirm-name.ts'
 import { assertCanReadOr403, getOrgId } from '../shared.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 import { type KeptDataVolume, listEnvironmentDataVolumes } from './data-volumes.ts'
 
 export const DATA_VOLUMES_CHANGED_ERROR = 'data_volumes_changed'
@@ -135,7 +136,6 @@ export async function planDestroyData(
   c: Context<AppEnv>,
   db: Db,
   params: {
-    organizationId: string
     environmentId: string
     serverIds: readonly string[]
     request: DestroyRequest
@@ -157,9 +157,12 @@ export async function planDestroyData(
     )
   }
 
+  // The caller passed the manage check on this environment: scope the list to its organization.
+  const organizationId = await resolveEntityOrganizationId(db, 'environment', params.environmentId)
+  if (!organizationId) return apiError(c, 404, 'not_found', 'Not found')
   const plan = await buildDestroyDataPlan(
     db,
-    params.organizationId,
+    organizationId,
     params.environmentId,
     params.serverIds
   )
