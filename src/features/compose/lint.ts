@@ -51,6 +51,7 @@ import {
 import { validateAgainstUpstreamSchema } from './upstream-schema.ts'
 import { type BuildRefusalCode, collectBuildRefusals } from './build-policy.ts'
 import { collectHostAccessFindings } from './host-access.ts'
+import { lintVolumes } from './lint-volumes.ts'
 
 export type ComposeLintLevel = 'error' | 'warning'
 
@@ -1765,9 +1766,8 @@ function lintTopLevelEntry(
   lineCounter: LineCounter,
   issues: ComposeLintIssue[]
 ): void {
-  if (key === 'networks') {
-    lintNetworks(valueNode, strict, lineCounter, issues)
-  }
+  if (key === 'networks') lintNetworks(valueNode, strict, lineCounter, issues)
+  if (key === 'volumes') lintVolumes(valueNode, strict, lineCounter, issues)
   if (classifyTopLevelKey(key) === undefined && !isExtensionKey(key)) {
     issues.push({
       level: 'warning',

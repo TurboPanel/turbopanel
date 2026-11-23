@@ -187,7 +187,7 @@ test('registerComposeVolumes returns empty when compose has no volumes', async (
   })
 })
 
-test('registerComposeVolumes registers unmanaged locations for external volumes', async () => {
+test('registerComposeVolumes does not register author external volumes', async () => {
   await withVolumeFixtures(async ({ db, organizationId, environmentId, serverId }) => {
     const document: ComposeDocument = {
       ...emptyComposeDocument(),
@@ -209,9 +209,9 @@ test('registerComposeVolumes registers unmanaged locations for external volumes'
     })
 
     const byKey = new Map(registered.map((row) => [row.composeKey, row]))
-    assertEquals(byKey.size, 2)
+    assertEquals(byKey.size, 1)
     assertEquals(byKey.get('internal')?.managed, true)
-    assertEquals(byKey.get('external')?.managed, false)
+    assertEquals(byKey.has('external'), false)
     assertEquals(byKey.has('named'), false)
 
     const rows = await db
@@ -220,7 +220,7 @@ test('registerComposeVolumes registers unmanaged locations for external volumes'
       .where(eq(storage.environmentId, environmentId))
     assertEquals(
       rows.map((row) => row.name).sort((a, b) => a.localeCompare(b)),
-      ['external', 'internal']
+      ['internal']
     )
   })
 })

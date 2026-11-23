@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { storage } from '../../db/schema.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 import { parseJsonbObject, requireStringField } from '../shared.ts'
 import {
   isPostgresUniqueViolation,
@@ -352,6 +353,10 @@ export function parseCreateStorageFields(
   if (metadata instanceof Response) return metadata
   const options = parseJsonbObject(c, body, 'options')
   if (options instanceof Response) return options
+  // Only a volume has a Docker volume, and create pins its name to the storage id.
+  if (kind !== 'volume' && metadata && 'dockerVolumeName' in metadata) {
+    return apiError(c, 400, 'invalid_request', 'Only a volume can name a Docker volume')
+  }
 
   const copy = parseCreateCopyFields(c, body)
   if (copy instanceof Response) return copy

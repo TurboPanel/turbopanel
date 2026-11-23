@@ -241,8 +241,8 @@ test('a deploy of an environment carries the common volumes it uses, with its ow
       { storageId: volume, serviceId: homeWeb, destinationPath: '/media' },
       { storageId: volume, serviceId: otherWeb, destinationPath: '/data/media' },
     ])
-    const load = (envId: string, projectId: string, serviceIds: string[]) =>
-      loadStorageMaterial(ctx.db, {
+    const load = async (envId: string, projectId: string, serviceIds: string[]) => {
+      const result = await loadStorageMaterial(ctx.db, {
         environmentId: envId,
         projectId,
         organizationId: ctx.organizationId,
@@ -251,6 +251,9 @@ test('a deploy of an environment carries the common volumes it uses, with its ow
         cloneNamesByServiceId: new Map(),
         registeredVolumes: [],
       })
+      if (!Array.isArray(result)) throw new TypeError(`unexpected refusal: ${result.kind}`)
+      return result
+    }
 
     // The project that owns the volume carries its own mount only, even while an
     // environment of another project mounts the same volume.

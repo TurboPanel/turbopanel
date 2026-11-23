@@ -105,7 +105,13 @@ import {
   pruneUnreferencedComposeNetworks,
 } from '../../features/compose/docker-external-networks.ts'
 import { sharedVolumeIds } from '../../features/folders/shares.ts'
-import { principalHomeDir, resolveDockerVolumeName } from '../../lib/naming.ts'
+import {
+  appendUnseenRegisteredVolumes,
+  dockerVolumeNameRefusal,
+  type DockerVolumeNameRefusal,
+  isDockerVolumeNameRefusal,
+} from './deploy-storage-volume-name.ts'
+import { dockerVolumeNameFromStorageId, principalHomeDir } from '../../lib/naming.ts'
 import { accessGroupsFor } from '../../features/principals/principal-access.ts'
 import { resolvePrincipalIds } from '../../features/principals/principal-ids.ts'
 import { SHA512_CRYPT_HASH_RE } from '../../lib/sha512-crypt.ts'
@@ -690,6 +696,7 @@ export type DeployPrepareError =
     }
   | { kind: 'empty_compose' }
   | { kind: 'datacenter_ip_required'; serverId: string }
+  | DockerVolumeNameRefusal
   | { kind: 'docker_external_network_unregistered'; names: string[] }
   | { kind: 'site_principal_ambiguous'; composeServiceName: string }
   /**
@@ -850,6 +857,7 @@ type HardDeployPrepareError =
   // Hard in preview too: a daemon without caches would refuse them, and a name clash is a real conflict.
   | ProjectCacheRefusal
   | { kind: 'datacenter_ip_required'; serverId: string }
+  | DockerVolumeNameRefusal
   // Hard in preview too: a PHP site cannot reach this database, however it is previewed.
   | { kind: 'binding_host_site_unsupported'; message: string }
   // Hard in preview too: the site would not come up in the mode it asks for.
@@ -1149,17 +1157,11 @@ function readPinnedDockerVolumeName(metadata: unknown): string | null {
   return metadata.dockerVolumeName.length > 0 ? metadata.dockerVolumeName : null
 }
 
-function readLocationFlags(options: unknown): {
-  managed?: boolean
-  externalName?: string
-} {
+function readLocationFlags(options: unknown): { managed?: boolean } {
   if (!isPlainObject(options)) return {}
-  const flags: { managed?: boolean; externalName?: string } = {}
+  const flags: { managed?: boolean } = {}
   if (options.managed === true || options.managed === false) {
     flags.managed = options.managed
-  }
-  if (typeof options.externalName === 'string' && options.externalName.length > 0) {
-    flags.externalName = options.externalName
   }
   return flags
 }
@@ -1239,11 +1241,17 @@ function toStorageMaterialEntry(
   row: LocationJoinRow,
   serverId: string,
   mounts: EnvironmentDeployStorageMount[]
-): EnvironmentDeployStorageMaterial | null {
+): EnvironmentDeployStorageMaterial | DockerVolumeNameRefusal | null {
   if (!isDeployStorageKind(row.kind) || !isDeployStorageProvider(row.provider)) {
     return null
   }
   const flags = readLocationFlags(row.locationOptions)
+  // A docker volume the platform does not manage is a name an author chose
+  // (an old `external` registration). It is never sent: the host would be
+  // asked to attach a volume the platform neither created nor owns.
+  if (row.provider === 'docker' && row.kind === 'volume' && flags.managed === false) {
+    return dockerVolumeNameRefusal(row.storageId, row.name)
+  }
   const entry: EnvironmentDeployStorageMaterial = {
     storageId: row.storageId,
     locationId: row.locationId,
@@ -1258,36 +1266,15 @@ function toStorageMaterialEntry(
   if (row.principalId) entry.principalId = row.principalId
   if (row.contentEnvelope) entry.contentEnvelope = row.contentEnvelope
   if (row.provider === 'docker') {
-    entry.volumeName = resolveDockerVolumeName({
-      storageId: row.storageId,
-      pinnedName: readPinnedDockerVolumeName(row.metadata),
-    })
+    // The daemon treats `volumeName` as owned, so it is only ever the storage id.
+    const pinned = readPinnedDockerVolumeName(row.metadata)
+    if (pinned !== null && pinned !== row.storageId) {
+      return dockerVolumeNameRefusal(row.storageId, row.name)
+    }
+    entry.volumeName = dockerVolumeNameFromStorageId(row.storageId)
   }
   if (flags.managed !== undefined) entry.managed = flags.managed
-  if (flags.externalName) entry.externalName = flags.externalName
   return entry
-}
-
-function appendUnseenRegisteredVolumes(
-  material: EnvironmentDeployStorageMaterial[],
-  seenStorageIds: ReadonlySet<string>,
-  registeredVolumes: readonly RegisteredComposeVolume[],
-  serverId: string
-): void {
-  for (const registered of registeredVolumes) {
-    if (seenStorageIds.has(registered.storageId)) continue
-    material.push({
-      storageId: registered.storageId,
-      locationId: registered.locationId,
-      kind: 'volume',
-      name: registered.composeKey,
-      provider: 'docker',
-      serverId,
-      volumeName: registered.volumeName,
-      managed: registered.managed,
-      mounts: [],
-    })
-  }
 }
 
 /** Warn about each published host port the platform reserves; the host refuses these at deploy. */
@@ -1384,7 +1371,7 @@ export async function loadStorageMaterial(
     cloneNamesByServiceId: Map<string, string[]>
     registeredVolumes: readonly RegisteredComposeVolume[]
   }
-): Promise<EnvironmentDeployStorageMaterial[]> {
+): Promise<EnvironmentDeployStorageMaterial[] | DockerVolumeNameRefusal> {
   const scopeConditions = [
     eq(storage.environmentId, params.environmentId),
     eq(storage.projectId, params.projectId),
@@ -1463,11 +1450,18 @@ export async function loadStorageMaterial(
       params.cloneNamesByServiceId
     )
     const entry = toStorageMaterialEntry(row, params.serverId, mounts)
+    if (isDockerVolumeNameRefusal(entry)) return entry
     if (entry) material.push(entry)
   }
 
-  appendUnseenRegisteredVolumes(material, seenStorageIds, params.registeredVolumes, params.serverId)
-  return material
+  return (
+    appendUnseenRegisteredVolumes(
+      material,
+      seenStorageIds,
+      params.registeredVolumes,
+      params.serverId
+    ) ?? material
+  )
 }
 
 export async function findUnavailableStorageCopy(
@@ -4175,6 +4169,7 @@ export async function prepareDeployCompose(
     cloneNamesByServiceId: buildCloneNamesByServiceId(serviceRows, pipeline.expansion),
     registeredVolumes: pipeline.registeredVolumes,
   })
+  if (isDockerVolumeNameRefusal(storageMaterialAll)) return storageMaterialAll
   const attached = detachMountsOfRemovedServices(
     storageMaterialAll,
     new Set(pipeline.expandedServiceNames)

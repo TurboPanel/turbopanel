@@ -1458,3 +1458,32 @@ test('a hosting route on a network_mode none, host or container service is refus
   assertEquals(container.length, 1)
   assertEquals(container[0]?.message.includes('container "other"'), true)
 })
+
+test('an author external top-level volume is refused with field_unsupported', () => {
+  const issues = lintComposeYaml(
+    'services:\n  web:\n    image: nginx\nvolumes:\n  data:\n    external: true\n  named:\n    external:\n      name: shared\n'
+  ).filter((issue) => issue.code === 'field_unsupported')
+  // Advice while editing, an error at deploy.
+  assertEquals(
+    issues.map((issue) => [issue.level, issue.path]),
+    [
+      ['warning', 'volumes.data.external'],
+      ['warning', 'volumes.named.external'],
+    ]
+  )
+  const strict = lintComposeYaml(
+    'services:\n  web:\n    image: nginx\nvolumes:\n  data:\n    external: true\n',
+    { strict: true }
+  ).filter((issue) => issue.code === 'field_unsupported')
+  assertEquals(
+    strict.map((issue) => [issue.level, issue.path]),
+    [['error', 'volumes.data.external']]
+  )
+})
+
+test('a plain top-level volume and external: false are not refused', () => {
+  const issues = lintComposeYaml(
+    'services:\n  web:\n    image: nginx\nvolumes:\n  data:\n  other:\n    external: false\n'
+  ).filter((issue) => issue.code === 'field_unsupported')
+  assertEquals(issues, [])
+})

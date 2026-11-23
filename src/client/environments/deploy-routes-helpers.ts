@@ -869,6 +869,16 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
           serverId: prepared.serverId,
         },
       }
+    case 'docker_volume_name_unsupported':
+      return {
+        status: 422,
+        body: {
+          error: 'docker_volume_name_unsupported',
+          storageId: prepared.storageId,
+          storageName: prepared.storageName,
+          message: `Storage "${prepared.storageName}" names a Docker volume the platform did not create. Detach or delete it, or recreate it as a platform volume, then deploy again.`,
+        },
+      }
     case 'docker_external_network_unregistered':
       return {
         status: 422,
