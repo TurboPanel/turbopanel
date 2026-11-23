@@ -67,6 +67,7 @@ import {
 } from '../features/webhook-delivery/webhook-delivery-records.ts'
 import { resolveClientIp } from '../client/authn/http.ts'
 import { readBoundedBodyBytes } from '../lib/http/bounded-body.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
 /** GitHub honors this on 429; the webhook Redis buckets are 60s windows. */
 export const WEBHOOK_RATE_LIMIT_RETRY_AFTER_SECONDS = 60
@@ -91,8 +92,7 @@ export type GateContext = {
  * secret actually verifies.
  */
 export type GateResolution<THolder> =
-  | { ok: true; candidates: THolder[] }
-  | { ok: false; reason: string }
+  { ok: true; candidates: THolder[] } | { ok: false; reason: string }
 
 /**
  * What one dispatched delivery decided.
@@ -159,7 +159,7 @@ export type WebhookGate<THolder> = {
     ctx: GateContext,
     holder: THolder,
     event: string,
-    payload: Record<string, unknown>,
+    payload: Record<string, unknown>
   ): Promise<DeliveryOutcome>
 }
 
@@ -193,7 +193,7 @@ async function selectVerified<THolder>(
   gate: WebhookGate<THolder>,
   candidates: THolder[],
   raw: Uint8Array,
-  ctx: GateContext,
+  ctx: GateContext
 ): Promise<THolder | null> {
   for (const candidate of candidates) {
     if (gate.isUnconfigured(candidate)) continue
@@ -209,7 +209,7 @@ async function selectVerified<THolder>(
 async function withinRateLimit<THolder>(
   gate: WebhookGate<THolder>,
   opts: WebhookGateOpts,
-  c: Context<AppEnv>,
+  c: Context<AppEnv>
 ): Promise<boolean> {
   if (!opts.rateLimiter) return true
   const peer = resolveClientIp(c, opts.runtime) ?? 'unknown'
@@ -230,10 +230,7 @@ async function withinRateLimit<THolder>(
  * byte count crosses `maxBodyBytes`, so a chunked-encoded upload with no (or a
  * lying) `Content-Length` is never fully buffered either.
  */
-async function readRawBody(
-  c: Context<AppEnv>,
-  maxBodyBytes: number,
-): Promise<Uint8Array | null> {
+async function readRawBody(c: Context<AppEnv>, maxBodyBytes: number): Promise<Uint8Array | null> {
   const read = await readBoundedBodyBytes(c, maxBodyBytes)
   if (!read.ok) return null
   return read.bytes
@@ -242,7 +239,7 @@ async function readRawBody(
 async function releaseClaimBestEffort<THolder>(
   gate: WebhookGate<THolder>,
   db: Db,
-  deliveryId: string,
+  deliveryId: string
 ): Promise<void> {
   try {
     await releaseWebhookDelivery(db, {
@@ -252,7 +249,7 @@ async function releaseClaimBestEffort<THolder>(
   } catch (err) {
     logWarn(
       gate.logScope,
-      `failed to release delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`,
+      `failed to release delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`
     )
   }
 }
@@ -269,11 +266,11 @@ async function dispatchClaimedDelivery<THolder>(
   holder: THolder,
   deliveryId: string,
   event: string,
-  raw: Uint8Array,
+  raw: Uint8Array
 ): Promise<Response> {
   try {
     const payload = parsePayload(raw)
-    if (!payload) return c.json({ error: 'Invalid request' }, 400)
+    if (!payload) return apiError(c, 400, 'invalid_request', 'Invalid request')
 
     const outcome = await gate.dispatch(ctx, holder, event, payload)
     if (outcome.retry) {
@@ -284,14 +281,14 @@ async function dispatchClaimedDelivery<THolder>(
       logWarn(
         gate.logScope,
         `delivery ${deliveryId} (${event}) could not be acted on; asking for a retry`,
-        JSON.stringify(outcome.result),
+        JSON.stringify(outcome.result)
       )
       return c.json({ error: 'retry' }, 503)
     }
     logInfo(
       gate.logScope,
       `delivery ${deliveryId} (${event}) accepted`,
-      JSON.stringify(outcome.result),
+      JSON.stringify(outcome.result)
     )
     return c.json({ ok: true as const })
   } catch (err) {
@@ -300,7 +297,7 @@ async function dispatchClaimedDelivery<THolder>(
       gate.logScope,
       `delivery ${deliveryId} (${event}) threw after claim; asking for a retry: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      }`
     )
     return c.json({ error: 'retry' }, 503)
   }
@@ -322,13 +319,13 @@ export function registerWebhookGate<THolder>(
   app: Hono<AppEnv>,
   paths: readonly string[],
   gate: WebhookGate<THolder>,
-  opts: WebhookGateOpts,
+  opts: WebhookGateOpts
 ): void {
   const handler = async (c: Context<AppEnv>) => {
     // 1. Rate limit first — it is what protects the verification work below.
     if (!(await withinRateLimit(gate, opts, c))) {
       c.header('Retry-After', String(WEBHOOK_RATE_LIMIT_RETRY_AFTER_SECONDS))
-      return c.json({ error: 'Too many requests' }, 429)
+      return apiError(c, 429, 'rate_limited', 'Too many requests')
     }
 
     const db = getDb(c)
@@ -371,10 +368,10 @@ export function registerWebhookGate<THolder>(
     }
 
     const deliveryId = await gate.deliveryId(ctx, raw)
-    if (!deliveryId) return c.json({ error: 'Invalid request' }, 400)
+    if (!deliveryId) return apiError(c, 400, 'invalid_request', 'Invalid request')
 
     const event = gate.eventName(ctx, raw)
-    if (!event) return c.json({ error: 'Invalid request' }, 400)
+    if (!event) return apiError(c, 400, 'invalid_request', 'Invalid request')
 
     // 5. Claim the delivery. A redelivery of work already done answers 204
     //    without re-running it.

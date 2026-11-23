@@ -37,6 +37,7 @@ import {
   DEVELOPER_API_PREFIX,
   INSTALL_API_PREFIX,
 } from './surfaces.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
@@ -137,7 +138,7 @@ export function createBrowserWriteProtectionMiddleware(
     try {
       pathname = new URL(c.req.url).pathname
     } catch {
-      return c.json({ ok: false, error: 'Forbidden' }, 403)
+      return apiError(c, 403, 'forbidden', 'Forbidden')
     }
 
     if (!isProtectedWritePath(pathname)) {
@@ -156,6 +157,6 @@ export function createBrowserWriteProtectionMiddleware(
       return await next()
     }
 
-    return c.json({ ok: false, error: 'Forbidden' }, 403)
+    return apiError(c, 403, 'forbidden', 'Forbidden')
   }
 }

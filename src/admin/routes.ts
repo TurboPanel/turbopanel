@@ -124,6 +124,7 @@ import {
   isValidServerMetricsLiveMaxMinutes,
   setServerMetricsLiveMaxMinutes,
 } from '../features/settings/server-metrics-settings.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
 type PublicUrlsApplyPayloadOutcome =
   { ok: true; payload: PublicUrlsApplyPayload } | ({ ok: false } & PublicUrlsApplyErrorResponse)
@@ -338,7 +339,7 @@ export function registerAdminRoutes(
     const refused = refuseWorkersWrite(c, opts)
     if (refused) return refused
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
 
     const body = await c.req.json().catch(() => null)
     if (!body || typeof body !== 'object' || !('urls' in body)) {
@@ -410,56 +411,56 @@ export function registerAdminRoutes(
 
   admin.get('/forges', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await listForgesHandler(c, db, instanceScope)
   })
 
   admin.post('/forges', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await createForgeHandler(c, db, instanceScope)
   })
 
   // Before `/forges/:id`: same segment count, and the literal must win.
   admin.get('/forges/webhook-origins', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await getWebhookOriginsHandler(c, db)
   })
 
   admin.post('/forges/github/manifest', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await startGithubManifestHandler(c, db, instanceScope)
   })
 
   admin.get('/forges/github/manifest/callback', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await completeGithubManifestHandler(c, db, instanceScope)
   })
 
   admin.post('/forges/:id/sync', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await syncForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
 
   admin.get('/forges/:id', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await getForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
 
   admin.patch('/forges/:id', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await patchForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
 
   admin.delete('/forges/:id', async (c) => {
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     return await deleteForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
 
@@ -723,7 +724,7 @@ export function registerAdminRoutes(
     }
 
     const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
 
     const body = await c.req.json().catch(() => null)
     const urlsResult = await resolvePublicUrlsForApply(db, body)

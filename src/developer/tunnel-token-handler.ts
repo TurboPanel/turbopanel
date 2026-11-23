@@ -2,6 +2,7 @@ import type { Context } from 'hono'
 import { getDaemonCellRegistry, getDb } from '../db/connection.ts'
 import type { SecretsConfig } from '../lib/secrets/secrets.ts'
 import { dispatchInstanceTunnelToken, parseTunnelTokenBody } from './tunnel-token.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
 /**
  * Shared HTTP handler for the developer route and the self-hosted admin route:
@@ -14,7 +15,7 @@ export async function handleTunnelTokenRequest(c: Context): Promise<Response> {
     return c.json({ ok: false, error: 'expected { token: string }' }, 400)
   }
   const db = getDb(c)
-  if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+  if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
   const registry = getDaemonCellRegistry(c)
   if (!registry) {
     return c.json({ ok: false, error: 'Daemon cell registry unavailable' }, 503)

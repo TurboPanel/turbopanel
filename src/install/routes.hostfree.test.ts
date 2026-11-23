@@ -118,7 +118,12 @@ test('POST /bootstrap returns 404 on Workers runtime', async () => {
     body: JSON.stringify({ username: 'root', password: 'x' }),
   })
   assertEquals(res.status, 404)
-  assertEquals(await res.json(), { ok: false, error: 'Not available' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Not available',
+    code: 'not_available',
+    message: 'Not available',
+  })
 })
 
 test('POST /bootstrap returns 503 without a database', async () => {
@@ -129,7 +134,12 @@ test('POST /bootstrap returns 503 without a database', async () => {
     body: JSON.stringify({ username: 'root', password: 'x' }),
   })
   assertEquals(res.status, 503)
-  assertEquals(await res.json(), { ok: false, error: 'Database unavailable' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Database unavailable',
+    code: 'database_unavailable',
+    message: 'Database unavailable',
+  })
 })
 
 test('POST /bootstrap returns 409 when the instance is already configured', async () => {
@@ -193,7 +203,12 @@ test('POST / returns 404 on Workers runtime', async () => {
     }),
   })
   assertEquals(res.status, 404)
-  assertEquals(await res.json(), { ok: false, error: 'Not available' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Not available',
+    code: 'not_available',
+    message: 'Not available',
+  })
 })
 
 test('POST / returns 503 without session secrets', async () => {
@@ -209,7 +224,12 @@ test('POST / returns 503 without session secrets', async () => {
     }),
   })
   assertEquals(res.status, 503)
-  assertEquals(await res.json(), { ok: false, error: 'Not configured' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Not configured',
+    code: 'not_configured',
+    message: 'Not configured',
+  })
 })
 
 test('POST / returns 503 without a database', async () => {
@@ -225,7 +245,12 @@ test('POST / returns 503 without a database', async () => {
     }),
   })
   assertEquals(res.status, 503)
-  assertEquals(await res.json(), { ok: false, error: 'Database unavailable' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Database unavailable',
+    code: 'database_unavailable',
+    message: 'Database unavailable',
+  })
 })
 
 test('POST / returns 409 when the instance is already configured', async () => {

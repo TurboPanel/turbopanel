@@ -1,4 +1,5 @@
 import { INSTANCE_VERSION } from '../../app/version.ts'
+import { apiErrorSchema } from '../../lib/http/error-schema.ts'
 import { resolveSessionCookieNameFromUrl } from '../../client/authn/crypto.ts'
 import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
 import { INSTANCE_ACCESS_PATHS, INSTANCE_TUNNEL_TOKEN_PATH } from './instance-access.ts'
@@ -41,6 +42,7 @@ export function getAdminOpenApiSpec(
         },
       },
       schemas: {
+        ErrorResponse: apiErrorSchema,
         PublicUrlsResponse: {
           type: 'object',
           required: ['ok', 'urls'],

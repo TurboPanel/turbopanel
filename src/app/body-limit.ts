@@ -23,8 +23,9 @@ import {
   DEVELOPER_API_PREFIX,
   INSTALL_API_PREFIX,
 } from './surfaces.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
-export const REQUEST_BODY_TOO_LARGE_CODE = 'request_body_too_large'
+export const REQUEST_BODY_TOO_LARGE_CODE = 'request_body_too_large' as const
 
 /** Default ceiling for any body on a limited surface. */
 export const DEFAULT_REQUEST_BODY_LIMIT_BYTES = 1024 * 1024
@@ -72,10 +73,7 @@ export function requestBodyLimitFor(pathname: string): number {
 }
 
 function tooLarge(c: Context): Response {
-  return c.json(
-    { ok: false, error: 'request body too large', code: REQUEST_BODY_TOO_LARGE_CODE },
-    413
-  )
+  return apiError(c, 413, REQUEST_BODY_TOO_LARGE_CODE, 'request body too large')
 }
 
 export function createRequestBodyLimitMiddleware(): MiddlewareHandler {

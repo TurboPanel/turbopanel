@@ -1,11 +1,7 @@
+import { apiErrorSchema } from '../../lib/http/error-schema.ts'
+
 export const readinessSchemas = {
-  DaemonErrorResponse: {
-    type: 'object',
-    required: ['error'],
-    properties: {
-      error: { type: 'string' },
-    },
-  },
+  DaemonErrorResponse: apiErrorSchema,
 }
 
 export const readinessPaths: Record<string, unknown> = {
