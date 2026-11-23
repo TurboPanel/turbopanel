@@ -270,7 +270,12 @@ test('GET /forges returns 503 when the db is dropped after session', async () =>
   const { app, cookie } = await buildApp(db, dropDbAfterSession(db))
   const res = await app.request('/forges', { headers: authHeaders(cookie) })
   assertEquals(res.status, 503)
-  assertEquals(await res.json(), { error: 'Database unavailable' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Database unavailable',
+    code: 'database_unavailable',
+    message: 'Database unavailable',
+  })
 })
 
 test('GET /forges returns 401 when the session is swallowed after auth', async () => {

@@ -486,9 +486,10 @@ function oversizedBodyStream(byteLength: number): ReadableStream<Uint8Array> {
 
 async function assertStreaming413(response: Response): Promise<void> {
   assertEquals(response.status, 413)
-  const body = (await response.json()) as { ok?: unknown; error?: unknown }
+  const body = (await response.json()) as { ok?: unknown; error?: unknown; code?: unknown }
   assertEquals(body.ok, false)
   assertEquals(body.error, 'request body too large')
+  assertEquals(body.code, 'request_body_too_large')
 }
 
 test('POST /auth/challenge rejects an oversized body without Content-Length', async () => {

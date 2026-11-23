@@ -1,8 +1,6 @@
-export const clientErrorJson = {
-  type: 'object',
-  required: ['error'],
-  properties: { error: { type: 'string' } },
-}
+import { apiErrorSchema } from '../../lib/http/error-schema.ts'
+
+export const clientErrorJson = apiErrorSchema
 
 export const sharedSchemas = {
   UpdateEntityRequest: {

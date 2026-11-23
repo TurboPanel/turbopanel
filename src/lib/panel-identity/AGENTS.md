@@ -61,12 +61,12 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
   models (`src/query-cache/read-models/`) do not select it yet, so the server badge still reads
   `none` there. The self-hosted edge gate (`src/platform/deno/ingress/gate.ts`) reads the column
   directly.
-- **`next` is retired.** `PUT …/identity/next` answers 410 and nothing writes one; parsers still
+- **`next` is retired.** The `PUT …/identity/next` route is gone and nothing writes one; parsers still
   read a stored or served `next` (forward-only). Key changes are key-set statements below.
 - **Key-set statements (key rotation).** `keyset-statement.ts` builds the exact statement bytes
   (`{"type":"tp-keyset","v":1,keyset,prev,kind,rpId,current,passkeys,iat}`, passkeys sorted by id) and
-  verifies an envelope `{statement, approvals}` the way servers do (`tp-host panel-identity-write
-  statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpIdHash`, UP+UV,
+  verifies an envelope `{statement, approvals}` the way servers do
+  (`tp-host panel-identity-write statement` in the daemon repo): WebAuthn assertions over `SHA-256(bytes)`, `rpIdHash`, UP+UV,
   `webauthn.get`, origin under the rp id, ES256 DER only or EdDSA, `prev` = pinned key, `keyset` above
   the pinned one, removals approved by a passkey that stays, additions prove possession, an `rpId`
   move needs an old-set approval plus possession under the new id. **Passkey plus old key** (owner
@@ -103,8 +103,9 @@ pinnedBy + current + keyset + iat`, joined by `\n`, with its daemon key; the pre
   charged to the caller's address (`identity-statements` limit). The Workers hello still carries the
   binding's keyset; a daemon whose pin holds passkeys does not compare it.
 - **Pin report passkeys.** A newer daemon adds `passkeys` (base64url SHA-256 of its pin's `passkeys=`
-  line, "" for none) with a second signature `passkeysSig` over `"tp-panel-pin-passkeys\n" + sessionId
-  + serverId + keyId + passkeys + iat` (joined by `\n`); stored in `server.trust_pin_passkeys`, and a
+  line, "" for none) with a second signature `passkeysSig` over
+  `"tp-panel-pin-passkeys\n" + sessionId + serverId + keyId + passkeys + iat`
+  (joined by `\n`); stored in `server.trust_pin_passkeys`, and a
   non-empty hash that differs from the marked set raises `panel.pin_mismatch` (context
   `reportedPasskeys` / `expectedPasskeys`). Not a mismatch: a report whose key set is below the live
   one (the server is behind and catches up on its daily read), and a report taken while the marked

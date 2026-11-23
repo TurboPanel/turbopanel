@@ -96,3 +96,37 @@ src/
   server row resolution
 - `src/cli/` — compiled-binary verbs (`migrate`, `generate-secret`,
   `generate-self-signed-cert`) plus `duckdb-smoke`
+
+## Layout check and its baseline
+
+`pnpm check:source-layout` (`scripts/check-source-layout.mjs`, wired into
+`pnpm test:hook`, `pnpm verify:ci` and CI) enforces four rules over `src/`:
+
+- `runtime`: no use of the `Deno` global (calls, `typeof Deno`,
+  `globalThis.Deno?.`, type positions too) and no Workers binding
+  (`cloudflare:` imports in any form, `DurableObject*`, `KVNamespace`,
+  `R2Bucket`, `D1Database`, `Hyperdrive`, `Fetcher`, `Queue`) in a non-test file
+  outside `src/platform/`, `src/cli/`, `src/test-fixtures/`, the `deno` and
+  `workers` subfolders of `src/app` and of each feature, and the entry files
+  (`src/deno.ts`, `src/deno-dev.ts`, `src/workers.ts`, `src/workers-vitest.ts`).
+  Comments and string contents are ignored.
+- `size`: at most 1,500 lines per non-test source file.
+- `barrel`: no new `index.ts`. Do not add re-export barrels; import the module.
+- `test-name`: a test file is `<name>.<kind>.ts` where `<name>` has no dots and
+  `<kind>` is one of `test`, `hostfree.test`, `deno.test`, `workers.test`,
+  `workers-e2e.test`, `entry.test` or `test.support`.
+
+Violations that existed when the check landed are listed in
+`scripts/source-layout-baseline.json`: `runtime`, `barrel` and `test-name` are
+lists of paths, `size` maps a path to its line count. The baseline only
+shrinks:
+
+- A new violation, or a baselined file that grew past its recorded size, fails
+  the check. Fix the code; never add to the baseline.
+- A baselined entry that is fixed (moved under `src/platform/`, split below
+  1,500 lines, renamed, deleted) also fails until it is removed. Run
+  `node scripts/check-source-layout.mjs --prune` to drop fixed entries (it never
+  adds one) and commit the smaller file with the fix.
+- A baselined file that shrank but is still over 1,500 lines also fails until
+  its recorded count is lowered, so it cannot grow back. `--prune` lowers the
+  counts; commit the result with the change.

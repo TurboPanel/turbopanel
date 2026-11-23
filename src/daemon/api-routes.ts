@@ -237,6 +237,7 @@ import {
   daemonRestRateLimitKey,
   type DaemonRestRateLimitRoute,
 } from './rate-limit/keys.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
 function normalizeRequiredString(value: unknown): string | null {
   if (typeof value !== 'string') return null
@@ -320,7 +321,7 @@ export const MAX_AUTH_SESSION_BODY_BYTES = 8 * 1024
  */
 function rejectIfContentLengthTooLarge(c: Context, maxBytes: number): Response | null {
   if (!contentLengthExceeds(c, maxBytes)) return null
-  return c.json({ ok: false, error: 'request body too large' }, 413)
+  return apiError(c, 413, 'request_body_too_large', 'request body too large')
 }
 
 /**
@@ -337,7 +338,7 @@ async function readBoundedJsonBody(
   if (!bodyRead.ok) {
     return {
       ok: false,
-      response: c.json({ ok: false, error: 'request body too large' }, 413),
+      response: apiError(c, 413, 'request_body_too_large', 'request body too large'),
     }
   }
   return { ok: true, text: bodyRead.text }
@@ -1716,7 +1717,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       // The binding's window is 60 s: telling the daemon when to try again
       // stops a well-behaved one from hammering the limit.
       c.header('Retry-After', '60')
-      return c.json({ ok: false, error: 'rate_limited' }, 429)
+      return apiError(c, 429, 'rate_limited')
     }
     return null
   }
@@ -1833,10 +1834,10 @@ export function registerDaemonApiRoutes<E extends Env>(
       return c.json({ ok: false, error: 'unauthorized' }, 401)
     }
     if (contentLengthExceeds(c, gate.maxBodyBytes)) {
-      return c.json({ ok: false, error: 'request body too large' }, 413)
+      return apiError(c, 413, 'request_body_too_large', 'request body too large')
     }
     const bodyRead = await readBodyWithByteLimit(c, gate.maxBodyBytes)
-    if (!bodyRead.ok) return c.json({ ok: false, error: 'request body too large' }, 413)
+    if (!bodyRead.ok) return apiError(c, 413, 'request_body_too_large', 'request body too large')
     const body = new Uint8Array(bodyRead.bytes)
     const verified = await checkRequestSignature(c, state, body)
     if (!verified.ok) return c.json({ ok: false, error: verified.error }, verified.status)
@@ -2592,7 +2593,7 @@ export function registerDaemonApiRoutes<E extends Env>(
 
       const bodyRead = await readRequestBodyWithLimit(c, MAX_METRICS_PAYLOAD_BYTES)
       if (!bodyRead.ok) {
-        return c.json({ ok: false, error: 'request body too large' }, 413)
+        return apiError(c, 413, 'request_body_too_large', 'request body too large')
       }
       const raw = bodyRead.text
       const payloadBytes = metricsPayloadByteLength(raw)

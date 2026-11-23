@@ -63,15 +63,36 @@ export function isBuildEnvNameAllowed(name: string): boolean {
 }
 
 /**
+ * Why `name` is not passed to a build, as a plain sentence, or `null` when it
+ * is. The one rule behind both the save check and the build-time filter
+ * ({@link isBuildEnvNameAllowed}), so a name cannot be saved for a build and
+ * then dropped from it.
+ */
+export function buildEnvNameProblem(name: string): string | null {
+  if (isBuildEnvNameAllowed(name)) return null
+  if (name.length > MAX_BUILD_ENV_NAME_LENGTH) {
+    return `${name.slice(0, 32)}... cannot be set for a build: a build variable name can be at most ${MAX_BUILD_ENV_NAME_LENGTH} characters.`
+  }
+  if (!BUILD_ENV_NAME_RE.test(name)) {
+    return `${name} cannot be set for a build: a build variable name must start with a letter or underscore and use only letters, digits and underscores.`
+  }
+  if (name.startsWith('LD_')) {
+    return `${name} cannot be set for a build: names starting with LD_ belong to the dynamic loader and are never passed to a build.`
+  }
+  return `${name} cannot be set for a build: it is reserved for the build sandbox and is never passed to a build.`
+}
+
+/**
  * A plain sentence when a variable may not be saved for builds, else `null`.
  * A build variable is an argument of `env(1)` inside the build and is not
  * secret, so a registry token must never travel that way.
  */
 export function buildEnvSaveProblem(key: string, forBuild: boolean): string | null {
-  if (forBuild && key === 'COMPOSER_AUTH') {
+  if (!forBuild) return null
+  if (key === 'COMPOSER_AUTH') {
     return 'Private PHP packages are not supported yet, so COMPOSER_AUTH cannot be set for a build.'
   }
-  return null
+  return buildEnvNameProblem(key)
 }
 
 const encoder = new TextEncoder()
