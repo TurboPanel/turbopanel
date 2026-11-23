@@ -58,6 +58,11 @@ function codeForStatus(status: number): ApiErrorCode {
   }
 }
 
+/** True for `/api` and everything under it: the paths that answer in the envelope. */
+export function isApiPath(path: string): boolean {
+  return path === '/api' || path.startsWith('/api/')
+}
+
 /**
  * The app-level error handler. Every `/api/*` error leaves in the envelope
  * (`src/lib/http/api-error.ts`):
@@ -69,27 +74,40 @@ function codeForStatus(status: number): ApiErrorCode {
  *   exist) instead of a 500;
  * - anything else is logged and answers a JSON 500 that does not leak the
  *   error text.
+ *
+ * Other paths (the web shell, `/webhook/*`, `/ws/*`) keep their earlier
+ * answers: Hono's own response for an `HTTPException`, a JSON 404 for a bad
+ * id, and the text "Internal Server Error" for anything else.
  */
 export function registerInvalidIdErrorHandler(app: Hono<AppEnv>): void {
   app.onError((err, c) => {
     if (err instanceof ApiError) {
       return c.json(apiErrorBody(err.code, err.explicitMessage, err.details), err.status)
     }
+    const api = isApiPath(c.req.path)
     if (err instanceof HTTPException) {
-      if (err.res) return err.getResponse()
+      if (err.res || !api) return err.getResponse()
       const status = err.status as ContentfulStatusCode
       return apiError(c, status, codeForStatus(status), err.message || undefined)
     }
-    if (isInvalidUuidError(err)) return apiError(c, 404, 'not_found', 'Not found')
-    logError('app', 'unhandled error', err)
-    return apiError(c, 500, 'internal_error')
-  })
-  // Unmatched `/api/*` paths answer in the envelope too; other paths keep
-  // Hono's default so the web shell and static files behave as before.
-  app.notFound((c) => {
-    if (c.req.path === '/api' || c.req.path.startsWith('/api/')) {
-      return apiError(c, 404, 'not_found', 'Not found')
+    if (isInvalidUuidError(err)) {
+      return api ? apiError(c, 404, 'not_found', 'Not found') : c.json({ error: 'Not found' }, 404)
     }
+    logError('app', 'unhandled error', err)
+    return api ? apiError(c, 500, 'internal_error') : c.text('Internal Server Error', 500)
+  })
+  registerApiNotFound(app)
+}
+
+/**
+ * Unmatched `/api/*` paths answer in the envelope; other paths keep Hono's
+ * default so the web shell and static files behave as before. Hono hands a
+ * sub-app's `onError` to its routes but not its `notFound`, so the Workers
+ * entry (which mounts the app under a per-request app) calls this too.
+ */
+export function registerApiNotFound(app: Hono<AppEnv>): void {
+  app.notFound((c) => {
+    if (isApiPath(c.req.path)) return apiError(c, 404, 'not_found', 'Not found')
     return c.text('404 Not Found', 404)
   })
 }

@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 /**
  * Rewrites `src/app/api-error-baseline.ts` from the tree: per file, how many
- * hand-built error bodies (`c.json({ error` / `c.json({ ok: false`) remain.
+ * hand-built error bodies (`c.json({ ... error ... })`, `{ ok: false }`, or the
+ * same inside `new Response(JSON.stringify(...))`) remain.
  * Run it after moving routes onto `apiError`; the guard test fails until the
  * baseline matches, so the numbers only ever go down.
  */
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const PATTERN = /\bc\.json\(\s*\{\s*(?:ok:\s*false|error\s*:)/g
+const PATTERN =
+  /\b(?:c\.json\(|new Response\(\s*JSON\.stringify\()\s*\{[^{}]*?\b(?:ok\s*:\s*false|error\s*[:,}])/g
 
 function walk(dir, out) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {

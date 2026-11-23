@@ -16,7 +16,8 @@ import { HAND_BUILT_ERROR_BASELINE } from './api-error-baseline.ts'
  */
 const test = Deno.test.bind(Deno)
 
-const PATTERN = /\bc\.json\(\s*\{\s*(?:ok:\s*false|error\s*:)/g
+const PATTERN =
+  /\b(?:c\.json\(|new Response\(\s*JSON\.stringify\()\s*\{[^{}]*?\b(?:ok\s*:\s*false|error\s*[:,}])/g
 
 async function* sourceFiles(dir: string): AsyncGenerator<string> {
   for await (const entry of Deno.readDir(dir)) {
@@ -53,5 +54,13 @@ test('the guard pattern sees the shapes it bans', () => {
   assertEquals("c.json({ error: 'x' }, 400)".match(PATTERN)?.length, 1)
   assertEquals("c.json({ ok: false, error: 'x' }, 400)".match(PATTERN)?.length, 1)
   assertEquals("c.json(\n  { error: 'x' }, 400)".match(PATTERN)?.length, 1)
+  assertEquals("c.json({ code: 'x', error: 'x' }, 400)".match(PATTERN)?.length, 1)
+  assertEquals("c.json({ message: 'x', ok: false }, 400)".match(PATTERN)?.length, 1)
+  assertEquals('c.json({ error }, 400)'.match(PATTERN)?.length, 1)
+  assertEquals(
+    "new Response(JSON.stringify({ error: 'x' }), { status: 400 })".match(PATTERN)?.length,
+    1
+  )
   assertEquals('c.json({ ok: true })'.match(PATTERN), null)
+  assertEquals('c.json({ ok: true, data: { error: 1 } })'.match(PATTERN), null)
 })
