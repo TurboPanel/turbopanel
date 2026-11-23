@@ -23,7 +23,12 @@ import { useBadges } from './badge-use.ts'
 import type { TunnelRow } from './lifecycle.ts'
 import { loadVerifiedNames } from './verified-names.ts'
 
-export type RoutedSet = { verifiedNames: string[]; hostnames: string[] | null }
+export type RoutedSet = {
+  verifiedNames: string[]
+  hostnames: string[] | null
+  /** Fingerprint of the ingress the provider was given (null when never recorded). */
+  ingress: string | null
+}
 
 function textList(value: unknown): string[] | null {
   return Array.isArray(value) ? value.filter((n): n is string => typeof n === 'string') : null
@@ -35,6 +40,7 @@ export function readRouted(metadata: unknown): RoutedSet {
   return {
     verifiedNames: textList(routes?.verifiedNames) ?? [],
     hostnames: textList(routes?.hostnames),
+    ingress: typeof routes?.ingress === 'string' ? routes.ingress : null,
   }
 }
 
@@ -51,14 +57,14 @@ function sameRouted(a: RoutedSet, b: RoutedSet): boolean {
     a.hostnames === null || b.hostnames === null
       ? a.hostnames === b.hostnames
       : sameList(a.hostnames, b.hostnames)
-  return names && sameList(a.verifiedNames, b.verifiedNames)
+  return names && sameList(a.verifiedNames, b.verifiedNames) && a.ingress === b.ingress
 }
 
 export type PushInput = {
   accountId: string | null
   /** Every name to route, read fresh on each attempt. */
   hostnames: (db: Db) => Promise<string[]>
-  /** Write only when the names or the verified names differ from the last write. */
+  /** Write only when the names, the verified names or the built ingress differ from the last write. */
   onlyIfChanged?: boolean
 }
 
@@ -67,16 +73,24 @@ export type PushResult = { pushed: boolean; verifiedNames: string[] }
 /** Passes at most; a tunnel whose names keep changing under the writer is left for the next pass. */
 export const PUSH_ATTEMPTS = 3
 
+type Names = { hostnames: string[]; verifiedNames: string[]; ingress: string | null }
+
 async function readNames(
   db: Db,
   rowId: string,
   input: PushInput,
-  now: Date
-): Promise<{ hostnames: string[]; verifiedNames: string[] }> {
+  now: Date,
+  adapter: TunnelAdapter
+): Promise<Names> {
   const hostnames = (await input.hostnames(db)).map((n) => n.toLowerCase())
   const wanted = new Set(hostnames)
   const verifiedNames = (await loadVerifiedNames(db, rowId, now)).filter((n) => wanted.has(n))
-  return { hostnames, verifiedNames }
+  // What the provider is given depends on more than the names (the origin, the
+  // per-name verification flags), so a change in how it is built counts too.
+  const ingress = adapter.ingressFingerprint
+    ? await adapter.ingressFingerprint({ hostnames, verifiedNames })
+    : null
+  return { hostnames, verifiedNames, ingress }
 }
 
 /** Write the full route set of a tunnel with its verified names. */
@@ -94,12 +108,19 @@ export async function pushTunnelRoutes(
       .from(tunnel)
       .where(eq(tunnel.id, row.id))
     if (!current) return { pushed: false, verifiedNames: [] }
-    const { hostnames, verifiedNames } = await readNames(db, row.id, input, now)
+    const { hostnames, verifiedNames, ingress } = await readNames(
+      db,
+      row.id,
+      input,
+      now,
+      deps.adapter
+    )
     const started = readRouted(current.metadata)
     if (
       input.onlyIfChanged &&
       sameList(started.hostnames, hostnames) &&
-      sameList(started.verifiedNames, verifiedNames)
+      sameList(started.verifiedNames, verifiedNames) &&
+      started.ingress === ingress
     ) {
       return { pushed: false, verifiedNames }
     }
@@ -121,14 +142,18 @@ export async function pushTunnelRoutes(
       if (!locked || locked.status === 'removing') return true
       const last = readRouted(locked.metadata)
       if (!sameRouted(last, started)) return false
-      const again = await readNames(tx as unknown as Db, row.id, input, now)
-      if (!sameList(again.hostnames, hostnames) || !sameList(again.verifiedNames, verifiedNames)) {
+      const again = await readNames(tx as unknown as Db, row.id, input, now, deps.adapter)
+      if (
+        !sameList(again.hostnames, hostnames) ||
+        !sameList(again.verifiedNames, verifiedNames) ||
+        again.ingress !== ingress
+      ) {
         return false
       }
       await tx
         .update(tunnel)
         .set({
-          metadata: sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), '{routes}', ${JSON.stringify({ verifiedNames, hostnames })}::jsonb)`,
+          metadata: sql`jsonb_set(coalesce(${tunnel.metadata}, '{}'::jsonb), '{routes}', ${JSON.stringify(ingress === null ? { verifiedNames, hostnames } : { verifiedNames, hostnames, ingress })}::jsonb)`,
         })
         .where(eq(tunnel.id, row.id))
       return true

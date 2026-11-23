@@ -470,6 +470,14 @@ export function createCloudflareAdapter(options: { fetch?: typeof fetch } = {}):
       await client(token).deleteTunnelConnections(requireAccount(input.accountId), input.externalId)
     },
 
+    async ingressFingerprint(input) {
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(buildIngress(input.hostnames, input.verifiedNames))
+      )
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
+      return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('')
+    },
+
     async setRoutes(token, input) {
       await client(token).putConfiguration(
         requireAccount(input.accountId),

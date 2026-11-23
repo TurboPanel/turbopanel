@@ -1568,6 +1568,36 @@ test('a hostname that fails to lose its DNS name stays, and the removal can be r
   })
 })
 
+test('a tunnel whose recorded ingress is missing or differs is written once, then left alone', async () => {
+  await withFixture(async (f) => {
+    const id = await makeTunnel(f)
+    const deps = { secrets: f.secrets, registry: createTunnelAdapterRegistry(fakeProvider) }
+    const sync = async () => {
+      const [row] = await f.db.select().from(tunnel).where(eq(tunnel.id, id))
+      return syncTunnelRoutes(f.db, deps, row!)
+    }
+    const setRoutes = (routes: Record<string, unknown>) =>
+      f.db.update(tunnel).set({ metadata: { routes } }).where(eq(tunnel.id, id))
+    const puts = () => provider.routeBodies.length
+
+    // A row written before the ingress was recorded: names match, hash missing.
+    await setRoutes({ verifiedNames: [], hostnames: [] })
+    const before = puts()
+    assertEquals(await sync(), 'pushed')
+    assertEquals(puts(), before + 1)
+    // Recorded now: the same ingress is not written again.
+    assertEquals(await sync(), 'unchanged')
+    assertEquals(puts(), before + 1)
+
+    // The origin (or any other part of the built ingress) changed since the last write.
+    await setRoutes({ verifiedNames: [], hostnames: [], ingress: 'stale-hash' })
+    assertEquals(await sync(), 'pushed')
+    assertEquals(puts(), before + 2)
+    assertEquals(await sync(), 'unchanged')
+    assertEquals(puts(), before + 2)
+  })
+})
+
 test("a name is linked to a site of the organization, and refused when the site is another organization's", async () => {
   await withFixture(async (f) => {
     const id = await makeTunnel(f)

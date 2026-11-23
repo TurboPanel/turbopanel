@@ -800,3 +800,15 @@ test('zones the person names are probed one by one, so a token that cannot list 
   assertEquals(report.capabilities.tunnels, false)
   assert(calls.every((c) => c.method === 'GET'))
 })
+
+test('the ingress fingerprint is stable for the same routes and changes with the built ingress', async () => {
+  const adapter = createCloudflareAdapter({ fetch: fakeFetch({}).impl })
+  const fingerprint = adapter.ingressFingerprint!
+  const a = await fingerprint({ hostnames: ['a.example.com'], verifiedNames: [] })
+  assertEquals(a, await fingerprint({ hostnames: ['A.example.com'], verifiedNames: [] }))
+  assertEquals(a.length, 64)
+  assert(
+    a !== (await fingerprint({ hostnames: ['a.example.com'], verifiedNames: ['a.example.com'] }))
+  )
+  assert(a !== (await fingerprint({ hostnames: ['b.example.com'], verifiedNames: [] })))
+})
