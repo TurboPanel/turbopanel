@@ -167,6 +167,57 @@ test('handleAcmeIssuanceEvent writes lastError onto the matching managed row, le
   assertEquals(metadata.acme?.challengeType, 'http-01')
 })
 
+test('a failed HTTPS check with no address record does not mark a DNS-01 wildcard order failed', async () => {
+  const { db, updates } = fakeDb([
+    {
+      id: 'tls-1',
+      status: 'automatic',
+      metadata: {
+        dnsNames: ['*.app.example.net', 'app.example.net'],
+        hasWildcard: true,
+        notBefore: '',
+        subject: '',
+        issuer: '',
+        acme: { challengeType: 'dns-01', managedBy: 'server', stage: 'ordering' },
+      },
+    },
+  ])
+  const result = await handleAcmeIssuanceEvent(db, {
+    serverId: SERVER_ID,
+    hostname: 'app.example.net',
+    ok: false,
+    errorMessage:
+      'fetch failed: error sending request for url (https://app.example.net/): dns error: failed to lookup address information: Name or service not known',
+  })
+  assertEquals(result.updated, false)
+  assertEquals(updates.length, 0)
+})
+
+test('a good HTTPS check still lands on a DNS-01 order row', async () => {
+  const { db, updates } = fakeDb([
+    {
+      id: 'tls-1',
+      status: 'automatic',
+      metadata: {
+        dnsNames: ['*.app.example.net', 'app.example.net'],
+        hasWildcard: true,
+        notBefore: '',
+        subject: '',
+        issuer: '',
+        acme: { challengeType: 'dns-01', managedBy: 'server', stage: 'ordering' },
+      },
+    },
+  ])
+  const result = await handleAcmeIssuanceEvent(db, {
+    serverId: SERVER_ID,
+    hostname: 'app.example.net',
+    ok: true,
+    notAfter: '2027-02-21T00:00:00.000Z',
+  })
+  assertEquals(result.updated, true)
+  assertEquals(updates.length, 1)
+})
+
 test('handleAcmeIssuanceEvent falls back to a default message when the daemon sent none', async () => {
   const { db, updates } = fakeDb([
     {
