@@ -29,6 +29,7 @@ import type { AppEnv } from '../app/app.ts'
 import { loadStoragePins } from '../features/schedule/plan-deploy.ts'
 import { listEnvironmentDataVolumes } from './environments/data-volumes.ts'
 import { loadStorageMaterial } from './environments/deploy-prepare.ts'
+import { isDockerVolumeNameRefusal } from './environments/deploy-storage-volume-name.ts'
 import { createDenoDb } from '../db/connection.ts'
 import { getDatabaseUrl } from '../db/url.ts'
 import {
@@ -1407,8 +1408,8 @@ test('deploy storage material ignores storage of another organization attached t
   await withFixture(async (fixture) => {
     const { db, orgA, orgB } = fixture
     const stray = await seedStrayVolumeOnB(fixture)
-    const load = (organizationId: string) =>
-      loadStorageMaterial(db, {
+    const load = async (organizationId: string) => {
+      const material = await loadStorageMaterial(db, {
         environmentId: fixture.b.environmentId!,
         projectId: fixture.b.projectId!,
         organizationId,
@@ -1417,6 +1418,9 @@ test('deploy storage material ignores storage of another organization attached t
         cloneNamesByServiceId: new Map(),
         registeredVolumes: [],
       })
+      assert(!isDockerVolumeNameRefusal(material))
+      return material
+    }
 
     const asB = await load(orgB)
     assertEquals(
