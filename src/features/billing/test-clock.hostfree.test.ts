@@ -4,7 +4,7 @@
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
-import type { BillingConfig } from './config.ts'
+import { DEFAULT_STRIPE_API_VERSION, type BillingConfig } from './config.ts'
 import { createStripeClient, type StripeFetch } from './client.ts'
 import { StripeApiError } from './errors.ts'
 import {
@@ -25,7 +25,7 @@ const test = Deno.test.bind(Deno)
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_abc',
   webhookSigningSecret: null,
-  apiVersion: '2026-09-30.endive',
+  apiVersion: DEFAULT_STRIPE_API_VERSION,
 }
 
 type Call = { url: string; method: string; body: string | null }

@@ -15,7 +15,7 @@ import { stub } from '@std/testing/mock'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import type { BillingConfig } from '../../features/billing/config.ts'
+import { DEFAULT_STRIPE_API_VERSION, type BillingConfig } from '../../features/billing/config.ts'
 import { StripeApiError } from '../../features/billing/errors.ts'
 import {
   emptyLedger,
@@ -79,7 +79,7 @@ const PERIOD_END = '2026-10-01T00:00:00.000Z'
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_x',
   webhookSigningSecret: 'whsec_x',
-  apiVersion: '2026-09-30.endive',
+  apiVersion: DEFAULT_STRIPE_API_VERSION,
 }
 const BASE_URL = 'https://panel.example.com'
 
@@ -348,7 +348,7 @@ test('every billing route is 503 billing_not_configured when only the Stripe API
     config: {
       secretKey: 'sk_test_x',
       webhookSigningSecret: null,
-      apiVersion: '2026-09-30.endive',
+      apiVersion: DEFAULT_STRIPE_API_VERSION,
     },
   })
   for (const [method, path] of PATHS) {
