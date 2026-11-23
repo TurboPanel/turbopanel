@@ -33,6 +33,8 @@ export const API_ERROR_CODES = {
   email_delivery_unavailable: 'Email delivery unavailable',
   /** A failure nothing handled. */
   internal_error: 'Internal Server Error',
+  /** A build variable name the build would drop (reserved or sandbox name). */
+  build_variable_name_refused: 'Build variable name refused',
   /** A response status with no more specific code (a thrown `HTTPException`). */
   http_error: 'Request failed',
 } as const
