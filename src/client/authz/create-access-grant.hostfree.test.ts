@@ -123,10 +123,7 @@ test('createAccessGrant rejects non organization/team targets before database ac
   if (result.ok || result.status !== 400) {
     throw new TypeError('workspace entity type should return 400')
   }
-  assertEquals(
-    result.error,
-    'Access grants may only target organization or team entities',
-  )
+  assertEquals(result.error, 'Access grants may only target organization or team entities')
 })
 
 test('createAccessGrant rejects invalid actor and entity ids before database access', async () => {
@@ -212,7 +209,7 @@ test('resolveEntityOrganizationId reads team organization_id from the database',
       }),
     } as unknown as Db,
     'team',
-    otherUuid,
+    otherUuid
   )
 
   assertEquals(resolved, validUuid)
@@ -241,13 +238,16 @@ test('createAccessGrant rejects incompatible permission and entity pairs', async
 })
 
 test('createAccessGrant creates a new organization grant row', async () => {
-  const result = await createAccessGrant(createOrganizationGrantDb({ insertReturnsId: 'grant-1' }), {
-    entityType: 'organization',
-    entityId: validUuid,
-    actorType: 'user',
-    actorId: otherUuid,
-    permissionKey: 'organization:manage',
-  })
+  const result = await createAccessGrant(
+    createOrganizationGrantDb({ insertReturnsId: 'grant-1' }),
+    {
+      entityType: 'organization',
+      entityId: validUuid,
+      actorType: 'user',
+      actorId: otherUuid,
+      permissionKey: 'organization:manage',
+    }
+  )
 
   if (!result.ok || !result.created) {
     throw new TypeError('expected created organization grant')
@@ -264,7 +264,7 @@ test('createAccessGrant returns existing id on duplicate insert', async () => {
       actorType: 'user',
       actorId: otherUuid,
       permissionKey: 'organization:own',
-    },
+    }
   )
 
   if (!result.ok || result.created) {
@@ -282,7 +282,7 @@ test('createAccessGrant returns conflict when duplicate insert finds no row', as
       actorType: 'user',
       actorId: otherUuid,
       permissionKey: 'organization:manage',
-    },
+    }
   )
 
   if (result.ok || result.status !== 409) {
@@ -356,7 +356,7 @@ test('validatePermissionEntityCompatibility rejects org permissions on team enti
   }
   assertEquals(
     manageOnTeam.error,
-    'organization:manage may only be granted on organization entities',
+    'organization:manage may only be granted on organization entities'
   )
 })
 
@@ -381,7 +381,7 @@ test('validateGrantEntityTarget rejects invitation organization mismatches', asy
     createExistsDb(true),
     'organization',
     validUuid,
-    otherUuid,
+    otherUuid
   )
   if (result.ok || result.status !== 400) {
     throw new TypeError('organization mismatch should return 400')
@@ -519,9 +519,7 @@ function createGrantFlowDb(options: {
           limit: () => {
             selectCalls++
             if (selectCalls === 1) {
-              return Promise.resolve(
-                options.entityExists === false ? [] : [{ id: validUuid }],
-              )
+              return Promise.resolve(options.entityExists === false ? [] : [{ id: validUuid }])
             }
             if (selectCalls === 2) {
               if (options.userExists === false) {
@@ -549,9 +547,7 @@ function createGrantFlowDb(options: {
       values: () => ({
         onConflictDoNothing: () => ({
           returning: () =>
-            Promise.resolve(
-              options.insertReturnsId ? [{ id: options.insertReturnsId }] : [],
-            ),
+            Promise.resolve(options.insertReturnsId ? [{ id: options.insertReturnsId }] : []),
         }),
       }),
     }),
@@ -559,16 +555,13 @@ function createGrantFlowDb(options: {
 }
 
 test('createAccessGrant rejects missing user actors', async () => {
-  const result = await createAccessGrant(
-    createGrantFlowDb({ userExists: false }),
-    {
-      entityType: 'organization',
-      entityId: validUuid,
-      actorType: 'user',
-      actorId: otherUuid,
-      permissionKey: 'organization:manage',
-    },
-  )
+  const result = await createAccessGrant(createGrantFlowDb({ userExists: false }), {
+    entityType: 'organization',
+    entityId: validUuid,
+    actorType: 'user',
+    actorId: otherUuid,
+    permissionKey: 'organization:manage',
+  })
 
   if (result.ok || result.status !== 404) {
     throw new TypeError('missing user actor should return 404')
@@ -576,7 +569,7 @@ test('createAccessGrant rejects missing user actors', async () => {
   assertEquals(result.error, 'User not found')
 })
 
-test('createAccessGrant rejects team actors from another organization', async () => {
+test('createAccessGrant answers 404 for team actors from another organization', async () => {
   const result = await createAccessGrant(
     createGrantFlowDb({ team: { exists: true, organizationId: otherUuid } }),
     {
@@ -585,63 +578,54 @@ test('createAccessGrant rejects team actors from another organization', async ()
       actorType: 'team',
       actorId: otherUuid,
       permissionKey: 'organization:manage',
-    },
+    }
   )
 
-  if (result.ok || result.status !== 400) {
-    throw new TypeError('cross-org team actor should return 400')
+  if (result.ok || result.status !== 404) {
+    throw new TypeError('cross-org team actor should answer like an unknown team')
   }
-  assertEquals(result.error, 'Team must belong to the same organization as the entity')
+  assertEquals(result.error, 'Team not found')
 })
 
 test('createAccessGrant rejects missing team and organization actors', async () => {
-  const missingTeam = await createAccessGrant(
-    createGrantFlowDb({ userExists: false }),
-    {
-      entityType: 'organization',
-      entityId: validUuid,
-      actorType: 'team',
-      actorId: otherUuid,
-      permissionKey: 'organization:manage',
-    },
-  )
+  const missingTeam = await createAccessGrant(createGrantFlowDb({ userExists: false }), {
+    entityType: 'organization',
+    entityId: validUuid,
+    actorType: 'team',
+    actorId: otherUuid,
+    permissionKey: 'organization:manage',
+  })
   if (missingTeam.ok || missingTeam.status !== 404) {
     throw new TypeError('missing team actor should return 404')
   }
   assertEquals(missingTeam.error, 'Team not found')
 
-  const missingOrg = await createAccessGrant(
-    createGrantFlowDb({ userExists: false }),
-    {
-      entityType: 'organization',
-      entityId: validUuid,
-      actorType: 'organization',
-      actorId: validUuid,
-      permissionKey: 'organization:manage',
-    },
-  )
+  const missingOrg = await createAccessGrant(createGrantFlowDb({ userExists: false }), {
+    entityType: 'organization',
+    entityId: validUuid,
+    actorType: 'organization',
+    actorId: validUuid,
+    permissionKey: 'organization:manage',
+  })
   if (missingOrg.ok || missingOrg.status !== 404) {
     throw new TypeError('missing organization actor should return 404')
   }
   assertEquals(missingOrg.error, 'Organization not found')
 })
 
-test('createAccessGrant rejects organization actors that do not match the entity org', async () => {
-  const result = await createAccessGrant(
-    createGrantFlowDb({ organizationActorExists: true }),
-    {
-      entityType: 'organization',
-      entityId: validUuid,
-      actorType: 'organization',
-      actorId: otherUuid,
-      permissionKey: 'organization:manage',
-    },
-  )
+test('createAccessGrant answers 404 for organization actors that do not match the entity org', async () => {
+  const result = await createAccessGrant(createGrantFlowDb({ organizationActorExists: true }), {
+    entityType: 'organization',
+    entityId: validUuid,
+    actorType: 'organization',
+    actorId: otherUuid,
+    permissionKey: 'organization:manage',
+  })
 
-  if (result.ok || result.status !== 400) {
-    throw new TypeError('organization actor mismatch should return 400')
+  if (result.ok || result.status !== 404) {
+    throw new TypeError('organization actor mismatch should answer like an unknown organization')
   }
-  assertEquals(result.error, 'Organization actor must match the entity organization')
+  assertEquals(result.error, 'Organization not found')
 })
 
 test('createAccessGrant creates team grants when actors and entities align', async () => {

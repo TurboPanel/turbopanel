@@ -1024,13 +1024,17 @@ test('GET and POST /access answer a foreign org or team like an unknown id', asy
       })
       return { status: response.status, body: await response.text() }
     }
-    const create = async (resourceId: string) => {
+    const createFor = async (
+      resourceId: string,
+      subjectKind: string = 'user',
+      subjectId: string = fixture.aOwn.userId
+    ) => {
       const response = await fixture.app.request('/api/client/v1/access', {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          subjectKind: 'user',
-          subjectId: fixture.aOwn.userId,
+          subjectKind,
+          subjectId,
           resourceId,
           effect: 'allow',
           permissionKey: 'organization:manage',
@@ -1038,6 +1042,7 @@ test('GET and POST /access answer a foreign org or team like an unknown id', asy
       })
       return { status: response.status, body: await response.text() }
     }
+    const create = (resourceId: string) => createFor(resourceId)
     const unknownId = crypto.randomUUID()
     for (const call of [list, create]) {
       const unknown = await call(unknownId)
@@ -1048,6 +1053,45 @@ test('GET and POST /access answer a foreign org or team like an unknown id', asy
     }
     const own = await list(fixture.orgA)
     assertEquals(own.status, 200, own.body)
+    const created = await createFor(fixture.orgA)
+    assert(
+      created.status >= 200 && created.status < 300,
+      `own create: ${created.status} ${created.body}`
+    )
+  })
+})
+
+test('POST /access answers a foreign subject id like an unknown one', async () => {
+  await withFixture(async (fixture) => {
+    const headers = {
+      cookie: fixture.cookieA,
+      [ORG_ID_HEADER]: fixture.orgA,
+      'content-type': 'application/json',
+    }
+    const create = async (subjectKind: string, subjectId: string) => {
+      const response = await fixture.app.request('/api/client/v1/access', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          subjectKind,
+          subjectId,
+          resourceId: fixture.orgA,
+          effect: 'allow',
+          permissionKey: 'organization:manage',
+        }),
+      })
+      return { status: response.status, body: await response.text() }
+    }
+    for (const [subjectKind, foreignId] of [
+      ['team', fixture.b.teamId!],
+      ['organization', fixture.orgB],
+    ] as const) {
+      const unknown = await create(subjectKind, crypto.randomUUID())
+      assertEquals(unknown.status, 404)
+      assertEquals(await create(subjectKind, foreignId), unknown)
+    }
+    const own = await create('organization', fixture.orgA)
+    assert(own.status >= 200 && own.status < 300, `own subject: ${own.status} ${own.body}`)
   })
 })
 
@@ -1068,6 +1112,11 @@ test('DELETE /access/:id answers a foreign grant like an unknown id', async () =
     const unknown = await remove(crypto.randomUUID())
     assertEquals(unknown.status, 404)
     assertEquals(await remove(foreignGrant!.id), unknown)
+    const survivors = await fixture.db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(eq(grant.id, foreignGrant!.id))
+    assertEquals(survivors.length, 1)
     const [ownGrant] = await fixture.db
       .insert(grant)
       .values({

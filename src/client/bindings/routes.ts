@@ -294,17 +294,19 @@ async function loadBindableLogin(
   }
 
   if (!isUuid(ref.principalId)) return c.json({ error: 'Not found' }, 404)
-  const rows = await db
-    .select({ id: login.id, managedId: login.managedId, role: login.role })
-    .from(login)
-    .where(eq(login.principalId, ref.principalId))
-  // Only logins on clusters in the caller's organization count: a principal
-  // from another organization answers exactly like an unknown one.
-  const userRows = rows.filter((row) => row.role === 'user')
-  const clusterOrgIds = await Promise.all(
-    userRows.map((row) => resolveEntityOrganizationId(db, 'managed', row.managedId))
-  )
-  const candidates = userRows.filter((_row, index) => clusterOrgIds[index] === organizationId)
+  // Only user logins on clusters in the caller's organization count: a
+  // principal from another organization answers exactly like an unknown one.
+  const candidates = await db.execute<{ id: string; managedId: string }>(sql`
+    SELECT l.id AS "id", l.managed_id AS "managedId"
+    FROM login l
+    JOIN managed m ON m.id = l.managed_id
+    JOIN environment e ON e.id = m.environment_id
+    JOIN project p ON p.id = e.project_id
+    JOIN workspace w ON w.id = p.workspace_id
+    WHERE l.principal_id = ${ref.principalId}::uuid
+      AND l.role = 'user'
+      AND w.organization_id = ${organizationId}::uuid
+  `)
   if (candidates.length === 0) return c.json({ error: 'Not found' }, 404)
   if (candidates.length > 1) {
     return c.json(
