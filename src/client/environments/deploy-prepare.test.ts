@@ -2755,23 +2755,19 @@ describe('detachMountsOfRemovedServices', () => {
 })
 
 describe('secretNotInjectedWarnings', () => {
-  const unreferenced = new Map([
-    ['web', [{ key: 'API_KEY' }]],
-    ['app', [{ key: 'TOKEN' }]],
-    ['worker', []],
-  ])
-
-  it('warns for a container service and never for a native app', () => {
-    const out = secretNotInjectedWarnings(unreferenced, new Set(['app']))
+  it('gives one warning per secret that reached no container', () => {
+    const out = secretNotInjectedWarnings([
+      { key: 'API_KEY', composeServiceNames: ['web', 'worker'] },
+    ])
     assertEquals(out.length, 1)
     assertEquals(out[0]!.code, 'secret_variable_not_injected')
-    assertEquals(out[0]!.details, { variable: 'API_KEY', composeServiceName: 'web' })
+    assertEquals(out[0]!.details, { variable: 'API_KEY', composeServiceNames: ['web', 'worker'] })
     assertEquals(out[0]!.message.includes('NAME: "{$API_KEY}"'), true)
     assertEquals(out[0]!.message.includes('NAME_FILE'), true)
     assertEquals(out[0]!.message.includes('configs:'), true)
   })
 
-  it('says nothing when every secret is referenced', () => {
-    assertEquals(secretNotInjectedWarnings(new Map([['web', []]]), new Set()), [])
+  it('says nothing when every secret reached a container', () => {
+    assertEquals(secretNotInjectedWarnings([]), [])
   })
 })

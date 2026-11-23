@@ -3868,31 +3868,20 @@ async function applyDeployVariables(
   }
   warnings.push(
     ...configFileWarnings(withVariables.configWarnings),
-    ...secretNotInjectedWarnings(
-      withVariables.unreferencedSecrets,
-      nativeComposeServiceNames(pipeline.expandedDocument)
-    )
+    ...secretNotInjectedWarnings(withVariables.secretsNotInjected)
   )
   return withVariables
 }
 
-/** One warning per runtime secret a container service has in scope but nothing references. */
+/** One warning per runtime secret that no container of the stack received. */
 export function secretNotInjectedWarnings(
-  unreferenced: ReadonlyMap<string, readonly { key: string }[]>,
-  nativeServiceNames: ReadonlySet<string>
+  secrets: readonly { key: string; composeServiceNames: readonly string[] }[]
 ): DeployPrepareWarning[] {
-  const out: DeployPrepareWarning[] = []
-  for (const [composeServiceName, secrets] of unreferenced) {
-    if (nativeServiceNames.has(composeServiceName)) continue
-    for (const { key } of secrets) {
-      out.push({
-        code: 'secret_variable_not_injected',
-        message: `Secret ${key} is not passed to service ${composeServiceName}, because nothing references it. A secret reaches a container only as a file: reference it in environment as NAME: "{$${key}}" to get NAME_FILE pointing at /run/secrets/NAME (NAME itself stays unset), or put it into a generated config file with configs: and {$${key}} in the content.`,
-        details: { variable: key, composeServiceName },
-      })
-    }
-  }
-  return out
+  return secrets.map(({ key, composeServiceNames }) => ({
+    code: 'secret_variable_not_injected',
+    message: `Secret ${key} is not passed to any container (in scope for ${composeServiceNames.join(', ')}), because nothing references it. A secret reaches a container only as a file: reference it in environment as NAME: "{$${key}}" to get NAME_FILE pointing at /run/secrets/NAME (NAME itself stays unset), or put it into a generated config file with configs: and {$${key}} in the content.`,
+    details: { variable: key, composeServiceNames: [...composeServiceNames] },
+  }))
 }
 
 /** Project caches and helper reach for this server; its warnings join the deploy's. */

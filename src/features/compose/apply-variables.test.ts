@@ -1141,9 +1141,7 @@ describe('apply-variables', () => {
         )
         // `worker` is a container: a service-scoped secret still needs a reference.
         assertEquals(result.runtimeAssignments.get('worker'), [])
-        assertEquals(result.unreferencedSecrets.get('worker'), [
-          { key: 'API_KEY', source: 'service' },
-        ])
+        assertEquals(result.unreferencedSecrets.get('worker'), [])
         // The build-only secret is neither delivered nor listed on the native app.
         assertEquals(
           result.runtimeAssignments.get('web')?.map((a) => a.name),
@@ -1153,61 +1151,78 @@ describe('apply-variables', () => {
       })
     })
 
-    describe('unreferenced secrets of a container service', () => {
-      const docFor = (environment?: Record<string, string>, configs?: boolean) => {
+    describe('secrets that reach no container of the stack', () => {
+      const stack = (
+        envs: Record<string, Record<string, string> | undefined>,
+        extra: Record<string, unknown> = {}
+      ) => {
         const doc = emptyComposeDocument()
-        doc.data.services = {
-          web: {
-            image: 'x',
-            ...(environment ? { environment } : {}),
-            ...(configs ? { configs: [{ source: 'app', target: '/etc/app.conf' }] } : {}),
-          },
-        }
-        if (configs) doc.data.configs = { app: { content: 'pass={$API_KEY}' } }
+        doc.data.services = Object.fromEntries(
+          Object.entries(envs).map(([name, environment]) => [
+            name,
+            { image: 'x', ...(environment ? { environment } : {}), ...(extra[name] as object) },
+          ])
+        )
         return doc
       }
-      const secret = entry({ key: 'API_KEY', isSecret: true, value: 'sealed', source: 'service' })
-
-      it('lists a runtime secret nothing references', () => {
-        const result = mustApply(
-          applyVariablesToComposeDocument(docFor(), {
-            globalEntries: [secret],
+      const secret = entry({ key: 'API_KEY', isSecret: true, value: 'sealed', source: 'project' })
+      const run = (doc: ReturnType<typeof stack>, entries = [secret], native?: string[]) =>
+        mustApply(
+          applyVariablesToComposeDocument(doc, {
+            globalEntries: entries,
             perServiceEntries: new Map(),
+            ...(native ? { nativeServiceNames: new Set(native) } : {}),
           })
         )
-        assertEquals(result.unreferencedSecrets.get('web'), [{ key: 'API_KEY', source: 'service' }])
+
+      it('reports a secret no container references, once, with every service it was in scope for', () => {
+        const result = run(stack({ app: undefined, db: undefined }))
+        assertEquals(result.secretsNotInjected, [
+          { key: 'API_KEY', source: 'project', composeServiceNames: ['app', 'db'] },
+        ])
         assertEquals(result.secretMaterial, [])
       })
 
-      it('does not list it once an environment entry references it', () => {
-        const result = mustApply(
-          applyVariablesToComposeDocument(docFor({ PASS: '{$API_KEY}' }), {
-            globalEntries: [secret],
-            perServiceEntries: new Map(),
-          })
-        )
-        assertEquals(result.unreferencedSecrets.get('web'), [])
+      it('says nothing when only one of two containers references it', () => {
+        const result = run(stack({ app: { PASS: '{$API_KEY}' }, cache: undefined }))
+        assertEquals(result.secretsNotInjected, [])
       })
 
-      it('does not list it when a generated config file reads it', () => {
-        const result = mustApply(
-          applyVariablesToComposeDocument(docFor(undefined, true), {
-            globalEntries: [secret],
-            perServiceEntries: new Map(),
-          })
+      it('says nothing when a generated config file reads it', () => {
+        const doc = stack(
+          { web: undefined, other: undefined },
+          { web: { configs: [{ source: 'app', target: '/etc/app.conf' }] } }
         )
-        assertEquals(result.unreferencedSecrets.get('web'), [])
+        doc.data.configs = { app: { content: 'pass={$API_KEY}' } }
+        assertEquals(run(doc).secretsNotInjected, [])
       })
 
-      it('does not list a binding secret, which attaches on its own', () => {
-        const result = mustApply(
-          applyVariablesToComposeDocument(docFor(), {
-            globalEntries: [{ ...secret, bindingId: 'binding-1' }],
-            perServiceEntries: new Map(),
-          })
-        )
-        assertEquals(result.unreferencedSecrets.get('web'), [])
-        assertEquals(result.secretMaterial.length, 1)
+      it('says nothing for a binding secret', () => {
+        const result = run(stack({ web: undefined }), [{ ...secret, bindingId: 'binding-1' }])
+        assertEquals(result.secretsNotInjected, [])
+      })
+
+      it('says nothing for a secret only a network share password uses', () => {
+        const doc = stack({ web: undefined })
+        doc.data.volumes = {
+          media: {
+            driver_opts: {
+              type: 'cifs',
+              device: '//h.example.net/m',
+              o: 'username=u,password={$API_KEY},vers=3.0',
+            },
+          },
+        }
+        assertEquals(run(doc).secretsNotInjected, [])
+      })
+
+      it('does not report native apps', () => {
+        assertEquals(run(stack({ web: undefined }), [secret], ['web']).secretsNotInjected, [])
+      })
+
+      it('does not report a secret that is not for runtime', () => {
+        const buildOnly = { ...secret, forBuild: true, forRuntime: false }
+        assertEquals(run(stack({ web: undefined }), [buildOnly]).secretsNotInjected, [])
       })
     })
 
