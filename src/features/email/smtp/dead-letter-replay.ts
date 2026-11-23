@@ -10,7 +10,7 @@
  * schedule again.
  *
  * Pure: the broker-free part (summaries, masking, ids, replayed headers). The
- * broker side is `lib/email/mailer/deno-mail-dead-letters.ts`.
+ * broker side is `features/email/mailer/deno-mail-dead-letters.ts`.
  */
 import { EMAIL_ATTEMPT_HEADER, failedAttemptsFromHeaders } from './retry-policy.ts'
 

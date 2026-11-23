@@ -179,8 +179,8 @@ import {
   probeCommandAmqpBrokerReachable,
 } from './commands/deno-amqp-queue.ts'
 import { startCommandConsumer } from '../../features/commands/deno-consumer.ts'
-import { startMailerConsumer } from '../../lib/email/mailer/deno-mailer-consumer.ts'
-import { createAmqpMailDeadLetterStore } from '../../lib/email/mailer/deno-mail-dead-letters.ts'
+import { startMailerConsumer } from '../../features/email/mailer/deno-mailer-consumer.ts'
+import { createAmqpMailDeadLetterStore } from '../../features/email/mailer/deno-mail-dead-letters.ts'
 import {
   createNoopCommandQueue,
   isNoopCommandQueue,

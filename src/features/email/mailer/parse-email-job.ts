@@ -3,7 +3,7 @@ import type {
   NotificationDigestGroup,
   NotificationMailHeaders,
   OtpType,
-} from '../../../features/email/types.ts'
+} from '../types.ts'
 
 const VALID_OTP_TYPES = new Set<OtpType>(['sign-in', 'email-verification', 'forget-password'])
 
