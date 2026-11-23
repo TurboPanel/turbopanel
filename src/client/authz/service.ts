@@ -14,49 +14,23 @@ export function isPlatformAdmin(u: PlatformUser): boolean {
 }
 
 async function fetchUserRole(db: Db, userId: string): Promise<string | null> {
-  const rows = await db
-    .select({ role: user.role })
-    .from(user)
-    .where(eq(user.id, userId))
-    .limit(1)
+  const rows = await db.select({ role: user.role }).from(user).where(eq(user.id, userId)).limit(1)
   return rows[0]?.role ?? null
 }
 
 async function resolveUserRole(
   db: Db,
   userId: string,
-  userRole?: string | null,
+  userRole?: string | null
 ): Promise<string | null> {
   return userRole === undefined ? fetchUserRole(db, userId) : userRole
-}
-
-async function hasOrganizationGrant(
-  db: Db,
-  userId: string,
-  organizationId: string,
-  permission: 'organization:own' | 'organization:manage',
-): Promise<boolean> {
-  const rows = await db
-    .select({ id: grant.id })
-    .from(grant)
-    .where(
-      and(
-        eq(grant.actorType, 'user'),
-        eq(grant.actorId, userId),
-        eq(grant.entityType, 'organization'),
-        eq(grant.entityId, organizationId),
-        eq(grant.permission, permission),
-      ),
-    )
-    .limit(1)
-  return rows.length > 0
 }
 
 async function hasTeamGrant(
   db: Db,
   userId: string,
   teamId: string,
-  permission: 'team:own' | 'team:manage',
+  permission: 'team:own' | 'team:manage'
 ): Promise<boolean> {
   const rows = await db
     .select({ id: grant.id })
@@ -67,34 +41,36 @@ async function hasTeamGrant(
         eq(grant.actorId, userId),
         eq(grant.entityType, 'team'),
         eq(grant.entityId, teamId),
-        eq(grant.permission, permission),
-      ),
+        eq(grant.permission, permission)
+      )
     )
     .limit(1)
   return rows.length > 0
 }
 
 /**
- * Exact owner-only check: platform admins bypass; otherwise the user must hold
- * an `organization:own` grant on the organization. An `organization:manage`
- * grant is NOT sufficient. This is the service-level owner-only guard reused by
- * owner-only flows; HTTP routes should reach for `assertOrgOwnerOr403`.
+ * Exact owner-only check: platform admins bypass; otherwise `can()` must grant
+ * `organization:own`, which counts a grant held directly, through a team the
+ * user belongs to, or by the organization itself for its teammates. An
+ * `organization:manage` grant is NOT sufficient. This is the service-level
+ * owner-only guard reused by owner-only flows; HTTP routes should reach for
+ * `assertOrgOwnerOr403`.
  */
 export async function canOwnOrganization(
   db: Db,
   userId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<boolean> {
   const role = await fetchUserRole(db, userId)
   if (role !== null && isPlatformAdmin({ id: userId, role })) return true
-  return hasOrganizationGrant(db, userId, organizationId, 'organization:own')
+  return can(db, userId, 'organization:own', 'organization', organizationId)
 }
 
 export async function canManageOrganization(
   db: Db,
   userId: string,
   organizationId: string,
-  userRole?: string | null,
+  userRole?: string | null
 ): Promise<boolean> {
   const role = await resolveUserRole(db, userId, userRole)
   if (role !== null && isPlatformAdmin({ id: userId, role })) return true
@@ -108,7 +84,7 @@ export async function canManageOrganization(
 export async function canInviteToOrganization(
   db: Db,
   userId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<boolean> {
   return canManageOrganization(db, userId, organizationId)
 }
@@ -117,7 +93,7 @@ export async function canOwnTeam(
   db: Db,
   userId: string,
   teamId: string,
-  userRole?: string | null,
+  userRole?: string | null
 ): Promise<boolean> {
   const role = await resolveUserRole(db, userId, userRole)
   if (role !== null && isPlatformAdmin({ id: userId, role })) return true
@@ -128,7 +104,7 @@ export async function canManageTeam(
   db: Db,
   userId: string,
   teamId: string,
-  userRole?: string | null,
+  userRole?: string | null
 ): Promise<boolean> {
   const role = await resolveUserRole(db, userId, userRole)
   if (role !== null && isPlatformAdmin({ id: userId, role })) return true
@@ -140,39 +116,14 @@ export async function canManageTeam(
   )
 }
 
-export async function canInviteToTeam(
-  db: Db,
-  userId: string,
-  teamId: string,
-): Promise<boolean> {
+export async function canInviteToTeam(db: Db, userId: string, teamId: string): Promise<boolean> {
   return canManageTeam(db, userId, teamId)
-}
-
-export async function assertNotLastOrgOwner(
-  db: Db,
-  organizationId: string,
-  subjectId: string,
-): Promise<void> {
-  const rows = await db
-    .select({ actorId: grant.actorId })
-    .from(grant)
-    .where(
-      and(
-        eq(grant.entityType, 'organization'),
-        eq(grant.entityId, organizationId),
-        eq(grant.permission, 'organization:own'),
-      ),
-    )
-
-  if (rows.length === 1 && rows[0]?.actorId === subjectId) {
-    throw new Error('Cannot remove the last owner of an organization')
-  }
 }
 
 export async function assertNotLastTeamOwner(
   db: Db,
   teamId: string,
-  subjectId: string,
+  subjectId: string
 ): Promise<void> {
   const rows = await db
     .select({ actorId: grant.actorId })
@@ -181,8 +132,8 @@ export async function assertNotLastTeamOwner(
       and(
         eq(grant.entityType, 'team'),
         eq(grant.entityId, teamId),
-        eq(grant.permission, 'team:own'),
-      ),
+        eq(grant.permission, 'team:own')
+      )
     )
 
   if (rows.length === 1 && rows[0]?.actorId === subjectId) {
