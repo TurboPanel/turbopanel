@@ -1008,36 +1008,64 @@ function findSecretsNotInjected(
   configSecretRefs: readonly DeployConfigSecretRef[],
   nativeServiceNames: ReadonlySet<string> | undefined
 ): SecretNotInjected[] {
-  const deliveredAnywhere = new Set<string>()
-  const deliveredTo = new Set<string>()
-  const deliveredKey = (service: string, key: string) => `${service}\u0000${key}`
-  for (const ref of configSecretRefs) {
-    deliveredAnywhere.add(ref.key)
-    deliveredTo.add(deliveredKey(ref.composeServiceName, ref.key))
-  }
-  for (const material of secretMaterial) {
-    const service = material.composeServiceName
-    if (service !== null && nativeServiceNames?.has(service)) continue
-    deliveredAnywhere.add(material.key)
-    if (service !== null) deliveredTo.add(deliveredKey(service, material.key))
-  }
+  const delivery = collectSecretDelivery(secretMaterial, configSecretRefs, nativeServiceNames)
   const byKey = new Map<string, SecretNotInjected>()
   for (const [composeServiceName, secrets] of candidates) {
     for (const secret of secrets) {
-      // A secret set on the service itself (or its hostnames) is that service's
-      // own value: the same key reaching another container is a different
-      // secret, so only this service counts. A wider scope is one secret for
-      // every service, delivered as soon as any container got it.
-      const delivered = isServiceOwnedSource(secret.source)
-        ? deliveredTo.has(deliveredKey(composeServiceName, secret.key))
-        : deliveredAnywhere.has(secret.key)
-      if (delivered) continue
+      if (isSecretDelivered(delivery, composeServiceName, secret)) continue
       const known = byKey.get(secret.key)
       if (known) known.composeServiceNames.push(composeServiceName)
       else byKey.set(secret.key, { ...secret, composeServiceNames: [composeServiceName] })
     }
   }
   return [...byKey.values()]
+}
+
+interface SecretDelivery {
+  /** Keys any container, config file or share got. */
+  readonly anywhere: ReadonlySet<string>
+  /** `service\u0000key` pairs: what each service itself got. */
+  readonly perService: ReadonlySet<string>
+}
+
+function deliveryKey(service: string, key: string): string {
+  return `${service}\u0000${key}`
+}
+
+function collectSecretDelivery(
+  secretMaterial: readonly DeployVariableMaterial[],
+  configSecretRefs: readonly DeployConfigSecretRef[],
+  nativeServiceNames: ReadonlySet<string> | undefined
+): SecretDelivery {
+  const anywhere = new Set<string>()
+  const perService = new Set<string>()
+  for (const ref of configSecretRefs) {
+    anywhere.add(ref.key)
+    perService.add(deliveryKey(ref.composeServiceName, ref.key))
+  }
+  for (const material of secretMaterial) {
+    const service = material.composeServiceName
+    if (service !== null && nativeServiceNames?.has(service)) continue
+    anywhere.add(material.key)
+    if (service !== null) perService.add(deliveryKey(service, material.key))
+  }
+  return { anywhere, perService }
+}
+
+/**
+ * A secret set on the service itself (or its hostnames) is that service's own
+ * value: the same key reaching another container is a different secret, so
+ * only this service counts. A wider scope is one secret for every service,
+ * delivered as soon as any container got it.
+ */
+function isSecretDelivered(
+  delivery: SecretDelivery,
+  composeServiceName: string,
+  secret: UnreferencedSecret
+): boolean {
+  return isServiceOwnedSource(secret.source)
+    ? delivery.perService.has(deliveryKey(composeServiceName, secret.key))
+    : delivery.anywhere.has(secret.key)
 }
 
 function isServiceOwnedSource(source: string | undefined): boolean {
