@@ -66,6 +66,19 @@
         "max_batch_timeout": 1,
         "max_retries": 6,
         "max_concurrency": 2
+      },
+      // Dead-letter consumers: record a redacted row, ack, tell admins (src/features/queues).
+      {
+        "queue": "dev-daemon-commands-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5
+      },
+      {
+        "queue": "dev-system-email-dlq",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 5
       }
     ]
   },
@@ -233,6 +246,19 @@
             "max_batch_timeout": 1,
             "max_retries": 6,
             "max_concurrency": 2
+          },
+          // Dead-letter consumers: record a redacted row, ack, tell admins (src/features/queues).
+          {
+            "queue": "testing-daemon-commands-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          },
+          {
+            "queue": "testing-system-email-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
           }
         ]
       },
@@ -410,6 +436,19 @@
             "max_batch_timeout": 1,
             "max_retries": 6,
             "max_concurrency": 2
+          },
+          // Dead-letter consumers: record a redacted row, ack, tell admins (src/features/queues).
+          {
+            "queue": "staging-daemon-commands-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          },
+          {
+            "queue": "staging-system-email-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
           }
         ]
       },
@@ -564,6 +603,19 @@
             "max_batch_timeout": 1,
             "max_retries": 6,
             "max_concurrency": 2
+          },
+          // Dead-letter consumers: record a redacted row, ack, tell admins (src/features/queues).
+          {
+            "queue": "daemon-commands-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
+          },
+          {
+            "queue": "system-email-dlq",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 5
           }
         ]
       },

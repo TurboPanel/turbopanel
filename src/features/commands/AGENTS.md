@@ -235,7 +235,7 @@ in the execution-log store — there is no Postgres column for them. See
   Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`. A
   dead-lettered message is never acked: it logs `command.permanent_failure`
   and is `retry()`d until `max_retries` routes it to the `dead_letter_queue`
-  (the DLQ must exist: `wrangler queues create <name>-dlq`). Retries and busy
+  (the DLQ must exist: `wrangler queues create <name>-dlq`). The `-dlq` queue has its own consumer (`features/queues/dead-letter-consumer.ts`, wired per environment in `wrangler.jsonc`): it writes a redacted `queue.dead_letter` audit row (queue, message id, command id, server id, type, attempts; never the body), acks, and raises the `queue.dead_lettered` notice to administrators on the first dead letter of a day and at the tenth. A redelivered message adds nothing. Dead letters are never replayed from the queue; re-issue the command through the API. Retries and busy
   waits are new delayed messages, not `retry()`, so they never use up
   `max_retries`.
 - **Deno:** `TURBOPANEL_AMQP_URL` (same URL as email queue, different topology).

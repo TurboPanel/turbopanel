@@ -585,6 +585,35 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         'unknown'
       )}). Marked passkeys approve a change of the control plane key on every server. ${CHECK_IDENTITY}`,
   },
+  // A hosted dead-letter queue (commands or system mail) received a message
+  // that gave up. `ctx.queue` is `commands` or `email`; `ctx.alert` is `first`
+  // or `threshold`. Never carries a message body.
+  'queue.dead_lettered': {
+    label: 'A queued job gave up',
+    severity: 'critical',
+    scope: 'instance',
+    audience: 'admins',
+    category: 'platform',
+    // Work was dropped on the floor and the platform forgets it in days.
+    urgent: true,
+    title: (ctx) =>
+      ctx.queue === 'email'
+        ? 'A system email could not be sent and was set aside'
+        : 'A server command could not be delivered and was set aside',
+    body: (ctx) =>
+      `A ${ctx.queue === 'email' ? 'system email' : 'server command'}${
+        has(ctx, 'type') ? ` (${name(ctx, 'type', 'unknown')})` : ''
+      } ran out of retries after ${name(ctx, 'attempts', 'several')} attempts: ${name(
+        ctx,
+        'error',
+        'no reason recorded'
+      )}. ` +
+      (ctx.alert === 'threshold'
+        ? 'Many have failed in the last day. '
+        : 'This is the first in the last day. ') +
+      'The record is in the audit trail (action queue.dead_letter). Messages are not replayed; ' +
+      'repeat the action through the API once the cause is fixed.',
+  },
 } as const satisfies Record<string, EventDefinition>
 
 export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS

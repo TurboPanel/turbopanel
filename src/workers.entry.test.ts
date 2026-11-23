@@ -327,6 +327,26 @@ describe('workers.ts entry handlers', () => {
     }
   }, 30_000)
 
+  it('queue sends a dead-letter queue to the dead-letter consumer, which retries without a database', async () => {
+    setWorkersDbFactoryForTests(() => undefined)
+    for (const queue of ['testing-daemon-commands-dlq', 'testing-system-email-dlq']) {
+      const msg = fakeQueueMessage({ v: 1, job: { type: 'email-otp' } })
+      const base = fakeMessageBatch([msg])
+      const batch = Object.assign(base, { queue })
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        await workers.queue(batch, workersTestEnv())
+        // Nothing is dropped for want of a database, and the message is never
+        // treated as a broken command envelope.
+        expect(batch.retriedAll).toBe(true)
+        expect(msg.acked).toBe(false)
+        expect(errorSpy.mock.calls.flat().join(' ')).not.toContain('command.permanent_failure')
+      } finally {
+        errorSpy.mockRestore()
+      }
+    }
+  }, 30_000)
+
   it('queue retries the batch when no DB client is available', async () => {
     setWorkersDbFactoryForTests(() => undefined)
     const batch = fakeMessageBatch([fakeQueueMessage({ commandId: 'cmd-1' })])
