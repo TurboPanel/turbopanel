@@ -850,7 +850,7 @@ service. Suffix contract: `src/client/system/AGENTS.md` → **Container name suf
 contract**. Apply writes `service.options.instances` to the member count so
 reconcile keeps pending ordinal-2/3 rows.
 
-`prepareManagedApplyPayloads` (`src/client/managed/apply-prepare.ts`) allocates
+`prepareManagedApplyPayloads` (`src/features/managed/apply-prepare.ts`) allocates
 one container per member via `ensureManagedContainerAllocation`, stamps
 per-member `containerName` / `memberId` / `peers` / resealed credentials and
 `orgTlsMaterial` onto each `managed.apply` payload, and prunes pending service
@@ -862,7 +862,7 @@ pin, or unpinned env whose project default is that server — never every unpinn
 binding in the organization. When a binding consumer is not co-resident,
 ProxySQL also joins that environment's spanning `tpn_*` segments (pinned to the
 reserved last-usable host) so remote consumers resolve it by name. Coverage:
-`src/client/managed/apply-prepare.test.ts` and
+`src/features/managed/apply-prepare.test.ts` and
 `allocate-managed-container.test.ts`.
 
 ## Cluster members

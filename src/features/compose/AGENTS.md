@@ -256,7 +256,7 @@ this check, and a file inside the service's directory is one a container could
 have written. A bind of the service's directory itself (`.:/app`, `./:/app`)
 is host-level too — a container that can write there can rewrite the deployed
 files and plant symlinks. This check is lexical; the daemon resolves every bind on the host
-before `compose up` (turbopaneld `src/deploy/compose-host-paths.ts`), which is
+before `compose up` (`../turbopaneld/src/deploy/compose-host-paths.ts`), which is
 what catches a symlink planted inside `./data`.
 `lint.ts` emits each finding with the same `field_requires_org_opt_in` code
 as a gated key, so every rule below applies to both. The platform itself never

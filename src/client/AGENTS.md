@@ -325,7 +325,7 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   "use or delete the key", "restore one" or "buy one") when every purchased
   license is bound, provisioning, held by an unused key, or ending at the
   boundary (net of outstanding seat releases); `DELETE /licenses/:id` runs the
-  detach-first refusal, then the billing gate (`authn/license-lifecycle.ts`),
+  detach-first refusal, then the billing gate (`licenses/routes.ts`, `isCustomerBillingOperational`),
   which records a deferred `release-seat` intent under the org's quantity lease
   so the seat drops at the period boundary (**409**
   `billing_mutation_in_progress` while held).

@@ -4,35 +4,43 @@
 
 Feature-first tree. The four executables stay at `src/` root. Names that match
 URL prefixes stay (`client/` = end-user API surface; `daemon/` = control-plane
-side of the daemon protocol, **not** `turbopaneld`). `lib/` is an admitted
-kernel only (both-runtime, no DB connection import, no feature vocabulary).
+side of the daemon protocol, **not** `turbopaneld`). `lib/` is the kernel
+(both-runtime, no DB connection import, no feature vocabulary). The import
+rules are enforced by `pnpm check:import-boundaries` over all of `src/lib`;
+violations that predate the wide rule are listed in
+`scripts/import-boundaries-baseline.json` and may only shrink.
 
 ```text
 src/
 ├── workers.ts · workers-vitest.ts · deno.ts · deno-dev.ts   # only executables
 ├── app/            # createApp, surfaces, cors, security-headers,
-│                   # browser-write-protection, scalar-html, build-info,
-│                   # version, developer-surface gate (dev-mode)
+│                   # browser-write-protection, body-limit, write-rate-limit,
+│                   # scalar-html, build-info, version, dev-mode
 ├── platform/
-│   ├── ports/      # command-queue, execution-log-store, rate-limiter,
-│   │               # query-cache, email-queue
-│   ├── workers/    # bindings, Hyperdrive, Workers queue, R2, Mailgun
-│   └── deno/       # server.ts (was deno-server), server-paths, runtime-paths,
-│                   # AMQP, filesystem/S3 stores, Redis, SMTP, DuckDB
+│   ├── ports/      # composition hooks the entries fill in: fleet-presence,
+│   │               # load-server-status, managed-ha-recovery, tcp-probe,
+│   │               # host-ipv4-discovery, register-command-runtime-ports
+│   ├── workers/    # bindings, Hyperdrive binding map, connection retry,
+│   │               # status edge cache, TCP probe
+│   └── deno/       # server.ts, server-paths, runtime-paths, job-tick,
+│                   # AMQP publisher and queues (commands, email),
+│                   # filesystem execution-log store, probes,
+│                   # ingress/ (self-hosted admin routes)
 ├── db/             # schema + factories + generic helpers; AGENTS.md
-├── lib/            # kernel: ip-address, naming, version-wire, machine-key,
-│                   # peer-address, display-name-format, timezones,
-│                   # optional-fields, logger, log-compat, sha512-crypt,
-│                   # secrets/{secrets,data-encryption,generate-secret},
-│                   # http/, tls/
-├── contracts/      # command schemas, deploy-validation, hostname,
-│                   # metrics-contract, capability-plan, topology,
-│                   # cell + cell-protocol, server-addresses,
-│                   # runtime-registry, update-channel
+├── lib/            # kernel: loose helpers (ip-address, naming,
+│                   # version-wire, machine-key, peer-address, logger,
+│                   # timezones, sha512-crypt, ...) plus folders
+│                   # acme/, email/mailer/, encoding/, http/,
+│                   # panel-identity/, secrets/, tls/
+├── contracts/      # wire shapes: commands/ (schemas, deploy-validation,
+│                   # hostname, tunnel shapes), cell + cell-protocol,
+│                   # metrics-contract, capability-plan, topology-*,
+│                   # server-addresses, runtime-registry, update-channel
 ├── features/       # domain modules (organizations, servers, compose,
-│                   # commands consumer, email queue, managed, …)
+│                   # commands consumer, email, managed, ...)
 ├── client/ · admin/ · developer/ · daemon/ · webhook/ · install/ · cli/
-├── query-cache/    # keep (own AGENTS.md); backends live in platform/
+├── jobs/           # registry.ts: the shared job table
+├── query-cache/    # own AGENTS.md; holds the Hyperdrive and Redis backends
 └── test-fixtures/
 ```
 
@@ -46,8 +54,8 @@ src/
   channel the instance follows, and rebuilds the overlay before enqueueing
   updates, instead of reading the public rail; the control plane and web
   interface get no target, since both run from the checkouts)
-- `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers
-  `developer/routes-core` once per isolate
+- `src/workers.ts` — Workers entry (`wrangler.jsonc` main); mounts no
+  developer surface
 - `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy entrypoint
   (pre-commit / `pnpm check:workers-bundle`)
 - `src/lib/machine-key.ts` — machine-key derive/normalize (Workers + Deno; no
@@ -57,8 +65,9 @@ src/
   Scalar embed HTML
 - `src/client/routes.ts` — client REST router; imports `src/client/authn/*` and
   `src/client/authz/*`
-- `src/client/authn/` — session, credentials, PAM install gate, license CRUD,
-  HTTP auth handlers
+- `src/client/authn/` — session, credentials, passkeys, two-factor, step-up,
+  one-time codes, install state, HTTP auth handlers; license routes live in
+  `src/client/licenses/`
 
 - `src/daemon/` — control-plane side of `/api/daemon/v1` + `/ws/daemon/v1`
   (see `src/daemon/AGENTS.md`). Cell protocol types live in `src/contracts/`;
@@ -71,12 +80,16 @@ src/
 - `src/db/schema.ts` — Drizzle table definitions (`server`, etc.; see
   `src/db/AGENTS.md`); connection factories stay in `src/db/connection.ts`
 - `src/install/routes.ts` — self-hosted install wizard (`/api/install/v1/*`;
-  Deno-only registration). Install helpers live in `src/features/install/`.
+  registered from `src/platform/deno/server.ts`, so Deno only). Install helpers
+  live in `src/features/install/`.
 
-- `src/features/email/` — shared queue types/templates; SMTP (Deno/AMQP) and
-  Mailgun (Workers) backends live under `src/platform/`
-- `src/developer/` — developer surface (Deno-only routes + Workers-safe
-  `routes-core.ts`)
+- `src/features/email/` — queue types, templates and the senders (`smtp/`,
+  `mailgun/`, `mailpit/`); the Deno AMQP publisher is
+  `src/platform/deno/email/deno-amqp-queue.ts` and the in-process consumer is
+  `src/lib/email/mailer/deno-mailer-consumer.ts`
+- `src/developer/` — developer surface, Deno development entry only
+  (`src/deno-dev.ts` calls `registerDeveloperRoutes`); `routes-core.ts` holds
+  the shared router builder
 
 - `src/platform/deno/server-paths.ts` / `src/features/servers/server-registry.ts` — Unix socket path + daemon
   server row resolution

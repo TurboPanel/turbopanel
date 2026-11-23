@@ -65,6 +65,48 @@ test('the Deno composition root may import the ingress directory', async () => {
   assertEquals(result.code, 0, result.text)
 })
 
+const KERNEL_BASELINE = 'scripts/import-boundaries-baseline.json'
+
+test('a nested lib folder importing a feature, a surface or the db connection fails', async () => {
+  const result = await runInTree({
+    'src/features/f/x.ts': 'export const x = 1\n',
+    'src/lib/email/m.ts': "import { x } from '../../features/f/x.ts'\nexport const m = x\n",
+    'src/lib/panel/p.ts':
+      "import { getDb } from '../../db/connection.ts'\nexport const p = getDb\n",
+    'src/db/connection.ts': 'export const getDb = 1\n',
+  })
+  assertEquals(result.code, 1)
+  assertStringIncludes(result.text, 'src/lib/email/m.ts (lib) imports feature src/features/f/x.ts')
+  assertStringIncludes(result.text, 'src/lib/panel/p.ts (lib) imports db connection')
+  assertStringIncludes(result.text, 'src/lib/panel/p.ts (lib) references getDb')
+})
+
+test('a baselined lib violation passes, a new one fails, a fixed one must leave the baseline', async () => {
+  const tree = {
+    'src/features/f/x.ts': 'export const x = 1\n',
+    'src/lib/email/m.ts': "import { x } from '../../features/f/x.ts'\nexport const m = x\n",
+  }
+  const known = 'src/lib/email/m.ts (lib) imports feature src/features/f/x.ts'
+  const accepted = await runInTree({ ...tree, [KERNEL_BASELINE]: JSON.stringify([known]) })
+  assertEquals(accepted.code, 0, accepted.text)
+
+  const added = await runInTree({
+    ...tree,
+    'src/lib/other.ts': "import { x } from './../features/f/x.ts'\nexport const o = x\n",
+    [KERNEL_BASELINE]: JSON.stringify([known]),
+  })
+  assertEquals(added.code, 1)
+  assertStringIncludes(added.text, 'src/lib/other.ts (lib) imports feature')
+
+  const stale = await runInTree({
+    'src/features/f/x.ts': 'export const x = 1\n',
+    'src/lib/email/m.ts': 'export const m = 1\n',
+    [KERNEL_BASELINE]: JSON.stringify([known]),
+  })
+  assertEquals(stale.code, 1)
+  assertStringIncludes(stale.text, 'lists a fixed violation, remove it')
+})
+
 test('the real tree passes', async () => {
   const root = join(dirname(scriptPath), '..')
   const out = await new Deno.Command('node', {
