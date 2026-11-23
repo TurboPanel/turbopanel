@@ -367,14 +367,14 @@ async function projectSubscriptionPass(
     )
     return { action: 'skipped', reason: 'customer_subject_missing' }
   }
+  const status = str(sub.status)
+  if (!status) return { action: 'skipped', reason: 'status_missing' }
+
   const taxIds = await deps.client.get<StripeObject>('/v1/tax_ids', {
     owner: { type: 'customer', customer_account: providerCustomerId },
     limit: 1,
   })
   const taxId = firstTaxId(Array.isArray(taxIds.data) ? taxIds.data.filter(isObject) : [])
-
-  const status = str(sub.status)
-  if (!status) return { action: 'skipped', reason: 'status_missing' }
 
   const items = await loadSubscriptionItems(
     deps.client,

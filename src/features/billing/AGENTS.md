@@ -72,7 +72,9 @@ Both `TURBOPANEL_STRIPE_SECRET_KEY` and
 `TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET` are **secrets**
 (`wrangler secret put`), never `vars` in `wrangler.jsonc`; `keep_vars: true`
 protects dashboard-set values across deploys. `TURBOPANEL_STRIPE_API_VERSION` is
-an optional override of the pin below. `TURBOPANEL_STRIPE_IS_COUPON_ALLOWED`
+an optional override of the pin below, and `TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION`
+an optional override of it for `/v2` (Accounts) calls only.
+`TURBOPANEL_STRIPE_IS_COUPON_ALLOWED`
 (`1` on, anything else off) is a plain var: when on, Checkout sends
 `allow_promotion_codes=true` so the customer can type a promotion code. Live
 commits `"0"`; an unfinished Checkout session already handed out keeps the
@@ -160,6 +162,18 @@ application/json` and a required `Stripe-Version`. That is the v1 pin unless
   `TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION` names a different one (a platform
   outside Connect needs a `.preview` version while Accounts v2 is in preview).
   v1 calls are unchanged: form bodies, the v1 pin.
+- The account is created with `configuration.customer` and the
+  `automatic_indirect_tax` capability requested (Checkout and subscriptions send
+  `automatic_tax`), and **no `identity`**: Stripe rejects identity fields on a
+  customer-only account (`unsupported_identity_field_for_configs`). Stripe Tax
+  takes the account's shipping address, then its identity address, then the
+  default payment method's billing details; production relies on the card
+  Checkout collects, the harness sets `configuration.customer.shipping`.
+- Checkout still sends `customer_update[address|name]=auto` with
+  `customer_account`. Stripe documents `customer_update` as only valid with
+  `customer` and `customer_account` as behaving the same as `customer`; that
+  pair has not been exercised against a sandbox, so run one Checkout before
+  launch.
 - No new event destination is needed: `customer.subscription.*` and `invoice.*`
   remain v1 snapshot events, and the projection refetches before reading. v2
   account events (thin events) are not consumed.
@@ -720,9 +734,10 @@ code.
    `not_collecting` and totals carry no tax. Register a test jurisdiction (the
    harness's customers are in California, US) before running the
    proration-sensitive scenarios, or the invoice totals the harness compares
-   will differ from a registered account's. A customer with no address fails
-   `customer_tax_location_invalid` — the harness sets one; production gets it
-   from Checkout's `customer_update[address]=auto`.
+   will differ from a registered account's. A customer with no
+   address fails `customer_tax_location_invalid` — the harness sets the
+   account's shipping address; production gets the address from the card
+   Checkout collects.
 5. **Do not configure Billing Automations in the sandbox.** An account with
    Automations refuses to attach a test clock to an existing customer, and
    although the harness always creates its customers directly on a clock,

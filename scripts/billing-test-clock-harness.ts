@@ -518,23 +518,23 @@ export async function createClockCustomer(
     display_name: `TurboPanel harness ${ctx.name}`,
     contact_email: `harness+${ctx.name}@example.invalid`,
     metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ctx.organizationId },
-    identity: {
-      country: 'us',
-      individual: {
-        given_name: `TurboPanel harness ${ctx.name}`,
-        address: {
-          line1: '510 Townsend St',
-          city: 'San Francisco',
-          state: 'CA',
-          postal_code: '94103',
-          country: 'us',
-        },
-      },
-    },
     configuration: {
       customer: {
         test_clock: ctx.clock.id,
         capabilities: { automatic_indirect_tax: { requested: true } },
+        // A customer-only account takes no `identity`
+        // (`unsupported_identity_field_for_configs`); the account's shipping
+        // address is the first location Stripe Tax uses.
+        shipping: {
+          name: `TurboPanel harness ${ctx.name}`,
+          address: {
+            line1: '510 Townsend St',
+            city: 'San Francisco',
+            state: 'CA',
+            postal_code: '94103',
+            country: 'us',
+          },
+        },
       },
     },
   })
@@ -562,8 +562,8 @@ export async function attachCard(
   await ctx.client.post(`/v1/payment_methods/${encodeURIComponent(paymentMethodId)}/attach`, {
     customer_account: providerCustomerId,
   })
-  await ctx.client.post(`/v1/customers/${encodeURIComponent(providerCustomerId)}`, {
-    invoice_settings: { default_payment_method: paymentMethodId },
+  await ctx.client.post(`/v2/core/accounts/${encodeURIComponent(providerCustomerId)}`, {
+    configuration: { customer: { billing: { default_payment_method: paymentMethodId } } },
   })
   ctx.log(`${failing ? 'failing' : 'good'} card ${paymentMethodId} is now the default`)
   return paymentMethodId

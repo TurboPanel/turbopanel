@@ -158,9 +158,11 @@ export type CreateCustomerInput = Readonly<{
  * C2/C14 — the organization's payer is a v2 Account with the customer
  * configuration (`POST /v2/core/accounts`, JSON). It names its organization
  * in `metadata` under exactly the key `customer-subject.ts` reads, so the
- * first webhook can resolve its subject. No `identity` is sent: a
- * customer-only account takes none, and Checkout collects the address. The
- * caller upserts `payer` from the returned id (`acct_…`) immediately.
+ * first webhook can resolve its subject. The `automatic_indirect_tax`
+ * capability is requested because Checkout and subscriptions send
+ * `automatic_tax`. No `identity` is sent: a customer-only account takes none
+ * (`unsupported_identity_field_for_configs`), and Checkout collects the
+ * address. The caller upserts `payer` from the returned id (`acct_…`) immediately.
  */
 export async function createCustomerForOrganization(
   client: StripeClient,
@@ -169,7 +171,9 @@ export async function createCustomerForOrganization(
   const account = await client.post<StripeObject>(
     '/v2/core/accounts',
     {
-      configuration: { customer: {} },
+      configuration: {
+        customer: { capabilities: { automatic_indirect_tax: { requested: true } } },
+      },
       metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: input.organizationId },
       ...(input.email ? { contact_email: input.email } : {}),
       ...(input.name ? { display_name: input.name } : {}),

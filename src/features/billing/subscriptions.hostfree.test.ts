@@ -213,6 +213,13 @@ test('createCustomerForOrganization writes the metadata key the projection reads
   assertEquals(out.providerCustomerId, 'acct_9')
   assertEquals(client.calls[0]!.path, '/v2/core/accounts')
   assertEquals(formOf(client.calls[0]!, 'contact_email'), 'o@example.com')
+  assertEquals(
+    formOf(
+      client.calls[0]!,
+      'configuration[customer][capabilities][automatic_indirect_tax][requested]'
+    ),
+    'true'
+  )
   assertEquals(formOf(client.calls[0]!, 'metadata[turbopanel_organization_id]'), 'org-1')
   assertEquals(client.calls[0]!.idempotencyKey, 'customer:org-1')
 })

@@ -192,6 +192,7 @@ test('T4 · ensureCustomerForOrganization reuses the projected payer, else creat
   const create = client.calls[0]!
   assertEquals(create.idempotencyKey, windowedIdempotencyKey(`customer:${ORG}`, Date.parse(NOW)))
   assertEquals(create.form, [
+    ['configuration[customer][capabilities][automatic_indirect_tax][requested]', 'true'],
     [`metadata[${STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY}]`, ORG],
     ['contact_email', 'owner@example.com'],
   ])

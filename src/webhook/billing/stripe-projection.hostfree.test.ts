@@ -297,9 +297,9 @@ test('T6 · every customer/subject/status skip answers its reason and writes no 
     const outcome = await projectSubscriptionById({ db, client, now: NOW }, 'sub_1')
     assertEquals(skipped(outcome), reason)
     assertEquals(rowCounts(db), { payer: 0, subscription: 0, seat: 0 }, reason)
-    // customer_missing stops after the subscription; a closed account or an
-    // unnamed subject after the account; only a missing status reads tax ids too.
-    const expectedCalls = reason === 'customer_missing' ? 1 : reason === 'status_missing' ? 3 : 2
+    // customer_missing stops after the subscription; every other skip stops
+    // after the account, before the tax ids are read.
+    const expectedCalls = reason === 'customer_missing' ? 1 : 2
     assertEquals(client.calls.length, expectedCalls, reason)
   }
 })

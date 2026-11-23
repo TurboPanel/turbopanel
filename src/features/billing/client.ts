@@ -83,6 +83,29 @@ function stripePath(path: string): string {
   return path
 }
 
+/**
+ * What differs between a `/v1` and a `/v2` call: the version header, the
+ * content type and how the params travel. `/v2` mutations send JSON; `/v2`
+ * reads still take a query string (arrays as `include[0]=...`, which the form
+ * encoder spells), as does every `/v1` read.
+ */
+function wireFormat(
+  config: BillingConfig,
+  method: 'GET' | 'POST' | 'DELETE',
+  path: string,
+  params: StripeFormParams | undefined
+): { version: string; contentType: string; query: string; body: string | undefined } {
+  const isV2 = stripePath(path).startsWith('/v2/')
+  const hasBody = method === 'POST'
+  const encoded = isV2 && hasBody ? JSON.stringify(params ?? {}) : encodeStripeForm(params)
+  return {
+    version: isV2 ? (config.accountsApiVersion ?? config.apiVersion) : config.apiVersion,
+    contentType: isV2 ? 'application/json' : 'application/x-www-form-urlencoded',
+    query: hasBody ? '' : encoded,
+    body: hasBody ? encoded : undefined,
+  }
+}
+
 function idOf(item: unknown): string | null {
   if (typeof item !== 'object' || item === null) return null
   const id = (item as { id?: unknown }).id
@@ -102,25 +125,18 @@ export function createStripeClient(
     params: StripeFormParams | undefined,
     idempotencyKey: string | null
   ): Promise<T> {
-    const isV2 = stripePath(path).startsWith('/v2/')
+    const wire = wireFormat(config, method, path, params)
     const headers: Record<string, string> = {
       Authorization: `Bearer ${config.secretKey}`,
-      'Stripe-Version': isV2 ? (config.accountsApiVersion ?? config.apiVersion) : config.apiVersion,
-      'Content-Type': isV2 ? 'application/json' : 'application/x-www-form-urlencoded',
+      'Stripe-Version': wire.version,
+      'Content-Type': wire.contentType,
       Accept: 'application/json',
     }
     if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey
 
-    // `/v2` reads still take a query string (arrays as `include[0]=...`,
-    // which the form encoder spells); only mutating bodies are JSON.
-    let url = `${baseUrl}${path}`
-    let body: string | undefined
-    if (method === 'GET' || method === 'DELETE') {
-      const encoded = encodeStripeForm(params)
-      if (encoded.length > 0) url += `?${encoded}`
-    } else {
-      body = isV2 ? JSON.stringify(params ?? {}) : encodeStripeForm(params)
-    }
+    const search = wire.query.length > 0 ? `?${wire.query}` : ''
+    const url = `${baseUrl}${path}${search}`
+    const body = wire.body
 
     // Resolved per call, never captured at module load (Workers 10021), and
     // `AbortSignal.timeout` likewise minted here.

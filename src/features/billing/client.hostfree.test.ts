@@ -285,7 +285,9 @@ test('createCustomerForOrganization over the real client posts a v2 Account with
   assertEquals(call.url, 'https://api.stripe.com/v2/core/accounts')
   assertEquals(call.headers['idempotency-key'], 'customer:org-1')
   assertEquals(JSON.parse(call.body ?? ''), {
-    configuration: { customer: {} },
+    configuration: {
+      customer: { capabilities: { automatic_indirect_tax: { requested: true } } },
+    },
     metadata: { turbopanel_organization_id: 'org-1' },
     contact_email: 'o@example.com',
     display_name: 'Org One',
