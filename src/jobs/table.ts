@@ -63,6 +63,14 @@ const WORKERS = ['workers'] as const
 
 const onCadence = ({ cadenceDue }: JobDueInput, job: CronJob) => cadenceDue(job)
 
+/** A job that runs on its cadence slot alone, on both runtimes. */
+const onSlot = <const I extends string, const C extends CronJob>(id: I, cadence: C) => ({
+  id,
+  cadence,
+  runtimes: BOTH,
+  due: (input: JobDueInput) => onCadence(input, cadence),
+})
+
 /** A connected server and a queue that can reach it. */
 const connected = (input: JobDueInput) => input.queue && input.gates.connectedServer
 
@@ -131,36 +139,11 @@ export const JOBS = [
     runtimes: BOTH,
     due: ({ gates }) => gates.commandRecoveryWork,
   },
-  {
-    id: 'command-dispatch-sweep',
-    cadence: 'commandDispatchCleanup',
-    runtimes: BOTH,
-    due: (input) => onCadence(input, 'commandDispatchCleanup'),
-  },
-  {
-    id: 'webhook-delivery-sweep',
-    cadence: 'webhookDeliveries',
-    runtimes: BOTH,
-    due: (input) => onCadence(input, 'webhookDeliveries'),
-  },
-  {
-    id: 'daemon-nonce-sweep',
-    cadence: 'daemonNonces',
-    runtimes: BOTH,
-    due: (input) => onCadence(input, 'daemonNonces'),
-  },
-  {
-    id: 'pin-silence-sweep',
-    cadence: 'pinSilence',
-    runtimes: BOTH,
-    due: (input) => onCadence(input, 'pinSilence'),
-  },
-  {
-    id: 'orphan-folder-alert-sweep',
-    cadence: 'orphanFolderAlerts',
-    runtimes: BOTH,
-    due: (input) => onCadence(input, 'orphanFolderAlerts'),
-  },
+  onSlot('command-dispatch-sweep', 'commandDispatchCleanup'),
+  onSlot('webhook-delivery-sweep', 'webhookDeliveries'),
+  onSlot('daemon-nonce-sweep', 'daemonNonces'),
+  onSlot('pin-silence-sweep', 'pinSilence'),
+  onSlot('orphan-folder-alert-sweep', 'orphanFolderAlerts'),
   {
     id: 'notification-retry-sweep',
     cadence: null,
@@ -173,24 +156,9 @@ export const JOBS = [
     runtimes: BOTH,
     due: (input) => input.gates.notificationHeld && onCadence(input, 'notificationDigests'),
   },
-  {
-    id: 'execution-log-sweep',
-    cadence: 'executionLogs',
-    runtimes: BOTH,
-    due: (input) => onCadence(input, 'executionLogs'),
-  },
-  {
-    id: 'history-prune',
-    cadence: 'historyPrune',
-    runtimes: BOTH,
-    due: (input) => onCadence(input, 'historyPrune'),
-  },
-  {
-    id: 'notification-history-prune',
-    cadence: 'notificationPrune',
-    runtimes: BOTH,
-    due: (input) => onCadence(input, 'notificationPrune'),
-  },
+  onSlot('execution-log-sweep', 'executionLogs'),
+  onSlot('history-prune', 'historyPrune'),
+  onSlot('notification-history-prune', 'notificationPrune'),
   {
     id: 'edge-trust-refresh',
     cadence: 'edgeTrust',
