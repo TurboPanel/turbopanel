@@ -153,8 +153,41 @@ test('metabase preset uses mysql for both MySQL-family engines', () => {
     'MB_DB_DBNAME',
     'MB_DB_USER',
     'MB_DB_PASS',
+    'MB_DB_CONNECTION_URI',
   ])
   assertEquals(rows.get('MB_DB_PASS')?.isSecret, true)
+})
+
+test('metabase preset: a JDBC URI carries the TLS flags, no credentials', () => {
+  const uri = (engine: string, mode: ManagedSslMode, delivery: BindingDelivery = 'container') =>
+    render('metabase', engine, delivery, mode).get('MB_DB_CONNECTION_URI')
+  assertEquals(uri('mariadb', 'require')?.value, 'mysql://db.internal:5432/appdb?sslMode=REQUIRED')
+  assertEquals(uri('mysql', 'prefer')?.value, 'mysql://db.internal:5432/appdb?sslMode=PREFERRED')
+  assertEquals(uri('mariadb', 'require')?.isSecret, false)
+  // Connector/J cannot read a PEM CA, so the verify modes still encrypt.
+  assertEquals(
+    uri('mariadb', 'verify-full')?.value,
+    'mysql://db.internal:5432/appdb?sslMode=REQUIRED'
+  )
+  assertEquals(
+    uri('postgres', 'require')?.value,
+    'postgres://db.internal:5432/appdb?sslmode=require'
+  )
+  assertEquals(
+    uri('postgres', 'verify-full')?.value,
+    'postgres://db.internal:5432/appdb?sslmode=verify-full&sslrootcert=/run/secrets/DATABASE_CA_CERT'
+  )
+  // No CA file on a native app: a verify mode is left out, never weakened.
+  assertEquals(uri('postgres', 'verify-ca', 'host-node'), undefined)
+  assertEquals(
+    uri('postgres', 'require', 'host-node')?.value,
+    'postgres://127.0.0.1:5432/appdb?sslmode=require'
+  )
+  assertEquals(uri('mariadb', 'disable'), undefined)
+  for (const engine of ['postgres', 'mysql', 'mariadb']) {
+    const value = uri(engine, 'require')?.value ?? ''
+    assertEquals(value.includes('appuser') || value.includes('pw@'), false)
+  }
 })
 
 test('uptime kuma preset: TLS switch follows the mode, CA text not on a site', () => {

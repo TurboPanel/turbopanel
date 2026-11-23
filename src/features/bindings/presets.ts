@@ -9,7 +9,7 @@
  * materializing whatever its form. Pure data and pure functions, no I/O.
  */
 
-import type { ManagedSslMode } from '../managed/ssl.ts'
+import { mysqlFamilySslMode, type ManagedSslMode } from '../managed/ssl.ts'
 
 export const BINDING_PRESETS = [
   'postgres',
@@ -30,7 +30,16 @@ export function isBindingPreset(value: unknown): value is BindingPreset {
 
 /** The fields a template may name (the reference fields a preset reads). */
 type PresetField =
-  'host' | 'port' | 'name' | 'user' | 'password' | 'url' | 'ssl_mode' | 'ca_file' | 'ca_text'
+  | 'host'
+  | 'port'
+  | 'name'
+  | 'user'
+  | 'password'
+  | 'url'
+  | 'ssl_mode'
+  | 'ca_file'
+  | 'ca_text'
+  | 'jdbc_ssl'
 
 const SECRET_FIELDS: ReadonlySet<string> = new Set(['password', 'url', 'ca_text'])
 /** Fields a PHP site must receive for the app to connect at all. */
@@ -123,6 +132,18 @@ const PRESET_DEFINITIONS: Readonly<Record<BindingPreset, PresetDefinition>> = {
       { name: 'MB_DB_DBNAME', template: '{name}' },
       { name: 'MB_DB_USER', template: '{user}' },
       { name: 'MB_DB_PASS', template: '{password}' },
+      // The JDBC URI carries the TLS flags (the binding's own URL spells them for
+      // libpq / libmysql, which JDBC ignores). The user and password stay in
+      // MB_DB_USER / MB_DB_PASS, so no secret is in this value.
+      {
+        name: 'MB_DB_CONNECTION_URI',
+        template: {
+          postgres: 'postgres://{host}:{port}/{name}?{jdbc_ssl}',
+          mysql: 'mysql://{host}:{port}/{name}?{jdbc_ssl}',
+          mariadb: 'mysql://{host}:{port}/{name}?{jdbc_ssl}',
+        },
+        when: 'ssl',
+      },
     ],
   },
   'uptime-kuma': {
@@ -188,6 +209,28 @@ function conditionHolds(when: PresetCondition | undefined, sslMode: string | nul
   return sslMode !== 'disable'
 }
 
+/**
+ * The TLS query of a JDBC URL, or `undefined` when it cannot be stated:
+ * - Postgres (pgjdbc) takes the mode as is, and `sslrootcert` in the verify
+ *   modes; without a CA file a verify mode is left out rather than weakened.
+ * - MySQL family (Connector/J) spells the mode `sslMode=REQUIRED`. Its verify
+ *   modes need a Java key store, which a PEM file cannot fill, so the verify
+ *   modes encrypt with `REQUIRED` (no certificate check) instead of failing.
+ */
+function jdbcSslQuery(
+  engineCode: string,
+  sslMode: ManagedSslMode | null,
+  caFile: string | undefined
+): string | undefined {
+  if (sslMode === null || sslMode === 'disable') return undefined
+  if (engineCode === 'postgres') {
+    if (!VERIFY_MODES.has(sslMode)) return `sslmode=${sslMode}`
+    return caFile === undefined ? undefined : `sslmode=${sslMode}&sslrootcert=${caFile}`
+  }
+  const verifies = VERIFY_MODES.has(sslMode)
+  return `sslMode=${verifies ? 'REQUIRED' : mysqlFamilySslMode(sslMode)}`
+}
+
 export type PresetRow = { key: string; value: string; isSecret: boolean }
 
 /** Values the caller holds, by field. A field the delivery kind cannot have is absent. */
@@ -218,10 +261,13 @@ export function renderPresetRows(
   }>
 ): PresetRow[] {
   const rows: PresetRow[] = []
+  const jdbcSsl = jdbcSslQuery(params.engineCode, params.sslMode, params.fields.ca_file)
+  const fields: PresetFieldValues =
+    jdbcSsl === undefined ? params.fields : { ...params.fields, jdbc_ssl: jdbcSsl }
   for (const entry of PRESET_DEFINITIONS[preset].entries) {
     const template = templateFor(entry, params.engineCode)
     if (template === null || !conditionHolds(entry.when, params.sslMode)) continue
-    const value = renderTemplate(template, params.fields)
+    const value = renderTemplate(template, fields)
     if (value === null) continue
     rows.push({
       key: entry.name,
