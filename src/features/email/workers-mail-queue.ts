@@ -15,7 +15,8 @@
  */
 import { parseEmailJob } from '../../lib/email/mailer/parse-email-job.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
-import { decideRetry } from './smtp/retry-policy.ts'
+import { deliverEmailJob, type EmailDeliverySender } from './deliver-email-job.ts'
+import type { MailerSender } from './sender-types.ts'
 import type { EmailJob, EmailQueue } from './types.ts'
 
 /** Narrow view of a Workers `Queue` producer binding (see `commands/workers-queue.ts`). */
@@ -59,8 +60,27 @@ export type EmailQueueMessage = {
   retry(options?: { delaySeconds?: number }): void
 }
 
-/** Where a job goes to be sent: the current settings' direct sender, or nothing configured. */
-export type EmailSender = { send(job: EmailJob): Promise<void> } | null
+/**
+ * The Workers direct queue as a sender for the delivery core: a send that
+ * throws becomes a failed result, permanent when it is an `EmailSendError`
+ * that says so.
+ */
+export function emailQueueSender(queue: EmailQueue): MailerSender {
+  return {
+    async sendJob(job) {
+      try {
+        await queue.enqueue(job)
+        return { success: true }
+      } catch (error) {
+        return {
+          success: false,
+          error: errorText(error),
+          permanent: error instanceof EmailSendError && error.permanent,
+        }
+      }
+    },
+  }
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -100,7 +120,7 @@ async function deadLetter(
  */
 export async function settleEmailMessage(input: {
   message: EmailQueueMessage
-  sender: EmailSender
+  sender: EmailDeliverySender
   deadLetterQueue?: EmailQueueBinding
   /** Counts a dead-lettered job (`dead-letter-tally.ts`); never throws. */
   onDeadLetter?: () => Promise<void>
@@ -117,38 +137,26 @@ export async function settleEmailMessage(input: {
     }
     return 'dead'
   }
-  let failure: string
-  let permanent = false
-  if (input.sender === null) {
-    failure = 'system email is not configured'
-  } else {
-    try {
-      await input.sender.send(job)
-      message.ack()
-      return 'sent'
-    } catch (error) {
-      failure = errorText(error)
-      permanent = error instanceof EmailSendError && error.permanent
-    }
+  const outcome = await deliverEmailJob(
+    job,
+    input.sender,
+    Math.max(1, message.attempts),
+    input.random
+  )
+  if (outcome.kind === 'sent') {
+    message.ack()
+    return 'sent'
   }
-  const decision = permanent
-    ? ({ action: 'dead_letter' } as const)
-    : decideRetry(job.type, Math.max(1, message.attempts), input.random)
-  if (decision.action === 'retry') {
+  if (outcome.kind === 'retry') {
     compatLogWarn(
       'email',
-      `${job.type} failed (attempt ${message.attempts}), retrying in ${decision.delayMs}ms: ${failure}`
+      `${job.type} failed (attempt ${message.attempts}), retrying in ${outcome.delayMs}ms: ${outcome.reason}`
     )
-    message.retry({ delaySeconds: Math.max(1, Math.ceil(decision.delayMs / 1000)) })
+    message.retry({ delaySeconds: outcome.delayS })
     return 'retry'
   }
   try {
-    await deadLetter(
-      input.deadLetterQueue,
-      message,
-      `${job.type} gave up after ${message.attempts} attempts: ${failure}`,
-      input.onDeadLetter
-    )
+    await deadLetter(input.deadLetterQueue, message, outcome.reason, input.onDeadLetter)
     message.ack()
   } catch {
     // handed back above

@@ -33,7 +33,7 @@ import {
   registerWorkersShellWebSocket,
 } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './features/email/mailgun/workers-queue.ts'
-import type { EmailJob, EmailQueue } from './features/email/types.ts'
+import type { EmailQueue } from './features/email/types.ts'
 import {
   consumeDeadLetterBatch,
   deadLetterQueueKind,
@@ -44,6 +44,7 @@ import { isNoopEmailQueue } from './features/email/noop-queue.ts'
 import { recordEmailDeadLetter } from './features/email/dead-letter-tally.ts'
 import {
   createWorkersQueuedEmailQueue,
+  emailQueueSender,
   settleEmailMessage,
 } from './features/email/workers-mail-queue.ts'
 import { normalizeSignupEnvOverride } from './client/authn/install-state.ts'
@@ -449,9 +450,7 @@ async function consumeEmailBatch(batch: MessageBatch<unknown>, env: CloudflareBi
       stringBindingEnv(env),
       cachedDataEncryptionSecrets ?? undefined
     )
-    const sender = isNoopEmailQueue(direct)
-      ? null
-      : { send: (job: EmailJob) => direct.enqueue(job) }
+    const sender = isNoopEmailQueue(direct) ? null : emailQueueSender(direct)
     await forEachSequential(batch.messages, async (message) => {
       await settleEmailMessage({
         message,

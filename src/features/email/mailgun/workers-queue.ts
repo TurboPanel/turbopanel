@@ -5,6 +5,7 @@ import { resolveWorkersMailpitApiBaseUrl } from '../mailpit/env.ts'
 import { sendMailpitJob } from '../mailpit/send.ts'
 import { createNoopQueue } from '../noop-queue.ts'
 import type { EmailJob, EmailQueue } from '../types.ts'
+import { mailgunConfigFromSettings } from './config.ts'
 import { sendMailgunJob } from './send.ts'
 import { EmailSendError } from '../workers-mail-queue.ts'
 
@@ -99,16 +100,10 @@ export function emailQueueFromResolvedSettings(
     return createNoopQueue()
   }
 
-  const apiKey = resolved.mailgunApiKey?.trim() ?? ''
-  const domain = resolved.mailgunDomain?.trim() ?? ''
-  if (apiKey === '' || domain === '') {
+  const config = mailgunConfigFromSettings(resolved)
+  if (config === undefined) {
     return createNoopQueue()
   }
 
-  return createWorkersMailgunQueue({
-    apiKey,
-    domain,
-    from: resolved.from,
-    apiBase: resolved.mailgunApiBase,
-  })
+  return createWorkersMailgunQueue(config)
 }
