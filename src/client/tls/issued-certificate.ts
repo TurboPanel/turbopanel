@@ -333,7 +333,7 @@ function requestIsOpenFor(metadata: unknown, input: IssuedCertificateInput, now:
  * A daemon may only supply the certificate of a hosting placed on its own
  * server; a pin on any other server's hosting is none of its business.
  */
-async function rowsPinnedOnServer<T extends { id: string }>(
+export async function rowsPinnedOnServer<T extends { id: string }>(
   tx: Db,
   candidates: T[],
   serverId: string
