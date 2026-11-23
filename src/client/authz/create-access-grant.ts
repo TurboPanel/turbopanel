@@ -572,7 +572,7 @@ async function resolveActor(
       .limit(1)
     const row = rows[0]
     // A team of another organization answers exactly like an unknown team.
-    if (!row || row.organizationId !== entityOrganizationId) {
+    if (row?.organizationId !== entityOrganizationId) {
       return { ok: false, status: 404, error: 'Team not found' }
     }
     return { ok: true }
