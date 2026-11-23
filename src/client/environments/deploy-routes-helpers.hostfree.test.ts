@@ -219,6 +219,15 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(nativeUnresolved.status, 422)
   assertEquals(nativeUnresolved.body.error, 'native_app_unresolved_service')
 
+  const volumeName = mapPrepareErrorResponse({
+    kind: 'docker_volume_name_unsupported',
+    storageId: 'st-1',
+    storageName: 'data',
+  })
+  assertEquals(volumeName.status, 422)
+  assertEquals(volumeName.body.error, 'docker_volume_name_unsupported')
+  assertEquals(volumeName.body.storageId, 'st-1')
+
   const variableWithContext = mapPrepareErrorResponse({
     kind: 'variable_unresolved',
     message: 'missing {$project.x}',

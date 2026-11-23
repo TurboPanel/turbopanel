@@ -105,6 +105,12 @@ import {
   pruneUnreferencedComposeNetworks,
 } from '../../features/compose/docker-external-networks.ts'
 import { sharedVolumeIds } from '../../features/folders/shares.ts'
+import {
+  appendUnseenRegisteredVolumes,
+  dockerVolumeNameRefusal,
+  type DockerVolumeNameRefusal,
+  isDockerVolumeNameRefusal,
+} from './deploy-storage-volume-name.ts'
 import { dockerVolumeNameFromStorageId, principalHomeDir } from '../../lib/naming.ts'
 import { accessGroupsFor } from '../../features/principals/principal-access.ts'
 import { resolvePrincipalIds } from '../../features/principals/principal-ids.ts'
@@ -690,6 +696,7 @@ export type DeployPrepareError =
     }
   | { kind: 'empty_compose' }
   | { kind: 'datacenter_ip_required'; serverId: string }
+  | DockerVolumeNameRefusal
   | { kind: 'docker_external_network_unregistered'; names: string[] }
   | { kind: 'site_principal_ambiguous'; composeServiceName: string }
   /**
@@ -850,6 +857,7 @@ type HardDeployPrepareError =
   // Hard in preview too: a daemon without caches would refuse them, and a name clash is a real conflict.
   | ProjectCacheRefusal
   | { kind: 'datacenter_ip_required'; serverId: string }
+  | DockerVolumeNameRefusal
   // Hard in preview too: a PHP site cannot reach this database, however it is previewed.
   | { kind: 'binding_host_site_unsupported'; message: string }
   // Hard in preview too: the site would not come up in the mode it asks for.
@@ -1233,7 +1241,7 @@ function toStorageMaterialEntry(
   row: LocationJoinRow,
   serverId: string,
   mounts: EnvironmentDeployStorageMount[]
-): EnvironmentDeployStorageMaterial | null {
+): EnvironmentDeployStorageMaterial | DockerVolumeNameRefusal | null {
   if (!isDeployStorageKind(row.kind) || !isDeployStorageProvider(row.provider)) {
     return null
   }
@@ -1241,7 +1249,9 @@ function toStorageMaterialEntry(
   // A docker volume the platform does not manage is a name an author chose
   // (an old `external` registration). It is never sent: the host would be
   // asked to attach a volume the platform neither created nor owns.
-  if (row.provider === 'docker' && row.kind === 'volume' && flags.managed === false) return null
+  if (row.provider === 'docker' && row.kind === 'volume' && flags.managed === false) {
+    return dockerVolumeNameRefusal(row.storageId, row.name)
+  }
   const entry: EnvironmentDeployStorageMaterial = {
     storageId: row.storageId,
     locationId: row.locationId,
@@ -1258,36 +1268,13 @@ function toStorageMaterialEntry(
   if (row.provider === 'docker') {
     // The daemon treats `volumeName` as owned, so it is only ever the storage id.
     const pinned = readPinnedDockerVolumeName(row.metadata)
-    if (pinned !== null && pinned !== row.storageId) return null
+    if (pinned !== null && pinned !== row.storageId) {
+      return dockerVolumeNameRefusal(row.storageId, row.name)
+    }
     entry.volumeName = dockerVolumeNameFromStorageId(row.storageId)
   }
   if (flags.managed !== undefined) entry.managed = flags.managed
   return entry
-}
-
-function appendUnseenRegisteredVolumes(
-  material: EnvironmentDeployStorageMaterial[],
-  seenStorageIds: ReadonlySet<string>,
-  registeredVolumes: readonly RegisteredComposeVolume[],
-  serverId: string
-): void {
-  for (const registered of registeredVolumes) {
-    if (seenStorageIds.has(registered.storageId)) continue
-    // `volumeName` is always the storage UUID the platform pinned; a volume
-    // the platform does not manage has no such name and is never sent.
-    if (!registered.managed) continue
-    material.push({
-      storageId: registered.storageId,
-      locationId: registered.locationId,
-      kind: 'volume',
-      name: registered.composeKey,
-      provider: 'docker',
-      serverId,
-      volumeName: registered.volumeName,
-      managed: registered.managed,
-      mounts: [],
-    })
-  }
 }
 
 /** Warn about each published host port the platform reserves; the host refuses these at deploy. */
@@ -1384,7 +1371,7 @@ export async function loadStorageMaterial(
     cloneNamesByServiceId: Map<string, string[]>
     registeredVolumes: readonly RegisteredComposeVolume[]
   }
-): Promise<EnvironmentDeployStorageMaterial[]> {
+): Promise<EnvironmentDeployStorageMaterial[] | DockerVolumeNameRefusal> {
   const scopeConditions = [
     eq(storage.environmentId, params.environmentId),
     eq(storage.projectId, params.projectId),
@@ -1463,11 +1450,18 @@ export async function loadStorageMaterial(
       params.cloneNamesByServiceId
     )
     const entry = toStorageMaterialEntry(row, params.serverId, mounts)
+    if (isDockerVolumeNameRefusal(entry)) return entry
     if (entry) material.push(entry)
   }
 
-  appendUnseenRegisteredVolumes(material, seenStorageIds, params.registeredVolumes, params.serverId)
-  return material
+  return (
+    appendUnseenRegisteredVolumes(
+      material,
+      seenStorageIds,
+      params.registeredVolumes,
+      params.serverId
+    ) ?? material
+  )
 }
 
 export async function findUnavailableStorageCopy(
@@ -4175,6 +4169,7 @@ export async function prepareDeployCompose(
     cloneNamesByServiceId: buildCloneNamesByServiceId(serviceRows, pipeline.expansion),
     registeredVolumes: pipeline.registeredVolumes,
   })
+  if (isDockerVolumeNameRefusal(storageMaterialAll)) return storageMaterialAll
   const attached = detachMountsOfRemovedServices(
     storageMaterialAll,
     new Set(pipeline.expandedServiceNames)

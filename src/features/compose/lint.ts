@@ -51,6 +51,7 @@ import {
 import { validateAgainstUpstreamSchema } from './upstream-schema.ts'
 import { type BuildRefusalCode, collectBuildRefusals } from './build-policy.ts'
 import { collectHostAccessFindings } from './host-access.ts'
+import { lintVolumes } from './lint-volumes.ts'
 
 export type ComposeLintLevel = 'error' | 'warning'
 
@@ -1583,57 +1584,6 @@ function lintNetworks(
   }
 }
 
-/**
- * Refuse an author-declared `external` top-level volume. TurboPanel owns the
- * names of the volumes it creates; a volume the author points at by name
- * would be registered as the environment's own storage and sent to the host
- * under a name the author chose. Declare the volume without `external` and
- * the platform provisions it.
- */
-function isExternalDeclared(field: { value?: unknown }): boolean {
-  const value = field.value as { value?: unknown } | null | undefined
-  if (!value || !('value' in value)) return true
-  return value.value !== false && value.value !== null
-}
-
-function lintVolumeEntry(
-  key: string,
-  entry: Node | null | undefined,
-  strict: boolean,
-  lineCounter: LineCounter,
-  issues: ComposeLintIssue[]
-): void {
-  if (!isMap(entry) || isTaggedNode(entry)) return
-  for (const field of (entry as YAMLMap).items) {
-    if (stringKey(field.key) !== 'external' || !isExternalDeclared(field)) continue
-    issues.push({
-      level: strict ? 'error' : 'warning',
-      code: 'field_unsupported',
-      message:
-        `volumes.${key}.external is not supported: TurboPanel creates and names the ` +
-        `volumes of an environment itself. Remove \`external\` and let the platform provision "${key}".`,
-      path: `volumes.${key}.external`,
-      line: nodeLine(field.key as Node, lineCounter),
-      // Save-time keeps a draft editable; deploy-time refuses it.
-      ...(strict ? {} : { blocking: false as const }),
-    })
-  }
-}
-
-function lintVolumes(
-  volumesNode: Node | null | undefined,
-  strict: boolean,
-  lineCounter: LineCounter,
-  issues: ComposeLintIssue[]
-): void {
-  if (!isMap(volumesNode) || isTaggedNode(volumesNode)) return
-  for (const item of (volumesNode as YAMLMap).items) {
-    const key = stringKey(item.key)
-    if (key === null || isExtensionKey(key)) continue
-    lintVolumeEntry(key, item.value as Node | null | undefined, strict, lineCounter, issues)
-  }
-}
-
 function lintService(params: {
   name: string
   valueNode: Node | null | undefined
@@ -1816,9 +1766,7 @@ function lintTopLevelEntry(
   lineCounter: LineCounter,
   issues: ComposeLintIssue[]
 ): void {
-  if (key === 'networks') {
-    lintNetworks(valueNode, strict, lineCounter, issues)
-  }
+  if (key === 'networks') lintNetworks(valueNode, strict, lineCounter, issues)
   if (key === 'volumes') lintVolumes(valueNode, strict, lineCounter, issues)
   if (classifyTopLevelKey(key) === undefined && !isExtensionKey(key)) {
     issues.push({

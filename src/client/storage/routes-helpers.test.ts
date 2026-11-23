@@ -270,7 +270,12 @@ test('parseCreateStorageFields refuses an author Docker volume name unless a vol
         storageCopy: { provider: 'docker', serverId: 'srv-1' },
       }),
       400,
-      { error: 'Only a volume can name a Docker volume' }
+      {
+        ok: false,
+        code: 'invalid_request',
+        error: 'Only a volume can name a Docker volume',
+        message: 'Only a volume can name a Docker volume',
+      }
     )
   }
   const volume = parseCreateStorageFields(c, {

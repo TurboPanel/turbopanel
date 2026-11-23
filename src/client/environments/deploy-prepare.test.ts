@@ -450,6 +450,15 @@ function createSelectWhereDb<T>(rows: T[]): Db {
   } as unknown as Db
 }
 
+type StorageMaterialParams = Parameters<typeof loadStorageMaterial>[1]
+
+/** `loadStorageMaterial` for a case that must produce material, not a refusal. */
+async function loadMaterial(db: Db, params: StorageMaterialParams) {
+  const result = await loadStorageMaterial(db, params)
+  if (!Array.isArray(result)) throw new TypeError(`unexpected refusal: ${result.kind}`)
+  return result
+}
+
 function createStorageMaterialDb(opts: {
   locations: LocationFixtureRow[]
   mounts?: MountFixtureRow[]
@@ -550,14 +559,14 @@ describe('loadStorageMaterial principal path locations', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material.length, 1)
     assertEquals(material[0]?.sourcePath, undefined)
     assertEquals(material[0]?.locationId, locationId)
     assertEquals(material[0]?.provider, 'path')
   })
 
-  it('never sends an author-chosen external volume name as the volume name', async () => {
+  it('refuses an author-chosen external volume instead of dropping it', async () => {
     const db = createStorageMaterialDb({
       locations: [
         volumeLocation({
@@ -567,7 +576,7 @@ describe('loadStorageMaterial principal path locations', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, {
+    const refusal = await loadStorageMaterial(db, {
       ...baseParams,
       registeredVolumes: [
         {
@@ -579,7 +588,11 @@ describe('loadStorageMaterial principal path locations', () => {
         },
       ],
     })
-    assertEquals(material, [])
+    assertEquals(refusal, {
+      kind: 'docker_volume_name_unsupported',
+      storageId,
+      storageName: 'pgdata',
+    })
   })
 
   it('keeps an explicit location path override', async () => {
@@ -594,7 +607,7 @@ describe('loadStorageMaterial principal path locations', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, '/custom/mount')
   })
 
@@ -602,7 +615,7 @@ describe('loadStorageMaterial principal path locations', () => {
     const db = createStorageMaterialDb({
       locations: [pathLocation({ storageId, locationId })],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, undefined)
   })
 
@@ -617,7 +630,7 @@ describe('loadStorageMaterial principal path locations', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, undefined)
   })
 })
@@ -989,7 +1002,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material.length, 0)
   })
 
@@ -1003,7 +1016,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material.length, 1)
     assertEquals(material[0]?.kind, 'volume')
     assertEquals(material[0]?.provider, 'docker')
@@ -1011,7 +1024,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
     assertEquals(material[0]?.volumeName, volumeStorageId)
   })
 
-  it('never sends a docker volume name other than the storage id', async () => {
+  it('refuses a docker volume pinned to a name other than its storage id', async () => {
     for (const kind of ['volume', 'directory', 'file'] as const) {
       const db = createStorageMaterialDb({
         locations: [
@@ -1023,9 +1036,37 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
           }),
         ],
       })
-      const material = await loadStorageMaterial(db, baseParams)
-      assertEquals(material.length, 0, kind)
+      assertEquals(
+        await loadStorageMaterial(db, baseParams),
+        {
+          kind: 'docker_volume_name_unsupported',
+          storageId: volumeStorageId,
+          storageName: 'pgdata',
+        },
+        kind
+      )
     }
+  })
+
+  it('refuses a registered volume pinned to a name other than its storage id', async () => {
+    const db = createStorageMaterialDb({ locations: [] })
+    const refusal = await loadStorageMaterial(db, {
+      ...baseParams,
+      registeredVolumes: [
+        {
+          storageId: volumeStorageId,
+          locationId: volumeLocationId,
+          composeKey: 'data',
+          volumeName: 'custom_vol',
+          managed: true,
+        },
+      ],
+    })
+    assertEquals(refusal, {
+      kind: 'docker_volume_name_unsupported',
+      storageId: volumeStorageId,
+      storageName: 'data',
+    })
   })
 
   it('falls back to storage id when docker volume metadata has no pin', async () => {
@@ -1038,7 +1079,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.volumeName, dockerVolumeNameFromStorageId(volumeStorageId))
   })
 
@@ -1062,7 +1103,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         },
       ],
     })
-    const material = await loadStorageMaterial(db, {
+    const material = await loadMaterial(db, {
       ...baseParams,
       serviceIds: [serviceId],
       cloneNamesByServiceId: new Map([[serviceId, ['web-1', 'web-2']]]),
@@ -1088,7 +1129,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, {
+    const material = await loadMaterial(db, {
       ...baseParams,
       registeredVolumes: [
         {
@@ -1128,7 +1169,7 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
         }),
       ],
     })
-    const material = await loadStorageMaterial(db, baseParams)
+    const material = await loadMaterial(db, baseParams)
     assertEquals(material[0]?.sourcePath, undefined)
     assertEquals(material[0]?.contentEnvelope, 'tp1.sealed.example')
     assertEquals(material[0]?.principalId, principalId)

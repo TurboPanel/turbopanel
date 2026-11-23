@@ -44,7 +44,7 @@
     "src/lib/logger.ts"
   ],
   "size": {
-    "src/client/environments/deploy-prepare.ts": 5846,
+    "src/client/environments/deploy-prepare.ts": 5841,
     "src/client/environments/deploy-routes.ts": 3215,
     "src/client/managed/routes.ts": 4651,
     "src/client/openapi/auth.ts": 1806,
