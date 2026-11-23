@@ -161,14 +161,22 @@ test('metabase preset uses mysql for both MySQL-family engines', () => {
 test('metabase preset: a JDBC URI carries the TLS flags, no credentials', () => {
   const uri = (engine: string, mode: ManagedSslMode, delivery: BindingDelivery = 'container') =>
     render('metabase', engine, delivery, mode).get('MB_DB_CONNECTION_URI')
-  assertEquals(uri('mariadb', 'require')?.value, 'mysql://db.internal:5432/appdb?sslMode=REQUIRED')
-  assertEquals(uri('mysql', 'prefer')?.value, 'mysql://db.internal:5432/appdb?sslMode=PREFERRED')
+  const CA_PATH = '/run/secrets/DATABASE_CA_CERT'
+  const base = 'mysql://db.internal:5432/appdb?'
+  const encrypt = 'useSsl=true&trustServerCertificate=true'
+  for (const engine of ['mysql', 'mariadb']) {
+    for (const mode of ['allow', 'prefer', 'require'] as const) {
+      assertEquals(uri(engine, mode)?.value, `${base}${encrypt}`)
+    }
+    assertEquals(uri(engine, 'verify-full')?.value, `${base}useSsl=true&serverSslCert=${CA_PATH}`)
+    assertEquals(
+      uri(engine, 'verify-ca')?.value,
+      `${base}useSsl=true&serverSslCert=${CA_PATH}&disableSslHostnameVerification=true`
+    )
+    assertEquals(uri(engine, 'verify-full', 'host-node'), undefined)
+    assertEquals(uri(engine, 'verify-ca', 'host-node'), undefined)
+  }
   assertEquals(uri('mariadb', 'require')?.isSecret, false)
-  // Connector/J cannot read a PEM CA, so the verify modes still encrypt.
-  assertEquals(
-    uri('mariadb', 'verify-full')?.value,
-    'mysql://db.internal:5432/appdb?sslMode=REQUIRED'
-  )
   assertEquals(
     uri('postgres', 'require')?.value,
     'postgres://db.internal:5432/appdb?sslmode=require'

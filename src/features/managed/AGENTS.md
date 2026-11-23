@@ -63,9 +63,11 @@ MySQL-family engines (its application database page says "MySQL or MariaDB" with
 that value). The Metabase preset also adds `MB_DB_CONNECTION_URI`, a JDBC URL
 with the TLS flags and no credentials (the binding's own URL spells TLS for
 libpq / libmysql, which JDBC ignores): Postgres `sslmode=<mode>` plus
-`sslrootcert=<CA file>` in the verify modes, MySQL family `sslMode=REQUIRED`
-(`PREFERRED` for allow / prefer). Connector/J cannot read a PEM CA, so the MySQL
-verify modes encrypt without checking the certificate. A preset name equal to one of the binding's own prefixed names (prefix
+`sslrootcert=<CA file>` in the verify modes, MySQL family (Metabase ships only
+the MariaDB 2.x driver, which ignores `sslMode`) `useSsl=true` with
+`trustServerCertificate=true`, or `serverSslCert=<CA file>` in the verify modes
+(`verify-ca` adds `disableSslHostnameVerification=true`). A verify mode with no
+CA file leaves the row out. A preset name equal to one of the binding's own prefixed names (prefix
 `DB` with WordPress) is refused as `binding_key_conflict`.
 
 **Delivery by service kind** (`src/features/bindings/host-run.ts`,

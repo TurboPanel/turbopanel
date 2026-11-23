@@ -9,7 +9,7 @@
  * materializing whatever its form. Pure data and pure functions, no I/O.
  */
 
-import { mysqlFamilySslMode, type ManagedSslMode } from '../managed/ssl.ts'
+import type { ManagedSslMode } from '../managed/ssl.ts'
 
 export const BINDING_PRESETS = [
   'postgres',
@@ -213,9 +213,11 @@ function conditionHolds(when: PresetCondition | undefined, sslMode: string | nul
  * The TLS query of a JDBC URL, or `undefined` when it cannot be stated:
  * - Postgres (pgjdbc) takes the mode as is, and `sslrootcert` in the verify
  *   modes; without a CA file a verify mode is left out rather than weakened.
- * - MySQL family (Connector/J) spells the mode `sslMode=REQUIRED`. Its verify
- *   modes need a Java key store, which a PEM file cannot fill, so the verify
- *   modes encrypt with `REQUIRED` (no certificate check) instead of failing.
+ * - MySQL family: Metabase ships only the MariaDB 2.x driver, which has no
+ *   `sslMode` option and ignores unknown ones. `useSsl=true` turns TLS on;
+ *   `serverSslCert` takes the PEM CA, with `disableSslHostnameVerification`
+ *   for `verify-ca`. The weaker modes encrypt without a certificate check.
+ *   A verify mode with no CA file is left out, as for Postgres.
  */
 function jdbcSslQuery(
   engineCode: string,
@@ -223,12 +225,14 @@ function jdbcSslQuery(
   caFile: string | undefined
 ): string | undefined {
   if (sslMode === null || sslMode === 'disable') return undefined
-  if (engineCode === 'postgres') {
-    if (!VERIFY_MODES.has(sslMode)) return `sslmode=${sslMode}`
-    return caFile === undefined ? undefined : `sslmode=${sslMode}&sslrootcert=${caFile}`
-  }
   const verifies = VERIFY_MODES.has(sslMode)
-  return `sslMode=${verifies ? 'REQUIRED' : mysqlFamilySslMode(sslMode)}`
+  if (verifies && caFile === undefined) return undefined
+  if (engineCode === 'postgres') {
+    return verifies ? `sslmode=${sslMode}&sslrootcert=${caFile}` : `sslmode=${sslMode}`
+  }
+  if (!verifies) return 'useSsl=true&trustServerCertificate=true'
+  const base = `useSsl=true&serverSslCert=${caFile}`
+  return sslMode === 'verify-ca' ? `${base}&disableSslHostnameVerification=true` : base
 }
 
 export type PresetRow = { key: string; value: string; isSecret: boolean }
