@@ -1230,6 +1230,22 @@ describe('apply-variables', () => {
         assertEquals(result.secretMaterial, [])
       })
 
+      it('says nothing for a service-scoped secret only its own config file reads', () => {
+        const own = entry({ key: 'SVC_PASS', isSecret: true, value: 'sealed', source: 'service' })
+        const doc = stack(
+          { web: undefined, init: undefined },
+          { init: { configs: [{ source: 'app', target: '/etc/app.conf' }] } }
+        )
+        doc.data.configs = { app: { content: 'pass={$SVC_PASS}' } }
+        const result = mustApply(
+          applyVariablesToComposeDocument(doc, {
+            globalEntries: [],
+            perServiceEntries: new Map([['init', [own]]]),
+          })
+        )
+        assertEquals(result.secretsNotInjected, [])
+      })
+
       it('says nothing for a service-scoped secret its own service references', () => {
         const own = entry({ key: 'SVC_PASS', isSecret: true, value: 'sealed', source: 'service' })
         const result = mustApply(

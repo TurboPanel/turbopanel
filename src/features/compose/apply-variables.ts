@@ -996,6 +996,11 @@ export function applyVariablesToComposeDocument(
  * The secrets no container of the stack received. Run after every injection
  * step (references, bindings, generated config files, network shares): a key
  * any container was given, or a config file or share reads, is delivered.
+ * A secret set on a service or its hostname (source `service` or `hosting`) is
+ * that service's own value, so it is delivered only when that same service got
+ * it; a same-named secret reaching another container does not count. A secret
+ * from a wider scope is one secret for every service, delivered once any
+ * container got it.
  */
 function findSecretsNotInjected(
   candidates: ReadonlyMap<string, readonly UnreferencedSecret[]>,
