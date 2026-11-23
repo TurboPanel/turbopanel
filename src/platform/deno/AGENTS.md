@@ -44,9 +44,16 @@ are in [`ingress/AGENTS.md`](./ingress/AGENTS.md).
 The hosted cron (`runOfflineSweep` in `src/daemon/cell/offline-sweep.ts`, once
 a minute) has no counterpart process on a self-hosted control plane. Its work
 runs on one 60 s timer in `server.ts`, the job tick (`job-tick.ts`,
-`createJobTick`), which asks the shared table (`src/jobs/registry.ts`) what is
-due and runs the same job functions with the same gates (`loadCronGates`, one
-statement; every flag open when it cannot be read).
+`createJobTick`), which builds its list from the shared job table
+(`src/jobs/table.ts`: one row per job with its cadence key, the runtimes that
+run it and the gate rule `due`) and runs the same job functions with the same
+gates (`loadCronGates`, one statement; every flag open when it cannot be read).
+`server.ts` keeps only the handler for each row (`DenoJobHandlers`, typed so a
+missing one fails the check); the Workers cron asks the same `jobDue` before
+each phase. A job on one runtime only carries its reason in the table, and
+`src/jobs/table.hostfree.test.ts` fails when a Deno handler is missing, and
+`offline-sweep.test.ts` runs cron ticks and fails when a Workers row is never
+asked about. To add a job, add its row and a handler on each runtime.
 
 - **Two kinds of job.** `local` jobs are the ones that must run on every
   instance, lease or not: the cell `maintain()` (its in-memory presence work,

@@ -240,7 +240,7 @@ export type SweepTierNoticesOpts = {
   deployment: MetricsDeploymentKind
   nowMs?: number
   /**
-   * Workers already gates on `shouldSweepTierNotices` (hourly). Deno's 60 s
+   * Workers already gates on the `tierNotices` cadence (hourly). Deno's 60 s
    * tick must not rescan every minute — the module elapsed-time gate covers
    * that unless this is set.
    */

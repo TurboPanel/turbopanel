@@ -62,8 +62,8 @@ test('the self-hosted run calls every tunnel sweep, and a failing one does not s
 
 test('the self-hosted tick runs the tunnel sweeps and delivers peer leaves with their table', () => {
   const server = readSource('./server.ts')
-  const start = server.indexOf("name: 'leaf renewal'")
-  const end = server.indexOf("onCadence('ingress tick'", start)
+  const start = server.indexOf("    'leaf-renewal': {")
+  const end = server.indexOf("    'ingress-tick': {", start)
   assert(start >= 0 && end > start, 'the certificate jobs are not where this test looks for them')
   const jobs = server.slice(start, end)
   assert(
