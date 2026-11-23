@@ -3,9 +3,13 @@
  * Import-boundary lint (CI guard). Rules enable as the destination
  * directories appear — a missing folder is not a failure.
  *
- *   - `src/lib/**` imports only `lib/`, `db/` types (not `db/connection.ts`),
- *     and `contracts/`. No surfaces, no `features/`, no `platform/` drivers,
- *     no `getDb`.
+ *   - `src/lib/**` (every folder, not only the loose files) imports only
+ *     `lib/`, `db/` types (not `db/connection.ts`), and `contracts/`. No
+ *     surfaces, no `features/`, no `platform/` drivers, no `getDb`. Violations
+ *     that existed when the rule was widened are listed in
+ *     `scripts/import-boundaries-baseline.json`: only a violation that is
+ *     not in the baseline fails, and a baseline entry that no longer applies
+ *     fails too, so the list can only shrink. Test files are not linted.
  *   - `src/features/**` and `src/lib/**` never import a surface
  *     (`client/`, `admin/`, `developer/`, `webhook/`, `daemon/`, `install/`,
  *     `app/`, `cli/`).
@@ -18,6 +22,7 @@
  *
  * Usage:
  *   node scripts/check-import-boundaries.mjs
+ *   node scripts/check-import-boundaries.mjs --write-baseline   # after fixing violations
  *   pnpm check:import-boundaries
  */
 import fs from 'node:fs'
@@ -37,6 +42,8 @@ const SKIP_DIR_NAMES = new Set([
   '.local',
   '.cache',
 ])
+
+const BASELINE_FILE = 'scripts/import-boundaries-baseline.json'
 
 const SURFACES = new Set([
   'client',
@@ -175,13 +182,15 @@ function under(rel, prefix) {
   return rel === prefix || rel.startsWith(`${prefix}/`)
 }
 
-function isAdmittedKernel(rel) {
-  if (!under(rel, 'src/lib')) return false
-  if (under(rel, 'src/lib/db')) return false
-  const rest = rel.slice('src/lib/'.length)
-  const first = rest.split('/')[0]
-  if (!rest.includes('/')) return true
-  return first === 'http' || first === 'tls' || first === 'secrets'
+function isKernel(rel) {
+  return under(rel, 'src/lib')
+}
+
+/** Failure strings recorded when the kernel rule was widened to all of `src/lib`. */
+function readBaseline() {
+  const file = path.join(ROOT, BASELINE_FILE)
+  if (!fs.existsSync(file)) return new Set()
+  return new Set(JSON.parse(fs.readFileSync(file, 'utf8')))
 }
 
 function lintLibImport(rel, spec, failures) {
@@ -204,7 +213,7 @@ function lintLibImport(rel, spec, failures) {
 }
 
 function lintLibKernel(srcFiles, failures) {
-  for (const rel of srcFiles.filter((f) => isAdmittedKernel(f))) {
+  for (const rel of srcFiles.filter((f) => isKernel(f))) {
     if (rel.endsWith('.test.ts') || rel.endsWith('.test.tsx')) continue
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8')
     if (hasWord(text, 'getDb')) {
@@ -251,7 +260,13 @@ function lintPlatformReachability(failures) {
 }
 
 const INGRESS_DIR = 'src/platform/deno/ingress'
-const INGRESS_IMPORTER_ALLOW = ['src/platform/deno', 'src/deno.ts', 'src/deno-dev.ts']
+// The OpenAPI parity test registers the ingress admin routes as the server does.
+const INGRESS_IMPORTER_ALLOW = [
+  'src/platform/deno',
+  'src/deno.ts',
+  'src/deno-dev.ts',
+  'src/app/openapi-parity.hostfree.test.ts',
+]
 
 function lintIngressIsolation(srcFiles, failures) {
   if (!existsDir(INGRESS_DIR)) return
@@ -271,16 +286,33 @@ function main() {
   const failures = new Set()
   const srcFiles = walkTs(SRC).map(posixRel)
 
-  const libKernelRuleOn = existsDir('src/lib/secrets')
+  const libKernelRuleOn = existsDir('src/lib')
   // Feature→surface waits until consumer helpers move with the consumer
   // (phase 3). `src/features/` exists from phase 1 (server-registry) while
   // that file still imports client/daemon helpers.
   const featuresSurfaceRuleOn = existsDir('src/features/commands')
 
-  // Kernel admission turns on once secrets live in lib/ (phase 2). Until
-  // phase 3, compose/commands/email/… still sit under src/lib — only the
-  // admitted kernel (loose files + http/tls/secrets) is gated.
-  if (libKernelRuleOn) lintLibKernel(srcFiles, failures)
+  // The kernel rule covers all of src/lib. Violations recorded in the
+  // baseline are tolerated until they are fixed; anything else fails.
+  if (libKernelRuleOn) {
+    const kernelFailures = new Set()
+    lintLibKernel(srcFiles, kernelFailures)
+    if (process.argv.includes('--write-baseline')) {
+      const sorted = [...kernelFailures].sort((x, y) => x.localeCompare(y))
+      fs.writeFileSync(path.join(ROOT, BASELINE_FILE), `${JSON.stringify(sorted, null, 2)}\n`)
+      console.log(`check-import-boundaries: wrote ${sorted.length} baseline entries.`)
+      return
+    }
+    const baseline = readBaseline()
+    for (const failure of kernelFailures) {
+      if (!baseline.has(failure)) failures.add(failure)
+    }
+    for (const entry of baseline) {
+      if (!kernelFailures.has(entry)) {
+        failures.add(`${BASELINE_FILE} lists a fixed violation, remove it: ${entry}`)
+      }
+    }
+  }
   if (featuresSurfaceRuleOn) lintFeatureSurfaces(srcFiles, failures)
   lintPlatformReachability(failures)
   lintIngressIsolation(srcFiles, failures)

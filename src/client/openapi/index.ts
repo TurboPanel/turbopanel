@@ -22,6 +22,7 @@ import { serverTrafficMapPaths, serverTrafficMapSchemas } from './server-traffic
 import { servicePaths, serviceSchemas } from './services.ts'
 import { variablePaths, variableSchemas } from './variables.ts'
 import { tagPaths, tagSchemas } from './tags.ts'
+import { notificationPaths, notificationSchemas } from './notifications.ts'
 import { taskPaths, taskSchemas } from './tasks.ts'
 import { cachePaths, cacheSchemas } from './caches.ts'
 import { bindingPaths, bindingSchemas } from './bindings.ts'
@@ -83,6 +84,10 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       { name: 'Variables', description: 'Environment variable and secret management' },
       { name: 'Tags', description: 'Organization tag registry and entity tagging' },
       {
+        name: 'Notifications',
+        description: 'Inbox, delivery channels and notification preferences',
+      },
+      {
         name: 'Tasks',
         description: 'Scheduled tasks (cron) — configuration only; execution is not implemented',
       },
@@ -129,6 +134,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
           'Managed services',
           'Variables',
           'Tags',
+          'Notifications',
           'Tasks',
           'Bindings',
           'Storage',
@@ -175,6 +181,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...projectSchemas,
         ...variableSchemas,
         ...tagSchemas,
+        ...notificationSchemas,
         ...taskSchemas,
         ...cacheSchemas,
         ...bindingSchemas,
@@ -217,6 +224,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       ...projectPaths,
       ...variablePaths,
       ...tagPaths,
+      ...notificationPaths,
       ...taskPaths,
       ...cachePaths,
       ...bindingPaths,

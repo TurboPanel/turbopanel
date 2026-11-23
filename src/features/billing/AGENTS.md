@@ -659,7 +659,7 @@ without a licence setup step, and it is why the self-hosted session fills `SX`
 into a licensed server with no tier (`fillSelfHostedGrantTier`).
 
 What the Deno bundle still _imports_ from `src/features/billing/` is the
-absent-config no-op path in `src/client/authn/license-lifecycle.ts` and the
+absent-config no-op path in `src/features/billing/config.ts` and the
 licence routes (`c.get('billingConfig')` is simply never set). That is
 import-level coupling, not behaviour; splitting it out is a larger refactor and
 has not been asked for.
