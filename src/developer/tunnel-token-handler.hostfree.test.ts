@@ -170,6 +170,12 @@ test('POST /instance/tunnel-token validates body and required context', async ()
     body: JSON.stringify({ token: 'tok' }),
   })
   assertEquals(missingDb.status, 503)
+  assertEquals(await missingDb.json(), {
+    ok: false,
+    error: 'Database unavailable',
+    code: 'database_unavailable',
+    message: 'Database unavailable',
+  })
 
   const noRegistry = await createApp({ registry: null })
   const missingRegistry = await noRegistry.request('/instance/tunnel-token', {
