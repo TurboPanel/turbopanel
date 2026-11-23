@@ -25,6 +25,12 @@ export type TcpProbe = {
    * as its servers; false for a Worker, which cannot dial them at all.
    */
   canReachPrivate: boolean
+  /**
+   * Interface addresses of the host this control plane runs on, so the probe
+   * can refuse to dial itself. Absent where the control plane has no host (a
+   * Worker).
+   */
+  localAddresses?: () => readonly string[]
   /** One bounded handshake attempt. Never throws; connection data is never read. */
   connect: (target: TcpProbeTarget, timeoutMs: number) => Promise<TcpProbeResult>
 }
