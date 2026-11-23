@@ -125,6 +125,16 @@ export type TunnelAdapter = {
     token: string,
     input: { accountId: string | null; externalId: string }
   ): Promise<void>
+  /**
+   * A stable fingerprint of what `setRoutes` would send for these names, so a
+   * change in how routes are built (the origin, the flags) reads as stale and
+   * is written once to existing tunnels. Optional: without it only the names
+   * decide.
+   */
+  ingressFingerprint?(input: {
+    hostnames: readonly string[]
+    verifiedNames: readonly string[]
+  }): Promise<string>
   /** Replace the full set of routes: every name goes to the local web server. */
   setRoutes(
     token: string,

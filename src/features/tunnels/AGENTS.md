@@ -650,11 +650,11 @@ A library pair counts as public only when this panel ordered it (`acme.managedBy
 
 Pushing routes goes through `pushTunnelRoutes` (`route-push.ts`). One writer per
 tunnel: the names are read, the provider written and `tunnel.metadata.routes`
-(`{ verifiedNames, hostnames }`) stored inside one transaction that holds the
+(`{ verifiedNames, hostnames, ingress }`, ingress being a hash of the built rules) stored inside one transaction that holds the
 tunnel row `for update`, so no writer can overwrite a newer name list with an
 older one. Every route write (add, remove, restore, sweep, nudge) takes that lock
 and reads its names inside it. `route-sync.ts` writes a tunnel only when its
-routed names or verified names differ from the last write; failures back off per
+routed names, verified names or ingress hash differ from the last write (a missing hash counts as changed); failures back off per
 tunnel (`metadata.routesRetry`: a minute, doubling to an hour, or the provider's
 `Retry-After`). `runVerifiedNamesSweepTick` (`verified-names-sweep.ts`, in
 `TUNNEL_SWEEPS`) handles at most 50 tunnels per tick in a minute-rotated order and
