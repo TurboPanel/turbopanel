@@ -117,7 +117,7 @@ test('laravel preset names per engine and kind', () => {
   assertEquals(pg.get('DB_PASSWORD')?.isSecret, true)
   assertEquals(pg.get('DB_HOST')?.isSecret, false)
   const my = render('laravel', 'mariadb', 'container')
-  assertEquals(my.get('DB_CONNECTION')?.value, 'mariadb')
+  assertEquals(my.get('DB_CONNECTION')?.value, 'mysql')
   assertEquals(my.get('MYSQL_ATTR_SSL_CA')?.value, '/run/secrets/DATABASE_CA_CERT')
   assertEquals(my.has('DB_SSLMODE'), false)
   assertEquals(render('laravel', 'mysql', 'host-node').has('MYSQL_ATTR_SSL_CA'), false)
