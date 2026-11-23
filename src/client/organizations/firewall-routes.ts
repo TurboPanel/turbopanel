@@ -318,6 +318,7 @@ async function postProbeResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
     status: 'done',
     ports: round.reach,
     notes: round.notes,
+    skipped: round.skipped,
   }
   await storeProbeRecord(scope.db, serverId, record)
   return c.json({

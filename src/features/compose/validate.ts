@@ -2,6 +2,7 @@ import { composeDocumentToYaml } from './convert.ts'
 import { blockingComposeLintIssues, type ComposeLintIssue, lintComposeYaml } from './lint.ts'
 import { stripComposePlacement, TURBOPANEL_EXTENSION_KEY } from './placement.ts'
 import { collectRootExtensionValidationIssues } from './root-extension.ts'
+import { collectServiceOptionOnlyKeyIssues } from './service-option-only-keys.ts'
 import { collectServiceTurbopanelValidationIssues } from './service-kind.ts'
 import { COMPOSE_TAG_KEY, isComposeTaggedValue, resolveComposeTags } from './tags.ts'
 import {
@@ -143,6 +144,7 @@ export function validateComposeDocument(
     })) {
       issues.push(issue)
     }
+    issues.push(...collectServiceOptionOnlyKeyIssues(services))
   }
 
   if (issues.length > 0) {

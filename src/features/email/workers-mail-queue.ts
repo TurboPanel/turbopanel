@@ -9,9 +9,9 @@
  * The queue consumer (`consumeEmailBatch` in `src/workers.ts`, one
  * `settleEmailMessage` per message)
  * resolves the current mail settings, sends, and acks, retries or dead-letters
- * each message. Without the `TURBOPANEL_EMAIL_QUEUE` binding the Worker keeps
- * sending directly from the request (`mailgun/workers-queue.ts`), so an
- * environment whose queues do not exist yet keeps working.
+ * each message. The `TURBOPANEL_EMAIL_QUEUE` binding is required: the Worker
+ * fails to start without it, so no request or sweep sends directly. Direct
+ * sending (`mailgun/workers-queue.ts`) only happens inside the consumer.
  */
 import { parseEmailJob } from './mailer/parse-email-job.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
@@ -137,12 +137,9 @@ export async function settleEmailMessage(input: {
     }
     return 'dead'
   }
-  const outcome = await deliverEmailJob(
-    job,
-    input.sender,
-    Math.max(1, message.attempts),
-    input.random
-  )
+  // One count for the decision and the log line, never below 1.
+  const attempt = Math.max(1, message.attempts)
+  const outcome = await deliverEmailJob(job, input.sender, attempt, input.random)
   if (outcome.kind === 'sent') {
     message.ack()
     return 'sent'
@@ -150,7 +147,7 @@ export async function settleEmailMessage(input: {
   if (outcome.kind === 'retry') {
     compatLogWarn(
       'email',
-      `${job.type} failed (attempt ${message.attempts}), retrying in ${outcome.delayMs}ms: ${outcome.reason}`
+      `${job.type} failed (attempt ${attempt}), retrying in ${outcome.delayMs}ms: ${outcome.reason}`
     )
     message.retry({ delaySeconds: outcome.delayS })
     return 'retry'

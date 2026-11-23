@@ -546,10 +546,13 @@ test('deleting a server removes its state and the rules pinned to it, but not or
 type Dialed = { address: string; port: number }
 
 /** A stand-in for the platform's TCP probe: records every dial, answers from `open`. */
-function fakeProbe(open: (target: Dialed) => boolean): { dialed: Dialed[] } {
+function fakeProbe(
+  open: (target: Dialed) => boolean,
+  options: { canReachPrivate?: boolean } = {}
+): { dialed: Dialed[] } {
   const dialed: Dialed[] = []
   const probe: TcpProbe = {
-    canReachPrivate: false,
+    canReachPrivate: options.canReachPrivate ?? false,
     connect: (target) => {
       dialed.push({ address: target.address, port: target.port })
       return Promise.resolve(
@@ -576,6 +579,17 @@ async function withProbeFixture(fn: (f: Fixture) => Promise<void>): Promise<void
       await f.db.delete(ip).where(inArray(ip.organizationId, [f.orgA, f.orgB]))
     }
   })
+}
+
+async function insertPrivateAddress(
+  db: Db,
+  organizationId: string,
+  serverId: string,
+  address: string
+) {
+  await db
+    .insert(ip)
+    .values({ organizationId, serverId, address, allocation: 'dedicated', scope: 'public' })
 }
 
 const probePath = (f: Fixture, serverId = f.serverA) =>
@@ -699,5 +713,32 @@ test('a check keeps the stored preview beside it instead of replacing it', async
     const [row] = await f.db.select().from(bulwark).where(eq(bulwark.serverId, f.serverA))
     const stored = row!.lastResult as { kind: string; ruleCount: number; probe: { status: string } }
     assertEquals([stored.kind, stored.ruleCount, stored.probe.status], ['preview', 3, 'done'])
+  })
+})
+
+test('a manual private row is never dialled; an address the daemon reported is, and skips are listed', async () => {
+  await withProbeFixture(async (f) => {
+    await insertPrivateAddress(f.db, f.orgA, f.serverA, '10.0.0.5')
+    await insertPrivateAddress(f.db, f.orgA, f.serverA, '192.168.1.7')
+    await f.db
+      .update(server)
+      .set({
+        metadata: {
+          resources: {
+            ips: [{ address: '192.168.1.7', version: 4, scope: 'private', cidr: '192.168.1.0/24' }],
+          },
+        },
+      })
+      .where(eq(server.id, f.serverA))
+    const { dialed } = fakeProbe((target) => target.port === 22, { canReachPrivate: true })
+
+    const res = await call(f, 'POST', probePath(f), f.managerCookie, {})
+    assertEquals(res.status, 200)
+    assertEquals(dialed, [{ address: '192.168.1.7', port: 22 }])
+    const probe = res.body.probe as { skipped: { address: string; reason: string }[] }
+    assertEquals(
+      probe.skipped.map((s) => s.address),
+      ['10.0.0.5']
+    )
   })
 })

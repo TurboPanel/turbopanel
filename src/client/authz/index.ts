@@ -30,8 +30,15 @@ export {
   canOwnTeam,
   canInviteToOrganization,
   canInviteToTeam,
-  assertNotLastOrgOwner,
   assertNotLastTeamOwner,
 } from './service.ts'
+export {
+  assertNotLastOrgOwner,
+  holdsOrganizationOwnership,
+  listOrganizationOwnerIds,
+  lockOrganizationOwnerGrants,
+  organizationWouldLoseAllOwners,
+} from './org-owners.ts'
+export type { OrganizationOwnerChange } from './org-owners.ts'
 export type { PlatformUser } from './service.ts'
 export { materializeInvitationGrants } from '../authn/invitation-grants.ts'

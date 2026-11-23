@@ -12,7 +12,17 @@ import {
   setDaemonCellUnsignedSessionsAllowedForTests,
 } from './cell/do.ts'
 import { createWorkersDb, endDbConnection } from '../db/connection.ts'
-import { instanceHostname, organization, server, tls } from '../db/schema.ts'
+import {
+  environment,
+  hosting,
+  instanceHostname,
+  organization,
+  project,
+  server,
+  service,
+  tls,
+  workspace,
+} from '../db/schema.ts'
 
 const CELL_HEADER = 'X-Turbopanel-Cell-Server-Id'
 
@@ -60,6 +70,30 @@ describe('instance-acme-issuance-event real-Postgres end-to-end', () => {
         .values({ organizationId: org!.id, name: 'instance-acme-e2e' })
         .returning({ id: server.id })
       const serverId = srv!.id
+      // A hosting on this server pins the tenant row; only a pinned row is the
+      // reporting server's to write.
+      const [wsp] = await realDb
+        .insert(workspace)
+        .values({ organizationId: org!.id, name: 'WS' })
+        .returning({ id: workspace.id })
+      const [proj] = await realDb
+        .insert(project)
+        .values({ workspaceId: wsp!.id, organizationId: org!.id, name: 'P' })
+        .returning({ id: project.id })
+      const [envRow] = await realDb
+        .insert(environment)
+        .values({ projectId: proj!.id, name: 'production', isPrimary: true, serverId })
+        .returning({ id: environment.id })
+      const [svc] = await realDb
+        .insert(service)
+        .values({ environmentId: envRow!.id, name: 'web', composeServiceName: 'web' })
+        .returning({ id: service.id })
+      await realDb.insert(hosting).values({
+        serviceId: svc!.id,
+        name: tenantHost,
+        tlsId: tenantRow!.id,
+        options: { hostnames: [tenantHost] },
+      })
       const secrets = await deriveDaemonJwtKeyring(
         parseSecretsFromEnv(
           { TURBOPANEL_SECRET: env.TURBOPANEL_SECRET, TURBOPANEL_SECRETS: env.TURBOPANEL_SECRETS },

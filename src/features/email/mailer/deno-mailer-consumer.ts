@@ -387,16 +387,17 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
     outcome: Exclude<EmailDeliveryOutcome, { kind: 'sent' }>
   ): Disposition {
     const headers = (msg.properties?.headers ?? {}) as Record<string, unknown>
+    const attempt = failedAttemptsFromHeaders(headers) + 1
     try {
       if (outcome.kind === 'retry') {
         owner.channel.sendToQueue(emailRetryQueueName(outcome.tier), msg.content, {
           persistent: true,
           expiration: String(outcome.delayMs),
-          headers: { ...headers, [EMAIL_ATTEMPT_HEADER]: failedAttemptsFromHeaders(headers) + 1 },
+          headers: { ...headers, [EMAIL_ATTEMPT_HEADER]: attempt },
         })
         logWarn(
           'mailer',
-          `${type} failed (attempt ${failedAttemptsFromHeaders(headers) + 1}), retrying in ${outcome.delayMs}ms: ${outcome.reason}`
+          `${type} failed (attempt ${attempt}), retrying in ${outcome.delayMs}ms: ${outcome.reason}`
         )
       } else {
         deadLetter(owner, msg, headers, outcome.reason)

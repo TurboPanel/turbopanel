@@ -19,7 +19,7 @@ export const HAND_BUILT_ERROR_BASELINE: Record<string, number> = {
   'src/client/access/routes.ts': 34,
   'src/client/authn/breached-password.ts': 1,
   'src/client/authn/change-password-http.ts': 5,
-  'src/client/authn/http.ts': 25,
+  'src/client/authn/http.ts': 24,
   'src/client/authn/invitation-landing-http.ts': 11,
   'src/client/authn/middleware.ts': 7,
   'src/client/authn/oauth/oauth-http.ts': 8,

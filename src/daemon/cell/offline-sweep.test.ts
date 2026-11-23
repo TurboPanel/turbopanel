@@ -216,8 +216,11 @@ function createFakeRegistry(cells: Map<string, FakeCell>): DaemonCellRegistry {
   }
 }
 
+/** The platform mail queue sweeps enqueue notices to; the Worker will not start without it. */
+const MAIL_QUEUE_BINDING = { send: () => Promise.resolve() }
+
 function inertEnv(): CloudflareBindings {
-  return {} as CloudflareBindings
+  return { TURBOPANEL_EMAIL_QUEUE: MAIL_QUEUE_BINDING } as unknown as CloudflareBindings
 }
 
 function inertDb(): Db {
@@ -1612,6 +1615,7 @@ it('T12 · with a key both billing phases run on their tick: pending projections
   const db = billingSweepDb({ withPayer: true })
   const env = {
     TURBOPANEL_STRIPE_SECRET_KEY: 'sk_test_x',
+    TURBOPANEL_EMAIL_QUEUE: MAIL_QUEUE_BINDING,
   } as unknown as CloudflareBindings
   const traces = await runTickCapturingTrace(env, db)
   assertEquals(db.ops.includes('select:payer'), true)
@@ -1624,6 +1628,7 @@ it('T12 · finding: a throwing billing phase is NOT isolated — the queued swee
   const db = billingSweepDb({ withPayer: false })
   const env = {
     TURBOPANEL_STRIPE_SECRET_KEY: 'sk_test_x',
+    TURBOPANEL_EMAIL_QUEUE: MAIL_QUEUE_BINDING,
   } as unknown as CloudflareBindings
   const traces = await runTickCapturingTrace(env, db)
   assertEquals(
@@ -1852,6 +1857,7 @@ it('idle tick: no gated sweep reads anything when every gate is closed', async (
 function commandQueueEnv(): CloudflareBindings {
   return {
     TURBOPANEL_COMMAND_QUEUE: { send: () => Promise.resolve() },
+    TURBOPANEL_EMAIL_QUEUE: MAIL_QUEUE_BINDING,
   } as unknown as CloudflareBindings
 }
 

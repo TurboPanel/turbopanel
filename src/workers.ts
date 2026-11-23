@@ -105,7 +105,7 @@ import {
   warnIfStripeWebhookRateLimiterMissing,
 } from './platform/workers/workers-bindings.ts'
 import { fetchWithConnectionRetry } from './platform/workers/connection-retry.ts'
-import { type createWorkersDb, type Db, endDbConnection } from './db/connection.ts'
+import { type createWorkersDb, endDbConnection } from './db/connection.ts'
 import { compatLogError, compatLogInfo, compatLogWarn } from './lib/log-compat.ts'
 import { assertPasswordHasherLoadable } from './lib/secrets/password-smoke.ts'
 import {
@@ -179,19 +179,6 @@ export function resetWorkerAppCachesForTests(): void {
   cachedAuthRateLimiter = null
   cachedWriteRateLimiter = null
   cachedDaemonCellRegistryFactory = null
-  lazyEmailQueueResolveCallsForTests = 0
-}
-
-/**
- * @internal Test seam: count of `resolveWorkersEmailQueue()` calls made by
- * {@link createLazyWorkersEmailQueue}. ESM imports cannot be monkeypatched
- * from a test, so the lazy resolver's own call count is the seam — a
- * rate-limited or non-email-sending request must leave this at 0.
- */
-let lazyEmailQueueResolveCallsForTests = 0
-
-export function resetLazyEmailQueueResolveCallsForTests(): void {
-  lazyEmailQueueResolveCallsForTests = 0
 }
 
 /** @internal Test seam: every route path registered on the cached Worker app. */
@@ -199,53 +186,29 @@ export function getWorkerAppRoutePathsForTests(): readonly string[] {
   return cachedApp?.routes.map((route) => route.path) ?? []
 }
 
-export function getLazyEmailQueueResolveCallsForTests(): number {
-  return lazyEmailQueueResolveCallsForTests
-}
-
-/**
- * Wrap {@link resolveWorkersEmailQueue} in an `EmailQueue` that only resolves
- * (and memoizes) the real queue when a caller actually enqueues a job.
- *
- * Resolving eagerly on every request means every webhook delivery, health
- * check, and auth probe pays a DB read plus an AES-GCM decrypt of the
- * Mailgun/SMTP secret before the route (or the auth rate limiter) ever sees
- * the request — see `src/workers.ts` module docs and the `fetch` handler.
- * Deferring to first `enqueue()` means that cost is paid only by the routes
- * that actually send email, and only after those routes' own rate limiting.
- */
-function createLazyWorkersEmailQueue(
-  db: Db | undefined,
-  platformEnv: Record<string, string | undefined>,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined
-): EmailQueue {
-  let resolved: Promise<EmailQueue> | null = null
-  const resolve = (): Promise<EmailQueue> => {
-    resolved ??= (() => {
-      lazyEmailQueueResolveCallsForTests += 1
-      return resolveWorkersEmailQueue(db, platformEnv, dataEncryptionSecrets)
-    })()
-    return resolved
-  }
-  return {
-    async enqueue(job) {
-      const queue = await resolve()
-      await queue.enqueue(job)
-    },
-    async close() {
-      if (!resolved) return
-      const queue = await resolved
-      await queue.close?.()
-    },
-  }
-}
-
 /** Per-colo Workers Cache API (not on the type of the shared `caches` global). */
 function edgeCache(): EdgeCacheLike {
   return (globalThis.caches as unknown as { default: EdgeCacheLike }).default
 }
 
+/**
+ * Mail always goes through the platform queue: that is where a failed send is
+ * retried and, in the end, dead-lettered. A Worker without the binding would
+ * have to send from the request with neither, so it refuses to start instead.
+ */
+function requireEmailQueueBinding(
+  env: CloudflareBindings
+): NonNullable<typeof env.TURBOPANEL_EMAIL_QUEUE> {
+  if (!env.TURBOPANEL_EMAIL_QUEUE) {
+    throw new Error(
+      'TURBOPANEL_EMAIL_QUEUE is not bound: system mail needs the platform mail queue (see wrangler.jsonc)'
+    )
+  }
+  return env.TURBOPANEL_EMAIL_QUEUE
+}
+
 async function initWorkerApp(env: CloudflareBindings) {
+  requireEmailQueueBinding(env)
   setTcpProbe(createWorkersTcpProbe(connectSocket))
   setRevokeBoundDaemonKey(revokeDaemonKey)
   registerCommandRuntimePorts({
@@ -573,21 +536,10 @@ export default {
       // Per request, like platformEnv — a dashboard secret change applies
       // without an isolate recycle. Absence *is* billing off.
       const billingConfig = resolveBillingConfig(platformEnv)
-      // Lazy: resolving email settings decrypts the Mailgun/SMTP secret on
-      // every call, so it must not run ahead of routing (or the auth rate
-      // limiter) for requests that never send email — a webhook flood or an
-      // unauthenticated auth probe would otherwise spend that DB read + AES-GCM
-      // decrypt before any throttle sees the request. `enqueue()` resolves
-      // (and memoizes) the real queue on first use, from the *current*
-      // DB/platform env, so admin PUT /settings/email still takes effect
-      // without restarting the Worker — same as the eager resolve this
-      // replaces, just deferred to the route that actually needs it.
-      // With the mail queue binding, a request only puts the job on the queue
-      // (no settings read at all); the queue consumer sends it, with retries
+      // A request only puts the job on the queue (no settings read at all);
+      // the queue consumer sends it, with retries
       // and a dead-letter queue (`features/email/workers-mail-queue.ts`).
-      const emailQueue: EmailQueue = env.TURBOPANEL_EMAIL_QUEUE
-        ? createWorkersQueuedEmailQueue(env.TURBOPANEL_EMAIL_QUEUE)
-        : createLazyWorkersEmailQueue(db, platformEnv, cachedDataEncryptionSecrets ?? undefined)
+      const emailQueue: EmailQueue = createWorkersQueuedEmailQueue(requireEmailQueueBinding(env))
       const requestApp = new Hono<AppEnv>()
       requestApp.use('*', async (c, next) => {
         // Session-cookie TLS uses the URL-derived (Workers) path — a spoofed
