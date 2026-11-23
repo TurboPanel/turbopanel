@@ -106,6 +106,7 @@ async function sealVariableValue(c: Context<AppEnv>, value: string): Promise<str
 }
 
 type ExistingVariableForPatch = {
+  key: string
   isSecret: boolean
   value: string
   isForBuild: boolean
@@ -256,6 +257,16 @@ async function buildVariablePatchFields(
 
   if (secretResult.toggled) {
     updateFields.isSecret = secretResult.nextIsSecret
+  }
+
+  // Only when the patch renames the variable or changes its build flag, so a
+  // variable saved before this rule can still have its value or note edited.
+  if (updateFields.key !== undefined || updateFields.isForBuild !== undefined) {
+    const buildProblem = buildEnvSaveProblem(
+      updateFields.key ?? existing.key,
+      updateFields.isForBuild ?? existing.isForBuild
+    )
+    if (buildProblem) return c.json({ error: buildProblem }, 400)
   }
 
   const valueError = await applyValueAndSecretPatch(
@@ -604,6 +615,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
 
     const existingRows = await db
       .select({
+        key: variable.key,
         isSecret: variable.isSecret,
         value: variable.value,
         isForBuild: variable.isForBuild,

@@ -9,7 +9,11 @@ import { parseServiceCreateFields, parseServicePatchFields } from '../services/r
 import { phpFieldsForApp } from '../servers/server-services.ts'
 import { parseServiceOptions } from '../../features/projects/service-options.ts'
 import { validateSiteLifecycleOptions } from '../../features/projects/site-lifecycle-options.ts'
-import { isBuildEnvNameAllowed, buildEnvSaveProblem } from '../../features/compose/build-env.ts'
+import {
+  isBuildEnvNameAllowed,
+  buildEnvNameProblem,
+  buildEnvSaveProblem,
+} from '../../features/compose/build-env.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -125,6 +129,24 @@ test('the PHP package manager names are reserved for builds, and COMPOSER_AUTH s
   )
   assertEquals(buildEnvSaveProblem('COMPOSER_AUTH', false), null)
   assertEquals(buildEnvSaveProblem('NEXT_PUBLIC_X', true), null)
+})
+
+test('a build variable the build would drop is refused at save, by the build rule itself', () => {
+  for (const name of ['PATH', 'HOME', 'BASH_ENV', 'LD_PRELOAD', 'LD_AUDIT', 'GIT_EXEC_PATH']) {
+    assertEquals(isBuildEnvNameAllowed(name), false)
+    const problem = buildEnvSaveProblem(name, true)
+    assertEquals(problem?.startsWith(`${name} cannot be set for a build:`), true)
+    assertEquals(buildEnvSaveProblem(name, false), null)
+  }
+  assertEquals(buildEnvSaveProblem('LD_AUDIT', true)?.includes('LD_'), true)
+  assertEquals(buildEnvSaveProblem('PATH', true)?.includes('reserved'), true)
+  assertEquals(buildEnvSaveProblem('1BAD', true)?.includes('letters, digits'), true)
+  assertEquals(buildEnvNameProblem('A'.repeat(256))?.includes('at most 255'), true)
+  // A lower-case name is a legal shell name and reaches the build.
+  for (const name of ['tp_bv_lower', 'NEXT_PUBLIC_X', 'LDX', 'PATHS']) {
+    assertEquals(isBuildEnvNameAllowed(name), true)
+    assertEquals(buildEnvSaveProblem(name, true), null)
+  }
 })
 
 test('commands or workers with no principal are unowned; nothing to run never is', () => {
