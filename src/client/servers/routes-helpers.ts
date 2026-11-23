@@ -206,9 +206,33 @@ function overlayWebServerSwitch(
   return null
 }
 
+const CLIENT_PATCHABLE_SERVER_OPTION_KEYS = [
+  'timezone',
+  'hosting',
+  'sshPort',
+  'ntp',
+  'hideWebServerNames',
+  'sendViaHeader',
+  'networkShares',
+  'buildLimits',
+] as const satisfies readonly (keyof ServerOptions)[]
+
+function pickClientPatchableOptions(
+  parsed: ServerOptions
+): NonNullable<ServerPatchFields['options']> {
+  const options: NonNullable<ServerPatchFields['options']> = {}
+  for (const key of CLIENT_PATCHABLE_SERVER_OPTION_KEYS) {
+    if (parsed[key] !== undefined) Object.assign(options, { [key]: parsed[key] })
+  }
+  return options
+}
+
 /**
- * Overlay sshPort / ntp / hideWebServerNames / sendViaHeader onto parsed server
- * options. `null` clears inherit.
+ * Build the PATCH options from client input: only the keys in
+ * `CLIENT_PATCHABLE_SERVER_OPTION_KEYS` (timezone, hosting, sshPort, ntp,
+ * hideWebServerNames, sendViaHeader, networkShares, buildLimits) are kept, then
+ * sshPort / ntp / the two web server switches / networkShares / buildLimits are
+ * validated and overlaid. `null` clears inherit. Other keys are dropped.
  */
 function parseServerPatchOptions(
   raw: unknown
@@ -217,17 +241,14 @@ function parseServerPatchOptions(
   if (!isRecord(raw) || parsed === null) {
     return invalidServerPatchRequest()
   }
-  const options: NonNullable<ServerPatchFields['options']> = { ...parsed }
-  // The location override changes only through the explicit `location` field;
-  // `options` is merged into the stored blob, so leaving `location` out of it
-  // keeps the stored override.
-  delete options.location
-  // Likewise the external-access setting: it only changes through its own route,
-  // which also tells the server.
-  delete options.managedExternalAccess
-  // The web terminal switch changes only through its own route, which also ends
-  // every open session when it turns off.
-  delete options.terminal
+  // An allow-list, not a spread: `parseServerOptions` also reads keys the
+  // control plane owns (`cellLocationHint`, `cellGeneration`,
+  // `metricsCapabilityPlan`, `networkSharesSince`) and keys with their own
+  // route (`location`, `managedExternalAccess`, `terminal`, `tunnels`,
+  // `phpModes`). Anything not listed here is dropped, as unknown
+  // keys always were. `options` is merged into the stored blob, so a dropped
+  // key leaves the stored value as it was.
+  const options = pickClientPatchableOptions(parsed)
   if ('sshPort' in raw) {
     const sshPort = parseSshPortInput(raw.sshPort)
     if (!sshPort.ok) {

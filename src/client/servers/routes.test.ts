@@ -4213,6 +4213,41 @@ test('PATCH /servers/:id stamps networkSharesSince when network shares turn on, 
   })
 })
 
+test('PATCH /servers/:id never changes control-plane-owned options', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const owned = {
+      cellGeneration: 3,
+      cellLocationHint: 'wnam',
+      metricsCapabilityPlan: { cpu: { enabled: true } },
+    }
+    await db.update(server).set({ options: owned }).where(eq(server.id, serverId))
+    const res = await app.request(`/servers/${serverId}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        options: {
+          sshPort: 2222,
+          cellGeneration: 99,
+          cellLocationHint: 'x',
+          metricsCapabilityPlan: { cpu: { enabled: false } },
+        },
+      }),
+    })
+    assertEquals(res.status, 200)
+    const [row] = await db
+      .select({ options: server.options })
+      .from(server)
+      .where(eq(server.id, serverId))
+      .limit(1)
+    assertEquals(row!.options, { ...owned, sshPort: 2222 })
+  })
+})
+
 test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecycle', async () => {
   await withServerDeleteFixtures(
     async ({ db, secrets, userId, organizationId, serverId, registry }) => {
