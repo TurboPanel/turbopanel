@@ -490,8 +490,9 @@ export async function createManagedLogin(
 }
 
 /**
- * A `user` login that shares a site owner's Linux user name: the engine role
- * takes the principal's applied name (the one allowed overlap in the
+ * A `user` login that belongs to a site owner's Linux user: the engine role
+ * takes the principal's applied name, or its mapped name when the engine does
+ * not accept it as-is (the one allowed overlap in the
  * organization's name pool) and a fresh sealed password. Returns the
  * show-once plaintext.
  */
