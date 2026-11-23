@@ -86,7 +86,7 @@ src/
 - `src/features/email/` — queue types, templates and the senders (`smtp/`,
   `mailgun/`, `mailpit/`); the Deno AMQP publisher is
   `src/platform/deno/email/deno-amqp-queue.ts`; the in-process consumer and
-  the SMTP and Mailgun senders (`smtp-sender.ts`, `mailgun-sender.ts`) are
+  the SMTP and HTTP API senders (`smtp-sender.ts`, `mailgun-sender.ts`) are
   under `src/lib/email/mailer/`
 - `src/developer/` — developer surface, Deno development entry only
   (`src/deno-dev.ts` calls `registerDeveloperRoutes`); `routes-core.ts` holds
