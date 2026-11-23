@@ -19,10 +19,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import {
-  GITLAB_WEBHOOK_PATH,
-  GITLAB_WEBHOOK_SCOPED_PATH,
-} from '../../app/surfaces.ts'
+import { GITLAB_WEBHOOK_PATH, GITLAB_WEBHOOK_SCOPED_PATH } from '../../app/surfaces.ts'
 import { gitlabWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
 import { gitlabProvider } from '../../features/git/gitlab-provider.ts'
 import { resolveGitlabWebhookForge } from '../../features/git/resolve-webhook-forge.ts'
@@ -62,7 +59,7 @@ async function handlePush(
   c: Context<AppEnv>,
   db: Db,
   forgeId: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<DeliveryOutcome> {
   const push = gitlabProvider.parsePush(payload)
   if (!push) return accepted({ skipped: 'non_branch_ref' })
@@ -86,7 +83,7 @@ async function handlePipeline(
   db: Db,
   forgeId: string,
   event: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<DeliveryOutcome> {
   // Pipeline-level success only — GitLab's analogue of a green `check_suite`.
   // A `Job Hook` describes one job and is deliberately not a release signal.
@@ -117,7 +114,7 @@ async function dispatchDelivery(
   db: Db,
   forgeId: string,
   event: string,
-  payload: Record<string, unknown>,
+  payload: Record<string, unknown>
 ): Promise<DeliveryOutcome> {
   const kind = typeof payload.object_kind === 'string' ? payload.object_kind : event
   switch (kind) {
@@ -144,7 +141,7 @@ const gitlabGate: WebhookGate<Forge> = {
       ctx.db,
       ctx.dataEncryptionSecrets,
       ref,
-      ctx.headers.get(GITLAB_TOKEN_HEADER),
+      ctx.headers.get(GITLAB_TOKEN_HEADER)
     )
     if (resolution.ok) return { ok: true, candidates: resolution.candidates }
     return { ok: false, reason: 'names no registered app' }
@@ -157,22 +154,18 @@ const gitlabGate: WebhookGate<Forge> = {
     gitlabProvider.verifyWebhook(app.webhookSecret ?? '', raw, ctx.headers),
 
   // The UUID when present, else a digest of the body — see the header note.
-  deliveryId: (ctx, raw) =>
-    gitlabDeliveryId(ctx.headers.get(GITLAB_EVENT_UUID_HEADER), raw),
+  deliveryId: (ctx, raw) => gitlabDeliveryId(ctx.headers.get(GITLAB_EVENT_UUID_HEADER), raw),
 
   // The ledger records the header's display name for tracing; `dispatchDelivery`
   // below discriminates on the payload's `object_kind` instead.
   eventName: (ctx) => gitlabEventName(ctx.headers.get(GITLAB_EVENT_HEADER)) || null,
 
-  dispatch: (ctx, app, event, payload) =>
-    dispatchDelivery(ctx.c, ctx.db, app.id, event, payload),
+  // The shared token authenticates the sender; neither header nor body is signed.
+  bodyDigestScope: (app) => app.id,
+
+  dispatch: (ctx, app, event, payload) => dispatchDelivery(ctx.c, ctx.db, app.id, event, payload),
 }
 
 export function registerGitlabWebhookRoutes(app: Hono<AppEnv>, opts: WebhookGateOpts) {
-  registerWebhookGate(
-    app,
-    [GITLAB_WEBHOOK_SCOPED_PATH, GITLAB_WEBHOOK_PATH],
-    gitlabGate,
-    opts,
-  )
+  registerWebhookGate(app, [GITLAB_WEBHOOK_SCOPED_PATH, GITLAB_WEBHOOK_PATH], gitlabGate, opts)
 }

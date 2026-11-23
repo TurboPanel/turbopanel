@@ -109,6 +109,48 @@ test('parseRepositoryOwnerRepo handles scp-like SSH clone URLs', () => {
   })
 })
 
+test('parseRepositoryOwnerRepo refuses dot segments and characters no forge allows', () => {
+  for (const url of [
+    'git@github.com:../orgs',
+    'git@github.com:../orgs.git',
+    'git@github.com:acme/..',
+    'git@github.com:./repo',
+    'git@github.com:acme/..git',
+    'git@github.com:acme%2f..%2fx/repo',
+    'git@github.com:acme/re%70o',
+    'git@github.com:acme/re?po',
+    'git@github.com:ac:me/repo',
+  ]) {
+    assertEquals(parseRepositoryOwnerRepo(url), null, url)
+  }
+  // The URL parser already resolves dot segments in an https path; whatever is
+  // left must still be a plain pair.
+  assertEquals(parseRepositoryOwnerRepo('https://github.com/acme/%2e%2e/repo'), null)
+  assertEquals(parseRepositoryOwnerRepo('https://github.com/acme/%2e%2e'), null)
+  assertEquals(parseRepositoryOwnerRepo('https://github.com/a_b.c/my-repo.v2.git'), {
+    owner: 'a_b.c',
+    repo: 'my-repo.v2',
+  })
+})
+
+test('repositoryPathFromCloneUrl refuses a dot segment anywhere in the namespace', () => {
+  assertEquals(repositoryPathFromCloneUrl('git@gitlab.com:group/../project.git'), null)
+  assertEquals(repositoryPathFromCloneUrl('git@gitlab.com:../group/project.git'), null)
+  assertEquals(repositoryPathFromCloneUrl('git@gitlab.com:group/./project.git'), null)
+  assertEquals(
+    repositoryPathFromCloneUrl('https://gitlab.com/my.group/sub_group/proj.ect.git'),
+    'my.group/sub_group/proj.ect'
+  )
+})
+
+test('an scp-like user or host that starts with a dash is not a clone URL', () => {
+  for (const url of ['-uhelp@x.com:y', 'git@-oProxyCommand=x:y', 'a@-b.com:y']) {
+    assertEquals(isSshCloneUrl(url), false, url)
+    assertEquals(cloneUrlRefusal(url), 'invalid', url)
+  }
+  assertEquals(canonicalizeRepositoryUrl('-uhelp@Example.com:y/z'), '-uhelp@Example.com:y/z')
+})
+
 test('repositoryPathFromCloneUrl returns the full namespace path', () => {
   assertEquals(
     repositoryPathFromCloneUrl('https://gitlab.com/group/subgroup/project.git'),

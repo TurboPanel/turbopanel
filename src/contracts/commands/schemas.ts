@@ -4426,10 +4426,10 @@ function isSafeSourceSubdirectory(value: unknown): value is string {
 function isCredentialFreeCloneUrl(value: string): boolean {
   if (value.startsWith('https://') || value.startsWith('ssh://')) {
     const authority = value.slice(value.indexOf('://') + 3).split('/')[0] ?? ''
-    return !authority.includes('@')
+    return !authority.includes('@') && !authority.startsWith('-')
   }
   // `git@host:owner/repo.git` — SSH scp-syntax carries a username, not a secret.
-  return /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:/.test(value)
+  return /^[A-Za-z0-9._][A-Za-z0-9._-]*@[A-Za-z0-9.][A-Za-z0-9.-]*:/.test(value)
 }
 
 function parseDeploySourceCommand(value: unknown, field: string): string | undefined {

@@ -152,7 +152,15 @@ that is exactly the duplication a third kind would have inherited.
    (`claimWebhookDelivery`, keyed on `(provider, external_delivery_id)`). A
    redelivery answers `204` without re-running side effects. Claiming *after*
    verification is deliberate: otherwise an unauthenticated request could burn
-   the id a genuine redelivery needs.
+   the id a genuine redelivery needs. GitHub's HMAC covers the body but not
+   `X-GitHub-Delivery` or `X-GitHub-Event`, and GitLab's token covers nothing
+   in the request, so those gates set `bodyDigestScope` (the verified holder's
+   id) and also claim `body-sha256:<holder id>:<hex of the body>` (same table,
+   same unique index, no schema change) before the id. The key is scoped to the
+   holder because GitLab sends the same bytes to every hook on a project and
+   each forge's hook must still run. The same bytes are processed once per
+   holder whatever the unsigned headers say; a replay under a fresh id or a
+   relabelled event answers `204`. A release frees both keys.
 6. **Parse and dispatch** — on `X-GitHub-Event`, or on GitLab's `object_kind`.
 
 Everything answers fast and answers 2xx unless the instance itself is at fault.

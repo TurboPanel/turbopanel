@@ -6918,6 +6918,9 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, image, and c
     'https://user:pass@gitlab.test/acme/app.git',
     'https://oauth2@gitlab.test/acme/app.git',
     'ssh://git@gitlab.test/acme/app.git',
+    '-uhelp@gitlab.test:acme/app.git',
+    'git@-gitlab.test:acme/app.git',
+    'ssh://-oProxyCommand=x/acme/app.git',
     'https://gitlab.test/acme/app.git with space',
     `https://gitlab.test/${'a'.repeat(2048)}.git`,
   ]) {

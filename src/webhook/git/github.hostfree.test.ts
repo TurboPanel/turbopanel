@@ -69,7 +69,13 @@ const WEBHOOK_REF = 'ref-under-test'
  */
 function stubAppDb(
   rows: unknown[],
-  opts: { claimed?: boolean; updated?: unknown[]; installations?: unknown[] } = {}
+  opts: {
+    claimed?: boolean
+    updated?: unknown[]
+    installations?: unknown[]
+    /** When set, claims are real: a key already in the set is a duplicate. */
+    ledger?: Set<string>
+  } = {}
 ): Db {
   return {
     select: () => ({
@@ -87,9 +93,17 @@ function stubAppDb(
       }),
     }),
     insert: () => ({
-      values: () => ({
+      values: (row: { externalDeliveryId?: string }) => ({
         onConflictDoNothing: () => ({
-          returning: () => Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
+          returning: () => {
+            const key = row.externalDeliveryId ?? ''
+            if (opts.ledger) {
+              if (opts.ledger.has(key)) return Promise.resolve([])
+              opts.ledger.add(key)
+              return Promise.resolve([{ id: 'row' }])
+            }
+            return Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }])
+          },
         }),
       }),
     }),
@@ -332,6 +346,7 @@ async function buildApp(opts: {
   rateLimited?: boolean
   rateLimiter?: { limit: (args: { key: string }) => Promise<{ success: boolean }> }
   claimed?: boolean
+  ledger?: Set<string>
   updated?: unknown[]
   /** Set a real (non-noop) command queue so dispatch can resolve a trigger. */
   dispatchReady?: boolean
@@ -390,7 +405,11 @@ async function buildApp(opts: {
             ...(opts.graph.repository === undefined ? {} : { repository: opts.graph.repository }),
             ...(opts.graph.onRelease === undefined ? {} : { onRelease: opts.graph.onRelease }),
           })
-        : stubAppDb(rows, { claimed: opts.claimed, updated: opts.updated })
+        : stubAppDb(rows, {
+            claimed: opts.claimed,
+            updated: opts.updated,
+            ...(opts.ledger ? { ledger: opts.ledger } : {}),
+          })
     )
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     if (opts.dispatchReady || opts.graph) {
@@ -1097,4 +1116,24 @@ test('a Redis eval failure still throttles GitHub webhook ingress', async () => 
   )
   assertEquals(second.status, 429)
   assertEquals(second.headers.get('Retry-After'), '60')
+})
+
+test('the same signed body under a fresh delivery id is acknowledged, not processed again', async () => {
+  const ledger = new Set<string>()
+  const app = await buildApp({ webhookSecret: 'shh', ledger, dispatchReady: true })
+  const body = JSON.stringify({ ref: 12 })
+  const first = await signedDispatch(app, body, { 'x-github-event': 'push' })
+  assertEquals(first.status, 200)
+  // Neither header is covered by the HMAC: a captured body resent with a new
+  // delivery id, or with the event relabelled, is the same delivery.
+  const fresh = await signedDispatch(app, body, { 'x-github-event': 'push' })
+  assertEquals(fresh.status, 204)
+  const relabelled = await signedDispatch(app, body, { 'x-github-event': 'installation' })
+  assertEquals(relabelled.status, 204)
+  // A genuine GitHub redelivery reuses the id and the bytes.
+  const id = crypto.randomUUID()
+  const other = JSON.stringify({ ref: 13 })
+  const a = await signedDispatch(app, other, { 'x-github-event': 'push', 'x-github-delivery': id })
+  const b = await signedDispatch(app, other, { 'x-github-event': 'push', 'x-github-delivery': id })
+  assertEquals([a.status, b.status], [200, 204])
 })
