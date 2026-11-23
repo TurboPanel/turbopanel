@@ -27,6 +27,7 @@
 export { DAEMON_CELL_MAINTAIN_MS as JOB_TICK_MS } from '../../contracts/cell-protocol.ts'
 import type { CronGates } from '../../daemon/cell/cron-gates.ts'
 import { ALL_GATES_OPEN } from '../../daemon/cell/cron-gates.ts'
+import { type JobDueInput, type JobIdOn, jobsOn } from '../../jobs/table.ts'
 import {
   CRON_CADENCES,
   type CronCadenceTable,
@@ -75,6 +76,46 @@ export type TickJob = {
   /** Whether to run this tick; omitted means every tick. */
   due?: (ctx: TickContext) => boolean
   run: (ctx: TickContext) => Promise<unknown>
+}
+
+/** What the self-hosted tick does for one table row: the work, and whether it needs the lease. */
+export type DenoJobHandler = {
+  scope: TickJob['scope']
+  run: TickJob['run']
+}
+
+/** One handler per row the table gives this runtime; a row without one fails the type check. */
+export type DenoJobHandlers = Record<JobIdOn<'deno'>, DenoJobHandler>
+
+/** The shared rule's input for a tick on this runtime. */
+export function denoDueInput(ctx: TickContext, runtime: { queue: boolean }): JobDueInput {
+  return {
+    gates: ctx.gates,
+    cadenceDue: ctx.isDue,
+    queue: runtime.queue,
+    // The self-hosted process always holds its secrets.
+    secrets: true,
+  }
+}
+
+/**
+ * The tick's job list from the shared table (`jobs/table.ts`), in table order:
+ * each row's shared rule decides whether it runs, its handler here does the work.
+ */
+export function tickJobsFromTable(
+  handlers: DenoJobHandlers,
+  runtime: { queue: boolean }
+): TickJob[] {
+  return jobsOn('deno').map((def) => {
+    const handler = handlers[def.id as JobIdOn<'deno'>]
+    const { due } = def
+    return {
+      name: def.id,
+      scope: handler.scope,
+      ...(due ? { due: (ctx: TickContext) => due(denoDueInput(ctx, runtime)) } : {}),
+      run: handler.run,
+    }
+  })
 }
 
 /**

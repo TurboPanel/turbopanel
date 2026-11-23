@@ -1,8 +1,16 @@
 import { assert, assertEquals } from '@std/assert'
 import { ALL_GATES_OPEN, type CronGates } from '../../daemon/cell/cron-gates.ts'
-import { CRON_CADENCES, resolveJobCadences } from '../../jobs/registry.ts'
+import { CRON_CADENCES, type CronJob, resolveJobCadences } from '../../jobs/registry.ts'
+import { jobsOn, RUNTIME_DIFFERENCES } from '../../jobs/table.ts'
 import { DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
-import { createJobTick, type JobTickDeps, type TickJob } from './job-tick.ts'
+import {
+  createJobTick,
+  type DenoJobHandlers,
+  type JobTickDeps,
+  type TickContext,
+  type TickJob,
+  tickJobsFromTable,
+} from './job-tick.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -436,22 +444,13 @@ test('the self-hosted server has one timer, the job tick, and none of the old lo
   }
 })
 
-test('every registry job the self-hosted tick reads exists in the table', () => {
-  const server = Deno.readTextFileSync(new URL('./server.ts', import.meta.url))
-  const names = new Set<string>(Object.keys(CRON_CADENCES))
-  const used = [
-    ...server.matchAll(/(?:onCadence\(\s*'[^']+',\s*|isDue\(\s*|reconcile\(\s*)'([A-Za-z]+)'/g),
-  ].map((match) => match[1])
-  assert(used.length >= 15, `found only ${used.length} registry names; the parser is broken`)
-  for (const name of used) assert(names.has(name), `${name} is not in CRON_CADENCES`)
-})
-
 test('Workers keeps its 90 second offline threshold and self-hosted its 150 second one', () => {
   // Read as text: importing offline-sweep.ts pulls the Workers-only types into a Deno check.
   const sweep = Deno.readTextFileSync(
     new URL('../../daemon/cell/offline-sweep.ts', import.meta.url)
   )
-  assert(sweep.includes('export const OFFLINE_SWEEP_STALE_MS = 90_000'))
+  assert(sweep.includes('OFFLINE_SWEEP_STALE_MS = RUNTIME_DIFFERENCES.offlineCutoffMs.workers'))
+  assertEquals(RUNTIME_DIFFERENCES.offlineCutoffMs.workers, 90_000)
   const server = Deno.readTextFileSync(new URL('./server.ts', import.meta.url))
   assert(server.includes('graceMs: DAEMON_OFFLINE_SWEEP_MS'))
   assert(!server.includes('OFFLINE_SWEEP_STALE_MS'))
@@ -599,8 +598,32 @@ test('a job whose due check throws is skipped and logged, and the tick still com
   )
 })
 
-test('the upgrade tick runs every minute while a run is active and on its slot otherwise', () => {
-  const server = Deno.readTextFileSync(new URL('./server.ts', import.meta.url))
-  assert(server.includes("name: 'upgrade tick'"))
-  assert(server.includes("ctx.gates.upgradeRunActive || ctx.isDue('upgradeTick')"))
+test('the self-hosted list is the table in order, each row ruled by the shared due rule', () => {
+  const handlers = Object.fromEntries(
+    jobsOn('deno').map((def) => [def.id, { scope: 'shared', run: () => Promise.resolve() }])
+  ) as unknown as DenoJobHandlers
+  const list = tickJobsFromTable(handlers, { queue: true })
+  assertEquals(
+    list.map((entry) => entry.name),
+    jobsOn('deno').map((def) => def.id)
+  )
+  const ctx = (gates: Partial<CronGates>, slots: CronJob[]): TickContext => ({
+    nowMs: 0,
+    env: {},
+    cadences: CRON_CADENCES,
+    gates: { ...ALL_GATES_OPEN, upgradeRunActive: false, ...gates },
+    isDue: (name) => slots.includes(name),
+    resource: (_key, open) => open(),
+  })
+  const upgrade = list.find((entry) => entry.name === 'upgrade-tick')
+  assert(upgrade?.due)
+  // Every minute while a run is active, on its slot otherwise.
+  assertEquals(upgrade.due(ctx({ upgradeRunActive: true }, [])), true)
+  assertEquals(upgrade.due(ctx({}, ['upgradeTick'])), true)
+  assertEquals(upgrade.due(ctx({}, [])), false)
+  // A no-op queue turns the queue sweeps off.
+  const noQueue = tickJobsFromTable(handlers, { queue: false })
+  const reconcile = (jobs: typeof list) => jobs.find((entry) => entry.name === 'system-reconcile')
+  assertEquals(reconcile(list)?.due?.(ctx({}, [])), true)
+  assertEquals(reconcile(noQueue)?.due?.(ctx({}, [])), false)
 })

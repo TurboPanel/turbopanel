@@ -25,6 +25,7 @@ import {
   isMassDisconnect,
   isStale,
   newSkippedPhases,
+  observeJobAsksForTests,
   optionalPhaseNames,
   MASS_DISCONNECT_ABSOLUTE,
   OFFLINE_SWEEP_STALE_MS,
@@ -32,9 +33,6 @@ import {
   runIsolatedSweep,
   runOfflineSweep,
   SELF_HEAL_SWEEP_BUDGET,
-  shouldSweepExecutionLogs,
-  shouldSweepTierNotices,
-  shouldSweepUpgradeHistory,
   sweepExpiredCommandDispatchSafely,
   sweepExpiredExecutionLogsSafely,
   sweepErrorMessage,
@@ -45,6 +43,8 @@ import {
   updateNullGraceBookkeeping,
 } from './offline-sweep.ts'
 import { resolveJobCadences } from '../../jobs/registry.ts'
+import { type JobIdOn, jobsOn } from '../../jobs/table.ts'
+import { ALL_GATES_OPEN } from './cron-gates.ts'
 import type { Alert } from '../../features/alerts/alert-sender.ts'
 import { WEBHOOK_DELIVERY_SWEEP_LIMIT } from '../../features/webhook-delivery/webhook-delivery-records.ts'
 import type { ExecutionLogStore } from '../../features/execution-logs/types.ts'
@@ -672,22 +672,16 @@ function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
   } as unknown as Db
 }
 
-it('shouldSweepExecutionLogs is true on every 15th UTC minute', () => {
-  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:00:00.000Z')), true)
-  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:15:00.000Z')), true)
-  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:01:00.000Z')), false)
-})
-
-it('shouldSweepUpgradeHistory is true on every 15th UTC minute', () => {
-  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:00:00.000Z')), true)
-  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:15:00.000Z')), true)
-  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:01:00.000Z')), false)
-})
-
-it('shouldSweepTierNotices is true on every UTC hour', () => {
-  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T00:00:00.000Z')), true)
-  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T01:00:00.000Z')), true)
-  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T00:15:00.000Z')), false)
+it('the phases follow the table: retention on its slot, the upgrade phase every quarter hour', () => {
+  const at = (iso: string) => optionalPhaseNames(Date.parse(iso))
+  assertEquals(at('2026-01-01T00:00:00.000Z').includes('execution-logs'), true)
+  assertEquals(at('2026-01-01T00:15:00.000Z').includes('execution-logs'), true)
+  assertEquals(at('2026-01-01T00:01:00.000Z').includes('execution-logs'), false)
+  assertEquals(at('2026-01-01T00:15:00.000Z').includes('upgrade-history'), true)
+  assertEquals(at('2026-01-01T00:01:00.000Z').includes('upgrade-history'), false)
+  assertEquals(at('2026-01-01T00:00:00.000Z').includes('tier-notices'), true)
+  assertEquals(at('2026-01-01T01:00:00.000Z').includes('tier-notices'), true)
+  assertEquals(at('2026-01-01T00:15:00.000Z').includes('tier-notices'), false)
 })
 
 it('second tick skips while the offline-sweep lease is held', async () => {
@@ -1661,6 +1655,7 @@ const IDLE_GATES_ROW = {
   notificationHeld: false,
   connectedServer: false,
   reconcileUrgent: false,
+  externalAccessPending: false,
   hostingPending: false,
   repinPending: false,
   principalRemoval: false,
@@ -1789,6 +1784,47 @@ it('gates: notification work wakes the retry and digest sweeps, otherwise they s
   await runTickCapturingTrace(commandQueueEnv(), open.db, null, MID_HOUR)
   assertEquals(closed.executed.length, 1)
   assertEquals(open.executed.length > closed.executed.length, true)
+})
+
+it('gates: an unconfirmed external-access change wakes its re-push sweep, otherwise it reads nothing', async () => {
+  const tlsRenewal = await testTlsRenewal()
+  const serverReads = async (externalAccessPending: boolean): Promise<number> => {
+    // A connected server alone does not wake it: only the pending flag does.
+    const { db } = countingIdleDb({ connectedServer: true, externalAccessPending })
+    await runTickCapturingTrace(commandQueueEnv(), db, tlsRenewal, MID_HOUR)
+    return db.ops.filter((op) => op === 'select:server').length
+  }
+  const clear = await serverReads(false)
+  const set = await serverReads(true)
+  assertEquals(set, clear + 1)
+})
+
+it('every job the table puts on Workers is asked about by the cron tick', async () => {
+  const tlsRenewal = await testTlsRenewal()
+  const env = {
+    ...commandQueueEnv(),
+    TURBOPANEL_STRIPE_SECRET_KEY: 'sk_test_x',
+  } as unknown as CloudflareBindings
+  const asked = new Set<string>()
+  observeJobAsksForTests((id) => asked.add(id))
+  try {
+    // Open gates and the hour, so every gated phase gets its turn; a phase that
+    // throws is isolated and the others still ask.
+    for (const [minute, gates] of [
+      [0, ALL_GATES_OPEN],
+      [5, ALL_GATES_OPEN],
+      [1, {}],
+    ] as const) {
+      const { db } = countingIdleDb(gates)
+      await runTickCapturingTrace(env, db, tlsRenewal, MINUTE_ZERO + minute * 60_000)
+    }
+  } finally {
+    observeJobAsksForTests(null)
+  }
+  const missing = jobsOn('workers')
+    .map((job) => job.id as JobIdOn<'workers'>)
+    .filter((id) => !asked.has(id))
+  assertEquals(missing, [])
 })
 
 it('gates: a connected server wakes one repair sweep per minute, none without one', async () => {
@@ -2131,14 +2167,12 @@ it('a bad TURBOPANEL_JOB_CADENCES logs one line per tick and the tick still runs
 
 it('a cadence override moves execution-log and tier-notice retention', () => {
   const table = resolveJobCadences('{"executionLogs":60,"tierNotices":1440}').table
-  const quarter = Date.parse('2026-01-01T00:15:00.000Z')
-  const hour = Date.parse('2026-01-01T01:00:00.000Z')
-  const midnight = Date.parse('2026-01-02T00:00:00.000Z')
-  assertEquals(shouldSweepExecutionLogs(quarter, table), false)
-  assertEquals(shouldSweepExecutionLogs(hour, table), true)
-  assertEquals(shouldSweepTierNotices(hour, table), false)
-  assertEquals(shouldSweepTierNotices(midnight, table), true)
-  assertEquals(shouldSweepUpgradeHistory(quarter, table), true)
+  const phases = (iso: string) => optionalPhaseNames(Date.parse(iso), table)
+  assertEquals(phases('2026-01-01T00:15:00.000Z').includes('execution-logs'), false)
+  assertEquals(phases('2026-01-01T01:00:00.000Z').includes('execution-logs'), true)
+  assertEquals(phases('2026-01-01T01:00:00.000Z').includes('tier-notices'), false)
+  assertEquals(phases('2026-01-02T00:00:00.000Z').includes('tier-notices'), true)
+  assertEquals(phases('2026-01-01T00:15:00.000Z').includes('upgrade-history'), true)
 })
 
 it('the peak history prune deletes through the table and never throws', async () => {

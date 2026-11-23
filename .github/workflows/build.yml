@@ -140,6 +140,9 @@ jobs:
       - name: Check import boundaries
         run: pnpm run check:import-boundaries
 
+      - name: Check source layout (baseline only shrinks)
+        run: pnpm run check:source-layout
+
       - name: Check metrics boundaries (AE tokens and page identity stay backend-private)
         run: pnpm run check:metrics-boundaries
 

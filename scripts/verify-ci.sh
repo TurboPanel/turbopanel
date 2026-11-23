@@ -88,6 +88,9 @@ pnpm run check:workers-acme-boundary
 echo "==> Check import boundaries"
 pnpm run check:import-boundaries
 
+echo "==> Check source layout"
+pnpm run check:source-layout
+
 echo "==> Check metrics boundaries"
 pnpm run check:metrics-boundaries
 

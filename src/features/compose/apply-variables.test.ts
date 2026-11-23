@@ -1216,6 +1216,72 @@ describe('apply-variables', () => {
         assertEquals(run(doc).secretsNotInjected, [])
       })
 
+      it('reports a service-scoped secret nothing references, for its own service only', () => {
+        const own = entry({ key: 'SVC_PASS', isSecret: true, value: 'sealed', source: 'service' })
+        const result = mustApply(
+          applyVariablesToComposeDocument(stack({ web: undefined, init: undefined }), {
+            globalEntries: [],
+            perServiceEntries: new Map([['init', [own]]]),
+          })
+        )
+        assertEquals(result.secretsNotInjected, [
+          { key: 'SVC_PASS', source: 'service', composeServiceNames: ['init'] },
+        ])
+        assertEquals(result.secretMaterial, [])
+      })
+
+      it('says nothing for a service-scoped secret only its own config file reads', () => {
+        const own = entry({ key: 'SVC_PASS', isSecret: true, value: 'sealed', source: 'service' })
+        const doc = stack(
+          { web: undefined, init: undefined },
+          { init: { configs: [{ source: 'app', target: '/etc/app.conf' }] } }
+        )
+        doc.data.configs = { app: { content: 'pass={$SVC_PASS}' } }
+        const result = mustApply(
+          applyVariablesToComposeDocument(doc, {
+            globalEntries: [],
+            perServiceEntries: new Map([['init', [own]]]),
+          })
+        )
+        assertEquals(result.secretsNotInjected, [])
+      })
+
+      it('says nothing for a service-scoped secret its own service references', () => {
+        const own = entry({ key: 'SVC_PASS', isSecret: true, value: 'sealed', source: 'service' })
+        const result = mustApply(
+          applyVariablesToComposeDocument(
+            stack({ web: undefined, init: { PASS: '{$SVC_PASS}' } }),
+            {
+              globalEntries: [],
+              perServiceEntries: new Map([['init', [own]]]),
+            }
+          )
+        )
+        assertEquals(result.secretsNotInjected, [])
+      })
+
+      it('still reports a secret scoped to one service when only another service references the key', () => {
+        // init's own SVC_PASS is a different secret from the project-level one
+        // web reads, so web's delivery does not cover init.
+        const own = entry({ key: 'SVC_PASS', isSecret: true, value: 'sealed', source: 'service' })
+        const other = entry({ key: 'SVC_PASS', isSecret: true, value: 'other', source: 'project' })
+        const result = mustApply(
+          applyVariablesToComposeDocument(
+            stack({ web: { PASS: '{$SVC_PASS}' }, init: undefined }),
+            {
+              globalEntries: [],
+              perServiceEntries: new Map([
+                ['init', [own]],
+                ['web', [other]],
+              ]),
+            }
+          )
+        )
+        assertEquals(result.secretsNotInjected, [
+          { key: 'SVC_PASS', source: 'service', composeServiceNames: ['init'] },
+        ])
+      })
+
       it('does not report native apps', () => {
         assertEquals(run(stack({ web: undefined }), [secret], ['web']).secretsNotInjected, [])
       })

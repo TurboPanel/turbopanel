@@ -85,6 +85,8 @@ export type CronGates = {
    * their routine 5 minute slot.
    */
   reconcileUrgent: boolean
+  /** A connected server whose external-access change is not confirmed yet: the re-push sweep's first read. */
+  externalAccessPending: boolean
   /** A site waiting on DNS for a Let's Encrypt order. */
   hostingPending: boolean
   /** A membership repin waiting for its fan-out. */
@@ -117,6 +119,7 @@ export const ALL_GATES_OPEN: CronGates = {
   notificationHeld: true,
   connectedServer: true,
   reconcileUrgent: true,
+  externalAccessPending: true,
   hostingPending: true,
   repinPending: true,
   principalRemoval: true,
@@ -186,6 +189,8 @@ export async function loadCronGates(
         exists (select 1 from ${server} srv where srv.is_connected
           and (srv.status_changed_at >= ${reconnectedSince}::timestamptz
             or ${systemReconcileRepairableExists(sql`srv.id`, sql`srv.organization_id`)})) as "reconcileUrgent",
+        exists (select 1 from ${server} where ${server.isConnected}
+          and ${server.externalAccessPendingAt} is not null) as "externalAccessPending",
         exists (select 1 from ${hosting} where ${hosting.pendingAt} is not null) as "hostingPending",
         exists (select 1 from ${ip} where ${ip.repinPendingFanoutAt} is not null) as "repinPending",
         exists (select 1 from ${principal} where ${principal.removalRequestedAt} is not null) as "principalRemoval",

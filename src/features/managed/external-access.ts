@@ -24,7 +24,7 @@
  * Out of scope here, on purpose: per-login source restrictions.
  */
 
-import { and, eq, gte, inArray, isNotNull, lte, sql } from 'drizzle-orm'
+import { and, asc, eq, gte, inArray, isNotNull, lte, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { command, managed, replica, server } from '../../db/schema.ts'
@@ -303,6 +303,9 @@ export async function enqueueManagedExternalAccessReconcile(
   return result.reason === 'not_needed' ? 'not_needed' : 'failed'
 }
 
+/** Servers one sweep pass re-sends to; the oldest pending change goes first, the rest wait for the next tick. */
+export const EXTERNAL_ACCESS_PENDING_SWEEP_LIMIT = 100
+
 /**
  * Re-send the setting to servers that were asked but never confirmed (a payload
  * that could not be built and has since been fixed, or a server offline past
@@ -321,6 +324,8 @@ export async function runManagedExternalAccessPendingSweep(
     })
     .from(server)
     .where(and(eq(server.isConnected, true), isNotNull(server.externalAccessPendingAt)))
+    .orderBy(asc(server.externalAccessPendingAt))
+    .limit(EXTERNAL_ACCESS_PENDING_SWEEP_LIMIT)
   if (connected.length === 0) return { enqueued: 0 }
 
   const now = new Date().toISOString()
