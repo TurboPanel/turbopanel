@@ -107,6 +107,28 @@ test('endpoint rules: https, or http on a private address; never loopback or met
   }
 })
 
+test('endpoint rules: loopback and link-local written as IPv6 are refused', () => {
+  for (const bad of [
+    '[::ffff:127.0.0.1]',
+    '[::ffff:7f00:1]',
+    '[::ffff:a9fe:a9fe]',
+    '[::ffff:169.254.169.254]',
+    '[0:0:0:0:0:ffff:7f00:1]',
+    '[::127.0.0.1]',
+    '[::7f00:1]',
+    '[64:ff9b::7f00:1]',
+    '[64:ff9b::a9fe:a9fe]',
+    '[::ffff:0.0.0.0]',
+  ]) {
+    assertEquals(typeof endpointRefusal(`https://${bad}`), 'string', bad)
+    assertEquals(typeof endpointRefusal(`http://${bad}`), 'string', bad)
+  }
+  assertEquals(endpointRefusal('https://[2001:db8::1]:9000'), null)
+  assertEquals(endpointRefusal('https://[::ffff:8.8.8.8]'), null)
+  assertEquals(endpointRefusal('http://[::ffff:10.0.0.5]:9000'), null)
+  assertEquals(typeof endpointRefusal('http://[::ffff:8.8.8.8]'), 'string')
+})
+
 test('the API shape never carries the secret key', () => {
   const api = toApiTarget(row())
   assertEquals(api.hasSecret, true)
