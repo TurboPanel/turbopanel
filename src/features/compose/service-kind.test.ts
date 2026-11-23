@@ -61,23 +61,6 @@ test('collectServiceTurbopanelValidationIssues rejects unsafe root', () => {
   )
 })
 
-test('collectServiceTurbopanelValidationIssues refuses workers and post-deploy keys in Compose', () => {
-  const issues = collectServiceTurbopanelValidationIssues({
-    web: {
-      'x-turbopanel': {
-        serviceKind: 'site',
-        sourceKind: 'managed-directory',
-        workers: [{ name: 'queue', command: 'php artisan queue:work' }],
-        postDeployCommands: ['php artisan migrate'],
-      },
-    },
-  })
-  assertEquals(
-    issues.map((issue) => issue.path),
-    ['services.web.x-turbopanel.workers', 'services.web.x-turbopanel.postDeployCommands']
-  )
-})
-
 test('collectServiceTurbopanelValidationIssues allows a site with no engine', () => {
   // `engine` is optional and defaults to caddy, resolved at the control-plane
   // split. A minimum static site is therefore four lines of compose.

@@ -1738,31 +1738,6 @@ function validateHostingConsistency(
   return collectHostingExtensionValidationIssues(basePath, raw.hosting, fields.serviceKind)
 }
 
-/**
- * A site's background workers and post-deploy commands are service options, set
- * on the service (`PATCH /services/:id`, the Workers settings), never read from
- * Compose. Left in `x-turbopanel` they would be dropped without a word, so a
- * site would deploy with no queue worker; refuse them at save and say where
- * they go.
- */
-const SERVICE_OPTION_ONLY_KEYS = [
-  'workers',
-  'postDeployCommands',
-  'postDeployTimeoutSeconds',
-  'postDeployTiming',
-] as const
-
-function validateServiceOptionOnlyKeys(
-  basePath: string,
-  rawExtension: unknown
-): ServiceTurbopanelValidationIssue[] {
-  if (!isPlainMapping(rawExtension)) return []
-  return SERVICE_OPTION_ONLY_KEYS.filter((key) => key in rawExtension).map((key) => ({
-    path: `${basePath}.${key}`,
-    message: `${key} is not read from Compose; set it in the service's Workers settings instead`,
-  }))
-}
-
 function collectServiceExtensionValidationIssues(
   basePath: string,
   rawService: Record<string, unknown>,
@@ -1783,7 +1758,6 @@ function collectServiceExtensionValidationIssues(
 
   return [
     ...validateRawExtensionFieldTypes(basePath, rawExtension, partialLayer),
-    ...validateServiceOptionOnlyKeys(basePath, rawExtension),
     ...validateEngineConsistency(basePath, fields),
     ...(isPlainMapping(rawExtension)
       ? [
