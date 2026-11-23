@@ -7,6 +7,7 @@ import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 import { getDb } from '../../db/connection.ts'
 import {
   environment,
@@ -597,7 +598,7 @@ async function createStorageRecord(
   // A parent of another organization answers like an unknown one.
   if (parent.id !== null) {
     const parentOrgId = await resolveEntityOrganizationId(db, parent.entityKind, parent.id)
-    if (parentOrgId !== orgId) return c.json({ error: 'Not found' }, 404)
+    if (parentOrgId !== orgId) return apiError(c, 404, 'not_found', 'Not found')
   }
 
   const parentId = parent.id ?? orgId
