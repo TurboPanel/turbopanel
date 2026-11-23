@@ -1,7 +1,9 @@
 import { assertEquals } from '@std/assert'
+import type { MailerSendResult } from './sender-types.ts'
 import type { EmailJob } from './types.ts'
 import {
   createWorkersQueuedEmailQueue,
+  emailQueueSender,
   EmailSendError,
   type EmailQueueBinding,
   type EmailQueueMessage,
@@ -34,6 +36,11 @@ function message(body: unknown, attempts = 1) {
   return { msg, settled }
 }
 
+/** The Workers direct queue, failing every send, as the consumer wraps it. */
+function failingSender(error: Error) {
+  return emailQueueSender({ enqueue: () => Promise.reject(error) })
+}
+
 function recordingBinding() {
   const sent: unknown[] = []
   const binding: EmailQueueBinding = {
@@ -57,9 +64,9 @@ test('a queued job that sends is acked', async () => {
   const outcome = await settleEmailMessage({
     message: msg,
     sender: {
-      send: (job) => {
+      sendJob: (job) => {
         delivered.push(job)
-        return Promise.resolve()
+        return Promise.resolve({ success: true }) as Promise<MailerSendResult>
       },
     },
   })
@@ -72,7 +79,7 @@ test('a passing failure is retried later on the self-hosted schedule', async () 
   const { msg, settled } = message({ v: 1, job: OTP_JOB })
   const outcome = await settleEmailMessage({
     message: msg,
-    sender: { send: () => Promise.reject(new Error('Mailgun did not answer')) },
+    sender: failingSender(new Error('Mailgun did not answer')),
     random: () => 1,
   })
   assertEquals(outcome, 'retry')
@@ -94,7 +101,7 @@ test('a job the provider refused for good, or out of tries, is dead-lettered and
     const dead = recordingBinding()
     const outcome = await settleEmailMessage({
       message: msgInput.msg,
-      sender: { send: () => Promise.reject(error) },
+      sender: failingSender(error),
       deadLetterQueue: dead.binding,
     })
     assertEquals(outcome, 'dead')
@@ -112,13 +119,13 @@ test('a dead-lettered job is counted for the Admin notice; a sent one is not', a
   const dead = recordingBinding()
   await settleEmailMessage({
     message: message({ v: 1, job: OTP_JOB }, 9).msg,
-    sender: { send: () => Promise.reject(new Error('down')) },
+    sender: failingSender(new Error('down')),
     deadLetterQueue: dead.binding,
     onDeadLetter,
   })
   await settleEmailMessage({
     message: message({ v: 1, job: OTP_JOB }).msg,
-    sender: { send: () => Promise.resolve() },
+    sender: { sendJob: () => Promise.resolve({ success: true as const }) },
     deadLetterQueue: dead.binding,
     onDeadLetter,
   })
@@ -132,9 +139,9 @@ test('an unreadable message is dead-lettered without a send', async () => {
   const outcome = await settleEmailMessage({
     message: msg,
     sender: {
-      send: () => {
+      sendJob: () => {
         sends += 1
-        return Promise.resolve()
+        return Promise.resolve({ success: true }) as Promise<MailerSendResult>
       },
     },
     deadLetterQueue: dead.binding,
@@ -148,7 +155,7 @@ test('a job that cannot be dead-lettered is handed back, not lost', async () => 
   const { msg, settled } = message({ v: 1, job: OTP_JOB }, 9)
   const outcome = await settleEmailMessage({
     message: msg,
-    sender: { send: () => Promise.reject(new Error('down')) },
+    sender: failingSender(new Error('down')),
     deadLetterQueue: { send: () => Promise.reject(new Error('queue down')) },
   })
   assertEquals(outcome, 'dead')

@@ -436,7 +436,11 @@ test('an exhausted rate limit requeues, pauses the consumer and resumes on the s
     broker.deliver({ content: { toString: () => OTP_JOB_JSON } })
     broker.deliver({ content: { toString: () => OTP_JOB_JSON } })
     await waitFor(() => broker.dispositions.length === 2, 'two dispositions')
-    assertEquals(broker.dispositions, [{ method: 'ack' }, { method: 'nack', requeue: true }])
+    // The two handlers run side by side, so which settles first is not fixed.
+    assertEquals(
+      [...broker.dispositions].sort((a, b) => a.method.localeCompare(b.method)),
+      [{ method: 'ack' }, { method: 'nack', requeue: true }]
+    )
     assertEquals(broker.cancels, ['ctag-1'])
     // The pause is the limiter's wait (1 ms at 60000/min); then the consumer
     // comes back on the same session.
