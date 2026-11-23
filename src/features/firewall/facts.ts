@@ -54,7 +54,7 @@ import { parseOrganizationOptions } from '../organizations/organization-options.
 import { resolveEffectiveSshPort } from '../servers/host-defaults.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import { SYSTEM_SELF_HOST_COMPONENT } from '../system/hierarchy.ts'
-import { ipAddressScope } from '../../lib/ip-address.ts'
+import { addressInCidr, ipAddressScope } from '../../lib/ip-address.ts'
 import { publishedPortsOfCompose } from './compose-ports.ts'
 import type {
   DerivedExposure,
@@ -433,28 +433,40 @@ async function loadDeployedEnvironments(db: Db, serverId: string): Promise<Envir
 }
 
 /**
- * A port published on a private or link-local host address is reachable from
- * this datacenter network only; one on every address, or on a public address,
- * is reachable by anyone.
+ * Who may reach a port published on one host address. An address inside the
+ * TurboFabric range is fabric reach, and one inside a datacenter network is
+ * datacenter reach (fabric first: its range is private too). Every address, a
+ * public address, or a private address that matches neither known range stays
+ * public: such an address is not internet-routable, and narrowing it to a
+ * range that does not contain it would close a port that is open today.
  */
-function reachOfHostIp(hostIp: string | undefined): ExposureReach {
+export function reachOfHostIp(
+  hostIp: string | undefined,
+  sets: Pick<FirewallSourceSets, 'fabric' | 'datacenter'>
+): ExposureReach {
   if (hostIp === undefined) return 'public'
   const scope = ipAddressScope(hostIp)
-  return scope === 'private' || scope === 'link-local' ? 'datacenter' : 'public'
+  if (scope !== 'private' && scope !== 'link-local') return 'public'
+  if (sets.fabric.some((cidr) => addressInCidr(hostIp, cidr))) return 'fabric'
+  if (sets.datacenter.some((cidr) => addressInCidr(hostIp, cidr))) return 'datacenter'
+  return 'public'
 }
 
-function exposureFromPublishedPort(port: {
-  proto: 'tcp' | 'udp'
-  ports: string
-  hostIp?: string
-  service: string
-}): DerivedExposure {
+function exposureFromPublishedPort(
+  port: {
+    proto: 'tcp' | 'udp'
+    ports: string
+    hostIp?: string
+    service: string
+  },
+  sets: FirewallSourceSets
+): DerivedExposure {
   return {
     source: 'compose',
     scope: 'published',
     proto: port.proto,
     ports: port.ports,
-    reach: reachOfHostIp(port.hostIp),
+    reach: reachOfHostIp(port.hostIp, sets),
     comment: `App ${port.service}`,
     ...(port.hostIp === undefined ? {} : { destination: port.hostIp }),
   }
@@ -463,6 +475,7 @@ function exposureFromPublishedPort(port: {
 async function loadComposeExposures(
   db: Db,
   serverId: string,
+  sets: FirewallSourceSets,
   notes: string[]
 ): Promise<DerivedExposure[]> {
   const exposures: DerivedExposure[] = []
@@ -481,7 +494,7 @@ async function loadComposeExposures(
     const merged = mergeComposeLayers(chain)
     const { ports, notes: portNotes } = publishedPortsOfCompose(merged.data)
     notes.push(...portNotes)
-    exposures.push(...ports.map(exposureFromPublishedPort))
+    exposures.push(...ports.map((port) => exposureFromPublishedPort(port, sets)))
   }
   return exposures
 }
@@ -605,7 +618,7 @@ export async function loadFirewallFacts(
     loadClusterPeerExposures(db, serverId, notes),
     loadFabricExposures(db, serverId),
     loadHaExposures(db, serverId),
-    loadComposeExposures(db, serverId, notes),
+    loadComposeExposures(db, serverId, sources, notes),
   ])
   return {
     organizationId: base.organizationId,

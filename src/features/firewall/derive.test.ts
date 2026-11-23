@@ -347,3 +347,11 @@ test('a port bound to a datacenter address derives to the datacenter sources', (
   )
   assertEquals(derivation.rules[0]?.sources, ['192.0.2.0/24'])
 })
+
+test('a datacenter-reach compose port is withheld with a note when no datacenter address is known', () => {
+  const derivation = deriveFirewall(
+    input({ exposures: [{ ...composeExposure('8081', '10.0.2.10'), reach: 'datacenter' }] })
+  )
+  assertEquals(derivation.rules, [])
+  assertEquals(derivation.notes[0]?.startsWith('App web (tcp 8081) is not sent:'), true)
+})
