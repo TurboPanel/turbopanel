@@ -94,6 +94,25 @@ test('currentCommitFromDaemonBuild maps daemonBuild commit fields', () => {
   )
 })
 
+test('parseServerPatchCore drops control-plane-owned option keys', () => {
+  const patched = parseServerPatchCore({
+    options: {
+      sshPort: 2222,
+      cellGeneration: 99,
+      cellLocationHint: 'x',
+      metricsCapabilityPlan: { cpu: { enabled: false } },
+      networkSharesSince: '2020-01-01T00:00:00.000Z',
+      tunnels: { carry: false },
+    },
+  })
+  if (!patched.ok) throw new TypeError('expected options patch')
+  assertEquals(patched.patch.options, { sshPort: 2222 })
+
+  const onlyInternal = parseServerPatchCore({ options: { cellGeneration: 99 } })
+  if (!onlyInternal.ok) throw new TypeError('expected options patch')
+  assertEquals(onlyInternal.patch.options, {})
+})
+
 test('parseServerPatchCore validates name, options, and emptiness', () => {
   const empty = parseServerPatchCore({})
   if (empty.ok) throw new TypeError('expected empty patch rejection')
