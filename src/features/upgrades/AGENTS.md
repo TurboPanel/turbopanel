@@ -49,11 +49,9 @@ manifests and may start one. Hello, heartbeat, and
 
 There is no on/off switch and no manual retry or cancel. The one manual start
 is **Update Now** (below, owner decision 2026-11-03): the hourly check, run at
-once. The routes that did the old manual starts, retries and cancels
-(`POST /instance/updates/instance`, `/daemon`, `/preflight`, `/runs`,
-`/steps/:id/retry`, `/runs/:id/cancel`, client `POST /servers/updates`
-and `POST /servers/:id/update`) answer **410** `updates_automatic`
-(`updatesAutomaticBody` in `decisions.ts`, one body for admin and client). The
+once. The admin routes that did the old manual starts, retries and cancels are
+gone; client `POST /servers/updates` and `POST /servers/:id/update` answer
+**410** `updates_automatic` (`updatesAutomaticBody` in `decisions.ts`). The
 legacy per-server updater and the client update gate are gone. The developer
 surface's own daemon update route (`../../developer/update-routes.ts`) stays.
 `UPGRADE_SOURCES` keeps `manual` and

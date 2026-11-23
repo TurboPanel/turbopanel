@@ -16,12 +16,11 @@ const test = Deno.test.bind(Deno)
 test('registerDeveloperRoutes mounts the Workers-safe core plus studio', async () => {
   const secrets = await deriveSecretsConfig(
     parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
-    'session-signing',
+    'session-signing'
   )
   const app = new Hono()
   registerDeveloperRoutes(app, { secrets, authRequired: false })
-  const response = await app.request(`${DEVELOPER_API_PREFIX}/daemon/events`)
-  assertEquals(response.status, 200)
-  const body = await response.json() as { events: unknown[] }
-  assertEquals(body.events, [])
+  // Past the auth gate (off here); the route answers 503 because the test has no db.
+  const response = await app.request(`${DEVELOPER_API_PREFIX}/organizations`)
+  assertEquals(response.status, 503)
 })

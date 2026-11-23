@@ -348,12 +348,12 @@ checkout changed). Co-located is skipped on all paths.
 
 ### Instance Cloudflare tunnel
 
-`POST /api/developer/v1/instance/tunnel-token`
-(`src/developer/tunnel-routes.ts`) sends a `tunnel-token` WS message to the
+`POST /api/admin/v1/instance/tunnel-token`
+(`src/platform/deno/ingress/admin-routes.ts`, body handled by
+`src/developer/tunnel-token-handler.ts`) sends a `tunnel-token` WS message to the
 co-located daemon, which writes `cloudflared/tunnels/instance.token` and
 (re)starts cloudflared. External remote daemons then reach this instance via the
-tunnel → Caddy → socket. Dev console: **Save Tunnel Token** in the fleet section
-(empty token tears it down).
+tunnel → Caddy → socket. An empty token tears it down.
 
 Correlated outbound work uses `createRequestAndWait` / `waitForRequest` (see
 **Enqueue-then-poll request contract** above) for dev-sync, tunnel-token,

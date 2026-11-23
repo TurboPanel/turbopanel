@@ -46,8 +46,7 @@ src/
   channel the instance follows, and rebuilds the overlay before enqueueing
   updates, instead of reading the public rail; the control plane and web
   interface get no target, since both run from the checkouts)
-- `src/workers.ts` — Workers entry (`wrangler.jsonc` main); registers
-  `developer/routes-core` once per isolate
+- `src/workers.ts` — Workers entry (`wrangler.jsonc` main)
 - `scripts/check-workers-bundle.mjs` — Wrangler dry-run of the deploy entrypoint
   (pre-commit / `pnpm check:workers-bundle`)
 - `src/lib/machine-key.ts` — machine-key derive/normalize (Workers + Deno; no
@@ -75,8 +74,7 @@ src/
 
 - `src/features/email/` — shared queue types/templates; SMTP (Deno/AMQP) and
   Mailgun (Workers) backends live under `src/platform/`
-- `src/developer/` — developer surface (Deno-only routes + Workers-safe
-  `routes-core.ts`)
+- `src/developer/` — developer surface (Deno-only routes plus `routes-core.ts`)
 
 - `src/platform/deno/server-paths.ts` / `src/features/servers/server-registry.ts` — Unix socket path + daemon
   server row resolution
