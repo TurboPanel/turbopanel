@@ -958,7 +958,10 @@ listed with `reason: 'not_referenced'` (`unreferencedSecrets`, never the value).
 A container never gets an unreferenced secret at any scope. When no container of
 the stack received a runtime secret (no reference, binding, generated config
 file or network share), deploy and preview warn once per secret with
-`secret_variable_not_injected` (`secretsNotInjected`, never the value).
+`secret_variable_not_injected` (`secretsNotInjected`, never the value). A
+secret set on a service (or its hostname) is that service's own value: it is
+delivered only when that same service got it, not when another service got a
+secret of the same name from a wider scope.
 Other differences worth knowing: the value is passed as typed
 (trimmed, not Compose-escaped, and a non-literal value's `${…}` is **not**
 expanded); the platform's own names (`HOST`, `HOSTNAME`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,

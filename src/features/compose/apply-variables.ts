@@ -1003,21 +1003,40 @@ function findSecretsNotInjected(
   configSecretRefs: readonly DeployConfigSecretRef[],
   nativeServiceNames: ReadonlySet<string> | undefined
 ): SecretNotInjected[] {
-  const delivered = new Set<string>(configSecretRefs.map((ref) => ref.key))
+  const deliveredAnywhere = new Set<string>()
+  const deliveredTo = new Set<string>()
+  const deliveredKey = (service: string, key: string) => `${service}\u0000${key}`
+  for (const ref of configSecretRefs) {
+    deliveredAnywhere.add(ref.key)
+    deliveredTo.add(deliveredKey(ref.composeServiceName, ref.key))
+  }
   for (const material of secretMaterial) {
     const service = material.composeServiceName
-    if (service === null || !nativeServiceNames?.has(service)) delivered.add(material.key)
+    if (service !== null && nativeServiceNames?.has(service)) continue
+    deliveredAnywhere.add(material.key)
+    if (service !== null) deliveredTo.add(deliveredKey(service, material.key))
   }
   const byKey = new Map<string, SecretNotInjected>()
   for (const [composeServiceName, secrets] of candidates) {
     for (const secret of secrets) {
-      if (delivered.has(secret.key)) continue
+      // A secret set on the service itself (or its hostnames) is that service's
+      // own value: the same key reaching another container is a different
+      // secret, so only this service counts. A wider scope is one secret for
+      // every service, delivered as soon as any container got it.
+      const delivered = isServiceOwnedSource(secret.source)
+        ? deliveredTo.has(deliveredKey(composeServiceName, secret.key))
+        : deliveredAnywhere.has(secret.key)
+      if (delivered) continue
       const known = byKey.get(secret.key)
       if (known) known.composeServiceNames.push(composeServiceName)
       else byKey.set(secret.key, { ...secret, composeServiceNames: [composeServiceName] })
     }
   }
   return [...byKey.values()]
+}
+
+function isServiceOwnedSource(source: string | undefined): boolean {
+  return source === 'service' || source === 'hosting'
 }
 
 /** Masked placeholder for secret-backed values in deploy-preview YAML. */
