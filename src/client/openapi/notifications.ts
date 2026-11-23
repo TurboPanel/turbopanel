@@ -432,19 +432,25 @@ export const notificationPaths = {
       tag: TAG,
       summary: 'Create an email channel for any address',
       description:
-        'Queues a verification link to the address; the channel receives nothing until it is followed. Limited per person and per address.',
+        'Queues a verification link to the address; the channel receives nothing until it is followed, unless the address is already verified for this person, when it is active at once (`verification: not_needed`). Limited per person and per address.',
       body: schemaRef('NotificationEmailChannelRequest'),
       ok: {
         type: 'object',
         required: ['ok', 'verification', 'channel'],
         properties: {
           ok: { type: 'boolean', const: true },
-          verification: { type: 'string', const: 'sent' },
+          verification: {
+            type: 'string',
+            enum: ['sent', 'not_needed'],
+            description:
+              '`not_needed` when the address is already verified for this person; `sent` when a link was queued.',
+          },
           channel: schemaRef('NotificationChannel'),
         },
       },
       okStatus: '201',
-      okDescription: 'Channel created, verification mail queued',
+      okDescription:
+        'Channel created; verification mail queued unless the address is already verified',
       errors: [400, 403, 422, 429, 502],
       detail: {
         429: '`too_many_unverified_channels`, `verification_mail_budget` or `address_verification_limit`',
@@ -470,7 +476,16 @@ export const notificationPaths = {
       summary: 'Update a notification channel',
       description: idPathNote,
       body: schemaRef('NotificationChannelPatchRequest'),
-      ok: schemaRef('NotificationChannelResponse'),
+      ok: {
+        type: 'object',
+        required: ['ok', 'channel'],
+        description:
+          '`channel` is `null` when the channel vanished between the write and the read.',
+        properties: {
+          ok: { type: 'boolean', const: true },
+          channel: { oneOf: [schemaRef('NotificationChannel'), { type: 'null' }] },
+        },
+      },
       errors: [400, 403, 404, 422],
     }),
     delete: jsonOperation({

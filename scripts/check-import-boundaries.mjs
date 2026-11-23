@@ -251,7 +251,13 @@ function lintPlatformReachability(failures) {
 }
 
 const INGRESS_DIR = 'src/platform/deno/ingress'
-const INGRESS_IMPORTER_ALLOW = ['src/platform/deno', 'src/deno.ts', 'src/deno-dev.ts']
+// The OpenAPI parity test registers the ingress admin routes as the server does.
+const INGRESS_IMPORTER_ALLOW = [
+  'src/platform/deno',
+  'src/deno.ts',
+  'src/deno-dev.ts',
+  'src/app/openapi-parity.hostfree.test.ts',
+]
 
 function lintIngressIsolation(srcFiles, failures) {
   if (!existsDir(INGRESS_DIR)) return

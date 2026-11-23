@@ -1,12 +1,18 @@
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import { type AppEnv, createApp } from './app.ts'
-import { ADMIN_API_PREFIX, CLIENT_API_PREFIX, DAEMON_API_PREFIX } from './surfaces.ts'
+import {
+  ADMIN_API_PREFIX,
+  CLIENT_API_PREFIX,
+  DAEMON_API_PREFIX,
+  INSTALL_API_PREFIX,
+} from './surfaces.ts'
 import { registerAdminRoutes } from '../admin/routes.ts'
 import { getAdminOpenApiSpec } from '../admin/openapi/index.ts'
 import { getWorkersAdminOpenApiSpec } from '../admin/openapi/workers.ts'
 import { getClientOpenApiSpec } from '../client/openapi/index.ts'
 import { getDaemonOpenApiSpec } from '../daemon/openapi/index.ts'
+import { registerIngressAdminRoutes } from '../platform/deno/ingress/admin-routes.ts'
 import { registerDaemonApiRoutes } from '../daemon/api-routes.ts'
 import { deriveSecretsConfig } from '../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
@@ -32,13 +38,13 @@ function toSpecPath(path: string): string {
   return normalized.length > 1 && normalized.endsWith('/') ? normalized.slice(0, -1) : normalized
 }
 
-function registeredOperations(app: Hono<AppEnv>, prefix: string): Set<string> {
+function registeredOperations(app: Hono<AppEnv>, ...prefixes: string[]): Set<string> {
   const out = new Set<string>()
   for (const route of app.routes) {
     const method = route.method.toLowerCase()
     // Middleware registers under ALL; only real verbs are operations.
     if (!METHODS.has(method)) continue
-    if (!route.path.startsWith(`${prefix}/`)) continue
+    if (!prefixes.some((prefix) => route.path.startsWith(`${prefix}/`))) continue
     // The spec and its viewer describe themselves nowhere; they are not API.
     if (SELF_DESCRIBING.test(route.path)) continue
     out.add(`${method.toUpperCase()} ${toSpecPath(route.path)}`)
@@ -65,7 +71,18 @@ async function clientApp(runtime: Runtime): Promise<Hono<AppEnv>> {
 async function adminApp(runtime: Runtime): Promise<Hono<AppEnv>> {
   const secrets = await deriveSecretsConfig(parseTestSecretsConfig('deno'), 'session-signing')
   const app = new Hono<AppEnv>()
-  registerAdminRoutes(app, { secrets, runtime, devSurface: false })
+  registerAdminRoutes(app, {
+    secrets,
+    runtime,
+    devSurface: false,
+    // Self-hosted only: Workers has no ingress routes, as in production.
+    ...(runtime === 'deno'
+      ? {
+          registerPlatformAdminRoutes: (admin, deps) =>
+            registerIngressAdminRoutes(admin, { ...deps, selfKid: () => null }),
+        }
+      : {}),
+  })
   return app
 }
 
@@ -85,17 +102,22 @@ type Case = {
 }
 
 const CASES: Case[] = [
-  {
-    name: 'client (deno)',
+  ...(['deno', 'workers'] as const).map((runtime): Case => ({
+    name: `client (${runtime})`,
     baseline: 'client',
-    routes: async () => registeredOperations(await clientApp('deno'), CLIENT_API_PREFIX),
+    // The install routes live on their own prefix and are documented in the
+    // client spec (Deno only).
+    routes: async () =>
+      registeredOperations(await clientApp(runtime), CLIENT_API_PREFIX, INSTALL_API_PREFIX),
     spec: () =>
       new Set(
-        [...documentedOperations(getClientOpenApiSpec(SERVER, { runtime: 'deno' }))].filter((op) =>
-          op.split(' ')[1].startsWith(`${CLIENT_API_PREFIX}/`)
+        [...documentedOperations(getClientOpenApiSpec(SERVER, { runtime }))].filter((op) =>
+          [CLIENT_API_PREFIX, INSTALL_API_PREFIX].some((prefix) =>
+            op.split(' ')[1].startsWith(`${prefix}/`)
+          )
         )
       ),
-  },
+  })),
   {
     name: 'admin (deno)',
     baseline: 'adminDeno',
@@ -126,6 +148,7 @@ const CASES: Case[] = [
  * and billing webhooks (callers are GitHub, GitLab and Stripe), WebSocket
  * upgrades (documented in the daemon spec as a GET) and the Workers-only
  * billing routes, which register through a hook this suite does not pass.
+ * The Deno-only ingress admin routes are registered here, as the server does.
  */
 for (const item of CASES) {
   test(`openapi parity: ${item.name} routes and spec agree`, async () => {

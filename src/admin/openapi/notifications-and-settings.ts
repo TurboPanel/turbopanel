@@ -212,7 +212,16 @@ export const ADMIN_NOTIFICATION_SETTINGS_PATHS = {
       tag: SETTINGS,
       summary: 'Update an instance notification channel',
       body: schemaRef('AdminNotificationChannelPatchRequest'),
-      ok: schemaRef('AdminNotificationChannelResponse'),
+      ok: {
+        type: 'object',
+        required: ['ok', 'channel'],
+        description:
+          '`channel` is `null` when the channel vanished between the write and the read.',
+        properties: {
+          ok: { type: 'boolean', const: true },
+          channel: { oneOf: [schemaRef('AdminNotificationChannel'), { type: 'null' }] },
+        },
+      },
       errors: [400, 404, 422],
     }),
     delete: adminOperation({
