@@ -47,7 +47,7 @@ export const serviceSchemas = {
         description:
           'Service settings (healthCheck, resources, hooks). A PHP site also takes `postDeployCommands` (command lines, at most 10), `postDeployTimeoutSeconds` (30 to 1800), `postDeployTiming` (`before-traffic` or `after-switch`) and `workers` (at most 10: `name`, `command`, `processes` 1 to 8, `stopTimeoutSeconds` 10 to 3600, `memoryMb` 64 to 65536, `enabled`). ' +
           POST_DEPLOY_RETRY_NOTE +
-          ' A bad command or worker is refused with 400 and a sentence in `error`.',
+          ' A bad command or worker, or a key that is not a service option (for example `cron`; use a task or compose `x-turbopanel.cron`), is refused with 400 and a sentence in `error` that names it.',
         additionalProperties: true,
       },
       createdAt: { type: 'string', format: 'date-time' },
@@ -131,7 +131,7 @@ export const serviceSchemas = {
         description:
           'Service settings (healthCheck, resources, hooks). A PHP site also takes `postDeployCommands` (command lines, at most 10), `postDeployTimeoutSeconds` (30 to 1800), `postDeployTiming` (`before-traffic` or `after-switch`) and `workers` (at most 10: `name`, `command`, `processes` 1 to 8, `stopTimeoutSeconds` 10 to 3600, `memoryMb` 64 to 65536, `enabled`). ' +
           POST_DEPLOY_RETRY_NOTE +
-          ' A bad command or worker is refused with 400 and a sentence in `error`.',
+          ' A bad command or worker, or a key that is not a service option (for example `cron`; use a task or compose `x-turbopanel.cron`), is refused with 400 and a sentence in `error` that names it.',
       },
     },
   },
@@ -166,7 +166,7 @@ export const serviceSchemas = {
         description:
           'Service settings (healthCheck, resources, hooks). A PHP site also takes `postDeployCommands` (command lines, at most 10), `postDeployTimeoutSeconds` (30 to 1800), `postDeployTiming` (`before-traffic` or `after-switch`) and `workers` (at most 10: `name`, `command`, `processes` 1 to 8, `stopTimeoutSeconds` 10 to 3600, `memoryMb` 64 to 65536, `enabled`). ' +
           POST_DEPLOY_RETRY_NOTE +
-          ' A bad command or worker is refused with 400 and a sentence in `error`.',
+          ' A bad command or worker, or a key that is not a service option (for example `cron`; use a task or compose `x-turbopanel.cron`), is refused with 400 and a sentence in `error` that names it.',
       },
     },
   },

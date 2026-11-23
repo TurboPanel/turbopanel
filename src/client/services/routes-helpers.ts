@@ -2,6 +2,7 @@ import { parseBuildLimitSettingsInput } from '../../features/deploy/build-limits
 import { readServiceApp } from '../../features/environments/app-facts.ts'
 import type { ServiceRunStateView } from '../../features/environments/service-run-state.ts'
 import {
+  findUnknownServiceOptionKey,
   parseServiceOptions,
   type ParseServiceOptionsOptions,
 } from '../../features/projects/service-options.ts'
@@ -121,6 +122,15 @@ export function parseOptionalServiceOptions(
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') return { kind: 'invalid' }
   if (optionsResult === null) return { kind: 'absent' }
+  // An unknown key would be dropped by the parse and look saved (a `cron` key
+  // is not a site cron: use a task or the compose `x-turbopanel.cron`).
+  const unknownKey = findUnknownServiceOptionKey(optionsResult)
+  if (unknownKey !== null) {
+    return {
+      kind: 'invalid',
+      message: `Unknown service option "${unknownKey}". Scheduled jobs are tasks (POST /tasks) or compose x-turbopanel.cron, not an option.`,
+    }
+  }
   // Run on the raw document: the parse drops what it cannot read, so a bad
   // command or worker would otherwise be saved away with a success answer.
   const lifecycleProblem = validateSiteLifecycleOptions(optionsResult)
