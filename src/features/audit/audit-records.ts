@@ -164,6 +164,8 @@ export const AUDIT_ACTIONS = [
   'server.terminal.open',
   'server.terminal.close',
   'server.terminal_settings.update',
+  // A hosted dead-letter queue received a message that gave up; redacted.
+  'queue.dead_letter',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

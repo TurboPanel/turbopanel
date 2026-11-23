@@ -34,6 +34,12 @@ import {
 } from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './features/email/mailgun/workers-queue.ts'
 import type { EmailJob, EmailQueue } from './features/email/types.ts'
+import {
+  consumeDeadLetterBatch,
+  deadLetterQueueKind,
+  recordDeadLetter,
+} from './features/queues/dead-letter-consumer.ts'
+import { emitNotification } from './features/notifications/emit.ts'
 import { isNoopEmailQueue } from './features/email/noop-queue.ts'
 import { recordEmailDeadLetter } from './features/email/dead-letter-tally.ts'
 import {
@@ -461,6 +467,50 @@ async function consumeEmailBatch(batch: MessageBatch<unknown>, env: CloudflareBi
   }
 }
 
+/**
+ * The dead-letter queue consumer: records each message as a redacted audit row,
+ * acks it, and tells the install's administrators (`dead-letter-consumer.ts`).
+ * Without a database the batch is retried, so nothing is dropped for want of one.
+ */
+async function consumeDeadLetterQueue(
+  kind: NonNullable<ReturnType<typeof deadLetterQueueKind>>,
+  batch: MessageBatch<unknown>,
+  env: CloudflareBindings
+) {
+  const db = resolveWorkersDb(env)
+  try {
+    if (!db) {
+      batch.retryAll()
+      return
+    }
+    await consumeDeadLetterBatch(kind, batch.messages, {
+      record: (record) => recordDeadLetter(db, record),
+      notify: async (record, alert) => {
+        // Never throws; the audit row is already written.
+        await emitNotification(
+          db,
+          cachedDataEncryptionSecrets ?? undefined,
+          {
+            event: 'queue.dead_lettered',
+            context: {
+              queue: record.queue,
+              type: record.type,
+              attempts: record.attempts,
+              error: record.error,
+              alert,
+            },
+          },
+          { allowPrivateTargets: true }
+        )
+      },
+    })
+  } catch {
+    batch.retryAll()
+  } finally {
+    if (db) await endDbConnection(db).catch(() => {})
+  }
+}
+
 /** Wait before a message the consumer could not re-queue is delivered again. */
 const REDELIVER_DELAY_SECONDS = 30
 
@@ -655,6 +705,11 @@ export default {
   async queue(batch: MessageBatch<unknown>, env: CloudflareBindings) {
     initPromise ??= initWorkerApp(env)
     await initPromise
+    const deadLetterKind = deadLetterQueueKind(batch.queue)
+    if (deadLetterKind) {
+      await consumeDeadLetterQueue(deadLetterKind, batch, env)
+      return
+    }
     if (isEmailQueueName(batch.queue)) {
       await consumeEmailBatch(batch, env)
       return
