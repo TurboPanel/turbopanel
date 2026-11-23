@@ -4,7 +4,7 @@ import {
   EMAIL_AMQP_DEAD_QUEUE,
   EMAIL_AMQP_EXCHANGE,
   EMAIL_AMQP_ROUTING_KEY,
-} from '../../../features/email/smtp/amqp-topology.ts'
+} from '../smtp/amqp-topology.ts'
 import {
   type DeadLetterList,
   type DeadLetterReplayAll,
@@ -13,8 +13,8 @@ import {
   MailQueueUnavailableError,
   replayHeaders,
   summarizeDeadLetter,
-} from '../../../features/email/smtp/dead-letter-replay.ts'
-import { logInfo, logWarn } from '../../logger.ts'
+} from '../smtp/dead-letter-replay.ts'
+import { logInfo, logWarn } from '../../../lib/logger.ts'
 
 /**
  * Lists and replays the mail dead-letter queue over RabbitMQ.

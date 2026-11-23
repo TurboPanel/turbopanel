@@ -30,7 +30,7 @@ src/
 ├── lib/            # kernel: loose helpers (ip-address, naming,
 │                   # version-wire, machine-key, peer-address, logger,
 │                   # timezones, sha512-crypt, ...) plus folders
-│                   # acme/, email/mailer/, encoding/, http/,
+│                   # acme/, encoding/, http/,
 │                   # panel-identity/, secrets/, tls/
 ├── contracts/      # wire shapes: commands/ (schemas, deploy-validation,
 │                   # hostname, tunnel shapes), cell + cell-protocol,
@@ -87,7 +87,7 @@ src/
   `mailgun/`, `mailpit/`); the Deno AMQP publisher is
   `src/platform/deno/email/deno-amqp-queue.ts`; the in-process consumer and
   the SMTP and HTTP API senders (`smtp-sender.ts`, `mailgun-sender.ts`) are
-  under `src/lib/email/mailer/`
+  under `src/features/email/mailer/`
 - `src/developer/` — developer surface, Deno development entry only
   (`src/deno-dev.ts` calls `registerDeveloperRoutes`); `routes-core.ts` holds
   the shared router builder
