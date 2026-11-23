@@ -8,12 +8,7 @@
 import { env } from 'cloudflare:test'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from './db/connection.ts'
-import {
-  ADMIN_API_PREFIX,
-  CLIENT_API_PREFIX,
-  GITHUB_WEBHOOK_PATH,
-  HEALTH_PATH,
-} from './app/surfaces.ts'
+import { ADMIN_API_PREFIX, CLIENT_API_PREFIX, HEALTH_PATH } from './app/surfaces.ts'
 import {
   resetWorkersBindingWarningsForTests,
   setWorkersDbFactoryForTests,

@@ -1630,7 +1630,6 @@ async function resolveWorkersNotificationEmail(
 async function sweepTierNoticesPhase(
   env: CloudflareBindings,
   db: Db,
-  tlsRenewal: CronTlsRenewal | null | undefined,
   opts: RunOfflineSweepOpts
 ): Promise<void> {
   const platformEnv = env as unknown as Record<string, string | undefined>
@@ -1923,7 +1922,7 @@ async function runOptionalCronPhases(
       opts.scheduledTime,
       phasesSkipped,
       (ms) => shouldSweepTierNotices(ms, cadences),
-      () => sweepTierNoticesPhase(env, db, tlsRenewal, opts)
+      () => sweepTierNoticesPhase(env, db, opts)
     ))
   ) {
     return

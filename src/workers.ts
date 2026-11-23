@@ -104,7 +104,7 @@ import {
   warnIfStripeWebhookRateLimiterMissing,
 } from './platform/workers/workers-bindings.ts'
 import { fetchWithConnectionRetry } from './platform/workers/connection-retry.ts'
-import { type createWorkersDb, type Db, endDbConnection } from './db/connection.ts'
+import { type createWorkersDb, endDbConnection } from './db/connection.ts'
 import { compatLogError, compatLogInfo, compatLogWarn } from './lib/log-compat.ts'
 import { assertPasswordHasherLoadable } from './lib/secrets/password-smoke.ts'
 import {
