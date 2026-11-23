@@ -17,6 +17,7 @@ import {
   assertOrgOwnerOr403,
   can,
   canManageOrganization,
+  lockOrganizationOwnerGrants,
 } from '../authz/index.ts'
 import { getPermissionCatalog } from '../authz/catalog.ts'
 import { getDb, type Db } from '../../db/connection.ts'
@@ -44,6 +45,7 @@ import {
 async function assertRevocableAllowGrant(
   db: Db,
   accessRow: {
+    id: string
     entityType: string
     entityId: string
     permission: string
@@ -51,7 +53,7 @@ async function assertRevocableAllowGrant(
   }
 ): Promise<void> {
   if (accessRow.entityType === 'organization' && accessRow.permission === 'organization:own') {
-    await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.actorId)
+    await assertNotLastOrgOwner(db, accessRow.entityId, { grantId: accessRow.id })
     return
   }
   if (accessRow.entityType === 'team' && accessRow.permission === 'team:own') {
@@ -356,6 +358,7 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const accessId = c.req.param('id')
     const accessRows = await db
       .select({
+        id: grant.id,
         entityType: grant.entityType,
         entityId: grant.entityId,
         permission: grant.permission,
@@ -374,8 +377,20 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const denied = await assertCanManageAccessOr403(c, db, accessRow.entityId)
     if (denied) return denied
 
+    // Check and delete in one transaction, with the owner grants locked, so two
+    // revocations cannot each pass the guard and leave no owner.
+    let revoked = false
     try {
-      await assertRevocableAllowGrant(db, accessRow)
+      revoked = await db.transaction(async (tx) => {
+        if (
+          accessRow.entityType === 'organization' &&
+          accessRow.permission === 'organization:own'
+        ) {
+          await lockOrganizationOwnerGrants(tx, accessRow.entityId)
+        }
+        await assertRevocableAllowGrant(tx, accessRow)
+        return await revokeAccessGrant(tx, accessId)
+      })
     } catch (err) {
       const conflict = ownerRemovalConflictMessage(err)
       if (conflict) {
@@ -383,8 +398,6 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       }
       throw err
     }
-
-    const revoked = await revokeAccessGrant(db, accessId)
     if (!revoked) {
       return c.json({ error: 'Not found' }, 404)
     }

@@ -7,8 +7,8 @@
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import { assertNotLastOrgOwner } from './org-owners.ts'
 import {
-  assertNotLastOrgOwner,
   assertNotLastTeamOwner,
   canOwnOrganization,
   canOwnTeam,
@@ -34,9 +34,15 @@ function thenableLimit(rows: unknown[]) {
   }
 }
 
-function selectQueue(responses: unknown[][]): Db {
+function selectQueue(responses: unknown[][], executes: unknown[][] = []): Db {
   let i = 0
+  let e = 0
   return {
+    execute: () => {
+      const rows = executes[e] ?? []
+      e += 1
+      return Promise.resolve(rows)
+    },
     select: () => ({
       from: () => ({
         where: () => {
@@ -57,100 +63,67 @@ test('isSuperAdmin / isPlatformAdmin', () => {
 })
 
 test('canOwnOrganization: platform admin bypass and grant check', async () => {
+  assertEquals(await canOwnOrganization(selectQueue([[{ role: 'superadmin' }]]), 'u', 'org'), true)
   assertEquals(
-    await canOwnOrganization(
-      selectQueue([[{ role: 'superadmin' }]]),
-      'u',
-      'org',
-    ),
-    true,
+    await canOwnOrganization(selectQueue([[{ role: 'user' }]], [[{ allowed: true }]]), 'u', 'org'),
+    true
   )
   assertEquals(
-    await canOwnOrganization(
-      selectQueue([[{ role: 'user' }], [{ id: 'g1' }]]),
-      'u',
-      'org',
-    ),
-    true,
+    await canOwnOrganization(selectQueue([[{ role: 'user' }]], [[{ allowed: false }]]), 'u', 'org'),
+    false
   )
-  assertEquals(
-    await canOwnOrganization(
-      selectQueue([[{ role: 'user' }], []]),
-      'u',
-      'org',
-    ),
-    false,
-  )
-  assertEquals(
-    await canOwnOrganization(selectQueue([[]]), 'missing-user', 'org'),
-    false,
-  )
+  assertEquals(await canOwnOrganization(selectQueue([[]]), 'missing-user', 'org'), false)
 })
 
 test('canOwnTeam: platform admin bypass and team own grant', async () => {
+  assertEquals(await canOwnTeam(selectQueue([[{ role: 'admin' }]]), 'u', 'team'), true)
   assertEquals(
-    await canOwnTeam(selectQueue([[{ role: 'admin' }]]), 'u', 'team'),
-    true,
-  )
-  assertEquals(
-    await canOwnTeam(
-      selectQueue([[{ role: 'user' }], [{ id: 'g' }]]),
-      'u',
-      'team',
-    ),
-    true,
+    await canOwnTeam(selectQueue([[{ role: 'user' }], [{ id: 'g' }]]), 'u', 'team'),
+    true
   )
   // userRole provided → only the team grant query runs.
-  assertEquals(
-    await canOwnTeam(selectQueue([[]]), 'u', 'team', 'user'),
-    false,
-  )
+  assertEquals(await canOwnTeam(selectQueue([[]]), 'u', 'team', 'user'), false)
 })
 
-test('assertNotLastOrgOwner / assertNotLastTeamOwner', async () => {
-  // Multiple owners — no throw.
-  await assertNotLastOrgOwner(
-    selectQueue([
-      [{ actorId: 'other' }, { actorId: 'self' }],
-    ]),
-    'org',
-    'self',
-  )
-
+test('assertNotLastOrgOwner counts distinct active owners, not grant rows', async () => {
+  // Another person still owns after the change: no throw.
+  await assertNotLastOrgOwner(selectQueue([], [[{ id: 'other' }, { id: 'self' }]]), 'org', {
+    userId: 'self',
+  })
   await assertRejects(
     () =>
-      assertNotLastOrgOwner(
-        selectQueue([[{ actorId: 'self' }]]),
-        'org',
-        'self',
-      ),
+      assertNotLastOrgOwner(selectQueue([], [[{ id: 'self' }]]), 'org', {
+        userId: 'self',
+      }),
     Error,
-    'Cannot remove the last owner of an organization',
+    'Cannot remove the last owner of an organization'
   )
+  // Revoking one grant: owners before, owners without that grant.
+  await assertRejects(
+    () =>
+      assertNotLastOrgOwner(selectQueue([], [[{ id: 'self' }], []]), 'org', {
+        grantId: '00000000-0000-0000-0000-000000000001',
+      }),
+    Error,
+    'Cannot remove the last owner of an organization'
+  )
+  await assertNotLastOrgOwner(selectQueue([], [[{ id: 'self' }], [{ id: 'self' }]]), 'org', {
+    grantId: '00000000-0000-0000-0000-000000000001',
+  })
+  // No owner today (only an empty team holds the grant): nothing to protect.
+  await assertNotLastOrgOwner(selectQueue([], [[]]), 'org', { userId: 'self' })
+})
 
+test('assertNotLastTeamOwner', async () => {
   await assertNotLastTeamOwner(
-    selectQueue([
-      [{ actorId: 'other' }, { actorId: 'self' }],
-    ]),
+    selectQueue([[{ actorId: 'other' }, { actorId: 'self' }]]),
     'team',
-    'self',
+    'self'
   )
 
   await assertRejects(
-    () =>
-      assertNotLastTeamOwner(
-        selectQueue([[{ actorId: 'self' }]]),
-        'team',
-        'self',
-      ),
+    () => assertNotLastTeamOwner(selectQueue([[{ actorId: 'self' }]]), 'team', 'self'),
     Error,
-    'Cannot remove the last owner of a team',
-  )
-
-  // Sole other owner — removing self is fine (zero match).
-  await assertNotLastOrgOwner(
-    selectQueue([[{ actorId: 'other' }]]),
-    'org',
-    'self',
+    'Cannot remove the last owner of a team'
   )
 })

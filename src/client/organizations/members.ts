@@ -23,11 +23,16 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { canManageOrganization, canOwnOrganization } from '../authz/index.ts'
+import {
+  can,
+  canManageOrganization,
+  canOwnOrganization,
+  lockOrganizationOwnerGrants,
+  organizationWouldLoseAllOwners,
+} from '../authz/index.ts'
+import { LAST_ORG_OWNER_MESSAGE } from '../authz/org-owners.ts'
 import { canAccessOrganization } from '../org-context.ts'
 import { listOrganizationMembers } from './members-list.ts'
-
-const LAST_OWNER_MESSAGE = 'Cannot remove the last owner of an organization'
 
 type MemberFootprint = {
   isMember: boolean
@@ -59,7 +64,7 @@ async function loadFootprint(
   organizationId: string,
   userId: string
 ): Promise<MemberFootprint> {
-  const [teamRows, userGrants] = await Promise.all([
+  const [teamRows, userGrants, isOwner] = await Promise.all([
     inOrganizationTeams(db, userId, organizationId),
     db
       .select({
@@ -70,6 +75,9 @@ async function loadFootprint(
       })
       .from(grant)
       .where(and(eq(grant.actorType, 'user'), eq(grant.actorId, userId))),
+    // The real permission check: ownership held through a team or the
+    // organization itself counts, not only grants held by the user directly.
+    can(db, userId, 'organization:own', 'organization', organizationId),
   ])
   const owners = await Promise.all(
     userGrants.map((g) => resolveEntityOrganizationId(db, g.entityType, g.entityId))
@@ -77,12 +85,7 @@ async function loadFootprint(
   const inOrg = userGrants.filter((_, i) => owners[i] === organizationId)
   return {
     isMember: teamRows.length > 0 || inOrg.length > 0,
-    isOwner: inOrg.some(
-      (g) =>
-        g.permission === 'organization:own' &&
-        g.entityType === 'organization' &&
-        g.entityId === organizationId
-    ),
+    isOwner,
     grantIds: inOrg.map((g) => g.id),
   }
 }
@@ -90,7 +93,8 @@ async function loadFootprint(
 /**
  * Delete the person's team memberships and grants inside the organization.
  * Owner grants are row-locked first so two owners removing each other at the
- * same time cannot leave the organization with none.
+ * same time cannot leave the organization with no active person who owns it
+ * (directly or through a team).
  */
 async function removeMemberRows(
   db: Db,
@@ -99,18 +103,8 @@ async function removeMemberRows(
   grantIds: string[]
 ): Promise<RemovalOutcome> {
   return await db.transaction(async (tx) => {
-    const owners = await tx
-      .select({ actorId: grant.actorId })
-      .from(grant)
-      .where(
-        and(
-          eq(grant.entityType, 'organization'),
-          eq(grant.entityId, organizationId),
-          eq(grant.permission, 'organization:own')
-        )
-      )
-      .for('update')
-    if (owners.length === 1 && owners[0]?.actorId === userId) {
+    await lockOrganizationOwnerGrants(tx, organizationId)
+    if (await organizationWouldLoseAllOwners(tx, organizationId, { userId })) {
       return { status: 'last_owner' as const }
     }
     const left = await tx
@@ -219,7 +213,7 @@ export function registerOrganizationMemberRoutes(router: Hono<AppEnv>, opts: Aut
 
     const outcome = await removeMemberRows(db, organizationId, memberId, footprint.grantIds)
     if (outcome.status === 'last_owner') {
-      return c.json({ error: LAST_OWNER_MESSAGE }, 409)
+      return c.json({ error: LAST_ORG_OWNER_MESSAGE }, 409)
     }
 
     await recordAuditAndNotify(

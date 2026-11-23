@@ -251,7 +251,7 @@ it('assertNotLastOrgOwner throws when removing the sole owner', async () => {
 
     let threw = false
     try {
-      await assertNotLastOrgOwner(db, organizationId, userId)
+      await assertNotLastOrgOwner(db, organizationId, { userId })
     } catch (error) {
       threw = true
       if (
@@ -280,7 +280,7 @@ it('assertNotLastOrgOwner throws when removing the sole owner', async () => {
         permission: 'organization:own',
       })
 
-      await assertNotLastOrgOwner(db, organizationId, userId)
+      await assertNotLastOrgOwner(db, organizationId, { userId })
     } finally {
       await db.delete(grant).where(eq(grant.actorId, secondUserId))
       await db.delete(user).where(eq(user.id, secondUserId))

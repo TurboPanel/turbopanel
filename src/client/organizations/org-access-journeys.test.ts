@@ -766,3 +766,117 @@ test('the member list never leaks across organizations and drops a person once r
     assertEquals(after.members[0]?.id, fx.owner.userId)
   })
 })
+
+/** A team in the fixture organization that holds `organization:own`, with the given members. */
+async function addOwningTeam(fx: Fixture, memberIds: string[]): Promise<string> {
+  const [row] = await fx.db
+    .insert(team)
+    .values({
+      organizationId: fx.organizationId,
+      name: `owners-${crypto.randomUUID().slice(0, 8)}`,
+    })
+    .returning({ id: team.id })
+  const teamId = row!.id
+  if (memberIds.length > 0) {
+    await fx.db.insert(teammate).values(memberIds.map((userId) => ({ teamId, userId })))
+  }
+  await fx.db.insert(grant).values({
+    entityType: 'organization',
+    entityId: fx.organizationId,
+    actorType: 'team',
+    actorId: teamId,
+    permission: 'organization:own',
+  })
+  return teamId
+}
+
+async function ownerGrantId(fx: Fixture, actorType: 'user' | 'team', actorId: string) {
+  const [row] = await fx.db
+    .select({ id: grant.id })
+    .from(grant)
+    .where(
+      and(
+        eq(grant.entityType, 'organization'),
+        eq(grant.entityId, fx.organizationId),
+        eq(grant.actorType, actorType),
+        eq(grant.actorId, actorId),
+        eq(grant.permission, 'organization:own')
+      )
+    )
+  return row!.id
+}
+
+test('a manager cannot remove a person who owns the organization through a team', async () => {
+  await withFixture(async (fx) => {
+    const viaTeam = await fx.addPerson('outsider')
+    await addOwningTeam(fx, [viaTeam.userId])
+    const manager = await fx.addPerson('manager')
+
+    const res = await fx.call(manager, 'DELETE', membersPath(fx.organizationId, viaTeam.userId))
+    assertEquals(res.status, 403)
+    assertEquals(await readsOrganization(fx, viaTeam), 200)
+
+    // A team-derived owner is an owner for the caller side too: they may remove another owner.
+    const byTeamOwner = await fx.call(
+      viaTeam,
+      'DELETE',
+      membersPath(fx.organizationId, fx.owner.userId)
+    )
+    assertEquals(byTeamOwner.status, 200, await byTeamOwner.clone().text())
+  })
+})
+
+test('the only human owner cannot revoke or remove themselves while an empty team holds own', async () => {
+  await withFixture(async (fx) => {
+    await addOwningTeam(fx, [])
+
+    const revoked = await fx.call(
+      fx.owner,
+      'DELETE',
+      `/access/${await ownerGrantId(fx, 'user', fx.owner.userId)}`
+    )
+    assertEquals(revoked.status, 409)
+    assertEquals(await revoked.json(), { error: 'Cannot remove the last owner of an organization' })
+
+    const left = await fx.call(fx.owner, 'DELETE', membersPath(fx.organizationId, fx.owner.userId))
+    assertEquals(left.status, 409)
+    assertEquals(await readsOrganization(fx, fx.owner), 200)
+  })
+})
+
+test('the last member of the only owning team cannot leave or lose the team grant', async () => {
+  await withFixture(async (fx) => {
+    const viaTeam = await fx.addPerson('outsider')
+    const owningTeam = await addOwningTeam(fx, [viaTeam.userId])
+    await fx.db.delete(grant).where(eq(grant.id, await ownerGrantId(fx, 'user', fx.owner.userId)))
+
+    const left = await fx.call(viaTeam, 'DELETE', membersPath(fx.organizationId, viaTeam.userId))
+    assertEquals(left.status, 409)
+
+    const revoked = await fx.call(
+      viaTeam,
+      'DELETE',
+      `/access/${await ownerGrantId(fx, 'team', owningTeam)}`
+    )
+    assertEquals(revoked.status, 409)
+    assertEquals(await readsOrganization(fx, viaTeam), 200)
+  })
+})
+
+test('an owner can be removed or revoked when another person still owns, even beside an empty owning team', async () => {
+  await withFixture(async (fx) => {
+    await addOwningTeam(fx, [])
+    const second = await fx.addPerson('owner')
+
+    const revoked = await fx.call(
+      second,
+      'DELETE',
+      `/access/${await ownerGrantId(fx, 'user', fx.owner.userId)}`
+    )
+    assertEquals(revoked.status, 200, await revoked.clone().text())
+
+    const third = await fx.addPerson('owner')
+    const removed = await fx.call(third, 'DELETE', membersPath(fx.organizationId, second.userId))
+    assertEquals(removed.status, 200, await removed.clone().text())
+  })
+})
