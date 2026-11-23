@@ -213,7 +213,7 @@ const githubGate: WebhookGate<Forge> = {
   eventName: (ctx) => ctx.headers.get(GITHUB_EVENT_HEADER)?.trim() || null,
 
   // The HMAC covers the body only, not the delivery or event headers.
-  claimBodyDigest: true,
+  bodyDigestScope: (app) => app.id,
 
   // Every downstream lookup is scoped to the verified app's id, which is what
   // keeps one organization's push out of another's environments when both

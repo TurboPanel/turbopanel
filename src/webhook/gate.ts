@@ -160,10 +160,12 @@ export type WebhookGate<THolder> = {
    * the body, never `X-GitHub-Delivery` / `X-GitHub-Event` or the GitLab
    * equivalents). The gate then also claims a digest of the body, so a captured
    * body replayed under a fresh delivery id or a relabelled event is still
-   * recognised and processed once. Leave unset when the id is inside the signed
-   * body (Stripe).
+   * recognised and processed once. Returns the verified holder's own id, which
+   * scopes the digest: GitLab sends the same bytes to every hook on a project,
+   * and each forge's hook must still run. Leave unset when the id is inside the
+   * signed body (Stripe).
    */
-  claimBodyDigest?: boolean
+  bodyDigestScope?(holder: THolder): string
   /** Step 6. */
   dispatch(
     ctx: GateContext,
@@ -247,15 +249,15 @@ async function readRawBody(c: Context<AppEnv>, maxBodyBytes: number): Promise<Ui
 }
 
 /**
- * Ledger key for the body itself. Deliberately excludes the event header: an
+ * Ledger key for the body itself, per verified holder. Deliberately excludes the event header: an
  * unsigned label must not let an already-processed body run a second time
  * under a different handler.
  */
-async function bodyDigestKey(raw: Uint8Array): Promise<string> {
+async function bodyDigestKey(scope: string, raw: Uint8Array): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw as BufferSource))
   let hex = ''
   for (const byte of digest) hex += byte.toString(16).padStart(2, '0')
-  return `body-sha256:${hex}`
+  return `body-sha256:${scope}:${hex}`
 }
 
 /** Every ledger key this delivery holds: its id and, when guarded, its body digest. */
@@ -266,9 +268,14 @@ async function releaseClaims<THolder>(
   db: Db,
   claims: Claims
 ): Promise<void> {
-  for (const externalDeliveryId of claims) {
-    await releaseWebhookDelivery(db, { provider: gate.kind, externalDeliveryId })
-  }
+  // Every key is attempted even if one delete fails, so no key stays held.
+  const results = await Promise.allSettled(
+    claims.map((externalDeliveryId) =>
+      releaseWebhookDelivery(db, { provider: gate.kind, externalDeliveryId })
+    )
+  )
+  const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+  if (failed) throw failed.reason
 }
 
 async function releaseClaimBestEffort<THolder>(
@@ -408,7 +415,9 @@ export function registerWebhookGate<THolder>(
     //    Signed-body providers also claim the body digest first, so the same
     //    bytes are processed once whatever the unsigned headers say.
     const claims: string[] = []
-    const keys = gate.claimBodyDigest ? [await bodyDigestKey(raw), deliveryId] : [deliveryId]
+    const keys = gate.bodyDigestScope
+      ? [await bodyDigestKey(gate.bodyDigestScope(holder), raw), deliveryId]
+      : [deliveryId]
     for (const key of keys) {
       const claimed = await claimWebhookDelivery(db, {
         provider: gate.kind,

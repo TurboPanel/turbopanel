@@ -485,27 +485,31 @@ async function buildDigestApp(trace: Trace, keys: Set<string>, retry: () => bool
       logScope: 'stub-webhook',
       maxBodyBytes: 64,
       rateLimitKey: () => 'stub',
-      resolve: () => Promise.resolve({ ok: true as const, candidates: [{ secret: 'shh' }] }),
+      resolve: (ctx) =>
+        Promise.resolve({
+          ok: true as const,
+          candidates: [{ id: ctx.headers.get('x-forge') ?? 'forge-a' }],
+        }),
       isUnconfigured: () => false,
       unconfiguredError: 'stub_not_configured',
       verify: () => Promise.resolve(true),
       deliveryId: (ctx) => Promise.resolve(ctx.headers.get('x-delivery')),
       eventName: (ctx) => ctx.headers.get('x-event'),
-      claimBodyDigest: true,
+      bodyDigestScope: (holder) => holder.id,
       dispatch: () => {
         trace.push('dispatch')
         return Promise.resolve(retry() ? retryable('down') : accepted({}))
       },
-    } satisfies WebhookGate<StubHolder>,
+    } satisfies WebhookGate<{ id: string }>,
     { runtime: 'deno' }
   )
   return app
 }
 
-function postWith(body: string, delivery: string, event: string): Request {
+function postWith(body: string, delivery: string, event: string, forge = 'forge-a'): Request {
   return new Request(`http://instance${PATH}`, {
     method: 'POST',
-    headers: { 'x-delivery': delivery, 'x-event': event },
+    headers: { 'x-delivery': delivery, 'x-event': event, 'x-forge': forge },
     body,
   })
 }
@@ -532,4 +536,15 @@ test('a retryable outcome frees the body digest so the provider retry runs', asy
   assertEquals(keys.size, 0)
   failing = false
   assertEquals((await app.request(postWith('{"a":1}', 'd1', 'push'))).status, 200)
+})
+
+test('the same body for two forges is dispatched once for each', async () => {
+  const trace: Trace = []
+  const app = await buildDigestApp(trace, new Set(), () => false)
+  assertEquals((await app.request(postWith('{"a":1}', 'u1', 'push', 'forge-a'))).status, 200)
+  assertEquals((await app.request(postWith('{"a":1}', 'u2', 'push', 'forge-b'))).status, 200)
+  assertEquals(trace.filter((e) => e === 'dispatch').length, 2)
+  // Each forge still dedupes its own replays.
+  assertEquals((await app.request(postWith('{"a":1}', 'u3', 'push', 'forge-b'))).status, 204)
+  assertEquals(trace.filter((e) => e === 'dispatch').length, 2)
 })

@@ -161,7 +161,7 @@ const gitlabGate: WebhookGate<Forge> = {
   eventName: (ctx) => gitlabEventName(ctx.headers.get(GITLAB_EVENT_HEADER)) || null,
 
   // The shared token authenticates the sender; neither header nor body is signed.
-  claimBodyDigest: true,
+  bodyDigestScope: (app) => app.id,
 
   dispatch: (ctx, app, event, payload) => dispatchDelivery(ctx.c, ctx.db, app.id, event, payload),
 }
