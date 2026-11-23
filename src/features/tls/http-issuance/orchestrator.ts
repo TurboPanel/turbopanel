@@ -152,7 +152,7 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
     organizationId: row.organizationId,
     names: namesOf(row.metadata),
     orderNames: await orderNamesOf(tx, row.id, row.metadata),
-    hasPair: row.hasKey === true && readHttpIssuanceState(row.metadata)?.centralPair === true,
+    hasPair: holdsOwnPair(row.hasKey === true, readHttpIssuanceState(row.metadata)),
     metadata: (row.metadata ?? {}) as Record<string, unknown>,
   }
 }
@@ -706,6 +706,11 @@ async function restateNoSiteMarker(db: Db, tlsId: string, now: Date): Promise<vo
     )
 }
 
+/** Whether the row holds a pair this flow ordered; a pair a server exported is not one. */
+function holdsOwnPair(hasKey: boolean, state: HttpIssuanceState | null): boolean {
+  return hasKey && state?.centralPair === true
+}
+
 /**
  * Start an order for one row when `due` says it is time and nothing is open:
  * the wait and the hourly cap allow it, and a server that DNS points at is
@@ -740,7 +745,7 @@ export async function startHttpIssuance(
   // address. None of them looks at DNS or at the servers.
   const meta = (peek.metadata ?? {}) as Record<string, unknown>
   // Only a pair the panel ordered is a renewal; one a server exported is not.
-  const ownPair = peek.hasKey === true && previous?.centralPair === true
+  const ownPair = holdsOwnPair(peek.hasKey === true, previous)
   if (!due({ hasPair: ownPair, metadata: meta })) return 'not_due'
   const attempts = {
     attemptTimes: previous?.attemptTimes ?? [],
