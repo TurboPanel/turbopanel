@@ -10,6 +10,7 @@ import { redactUrlSecrets } from '../../upgrades/redact-url-secrets.ts'
 import {
   allNamesCovered,
   closedAsIssued,
+  DNS_ISSUANCE_CHALLENGE_TYPE,
   HTTP_ISSUANCE_CHALLENGE_TYPE,
   HTTP_ISSUANCE_MANAGED_BY,
   type HttpIssuanceState,
@@ -31,6 +32,14 @@ export const CAPTURED_WITHOUT_EVENT_MS = MINUTE
 export const PAIR_WAIT_MS = 5 * MINUTE
 /** The whole request, including forwards, lives this long. */
 export const REQUEST_LIFETIME_MS = 30 * MINUTE
+/**
+ * An order over the DNS proof: the daemon gives up on its own after 10 minutes, so the
+ * panel does the same a minute later, whatever else the server has said.
+ */
+export const DNS_ORDER_DEADLINE_MS = 10 * MINUTE
+export const DNS_DEADLINE_GRACE_MS = MINUTE
+/** The whole DNS request: the order, then the pair. There are no helpers to wait for. */
+export const DNS_REQUEST_LIFETIME_MS = 15 * MINUTE
 
 export type OpenAction =
   | { kind: 'wait' }
@@ -72,6 +81,12 @@ function orderingAction(state: HttpIssuanceState, now: Date): OpenAction {
           blameIssuer: true,
         }
       : { kind: 'wait' }
+  }
+  if (
+    state.challenge === 'dns-01' &&
+    since(state.orderSentAt, now) >= DNS_ORDER_DEADLINE_MS + DNS_DEADLINE_GRACE_MS
+  ) {
+    return { kind: 'fail', reason: 'The order did not finish in time.', blameIssuer: true }
   }
   const quiet = state.lastEventAt === null ? START_SILENCE_MS : ORDER_SILENCE_MS
   const base = state.lastEventAt ?? state.orderSentAt
@@ -143,7 +158,8 @@ export function publicMarker(
   const next: TlsAcmeMetadata = {
     ...previous,
     managedBy: HTTP_ISSUANCE_MANAGED_BY,
-    challengeType: HTTP_ISSUANCE_CHALLENGE_TYPE,
+    challengeType:
+      state.challenge === 'dns-01' ? DNS_ISSUANCE_CHALLENGE_TYPE : HTTP_ISSUANCE_CHALLENGE_TYPE,
     stage: stageOf(state),
     attempts: state.consecutiveFailures,
     serverStatus: serverStatusLines(state),
@@ -162,12 +178,14 @@ export function publicMarker(
 /** The marker while no server can take the order, with the plain reason. */
 export function waitingMarker(
   previous: TlsAcmeMetadata | undefined,
-  text: string
+  text: string,
+  challenge: 'http-01' | 'dns-01' = 'http-01'
 ): TlsAcmeMetadata {
   const next: TlsAcmeMetadata = {
     ...previous,
     managedBy: HTTP_ISSUANCE_MANAGED_BY,
-    challengeType: HTTP_ISSUANCE_CHALLENGE_TYPE,
+    challengeType:
+      challenge === 'dns-01' ? DNS_ISSUANCE_CHALLENGE_TYPE : HTTP_ISSUANCE_CHALLENGE_TYPE,
     stage: 'waiting',
     warning: text,
   }

@@ -8,7 +8,7 @@
  * instance costs one cheap query. Sites that were re-pinned to a renewed
  * certificate are returned so the caller can queue their hostings-only apply.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { tls } from '../../db/schema.ts'
 import { logWarn } from '../../lib/logger.ts'
@@ -22,7 +22,7 @@ import {
 } from '../../lib/throttle-counters.ts'
 import { ORIGIN_SWEEP_BATCH, sweepOriginCertificates } from './origin-certificate.ts'
 import { createTunnelAdapterRegistry, type TunnelAdapterRegistry } from './registry.ts'
-import { verifyOriginHostnames } from './verify-state.ts'
+import { tunnelDoorwayHostnames } from './verified-names.ts'
 
 /** Wall-clock time after which a pass starts no further organization. */
 export const ORIGIN_SWEEP_BUDGET_MS = 20_000
@@ -57,6 +57,8 @@ export async function runOriginCertificateSweepTick(
     limit?: number
     /** Wall-clock time after which no further organization is started. */
     budgetMs?: number
+    /** Test seam: look only at these organizations. */
+    onlyOrganizationIds?: readonly string[]
   } = {}
 ): Promise<OriginCertificateSweepTick> {
   const startedAt = Date.now()
@@ -70,7 +72,14 @@ export async function runOriginCertificateSweepTick(
   const orgs = await db
     .selectDistinct({ organizationId: tls.organizationId })
     .from(tls)
-    .where(eq(tls.source, 'provider_origin'))
+    .where(
+      and(
+        eq(tls.source, 'provider_origin'),
+        deps.onlyOrganizationIds
+          ? inArray(tls.organizationId, [...deps.onlyOrganizationIds])
+          : undefined
+      )
+    )
   const registry = deps.registry ?? createTunnelAdapterRegistry()
   let budget = deps.limit ?? ORIGIN_SWEEP_BATCH
   const turns = turnOrder(orgs, deps.now ?? new Date())
@@ -84,7 +93,7 @@ export async function runOriginCertificateSweepTick(
         secrets,
         registry,
         organizationId,
-        usedHostnames: await verifyOriginHostnames(db, organizationId),
+        usedHostnames: await tunnelDoorwayHostnames(db, organizationId),
         limit: share,
         ...(deps.now ? { now: deps.now } : {}),
       })

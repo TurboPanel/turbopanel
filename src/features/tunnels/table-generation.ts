@@ -20,7 +20,6 @@
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { organization } from '../../db/schema.ts'
-import { TUNNEL_TABLE_GENERATION_FEATURE } from '../../lib/version-wire.ts'
 import { compareText } from './order.ts'
 import type { RoutingFacts } from './route-facts.ts'
 
@@ -37,22 +36,6 @@ export const TUNNEL_GENERATION_BUMP_GAP_MS = 60_000
 
 /** A resolved generation, and whether it was newly raised by this call. */
 export type TunnelGenerationDecision = StoredTunnelGeneration & { changed: boolean }
-
-/** Only a daemon that lists `tunnel-table-generation-v1` is sent a generation. */
-export function daemonTakesTunnelGeneration(features: readonly string[] | undefined): boolean {
-  return features?.includes(TUNNEL_TABLE_GENERATION_FEATURE) === true
-}
-
-/**
- * The generation to send a daemon, or `undefined` for one that does not list
- * the feature (nothing is resolved or stored for it).
- */
-export async function generationForDaemon(
-  features: readonly string[] | undefined,
-  resolve: () => Promise<number>
-): Promise<number | undefined> {
-  return daemonTakesTunnelGeneration(features) ? await resolve() : undefined
-}
 
 /** Pure: the next generation for changed content. Never below the clock, always above the last. */
 export function nextTunnelGeneration(previous: number | undefined, nowMs: number): number {

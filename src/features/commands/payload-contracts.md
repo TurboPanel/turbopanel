@@ -164,7 +164,7 @@ create / schedule / timezone / retention / enabled change / delete; managed
 create (the automatic daily policy); a managed apply, promote or HA failover
 that re-pins `managed.server_id` (both old and new host); managed delete
 (force delete in the route, `deleteAfterDestroy` in the consumer); and once per
-reconnect by `runBackupsReconcileSweep` (Workers cron + Deno maintenance tick),
+reconnect by `runBackupsReconcileSweep` (Workers cron + Deno job tick),
 which also reaches a server whose policies were all deleted while it was away.
 
 A `copy` entry (added 2026-09-30, Road row `r2-backup-tenant-volumes`) also
@@ -193,7 +193,7 @@ requested folder, in order. The consumer deletes the `removing` row of each
 folder reported removed and logs the reason of one that stayed (its row keeps
 its locks). Sent by `features/folders/removal.ts` after a delete of a service,
 a volume or a volume copy commits, naming every `removing` folder of that
-server; and by `runFolderRemovalSweep` (Workers cron + Deno maintenance tick)
+server; and by `runFolderRemovalSweep` (Workers cron + Deno job tick)
 for a connected server that has `removing` rows and was not asked since it
 reconnected or in the last 15 minutes, which is how a server that was offline at
 delete time catches up and how a folder the host could not remove is retried.
@@ -271,6 +271,61 @@ the consumer reconciles those into `container` rows (ids/status only). **Cost:**
 one cell outbox enqueue; UI polls Postgres command rows only — never Durable
 Object reads for deploy status. Hosting Caddy (`:80`/`:443`) is distinct from
 control-plane Caddy (`:8443`).
+
+**`composeCheckout` (Git Compose projects):** a project that follows its
+repository's compose file (`options.composeSource.mode: 'track'`) sends the
+repository, the exact commit the file was read from (`composeBase.commitSha`,
+never a fresh branch read) and the file's repo-relative path
+(`src/client/environments/deploy-compose-checkout.ts`). The daemon checks that
+commit out into `<deploymentDir>/repo` before anything builds or starts and runs
+Compose with the folder of the compose file as its project directory, so
+`build: ./vpn`, relative binds and `env_file` resolve as they do in the
+repository. The clone credential is sealed to that daemon on the lane
+`sourceMaterial[]` uses (`tpdaemon.…`) and is never hashed or logged. The
+commit, path and clone URL are part of `desiredHash`, so a moved commit is a
+new deploy. A preview and a hostings-only run send none of it; a rollback sends
+the commit its recorded Base names. Every daemon must list `compose-checkout-v1`
+(the control plane holds back one that does not), and the wire rules in
+`src/lib/version-wire.ts` apply: the daemon merges first.
+
+**`allowNetworkShares` (network share volumes):** optional boolean, `true` or
+absent, next to `hostLevelApproved`. The planner sets it only when the resolved
+compose has a top-level volume with `driver_opts.type` `cifs` or `smb3` and the
+gate passed: the target server has `options.networkShares === true` ("Allow
+Network Shares") and the deployer holds the permission
+`environments.deploy_network_shares` (organization entity: Owner and Manager by
+default, the platform admin bypass, grantable to other roles). A scheduled or
+automatic deploy needs a recorded approval (metadata key
+`composeNetworkSharesApproval`) of the authored volumes AND of what they resolved
+to; turning the server setting off and on again voids older approvals. It is set
+per server, so it reaches only servers that passed. The daemon refuses a share
+without it. Every daemon must list `network-shares-v1` (the daemon merges first).
+
+The volume's `device` and `o` resolve `{$KEY}` from project variables, then the
+control plane re-checks the result: type `cifs`/`smb3`, device `//host/share`, no
+`bind`/`rbind`/`remount`/`move`/`credentials`, no comma or line break inside a
+value, and no `$` left. A share secret never appears in the compose text or the
+payload.
+
+**`networkShareCredentials` (share logins):** optional array on
+`environment.deploy`, sent only with `allowNetworkShares`:
+`{ volume, passwordKey, usernameKey? | username?, domain?, composeServiceName? }[]`
+(at most 64, one entry per volume). `passwordKey` and `usernameKey` name
+`variableMaterial[]` entries, looked up as `${composeServiceName ?? ""}::${key}`
+(`forBuild: false`, `forRuntime: false`, `isLiteral: false`, `valueEnvelope`
+sealed like every other secret); `username` and `domain` are plain text. The
+control plane sends the first compose service as `composeServiceName`. The
+compose text carries no login: user name, domain and password leave `o`. The
+daemon unseals the entries and adds `username=`, `password=` and `domain=` to
+that volume's `o` itself; the control plane never sends them, nor `credentials=`,
+in `o`. A literal `password=` in `o` (also `pass=` or `pwd=`), or a password that
+is not a `{$KEY}` of a secret variable, is refused by the control plane (the
+daemon refuses them in compose too). Values must not be empty or contain a comma
+or a line break. A secret domain, or a secret user
+name without a secret password, is refused. The same secrets are listed in
+`configSecretRefs` of the deployment options so a boot rehydrate fetches them
+again. Previews send no credentials. The wire rules in `src/lib/version-wire.ts`
+apply.
 
 **`composeFiles[]` (compiled runtime file):** `environment.deploy` carries
 `EnvironmentDeployComposeFile[]`. Deploys send a **single**
@@ -654,8 +709,8 @@ hosting enable (`PATCH /servers/:id` → `reconcile`), hosting disable (`PATCH` 
 `stop` scoped to hosting-ingress), operate restart
 (`POST /servers/:id/system/:component/restart` — hosting-ingress only, see
 `SYSTEM_OPERATE_COMPONENTS`), and a storage-free drift sweep (Workers
-offline-sweep cron + Deno maintenance timer, including an immediate tick on Deno
-boot) that enqueues for connected servers where either the hosting-ingress row
+offline-sweep cron + Deno job tick; a reconnect opens the `reconcileUrgent`
+gate, so the next tick runs it) that enqueues for connected servers where either the hosting-ingress row
 needs heal **because demand/observation exists** (and is not running, missing a
 Docker id, or the server recently reconnected), **or** a self-host
 `database`/`queue`/`analytics` system-role container is not running or missing a

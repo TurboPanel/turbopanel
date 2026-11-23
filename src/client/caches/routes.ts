@@ -6,10 +6,8 @@
  * - `PATCH  /environments/:id/caches/:cacheId` changes its access, memory limit or variable prefix.
  * - `DELETE /environments/:id/caches/:cacheId?deleteData=` removes it; the data goes unless `deleteData=false`.
  *
- * Writes queue `cache.apply` only for a daemon that lists `project-cache-v1`;
- * a server without it answers 409 `daemon_update_needed`. A cache on a server
- * that is offline is removed from the record without a command, so a dead host
- * is never a dead end.
+ * A cache on a server that is offline is removed from the record without a
+ * command, so a dead host is never a dead end.
  */
 
 import { and, eq } from 'drizzle-orm'
@@ -42,12 +40,10 @@ import {
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { isUuid } from '../../features/principals/store.ts'
 import { generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
-import { PROJECT_CACHE_FEATURE } from '../../lib/version-wire.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { storedDaemonFeatures } from '../environments/destroy-data.ts'
 import { effectiveAccountLimits } from '../environments/account-limits.ts'
 import { loadTenancyPrincipalIdsForEnvironment } from '../principals/tenancies.ts'
 import {
@@ -72,8 +68,6 @@ type EnvContext = {
   serverId: string | null
   orgOptions: unknown
 }
-
-const DAEMON_UPDATE_MESSAGE = 'Update the daemon on this server to use project caches'
 
 function refusal(c: Context<AppEnv>, error: CacheRequestError): Response {
   return c.json({ error: error.error, message: error.message }, error.status)
@@ -149,16 +143,6 @@ async function usedPorts(db: Db, environmentId: string, serverId: string): Promi
   return used
 }
 
-async function daemonRefusal(
-  c: Context<AppEnv>,
-  db: Db,
-  serverId: string
-): Promise<Response | null> {
-  const features = await storedDaemonFeatures(db, serverId)
-  if (features.includes(PROJECT_CACHE_FEATURE)) return null
-  return c.json({ error: 'daemon_update_needed', message: DAEMON_UPDATE_MESSAGE }, 409)
-}
-
 function apply(
   c: Context<AppEnv>,
   ctx: EnvContext & { serverId: string },
@@ -229,8 +213,6 @@ async function createCache(c: Context<AppEnv>): Promise<Response> {
     )
   }
   const placed = { ...ctx, serverId: ctx.serverId }
-  const gate = await daemonRefusal(c, ctx.db, placed.serverId)
-  if (gate) return gate
   const accounts = await loadTenancyPrincipalIdsForEnvironment(ctx.db, ctx.environmentId)
   if (!new Set(accounts).has(input.principalId)) {
     return c.json(
@@ -326,8 +308,6 @@ async function patchCache(c: Context<AppEnv>): Promise<Response> {
   if (body instanceof Response) return body
   const patch = parseCachePatchBody(body)
   if ('error' in patch) return refusal(c, patch)
-  const gate = await daemonRefusal(c, ctx.db, row.serverId)
-  if (gate) return gate
   const placed = { ...ctx, serverId: row.serverId }
   const srv = await serverOptions(ctx.db, row.serverId)
   const limits = effectiveAccountLimits(ctx.orgOptions, srv.options)
@@ -390,8 +370,6 @@ async function removeCache(c: Context<AppEnv>): Promise<Response> {
     await deleteCacheRow(ctx.db, row.id)
     return c.json({ ok: true as const, removed: 'record_only' as const })
   }
-  const gate = await daemonRefusal(c, ctx.db, row.serverId)
-  if (gate) return gate
   if (!c.get('dataEncryptionSecrets')) return c.json({ error: 'Encryption unavailable' }, 503)
   const limits = effectiveAccountLimits(ctx.orgOptions, srv.options)
   // Queued first: if the host cannot be asked, the row stays and nothing is lost.

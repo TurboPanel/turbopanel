@@ -58,6 +58,7 @@ import {
 } from '../../features/servers/server-identity-db.ts'
 import { isGitProviderFailure, resolveGitProvider } from '../../features/git/git-provider.ts'
 import type { ResolvedSourceCommit } from '../../features/git/git-provider.ts'
+import type { ComposeBaseRecord } from '../../features/projects/project-options.ts'
 import { isSshCloneUrl } from '../../features/git/clone-url.ts'
 import { normalizeBranchName } from '../../features/git/environment-branch-tracking.ts'
 import { newCorrelationId } from '../../features/commands/ids.ts'
@@ -72,13 +73,12 @@ import {
   type NodePackageManager,
   readServiceTurbopanelExtension,
 } from '../../features/compose/index.ts'
-import {
-  IMAGE_BUILD_WIRE_KIND,
-  type EnvironmentDeployPrincipalMaterial,
-  type EnvironmentDeploySource,
-  type EnvironmentDeploySourceBuild,
-  type EnvironmentDeploySourceCredentialKind,
-  type EnvironmentDeploySitePrincipal,
+import type {
+  EnvironmentDeployPrincipalMaterial,
+  EnvironmentDeploySource,
+  EnvironmentDeploySourceBuild,
+  EnvironmentDeploySourceCredentialKind,
+  EnvironmentDeploySitePrincipal,
 } from '../../contracts/commands/schemas.ts'
 import { secret, repository } from '../../db/schema.ts'
 import {
@@ -130,6 +130,12 @@ export type DeployRollbackRequest = {
    * that release. Every entry is verified by the route before it reaches here.
    */
   releaseByService: Record<string, DeployRollbackReleasePin>
+  /**
+   * The compose Base the deployment being returned to recorded, when it
+   * followed a repository file. The route reads that file again at that
+   * commit, never the latest read.
+   */
+  composeBase?: ComposeBaseRecord
 }
 
 /**
@@ -248,7 +254,7 @@ export type DeploySourceResolveParams = {
   releaseIds?: ReleaseIdAllocator
 }
 
-type SourceRow = {
+export type SourceRow = {
   id: string
   provider: string
   repositoryUrl: string
@@ -337,9 +343,7 @@ function resolveSourceBuild(
   packageManager?: NodePackageManager
 ): EnvironmentDeploySourceBuild {
   const build: EnvironmentDeploySourceBuild = {
-    // A released daemon rejects `image`, so the wire keeps the old value for
-    // either spelling of the image kind until wipe day.
-    kind: isImageBuildKind(binding.buildKind) ? IMAGE_BUILD_WIRE_KIND : 'native',
+    kind: isImageBuildKind(binding.buildKind) ? 'image' : 'native',
   }
   // The owning service's package-manager choice rides the build object so the
   // daemon can derive the right install command after checkout.
@@ -399,9 +403,9 @@ export function withBuildEnv(
   return out
 }
 
-type DaemonRecipient = { serverId: string; keyId: string }
+export type DaemonRecipient = { serverId: string; keyId: string }
 
-async function resolveDaemonRecipient(
+export async function resolveDaemonRecipient(
   db: Db,
   serverId: string
 ): Promise<DaemonRecipient | Response> {
@@ -751,7 +755,7 @@ export async function resolveDeploySourceMaterial(
   return out
 }
 
-type CommitAndCredentialParams = {
+export type CommitAndCredentialParams = {
   composeServiceName: string
   row: SourceRow
   ref: string
@@ -774,7 +778,7 @@ type CommitAndCredentialParams = {
  * clone. A follow-up phase adds `git ls-remote` resolution so the control plane
  * pins the exact commit for those too.
  */
-async function resolveSourceCommitAndCredential(
+export async function resolveSourceCommitAndCredential(
   c: Context<AppEnv>,
   db: Db,
   params: CommitAndCredentialParams

@@ -8,12 +8,16 @@ import type { ComposeDocument } from '../../features/compose/index.ts'
 import { hostingEntryKey } from '../../features/compose/index.ts'
 import {
   audit,
+  badge,
+  carrier,
+  deployment,
   environment,
   hostname,
   hosting,
   instanceHostname,
   ip,
   organization,
+  server,
   service,
   setting,
   tls,
@@ -117,6 +121,11 @@ function createReconcileDb(opts: {
       // The reconcile takes the environment row's lock first.
       [environment, [{ id: ENV_ID }]],
       [audit, []],
+      // The name gate reads DNS tokens and the servers that serve the route; none here.
+      [carrier, []],
+      [badge, []],
+      [deployment, []],
+      [server, []],
       [hosting, opts.hostingRows ?? []],
       [
         service,

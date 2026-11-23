@@ -678,33 +678,7 @@ test('the host is sent the target sealed to its own key; a cluster can override 
   })
 })
 
-test('a host that does not list the copy feature is sent no target', async () => {
-  await withFixture(async (f) => {
-    const id = await createTarget(f)
-    await f.db.insert(retention).values({
-      organizationId: f.orgA,
-      targetKind: 'managed',
-      managedId: f.managedId,
-      name: 'Nightly',
-      schedule: '0 3 * * *',
-      retentionKeep: 5,
-    })
-    await call(f, 'PUT', `/organizations/${f.orgA}/backup-targets/default`, f.ownerCookie, {
-      destinationId: id,
-    })
-    await f.db
-      .update(server)
-      .set({ daemon: { projection: { features: [] } } })
-      .where(eq(server.id, f.serverId))
-    const set = await buildBackupPolicySetForServer(f.db, f.serverId, {
-      secretsConfig: f.secretsConfig,
-      dataEncryptionSecrets: f.dataEncryptionSecrets,
-    })
-    assertEquals(set[0]!.copyTarget, undefined)
-  })
-})
-
-test('the connection test is queued for a ready host, stores its outcome, and refuses a host that cannot take it', async () => {
+test('the connection test is queued for a ready host, and stores its outcome', async () => {
   await withFixture(async (f) => {
     const id = await createTarget(f)
     const queued = await call(
@@ -729,19 +703,6 @@ test('the connection test is queued for a ready host, stores its outcome, and re
     const [tested] = await f.db.select().from(backupTarget).where(eq(backupTarget.id, id))
     assertEquals(tested!.isLastTestOk, false)
     assertEquals(tested!.lastTestError, 'write failed: the bucket does not exist')
-
-    await f.db
-      .update(server)
-      .set({ daemon: { projection: { features: [] } } })
-      .where(eq(server.id, f.serverId))
-    const refused = await call(
-      f,
-      'POST',
-      `/organizations/${f.orgA}/backup-targets/${id}/test`,
-      f.managerCookie,
-      {}
-    )
-    assertEquals(refused.status, 409)
   })
 })
 

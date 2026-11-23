@@ -13,6 +13,10 @@ import type { AppEnv } from '../../app/app.ts'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { audit, carrier, grant, organization, tls, user } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
+import {
+  newHttpIssuanceState,
+  withHttpIssuanceState,
+} from '../../features/tls/http-issuance/state.ts'
 import { DNS_CERT_KEY } from '../../features/tls/dns-certificates/order-state.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -21,11 +25,7 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { toPublicTlsRow } from '../tls/routes-helpers.ts'
-import {
-  ORDERING_OFF_ERROR,
-  ORDERING_OFF_MESSAGE,
-  registerOrganizationDnsCertificateRoutes,
-} from './dns-certificate-routes.ts'
+import { registerOrganizationDnsCertificateRoutes } from './dns-certificate-routes.ts'
 
 /** Jest/Mocha-shaped alias so Sonar sees real tests (typescript:S2187). */
 const test = Deno.test.bind(Deno)
@@ -218,29 +218,75 @@ test('every route needs a session, and the list is for the organization’s owne
     assertEquals((await call(f, 'GET', list, f.otherManagerCookie)).status, 403)
   }))
 
-test('starting, checking and retrying an order are refused in plain words and change nothing', () =>
+test('a manager orders a wildcard and a name; a member and another organization cannot', () =>
   withFixture(async (f) => {
-    const [before] = await f.db.select().from(tls).where(eq(tls.id, f.certificateId))
-    for (const cookie of [f.managerCookie, f.memberCookie, f.otherManagerCookie]) {
-      for (const path of orderPaths(f, f.orgA)) {
-        const refused = await call(f, 'POST', path, cookie, {
-          carrierId: f.carrierId,
-          names: ['b.example.com'],
-        })
-        assertEquals(
-          [refused.status, refused.body.error, refused.body.message],
-          [422, ORDERING_OFF_ERROR, ORDERING_OFF_MESSAGE],
-          path
-        )
-      }
+    const path = `/organizations/${f.orgA}/dns-certificates`
+    const made = await call(f, 'POST', path, f.managerCookie, {
+      names: ['example.com', '*.example.com'],
+    })
+    assertEquals(made.status, 201, made.text)
+    const order = made.body.certificate as Record<string, unknown>
+    assertEquals([order.names, order.wildcard], [['example.com', '*.example.com'], true])
+    const [stored] = await f.db
+      .select()
+      .from(tls)
+      .where(eq(tls.id, order.id as string))
+    assertEquals([stored!.source, stored!.organizationId], ['lets_encrypt', f.orgA])
+    assertEquals(stored!.privateKeyPem, null)
+    // A bad name is refused and writes no row.
+    const bad = await call(f, 'POST', path, f.managerCookie, { names: ['*.*.example.com'] })
+    assertEquals([bad.status, bad.body.error], [400, 'Invalid request'])
+    // Check and retry answer for the organization's own order only.
+    for (const action of ['check', 'retry']) {
+      const own = await call(f, 'POST', `${path}/${order.id}/${action}`, f.managerCookie, {})
+      assertEquals(own.status, 200, own.text)
     }
-    const rows = await f.db.select().from(tls).where(eq(tls.organizationId, f.orgA))
-    assertEquals(rows.length, 1)
-    assertEquals(rows[0]!.metadata, before!.metadata)
-    assertEquals(
-      (await f.db.select().from(audit).where(eq(audit.organizationId, f.orgA))).length,
-      0
+    const foreign = await call(
+      f,
+      'POST',
+      `/organizations/${f.orgB}/dns-certificates/${order.id}/check`,
+      f.otherManagerCookie,
+      {}
     )
+    assertEquals(foreign.status, 404)
+    assertEquals(
+      (await call(f, 'POST', path, f.memberCookie, { names: ['b.example.com'] })).status,
+      403
+    )
+    const rows = await f.db.select().from(tls).where(eq(tls.organizationId, f.orgA))
+    assertEquals(rows.length, 2)
+  }))
+
+test('a retry is refused while the authority has the organization on a rate limit', () =>
+  withFixture(async (f) => {
+    const base = `/organizations/${f.orgA}/dns-certificates`
+    const made = await call(f, 'POST', base, f.managerCookie, { names: ['limited.example.com'] })
+    assertEquals(made.status, 201, made.text)
+    const id = (made.body.certificate as { id: string }).id
+    const [row] = await f.db.select().from(tls).where(eq(tls.id, id))
+    const later = new Date(Date.now() + 3_600_000).toISOString()
+    await f.db
+      .update(tls)
+      .set({
+        metadata: withHttpIssuanceState(
+          row!.metadata,
+          newHttpIssuanceState({
+            issuingServerId: 'a',
+            requestId: 'req_limited',
+            startedAt: new Date().toISOString(),
+            startByAt: later,
+            challenge: 'dns-01',
+            phase: 'failed',
+            lastError: 'too many certificates already issued',
+            nextAttemptAt: later,
+            endedAt: new Date().toISOString(),
+          })
+        ),
+      })
+      .where(eq(tls.id, id))
+    const refused = await call(f, 'POST', `${base}/${id}/retry`, f.managerCookie, {})
+    assertEquals([refused.status, refused.body.error], [409, 'rate_limited'])
+    assertEquals(refused.body.retryAt, later)
   }))
 
 test('the list still shows a certificate made earlier and shows nothing private', () =>

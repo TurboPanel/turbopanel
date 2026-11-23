@@ -57,10 +57,8 @@ import {
   nextUpgradeCheckAt,
   UPGRADE_MANUAL_CHECK_MIN_GAP_MS,
 } from '../features/upgrades/schedule.ts'
-import {
-  parseUpgradeCheckMinutes,
-  UPGRADE_CHECK_MINUTES_ENV,
-} from '../features/upgrades/tick-cadence.ts'
+import { jobEveryMinutes } from '../jobs/registry.ts'
+import { loadJobCadences, resolveJobCadencesFromEnv } from '../features/settings/job-cadences.ts'
 import { UPGRADE_ACTIVE_STATUSES } from '../features/upgrades/vocabulary.ts'
 import {
   controlPlaneBackupPath,
@@ -534,7 +532,7 @@ type AutomaticStatus = {
   daemonsBehind: boolean
   nextCheckAt: string | null
   lastCheckAt: string | null
-  /** How often this install checks: 60, or less where `TURBOPANEL_UPGRADE_CHECK_MINUTES` is set. */
+  /** How often this install checks: 60, or less where the `upgradeCheck` job cadence is set. */
   checkIntervalMinutes: number
   activeRunId: string | null
 }
@@ -563,7 +561,10 @@ async function readAutomaticStatus(
 ): Promise<AutomaticStatus> {
   const db = getDb(c)
   const env = resolvePlatformEnv(c, opts)
-  const checkIntervalMinutes = parseUpgradeCheckMinutes(env[UPGRADE_CHECK_MINUTES_ENV])
+  // Workers read the var only; self-hosted also reads the `jobs.cadences` setting (cached).
+  const cadences =
+    db && opts.runtime === 'deno' ? await loadJobCadences(db, env) : resolveJobCadencesFromEnv(env)
+  const checkIntervalMinutes = jobEveryMinutes('upgradeCheck', cadences.table)
   const empty: AutomaticStatus = {
     automatic: true,
     ...pauseFields(null),

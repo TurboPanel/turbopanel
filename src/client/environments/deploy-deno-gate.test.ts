@@ -1,12 +1,5 @@
 import { assertEquals } from '@std/assert'
-import type { Db } from '../../db/connection.ts'
-import {
-  DENO_NATIVE_APPS_FEATURE,
-  denoAppNeedingFeature,
-  denoAppWithUnsupportedVersion,
-  withDenoNativeApps,
-  withRecordedRuntimes,
-} from './deploy-deno-gate.ts'
+import { denoAppWithUnsupportedVersion, withRecordedRuntimes } from './deploy-deno-gate.ts'
 import { mapPrepareErrorResponse } from './deploy-routes-helpers.ts'
 import { nativeAppDenoVersionViews } from './deploy-prepare.ts'
 import { contextReleasesFor } from './deploy-routes.ts'
@@ -14,27 +7,11 @@ import { releasePin } from './release-routes.ts'
 import type { EnvironmentDeploySource } from '../../contracts/commands/schemas.ts'
 import type { ServiceReleaseRecord } from '../../features/git/releases.ts'
 import { normalizeContextReleases } from '../../features/commands/context.ts'
-import { DAEMON_WIRE_FEATURES } from '../../lib/version-wire.ts'
 
 const test = Deno.test.bind(Deno)
-const db = {} as Db
 
 const deno = { composeServiceName: 'api', runtime: 'deno' as const }
 const node = { composeServiceName: 'web' }
-
-test('the feature string is in the panel wire list', () => {
-  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(DENO_NATIVE_APPS_FEATURE), true)
-})
-
-test('a Deno app is refused for a daemon without the feature; Node apps never are', () => {
-  assertEquals(denoAppNeedingFeature([node, deno], []), {
-    kind: 'deno_feature_missing',
-    composeServiceName: 'api',
-  })
-  assertEquals(denoAppNeedingFeature([deno], ['managed-upgrade-v1']) !== undefined, true)
-  assertEquals(denoAppNeedingFeature([deno], [DENO_NATIVE_APPS_FEATURE]), undefined)
-  assertEquals(denoAppNeedingFeature([node], []), undefined)
-})
 
 test('a Deno series nothing here offers is refused, and every spelling of 2 is not', () => {
   assertEquals(denoAppWithUnsupportedVersion([{ ...deno, denoVersion: '3' }]), {
@@ -50,33 +27,7 @@ test('a Deno series nothing here offers is refused, and every spelling of 2 is n
   assertEquals(denoAppWithUnsupportedVersion([{ ...node, denoVersion: '9' }]), undefined)
 })
 
-test('the daemon is looked up only when a Deno app is in the deploy, after the version check', async () => {
-  let lookups = 0
-  const load = () => {
-    lookups++
-    return Promise.resolve([] as readonly string[])
-  }
-  assertEquals(await withDenoNativeApps(db, 's1', [node], load), { ok: true })
-  assertEquals(lookups, 0)
-  const unsupported = await withDenoNativeApps(db, 's1', [{ ...deno, denoVersion: '3' }], load)
-  assertEquals('kind' in unsupported && unsupported.kind, 'deno_version_unsupported')
-  assertEquals(lookups, 0)
-  assertEquals('kind' in (await withDenoNativeApps(db, 's1', [deno], load)), true)
-  assertEquals(lookups, 1)
-  assertEquals(
-    await withDenoNativeApps(db, 's1', [deno], () => Promise.resolve([DENO_NATIVE_APPS_FEATURE])),
-    { ok: true }
-  )
-})
-
-test('both refusals are 422s in plain words', () => {
-  const missing = mapPrepareErrorResponse({
-    kind: 'deno_feature_missing',
-    composeServiceName: 'api',
-  })
-  assertEquals(missing.status, 422)
-  assertEquals((missing.body as { error: string }).error, 'deno_feature_missing')
-  assertEquals(String((missing.body as { message: string }).message).includes('too old'), true)
+test('the version refusal is a 422 in plain words', () => {
   const unsupported = mapPrepareErrorResponse({
     kind: 'deno_version_unsupported',
     composeServiceName: 'api',

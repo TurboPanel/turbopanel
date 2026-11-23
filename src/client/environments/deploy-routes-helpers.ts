@@ -369,6 +369,36 @@ function mapComposeHostAccessActorError(
   }
 }
 
+function mapNetworkSharesRefusedError(
+  prepared: Extract<DeployPrepareError, { kind: 'compose_network_shares_refused' }>
+): PrepareErrorResponse {
+  const volumes = prepared.volumes.map((name) => `\`${name}\``).join(', ')
+  const base = `This compose document mounts a network share (SMB volume ${volumes}).`
+  const names = (prepared.servers ?? []).map((entry) => entry.name).join(', ')
+  const reenabled =
+    names === ''
+      ? ''
+      : `, and ${names}, where Allow Network Shares was turned off and on again since`
+  let message: string
+  if (prepared.reason === 'permission') {
+    message = `${base} You do not have the Deploy network shares permission (environments.deploy_network_shares). Organization owners and managers have it; an owner can grant it to another role. The target server must also have Allow Network Shares turned on, which an admin can do in the server's settings.`
+  } else if (prepared.reason === 'approval') {
+    message = `${base} This is an automated deploy (a git push or a scheduled run), and nobody with the Deploy network shares permission has deployed these shares in this form yet. That includes changed variables that change the address or the options${reenabled}. Deploy it once from the web interface to approve it; automated deploys of the same shares will then run. The target server must also have Allow Network Shares turned on.`
+  } else {
+    message = `${base} Allow Network Shares is off on ${names}. An admin can turn on "Allow Network Shares" in the server's settings.`
+  }
+  return {
+    status: 403,
+    body: {
+      error: prepared.kind,
+      reason: prepared.reason,
+      volumes: prepared.volumes,
+      ...(prepared.servers ? { servers: prepared.servers } : {}),
+      message,
+    },
+  }
+}
+
 function mapSitePrepareError(
   prepared: Extract<
     DeployPrepareError,
@@ -679,8 +709,6 @@ const PHP_MODE_REFUSAL_TEXT = {
   engine_unsupported: 'its web server cannot run that mode',
   not_allowed: 'its organization or server does not offer that mode',
   none_allowed: 'its organization and server offer no mode its web server can run',
-  daemon_unsupported:
-    "the server's TurboPanel daemon is too old to run per-site PHP modes (update the daemon first)",
 } as const
 
 function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
@@ -707,43 +735,7 @@ function tryMapBindingHostSiteError(prepared: DeployPrepareError): PrepareErrorR
   }
 }
 
-function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErrorResponse | null {
-  if (prepared.kind !== 'site_engine_feature_missing') return null
-  return {
-    status: 422,
-    body: {
-      error: 'site_engine_feature_missing',
-      composeServiceName: prepared.composeServiceName,
-      message: `Site "${prepared.composeServiceName}" uses the nginx+apache web server pair, but the TurboPanel daemon on this server is too old to run it. Update the daemon on this server, then deploy again.`,
-    },
-  }
-}
-
-function tryMapSiteLifecycleUnsupportedError(
-  prepared: DeployPrepareError
-): PrepareErrorResponse | null {
-  if (prepared.kind !== 'site_lifecycle_unsupported') return null
-  return {
-    status: 409,
-    body: {
-      error: 'site_lifecycle_unsupported',
-      message: prepared.message,
-      servers: prepared.servers,
-    },
-  }
-}
-
 function tryMapDenoPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
-  if (prepared.kind === 'deno_feature_missing') {
-    return {
-      status: 422,
-      body: {
-        error: 'deno_feature_missing',
-        composeServiceName: prepared.composeServiceName,
-        message: `App "${prepared.composeServiceName}" runs on Deno, but the TurboPanel daemon on this server is too old to run Deno apps. Update the daemon on this server, then deploy again.`,
-      },
-    }
-  }
   if (prepared.kind !== 'deno_version_unsupported') return null
   return {
     status: 422,
@@ -753,19 +745,6 @@ function tryMapDenoPrepareError(prepared: DeployPrepareError): PrepareErrorRespo
       requested: prepared.requested,
       supported: prepared.supported,
       message: `Deno app "${prepared.composeServiceName}" asks for Deno ${prepared.requested}, which this platform does not offer. Offered: ${prepared.supported.join(', ')}. Set x-turbopanel: { denoVersion: "${prepared.supported.at(-1) ?? '2'}" }, or remove denoVersion to use the default.`,
-    },
-  }
-}
-
-function tryMapNodeAppModeFeatureError(prepared: DeployPrepareError): PrepareErrorResponse | null {
-  if (prepared.kind !== 'node_app_mode_feature_missing') return null
-  return {
-    status: 422,
-    body: {
-      error: 'node_app_mode_feature_missing',
-      composeServiceName: prepared.composeServiceName,
-      appMode: prepared.appMode,
-      message: `App "${prepared.composeServiceName}" uses the custom application mode "${prepared.appMode}", but the TurboPanel daemon on this server is too old to run apps in a custom mode. Update the daemon on this server, then deploy again, or set the mode to production or development.`,
     },
   }
 }
@@ -824,11 +803,8 @@ export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareEr
   return (
     tryMapPhpModePrepareError(prepared) ??
     tryMapNodeVersionPrepareError(prepared) ??
-    tryMapSiteEngineFeatureError(prepared) ??
-    tryMapSiteLifecycleUnsupportedError(prepared) ??
     tryMapBindingHostSiteError(prepared) ??
     tryMapDenoPrepareError(prepared) ??
-    tryMapNodeAppModeFeatureError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapNativeAppUnresolvedPrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
@@ -881,6 +857,10 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
     case 'compose_host_access_requires_manager':
     case 'compose_host_access_requires_approval':
       return mapComposeHostAccessActorError(prepared)
+    // A network share (SMB volume) needs both the deploying user's capability
+    // and the server's "Allow Network Shares"; the body names which is missing.
+    case 'compose_network_shares_refused':
+      return mapNetworkSharesRefusedError(prepared)
     case 'datacenter_ip_required':
       return {
         status: 422,
@@ -915,20 +895,11 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
     case 'config_file_invalid':
     case 'config_file_shared':
       return variablePrepareErrorResponse(prepared)
-    case 'config_files_need_daemon_update':
-      return {
-        status: 409,
-        body: {
-          error: 'config_files_need_daemon_update',
-          message: prepared.message,
-          servers: prepared.servers,
-        },
-      }
     case 'storage_location_unavailable':
       return storageLocationUnavailableResponse(prepared)
     case 'project_cache_refused':
       return {
-        status: prepared.code === 'daemon_update_needed' ? 409 : 422,
+        status: 422,
         body: { error: prepared.code, message: prepared.message },
       }
     case 'resource_limit':

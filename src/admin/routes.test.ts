@@ -27,17 +27,13 @@ import {
   upgrade,
   user,
 } from '../db/schema.ts'
-import {
-  createNotificationChannel,
-  OPERATOR_WEBHOOK_LABEL,
-} from '../features/notifications/records.ts'
+import { OPERATOR_WEBHOOK_LABEL } from '../features/notifications/records.ts'
 import { setUpdateManifestProvider } from '../features/update/manifest.ts'
 import { LATEST_BUILD_SETTINGS_KEY } from '../features/upgrades/target-resolve.ts'
 import {
   UPDATE_NOW_ERRORS,
   UPDATE_NOW_UNREACHABLE_MESSAGE,
 } from '../features/upgrades/update-now.ts'
-import { encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
 import {
@@ -47,7 +43,6 @@ import {
 } from './reencrypt-secrets.ts'
 import { registerAdminRoutes } from './routes.ts'
 import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from '../features/settings/server-metrics-settings.ts'
-import { ALERT_WEBHOOK_URL_KEY } from '../features/alerts/alert-webhook-settings.ts'
 import { replaceInstanceHostnames } from '../features/install/instance-hostnames.ts'
 import {
   INSTANCE_ACME_SETTINGS,
@@ -1564,11 +1559,11 @@ test('GET and PUT /api/admin/v1/settings/audit-retention round-trip the window',
     }
   })
 })
+
 test('GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back', async () => {
   await withRoleUser('superadmin', async ({ app, cookie }) => {
     const db = createDenoDb()
     try {
-      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
       await db
         .delete(notificationChannel)
         .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
@@ -1612,12 +1607,6 @@ test('GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back',
       assertEquals(typeof stored[0]?.address, 'string')
       assertEquals(String(stored[0]?.address).includes('SECRETPATH'), false)
       assertEquals(String(stored[0]?.address).startsWith('tpsecret.'), true)
-      const legacyRows = await db
-        .select({ value: setting.value })
-        .from(setting)
-        .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-        .limit(1)
-      assertEquals(legacyRows.length, 0)
 
       // Scheme and credential rules hold on every runtime; the test app is
       // the self-hosted (Deno) runtime, where a LAN or loopback target is
@@ -1644,73 +1633,6 @@ test('GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back',
         origin: null,
       })
     } finally {
-      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-      await db
-        .delete(notificationChannel)
-        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
-    }
-  })
-})
-
-test('a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on first touch', async () => {
-  await withRoleUser('superadmin', async ({ app, cookie }) => {
-    const db = createDenoDb()
-    try {
-      await db
-        .delete(notificationChannel)
-        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
-      // A pre-pipeline instance: the sealed URL sits in the setting row.
-      const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
-      const enc = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
-      await db
-        .insert(setting)
-        .values({
-          key: ALERT_WEBHOOK_URL_KEY,
-          value: await encryptSecret(enc, 'https://hooks.slack.com/services/LEGACY/PATH'),
-        })
-        .onConflictDoUpdate({
-          target: setting.key,
-          set: {
-            value: await encryptSecret(enc, 'https://hooks.slack.com/services/LEGACY/PATH'),
-          },
-        })
-
-      // Listing the instance channels folds it in: one channel, a `*` rule,
-      // the setting row gone.
-      const listed = await app.request(`${ADMIN_API_PREFIX}/notification-channels`, {
-        headers: { Cookie: cookie },
-      })
-      assertEquals(listed.status, 200)
-      const { channels } = await jsonBody<{
-        channels: Array<{
-          label: string
-          kind: string
-          address: string
-          allOrganizations: boolean
-          rules: Array<{ event: string; minSeverity: string }>
-        }>
-      }>(listed)
-      const operator = channels.find((ch) => ch.label === OPERATOR_WEBHOOK_LABEL)
-      assertEquals(operator?.kind, 'webhook')
-      assertEquals(operator?.address, 'https://hooks.slack.com')
-      assertEquals(operator?.allOrganizations, true)
-      assertEquals(operator?.rules, [{ event: '*', minSeverity: 'info' }])
-      const legacyRows = await db
-        .select({ value: setting.value })
-        .from(setting)
-        .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-      assertEquals(legacyRows.length, 0)
-
-      // And the old route still answers from the same channel.
-      const described = await app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
-        headers: { Cookie: cookie },
-      })
-      assertEquals(await jsonBody(described), {
-        configured: true,
-        origin: 'https://hooks.slack.com',
-      })
-    } finally {
-      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
       await db
         .delete(notificationChannel)
         .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
@@ -1749,41 +1671,6 @@ test('a control plane channel carries the all organizations switch through creat
       assertEquals((await jsonBody<{ error: string }>(bad)).error, 'all_organizations_invalid')
     } finally {
       await send('DELETE', `/${channel.id}`, {})
-    }
-  })
-})
-
-test('an operator webhook made before the switch existed is switched on when touched', async () => {
-  await withRoleUser('superadmin', async ({ app, cookie }) => {
-    const db = createDenoDb()
-    try {
-      await db
-        .delete(notificationChannel)
-        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
-      const enc = await deriveEncryptionSecretsConfig(
-        parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
-        'data-encryption'
-      )
-      const old = await createNotificationChannel(db, enc, {
-        scope: 'instance',
-        kind: 'webhook',
-        label: OPERATOR_WEBHOOK_LABEL,
-        address: 'https://hooks.slack.com/services/OLD/PATH',
-        isAllOrganizationsNotified: false,
-      })
-      const listed = await app.request(`${ADMIN_API_PREFIX}/notification-channels`, {
-        headers: { Cookie: cookie },
-      })
-      assertEquals(listed.status, 200)
-      const [row] = await db
-        .select({ on: notificationChannel.isAllOrganizationsNotified })
-        .from(notificationChannel)
-        .where(eq(notificationChannel.id, old.id))
-      assertEquals(row?.on, true)
-    } finally {
-      await db
-        .delete(notificationChannel)
-        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
     }
   })
 })

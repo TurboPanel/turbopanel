@@ -28,8 +28,6 @@ import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.t
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { listEnvironmentDeploymentTargets } from '../../features/deploy/deployment-records.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import { DEPLOY_HOSTINGS_ONLY_FEATURE } from '../../lib/version-wire.ts'
-import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { type DeployActor, runEnvironmentDeployForActor } from '../environments/deploy-routes.ts'
 
 export type HostingApplyOutcome =
@@ -39,7 +37,6 @@ export type HostingApplyOutcome =
   | 'not_deployed'
   | 'deploy_in_progress'
   | 'server_offline'
-  | 'daemon_too_old'
   | 'pending_changes'
   | 'refused'
 
@@ -48,8 +45,6 @@ export type HostingApplyDeps = {
   /** Live presence; the stored `is_connected` column answers without it. */
   registry?: DaemonCellRegistry
   runDeploy?: typeof runEnvironmentDeployForActor
-  /** The wire features a server's daemon lists; defaults to its stored projection. */
-  daemonFeatures?: (db: Db, serverId: string) => Promise<readonly string[]>
 }
 
 export type HostingApplyParams = {
@@ -60,21 +55,7 @@ export type HostingApplyParams = {
   editedAt: string
 }
 
-async function storedDaemonFeatures(db: Db, serverId: string): Promise<readonly string[]> {
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return state?.projection?.features ?? []
-}
-
 const IN_PROGRESS_DEPLOYMENT_STATUSES: ReadonlySet<string> = new Set(['pending', 'applying'])
-
-async function everyDaemonSupportsHostingsOnly(
-  db: Db,
-  serverIds: readonly string[],
-  lookup: (db: Db, serverId: string) => Promise<readonly string[]>
-): Promise<boolean> {
-  const answers = await Promise.all(serverIds.map((id) => lookup(db, id)))
-  return answers.every((features) => features.includes(DEPLOY_HOSTINGS_ONLY_FEATURE))
-}
 
 /**
  * Did anything a deploy carries change after `since`: the hosting itself
@@ -133,7 +114,7 @@ function oldestFinish(targets: readonly { finishedAt: string | null }[]): string
   return oldest
 }
 
-async function environmentOfHosting(db: Db, hostingId: string): Promise<string | null> {
+export async function environmentOfHosting(db: Db, hostingId: string): Promise<string | null> {
   const [row] = await db
     .select({ environmentId: service.environmentId })
     .from(hosting)
@@ -141,6 +122,27 @@ async function environmentOfHosting(db: Db, hostingId: string): Promise<string |
     .where(eq(hosting.id, hostingId))
     .limit(1)
   return row?.environmentId ?? null
+}
+
+/**
+ * What a released hostname leaves on the servers. A removal never runs a
+ * deploy of its own: a deploy plans from the whole environment, so it would
+ * ship someone's other undeployed edits. The route goes at the next deploy.
+ */
+export type HostingRemovalUpdate = 'next_deploy' | 'no_environment' | 'not_deployed'
+
+export async function hostingRemovalUpdate(
+  db: Db,
+  environmentId: string | null
+): Promise<HostingRemovalUpdate> {
+  if (environmentId === null) return 'no_environment'
+  const targets = await listEnvironmentDeploymentTargets(db, environmentId)
+  // A later failed deploy sets the status to `failed` but keeps the generation
+  // an earlier one applied, so the generation (not the status) says a server
+  // holds the route.
+  return targets.some((target) => target.appliedGeneration !== null)
+    ? 'next_deploy'
+    : 'not_deployed'
 }
 
 async function everyServerOnline(
@@ -178,8 +180,6 @@ async function queueApply(
   if (applied.length === 0 || since === null) return 'not_deployed'
   const serverIds = applied.map((target) => target.serverId)
   if (!(await everyServerOnline(db, deps.registry, serverIds))) return 'server_offline'
-  const features = deps.daemonFeatures ?? storedDaemonFeatures
-  if (!(await everyDaemonSupportsHostingsOnly(db, serverIds, features))) return 'daemon_too_old'
   const changed = await changedSince(db, {
     environmentId,
     hostingId: params.hostingId,
@@ -243,6 +243,18 @@ export function isPinOnlyChange(before: HostingPinState, after: HostingPinState)
     after.ipId === before.ipId &&
     sortedJson(after.options) === sortedJson(before.options)
   )
+}
+
+/**
+ * True when an edit left what the servers receive from the hosting itself (its
+ * options and pinned address) as it was, so the hostings-only apply may carry
+ * it and the edit does not count as a pending change.
+ */
+export function leftServerFactsAlone(
+  before: Pick<HostingPinState, 'ipId' | 'options'>,
+  after: Pick<HostingPinState, 'ipId' | 'options'>
+): boolean {
+  return after.ipId === before.ipId && sortedJson(after.options) === sortedJson(before.options)
 }
 
 /** Is this certificate row a managed Let's Encrypt one (the web server obtains it)? */

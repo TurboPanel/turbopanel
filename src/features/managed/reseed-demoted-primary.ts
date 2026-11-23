@@ -33,7 +33,6 @@ import { findInFlightRecovery, updateRecoveryLocked } from './recovery-records.t
 import { readPrimaryEpoch } from './primary-epoch.ts'
 import { RESEED_GUARD_METADATA_KEY } from './reseed-guard.ts'
 import { evaluateFinalPosition } from './switchover-evidence.ts'
-import { daemonsAllReportFinalPosition } from './switchover-position.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { parseManagedResidual } from './serialize.ts'
 
@@ -58,8 +57,6 @@ export type ReseedDemotedPrimaryDeps = {
   hasLiveBackup?: (db: Db, managedId: string) => Promise<boolean>
   /** Writes the outcome on the recovery row so the operator can see it. */
   recordOutcome?: (db: Db, recoveryId: string, outcome: ReseedOutcome) => Promise<void>
-  /** True when the daemon of every listed server lists `managed-switchover-final-position-v1`. */
-  daemonsReportFinalPosition?: (db: Db, serverIds: string[]) => Promise<boolean>
   /** Marks the re-seed as decided before anything is queued; false = someone already did. */
   claim?: (db: Db, recoveryId: string) => Promise<boolean>
   loadCluster?: (db: Db, managedId: string) => Promise<ManagedApplyCluster | null>
@@ -332,10 +329,8 @@ async function finalPositionSkip(
         .map((row) => row.serverId)
     ),
   ]
-  // Both hosts must be known to prove they report the final position.
+  // Both hosts must be known to read the final position.
   if (serverIds.length < 2) return skip('the former or the new primary member is missing')
-  const capable = deps.daemonsReportFinalPosition ?? daemonsAllReportFinalPosition
-  if (!(await capable(db, serverIds))) return skip('daemon too old')
   const finalPosition = evaluateFinalPosition(record.metadata)
   if (!finalPosition.caughtUp) return skip(finalPosition.basis)
   const started = record.metadata.primaryEpochAtStart

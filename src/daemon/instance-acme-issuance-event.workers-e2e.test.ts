@@ -7,7 +7,10 @@ import { eq } from 'drizzle-orm'
 import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
-import { setDaemonCellProjectionDbFactoryForTests } from './cell/do.ts'
+import {
+  setDaemonCellProjectionDbFactoryForTests,
+  setDaemonCellUnsignedSessionsAllowedForTests,
+} from './cell/do.ts'
 import { createWorkersDb, endDbConnection } from '../db/connection.ts'
 import { instanceHostname, organization, server, tls } from '../db/schema.ts'
 
@@ -32,6 +35,8 @@ describe('instance-acme-issuance-event real-Postgres end-to-end', () => {
       return
     }
     setDaemonCellProjectionDbFactoryForTests(null)
+    // These frames are unsigned: the cell takes them only through the test seam.
+    setDaemonCellUnsignedSessionsAllowedForTests(true)
     const realDb = createWorkersDb(env.HYPERDRIVE)
     try {
       const [org] = await realDb.insert(organization).values({}).returning({ id: organization.id })
@@ -138,6 +143,7 @@ describe('instance-acme-issuance-event real-Postgres end-to-end', () => {
     } finally {
       await endDbConnection(realDb)
       setDaemonCellProjectionDbFactoryForTests(null)
+      setDaemonCellUnsignedSessionsAllowedForTests(false)
     }
   }, 20_000)
 })

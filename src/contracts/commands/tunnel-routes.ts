@@ -23,6 +23,14 @@ import { isValidHostname } from './hostname.ts'
 /** The fixed certificate name of the hop between servers. Same on both sides. */
 export const TUNNEL_PEER_TLS_NAME = 'tp-peer.internal'
 
+/**
+ * The port of the peer-facing server on a server that carries a tunnel. A server
+ * of its own, apart from the hosting port, because a server that checks client
+ * certificates matches names strictly. Not 7443 (the reverse proxy listens
+ * there). Same on both sides; the daemon reserves it for apps.
+ */
+export const TUNNEL_PEER_PORT = 9443
+
 const MAX_TUNNEL_HOSTNAMES = 256
 const MAX_TUNNEL_ADDRESSES = 64
 const MAX_TUNNEL_ROUTES = 2000
@@ -160,6 +168,12 @@ export type TunnelRouteUpstream = {
   addresses: string[]
   /** Port of the server's web server on those addresses. Default 443. */
   port?: number
+  /**
+   * This server's own address to send from when it dials this server: the one
+   * the receiver's allowlist names for this pair. A bare address. Absent = the
+   * kernel picks the source address.
+   */
+  localAddress?: string
 }
 
 export type TunnelRoute = {
@@ -193,6 +207,15 @@ export type TunnelPeerMaterial = {
 }
 
 /**
+ * What the receiving side of the hop between servers does about client
+ * certificates (daemon feature `tunnel-peer-mtls-v1`). Absent = it asks for
+ * none. `verify` checks a client certificate against the organization's
+ * authority when one is shown and lets a server without one through; `require`
+ * also refuses a server that shows none.
+ */
+export type TunnelPeerClientAuth = 'verify' | 'require'
+
+/**
  * A tunnel name whose site runs on this server, with the exact addresses of the
  * other servers that carry it (empty when only this server does). The daemon
  * sets the lock and trusted peers of that name's site block from it without a
@@ -223,6 +246,8 @@ export type TunnelRoutesCommandPayload = {
   listenAddresses?: string[]
   /** Required when `routes` or `peerAddresses` is not empty. */
   peerMaterial?: TunnelPeerMaterial
+  /** Client certificate policy of the peer-facing site. Always sent with a table. */
+  peerClientAuth?: TunnelPeerClientAuth
   /**
    * Every tunnel name whose site runs here, with who may forward it. Sent only
    * to a daemon that advertises `tunnel-lock-follow-v1`; absent = the locks stay
@@ -271,6 +296,14 @@ function parseTunnelUpstream(value: unknown): TunnelRouteUpstream {
       throw new TypeError('Invalid server.tunnel.routes upstream port')
     }
     upstream.port = value.port
+  }
+  if (value.localAddress !== undefined) {
+    const [localAddress] = parseAddressList(
+      [value.localAddress],
+      'server.tunnel.routes upstream localAddress',
+      { min: 1, max: 1 }
+    )
+    upstream.localAddress = localAddress
   }
   return upstream
 }
@@ -358,6 +391,13 @@ function parseTunnelInbound(value: unknown): TunnelInbound {
   }
 }
 
+function parseTunnelPeerClientAuth(value: unknown): TunnelPeerClientAuth {
+  if (value !== 'verify' && value !== 'require') {
+    throw new TypeError('Invalid server.tunnel.routes peerClientAuth')
+  }
+  return value
+}
+
 function parseTunnelInboundList(value: unknown): TunnelInbound[] {
   if (!Array.isArray(value) || value.length > MAX_TUNNEL_ROUTES) {
     throw new TypeError('Invalid server.tunnel.routes inbound')
@@ -367,6 +407,29 @@ function parseTunnelInboundList(value: unknown): TunnelInbound[] {
     throw new TypeError('Invalid server.tunnel.routes inbound')
   }
   return inbound
+}
+
+/** The optional fields of `server.tunnel.routes`, parsed onto `payload`. */
+function readTunnelRoutesOptionals(
+  value: Record<string, unknown>,
+  payload: TunnelRoutesCommandPayload
+): void {
+  if (value.listenAddresses !== undefined) {
+    payload.listenAddresses = parseAddressList(
+      value.listenAddresses,
+      'server.tunnel.routes listenAddresses',
+      { min: 1, max: MAX_TUNNEL_ADDRESSES }
+    )
+  }
+  if (value.peerMaterial !== undefined) {
+    payload.peerMaterial = parseTunnelPeerMaterial(value.peerMaterial)
+  }
+  if (value.peerClientAuth !== undefined) {
+    payload.peerClientAuth = parseTunnelPeerClientAuth(value.peerClientAuth)
+  }
+  if (value.inbound !== undefined) payload.inbound = parseTunnelInboundList(value.inbound)
+  const generation = parseTunnelGeneration(value.generation, 'server.tunnel.routes generation')
+  if (generation !== undefined) payload.generation = generation
 }
 
 export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPayload {
@@ -389,19 +452,7 @@ export function parseTunnelRoutesPayload(value: unknown): TunnelRoutesCommandPay
           max: MAX_TUNNEL_ADDRESSES,
         })
   const payload: TunnelRoutesCommandPayload = { hash: value.hash, routes, peerAddresses }
-  if (value.listenAddresses !== undefined) {
-    payload.listenAddresses = parseAddressList(
-      value.listenAddresses,
-      'server.tunnel.routes listenAddresses',
-      { min: 1, max: MAX_TUNNEL_ADDRESSES }
-    )
-  }
-  if (value.peerMaterial !== undefined) {
-    payload.peerMaterial = parseTunnelPeerMaterial(value.peerMaterial)
-  }
-  if (value.inbound !== undefined) payload.inbound = parseTunnelInboundList(value.inbound)
-  const generation = parseTunnelGeneration(value.generation, 'server.tunnel.routes generation')
-  if (generation !== undefined) payload.generation = generation
+  readTunnelRoutesOptionals(value, payload)
   const needsMaterial = routes.length > 0 || peerAddresses.length > 0
   if (needsMaterial && !payload.peerMaterial) {
     throw new TypeError('Invalid server.tunnel.routes peerMaterial: required with routes or peers')

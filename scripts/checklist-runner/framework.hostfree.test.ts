@@ -5,6 +5,8 @@ import { ApiClient, type FetchLike } from './http.ts'
 import { acquireLock, LockHeldError, type LockFs } from './lock.ts'
 import { planChecks, roadLines, runOne, runPlan, runPrefix, toMarkdown } from './runner.ts'
 import {
+  FORBIDDEN_HOSTS,
+  SHARED_DATABASE_HOSTS,
   SafetyError,
   assertAffectedHost,
   assertHealthEnvironment,
@@ -438,7 +440,7 @@ Deno.test('client: DELETE reauths once when the panel asks for it', async () => 
 })
 
 Deno.test(
-  'host gates: studio never, shared Postgres hosts never, managed only on themisto/megaclite',
+  'host gates: forbidden and shared-database hosts are refused, empty lists refuse nothing',
   () => {
     const refuses = (fn: () => void) => {
       try {
@@ -448,16 +450,24 @@ Deno.test(
         return error instanceof SafetyError
       }
     }
-    assert(refuses(() => assertSshHost('studio.lan', ['studio.lan'])))
-    assert(refuses(() => assertSshHost('io.privatehosting.xyz', [])))
-    assert(!refuses(() => assertSshHost('io.privatehosting.xyz', ['io.privatehosting.xyz'])))
-    assert(refuses(() => assertManagedPlacement('adrastea')))
-    assert(refuses(() => assertManagedPlacement('kore.lan')))
-    assert(refuses(() => assertManagedPlacement('europa')))
-    assert(!refuses(() => assertManagedPlacement('themisto')))
-    assert(refuses(() => assertAffectedHost('kore', ['kore'])))
-    assert(refuses(() => assertAffectedHost('io', ['europa'])))
-    assert(!refuses(() => assertAffectedHost('io.privatehosting.xyz', ['io'])))
+    const lists = { forbidden: ['server-a', 'server-a.example.lan'], sharedDatabase: ['server-b'] }
+    assert(refuses(() => assertSshHost('server-a.example.lan', ['server-a.example.lan'], lists)))
+    assert(refuses(() => assertSshHost('server-a', ['server-a'], lists)))
+    assert(refuses(() => assertSshHost('server-c.example.lan', [], lists)))
+    assert(!refuses(() => assertSshHost('server-c.example.lan', ['server-c.example.lan'], lists)))
+    assert(refuses(() => assertManagedPlacement('server-b', lists)))
+    assert(refuses(() => assertManagedPlacement('server-b.example.lan', lists)))
+    assert(!refuses(() => assertManagedPlacement('server-c', lists)))
+    assert(refuses(() => assertAffectedHost('server-a', ['server-a'], lists)))
+    assert(refuses(() => assertAffectedHost('server-b', ['server-b'], lists)))
+    assert(refuses(() => assertAffectedHost('server-c', ['server-d'], lists)))
+    assert(!refuses(() => assertAffectedHost('server-c.example.lan', ['server-c'], lists)))
+    // The shipped lists are empty: nothing is forbidden or shared, but `--host` still gates.
+    assertEquals([FORBIDDEN_HOSTS.length, SHARED_DATABASE_HOSTS.length], [0, 0])
+    assert(!refuses(() => assertManagedPlacement('server-a')))
+    assert(!refuses(() => assertAffectedHost('server-a', ['server-a'])))
+    assert(refuses(() => assertAffectedHost('server-a', ['server-c'])))
+    assert(refuses(() => assertSshHost('server-a', [])))
   }
 )
 
@@ -496,7 +506,7 @@ Deno.test('ssh refuses unnamed hosts and passes strict options', async () => {
   })
   assertEquals(await exec('io.privatehosting.xyz', 'systemctl is-active turbopaneld'), 'active\n')
   assert(seen[0]?.includes('StrictHostKeyChecking=yes'))
-  await assertRejects(() => exec('studio.lan', 'true'), SafetyError)
+  await assertRejects(() => exec('server-c.example.lan', 'true'), SafetyError)
 })
 
 Deno.test('run prefix is short, unique-ish and marked', () => {
@@ -556,20 +566,10 @@ Deno.test('host-affecting checks skip without --host and create nothing', async 
   assertEquals(report.leftovers, [])
 })
 
-Deno.test('managed placement refuses adrastea even when passed with --host', async () => {
+Deno.test('a managed check on a host the panel does not list fails', async () => {
   const { managedPgSingle } = await import('./checks/managed.ts')
-  const api: Api = {
-    ...nullApi,
-    get: () =>
-      Promise.resolve({
-        status: 200,
-        body: { servers: [{ id: 's1', hostname: 'adrastea' }] },
-        headers: new Headers(),
-      }),
-  }
-  const result = await runOne(managedPgSingle, { api, ...silent, hosts: ['adrastea'] }, [])
-  assertEquals(result.verdict, 'skip')
-  const themisto = await runOne(
+  const api: Api = { ...nullApi }
+  const unlisted = await runOne(
     managedPgSingle,
     {
       api: {
@@ -577,17 +577,17 @@ Deno.test('managed placement refuses adrastea even when passed with --host', asy
         get: () =>
           Promise.resolve({
             status: 200,
-            body: { servers: [{ id: 's1', hostname: 'kore' }] },
+            body: { servers: [{ id: 's1', hostname: 'server-b' }] },
             headers: new Headers(),
           }),
       },
       ...silent,
-      hosts: ['themisto'],
+      hosts: ['server-a'],
     },
     []
   )
-  assertEquals(themisto.verdict, 'fail')
-  assertStringIncludes(themisto.evidence, 'not in this organization')
+  assertEquals(unlisted.verdict, 'fail')
+  assertStringIncludes(unlisted.evidence, 'not in this organization')
 })
 
 Deno.test('health gate: null environment is accepted only for canary', () => {

@@ -59,6 +59,22 @@ test('a bearer token on a server that never proved itself needs no signature', a
   )
 })
 
+test('where signed sessions are required, a bearer token with no signature is refused at trust level 0', async () => {
+  const { params } = await setup()
+  const unsigned = { ...params, header: null, cnfJkt: undefined, trustLevel: 0 }
+  assertEquals(await refuseUnsignedUpgrade(unsigned), null)
+  assertEquals((await refuseUnsignedUpgrade({ ...unsigned, requireSigned: true }))?.status, 401)
+  assertEquals(
+    await refuseUnsignedUpgrade({
+      ...params,
+      cnfJkt: undefined,
+      trustLevel: 0,
+      requireSigned: true,
+    }),
+    null
+  )
+})
+
 test('a key-bound token needs a signed upgrade, used once', async () => {
   const { params } = await setup()
   assertEquals(await refuseUnsignedUpgrade(params), null)

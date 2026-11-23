@@ -165,17 +165,17 @@ test('every fleet server lands in exactly one wave for any batch size', () => {
 test('orderServersConnectedFirst keeps relative order inside each group', () => {
   assertEquals(
     orderServersConnectedFirst(
-      ['studio', 'io-1', 'alpha', 'io-2', 'beta'],
+      ['server-a', 'io-1', 'alpha', 'io-2', 'beta'],
       new Set(['alpha', 'beta'])
     ),
-    ['alpha', 'beta', 'studio', 'io-1', 'io-2']
+    ['alpha', 'beta', 'server-a', 'io-1', 'io-2']
   )
 })
 
 test('fleet steps put connected servers before offline ones, stable within each group', () => {
   const plan = planUpgrade(
     input({
-      fleetServerIds: ['studio', 'io-1', 'alpha', 'io-2', 'beta'],
+      fleetServerIds: ['server-a', 'io-1', 'alpha', 'io-2', 'beta'],
       connectedServerIds: ['alpha', 'beta'],
       batch: { mode: 'count', value: 1 },
     })
@@ -183,7 +183,7 @@ test('fleet steps put connected servers before offline ones, stable within each 
   const fleet = plan.phases.find((p) => p.phase === 'fleet')
   assertEquals(
     fleet?.steps.map((s) => s.serverId),
-    ['alpha', 'beta', 'studio', 'io-1', 'io-2']
+    ['alpha', 'beta', 'server-a', 'io-1', 'io-2']
   )
   assertEquals(
     fleet?.steps.map((s) => s.batchIndex),
@@ -192,7 +192,7 @@ test('fleet steps put connected servers before offline ones, stable within each 
 })
 
 test('a run with only offline servers keeps fleet order', () => {
-  const ids = ['studio', 'io-1', 'io-2']
+  const ids = ['server-a', 'io-1', 'io-2']
   const plan = planUpgrade(
     input({
       fleetServerIds: ids,

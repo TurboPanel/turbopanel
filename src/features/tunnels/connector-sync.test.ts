@@ -162,21 +162,13 @@ async function sentPayload(c: Ctx, index = c.queued.length - 1) {
   )
 }
 
-test('an offline server and an old daemon are skipped', async () => {
+test('an offline server is skipped', async () => {
   await withServer({ connected: false, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
     await c.addTunnel('Offline')
     assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), {
       status: 'skipped',
       reason: 'server offline',
     })
-  })
-  await withServer({ connected: true, features: ['tunnel-forwarding-v1'] }, async (c) => {
-    await c.addTunnel('Old')
-    assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), {
-      status: 'skipped',
-      reason: 'daemon too old',
-    })
-    assertEquals(c.queued.length, 0)
   })
 })
 
@@ -351,6 +343,22 @@ test('a connector the server reports stopped is sent again; a running one is not
     // Once that resend finished, nothing more goes out until the next bad answer.
     await c.db.update(command).set({ status: 'succeeded' }).where(eq(command.serverId, c.serverId))
     assertEquals(await syncServerTunnelConnectors(c.db, c.deps, c), { status: 'unchanged' })
+  })
+})
+
+test('a connector the server reports not installed is sent again', async () => {
+  await withServer({ connected: true, features: [TUNNEL_CONNECTOR_FEATURE] }, async (c) => {
+    const providerId = await c.addTunnel('Missing')
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    await c.db.update(command).set({ status: 'succeeded' }).where(eq(command.serverId, c.serverId))
+    await recordTunnelStatus(c.db, c.serverId, {
+      pinnedVersion: '2026.10.7',
+      connectors: [
+        { tunnelId: providerId, status: 'not-installed', version: '2026.10.7', slot: 'a' },
+      ],
+    })
+    assertEquals((await syncServerTunnelConnectors(c.db, c.deps, c)).status, 'sent')
+    assertEquals(c.queued.length, 2)
   })
 })
 

@@ -332,24 +332,6 @@ test('servers are moved one at a time, each waits for the one before to connect,
   })
 })
 
-test('a server whose daemon cannot follow refuses the rotation before anything changes', async () => {
-  await withWorld(
-    { servers: [ALL_FEATURES, [TUNNEL_FORWARDING_FEATURE, TUNNEL_CONNECTOR_FEATURE]] },
-    async (w) => {
-      const row = await tunnelRow(w)
-      const err = await assertRejects(
-        () => startRunTokenRotation(w.db, w.deps, row, { confirmSingleServer: false }),
-        TunnelRefusal
-      )
-      assertEquals(err.code, 'tunnel_daemon_too_old')
-      assertEquals(w.provider.rotations, 0)
-      // The screen sees the same reason before anything is pressed.
-      assertEquals((await rotationBlock(w.db, row))?.code, 'tunnel_daemon_too_old')
-      assertEquals(readRotation((await tunnelRow(w)).metadata), null)
-    }
-  )
-})
-
 test('one server needs a confirmation that names the short outage, then rotates', async () => {
   await withWorld({ servers: [ALL_FEATURES] }, async (w) => {
     // A lone server is not a block: the screen offers the action with the extra warning.

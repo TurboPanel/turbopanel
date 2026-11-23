@@ -125,7 +125,7 @@ function storedRow<T extends { options: unknown }>(row: T) {
     ...row,
     options: Object.keys(rest).length > 0 || row.options !== null ? rest : null,
     priority: priority ?? 100,
-    isTrusted: trusted ?? true,
+    isTrusted: trusted ?? false,
     addressPreference: addressPreference ?? 'ipv6',
   }
 }
@@ -650,11 +650,11 @@ test('GET /datacenters/:id applies default priority and trusted when options are
   }
   assertEquals(body.datacenter.options, {
     priority: 100,
-    trusted: true,
+    trusted: false,
     addressPreference: 'ipv6',
   })
   assertEquals(body.datacenter.priority, 100)
-  assertEquals(body.datacenter.trusted, true)
+  assertEquals(body.datacenter.trusted, false)
 })
 
 test('GET /datacenters/:id surfaces stored priority and trusted from options', async () => {
@@ -712,7 +712,7 @@ test('GET /datacenters defaults priority and trusted when options omit them', as
     datacenters: Array<{ priority: number; trusted: boolean }>
   }
   assertEquals(body.datacenters[0]?.priority, 100)
-  assertEquals(body.datacenters[0]?.trusted, true)
+  assertEquals(body.datacenters[0]?.trusted, false)
 })
 
 test('POST /datacenters returns 403 when create is denied', async () => {
@@ -1241,7 +1241,7 @@ test('PATCH /datacenters/:id drops an invalid trusted value', async () => {
   assertEquals(updates[0]?.options, null)
   assertEquals(updates[0]?.addressPreference, 'ipv6')
   assertEquals(updates[0]?.priority, 20)
-  assertEquals(updates[0]?.isTrusted, true)
+  assertEquals(updates[0]?.isTrusted, false)
 })
 
 test('PATCH /datacenters/:id refuses a priority outside 0..1000 or not whole with 400', async () => {
@@ -1731,8 +1731,8 @@ test('POST /datacenters/:id/server-traffic gives the chosen network the lowest n
   const { app, cookie, updates } = await buildSessionApp({
     manageAllowed: true,
     orgDatacenterRows: [
-      { id: otherDatacenterId, options: {} },
-      { id: BACKHAUL_ID, options: { addressPreference: 'ipv4' } },
+      { id: otherDatacenterId, options: { trusted: true } },
+      { id: BACKHAUL_ID, options: { addressPreference: 'ipv4', trusted: true } },
     ],
   })
   const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
@@ -1755,8 +1755,8 @@ test('POST /datacenters/:id/server-traffic answers 409 when the row moved before
     manageAllowed: true,
     updateMatchesNothing: true,
     orgDatacenterRows: [
-      { id: otherDatacenterId, options: {} },
-      { id: BACKHAUL_ID, options: {} },
+      { id: otherDatacenterId, options: { trusted: true } },
+      { id: BACKHAUL_ID, options: { trusted: true } },
     ],
   })
   const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
@@ -1772,8 +1772,8 @@ test('POST /datacenters/:id/server-traffic writes nothing when the network alrea
   const { app, cookie, updates } = await buildSessionApp({
     manageAllowed: true,
     orgDatacenterRows: [
-      { id: otherDatacenterId, options: {} },
-      { id: BACKHAUL_ID, options: { priority: 10 } },
+      { id: otherDatacenterId, options: { trusted: true } },
+      { id: BACKHAUL_ID, options: { priority: 10, trusted: true } },
     ],
   })
   const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
@@ -1857,7 +1857,7 @@ async function listWithPriorities(
 }
 
 test('GET /datacenters says which network carries server-to-server traffic', async () => {
-  const body = await listWithPriorities({}, { priority: 10 })
+  const body = await listWithPriorities({ trusted: true }, { priority: 10, trusted: true })
   const byId = new Map(body.datacenters.map((row) => [row.id, row.serverTraffic]))
   assertEquals(byId.get(BACKHAUL_ID), { wins: true, tied: false })
   assertEquals(byId.get(id), { wins: false, tied: false })
@@ -1865,7 +1865,7 @@ test('GET /datacenters says which network carries server-to-server traffic', asy
 })
 
 test('GET /datacenters warns when two trusted networks share a priority number', async () => {
-  const body = await listWithPriorities({}, {})
+  const body = await listWithPriorities({ trusted: true }, { trusted: true })
   assertEquals(body.warnings, [
     { code: 'equal_priority', priority: 100, datacenterIds: [id, BACKHAUL_ID].sort() },
   ])

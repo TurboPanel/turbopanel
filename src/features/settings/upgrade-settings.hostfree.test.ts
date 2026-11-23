@@ -104,7 +104,7 @@ test('setUpgradeSettings rejects invalid values and round-trips a valid one', as
   assertEquals(await getUpgradeSettings(db), { batch: { mode: 'count', value: 4 } })
 })
 
-test('a save keeps the row readable by an older control plane, with updates on and no window', async () => {
+test('a save writes only the batch', async () => {
   let written: unknown
   const db = {
     insert() {
@@ -117,11 +117,7 @@ test('a save keeps the row readable by an older control plane, with updates on a
     },
   } as unknown as Db
   await setUpgradeSettings(db, sample({ batch: { mode: 'percent', value: 25 } }))
-  assertEquals(written, {
-    autoUpdate: true,
-    batch: { mode: 'percent', value: 25 },
-    maintenanceWindow: { enabled: false, startMinute: 0, durationMinutes: 60, weekdays: [] },
-  })
+  assertEquals(written, { batch: { mode: 'percent', value: 25 } })
 })
 
 test('the built-in default updates every server in one wave', () => {

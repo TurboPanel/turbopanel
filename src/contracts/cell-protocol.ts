@@ -275,9 +275,9 @@ export type CommandProgressMessage = {
  * One control-plane hostname on `public-urls-update`. Twin of
  * `turbopaneld/src/contracts/cell-messages.ts`. An uploaded key travels as
  * `keyEnvelope`, a `tpdaemon` envelope the recipient daemon opens through
- * `POST /api/daemon/v1/secrets/decrypt`, when the daemon advertises
- * `sealed-instance-secrets-v1`. `keyPem` (plaintext) is the legacy field for
- * daemons that do not; it is never a stored column.
+ * `POST /api/daemon/v1/secrets/decrypt`. The control plane never sends
+ * `keyPem` (plaintext) and the daemon refuses it; the field stays on the type
+ * so the twin shapes match.
  */
 export type InstanceHostnameCertSource = 'lets-encrypt' | 'platform-ca' | 'uploaded'
 
@@ -309,9 +309,8 @@ export type InstanceEdgeTrustWire = {
 
 /**
  * Instance → co-located daemon: start (or, with an empty `token`, stop) the
- * Cloudflare tunnel. A daemon that advertises `sealed-instance-secrets-v1`
- * receives a non-empty token only as `tokenEnvelope` (`tpdaemon`); `token`
- * is the legacy plaintext field. Twin of `turbopaneld/src/contracts/cell-messages.ts`.
+ * Cloudflare tunnel. A non-empty token travels only as `tokenEnvelope`
+ * (`tpdaemon`); `token` is only ever the empty teardown value. Twin of `turbopaneld/src/contracts/cell-messages.ts`.
  */
 export type TunnelTokenMessage = {
   type: 'tunnel-token'
@@ -680,6 +679,22 @@ export type CommandRecoveryReport = {
   unacked: string[]
 }
 
+/**
+ * What a daemon process remembers about commands (feature
+ * `command-recovery-v2`), sent on every `hello` and never on a `heartbeat`.
+ * `processStartId` is made once per daemon process (a UUID); it is checked for
+ * shape but not used yet. `known` holds the
+ * ids it accepted and still holds state for, including entries left in its
+ * on-disk journal. `complete` is `false` when the list was cut or the journal
+ * could not be read; then a missing id proves nothing. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type CommandStateReport = {
+  processStartId: string
+  known: string[]
+  complete: boolean
+}
+
 /** Control plane -> daemon: the final outcome of command `id` is stored; drop the held copy. */
 export type CommandOutcomeAckMessage = {
   type: 'command-outcome-ack'
@@ -708,10 +723,39 @@ export type AcmeIssueRequestMessage = {
   names: string[]
   directory: 'production' | 'staging'
   contactEmail: string
+  /** The proof to use. Absent means `http-01`; `dns-01` goes only to a daemon with `acme-issue-dns-v1`. */
+  challenge?: 'http-01' | 'dns-01'
   /** The request is open until this time (ISO 8601). */
   startByIso: string
   /** Other servers that pass the proof path on; the issuer checks each before asking the authority. */
   helpers: AcmeProofHelper[]
+  at: string
+}
+
+/** One TXT record the daemon needs published for the DNS proof. */
+export type AcmeDnsRecord = { name: string; value: string }
+
+/** Daemon → control plane: publish these TXT records for the order. Twin of the daemon's message. */
+export type AcmeDnsPublishMessage = {
+  type: 'acme-dns-publish'
+  requestId: string
+  records: AcmeDnsRecord[]
+  at: string
+}
+
+/** Control plane → daemon: the records are published (`ok`), or a plain reason they could not be. */
+export type AcmeDnsPublishedMessage = {
+  type: 'acme-dns-published'
+  requestId: string
+  ok: boolean
+  error?: string
+  at: string
+}
+
+/** Daemon → control plane: the order is done with its records; remove them. */
+export type AcmeDnsRemoveMessage = {
+  type: 'acme-dns-remove'
+  requestId: string
   at: string
 }
 
@@ -754,6 +798,88 @@ export type AcmeProofForwardReportMessage = {
   type: 'acme-proof-forward-ready' | 'acme-proof-forward-failed'
   requestId: string
   reason?: string
+  at: string
+}
+
+/**
+ * Control plane to daemon (feature `terminal-container-v1`): open one web
+ * terminal session. `keySealed` is the session's AES-256-GCM key sealed to
+ * this daemon's sealing key: base64url of the HPKE encapsulated key (32
+ * bytes) followed by the ciphertext, with `aad` = the server id and `info` =
+ * "turbopanel shell key v1" followed by `sid` (lower-case UUID text). `userId`
+ * is the stable id the per-user session limit counts; `userLabel` is for
+ * logs only. Twin of the daemon's `ShellOpenMessage`.
+ */
+export type ShellOpenMessage = {
+  type: 'shell-open'
+  sid: string
+  kind: 'container' | 'host'
+  userId: string
+  userLabel: string
+  container?: { id: string; user?: string }
+  cols: number
+  rows: number
+  term: 'xterm-256color'
+  keySealed: string
+  idleSec: number
+  maxSec: number
+  windowBytes: number
+  maxFrameBytes: number
+  /** Host sessions only; not used by `terminal-container-v1`. */
+  rootGrant?: string
+}
+
+/** Control plane to daemon: end one session (`sid`) or all of them (`all`). */
+export type ShellKillMessage = {
+  type: 'shell-kill'
+  sid?: string
+  all?: true
+  reason: 'revoked' | 'switch-off' | 'admin' | 'expired'
+}
+
+/** Daemon to control plane (signed report): the session is open. */
+export type ShellOpenedReport = {
+  type: 'shell-opened'
+  sid: string
+  shell: string
+  user: string
+  at: string
+}
+
+export type ShellCloseReason =
+  'exit' | 'idle' | 'max' | 'kill' | 'client' | 'error' | 'daemon-restart'
+
+/** Daemon to control plane (signed report): the session ended. */
+export type ShellClosedReport = {
+  type: 'shell-closed'
+  sid: string
+  reason: ShellCloseReason
+  exitCode?: number
+  durationMs: number
+  bytesIn: number
+  bytesOut: number
+  at: string
+}
+
+export type ShellErrorCode =
+  | 'container_not_found'
+  | 'container_not_owned'
+  | 'gate_denied'
+  | 'no_shell'
+  | 'helper_unavailable'
+  | 'grant_invalid'
+  | 'limit'
+  | 'key_invalid'
+  /** The control session is not signed and verified, so no terminal opens. */
+  | 'unverified'
+  /** A terminal with this `sid` is already running. */
+  | 'duplicate_sid'
+
+/** Daemon to control plane (signed report): the session could not be opened. */
+export type ShellErrorReport = {
+  type: 'shell-error'
+  sid: string
+  code: ShellErrorCode
   at: string
 }
 
@@ -805,6 +931,8 @@ export type DaemonMessage =
       releaseLinkScan?: ServerReleaseLinkScanMetadata
       /** Commands in flight and results awaiting an ack (feature `command-recovery-v1`). */
       commands?: CommandRecoveryReport
+      /** Commands the daemon process and its journal know (feature `command-recovery-v2`). */
+      commandState?: CommandStateReport
       /**
        * How this server pinned the panel key (the pin file the installer
        * wrote). Hello only; omitted by a daemon without a pin file.
@@ -910,6 +1038,14 @@ export type DaemonMessage =
   | AcmeProofForwardEndMessage
   | AcmeIssueEventMessage
   | AcmeProofForwardReportMessage
+  | AcmeDnsPublishMessage
+  | AcmeDnsPublishedMessage
+  | AcmeDnsRemoveMessage
+  | ShellOpenMessage
+  | ShellKillMessage
+  | ShellOpenedReport
+  | ShellClosedReport
+  | ShellErrorReport
   | {
       /**
        * Daemon-initiated, fire-and-forget: every managed replica the host runs,
@@ -1124,18 +1260,14 @@ export type DaemonMessage =
       /**
        * Daemon-initiated, fire-and-forget (no correlated request/result, same
        * shape as `managed-ha-event`): the daemon's `topology/` module reporting
-       * a new topology generation (stable device/filesystem/GPU/signal
+       * a new topology (stable device/filesystem/GPU/signal
        * identity). Server identity comes from the authenticated connection, not
        * a wire field — see `managed-ha-event`'s precedent.
        *
-       * `generation` and `bootGeneration` are deprecated and optional: the
-       * control plane tells topologies apart by their content
-       * (`topologyIdentityKey`), and a daemon leaves both out once the control
-       * plane lists `topology-generation-optional-v1`.
+       * The control plane tells topologies apart by their content
+       * (`topologyIdentityKey`); the report carries no generation number.
        */
       type: 'topology-report'
-      generation?: number
-      bootGeneration?: number
       snapshot: unknown
       at: string
     }
@@ -1231,10 +1363,7 @@ export type DaemonMessage =
   | {
       type: 'public-urls-update'
       id: string
-      /** Flat compatibility list. Daemons below the per-hostname floor read only this. */
-      urls: string[]
-      /** Present when the daemon can render per-hostname certificate sources. */
-      hostnames?: InstanceHostnameWireEntry[]
+      hostnames: InstanceHostnameWireEntry[]
       /** Present when any hostname uses `lets-encrypt`. */
       instanceAcme?: InstanceAcmeWireSettings
       /** Present only for a daemon that advertises `instance-edge-trust-v1`. */
@@ -1330,6 +1459,8 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'acme-issue-event',
   'acme-proof-forward-ready',
   'acme-proof-forward-failed',
+  'acme-dns-publish',
+  'acme-dns-remove',
   'backup-run-report',
   'backup-copy-report',
   'fabric-paths-result',
@@ -1342,6 +1473,9 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'command-progress',
   'command-ack',
   'command-outcome',
+  'shell-opened',
+  'shell-closed',
+  'shell-error',
 ] as const)
 
 /** Hard cap on a single inbound WebSocket text/binary frame (UTF-8 bytes). */
@@ -1368,6 +1502,12 @@ export const MAX_DAEMON_WS_ERROR_CODE_CHARS = 64
 
 /** Max ids in each list of a `commands` report on `hello` / `heartbeat`. */
 export const MAX_DAEMON_WS_COMMAND_REPORT_IDS = 64
+
+/** Max ids in `hello.commandState.known`. */
+export const MAX_DAEMON_WS_COMMAND_STATE_IDS = 256
+
+/** Max characters for one id in `hello.commandState.known`. */
+export const MAX_DAEMON_WS_COMMAND_STATE_ID_CHARS = 64
 
 /** Max steps in one `command-progress.progress.steps`. */
 export const MAX_DAEMON_WS_PROGRESS_STEPS = 24
@@ -1650,7 +1790,31 @@ function validateHelloFields(record: Record<string, unknown>): string | null {
   if (!parseDaemonBuildInfo(record.daemonBuild)) return 'invalid daemonBuild'
   const presence = validatePresenceFields(record)
   if (presence) return presence
-  return validateHelloFeatures(record.features) ?? validateHelloAttach(record.attach)
+  return (
+    validateHelloFeatures(record.features) ??
+    validateHelloAttach(record.attach) ??
+    validateCommandState(record.commandState)
+  )
+}
+
+const COMMAND_STATE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Shape of `hello.commandState`; absent is fine (a daemon without the feature). */
+function validateCommandState(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isRecord(value)) return 'invalid commandState'
+  const { processStartId, known, complete } = value
+  const valid =
+    typeof processStartId === 'string' &&
+    COMMAND_STATE_UUID_RE.test(processStartId) &&
+    typeof complete === 'boolean' &&
+    Array.isArray(known) &&
+    known.length <= MAX_DAEMON_WS_COMMAND_STATE_IDS &&
+    known.every(
+      (id) =>
+        typeof id === 'string' && id.length > 0 && id.length <= MAX_DAEMON_WS_COMMAND_STATE_ID_CHARS
+    )
+  return valid ? null : 'invalid commandState'
 }
 
 /** Shape only; the signature is checked by the transport (`attach-proof.ts`). */
@@ -1936,22 +2100,8 @@ function isNonNegativeInt(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0
 }
 
-/** Largest generation number the control plane stores (a Postgres `integer`). */
-const MAX_TOPOLOGY_REPORT_GENERATION = 2_147_483_647
-
-function isTopologyGenerationNumber(value: unknown): value is number {
-  return isNonNegativeInt(value) && value <= MAX_TOPOLOGY_REPORT_GENERATION
-}
-
 function validateTopologyReportFields(record: Record<string, unknown>): string | null {
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
-  // Optional (older daemons send them); a value that is sent must still fit.
-  if (record.generation !== undefined && !isTopologyGenerationNumber(record.generation)) {
-    return 'invalid generation'
-  }
-  if (record.bootGeneration !== undefined && !isTopologyGenerationNumber(record.bootGeneration)) {
-    return 'invalid bootGeneration'
-  }
   return validateTopologyReportSnapshot(record.snapshot)
 }
 
@@ -2017,11 +2167,15 @@ function validateAcmeRequestId(value: unknown): string | null {
   return typeof value === 'string' && ACME_REQUEST_ID_RE.test(value) ? null : 'invalid requestId'
 }
 
-function validateAcmeNames(value: unknown): string | null {
+/** A wildcard (`*.example.com`) is a name only for an order proved over DNS. */
+function validateAcmeNames(value: unknown, dns = false): string | null {
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ACME_ISSUE_NAMES) {
     return 'invalid names'
   }
-  const ok = value.every((n) => typeof n === 'string' && n.length <= 253 && ACME_NAME_RE.test(n))
+  const bare = (n: string) => (dns && n.startsWith('*.') ? n.slice(2) : n)
+  const ok = value.every(
+    (n) => typeof n === 'string' && n.length <= 253 && ACME_NAME_RE.test(bare(n))
+  )
   return ok ? null : 'invalid names'
 }
 
@@ -2056,7 +2210,7 @@ export function validateAcmeIssueRequestFields(record: Record<string, unknown>):
   return firstProblem(
     validateAcmeRequestId(record.requestId),
     isBoundedId(record.tlsId) ? null : 'invalid tlsId',
-    validateAcmeNames(record.names),
+    validateAcmeNames(record.names, record.challenge === 'dns-01'),
     record.directory === 'production' || record.directory === 'staging'
       ? null
       : 'invalid directory',
@@ -2065,6 +2219,11 @@ export function validateAcmeIssueRequestFields(record: Record<string, unknown>):
       record.contactEmail.length <= 254
       ? null
       : 'invalid contactEmail',
+    record.challenge === undefined ||
+      record.challenge === 'http-01' ||
+      record.challenge === 'dns-01'
+      ? null
+      : 'invalid challenge',
     isIsoTimestamp(record.startByIso) ? null : 'invalid startByIso',
     validateAcmeHelpers(record.helpers),
     isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
@@ -2116,6 +2275,50 @@ export function validateAcmeProofForwardReportFields(
   return firstProblem(
     validateAcmeRequestId(record.requestId),
     validateOptionalError(record.reason),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Most records one order asks for: one per name. */
+export const MAX_ACME_DNS_RECORDS = MAX_ACME_ISSUE_NAMES
+export const ACME_DNS_RECORD_NAME_RE = /^_acme-challenge\.[a-z0-9.-]+$/
+export const ACME_DNS_RECORD_VALUE_RE = /^[A-Za-z0-9_-]{1,128}$/
+
+function validateAcmeDnsRecords(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_ACME_DNS_RECORDS) {
+    return 'invalid records'
+  }
+  for (const item of value) {
+    if (typeof item !== 'object' || item === null) return 'invalid records'
+    const { name, value: text } = item as Record<string, unknown>
+    if (typeof name !== 'string' || name.length > 253 || !ACME_DNS_RECORD_NAME_RE.test(name)) {
+      return 'invalid records'
+    }
+    if (typeof text !== 'string' || !ACME_DNS_RECORD_VALUE_RE.test(text)) return 'invalid records'
+  }
+  return null
+}
+
+/** Shape check for `acme-dns-publish` (daemon to control plane). */
+export function validateAcmeDnsPublishFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    validateAcmeDnsRecords(record.records),
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
+    acmeForbiddenKey(record)
+  )
+}
+
+/** Shape check for `acme-dns-remove`: the same request id and time as the end of a forward. */
+export const validateAcmeDnsRemoveFields = validateAcmeProofForwardEndFields
+
+/** Shape check for `acme-dns-published` (control plane to daemon). */
+export function validateAcmeDnsPublishedFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    validateAcmeRequestId(record.requestId),
+    typeof record.ok === 'boolean' ? null : 'invalid ok',
+    validateOptionalError(record.error),
     isIsoTimestamp(record.at) ? null : 'invalid at timestamp',
     acmeForbiddenKey(record)
   )
@@ -2945,14 +3148,6 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateRepoKeyChangedFields(record)
     case 'topology-report':
       return validateTopologyReportFields(record)
-    case 'acme-issuance-event':
-    case 'instance-acme-issuance-event':
-      return validateAcmeIssuanceEventFields(record)
-    case 'acme-issue-event':
-      return validateAcmeIssueEventFields(record)
-    case 'acme-proof-forward-ready':
-    case 'acme-proof-forward-failed':
-      return validateAcmeProofForwardReportFields(record)
     case 'backup-run-report':
       return validateBackupRunReportFields(record)
     case 'backup-copy-report':
@@ -2983,8 +3178,111 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
       return validateUpdateProgressFields(record)
     case 'command-progress':
       return validateCommandProgressFields(record)
+    default: {
+      const acme = validateAcmeInboundFields(record)
+      if (acme !== undefined) return acme
+      const shell = validateShellReportFields(record)
+      return shell === undefined ? `disallowed type ${String(record.type)}` : shell
+    }
+  }
+}
+
+const SHELL_SID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+export const SHELL_CLOSE_REASONS: readonly ShellCloseReason[] = [
+  'exit',
+  'idle',
+  'max',
+  'kill',
+  'client',
+  'error',
+  'daemon-restart',
+]
+export const SHELL_ERROR_CODES: readonly ShellErrorCode[] = [
+  'container_not_found',
+  'container_not_owned',
+  'gate_denied',
+  'no_shell',
+  'helper_unavailable',
+  'grant_invalid',
+  'limit',
+  'key_invalid',
+  'unverified',
+  'duplicate_sid',
+]
+
+function isShellSid(value: unknown): value is string {
+  return typeof value === 'string' && SHELL_SID_RE.test(value)
+}
+
+function isCounter(value: unknown): boolean {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function validateShellClosedFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    SHELL_CLOSE_REASONS.includes(record.reason as ShellCloseReason) ? null : 'invalid reason',
+    record.exitCode === undefined ||
+      (typeof record.exitCode === 'number' && Number.isInteger(record.exitCode))
+      ? null
+      : 'invalid exitCode',
+    isCounter(record.durationMs) ? null : 'invalid durationMs',
+    isCounter(record.bytesIn) ? null : 'invalid bytesIn',
+    isCounter(record.bytesOut) ? null : 'invalid bytesOut'
+  )
+}
+
+function validateShellOpenedFields(record: Record<string, unknown>): string | null {
+  return firstProblem(
+    typeof record.shell === 'string' && record.shell.length <= 256 ? null : 'invalid shell',
+    typeof record.user === 'string' && record.user.length <= 256 ? null : 'invalid user'
+  )
+}
+
+/**
+ * Shape check for the terminal reports a daemon signs (`shell-opened`,
+ * `shell-closed`, `shell-error`); `undefined` when the type is not one of them.
+ */
+export function validateShellReportFields(
+  record: Record<string, unknown>
+): string | null | undefined {
+  let typed: string | null
+  switch (record.type) {
+    case 'shell-opened':
+      typed = validateShellOpenedFields(record)
+      break
+    case 'shell-closed':
+      typed = validateShellClosedFields(record)
+      break
+    case 'shell-error':
+      typed = SHELL_ERROR_CODES.includes(record.code as ShellErrorCode) ? null : 'invalid code'
+      break
     default:
-      return `disallowed type ${String(record.type)}`
+      return undefined
+  }
+  return firstProblem(
+    isShellSid(record.sid) ? null : 'invalid sid',
+    typed,
+    isIsoTimestamp(record.at) ? null : 'invalid at timestamp'
+  )
+}
+
+/** The certificate frames a daemon sends; `undefined` when the type is not one of them. */
+function validateAcmeInboundFields(record: Record<string, unknown>): string | null | undefined {
+  switch (record.type) {
+    case 'acme-issuance-event':
+    case 'instance-acme-issuance-event':
+      return validateAcmeIssuanceEventFields(record)
+    case 'acme-issue-event':
+      return validateAcmeIssueEventFields(record)
+    case 'acme-proof-forward-ready':
+    case 'acme-proof-forward-failed':
+      return validateAcmeProofForwardReportFields(record)
+    case 'acme-dns-publish':
+      return validateAcmeDnsPublishFields(record)
+    case 'acme-dns-remove':
+      return validateAcmeDnsRemoveFields(record)
+    default:
+      return undefined
   }
 }
 
@@ -3232,15 +3530,14 @@ export type DaemonOutboundEnvelope =
   | (OutboundEnvelopeBase & { kind: 'dev-sync'; phase: 'end' })
   | (OutboundEnvelopeBase & {
       kind: 'tunnel-token'
-      /** Legacy plaintext; also the empty teardown token. */
+      /** Only the empty teardown token; a real token is never sent in plaintext. */
       token?: string
-      /** `tpdaemon` envelope for a non-empty token (sealed-instance-secrets-v1). */
+      /** `tpdaemon` envelope for a non-empty token. */
       tokenEnvelope?: string
     })
   | (OutboundEnvelopeBase & {
       kind: 'public-urls-update'
-      urls: string[]
-      hostnames?: InstanceHostnameWireEntry[]
+      hostnames: InstanceHostnameWireEntry[]
       instanceAcme?: InstanceAcmeWireSettings
       edgeTrust?: InstanceEdgeTrustWire
     })
@@ -3289,6 +3586,7 @@ export type DaemonOutboundEnvelope =
       names: string[]
       directory: 'production' | 'staging'
       contactEmail: string
+      challenge?: 'http-01' | 'dns-01'
       startByIso: string
       helpers: AcmeProofHelper[]
     })
@@ -3523,6 +3821,8 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
     case 'acme-issue-event':
     case 'acme-proof-forward-ready':
     case 'acme-proof-forward-failed':
+    case 'acme-dns-publish':
+    case 'acme-dns-remove':
     case 'update-progress':
     case 'command-progress':
       // Fire-and-forget (or session setup). Not a correlated request.
@@ -3743,19 +4043,13 @@ function devSyncMessage(env: OutboundEnvelopeOf<'dev-sync'>): DaemonMessage {
   return { type: 'dev-sync-end', id: env.requestId, at: env.at }
 }
 
-/**
- * Omit `hostnames` and `instanceAcme` when absent so an older daemon sees
- * the flat `urls` list it already understands.
- */
+/** `instanceAcme` travels only with `hostnames` and only when set. */
 function publicUrlsUpdateMessage(env: OutboundEnvelopeOf<'public-urls-update'>): DaemonMessage {
   return {
     type: 'public-urls-update' as const,
     id: env.requestId,
-    urls: env.urls,
-    ...(env.hostnames === undefined ? {} : { hostnames: env.hostnames }),
-    ...(env.hostnames === undefined || env.instanceAcme === undefined
-      ? {}
-      : { instanceAcme: env.instanceAcme }),
+    hostnames: env.hostnames,
+    ...(env.instanceAcme === undefined ? {} : { instanceAcme: env.instanceAcme }),
     ...(env.edgeTrust === undefined ? {} : { edgeTrust: env.edgeTrust }),
     at: env.at,
   }
@@ -3845,6 +4139,7 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
         names: env.names,
         directory: env.directory,
         contactEmail: env.contactEmail,
+        ...(env.challenge === undefined ? {} : { challenge: env.challenge }),
         startByIso: env.startByIso,
         helpers: env.helpers,
         at: env.at,

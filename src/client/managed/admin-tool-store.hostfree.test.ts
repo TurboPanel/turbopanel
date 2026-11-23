@@ -119,7 +119,7 @@ test('findTool answers the tool whose binding names its login, and nothing for a
   assertEquals(await store.findTool('other-project'), undefined)
 })
 
-test('a pending destroy, a used hostname and the daemon features are read from their tables', async () => {
+test('a pending destroy, and a used hostname are read from their tables', async () => {
   const pending = storeFor(fakeDb({ command: [{ id: 'c1' }] }).db)
   assertEquals(await pending.destroyPending(), true)
   assertEquals(await storeFor(fakeDb({}).db).destroyPending(), false)
@@ -128,7 +128,6 @@ test('a pending destroy, a used hostname and the daemon features are read from t
     true
   )
   assertEquals(await storeFor(fakeDb({}).db).hostnameInUse('a.example.com'), false)
-  assertEquals(await storeFor(fakeDb({}).db).daemonFeatures('s1'), [])
   assertEquals(await storeFor(fakeDb({}).db).panelHostnameRefusal('a.example.com'), null)
 })
 

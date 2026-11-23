@@ -7,7 +7,6 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { EnvironmentDeploySite } from '../../contracts/commands/schemas.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { SITE_DB_BINDINGS_FEATURE, SITE_DB_URL_CA_FEATURE } from '../../lib/version-wire.ts'
 import {
   siteDbCaUnavailableWarning,
   siteNeedsHostnameError,
@@ -57,22 +56,18 @@ const serviceRows = [
   { id: 's-docs', composeServiceName: 'docs' },
 ]
 
-function run(
-  features: string[],
-  sites: EnvironmentDeploySite[],
-  useDeps: SiteDbBindingsDeps = deps
-) {
+function run(sites: EnvironmentDeploySite[], useDeps: SiteDbBindingsDeps = deps) {
   const warnings: SiteDbBindingsWarning[] = []
   return withSiteDbBindings(
     db,
     secrets,
-    { organizationId: 'org', sites, serviceRows, daemonFeatures: features, warnings },
+    { organizationId: 'org', sites, serviceRows, warnings },
     useDeps
   ).then((out) => ({ out: out as EnvironmentDeploySite[], warnings }))
 }
 
-test('a bound site on a new daemon gets the CA and the required names, once each', async () => {
-  const { out, warnings } = await run([SITE_DB_BINDINGS_FEATURE], [site('wp'), site('docs')])
+test('a bound site gets the CA and the required names, once each', async () => {
+  const { out, warnings } = await run([site('wp'), site('docs')])
   assertEquals(out[0]?.dbCa, {
     variables: ['DATABASE_CA_FILE', 'REPORTS_CA_FILE'],
     pem: PEM,
@@ -82,17 +77,14 @@ test('a bound site on a new daemon gets the CA and the required names, once each
   assertEquals(warnings, [])
 })
 
-test('an old daemon is sent neither field and the panel says why', async () => {
-  const { out, warnings } = await run([], [site('wp'), site('docs')])
+test('a site is sent neither field and the panel says why when the CA cannot be loaded', async () => {
+  const { out, warnings } = await run([site('wp'), site('docs')], {
+    ...deps,
+    loadCaPem: () => Promise.resolve(undefined),
+  })
   assertEquals(out, [site('wp'), site('docs')])
   assertEquals(warnings.length, 1)
   assertEquals(warnings[0]?.details.composeServiceName, 'wp')
-})
-
-test('a daemon without the feature but another one listed is still old', async () => {
-  const { out } = await run(['php-site-modes-v1'], [site('wp')])
-  assertEquals('dbCa' in (out[0] ?? {}), false)
-  assertEquals('requiredEnv' in (out[0] ?? {}), false)
 })
 
 test('no sites, or no encryption secrets, changes nothing', async () => {
@@ -101,7 +93,6 @@ test('no sites, or no encryption secrets, changes nothing', async () => {
     organizationId: 'org',
     sites: [site('wp')],
     serviceRows,
-    daemonFeatures: [SITE_DB_BINDINGS_FEATURE],
     warnings,
   }
   assertEquals(await withSiteDbBindings(db, undefined, params, deps), [site('wp')])
@@ -112,8 +103,6 @@ test('the warning names the site and the fix, never a value', () => {
   const warning = siteDbCaUnavailableWarning('wp')
   assertEquals(warning.code, 'site_db_ca_unavailable')
   assertEquals(warning.message.includes('"wp"'), true)
-  assertEquals(warning.message.includes('Update the daemon'), true)
-  assertEquals(SITE_DB_BINDINGS_FEATURE, 'site-db-bindings-v1')
 })
 
 test('a bound site with no hostname is refused in plain words instead of losing its settings', async () => {
@@ -133,7 +122,6 @@ test('a bound site with no hostname is refused in plain words instead of losing 
       organizationId: 'org',
       sites: [site('bare')],
       serviceRows: [{ id: 's-nohost', composeServiceName: 'bare' }],
-      daemonFeatures: [SITE_DB_BINDINGS_FEATURE],
       warnings: [],
     },
     noHostDeps
@@ -159,9 +147,8 @@ const withRefs = (
     ),
 })
 
-test('a daemon with the url feature gets the URL names too, joined with the reference names, once each', async () => {
+test('the URL names are sent too, joined with the reference names, once each', async () => {
   const { out } = await run(
-    [SITE_DB_BINDINGS_FEATURE, SITE_DB_URL_CA_FEATURE],
     [site('wp')],
     withRefs({
       siteCaFileNames: ['CA', 'DATABASE_CA_FILE'],
@@ -175,47 +162,17 @@ test('a daemon with the url feature gets the URL names too, joined with the refe
   })
 })
 
-test('a daemon without the url feature is sent no URL names', async () => {
-  const { out } = await run(
-    [SITE_DB_BINDINGS_FEATURE],
-    [site('wp')],
-    withRefs({ siteCaFileNames: ['CA'], siteUrlNames: ['DB_URL'] })
-  )
-  assertEquals(out[0]?.dbCa, { variables: ['DATABASE_CA_FILE', 'CA'], pem: PEM })
-})
-
-test('more than 8 names is refused without the url feature, and up to 16 is taken with it', async () => {
+test('up to 16 names are taken and more is refused', async () => {
   const many = Array.from({ length: 9 }, (_, i) => `CA_${i}`)
-  const names = { siteCaFileNames: many, siteUrlNames: [] }
-  const old = await run([SITE_DB_BINDINGS_FEATURE], [site('wp')], withRefs(names))
-  assertEquals((old.out as unknown as { kind: string }).kind, 'binding_host_site_unsupported')
-  assertEquals(
-    (old.out as unknown as { message: string }).message.includes('Update the daemon'),
-    true
-  )
-  const current = await run(
-    [SITE_DB_BINDINGS_FEATURE, SITE_DB_URL_CA_FEATURE],
-    [site('wp')],
-    withRefs(names)
-  )
+  const current = await run([site('wp')], withRefs({ siteCaFileNames: many, siteUrlNames: [] }))
   assertEquals(current.out[0]?.dbCa?.variables.length, 10)
   const tooMany = Array.from({ length: 17 }, (_, i) => `CA_${i}`)
-  const refused = await run(
-    [SITE_DB_BINDINGS_FEATURE, SITE_DB_URL_CA_FEATURE],
-    [site('wp')],
-    withRefs({ siteCaFileNames: tooMany, siteUrlNames: [] })
-  )
+  const refused = await run([site('wp')], withRefs({ siteCaFileNames: tooMany, siteUrlNames: [] }))
   assertEquals((refused.out as unknown as { kind: string }).kind, 'binding_host_site_unsupported')
 })
 
-const BOTH_FEATURES = [SITE_DB_BINDINGS_FEATURE, SITE_DB_URL_CA_FEATURE]
-
-test('a MariaDB-only binding on a daemon with the url feature sends no urlVariables key', async () => {
-  const { out } = await run(
-    BOTH_FEATURES,
-    [site('wp')],
-    withRefs({ siteCaFileNames: [], siteUrlNames: [] }, [])
-  )
+test('a MariaDB-only binding sends no urlVariables key', async () => {
+  const { out } = await run([site('wp')], withRefs({ siteCaFileNames: [], siteUrlNames: [] }, []))
   const dbCa = out[0]?.dbCa
   assertEquals(dbCa, { variables: ['DATABASE_CA_FILE'], pem: PEM })
   assertEquals('urlVariables' in (dbCa ?? {}), false)
@@ -223,7 +180,6 @@ test('a MariaDB-only binding on a daemon with the url feature sends no urlVariab
 
 test('a PostgreSQL-only binding sends its URL names', async () => {
   const { out } = await run(
-    BOTH_FEATURES,
     [site('wp')],
     withRefs({ siteCaFileNames: [], siteUrlNames: [] }, ['PG_URL'])
   )
@@ -232,7 +188,6 @@ test('a PostgreSQL-only binding sends its URL names', async () => {
 
 test('a mixed set sends only the PostgreSQL URL names', async () => {
   const { out } = await run(
-    BOTH_FEATURES,
     [site('wp')],
     withRefs({ siteCaFileNames: ['MARIA_CA_FILE'], siteUrlNames: [] }, ['PG_URL'])
   )

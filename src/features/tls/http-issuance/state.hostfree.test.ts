@@ -48,6 +48,7 @@ function state(overrides: Partial<HttpIssuanceState> = {}): HttpIssuanceState {
     issueTimes: [],
     renewAt: null,
     orderNames: [],
+    challenge: 'http-01',
     ...overrides,
   }
 }

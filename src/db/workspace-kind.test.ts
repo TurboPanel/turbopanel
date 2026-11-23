@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   isWorkspaceKind,
   parseWorkspaceKind,
-  WORKSPACE_KIND_SYSTEM,
+  WORKSPACE_KIND_TURBOPANEL,
   WORKSPACE_KIND_USER,
   WORKSPACE_KINDS,
 } from './workspace-kind.ts'
@@ -18,7 +18,7 @@ const test = Deno.test.bind(Deno)
 test('WORKSPACE_KINDS lists user and turbopanel discriminators', () => {
   assertEquals([...WORKSPACE_KINDS], ['user', 'turbopanel'])
   assertEquals(WORKSPACE_KIND_USER, 'user')
-  assertEquals(WORKSPACE_KIND_SYSTEM, 'turbopanel')
+  assertEquals(WORKSPACE_KIND_TURBOPANEL, 'turbopanel')
 })
 
 test('isWorkspaceKind accepts only exact kind strings', () => {
@@ -30,8 +30,8 @@ test('isWorkspaceKind accepts only exact kind strings', () => {
 })
 
 test('parseWorkspaceKind maps unknown values to user', () => {
-  assertEquals(parseWorkspaceKind('turbopanel'), WORKSPACE_KIND_SYSTEM)
-  assertEquals(parseWorkspaceKind(WORKSPACE_KIND_SYSTEM), WORKSPACE_KIND_SYSTEM)
+  assertEquals(parseWorkspaceKind('turbopanel'), WORKSPACE_KIND_TURBOPANEL)
+  assertEquals(parseWorkspaceKind(WORKSPACE_KIND_TURBOPANEL), WORKSPACE_KIND_TURBOPANEL)
   assertEquals(parseWorkspaceKind(undefined), WORKSPACE_KIND_USER)
   assertEquals(parseWorkspaceKind('systemic'), WORKSPACE_KIND_USER)
   assertEquals(parseWorkspaceKind(null), WORKSPACE_KIND_USER)

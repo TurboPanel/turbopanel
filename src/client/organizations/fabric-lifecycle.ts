@@ -9,10 +9,8 @@
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
-import { FABRIC_RETAIN_KEYS_FEATURE } from '../../lib/version-wire.ts'
-import { and, eq, inArray } from 'drizzle-orm'
-import { network, server } from '../../db/schema.ts'
-import { parseServerDaemonState } from '../../features/servers/daemon-state.ts'
+import { and, eq } from 'drizzle-orm'
+import { network } from '../../db/schema.ts'
 import {
   clearRelayAppliedPayloadHash,
   deleteComposeNetworkIds,
@@ -42,7 +40,6 @@ import {
   fabricDependentsMessage,
   findFabricDependents,
   findStoredFabricDependents,
-  loadFabricServerMemberships,
   updateServerFabricMembership,
 } from '../../features/fabric/membership.ts'
 import {
@@ -91,53 +88,6 @@ async function sendTeardown(
   })
 }
 
-/**
- * Servers whose daemon cannot pause (it would read a pause as a full tear
- * down), from the features each daemon last advertised.
- */
-async function serversThatCannotPause(db: Db, serverIds: readonly string[]): Promise<string[]> {
-  if (serverIds.length === 0) return []
-  const rows = await db
-    .select({ id: server.id, daemon: server.daemon })
-    .from(server)
-    .where(inArray(server.id, [...serverIds]))
-  const ready = new Set(
-    rows
-      .filter((row) =>
-        (parseServerDaemonState(row.daemon)?.projection?.features ?? []).includes(
-          FABRIC_RETAIN_KEYS_FEATURE
-        )
-      )
-      .map((row) => row.id)
-  )
-  return serverIds.filter((id) => !ready.has(id))
-}
-
-async function serverNames(
-  db: Db,
-  organizationId: string,
-  serverIds: readonly string[]
-): Promise<string[]> {
-  const wanted = new Set(serverIds)
-  const rows = await loadFabricServerMemberships(db, { organizationId, relays: [] })
-  return rows.filter((row) => wanted.has(row.serverId)).map((row) => row.name)
-}
-
-function pauseNeedsUpdateResponse(c: Context, names: string[], serverIds: string[]): Response {
-  return c.json(
-    {
-      error: 'fabric_pause_needs_daemon_update',
-      message: `TurboFabric is still on: ${names.join(', ')} ${
-        names.length === 1 ? 'runs a TurboPanel daemon' : 'run TurboPanel daemons'
-      } too old to turn TurboFabric off and keep the keys. Update ${
-        names.length === 1 ? 'that server' : 'those servers'
-      }, or remove TurboFabric completely instead.`,
-      serverIds,
-    },
-    409
-  )
-}
-
 async function audit(
   params: FabricLifecycleParams,
   entry: Pick<AuditEntry, 'action' | 'targetType' | 'targetId' | 'context'>
@@ -166,10 +116,6 @@ export async function pauseFabric(
   if (!existing) return null
   const serverIds = (await listFabricRelays(db, existing.id)).map((row) => row.serverId)
 
-  const tooOld = await serversThatCannotPause(db, serverIds)
-  if (tooOld.length > 0) {
-    return pauseNeedsUpdateResponse(c, await serverNames(db, organizationId, tooOld), tooOld)
-  }
   if (isFabricPaused(existing)) return await repeatPause(c, params, existing, serverIds)
 
   const paused = await pauseOrganizationFabric(db, existing)
@@ -348,8 +294,7 @@ async function tearDownSwitchedOffServer(
   if (!existing || isFabricPaused(existing)) return null
   const relays = await listFabricRelays(db, existing.id, { includeSwitchedOff: true })
   if (!relays.some((row) => row.serverId === serverId)) return null
-  const keepKey = (await serversThatCannotPause(db, [serverId])).length === 0
-  const results = await sendTeardown(params, existing, [serverId], keepKey)
+  const results = await sendTeardown(params, existing, [serverId], true)
   if (notQueuedServerIds(results).length > 0) {
     return teardownNotQueuedResponse(
       c,
@@ -357,11 +302,7 @@ async function tearDownSwitchedOffServer(
       [serverId]
     )
   }
-  if (keepKey) {
-    await clearRelayAppliedPayloadHash(db, { serverId, fabricId: existing.id })
-  } else {
-    await resetRelaysAfterQueuedTeardown(db, { fabricId: existing.id, serverIds: [serverId] })
-  }
+  await clearRelayAppliedPayloadHash(db, { serverId, fabricId: existing.id })
   return null
 }
 

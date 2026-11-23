@@ -27,11 +27,10 @@ function emptySample(): MetricsSample {
   return {
     type: 'metrics',
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-01T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 0,
-      topologyGeneration: 0,
       bootGeneration: 0,
     },
     host: {
@@ -454,12 +453,6 @@ test('hardwareHealthEventsEnabled=false drops only hardware-health event kinds',
       severity: 'warning',
     },
     {
-      eventId: 'evt-topology',
-      at: '2026-01-01T00:00:04.000Z',
-      kind: 'topology_generation_changed',
-      severity: 'info',
-    },
-    {
       eventId: 'evt-boot',
       at: '2026-01-01T00:00:05.000Z',
       kind: 'boot_generation_changed',
@@ -476,7 +469,7 @@ test('hardwareHealthEventsEnabled=false drops only hardware-health event kinds',
   const truncated = prepareSampleForStorage(sample, plan)
   assertEquals(
     truncated.events.map((event) => event.eventId),
-    ['evt-oom', 'evt-fabric', 'evt-clock', 'evt-topology', 'evt-boot', 'evt-remount']
+    ['evt-oom', 'evt-fabric', 'evt-clock', 'evt-boot', 'evt-remount']
   )
 })
 

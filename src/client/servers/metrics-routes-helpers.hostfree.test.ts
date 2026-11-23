@@ -790,7 +790,7 @@ test('logSeriesGaps logs holes and failed families once per server per minute', 
   )
 })
 
-test('querySeriesResults forwards slotMapping/topologyGeneration for the network family', async () => {
+test('querySeriesResults forwards slotMapping for the network family', async () => {
   let seen: EntitySeriesQuery | undefined
   const parsed = parseSeriesMetricSelectors('network:eth0.receiveBytesPerSecond')
   if (!parsed.ok) throw new TypeError('expected selectors to parse')

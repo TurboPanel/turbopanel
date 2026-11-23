@@ -1,8 +1,18 @@
+import { attachBuildLimits } from '../../features/deploy/build-limits.ts'
+import { redirectNetworkModeNames } from '../../features/compose/network-mode.ts'
 import type { Context } from 'hono'
+import {
+  buildServiceVariablesViews,
+  type ServiceVariablesView,
+} from '../../features/compose/service-variables-view.ts'
 import { panelHostnameRefusal } from '../../features/hostings/panel-hostname-guard.ts'
 import { and, eq, inArray, or } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
-import { hostingCertificateNames, type HostingWwwMode } from '../../contracts/commands/hostname.ts'
+import {
+  hostingCertificateNames,
+  hostingWwwRedirects,
+  type HostingWwwMode,
+} from '../../contracts/commands/hostname.ts'
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -46,6 +56,7 @@ import {
   isApplyVariablesError,
   type VariableScopeEntryMap,
 } from '../../features/compose/apply-variables.ts'
+import type { NetworkShareCredential } from '../../features/compose/network-share-variables.ts'
 import type {
   DeployConfigFileEntry,
   DeployConfigSecretRef,
@@ -117,7 +128,16 @@ import {
 } from '../../features/principals/principal-access.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { settleTunnelOnlyHosting } from '../../features/tunnels/tunnel-only-certificate.ts'
+import { HOSTING_NAME_TLS_FEATURE } from '../../lib/version-wire.ts'
 import { resolveDeployNameLock } from '../../features/tunnels/name-lock.ts'
+import { loadNameCertificates } from '../../features/hostings/name-certificates.ts'
+import {
+  type NameWire,
+  type NameWireValue,
+  nameTlsPinIds,
+  planNameTlsForServer,
+} from '../../features/hostings/name-tls-wire.ts'
+import { hostingRoutingNames } from '../../features/servers/hostname-records.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
   type NativeAppNodeVersionView,
@@ -130,34 +150,17 @@ import {
   denoRuntimeSeries,
 } from '../../contracts/runtime-registry.ts'
 import {
-  type DenoAppFeatureError,
-  withDenoNativeApps,
+  type DenoAppVersionError,
+  denoAppWithUnsupportedVersion,
   withRecordedRuntimes,
 } from './deploy-deno-gate.ts'
-import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
-import {
-  renderSiteLifecycleForDeploy,
-  type SiteLifecycleUnsupportedError,
-  siteLifecycleUnowned,
-  siteLifecycleUnsupported,
-  sitesCarryLifecycle,
-} from './deploy-site-lifecycle.ts'
-import {
-  type NodeAppModeFeatureError,
-  withCustomNodeAppModes,
-} from './deploy-node-app-mode-gate.ts'
+import { renderSiteLifecycleForDeploy, siteLifecycleUnowned } from './deploy-site-lifecycle.ts'
 import { type SiteDbBindingsWarning, withSiteDbBindings } from './deploy-site-db-bindings.ts'
 import {
   type BindingDelivery,
   deliveryByServiceId,
   hostRunDeliveryByComposeName,
 } from '../../features/bindings/host-run.ts'
-import {
-  ACME_ISSUE_FEATURE,
-  DEPLOY_CONFIG_FILES_FEATURE,
-  PHP_SITE_MODES_FEATURE,
-} from '../../lib/version-wire.ts'
-import { storedDaemonFeatures } from './destroy-data.ts'
 import { effectiveAccountLimits } from './account-limits.ts'
 import {
   applyDeliveryToMap,
@@ -219,10 +222,12 @@ import type {
   EnvironmentDeployCache,
   EnvironmentDeployHelperReach,
   EnvironmentDeployHosting,
+  EnvironmentDeployNameTls,
   EnvironmentDeployIngressService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySite,
   EnvironmentDeploySitePrincipal,
+  EnvironmentDeployComposeCheckout,
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployStorageMount,
@@ -236,6 +241,8 @@ import {
   resolveDeploySourceMaterial,
   withBuildEnv,
 } from './deploy-sources.ts'
+import { resolveDeployComposeCheckout } from './deploy-compose-checkout.ts'
+import type { ComposeBaseRecord } from '../../features/projects/project-options.ts'
 import {
   binding,
   environment,
@@ -297,6 +304,7 @@ import {
   resolveDbRefsForService,
 } from '../../features/bindings/db-refs.ts'
 import {
+  hasUnprovisionedBoundManaged,
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
 } from '../../features/bindings/materialize.ts'
@@ -384,6 +392,7 @@ export type DeployPrepareWarningCode =
   | 'cache_other_account'
   | 'cache_other_server'
   | 'cache_variable_overrides'
+  | 'compose_base_unreadable'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -574,12 +583,29 @@ export type PreparedDeployCompose = ServerDeployment & {
   /** Secrets the generated files read; kept so a reboot can ask for their values. */
   configSecretRefs?: DeployConfigSecretRef[]
   /**
+   * Network share volumes with a secret username, password or domain (key
+   * names only; the sealed values ride in `variableMaterial`). Absent when none.
+   */
+  networkShareCredentials?: NetworkShareCredential[]
+  /**
+   * What the share volumes resolved to, as stable text without any secret
+   * value. Internal: the automated-deploy approval is judged on its hash. Never
+   * sent to a daemon.
+   */
+  networkSharesResolved?: string
+  /**
    * What each native app's process gets as environment variables, for people:
    * every name, where it came from, and whether it reaches the process. Secret
    * values are left out. Never sent to a daemon — the wire list is
    * `nativeAppServices[].variables`.
    */
   nativeAppVariables?: NativeAppVariablesView[]
+  /**
+   * Every service's variables by the names a person set, split into build and
+   * runtime use, for people. Secret values are left out. Never sent to a daemon.
+   * With several servers the preview keeps the last server's list per service.
+   */
+  serviceVariables?: ServiceVariablesView[]
   /**
    * The Node series each native app runs and where it came from (the compose
    * service, the repository's `package.json` / `.nvmrc` / `.node-version`, or
@@ -626,20 +652,13 @@ export type NativeAppVariablesView = {
   variables: NativeAppVariableView[]
 }
 
-/** A generated config file the compose cannot compile, or the daemon cannot take. */
-export type ConfigFilesPrepareError =
-  | {
-      kind: 'config_interpolation' | 'config_file_invalid' | 'config_file_shared'
-      message: string
-      composeServiceName?: string
-      envKey?: string
-    }
-  | {
-      kind: 'config_files_need_daemon_update'
-      message: string
-      /** The servers whose daemon lacks `deploy-config-files-v1`. */
-      servers: Array<{ serverId: string; name: string }>
-    }
+/** A generated config file the compose cannot compile. */
+export type ConfigFilesPrepareError = {
+  kind: 'config_interpolation' | 'config_file_invalid' | 'config_file_shared'
+  message: string
+  composeServiceName?: string
+  envKey?: string
+}
 
 export type DeployPrepareError =
   | ConfigFilesPrepareError
@@ -717,12 +736,9 @@ export type DeployPrepareError =
   | { kind: 'site_lifecycle_unowned'; composeServiceName: string }
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
-  | SiteEngineFeatureError
-  | SiteLifecycleUnsupportedError
   /** A Deno app goes to a daemon that cannot run it, or asks for a series nothing offers. */
-  | DenoAppFeatureError
+  | DenoAppVersionError
   /** An app with a custom application mode goes to a daemon that would refuse it. */
-  | NodeAppModeFeatureError
   /**
    * The repository asks for a Node version no offered series satisfies, names
    * one that is not a version range, or (a deploy only) could not be read.
@@ -831,13 +847,10 @@ type HardDeployPrepareError =
   | { kind: 'binding_host_site_unsupported'; message: string }
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
-  | SiteEngineFeatureError
   // Hard in preview too: an older daemon would refuse the whole deploy.
-  | SiteLifecycleUnsupportedError
   // Hard in preview too: a Deno app sent to a daemon that cannot run it would start on Node.
-  | DenoAppFeatureError
+  | DenoAppVersionError
   // Hard in preview too: an older daemon would refuse the whole deploy.
-  | NodeAppModeFeatureError
   // Hard in preview too: the build would get a Node the app says it cannot run on.
   | NodeVersionPrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
@@ -2208,6 +2221,26 @@ function localManagedNetworkServiceNames(
 }
 
 /**
+ * Managed-network services for the daemon: the local/remote sort runs on the
+ * original service names (the hosts and co-resident sets are keyed by them),
+ * then a service with `network_mode` hands its attachment to the service that
+ * owns its network, since it has no network of its own to join.
+ */
+export function managedNetworkNamesForDeploy(
+  boundNames: readonly string[],
+  remoteHostsByService: ReadonlyMap<string, unknown> | undefined,
+  coResidentNames: ReadonlySet<string> | undefined,
+  composeServices: Record<string, unknown>
+): string[] {
+  const local = localManagedNetworkServiceNames(
+    [...boundNames].sort((a, b) => a.localeCompare(b)),
+    remoteHostsByService,
+    coResidentNames
+  )
+  return redirectNetworkModeNames(local, composeServices).sort((a, b) => a.localeCompare(b))
+}
+
+/**
  * Attach per-app and per-account resource ceilings to the split native apps.
  *
  * Per-app values are read off {@link ResolvedApplication.services} — the stage
@@ -2587,13 +2620,22 @@ function absorbBindingOutcome(
  * Re-materialize service bindings and classify the outcome so the caller
  * stays a flat sequence of early returns / warning pushes.
  */
-async function resolveBindingMaterializationOutcome(
+export async function resolveBindingMaterializationOutcome(
   db: Db,
   dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined,
   serviceIds: string[],
   mode: DeployPrepareMode,
   deliveries?: ReadonlyMap<string, BindingDelivery>
 ): Promise<BindingMaterializationOutcome> {
+  // Same predicate the create route uses to retry a failed first apply: a
+  // cluster that never finished provisioning has no endpoint to bind to.
+  if (await hasUnprovisionedBoundManaged(db, serviceIds)) {
+    const error: DeployPrepareError = { kind: 'binding_endpoint_unavailable' }
+    return mode === 'preview'
+      ? { kind: 'warn', warning: warningFromPrepareError(error) }
+      : { kind: 'error', error }
+  }
+
   if (!dataEncryptionSecrets) return { kind: 'ok' }
 
   const bindResult = await materializeBindingsForServices(
@@ -2934,6 +2976,7 @@ function deployHashInputs(parts: {
   nativeAppNodeVersions?: NativeAppNodeVersionView[]
   nativeAppDenoVersions?: NativeAppDenoVersionView[]
   sourceMaterial: EnvironmentDeploySource[]
+  composeCheckout?: EnvironmentDeployComposeCheckout
   dockerExternalNetworks: string[]
   dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
   fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -2955,6 +2998,11 @@ function deployHashInputs(parts: {
     nativeAppNodeVersions: parts.nativeAppNodeVersions,
     nativeAppDenoVersions: parts.nativeAppDenoVersions,
     sourceMaterial: parts.sourceMaterial,
+    // The repository tree, commit and compose path decide what a relative path
+    // in the compose file means, so a moved commit is a different deploy even
+    // when the compiled YAML is byte-identical. The sealed credential never
+    // counts (`deploy-inputs-digest.ts`); absent, the hash is what it was.
+    composeCheckout: parts.composeCheckout,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing,
     fabricNetworks: parts.fabricNetworks,
@@ -2994,9 +3042,11 @@ async function toPreparedDeployResult(
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
     nativeAppVariables?: NativeAppVariablesView[]
+    serviceVariables?: ServiceVariablesView[]
     nativeAppNodeVersions?: NativeAppNodeVersionView[]
     nativeAppDenoVersions?: NativeAppDenoVersionView[]
     sourceMaterial: EnvironmentDeploySource[]
+    composeCheckout?: EnvironmentDeployComposeCheckout
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
     fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
@@ -3019,6 +3069,8 @@ async function toPreparedDeployResult(
     secretPlan?: DeploySecretPlanEntry[]
     configFiles?: DeployConfigFileEntry[]
     configSecretRefs?: DeployConfigSecretRef[]
+    networkShareCredentials?: NetworkShareCredential[]
+    networkSharesResolved?: string
     sourceSelection?: DeploySourceSelection
     projectCaches?: PreparedProjectCaches
     /**
@@ -3032,7 +3084,7 @@ async function toPreparedDeployResult(
 ): Promise<PreparedDeployCompose> {
   const omitSecrets = mode === 'preview'
   return {
-    ...(parts.serverId === undefined ? {} : { serverId: parts.serverId }),
+    ...optionalField('serverId', parts.serverId),
     composeYaml: parts.composeYaml,
     composeFiles: parts.composeFiles,
     desiredHash: await deployDesiredHash(
@@ -3052,9 +3104,11 @@ async function toPreparedDeployResult(
     sites: parts.sites,
     nativeAppServices: parts.nativeAppServices,
     nativeAppVariables: parts.nativeAppVariables ?? [],
+    ...(parts.serviceVariables === undefined ? {} : { serviceVariables: parts.serviceVariables }),
     nativeAppNodeVersions: parts.nativeAppNodeVersions ?? [],
     nativeAppDenoVersions: parts.nativeAppDenoVersions ?? [],
     sourceMaterial: parts.sourceMaterial,
+    ...(parts.composeCheckout === undefined ? {} : { composeCheckout: parts.composeCheckout }),
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing
       ? [...parts.dockerNetworkAddressing]
@@ -3067,16 +3121,10 @@ async function toPreparedDeployResult(
     hostings: parts.edge?.hostings ?? [],
     tlsMaterial: parts.edge?.tlsMaterial ?? [],
     listenerPorts: parts.edge?.listenerPorts ?? DEFAULT_MANAGED_INGRESS_PORTS,
-    ...(parts.edge?.hostingIngress === undefined
-      ? {}
-      : { hostingIngress: parts.edge.hostingIngress }),
-    ...(parts.edge?.hostingIngressNetwork === undefined
-      ? {}
-      : { hostingIngressNetwork: parts.edge.hostingIngressNetwork }),
-    ...(parts.edge?.hideWebServerNames === undefined
-      ? {}
-      : { hideWebServerNames: parts.edge.hideWebServerNames }),
-    ...(parts.edge?.sendViaHeader === undefined ? {} : { sendViaHeader: parts.edge.sendViaHeader }),
+    ...optionalField('hostingIngress', parts.edge?.hostingIngress),
+    ...optionalField('hostingIngressNetwork', parts.edge?.hostingIngressNetwork),
+    ...optionalField('hideWebServerNames', parts.edge?.hideWebServerNames),
+    ...optionalField('sendViaHeader', parts.edge?.sendViaHeader),
     composeServiceExpansion: expansionToRecord(parts.expansion),
     volumes: parts.registeredVolumes,
     warnings: parts.warnings,
@@ -3084,7 +3132,9 @@ async function toPreparedDeployResult(
     ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
     ...nonEmptyListField('configFiles', parts.configFiles),
     ...nonEmptyListField('configSecretRefs', parts.configSecretRefs),
-    ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
+    ...nonEmptyListField('networkShareCredentials', parts.networkShareCredentials),
+    ...optionalField('networkSharesResolved', parts.networkSharesResolved),
+    ...optionalField('sourceSelection', parts.sourceSelection),
     ...projectCacheFields(parts.projectCaches ?? NO_PROJECT_CACHES),
   }
 }
@@ -3104,25 +3154,12 @@ function projectCacheFields(
   }
 }
 
-/** The server this slice compiles for, named the way people know it. */
-async function namedServer(db: Db, serverId: string): Promise<{ serverId: string; name: string }> {
-  const [row] = await db
-    .select({ name: server.name, hostname: server.hostname })
-    .from(server)
-    .where(eq(server.id, serverId))
-    .limit(1)
-  return { serverId, name: row?.name?.trim() || row?.hostname || serverId }
-}
-
-/** Refuses commands or workers for a server whose daemon cannot run them; names the server only then. */
-async function withSiteLifecycleGate(
-  db: Db,
-  serverId: string,
-  sites: readonly EnvironmentDeploySite[],
-  features: readonly string[]
-): Promise<SiteLifecycleUnsupportedError | undefined> {
-  if (!sitesCarryLifecycle(sites)) return undefined
-  return siteLifecycleUnsupported(sites, features, await namedServer(db, serverId))
+/** A one-key object, or nothing when the value is `undefined` or `null`. */
+function optionalField<K extends string, T>(
+  key: K,
+  value: T | null | undefined
+): Partial<Record<K, T>> {
+  return value == null ? {} : ({ [key]: value } as Partial<Record<K, T>>)
 }
 
 /** A list as a one-key object, or nothing when it is absent or empty (keeps old hashes and payloads as they were). */
@@ -3132,17 +3169,6 @@ function nonEmptyListField<K extends string, T>(
 ): Partial<Record<K, T[]>> {
   if (list === undefined || list.length === 0) return {}
   return { [key]: [...list] } as Partial<Record<K, T[]>>
-}
-
-/** The prepare error for a failed variable pass; the daemon gate names this slice's server. */
-async function variablesPrepareFailure(
-  db: Db,
-  serverId: string,
-  error: ApplyVariablesError
-): Promise<DeployPrepareError> {
-  const prepareError = toApplyVariablesPrepareError(error)
-  if (prepareError.kind !== 'config_files_need_daemon_update') return prepareError
-  return { ...prepareError, servers: [await namedServer(db, serverId)] }
 }
 
 function configFileWarnings(
@@ -3157,9 +3183,6 @@ function configFileWarnings(
 
 function toApplyVariablesPrepareError(error: ApplyVariablesError): DeployPrepareError {
   const { kind, message, ref, composeServiceName, envKey } = error
-  if (kind === 'config_files_need_daemon_update') {
-    return { kind, message, servers: [] }
-  }
   if (kind === 'variable_unresolved') {
     return {
       kind,
@@ -3243,6 +3266,7 @@ async function loadDeployComposeContext(
     serverId: string
     organizationId: string
     composeValidated?: boolean
+    projectOptions?: unknown
   }
 ): Promise<
   | {
@@ -3262,7 +3286,11 @@ async function loadDeployComposeContext(
 > {
   const loaded = await loadDeployEnvAndProject(db, params.environmentId)
   if (loaded instanceof Response) return { ok: false, failure: loaded }
-  const { envRow, projectRow } = loaded
+  const { envRow } = loaded
+  const projectRow =
+    params.projectOptions === undefined
+      ? loaded.projectRow
+      : { id: loaded.projectRow.id, options: params.projectOptions }
 
   const [orgRow] = await db
     .select({ options: organization.options })
@@ -3493,6 +3521,43 @@ async function resolveManagedNetworkHostName(
   return network.hostName
 }
 
+/**
+ * What the host needs from the repository: the local source material with its
+ * build environment and build limits set, and the checkout of a followed
+ * compose file. The commit hash never includes build limits, so changing a
+ * limit does not make a deploy look new.
+ */
+async function prepareSourceMaterial(
+  c: Context<AppEnv>,
+  db: Db,
+  args: {
+    mode: 'deploy' | 'preview'
+    organizationId: string
+    serverId: string
+    composeBase: ComposeBaseRecord | null | undefined
+    localSourceMaterial: readonly EnvironmentDeploySource[]
+    buildAssignments: Parameters<typeof withBuildEnv>[1]
+    levels: Parameters<typeof attachBuildLimits>[1]
+    hostingsOnly: boolean
+  }
+): Promise<
+  | {
+      sourceMaterial: EnvironmentDeploySource[]
+      composeCheckout?: EnvironmentDeployComposeCheckout
+    }
+  | DeployPrepareError
+  | Response
+> {
+  const built = withBuildEnv(args.localSourceMaterial, args.buildAssignments)
+  if (!Array.isArray(built)) return toApplyVariablesPrepareError(built)
+  const composeCheckout = await resolveDeployComposeCheckout(c, db, args)
+  if (isPrepareStop(composeCheckout)) return composeCheckout
+  return {
+    sourceMaterial: attachBuildLimits(built, args.levels),
+    ...(composeCheckout === undefined ? {} : { composeCheckout }),
+  }
+}
+
 /** A prepare step answered with a refusal (a `Response` or a `DeployPrepareError`) instead of its value. */
 function isPrepareStop<T>(value: T): value is Extract<T, Response | DeployPrepareError> {
   return (
@@ -3525,10 +3590,8 @@ async function prepareNativeAppRuntimes(
 > {
   // A rollback runs each app on the runtime its release ran on.
   const nativeApps = withRecordedRuntimes(args.nativeApps, args.params.rollback?.releaseByService)
-  const denoGate = await withDenoNativeApps(db, args.params.serverId, nativeApps)
-  if ('kind' in denoGate) return denoGate
-  const appModeGate = await withCustomNodeAppModes(db, args.params.serverId, nativeApps)
-  if ('kind' in appModeGate) return appModeGate
+  const denoGate = denoAppWithUnsupportedVersion(nativeApps)
+  if (denoGate) return denoGate
 
   // An app with no `nodeVersion` gets one here from its repository at the
   // commit being deployed.
@@ -3629,12 +3692,9 @@ async function resolveLocalSitesBoundForDeploy(
     tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]>
   }
 ): Promise<EnvironmentDeploySite[] | DeployPrepareError> {
-  const phpDaemonState = await getServerDaemonStateByServerId(db, args.params.serverId)
   const siteResolved = await withSitePhpModes(
     db,
     {
-      daemonRunsModes:
-        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
       environmentId: args.params.environmentId,
       serverId: args.params.serverId,
       localServiceNames: args.pipeline.localServiceNames,
@@ -3660,21 +3720,11 @@ async function resolveLocalSitesBoundForDeploy(
   )
   if ('kind' in siteResolved) return siteResolved
   const localSite = sitesOnScheduledServer(siteResolved, args.pipeline.localServiceNames)
-  const engineGate = await withSiteEngineFeature(db, args.params.serverId, localSite)
-  if ('kind' in engineGate) return engineGate
-  const lifecycleGate = await withSiteLifecycleGate(
-    db,
-    args.params.serverId,
-    localSite,
-    phpDaemonState?.projection?.features ?? []
-  )
-  if (lifecycleGate) return lifecycleGate
   const dbBindingWarnings: SiteDbBindingsWarning[] = []
   const localSiteBound = await withSiteDbBindings(db, c.get('dataEncryptionSecrets'), {
     organizationId: args.params.organizationId,
     sites: localSite,
     serviceRows: args.serviceRows,
-    daemonFeatures: phpDaemonState?.projection?.features ?? [],
     warnings: dbBindingWarnings,
   })
   if ('kind' in localSiteBound) return localSiteBound
@@ -3811,12 +3861,9 @@ async function applyDeployVariables(
     nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
     projectId: input.projectId,
     environmentId: params.environmentId,
-    configFilesEnabled: (await storedDaemonFeatures(db, params.serverId)).includes(
-      DEPLOY_CONFIG_FILES_FEATURE
-    ),
   })
   if (isApplyVariablesError(withVariables)) {
-    return await variablesPrepareFailure(db, params.serverId, withVariables)
+    return toApplyVariablesPrepareError(withVariables)
   }
   warnings.push(...configFileWarnings(withVariables.configWarnings))
   return withVariables
@@ -3962,6 +4009,21 @@ export async function prepareDeployCompose(
      * which is what keeps every path that reaches the compiler gated.
      */
     composeValidated?: boolean
+    /**
+     * The project options the scheduler merged, with a followed repository's
+     * compose file already swapped in as the Base. Prepare uses these instead of
+     * the stored row, so the plan and every server read one Base.
+     */
+    projectOptions?: unknown
+    /**
+     * The Base this deploy used when the project follows its repository's
+     * compose file (`PlannedDeploy.composeBase`). Its repository, commit and
+     * path become the payload's `composeCheckout`, so the host has the files
+     * the compose file's relative paths mean.
+     */
+    composeBase?: ComposeBaseRecord | null
+    /** Only the web server config and certificates change: no repository checkout is resolved. */
+    hostingsOnly?: boolean
   }
 ): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
   const mode = params.mode ?? 'deploy'
@@ -4151,11 +4213,11 @@ export async function prepareDeployCompose(
     pipeline.expansion,
     params.serverId
   )
-  const boundNames = managedBindings.bound.filter((name) => !hostNativeNames.has(name))
-  const managedLogicalNames = localManagedNetworkServiceNames(
-    boundNames,
+  const managedLogicalNames = managedNetworkNamesForDeploy(
+    managedBindings.bound.filter((name) => !hostNativeNames.has(name)),
     params.schedule?.managedIngressHostsByService,
-    managedBindings.coResident
+    managedBindings.coResident,
+    composeServicesRecord(split.containerDocument)
   )
 
   // Effective document = the same post-split container document serialized as
@@ -4195,8 +4257,22 @@ export async function prepareDeployCompose(
   })
   if (isPrepareStop(edge)) return edge
 
-  const sourceMaterial = withBuildEnv(localSourceMaterial, withVariables.buildAssignments)
-  if (!Array.isArray(sourceMaterial)) return toApplyVariablesPrepareError(sourceMaterial)
+  const sources = await prepareSourceMaterial(c, db, {
+    mode,
+    organizationId: params.organizationId,
+    serverId: params.serverId,
+    composeBase: params.composeBase,
+    hostingsOnly: params.hostingsOnly === true,
+    localSourceMaterial,
+    buildAssignments: withVariables.buildAssignments,
+    levels: {
+      organizationOptions: orgRow?.options,
+      serverOptions: serverRow?.options,
+      serviceOptionsByComposeName: pipeline.optionsByComposeName,
+    },
+  })
+  if (isPrepareStop(sources)) return sources
+  const { sourceMaterial, composeCheckout } = sources
 
   const sealedPrincipalMaterial = await sealPrincipalMaterialForDaemon(
     c,
@@ -4219,6 +4295,7 @@ export async function prepareDeployCompose(
             // Left out when there are none, so an environment without generated
             // files keeps the hash it already has.
             ...nonEmptyListField('configFiles', withVariables.configFiles),
+            ...nonEmptyListField('networkShareCredentials', withVariables.networkShareCredentials),
             storage: storageMaterialRaw,
             ...cacheHashInputs(cacheState),
           },
@@ -4234,14 +4311,23 @@ export async function prepareDeployCompose(
     sites: localSiteBound,
     nativeAppServices: nodeVersions.apps,
     nativeAppVariables: nativeAppVariableViews(nodeVersions.apps, nativeVariables),
+    serviceVariables: buildServiceVariablesViews(
+      withVariables,
+      new Set(
+        sourceMaterial
+          .filter((row) => row.rollbackToReleaseId === undefined && row.build.kind !== 'static')
+          .map((row) => row.composeServiceName)
+      )
+    ),
     nativeAppNodeVersions: nodeVersions.views,
     nativeAppDenoVersions: nativeAppDenoVersionViews(nodeVersions.apps),
     sourceMaterial,
+    composeCheckout,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
     fabricNetworks: fabricNetworksFromSchedule(params.schedule),
     managedNetworkServices,
-    ...(managedNetwork === undefined ? {} : { managedNetwork }),
+    ...optionalField('managedNetwork', managedNetwork),
     containers: pipeline.containers,
     ingressServices: pipeline.ingressServices,
     edge,
@@ -4253,6 +4339,8 @@ export async function prepareDeployCompose(
     secretPlan: withVariables.secretPlan,
     configFiles: withVariables.configFiles,
     configSecretRefs: withVariables.configSecretRefs,
+    networkShareCredentials: withVariables.networkShareCredentials,
+    ...optionalField('networkSharesResolved', withVariables.networkSharesResolved),
     sourceSelection: params.sourceSelection,
   })
 }
@@ -4641,7 +4729,7 @@ function isTlsSource(value: string): value is TlsSource {
   return (TLS_SOURCES as readonly string[]).includes(value)
 }
 
-type OrgTlsCandidate = TlsCandidate & {
+export type OrgTlsCandidate = TlsCandidate & {
   certificatePem: string | null
   privateKeyPem: string | null
   /** The stored pair was ordered by a serving server at the panel's request (see `http-issuance`). */
@@ -4693,7 +4781,7 @@ type HostingServiceRow = {
   composeServiceName: string
 }
 
-type HostingRow = {
+export type HostingRow = {
   id: string
   options: unknown
   tlsId: string | null
@@ -4754,30 +4842,26 @@ function tlsPinErrorResponse(
   )
 }
 
-/** The 409 for a hosting whose tunnel names cannot be locked; `serverId` is named when the daemon is the problem. */
+/** The 409 for a hosting whose tunnel names cannot be locked. */
 function nameLockRefusalResponse(
   refusal: { code: string; hostnames: string[] },
-  hostingId: string,
-  serverId: string
+  hostingId: string
 ): Response {
   return Response.json(
     {
       error: refusal.code,
       hostingId,
       hostnames: refusal.hostnames,
-      ...(refusal.code === 'tunnel_daemon_too_old' ? { serverId } : {}),
     },
     { status: 409 }
   )
 }
 
-/** The pinned row holds a pair ordered by this flow, and the target server's daemon lists the feature. */
-async function takesCentralPair(
-  db: Db,
+/** The pinned row holds a pair ordered by this flow and covering every name the site answers on. */
+function takesCentralPair(
   pinned: OrgTlsCandidate | undefined,
-  serverId: string,
   site: Readonly<{ hostnames: string[]; www: HostingWwwMode }>
-): Promise<boolean> {
+): boolean {
   if (!pinned?.httpCentralPair || !pinned.certificatePem || !pinned.privateKeyPem) return false
   // One stored pair serves every site that pins the row, so it must cover all the
   // row's names, and every name this site answers on (its www mode adds the other
@@ -4785,9 +4869,7 @@ async function takesCentralPair(
   // them stays with the server's own web server.
   const stored = pinned.metadata.acme?.storedNames
   if (!stored || !coversAllHostnames(stored, pinned.metadata.dnsNames)) return false
-  if (!coversAllHostnames(stored, hostingCertificateNames(site))) return false
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return state?.projection?.features?.includes(ACME_ISSUE_FEATURE) === true
+  return coversAllHostnames(stored, hostingCertificateNames(site))
 }
 
 /**
@@ -4822,7 +4904,250 @@ async function resolveHostingBindAndWeb(
   return { bindResolved, web }
 }
 
-async function resolveHttpHostingEntry(
+type NameChoiceRead = {
+  hostname: string
+  typed: boolean
+  certificate: string
+  tlsId: string | null
+}
+
+/**
+ * The pin of every name the hosting answers on (typed names and the www names
+ * its choice adds). A name with no stored choice follows the site pin. A name
+ * set to Let's Encrypt via DNS that holds no ready pair deploys on the
+ * self-signed one; it never asks the server for a public certificate.
+ * `uniformPin` is set when every name has the same pin, the case that sends no
+ * per-name field.
+ */
+async function readNameChoices(
+  db: Db,
+  h: HostingRow,
+  candidates: OrgTlsCandidate[],
+  hostnames: string[],
+  www: HostingWwwMode
+): Promise<{ choices: NameChoiceRead[]; uniformPin: string | null | undefined }> {
+  const stored = (await loadNameCertificates(db, [h.id])).get(h.id) ?? []
+  const byName = new Map(stored.map((row) => [row.hostname, row]))
+  const typed = new Set(hostnames)
+  const choices = hostingRoutingNames(hostnames, www).map((name): NameChoiceRead => {
+    const row = byName.get(name)
+    const pin = row === undefined ? h.tlsId : row.tlsId
+    const certificate = row?.certificate ?? 'library'
+    const pair = pin === null ? undefined : candidates.find((candidate) => candidate.id === pin)
+    const waitingForDns =
+      certificate === 'letsencrypt_dns' &&
+      (pair === undefined || pair.metadata.status === 'automatic')
+    return {
+      hostname: name,
+      typed: typed.has(name),
+      certificate,
+      tlsId: waitingForDns ? null : pin,
+    }
+  })
+  if (choices.length === 0) return { choices, uniformPin: h.tlsId }
+  const pins = new Set(choices.map((choice) => choice.tlsId))
+  return { choices, uniformPin: pins.size === 1 ? choices[0]!.tlsId : undefined }
+}
+
+/**
+ * The wire value of each name when the names do not share one pin: the pins are
+ * resolved group by group, each against the names that use it, with the
+ * refusals a whole-site pin gets.
+ */
+function resolvePerNameWires(params: {
+  h: HostingRow
+  candidates: OrgTlsCandidate[]
+  acmeEnabled: boolean
+  choices: NameChoiceRead[]
+}): { names: NameWire[] } | { error: Response } {
+  const { h, candidates, acmeEnabled, choices } = params
+  const bindScope = resolveHostingBind(parseHostingOptions(h.options))
+  const groups = new Map<string | null, NameChoiceRead[]>()
+  for (const choice of choices) {
+    groups.set(choice.tlsId, [...(groups.get(choice.tlsId) ?? []), choice])
+  }
+  const valueByPin = new Map<string | null, NameWireValue>()
+  for (const [pinId, group] of groups) {
+    const names = group.map((choice) => choice.hostname)
+    const typedNames = group.filter((choice) => choice.typed).map((choice) => choice.hostname)
+    const pinned = pinId === null ? undefined : candidates.find((c) => c.id === pinId)
+    // A Let's Encrypt pin is issued name by name, so only the typed names are checked against it.
+    const coverage = pinned?.source === 'lets_encrypt' && typedNames.length > 0 ? typedNames : names
+    const resolved = resolveTlsForHosting({ pinId, hostnames: coverage, candidates })
+    if (!resolved.ok) {
+      return {
+        error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames: names, www: 'off' }),
+      }
+    }
+    const resolvedPin = resolved.tlsId
+      ? candidates.find((candidate) => candidate.id === resolved.tlsId)
+      : undefined
+    const wire = hostingTlsWireFromResolved({
+      tlsId: resolved.tlsId,
+      status: resolvedPin?.metadata.status,
+      bindScope,
+      acmeEnabled,
+      centralPair: takesCentralPair(resolvedPin, { hostnames: names, www: 'off' }),
+    })
+    if (!wire.ok) {
+      return { error: Response.json({ error: wire.error, hostingId: h.id }, { status: 400 }) }
+    }
+    valueByPin.set(
+      pinId,
+      wire.tlsMode === 'acme' ? { tlsId: null, tlsMode: 'acme' } : { tlsId: wire.tlsId }
+    )
+  }
+  return {
+    names: choices.map((choice) => ({
+      hostname: choice.hostname,
+      typed: choice.typed,
+      value: valueByPin.get(choice.tlsId)!,
+    })),
+  }
+}
+
+/** Does this server's daemon list the per-name certificate feature? A read that fails counts as no. */
+async function serverTakesNameTls(db: Db, serverId: string): Promise<boolean> {
+  try {
+    const state = await getServerDaemonStateByServerId(db, serverId)
+    return (state?.projection?.features ?? []).includes(HOSTING_NAME_TLS_FEATURE)
+  } catch {
+    return false
+  }
+}
+
+/** The one certificate wire for a row whose names all share a pin. */
+function resolveUniformTlsWire(
+  h: HostingRow,
+  params: {
+    sitePinId: string | null
+    candidates: OrgTlsCandidate[]
+    acmeEnabled: boolean
+    hostnames: string[]
+    www: HostingWwwMode
+  }
+): { tlsWire: Extract<HostingTlsWire, { ok: true }> } | { error: Response } {
+  const { sitePinId, candidates, acmeEnabled, hostnames, www } = params
+  // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
+  // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
+  const resolved = resolveTlsForHosting({
+    pinId: sitePinId,
+    hostnames: pinCoverageNames(sitePinId, candidates, { hostnames, www }),
+    candidates,
+  })
+  if (!resolved.ok) {
+    const pinned = candidates.find((candidate) => candidate.id === sitePinId)
+    return {
+      error: tlsPinErrorResponse(resolved.error, h.id, pinned, { hostnames, www }),
+    }
+  }
+
+  const bindScope = resolveHostingBind(parseHostingOptions(h.options))
+  const pinned = resolved.tlsId
+    ? candidates.find((candidate) => candidate.id === resolved.tlsId)
+    : undefined
+  const wire = hostingTlsWireFromResolved({
+    tlsId: resolved.tlsId,
+    status: pinned?.metadata.status,
+    bindScope,
+    acmeEnabled,
+    centralPair: takesCentralPair(pinned, { hostnames, www }),
+  })
+  if (!wire.ok) {
+    return { error: Response.json({ error: wire.error, hostingId: h.id }, { status: 400 }) }
+  }
+  return { tlsWire: wire }
+}
+
+/** The row-level wire and `nameTls` entries for a row whose names resolve to different pins. */
+async function resolveMixedNameTls(
+  db: Db,
+  h: HostingRow,
+  serverId: string,
+  params: {
+    perName: { names: NameWire[] }
+    lock: Exclude<Awaited<ReturnType<typeof resolveDeployNameLock>>, { refusal: unknown }>
+    hostnames: string[]
+    www: HostingWwwMode
+  }
+): Promise<
+  | {
+      tlsWire: Extract<HostingTlsWire, { ok: true }>
+      nameTls: EnvironmentDeployNameTls[] | undefined
+    }
+  | { error: Response }
+> {
+  const { perName, lock, hostnames, www } = params
+  // A name that arrives only through the tunnel never asks for a public certificate.
+  const closed = new Set(
+    (lock.tunnel?.hostnames ?? []).filter((name) => !lock.tunnel?.openHostnames?.includes(name))
+  )
+  const names = perName.names.map((name) =>
+    name.value.tlsMode === 'acme' && closed.has(name.hostname)
+      ? { ...name, value: { tlsId: null } }
+      : name
+  )
+  const send = planNameTlsForServer(names, {
+    avoidAcmeAtRow: closed.size > 0,
+    redirects: new Map(hostingWwwRedirects({ hostnames, www }).map((r) => [r.from, r.to])),
+    serverTakesNameTls: await serverTakesNameTls(db, serverId),
+  })
+  if (!send.ok) {
+    return {
+      error: Response.json(
+        { error: send.error, message: send.message, hostingId: h.id },
+        { status: 409 }
+      ),
+    }
+  }
+  const { plan } = send
+  return {
+    tlsWire: {
+      ok: true,
+      tlsId: plan.row.tlsId,
+      ...(plan.row.tlsMode === undefined ? {} : { tlsMode: plan.row.tlsMode }),
+    },
+    nameTls: plan.nameTls.length > 0 ? plan.nameTls : undefined,
+  }
+}
+
+/**
+ * The certificate wire of a row. Names that share one pin take today's path
+ * and send today's payload; names that resolve to different pins come back as
+ * `perName` and are worked out name by name once the tunnel lock is known.
+ */
+async function resolveRowTls(
+  db: Db,
+  h: HostingRow,
+  params: {
+    candidates: OrgTlsCandidate[]
+    acmeEnabled: boolean
+    hostnames: string[]
+    www: HostingWwwMode
+  }
+): Promise<
+  | { perName: { names: NameWire[] } | null; tlsWire: Extract<HostingTlsWire, { ok: true }> }
+  | { error: Response }
+> {
+  const { candidates, acmeEnabled, hostnames, www } = params
+  const read = await readNameChoices(db, h, candidates, hostnames, www)
+  if (read.uniformPin === undefined) {
+    const perName = resolvePerNameWires({ h, candidates, acmeEnabled, choices: read.choices })
+    if ('error' in perName) return perName
+    return { perName, tlsWire: { ok: true, tlsId: null } }
+  }
+  const uniform = resolveUniformTlsWire(h, {
+    sitePinId: read.uniformPin,
+    candidates,
+    acmeEnabled,
+    hostnames,
+    www,
+  })
+  if ('error' in uniform) return uniform
+  return { perName: null, tlsWire: uniform.tlsWire }
+}
+
+export async function resolveHttpHostingEntry(
   db: Db,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
@@ -4845,81 +5170,87 @@ async function resolveHttpHostingEntry(
   const panelRefusal = await panelHostnameRefusal(db, svc.composeServiceName, { hostnames, www })
   if (panelRefusal) return { prepareError: panelRefusal }
 
-  // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
-  // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
-  const resolved = resolveTlsForHosting({
-    pinId: h.tlsId,
-    hostnames: pinCoverageNames(h.tlsId, candidates, { hostnames, www }),
-    candidates,
-  })
-  if (!resolved.ok) {
-    const pinned = candidates.find((candidate) => candidate.id === h.tlsId)
-    return {
-      error: tlsPinErrorResponse(resolved.error, h.id, pinned, {
-        hostnames,
-        www,
-      }),
-    }
-  }
-
-  const bindScope = resolveHostingBind(parseHostingOptions(h.options))
-  const pinned = resolved.tlsId
-    ? candidates.find((candidate) => candidate.id === resolved.tlsId)
-    : undefined
-  const tlsWire = hostingTlsWireFromResolved({
-    tlsId: resolved.tlsId,
-    status: pinned?.metadata.status,
-    bindScope,
-    acmeEnabled,
-    centralPair: await takesCentralPair(db, pinned, serverId, { hostnames, www }),
-  })
-  if (!tlsWire.ok) {
-    return {
-      error: Response.json(
-        { error: tlsWire.error, hostingId: h.id },
-        {
-          status: 400,
-        }
-      ),
-    }
-  }
+  const rowTls = await resolveRowTls(db, h, { candidates, acmeEnabled, hostnames, www })
+  if ('error' in rowTls) return rowTls
+  const { perName } = rowTls
+  let { tlsWire } = rowTls
 
   const bindAndWeb = await resolveHostingBindAndWeb(db, h, serverId)
   if ('prepareError' in bindAndWeb) return bindAndWeb
   const { bindResolved, web } = bindAndWeb
 
+  // A mixed row never asks the lock for the whole-site Let's Encrypt refusal:
+  // a tunnel-only name that was given a public certificate is set aside below.
   const lock = await resolveDeployNameLock(db, {
     organizationId,
     serverId,
     hostingId: h.id,
     siteHostnames: hostnames,
     www,
-    tlsMode: tlsWire.tlsMode,
+    tlsMode: perName === null ? tlsWire.tlsMode : undefined,
   })
-  if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id, serverId) }
+  if ('refusal' in lock) return { error: nameLockRefusalResponse(lock.refusal, h.id) }
+
+  let nameTls: EnvironmentDeployNameTls[] | undefined
+  if (perName !== null) {
+    const mixed = await resolveMixedNameTls(db, h, serverId, { perName, lock, hostnames, www })
+    if ('error' in mixed) return mixed
+    tlsWire = mixed.tlsWire
+    nameTls = mixed.nameTls
+  }
 
   // A hosting whose names are all tunnel-only never asks for a public certificate,
   // and keeps no Let's Encrypt row waiting on one.
-  if (lock.dropPublicCertificate === true) {
+  const dropCertificate = lock.dropPublicCertificate === true
+  if (dropCertificate) {
     await settleTunnelOnlyHosting(db, { organizationId, hostingId: h.id })
   }
-  const tlsMode = lock.dropPublicCertificate === true ? undefined : tlsWire.tlsMode
+  const tlsMode = dropCertificate ? undefined : tlsWire.tlsMode
   return {
-    entry: {
-      hostingId: h.id,
-      serviceId: svc.id,
-      composeServiceName: svc.composeServiceName,
+    entry: buildHttpHostingEntry(h, svc, {
       hostnames,
-      ...(lock.tunnel === undefined ? {} : { tunnel: lock.tunnel }),
-      pathPrefix: readPathPrefix(h.options),
-      targetPort: readTargetPort(h.options),
+      www,
+      tunnel: lock.tunnel,
       tlsId: tlsWire.tlsId,
-      ...(tlsMode === undefined ? {} : { tlsMode }),
-      proxy: readHostingProxyFromOptions(h.options),
-      ...(www === 'off' ? {} : { www }),
-      ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
-      ...(web === undefined ? {} : { web }),
-    },
+      tlsMode,
+      bindAddress: bindResolved,
+      web,
+      nameTls,
+    }),
+  }
+}
+
+/** The deploy row of an HTTP hosting; the optional parts are left out when unset. */
+function buildHttpHostingEntry(
+  h: HostingRow,
+  svc: Readonly<{ id: string; composeServiceName: string }>,
+  parts: {
+    hostnames: string[]
+    www: HostingWwwMode
+    tunnel: DeployHostingPayload['tunnel']
+    tlsId: string | null
+    tlsMode: DeployHostingPayload['tlsMode']
+    bindAddress: DeployHostingPayload['bindAddress']
+    web: DeployHostingPayload['web']
+    nameTls: EnvironmentDeployNameTls[] | undefined
+  }
+): DeployHostingPayload {
+  const { hostnames, www, tunnel, tlsId, tlsMode, bindAddress, web, nameTls } = parts
+  return {
+    hostingId: h.id,
+    serviceId: svc.id,
+    composeServiceName: svc.composeServiceName,
+    hostnames,
+    ...(tunnel === undefined ? {} : { tunnel }),
+    pathPrefix: readPathPrefix(h.options),
+    targetPort: readTargetPort(h.options),
+    tlsId,
+    ...(tlsMode === undefined ? {} : { tlsMode }),
+    proxy: readHostingProxyFromOptions(h.options),
+    ...(www === 'off' ? {} : { www }),
+    ...(bindAddress === undefined ? {} : { bindAddress }),
+    ...(web === undefined ? {} : { web }),
+    ...(nameTls === undefined ? {} : { nameTls }),
   }
 }
 
@@ -5068,6 +5399,8 @@ async function buildHostingsForService(
     if (result.entry.tlsId && result.entry.tlsMode !== 'acme') {
       tlsIds.push(result.entry.tlsId)
     }
+    // A name given its own pair needs that pair in `tlsMaterial` too.
+    tlsIds.push(...nameTlsPinIds(result.entry.nameTls))
   }
   return { hostings, tlsIds }
 }
@@ -5344,8 +5677,7 @@ async function compileServerEdgeDeployment(
         db,
         params.serverId,
         params.serverOrganizationId ?? params.organizationId
-      ),
-      (await getServerDaemonStateByServerId(db, params.serverId))?.projection?.features
+      )
     ),
   }
 }

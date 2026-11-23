@@ -80,7 +80,12 @@ export function validatePermissionEntityCompatibility(
     }
   }
 
-  if (isSystemPermissionKey(permissionKey) && entityType !== 'organization') {
+  if (
+    (isSystemPermissionKey(permissionKey) ||
+      permissionKey === 'environments.deploy_network_shares' ||
+      permissionKey === 'terminal:container') &&
+    entityType !== 'organization'
+  ) {
     return {
       ok: false,
       error: `${permissionKey} may only be granted on organization entities`,

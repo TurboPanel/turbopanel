@@ -89,6 +89,11 @@ export type AuthRouteOpts = {
    * Required for passkey register/login; derived at boot from `TURBOPANEL_SECRET`.
    */
   webauthnChallengeSecrets?: DerivedSecretsConfig
+  /**
+   * HMAC keyring for web terminal tickets (`shell-ticket` purpose). Without it
+   * terminal sessions cannot be opened; derived at boot from `TURBOPANEL_SECRET`.
+   */
+  shellTicketSecrets?: DerivedSecretsConfig
   runtime: 'deno' | 'workers'
   /**
    * Fetch used to read Let's Encrypt's directory for its current terms (the

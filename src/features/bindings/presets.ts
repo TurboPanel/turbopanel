@@ -30,7 +30,16 @@ export function isBindingPreset(value: unknown): value is BindingPreset {
 
 /** The fields a template may name (the reference fields a preset reads). */
 type PresetField =
-  'host' | 'port' | 'name' | 'user' | 'password' | 'url' | 'ssl_mode' | 'ca_file' | 'ca_text'
+  | 'host'
+  | 'port'
+  | 'name'
+  | 'user'
+  | 'password'
+  | 'url'
+  | 'ssl_mode'
+  | 'ca_file'
+  | 'ca_text'
+  | 'jdbc_ssl'
 
 const SECRET_FIELDS: ReadonlySet<string> = new Set(['password', 'url', 'ca_text'])
 /** Fields a PHP site must receive for the app to connect at all. */
@@ -90,8 +99,13 @@ const PRESET_DEFINITIONS: Readonly<Record<BindingPreset, PresetDefinition>> = {
     engines: ALL_ENGINES,
     entries: [
       {
+        // MariaDB uses Laravel's `mysql` connection too: it speaks the same
+        // protocol, every Laravel version has that connection, and an app's
+        // own `mysql` block can read DB_STRICT. Laravel 11+ merges its stock
+        // `mariadb` connection (strict mode hard-coded, no env switch) into
+        // every app, and an app older than 11 has no `mariadb` connection.
         name: 'DB_CONNECTION',
-        template: { postgres: 'pgsql', mysql: 'mysql', mariadb: 'mariadb' },
+        template: { postgres: 'pgsql', mysql: 'mysql', mariadb: 'mysql' },
       },
       { name: 'DB_HOST', template: '{host}' },
       { name: 'DB_PORT', template: '{port}' },
@@ -123,6 +137,18 @@ const PRESET_DEFINITIONS: Readonly<Record<BindingPreset, PresetDefinition>> = {
       { name: 'MB_DB_DBNAME', template: '{name}' },
       { name: 'MB_DB_USER', template: '{user}' },
       { name: 'MB_DB_PASS', template: '{password}' },
+      // The JDBC URI carries the TLS flags (the binding's own URL spells them for
+      // libpq / libmysql, which JDBC ignores). The user and password stay in
+      // MB_DB_USER / MB_DB_PASS, so no secret is in this value.
+      {
+        name: 'MB_DB_CONNECTION_URI',
+        template: {
+          postgres: 'postgres://{host}:{port}/{name}?{jdbc_ssl}',
+          mysql: 'mysql://{host}:{port}/{name}?{jdbc_ssl}',
+          mariadb: 'mysql://{host}:{port}/{name}?{jdbc_ssl}',
+        },
+        when: 'ssl',
+      },
     ],
   },
   'uptime-kuma': {
@@ -188,6 +214,32 @@ function conditionHolds(when: PresetCondition | undefined, sslMode: string | nul
   return sslMode !== 'disable'
 }
 
+/**
+ * The TLS query of a JDBC URL, or `undefined` when it cannot be stated:
+ * - Postgres (pgjdbc) takes the mode as is, and `sslrootcert` in the verify
+ *   modes; without a CA file a verify mode is left out rather than weakened.
+ * - MySQL family: Metabase ships only the MariaDB 2.x driver, which has no
+ *   `sslMode` option and ignores unknown ones. `useSsl=true` turns TLS on;
+ *   `serverSslCert` takes the PEM CA, with `disableSslHostnameVerification`
+ *   for `verify-ca`. The weaker modes encrypt without a certificate check.
+ *   A verify mode with no CA file is left out, as for Postgres.
+ */
+function jdbcSslQuery(
+  engineCode: string,
+  sslMode: ManagedSslMode | null,
+  caFile: string | undefined
+): string | undefined {
+  if (sslMode === null || sslMode === 'disable') return undefined
+  const verifies = VERIFY_MODES.has(sslMode)
+  if (verifies && caFile === undefined) return undefined
+  if (engineCode === 'postgres') {
+    return verifies ? `sslmode=${sslMode}&sslrootcert=${caFile}` : `sslmode=${sslMode}`
+  }
+  if (!verifies) return 'useSsl=true&trustServerCertificate=true'
+  const base = `useSsl=true&serverSslCert=${caFile}`
+  return sslMode === 'verify-ca' ? `${base}&disableSslHostnameVerification=true` : base
+}
+
 export type PresetRow = { key: string; value: string; isSecret: boolean }
 
 /** Values the caller holds, by field. A field the delivery kind cannot have is absent. */
@@ -218,10 +270,13 @@ export function renderPresetRows(
   }>
 ): PresetRow[] {
   const rows: PresetRow[] = []
+  const jdbcSsl = jdbcSslQuery(params.engineCode, params.sslMode, params.fields.ca_file)
+  const fields: PresetFieldValues =
+    jdbcSsl === undefined ? params.fields : { ...params.fields, jdbc_ssl: jdbcSsl }
   for (const entry of PRESET_DEFINITIONS[preset].entries) {
     const template = templateFor(entry, params.engineCode)
     if (template === null || !conditionHolds(entry.when, params.sslMode)) continue
-    const value = renderTemplate(template, params.fields)
+    const value = renderTemplate(template, fields)
     if (value === null) continue
     rows.push({
       key: entry.name,

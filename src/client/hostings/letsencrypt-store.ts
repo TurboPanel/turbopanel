@@ -39,6 +39,7 @@ import { inetAddressToString } from '../../lib/ip-address.ts'
 import { coversAllHostnames } from '../../lib/tls/match.ts'
 import { splitTlsMetadata } from '../../lib/tls/metadata.ts'
 import { materialFromLetsEncrypt, isCreateTlsFailure } from '../tls/routes-helpers.ts'
+import { pinHostingNames } from '../../features/hostings/name-certificates.ts'
 import {
   LETS_ENCRYPT_CREATED_FOR_SITES,
   lockOrganizationLetsEncrypt,
@@ -274,6 +275,8 @@ export function createLetsEncryptStore(db: Db): LetsEncryptStore {
             : {}),
         })
         .where(eq(hosting.id, hostingId))
+      // The pin is for the whole site, so every name follows it.
+      if (patch.tlsId !== undefined) await pinHostingNames(db, hostingId, patch.tlsId)
     },
   }
 }

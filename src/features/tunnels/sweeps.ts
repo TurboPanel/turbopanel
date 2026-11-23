@@ -1,14 +1,16 @@
 /**
  * The periodic tunnel sweeps, in the order they run. Both schedulers walk this
  * one list: the hosted cron (`runQueuedCronSweeps` in
- * `daemon/cell/offline-sweep.ts`) and the self-hosted minute timer
+ * `daemon/cell/offline-sweep.ts`) and the self-hosted job tick
  * (`platform/deno/server.ts`), so a sweep added here runs on both.
  *
  * Each sweep decides for itself, from the database, whether there is work: an
  * unchanged table or connector list is not sent again, a removal waits out its
  * own back-off, a token is checked once a day and a server is asked for its
- * connector status at most every ten minutes. Calling them every minute is
- * therefore cheap.
+ * connector status at most every ten minutes. Both schedulers call the list on
+ * the `tunnelSweeps` job cadence (5 minutes by default) and every minute while
+ * the `tunnelsUrgent` gate is true; user changes send their tables directly
+ * (`nudgeTunnelRoutes`), so the list is the repair path.
  */
 import type { Db } from '../../db/connection.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -19,6 +21,7 @@ import { runTunnelConnectorsSweepTick } from './connector-sync.ts'
 import { runTunnelRemovalSweepTick } from './removal.ts'
 import { runRunTokenRotationSweepTick } from './run-token-rotation.ts'
 import { runTunnelStatusPollTick } from './status-poll.ts'
+import { runVerifiedNamesSweepTick } from './verified-names-sweep.ts'
 import { runTunnelRoutesSweepTick } from './sync.ts'
 
 export type TunnelSweepDeps = Readonly<{
@@ -39,6 +42,12 @@ export const TUNNEL_SWEEPS: readonly TunnelSweep[] = [
   {
     failureLabel: 'tunnel-routes-sweep-failed',
     run: (db, deps) => runTunnelRoutesSweepTick(db, deps),
+  },
+  // Names the connector may verify: a deploy that carried a certificate (or a
+  // pair that changed) makes a name verifiable, so the routes are written again.
+  {
+    failureLabel: 'tunnel-verified-names-sweep-failed',
+    run: (db, deps) => runVerifiedNamesSweepTick(db, { secrets: deps.dataEncryptionSecrets }),
   },
   // Tunnel connectors: each carrying server is told to run its tunnels, and to
   // drop the ones that moved away. A resend leaves a running connector alone.

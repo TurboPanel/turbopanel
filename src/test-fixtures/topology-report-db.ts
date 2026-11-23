@@ -1,6 +1,6 @@
 /**
  * A fake `Db` surface for tests that only need to see what a `topology-report`
- * writes. `recordTopologyGeneration` runs inside a transaction, locks the
+ * writes. `recordTopologyReport` runs inside a transaction, locks the
  * server row (a `select ... for update`, nothing stored yet) and writes the
  * `server.hardware` column; this fake answers the select and captures the
  * value the update carried.
@@ -11,8 +11,6 @@ import type { Db } from '../db/connection.ts'
 
 export type RecordedTopologyInsert = {
   serverId: string
-  generation: number
-  bootGeneration: number
   snapshot: unknown
   appliedAt: string
 }
@@ -38,15 +36,11 @@ export function withTopologyReportRecording(base: Record<string, unknown>): {
         where: (condition: SQL) => {
           if (values.hardware) {
             const written = JSON.parse(String(dialect.sqlToQuery(values.hardware).params[0])) as {
-              generation: number
-              bootGeneration: number
               snapshot: unknown
               appliedAt: string
             }
             inserted.push({
               serverId: String(dialect.sqlToQuery(condition).params[0]),
-              generation: written.generation,
-              bootGeneration: written.bootGeneration,
               snapshot: written.snapshot,
               appliedAt: written.appliedAt,
             })

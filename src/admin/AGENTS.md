@@ -1,5 +1,13 @@
 # Admin Surface (`src/admin/`)
 
+- `GET /organizations` (`organization-routes.ts`, `features/organizations/admin-list.ts`):
+  every organization, oldest first, in one statement with grouped counts:
+  `{ ok, organizations: [{ id, name, createdAt, owner: { id, name, email } | null,
+memberCount, serverCount, projectCount, isRoot }] }`. Admin or superadmin (the
+  admin gate). Deleting one is the client route `DELETE /organizations/:id`
+  (see `src/client/AGENTS.md`), which holds the same rules for a platform admin
+  (step-up, exact-name confirm, 409 while servers, tunnels or DNS records
+  remain, never the root); it is audited `organization.delete`.
 - `src/admin/routes.ts` — admin surface (`/api/admin/v1`); **now mounted** on
   both runtimes; gated to `superadmin` or `admin` via
   `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar;
@@ -10,7 +18,7 @@
   of any organization's ACME opt-in); the reads stay admin-gated but the
   writes (PUT hostnames, POST certificates, PATCH certificate hostnames, PUT
   acme) sit behind `createRootOnlyMiddleware` like public URLs and apply; `GET /instance/daemon` reports the
-  co-located daemon's `resolveDaemonCapabilities` snapshot (`{ applicable: false }`
+  co-located daemon's connection and version (`{ applicable: false }`
   on Workers, and it must not wake a cell); `GET /instance/updates` reports the
   installed control-plane version (`INSTANCE_VERSION` plus `resolveInstanceRevision`)
   and the co-located daemon's `daemonBuild` beside each channel manifest target,
@@ -36,11 +44,11 @@
   `src/deno-dev.ts` while the developer surface is on, so they are absent (404)
   elsewhere and stay out of the admin spec; this file must never import
   `src/developer/*`. GET answers `{ ok, daemonBuild: { built: { commit,
-  buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
-  servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
-  }], job: null | { id, state: building | pushing | done | failed, startedAt,
-  endedAt, message, servers: [{ id, name, ok, skipped, error }] },
-  pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
+buildId, builtAt, source } | null, sourceFingerprint, sourceChanged },
+servers: [{ id, name, connected, daemonVersion, daemonCommit, onLatestBuild
+}], job: null | { id, state: building | pushing | done | failed, startedAt,
+endedAt, message, servers: [{ id, name, ok, skipped, error }] },
+pendingDaemonChanges, host }` (remote servers only; the job lives in memory and a
   restart forgets it). `host` is the co-located daemon's development host
   status (`dev-host-status`, feature `dev-host-v1`, kept in memory by
   `src/developer/dev-host-status.ts`) with the control plane part's
@@ -78,18 +86,7 @@
   configured primary hostname (409 `no_primary_hostname`; never the request's host), and Emergency
   Revoke always moves to a key made for it. `PUT /instance/hostnames` refuses (409
   `rotation_rp_id_hostname`) a primary hostname other than the marked passkeys' `rp_id`;
-  `GET /instance/identity/sealed-secrets` (superadmin) reports per server whether secrets still
-  reach it in plaintext (feature, sealing key id, `plaintext_secrets_at`);
-  `DELETE /instance/identity/sealed-secrets/:serverId/key` is Clear Sealing Key
-  (superadmin, `?confirmName` = server name then hostname then id or 400
-  `confirm_name_required`, then step-up `server.sealing_key.clear`, audited as
-  `server.sealing_key.clear` with no notification event): it clears the three
-  `sealing_key_*` columns through `clearDaemonSealingKey`, answers
-  `{ ok, cleared }` (`cleared: false` when no key was on file), and refuses 409
-  `daemon_seals_secrets` while the server is connected with a hello listing
-  `daemon-sealed-secrets-v1` (that daemon would refuse plaintext; the update
-  checks the same condition and the key id again, so a daemon that connects
-  after the read keeps its key); the self-hosted
+  the self-hosted
   tunnel-token write sits behind the same step-up and is audited as `instance.tunnel_token.set`;
   `GET /instance/platform-ca` and
   `POST /instance/platform-ca/trust-reconcile` are Deno-only Platform CA read

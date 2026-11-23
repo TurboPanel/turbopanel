@@ -28,8 +28,14 @@ function extractLicenseArg(command: string): string {
 test('formatInstallScriptCurlUrl fetches the CDN over https and appends /run.sh elsewhere', () => {
   assertEquals(formatInstallScriptCurlUrl('https://turbopanel.sh'), 'https://turbopanel.sh')
   assertEquals(formatInstallScriptCurlUrl(CDN_INSTALL_HOST), 'https://turbopanel.sh')
-  assertEquals(formatInstallScriptCurlUrl('https://huey.lan:8443'), 'https://huey.lan:8443/run.sh')
-  assertEquals(formatInstallScriptCurlUrl('https://huey.lan:8443'), 'https://huey.lan:8443/run.sh')
+  assertEquals(
+    formatInstallScriptCurlUrl('https://server-a.example.lan:8443'),
+    'https://server-a.example.lan:8443/run.sh'
+  )
+  assertEquals(
+    formatInstallScriptCurlUrl('https://server-a.example.lan:8443'),
+    'https://server-a.example.lan:8443/run.sh'
+  )
 })
 
 test('encodeLicenseArg emits base64url without padding', () => {
@@ -42,7 +48,7 @@ test('encodeLicenseArg emits base64url without padding', () => {
 test('buildLicenseInstallCommand uses dev /run.sh with insecure TLS', () => {
   const command = buildLicenseInstallCommand({
     runtime: 'deno',
-    instanceUrl: 'https://huey.turbopanel.dev:8443',
+    instanceUrl: 'https://server-a.turbopanel.dev:8443',
     licenseId: 'license-id',
     licenseToken: 'token',
     caFingerprints: ['a'.repeat(64)],
@@ -51,12 +57,12 @@ test('buildLicenseInstallCommand uses dev /run.sh with insecure TLS', () => {
   })
   const encoded = encodeLicenseArg('license-id', 'token')
 
-  assertEquals(command.includes('curl -fsSLk https://huey.turbopanel.dev:8443/run.sh'), true)
+  assertEquals(command.includes('curl -fsSLk https://server-a.turbopanel.dev:8443/run.sh'), true)
   assertEquals(command.includes(`TURBOPANEL_LICENSE=${encoded}`), true)
-  assertEquals(command.includes('TURBOPANEL_HOST=https://huey.turbopanel.dev:8443'), true)
+  assertEquals(command.includes('TURBOPANEL_HOST=https://server-a.turbopanel.dev:8443'), true)
   assertEquals(command.includes('TURBOPANEL_INSECURE_TLS=1'), true)
   assertEquals(
-    command.includes('TURBOPANEL_DL_BASE=https://huey.turbopanel.dev:8443/downloads/daemon'),
+    command.includes('TURBOPANEL_DL_BASE=https://server-a.turbopanel.dev:8443/downloads/daemon'),
     true
   )
 })

@@ -54,7 +54,6 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
-import { MANAGED_DATA_ONLY_READWRITE_FEATURE } from '../../lib/version-wire.ts'
 import {
   createCommandRecord,
   getCommandRecord,
@@ -753,6 +752,186 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       const getBody = (await getRes.json()) as Record<string, unknown>
       assertEquals(JSON.stringify(getBody).includes('password'), false)
       assertEquals(JSON.stringify(getBody).includes('tpsecret.'), false)
+    }
+  )
+})
+
+test('POST create retries a failed first apply in place and keeps the bindings', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      const managedId = created.managed.id
+      await db
+        .update(managed)
+        .set({
+          status: 'failed',
+          metadata: sql`${managed.metadata} || '{"error":"compose up failed"}'::jsonb`,
+        })
+        .where(eq(managed.id, managedId))
+
+      const [consumer] = await db
+        .insert(service)
+        .values({ environmentId, name: 'app', composeServiceName: 'app' })
+        .returning({ id: service.id })
+      const [rootRow] = await db
+        .select({ id: login.id })
+        .from(login)
+        .where(and(eq(login.managedId, managedId), eq(login.role, 'root')))
+        .limit(1)
+      await db.insert(binding).values({
+        loginId: rootRow!.id,
+        serviceId: consumer!.id,
+        databaseId: await databaseIdByName(db, managedId, 'defaultdb'),
+        keyPrefix: 'DATABASE',
+        isEmitEngineDefaults: true,
+      })
+      const queuedBefore = commandQueue.envelopes.length
+
+      // A retry whose apply cannot be queued puts the row back and drops
+      // nothing; the root password is never touched.
+      const [before] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      const enqueue = commandQueue.enqueue
+      commandQueue.enqueue = () => {
+        throw new Error('queue unavailable')
+      }
+      const refused = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      commandQueue.enqueue = enqueue
+      assertEquals(refused.status, 503)
+      const [restored] = await db
+        .select({ status: managed.status, metadata: managed.metadata })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+      assertEquals(restored!.status, 'failed')
+      assertEquals((restored!.metadata as { error?: string }).error, 'compose up failed')
+      const [after] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      assertEquals(after!.password, before!.password)
+      assertEquals(
+        (
+          await db
+            .select({ id: binding.id })
+            .from(binding)
+            .where(eq(binding.serviceId, consumer!.id))
+        ).length,
+        1
+      )
+
+      const bindingCount = async () =>
+        (
+          await db
+            .select({ id: binding.id })
+            .from(binding)
+            .where(eq(binding.serviceId, consumer!.id))
+        ).length
+
+      // A throw after the row moved still puts it back as `failed`.
+      const originalInsert = db.insert
+      Object.assign(db, {
+        insert: () => {
+          throw new Error('boom')
+        },
+      })
+      const thrown = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      Object.assign(db, { insert: originalInsert })
+      assertEquals(thrown.status, 500)
+      const [afterThrow] = await db
+        .select({ status: managed.status, metadata: managed.metadata })
+        .from(managed)
+        .where(eq(managed.id, managedId))
+      assertEquals(afterThrow!.status, 'failed')
+      assertEquals((afterThrow!.metadata as { error?: string }).error, 'compose up failed')
+      assertEquals(await bindingCount(), 1)
+
+      // A second POST while a retry holds the row (provisioning, fresh marker)
+      // is refused and must not read it as an abandoned create and delete it.
+      await db
+        .update(managed)
+        .set({
+          status: 'provisioning',
+          metadata: sql`${managed.metadata} || jsonb_build_object('retryStartedAt', now()::text)`,
+        })
+        .where(eq(managed.id, managedId))
+      const concurrent = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(concurrent.status, 409)
+      assertEquals(
+        (
+          await db
+            .select({ id: managed.id })
+            .from(managed)
+            .where(eq(managed.environmentId, environmentId))
+        ).length,
+        1
+      )
+      assertEquals(await bindingCount(), 1)
+      // Once the marker is stale the retry died: the row is retried in place.
+      await db
+        .update(managed)
+        .set({
+          metadata: sql`${managed.metadata} || jsonb_build_object('retryStartedAt', '2020-01-01T00:00:00.000Z')`,
+        })
+        .where(eq(managed.id, managedId))
+
+      const retry = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(retry.status, 200)
+      const retryBody = (await retry.json()) as {
+        alreadyProvisioned?: boolean
+        rootPassword?: string
+        managed: { id: string }
+      }
+      assertEquals(retryBody.alreadyProvisioned, undefined)
+      assertEquals(retryBody.rootPassword, undefined)
+      // Same row: nothing was deleted, so the binding survives.
+      assertEquals(retryBody.managed.id, managedId)
+      const rows = await db
+        .select({ id: managed.id, status: managed.status, metadata: managed.metadata })
+        .from(managed)
+        .where(eq(managed.environmentId, environmentId))
+      assertEquals(rows.length, 1)
+      assertEquals(rows[0]!.id, managedId)
+      assertEquals(rows[0]!.status, 'applying')
+      assertEquals((rows[0]!.metadata as { error?: string }).error, undefined)
+      assertEquals(await bindingCount(), 1)
+      const [finalLogin] = await db
+        .select({ password: login.password })
+        .from(login)
+        .where(eq(login.id, rootRow!.id))
+      assertEquals(finalLogin!.password, before!.password)
+      const queued = commandQueue.envelopes.slice(queuedBefore)
+      assertEquals(queued[0]?.type, 'managed.apply')
     }
   )
 })
@@ -1606,6 +1785,196 @@ test('POST restore 409s when the artifact is on a former primary, and does not f
       } finally {
         await db.delete(backup).where(eq(backup.managedId, created.managed.id))
         await db.delete(server).where(eq(server.id, formerId))
+      }
+    }
+  )
+})
+
+test('POST restore refuses unknown body fields and says restore is in place only', async () => {
+  await withManagedFixtures(
+    {},
+    async ({
+      db,
+      app,
+      secrets,
+      commandQueue,
+      userId,
+      organizationId,
+      workspaceId,
+      environmentId,
+      serverId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const managedId = ((await create.json()) as { managed: { id: string } }).managed.id
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+
+      const [otherProject] = await db
+        .insert(project)
+        .values({
+          name: 'Other Cluster',
+          workspaceId,
+          organizationId,
+          kind: 'managed',
+          metadata: { code: 'postgres' },
+        })
+        .returning({ id: project.id })
+      const [otherEnv] = await db
+        .insert(environment)
+        .values({ name: 'production', projectId: otherProject!.id, serverId })
+        .returning({ id: environment.id })
+      const [otherManaged] = await db
+        .insert(managed)
+        .values({
+          environmentId: otherEnv!.id,
+          serverId,
+          name: 'Other Postgres',
+          engine: 'postgres',
+          status: 'ready',
+          options: { settings: getManagedEngineSpec('postgres')!.defaultSettings },
+        })
+        .returning({ id: managed.id })
+      try {
+        await db.insert(backup).values({
+          backupId: 'bk_other_cluster',
+          managedId: otherManaged!.id,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          sizeBytes: 100,
+          checksum: 'a'.repeat(64),
+          database: 'postgres',
+          path: '/var/lib/turbopanel/managed/x/backups/bk_other_cluster.dump',
+          serverId,
+        })
+        const before = commandQueue.envelopes.length
+        const restoreUrl = (id: string) =>
+          `/environments/${environmentId}/managed/backups/${id}/restore`
+
+        const extra = await app.request(restoreUrl('bk_missing'), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ target: 'other-cluster' }),
+        })
+        assertEquals(extra.status, 400)
+        const extraBody = (await extra.json()) as { error: string; fields: string[] }
+        assertEquals(extraBody.error, 'unknown_fields')
+        assertEquals(extraBody.fields, ['target'])
+
+        const mixed = await app.request(restoreUrl('bk_missing'), {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ fromCopy: false, target: 'x' }),
+        })
+        assertEquals(mixed.status, 400)
+
+        const other = await app.request(restoreUrl('bk_other_cluster'), {
+          method: 'POST',
+          headers,
+          body: '{}',
+        })
+        assertEquals(other.status, 404)
+        const otherBody = (await other.json()) as { error: string; message: string }
+        assertEquals(otherBody.error, 'backup_on_other_cluster')
+        assertEquals(otherBody.message.includes('only works in place'), true)
+
+        const missing = await app.request(restoreUrl('bk_missing'), {
+          method: 'POST',
+          headers,
+          body: '{}',
+        })
+        assertEquals(missing.status, 404)
+        assertEquals(await missing.json(), { error: 'backup_not_found' })
+        assertEquals(commandQueue.envelopes.length, before)
+      } finally {
+        await db.delete(backup).where(eq(backup.managedId, otherManaged!.id))
+        await db.delete(managed).where(eq(managed.id, otherManaged!.id))
+        await db.delete(environment).where(eq(environment.id, otherEnv!.id))
+        await db.delete(project).where(eq(project.id, otherProject!.id))
+      }
+    }
+  )
+})
+
+test('POST restore does not confirm a backup id held by another organization', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, workspaceId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const managedId = ((await create.json()) as { managed: { id: string } }).managed.id
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, managedId))
+
+      const [foreignOrg] = await db
+        .insert(organization)
+        .values({ name: 'Restore Foreign Org' })
+        .returning({ id: organization.id })
+      const [foreignProject] = await db
+        .insert(project)
+        .values({
+          name: 'Foreign Cluster',
+          workspaceId,
+          organizationId: foreignOrg!.id,
+          kind: 'managed',
+          metadata: { code: 'postgres' },
+        })
+        .returning({ id: project.id })
+      const [foreignEnv] = await db
+        .insert(environment)
+        .values({ name: 'production', projectId: foreignProject!.id, serverId })
+        .returning({ id: environment.id })
+      const [foreignManaged] = await db
+        .insert(managed)
+        .values({
+          environmentId: foreignEnv!.id,
+          serverId,
+          name: 'Foreign Postgres',
+          engine: 'postgres',
+          status: 'ready',
+          options: { settings: getManagedEngineSpec('postgres')!.defaultSettings },
+        })
+        .returning({ id: managed.id })
+      try {
+        await db.insert(backup).values({
+          backupId: 'bk_foreign_org',
+          managedId: foreignManaged!.id,
+          createdAt: '2024-01-01T00:00:00.000Z',
+          sizeBytes: 100,
+          checksum: 'a'.repeat(64),
+          database: 'postgres',
+          path: '/var/lib/turbopanel/managed/x/backups/bk_foreign_org.dump',
+          serverId,
+        })
+        const res = await app.request(
+          `/environments/${environmentId}/managed/backups/bk_foreign_org/restore`,
+          { method: 'POST', headers, body: '{}' }
+        )
+        assertEquals(res.status, 404)
+        assertEquals(await res.json(), { error: 'backup_not_found' })
+      } finally {
+        await db.delete(backup).where(eq(backup.managedId, foreignManaged!.id))
+        await db.delete(managed).where(eq(managed.id, foreignManaged!.id))
+        await db.delete(environment).where(eq(environment.id, foreignEnv!.id))
+        await db.delete(project).where(eq(project.id, foreignProject!.id))
+        await db.delete(organization).where(eq(organization.id, foreignOrg!.id))
       }
     }
   )
@@ -3376,31 +3745,6 @@ for (const engine of ['mysql', 'mariadb'] as const) {
   test(`POST app-logins on ${engine}: owner, read/write and read-only, no straight through`, async () => {
     await withManagedFixtures({ engine }, async (ctx) => {
       const cluster = await appLoginsCluster(ctx)
-      // A daemon too old for the data-only read/write level refuses, and nothing is added.
-      const tooOld = await cluster.appLogins({ prefix: 'shop' })
-      assertEquals(tooOld.status, 409)
-      assertEquals(await cluster.userLogins(), [])
-
-      const [current] = await ctx.db
-        .select({ daemon: server.daemon })
-        .from(server)
-        .where(eq(server.id, ctx.serverId))
-      const daemon = (current?.daemon ?? {}) as { projection?: { features?: string[] } }
-      await ctx.db
-        .update(server)
-        .set({
-          daemon: {
-            ...daemon,
-            projection: {
-              ...daemon.projection,
-              features: [
-                ...(daemon.projection?.features ?? []),
-                MANAGED_DATA_ONLY_READWRITE_FEATURE,
-              ],
-            },
-          },
-        })
-        .where(eq(server.id, ctx.serverId))
       const before = ctx.commandQueue.envelopes.length
       const made = await cluster.appLogins({ prefix: 'shop' })
       assertEquals(made.status, 200)

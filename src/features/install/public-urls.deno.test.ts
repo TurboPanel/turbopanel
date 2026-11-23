@@ -3,8 +3,8 @@ import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import { instanceHostname, instanceUploadedCertificate, setting } from '../../db/schema.ts'
-import { getPublicUrls, PUBLIC_URLS_SETTING_KEY, setPublicUrls } from './public-urls.ts'
+import { instanceHostname, instanceUploadedCertificate } from '../../db/schema.ts'
+import { getPublicUrls, setPublicUrls } from './public-urls.ts'
 import { applyUploadedCertificateHosts, upsertInstanceHostname } from './instance-hostnames.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -27,11 +27,6 @@ async function withPublicUrlsFixture(
 
   const db = createDenoDb()
   const previousHostnames = await db.select().from(instanceHostname)
-  const previousSetting = await db
-    .select({ value: setting.value })
-    .from(setting)
-    .where(eq(setting.key, PUBLIC_URLS_SETTING_KEY))
-    .limit(1)
 
   try {
     await fn(db)
@@ -40,30 +35,12 @@ async function withPublicUrlsFixture(
     if (previousHostnames.length > 0) {
       await db.insert(instanceHostname).values(previousHostnames)
     }
-    if (previousSetting.length === 0) {
-      await db.delete(setting).where(eq(setting.key, PUBLIC_URLS_SETTING_KEY))
-    } else {
-      await db
-        .insert(setting)
-        .values({
-          key: PUBLIC_URLS_SETTING_KEY,
-          value: previousSetting[0]!.value,
-        })
-        .onConflictDoUpdate({
-          target: setting.key,
-          set: {
-            value: previousSetting[0]!.value,
-            updatedAt: new Date().toISOString(),
-          },
-        })
-    }
   }
 }
 
 test('getPublicUrls returns an empty list when unset', async () => {
   await withPublicUrlsFixture(async (db) => {
     await db.delete(instanceHostname)
-    await db.delete(setting).where(eq(setting.key, PUBLIC_URLS_SETTING_KEY))
     assertEquals(await getPublicUrls(db), [])
   })
 })
@@ -74,29 +51,6 @@ test('getPublicUrls reads array values through the hostname table', async () => 
     assertEquals(await getPublicUrls(db), [
       'https://panel.example.com:8443',
       'backup.example.com:8443',
-    ])
-  })
-})
-
-test('getPublicUrls migrates a legacy setting string when the hostname table is empty', async () => {
-  await withPublicUrlsFixture(async (db) => {
-    await db.delete(instanceHostname)
-    await db
-      .insert(setting)
-      .values({
-        key: PUBLIC_URLS_SETTING_KEY,
-        value: ' https://one.example.com , https://two.example.com ',
-      })
-      .onConflictDoUpdate({
-        target: setting.key,
-        set: {
-          value: ' https://one.example.com , https://two.example.com ',
-          updatedAt: new Date().toISOString(),
-        },
-      })
-    assertEquals(await getPublicUrls(db), [
-      'https://one.example.com:8443',
-      'https://two.example.com:8443',
     ])
   })
 })

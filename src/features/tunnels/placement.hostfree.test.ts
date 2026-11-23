@@ -2,7 +2,6 @@ import { assert, assertEquals } from '@std/assert'
 import {
   parsePlacementBody,
   hostnameLockSkippedWarning,
-  hostnameLockWarning,
   placementWarnings,
   portalChanges,
   resolveCarryingServers,
@@ -132,14 +131,6 @@ test('a placement change keeps the rows of servers whose role is unchanged', () 
   })
   assertEquals(portalChanges(existing, existing), { remove: [], add: [] })
   assertEquals(portalChanges([], existing), { remove: [], add: existing })
-})
-
-test('servers that cannot add a lock get a plain warning, and none means no warning', () => {
-  assertEquals(hostnameLockWarning(0), null)
-  assert(hostnameLockWarning(1)!.includes('1 server that runs this Tunnel’s sites cannot lock'))
-  assert(hostnameLockWarning(1)!.includes('until the site is deployed again'))
-  assert(hostnameLockWarning(3)!.includes('3 servers'))
-  assert(hostnameLockWarning(3)!.includes('Update their daemons'))
 })
 
 test('sites the lock add skips get their own plain warning', () => {

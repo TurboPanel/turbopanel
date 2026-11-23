@@ -1192,19 +1192,6 @@ test('PUT /fabric enabled:false pauses the mesh, keeps relays and keys, and send
   )
 })
 
-test('PUT /fabric enabled:false refuses to pause when a daemon is too old to keep its key', async () => {
-  const { app, cookie, fabricPatches, enqueued } = await buildEnabledFabricApp({
-    withRelay: true,
-  })
-  const res = await putFabricOff(app, cookie)
-  assertEquals(res.status, 409)
-  const body = (await res.json()) as { error: string; serverIds: string[]; message: string }
-  assertEquals(body.error, 'fabric_pause_needs_daemon_update')
-  assertEquals(body.serverIds, [serverId])
-  assertEquals(fabricPatches, [])
-  assertEquals(enqueued, [])
-})
-
 test('PUT /fabric enabled:false keeps the mesh on when a pause cannot reach a server', async () => {
   const { app, cookie, fabricPatches } = await buildEnabledFabricApp({
     withRelay: true,

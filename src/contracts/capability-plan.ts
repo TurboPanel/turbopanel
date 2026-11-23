@@ -135,7 +135,7 @@ export function isGpuDerivedSignalId(signalId: unknown): boolean {
 /**
  * How many of `signals` prove host-level sensors. GPU-derived signals are
  * excluded: a virtual display adapter or passthrough GPU reports them on a VM
- * too (the io/megaclite/themisto bug), so they never make a machine physical.
+ * too (the io/megaclite bug), so they never make a machine physical.
  * Accepts topology snapshot entries (`{ signalId }`) and sample signals alike.
  */
 export function countHostLevelSignals(signals: readonly unknown[]): number {
@@ -153,7 +153,7 @@ export function countHostLevelSignals(signals: readonly unknown[]): number {
 /**
  * Infer a machine class from whichever topology snapshot is on hand (the
  * daemon's `topology-report.snapshot`, stored verbatim by
- * `recordTopologyGeneration`). A v6 daemon states its own verdict in
+ * `recordTopologyReport`). A v6 daemon states its own verdict in
  * `snapshot.machineClass` (DMI-based, `physical-classifier.ts`), and that
  * wins: a bare-metal host with nothing discoverable is still physical.
  * Without it, the sensor proxy: a physical host is the only kind that ever

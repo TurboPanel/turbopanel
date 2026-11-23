@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
+import { newHttpIssuanceState } from '../../features/tls/http-issuance/state.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
@@ -810,6 +811,70 @@ test('a certificate a tunnel provider issued cannot be revoked, deleted or creat
       .where(eq(tls.id, row!.id))
       .limit(1)
     assertEquals(still?.status, 'ready')
+  })
+})
+
+test('DELETE /tls/:id is refused while the order still has DNS challenge records to remove', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { cookie, [ORG_ID_HEADER]: organizationId }
+    const [row] = await db
+      .insert(tls)
+      .values({
+        organizationId,
+        source: 'lets_encrypt',
+        status: 'automatic',
+        metadata: {
+          dnsNames: ['example.com'],
+          dnsCert: {
+            carrierId: 'carrier-1',
+            records: [
+              {
+                zoneId: 'zone-1',
+                recordId: 'rec-1',
+                name: '_acme-challenge.example.com',
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        },
+      })
+      .returning({ id: tls.id })
+    const refused = await app.request(`/tls/${row!.id}`, { method: 'DELETE', headers })
+    assertEquals(refused.status, 409)
+    assertEquals(((await refused.json()) as { error: string }).error, 'tls_dns_records_outstanding')
+    const [still] = await db.select({ id: tls.id }).from(tls).where(eq(tls.id, row!.id))
+    assertEquals(still?.id, row!.id)
+  })
+})
+
+test('DELETE /tls/:id is refused while an order is open', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { cookie, [ORG_ID_HEADER]: organizationId }
+    const state = newHttpIssuanceState({
+      issuingServerId: crypto.randomUUID(),
+      requestId: 'req_delete_open',
+      startedAt: '2026-11-01T12:00:00.000Z',
+      startByAt: '2026-11-01T12:15:00.000Z',
+      challenge: 'dns-01',
+      orderNames: ['example.com'],
+      endedAt: null,
+    })
+    const [row] = await db
+      .insert(tls)
+      .values({
+        organizationId,
+        source: 'lets_encrypt',
+        status: 'automatic',
+        metadata: { dnsNames: ['example.com'], httpCert: state },
+      })
+      .returning({ id: tls.id })
+    const refused = await app.request(`/tls/${row!.id}`, { method: 'DELETE', headers })
+    assertEquals(refused.status, 409)
+    assertEquals(((await refused.json()) as { error: string }).error, 'tls_order_open')
+    const [still] = await db.select({ id: tls.id }).from(tls).where(eq(tls.id, row!.id))
+    assertEquals(still?.id, row!.id)
   })
 })
 

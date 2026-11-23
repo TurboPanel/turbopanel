@@ -1,6 +1,7 @@
 import { assertEquals } from '@std/assert'
 import {
   classifyDeployFailure,
+  classifyPostDeployFailure,
   DEPLOY_CANCELLED_ERROR_CODE,
   deployOutcomeErrorCode,
   deployOutcomeReason,
@@ -59,4 +60,67 @@ test('a cancelled deploy is told apart by the daemon error prefix and is not a r
   // Neither a strategy outcome nor a rollback: history reads it from `status`.
   assertEquals(classifyDeployFailure(message), null)
   assertEquals(outcomeFromErrorCode(DEPLOY_CANCELLED_ERROR_CODE), null)
+})
+
+const AFTER_SWITCH =
+  'post_deploy_failed_after_switch: Post-deploy commands for site web failed after the new release rel-2 went live. /usr/bin/php exited with exit status 1. Roll back to the previous release rel-1 from the deploy page if the site is not working.'
+
+test('a post-deploy failure after the switch names the program and offers Roll Back', () => {
+  const failure = classifyPostDeployFailure(AFTER_SWITCH)
+  assertEquals(failure?.program, '/usr/bin/php')
+  assertEquals(failure?.how, 'exited with exit status 1')
+  assertEquals(failure?.failedReleaseId, 'rel-2')
+  assertEquals(failure?.previousReleaseId, 'rel-1')
+  assertEquals(failure?.rollBackAvailable, true)
+  assertEquals(
+    failure?.message,
+    'The post-deploy command /usr/bin/php exited with exit status 1 after the new release went live. Roll back to the previous release if the site is not working.'
+  )
+  const timedOut = classifyPostDeployFailure(
+    AFTER_SWITCH.replace('exited with exit status 1', 'timed out')
+  )
+  assertEquals(
+    timedOut?.message.startsWith('The post-deploy command /usr/bin/php timed out after'),
+    true
+  )
+})
+
+test('a signal stop and an unnamed program still keep the release ids', () => {
+  const signal = classifyPostDeployFailure(
+    AFTER_SWITCH.replace('exited with exit status 1', 'was stopped by SEGV')
+  )
+  assertEquals(signal?.program, '/usr/bin/php')
+  assertEquals(signal?.how, 'was stopped by SEGV')
+  assertEquals(signal?.failedReleaseId, 'rel-2')
+  assertEquals(signal?.previousReleaseId, 'rel-1')
+  assertEquals(signal?.rollBackAvailable, true)
+  for (const how of ['exited with exit status 1', 'timed out', 'was stopped by SEGV', 'failed']) {
+    const unnamed = classifyPostDeployFailure(
+      AFTER_SWITCH.replace('/usr/bin/php exited with exit status 1', `a command ${how}`)
+    )
+    assertEquals(unnamed?.program, null)
+    assertEquals(unnamed?.how, how)
+    assertEquals(unnamed?.previousReleaseId, 'rel-1')
+    assertEquals(unnamed?.rollBackAvailable, true)
+  }
+})
+
+test('a post-deploy failure without a program or a previous release still reads clearly', () => {
+  const failure = classifyPostDeployFailure(
+    'post_deploy_failed_after_switch: Post-deploy commands for site web failed after the new release rel-2 went live. Roll back to the previous release from the deploy page if the site is not working.'
+  )
+  assertEquals(failure?.program, null)
+  assertEquals(failure?.rollBackAvailable, false)
+  assertEquals(failure?.message, 'A post-deploy command failed after the new release went live.')
+})
+
+test('an unknown or older error text is not a post-deploy failure', () => {
+  assertEquals(classifyPostDeployFailure('Docker Compose deployment failed'), null)
+  assertEquals(
+    classifyPostDeployFailure(
+      'Post-deploy commands for site web failed after the new release went live.'
+    ),
+    null
+  )
+  assertEquals(classifyPostDeployFailure(null), null)
 })

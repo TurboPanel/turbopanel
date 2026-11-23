@@ -1,8 +1,5 @@
 import { assertEquals } from '@std/assert'
-import {
-  mergeManagedFailureMessages,
-  pickManagedFailureMessage,
-} from './last-error.ts'
+import { mergeManagedFailureMessages, pickManagedFailureMessage } from './last-error.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -16,7 +13,7 @@ test('mergeManagedFailureMessages skips blanks and duplicates', () => {
   assertEquals(mergeManagedFailureMessages(null, '  ', undefined), null)
   assertEquals(
     mergeManagedFailureMessages('docker.sock denied', 'docker.sock denied', 'proxysql missing'),
-    'docker.sock denied\nproxysql missing',
+    'docker.sock denied\nproxysql missing'
   )
 })
 
@@ -28,40 +25,40 @@ test('pickManagedFailureMessage prefers latest apply-family then ingress', () =>
         {
           type: 'managed.ingress.reconcile',
           status: 'failed',
-          error: 'proxysql admin.cnf is missing',
+          errorMessage: 'proxysql admin.cnf is missing',
           context: {},
           createdAt: '2026-08-19T18:00:02.000Z',
         },
         {
           type: 'managed.apply',
           status: 'failed',
-          error: 'permission denied while trying to connect to the docker API',
+          errorMessage: 'permission denied while trying to connect to the docker API',
           context: { managedId },
           createdAt: '2026-08-19T18:00:01.000Z',
         },
         {
           type: 'managed.apply',
           status: 'failed',
-          error: 'older apply error',
+          errorMessage: 'older apply error',
           context: { managedId },
           createdAt: '2026-08-19T17:00:00.000Z',
         },
         {
           type: 'managed.apply',
           status: 'failed',
-          error: 'other cluster',
+          errorMessage: 'other cluster',
           context: { managedId: 'managed-2' },
         },
         {
           type: 'managed.apply',
           status: 'succeeded',
-          error: null,
+          errorMessage: null,
           context: { managedId },
         },
       ],
-      managedId,
+      managedId
     ),
-    'permission denied while trying to connect to the docker API\nproxysql admin.cnf is missing',
+    'permission denied while trying to connect to the docker API\nproxysql admin.cnf is missing'
   )
 })
 
@@ -73,42 +70,45 @@ test('pickManagedFailureMessage ignores ingress failure superseded by a later su
         {
           type: 'managed.ingress.reconcile',
           status: 'succeeded',
-          error: null,
+          errorMessage: null,
           context: {},
           createdAt: '2026-08-19T19:15:04.000Z',
         },
         {
           type: 'managed.ingress.reconcile',
           status: 'failed',
-          error: 'managed-ingress descriptor is missing',
+          errorMessage: 'managed-ingress descriptor is missing',
           context: {},
           createdAt: '2026-08-19T18:40:00.000Z',
         },
         {
           type: 'managed.apply',
           status: 'failed',
-          error: "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)",
+          errorMessage:
+            "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)",
           context: { managedId },
           createdAt: '2026-08-19T19:16:00.000Z',
         },
       ],
-      managedId,
+      managedId
     ),
-    "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)",
+    "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)"
   )
 })
 
 test('pickManagedFailureMessage returns null when nothing failed', () => {
   assertEquals(
     pickManagedFailureMessage(
-      [{
-        type: 'managed.apply',
-        status: 'succeeded',
-        error: null,
-        context: { managedId: 'managed-1' },
-      }],
-      'managed-1',
+      [
+        {
+          type: 'managed.apply',
+          status: 'succeeded',
+          errorMessage: null,
+          context: { managedId: 'managed-1' },
+        },
+      ],
+      'managed-1'
     ),
-    null,
+    null
   )
 })

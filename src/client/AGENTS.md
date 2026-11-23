@@ -45,13 +45,12 @@ changes.
   sentence, because the parse drops what it cannot read. Deploy prepare
   (`environments/deploy-site-lifecycle.ts`) turns them into `sites[].postDeploy`
   and `sites[].workers`: a site with either and no principal is
-  **422 `site_lifecycle_unowned`**; a server whose daemon lacks
-  `site-php-lifecycle-v1` is **409 `site_lifecycle_unsupported`** naming the
-  server (a site without them deploys as before). Commands on a managed-directory
+  **422 `site_lifecycle_unowned`** (a site without them deploys as before). Commands on a managed-directory
   site are not sent (no release); workers are. A retried deploy can run commands
   again, so say "should be safe to run more than once" wherever they are described.
   The server services response carries the PHP patch versions (`patches`),
-  `restartError` and per-service `phpVersion` / `phpRestartPending`, never the
+  `restartError` and per-service `phpVersion` / `phpRestartPending` / `phpShared` (the daemon's
+  `runtimes.php.sites[].shared`, absent from an older daemon), never the
   raw site list. Keep `RESERVED_BUILD_ENV_KEYS` in `features/compose/build-env.ts`
   in step with the daemon's.
 - **Tunnel provider accounts (client surface):** `GET|POST /organizations/:id/carriers`,
@@ -80,7 +79,9 @@ changes.
   are more). Each item carries `state` + `failure`, `finishedAt`, `actorType` /
   `actorName` (a current member's name or email; otherwise `Platform Admin` for an instance administrator or `Former Member`), the push `trigger` (`branch`, `commitSha`, `sourceId`, and `pushedBy`: the pusher's git login, `null` when unknown) and the `commit` (first recorded release,
   else the pushed SHA); `step` / `totalSteps` / `stepLabel` come from the
-  daemon's step plan on `command.progress` (`null` until it reports one);
+  daemon's step plan on `command.progress` (`null` until it reports one;
+  `totalSteps` is every listed step and `step` the running step's place in the
+  list, so the web interface's "Step N of M" matches);
   `crashCount` is always `null` until restart counts are recorded. Gate as the
   members list: unreachable org or bad uuid **404**, no owner/manager rights
   **403**; rows are limited to `listVisible(server)` and to servers of the
@@ -104,6 +105,34 @@ changes.
   `server.timezone` column). Commands: `POST /servers/:id/timezone`
   (`server.timezone.set`, also persists the server override) and
   `POST /servers/:id/ntp` (`server.ntp.set`) — manage-gated, create-then-poll.
+  Org delete: `DELETE /organizations/:id?confirmName=<exact name>`
+  (`organizations/delete-routes.ts`) — the owner or a platform admin
+  (`organization:own`); a manager who is not the owner gets 403. Always asks
+  for step-up (`requireInstanceStepUp`, `organization.delete`, whatever the
+  organization's switch says). Order: 401, 404 (unknown, or one the caller
+  cannot see: a stranger gets 404 as on GET), 403, 403 `reauth_required`,
+  400 `confirm_name_required`, then 409 `root_organization` (the id pinned in
+  the `setting` row `INSTANCE_ROOT_ORGANIZATION`, written by the install and
+  backfilled on first lookup; `findDefaultInstalledOrganizationId`, never the
+  display name),
+  `organization_has_servers` (`serverCount`), `organization_has_tunnels`
+  (`tunnelCount`) and `organization_has_dns_records` (`dnsRecordCount`); each
+  409 carries `error`, `code` and `message`. Servers are never moved, shared or
+  disconnected: they are purged or removed one by one first (a server can never
+  change organization). Tunnels and DNS records live at a provider the cascade
+  cannot reach, so they are removed first too. The blockers are counted
+  under a `FOR UPDATE` lock on the organization row inside the delete
+  transaction (`deleteOrganizationIfClear`), including rows on its carriers, so
+  a racing insert still gets the 409. On success it removes the rows, the
+  `permission` grants on the organization, its teams, workspaces and projects,
+  and writes the audit (`organization.delete`, null organization id: the
+  organization's own audit rows cascade away) in that one transaction
+  (`{ ok: true, id }`). A person whose last organization was deleted has none:
+  `GET /organizations` answers `{ organizations: [] }`, the UI lands on the
+  organization switcher, and `POST /organizations` creates the next. Left behind on purpose: people's accounts, ACME and
+  uploaded certificates are database rows only (nothing is revoked at the
+  authority), and Git provider applications or installations registered at
+  GitHub or GitLab stay registered there.
   Org record: `GET`/`PATCH /organizations/:id` — GET is access-gated (same
   visibility as the org list: team membership, owner/manager grant, or platform
   admin; missing or inaccessible → **404**); PATCH is manage-gated and takes any
@@ -224,14 +253,13 @@ changes.
   is a teardown (reclaims `network(kind='compose')` + `subnet`).
   **Trusted LAN wins (one pair rule, `serversShareTrustedLan` in
   `features/net/private-endpoint.ts`):** two servers that share a trusted
-  datacenter network giving both an IPv4 address, both daemons listing
-  `fabric-lan-routes-v1`, have **no tunnel** (an IPv6-only shared network keeps
+  datacenter network giving both an IPv4 address have **no tunnel** (an IPv6-only shared network keeps
   the tunnel; the managed-database ladder still uses it): they are not WireGuard peers, the ladder never gives them a fabric
   address, and a cross-server container network between them rides the LAN
   (`lanRoutes`: each routes the other's `server.container_prefix` via its IPv4
   LAN address) with TurboFabric on, paused or off
   (`reconcileServerNetworking`; outside a running mesh the payload is
-  `tunnel: false`). A pair with an older daemon keeps its tunnel over the LAN.
+  `tunnel: false`).
   While TurboFabric is not running for a pair (off, paused, a server switched
   off), a change that would end a LAN pair holding a cross-server network is
   refused (`409 lan_pair_in_use`: marking the datacenter untrusted, removing a
@@ -349,7 +377,47 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   compose (a catalog entry's shared compose merged with each environment's own,
   `catalog-compose.ts`) into the environment's own changes, so a deploy sees the
   same merged compose as before. A compose that names a repository
-  (`composeSource`) or has project overlays stays in the Base for now.
+  (`composeSource`) or has project overlays stays in the Base.
+- **A project from a Git repository follows its compose file:** the wizard
+  seeds the file into the Base (never the environment layer) and
+  `composeSource.mode` defaults to `track` (`lastReadCommitSha` and
+  `lastReadDigest` start as the seeded values). In `track` mode every deploy
+  reads `composeSource.path` at the commit it deploys through the repository
+  inspect path (`environments/deploy-tracked-base.ts`, no second clone; a
+  push's commit, else the head of the branch the environment builds for that
+  repository (its own `x-turbopanel.source.branch`, e.g. staging on `staging`),
+  else `composeSource.ref` or the default branch; the same commit pins the
+  builds and is what the command records), uses it as the Base, and layers the
+  environment's changes on top. The deploy command's `context.composeBase`
+  (`{sourceId, ref, path, commitSha, digest}`) is returned as `composeBase` on
+  deployment history and on the preview. A missing or unusable file fails the
+  deploy, with no fallback: 422 `compose_file_missing` /
+  `compose_file_unparseable`, 502 `compose_source_unavailable`, each with
+  `message`, `sourceId`, `ref`, `path`, `commitSha`. A hostings-only run keeps
+  the stored Base. A rollback reads the file again at the commit its release's
+  deployment recorded in `composeBase` (never the latest read, and it stores
+  nothing); a release deployed without a record is refused (**409**
+  `rollback_base_unrecorded`; switch to `seed` to roll back). The deploy stores
+  what it read as the Base only once it is accepted (a refused deploy leaves it
+  unchanged) and only when it read the project's own branch (`composeSource.ref`,
+  else the repository default): an environment building another branch such as
+  `staging` is built from that branch's file but never changes the shared Base
+  or the last read. Listings, lint
+  and a switch to `seed` see the last-read content; the environment-layer lint
+  therefore uses the last-deployed Base. `lastReadAt` (ISO time of the latest
+  tracked read, stored in the same options JSON; a read of an unchanged file
+  moves only it) is shown at `options.composeSource.lastReadAt`. `mode` and
+  `lastRead*` are never writable through `PATCH /projects/:id` or create, for a `seed` project as
+  much as a `track` one.
+  Preview reads the branch head and, when that fails, uses the stored Base with
+  a `compose_base_unreadable` warning. Known limit: the read passes no daemon
+  credential, so a private repository the provider cannot read may need its
+  connection fixed. Base edits in `track` mode, and changes to `composeSource` other than
+  `mode`, are **409** `base_tracks_repository` (`projects/tracked-base-edit.ts`); the
+  settings in the same options write (`containerNaming`, `defaultServerId`, deploy
+  tuning) still save and the stored Base is kept;
+  `PATCH /projects/:id/compose-source {mode}` switches between `track` and
+  `seed` (seed keeps the last-read Base editable).
 - **A new environment is a copy of the primary one:** `POST /environments`
   without `options` copies the primary's `compose` and `composeOverlays`
   (`start: 'copy'`, the default; `features/projects/primary-environment-copy.ts`)
@@ -466,7 +534,13 @@ deploy_options_invalid` on environments; the reason string on projects) and a
   (`deploy_rolled_back` / `deploy_needs_attention`) and `deployment.metadata`
   (`deployment.outcome` stays `failed`: its check allows only applied/failed/timed_out),
   and deployment history entries expose `strategy`, `strategyOutcome`,
-  `strategyOutcomeReason`. A multi-server `sequential` deploy
+  `strategyOutcomeReason`. A site whose post-deploy commands fail after the new
+  release is live fails with `post_deploy_failed_after_switch: ...` (a text prefix, like
+  the above); it is kept as `command.error_code`
+  `deploy_post_deploy_failed_after_switch`, and history entries expose
+  `postDeployFailure` (program, plain message, `rollBackAvailable`). The program's
+  output is already in the deploy log. An older daemon's text stays an ordinary
+  failure. A multi-server `sequential` deploy
   is a rolling deploy: `deploy.update_config.parallelism` (default 1, `0` = all at once)
   that many servers update at once. Only the first batch's commands are queued; the rest are
   recorded (deployment target `pending`, `options.rollout = { batch, batches }`, command
@@ -670,9 +744,10 @@ sourceServerId? }`
     (`DEFAULT_DATACENTER_PRIORITY`). A request (`POST` / `PATCH`) carrying an
     out-of-range or non-integer value is **400** `invalid_priority`
     (`hasInvalidPriority`); the column CHECK backs it.
-  - `trusted` — boolean; absent = **`true`** (`DEFAULT_DATACENTER_TRUSTED`).
-    `false` marks a datacenter whose L2 is **not** under the operator's control
-    (shared or provider-owned segments).
+  - `trusted` — boolean; absent = **`false`** (`DEFAULT_DATACENTER_TRUSTED`).
+    `false` (untrusted) marks a datacenter whose L2 is **not** under the
+    operator's control: server-to-server traffic goes over TurboFabric, with no
+    LAN routes and no Raft group on it. `true` is set only by an admin.
 
   `PATCH /datacenters/:id` accepts both under the same **replace-all `options`**
   semantics as `addressPreference` (send the merged object; a key left out resets
@@ -862,4 +937,4 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
 
 - `desiredHash` (see `environments/deploy-inputs-digest.ts`) covers the compose document, every source's commit and build inputs, variables (including linked-database logins, which are materialized into variables before the deploy is prepared), hostnames, sites, apps and storage. The organization CA is not part of a deploy payload (it travels in its own trust command), so it neither changes the hash nor needs to. The digest input includes plaintext secret variable values, but only the SHA-256 leaves the panel and is stored; no input is kept. Inputs that cannot be compared between sends (daemon-sealed values, a source known only by branch name) make the hash unique, so those deploys always run. The host additionally verifies that what the last deploy put in place is still running before it skips.
 - `POST /environments/:id/stop` is Destroy (the UI's Destroy button and the project delete wizard). The lifecycle bar's Stop uses `POST /environments/:id/lifecycle` with `stop`, which never sends `releaseCleanup`. Only the Destroy route sends `releaseCleanup`, which clears releases and keeps each service folder and its uploads.
-- Destroy that deletes data (owner decision 2026-11-09, "ask each time"): `POST /environments/:id/stop` with `{ deleteVolumes: true, confirmName, volumeIds }` also removes the environment's registered Docker volumes. Off by default; an empty body is a plain Destroy, byte for byte. `environments/data-volumes.ts` decides the list (`kind = 'volume'` storage rows of the environment or its services with a Docker copy, named by their storage id, not external, not common, no `share` row and no mount from another environment's service); `GET /environments/:id/data-volumes` returns it for the dialog with `kept` reasons, `staysOn` and `outdatedServers`, and the stop recomputes it and never takes names from the request. `environments/destroy-data.ts` checks, before anything is stopped: the typed name (400 `confirm_name_required`), that `volumeIds` is the list just computed (409 `data_volumes_changed` with the new list), and that every server the stop goes to lists `environment-stop-remove-volumes-v1` (409 `delete_volumes_needs_daemon_update`). The right is the manage gate every Destroy has (the right an environment delete needs); the step-up is `environment.data.delete`. The payload carries `removeVolumes: [{ storageId }]` to every target server (a registered volume is created on each server the environment deploys to; a server without it reports `absent`). A Docker copy recorded on a server the stop does not go to stays, and the dialog and audit say so (`staysOn`). The daemon keeps a volume any container still uses. An `environment.data.delete` audit row names each volume with `removedOn` and `staysOn`, the kept ones and the commands. Storage rows stay, so a later deploy creates the volumes again, empty. Volume folders (`retention`) are not touched by any of this.
+- Destroy that deletes data (owner decision 2026-11-09, "ask each time"): `POST /environments/:id/stop` with `{ deleteVolumes: true, confirmName, volumeIds }` also removes the environment's registered Docker volumes. Off by default; an empty body is a plain Destroy, byte for byte. `environments/data-volumes.ts` decides the list (`kind = 'volume'` storage rows of the environment or its services with a Docker copy, named by their storage id, not external, not common, no `share` row and no mount from another environment's service); `GET /environments/:id/data-volumes` returns it for the dialog with `kept` reasons, `staysOn` and `outdatedServers`, and the stop recomputes it and never takes names from the request. `environments/destroy-data.ts` checks, before anything is stopped: the typed name (400 `confirm_name_required`), that `volumeIds` is the list just computed (409 `data_volumes_changed` with the new list). The right is the manage gate every Destroy has (the right an environment delete needs); the step-up is `environment.data.delete`. The payload carries `removeVolumes: [{ storageId }]` to every target server (a registered volume is created on each server the environment deploys to; a server without it reports `absent`). A Docker copy recorded on a server the stop does not go to stays, and the dialog and audit say so (`staysOn`). The daemon keeps a volume any container still uses. An `environment.data.delete` audit row names each volume with `removedOn` and `staysOn`, the kept ones and the commands. Storage rows stay, so a later deploy creates the volumes again, empty. Volume folders (`retention`) are not touched by any of this.

@@ -125,6 +125,16 @@ export type TunnelAdapter = {
     token: string,
     input: { accountId: string | null; externalId: string }
   ): Promise<void>
+  /**
+   * A stable fingerprint of what `setRoutes` would send for these names, so a
+   * change in how routes are built (the origin, the flags) reads as stale and
+   * is written once to existing tunnels. Optional: without it only the names
+   * decide.
+   */
+  ingressFingerprint?(input: {
+    hostnames: readonly string[]
+    verifiedNames: readonly string[]
+  }): Promise<string>
   /** Replace the full set of routes: every name goes to the local web server. */
   setRoutes(
     token: string,
@@ -133,12 +143,11 @@ export type TunnelAdapter = {
       externalId: string
       hostnames: readonly string[]
       /**
-       * Verify the hop to the local web server instead of skipping verification.
-       * The connector already trusts the provider's own origin roots, so this
-       * only helps names served with a provider origin certificate (or a public
-       * one). Left out, verification stays off.
+       * Names whose hop to the local web server is verified instead of skipped:
+       * the ones served with a provider origin certificate or a public one that
+       * covers them. Any other name skips verification. Left out, none verify.
        */
-      verifyOrigin?: boolean
+      verifiedNames?: readonly string[]
     }
   ): Promise<void>
   /** Create the public DNS name for a hostname, pointing at the tunnel. */

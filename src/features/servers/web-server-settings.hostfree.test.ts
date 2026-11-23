@@ -1,6 +1,5 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { HOSTING_VIA_HEADER_FEATURE } from '../../lib/version-wire.ts'
 import { loadWebServerSettings, webServerDeployFields } from './web-server-settings.ts'
 
 const test = Deno.test.bind(Deno)
@@ -42,16 +41,8 @@ test('loadWebServerSettings follows the organization, and the server wins', asyn
   )
 })
 
-test('webServerDeployFields sends sendViaHeader only to a daemon that lists the feature', () => {
+test('webServerDeployFields carries both switches', () => {
   const on = { hideWebServerNames: true, sendViaHeader: true }
-  assertEquals(webServerDeployFields(on, [HOSTING_VIA_HEADER_FEATURE]), on)
-  assertEquals(
-    webServerDeployFields(DEFAULTS, ['metrics-v8', HOSTING_VIA_HEADER_FEATURE]),
-    DEFAULTS
-  )
-  for (const features of [undefined, null, [], ['metrics-v8']]) {
-    const fields = webServerDeployFields(on, features)
-    assertEquals(fields, { hideWebServerNames: true })
-    assertEquals('sendViaHeader' in fields, false)
-  }
+  assertEquals(webServerDeployFields(on), on)
+  assertEquals(webServerDeployFields(DEFAULTS), DEFAULTS)
 })

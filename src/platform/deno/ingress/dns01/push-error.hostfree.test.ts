@@ -158,7 +158,6 @@ function tickDb(row: Row): Db {
 }
 
 const BODY: PublicUrlsApplyPayload = {
-  urls: ['https://panel.example.test:8443'],
   hostnames: [
     {
       host: 'https://panel.example.test:8443',

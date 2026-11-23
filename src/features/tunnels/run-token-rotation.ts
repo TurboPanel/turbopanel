@@ -38,11 +38,6 @@ import type { Db } from '../../db/connection.ts'
 import { command, portal, secret, server, tunnel } from '../../db/schema.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import {
-  TUNNEL_CONNECTOR_FEATURE,
-  TUNNEL_CONNECTOR_TOKEN_CHANGE_FEATURE,
-  TUNNEL_STATUS_FEATURE,
-} from '../../lib/version-wire.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { parseTunnelStatusResult } from '../../contracts/commands/tunnel-status.ts'
@@ -50,7 +45,6 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import { newTunnelSecret, type TunnelAdapter } from './adapter.ts'
 import { useBadges } from './badge-use.ts'
 import { connectorServerProblem, syncServerTunnelConnectors } from './connector-sync.ts'
@@ -110,22 +104,6 @@ async function loadTunnel(db: Db, tunnelId: string): Promise<TunnelRow | null> {
 // ---------------------------------------------------------------------------
 // Readiness
 
-/** The carrying servers whose daemon cannot follow a rotation (or report status). */
-export async function serversThatCannotRotate(
-  db: Db,
-  serverIds: readonly string[]
-): Promise<string[]> {
-  const states = await Promise.all(serverIds.map((id) => getServerDaemonStateByServerId(db, id)))
-  return serverIds.filter((_, index) => {
-    const features = states[index]?.projection?.features ?? []
-    return ![
-      TUNNEL_CONNECTOR_FEATURE,
-      TUNNEL_CONNECTOR_TOKEN_CHANGE_FEATURE,
-      TUNNEL_STATUS_FEATURE,
-    ].every((feature) => features.includes(feature))
-  })
-}
-
 /** Carrying servers that cannot be sent a connector list now. */
 async function serversNotReady(
   db: Db,
@@ -155,7 +133,7 @@ const IN_PROGRESS = 'The run token of this Tunnel is already being replaced'
 
 /**
  * Why a rotation cannot start now (removing, not at the provider, under way,
- * a daemon that cannot follow, a carrier that cannot be reached), or null.
+ * a carrier that cannot be reached), or null.
  * The screen reads it to hide or disable the action with the reason; a start
  * throws it. A single carrier is not a block (it needs a confirmation).
  */
@@ -176,16 +154,6 @@ export async function rotationBlock(
   }
   if (rotationActive(read)) return new TunnelRefusal('rotation_in_progress', 409, IN_PROGRESS)
   const carrying = (await carryingServers(db, row)).toSorted(compareText)
-  const old = await serversThatCannotRotate(db, carrying)
-  if (old.length > 0) {
-    const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
-    return new TunnelRefusal(
-      'tunnel_daemon_too_old',
-      409,
-      `${names} a daemon that cannot move its connector to a new run token. Update it first.`,
-      { serverIds: old }
-    )
-  }
   // Resuming after the provider may have been asked: waiting servers need the
   // new token, so an unreachable one is waited for instead of blocking.
   if (read?.phase === 'stopped' && (read.newSecretId || read.tunnelSecretId)) return null

@@ -14,12 +14,8 @@ export const WORKSPACE_KIND_USER: WorkspaceKind = 'user'
 /** Machine / platform workspace discriminator — one TurboPanel workspace per org. */
 export const WORKSPACE_KIND_TURBOPANEL: WorkspaceKind = 'turbopanel'
 
-/** @deprecated Prefer {@link WORKSPACE_KIND_TURBOPANEL}. */
-export const WORKSPACE_KIND_SYSTEM = WORKSPACE_KIND_TURBOPANEL
-
 export function isWorkspaceKind(value: unknown): value is WorkspaceKind {
-  return typeof value === 'string' &&
-    (WORKSPACE_KINDS as readonly string[]).includes(value)
+  return typeof value === 'string' && (WORKSPACE_KINDS as readonly string[]).includes(value)
 }
 
 /**
@@ -27,7 +23,5 @@ export function isWorkspaceKind(value: unknown): value is WorkspaceKind {
  * becomes `'user'`.
  */
 export function parseWorkspaceKind(value: unknown): WorkspaceKind {
-  return value === WORKSPACE_KIND_TURBOPANEL
-    ? WORKSPACE_KIND_TURBOPANEL
-    : WORKSPACE_KIND_USER
+  return value === WORKSPACE_KIND_TURBOPANEL ? WORKSPACE_KIND_TURBOPANEL : WORKSPACE_KIND_USER
 }

@@ -1,6 +1,8 @@
 /**
  * Host-free coverage for "use the best network that is up": the link-aware
- * resolver ladder, `splitTrustedByLink`, and the TurboFabric LAN rung.
+ * resolver ladder, `splitTrustedByLink`, and the TurboFabric LAN rung for
+ * trusted IPv6-only pairs (the only pairs that still get a tunnel over a
+ * trusted LAN).
  */
 
 import { assertEquals } from '@std/assert'
@@ -156,37 +158,67 @@ test('splitTrustedByLink keeps (priority, id) order in both lists', () => {
   assertEquals(splitTrustedByLink(['dc-1'], [], []), { available: ['dc-1'], down: [] })
 })
 
+/** IPv6-only pin: a trusted IPv6-only network is the one a tunnel still runs over. */
+function pin6(
+  serverId: string,
+  datacenterId: string,
+  address: string,
+  linkDown = false
+): DatacenterMembershipRow {
+  return { ...pin(serverId, datacenterId, address, linkDown), family: 6 }
+}
+
 function fabricCaches(down: boolean): EndpointAddressCaches {
   return {
     publicAddressByServer: new Map([['b', '203.0.113.11']]),
     reportedByServer: new Map(),
     datacenterMembershipsByServer: new Map([
-      ['a', [pin('a', BACKHAUL, '10.9.0.10', down)]],
-      ['b', [pin('b', BACKHAUL, '10.9.0.11')]],
+      ['a', [pin6('a', BACKHAUL, 'fd00:9::10', down)]],
+      ['b', [pin6('b', BACKHAUL, 'fd00:9::11')]],
     ]),
-    policyByDatacenter: new Map([[BACKHAUL, policy(10)]]),
+    policyByDatacenter: new Map([[BACKHAUL, { ...policy(10), addressPreference: 'ipv6' }]]),
     natEndpointByPair: new Map(),
     failedPathKindsByPair: new Map(),
   }
 }
 
-test('TurboFabric tries a LAN whose link is up first, public next, a dead LAN last', () => {
+test('TurboFabric over a trusted IPv6-only LAN tries a LAN whose link is up first, public next, a dead LAN last', () => {
   const peer = { serverId: 'b', endpointAddress: null }
   assertEquals(directCandidates('a', peer, fabricCaches(false)), [
-    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
+    { kind: 'direct_lan', address: 'fd00:9::11', datacenterId: BACKHAUL },
     { kind: 'direct_public', address: '203.0.113.11' },
   ])
   assertEquals(directCandidates('a', peer, fabricCaches(true)), [
     { kind: 'direct_public', address: '203.0.113.11' },
-    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
+    { kind: 'direct_lan', address: 'fd00:9::11', datacenterId: BACKHAUL },
   ])
 })
 
-test('a dead LAN is still the only candidate when nothing else reaches the peer', () => {
+test('a dead IPv6-only LAN is still the only candidate when nothing else reaches the peer', () => {
   const caches = fabricCaches(true)
   caches.publicAddressByServer.clear()
   assertEquals(directCandidates('a', { serverId: 'b', endpointAddress: null }, caches), [
-    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
+    { kind: 'direct_lan', address: 'fd00:9::11', datacenterId: BACKHAUL },
+  ])
+})
+
+test('TurboFabric with two trusted IPv6-only LANs, one up and one down: LAN-up, public, NAT, then LAN-down', () => {
+  const caches = fabricCaches(false)
+  caches.datacenterMembershipsByServer.set('a', [
+    pin6('a', BACKHAUL, 'fd00:9::10', true),
+    pin6('a', LAN, 'fd00:1::10'),
+  ])
+  caches.datacenterMembershipsByServer.set('b', [
+    pin6('b', BACKHAUL, 'fd00:9::11'),
+    pin6('b', LAN, 'fd00:1::11'),
+  ])
+  caches.policyByDatacenter.set(LAN, { ...policy(100), addressPreference: 'ipv6' })
+  caches.natEndpointByPair.set('a>b', '198.51.100.7:51820')
+  assertEquals(directCandidates('a', { serverId: 'b', endpointAddress: null }, caches), [
+    { kind: 'direct_lan', address: 'fd00:1::11', datacenterId: LAN },
+    { kind: 'direct_public', address: '203.0.113.11' },
+    { kind: 'direct_nat', address: '198.51.100.7:51820' },
+    { kind: 'direct_lan', address: 'fd00:9::11', datacenterId: BACKHAUL },
   ])
 })
 
@@ -227,26 +259,6 @@ test('a network counts as down when any pin of either server in it is flagged, w
   ]
   const toPins = [pin('b', LAN, '192.168.1.11')]
   assertEquals(splitTrustedByLink([LAN], fromPins, toPins), { available: [], down: [LAN] })
-})
-
-test('TurboFabric with two LANs, one up and one down: LAN-up, public, NAT, then LAN-down', () => {
-  const caches = fabricCaches(false)
-  caches.datacenterMembershipsByServer.set('a', [
-    pin('a', BACKHAUL, '10.9.0.10', true),
-    pin('a', LAN, '192.168.1.10'),
-  ])
-  caches.datacenterMembershipsByServer.set('b', [
-    pin('b', BACKHAUL, '10.9.0.11'),
-    pin('b', LAN, '192.168.1.11'),
-  ])
-  caches.policyByDatacenter.set(LAN, policy(100))
-  caches.natEndpointByPair.set('a>b', '198.51.100.7:51820')
-  assertEquals(directCandidates('a', { serverId: 'b', endpointAddress: null }, caches), [
-    { kind: 'direct_lan', address: '192.168.1.11', datacenterId: LAN },
-    { kind: 'direct_public', address: '203.0.113.11' },
-    { kind: 'direct_nat', address: '198.51.100.7:51820' },
-    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
-  ])
 })
 
 test('a public fallback past trusted networks that are all down carries no untrusted marker', () => {

@@ -10,6 +10,7 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { STEP_UP_WINDOW_MS, stampStepUp } from '../authn/step-up.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { DAEMON_WIRE_FEATURES, MIN_SUPPORTED_DAEMON_VERSION } from '../../lib/version-wire.ts'
 import {
   command,
   container,
@@ -3398,27 +3399,16 @@ test('GET /servers returns Postgres data without calling getSnapshots', async ()
   })
 })
 
-test('GET /servers includes os, osDisplay, and osLogo from metadata without caching them', async () => {
+test('GET /servers includes os, osDisplay, and osLogo from the os columns without caching them', async () => {
   await withServerDeleteFixtures(async ({ db, secrets, userId, organizationId, serverId }) => {
-    const existing = await db
-      .select({ metadata: server.metadata })
-      .from(server)
-      .where(eq(server.id, serverId))
-      .limit(1)
     await db
       .update(server)
       .set({
-        // hostname is a dedicated column now — only os-shaped facts live in metadata.
-        metadata: {
-          ...(existing[0]?.metadata ?? {}),
-          os: {
-            family: 'linux',
-            id: 'debian',
-            version: '13',
-            codename: 'trixie',
-            prettyName: 'Debian GNU/Linux 13 (trixie)',
-          },
-        },
+        osFamily: 'linux',
+        osId: 'debian',
+        osVersion: '13',
+        osCodename: 'trixie',
+        osPrettyName: 'Debian GNU/Linux 13 (trixie)',
         updatedAt: new Date().toISOString(),
       })
       .where(eq(server.id, serverId))
@@ -4168,6 +4158,61 @@ test('PATCH /servers/:id does not commit hosting.enabled when hierarchy fails', 
   })
 })
 
+test('PATCH /servers/:id stamps networkSharesSince when network shares turn on, and audits the change', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const patch = (networkShares: boolean) =>
+      app.request(`/servers/${serverId}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ options: { networkShares } }),
+      })
+    const stored = async () => {
+      const [row] = await db
+        .select({ options: server.options })
+        .from(server)
+        .where(eq(server.id, serverId))
+        .limit(1)
+      return row!.options as { networkShares?: boolean; networkSharesSince?: string }
+    }
+    const auditRows = async () =>
+      await db
+        .select({ context: audit.context })
+        .from(audit)
+        .where(
+          and(
+            eq(audit.organizationId, organizationId),
+            eq(audit.targetId, serverId),
+            eq(audit.action, 'server.network_shares.update')
+          )
+        )
+
+    assertEquals((await patch(true)).status, 200)
+    const on = await stored()
+    assertEquals(on.networkShares, true)
+    assertEquals(typeof on.networkSharesSince, 'string')
+    const rows = await auditRows()
+    assertEquals(rows.length, 1)
+    assertEquals(rows[0]!.context, { serverId, before: false, after: true })
+
+    // The same value again stamps nothing and audits nothing.
+    assertEquals((await patch(true)).status, 200)
+    assertEquals((await stored()).networkSharesSince, on.networkSharesSince)
+    assertEquals((await auditRows()).length, 1)
+
+    // Off then on again: a fresh stamp (it voids older approvals) and two more rows.
+    assertEquals((await patch(false)).status, 200)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    assertEquals((await patch(true)).status, 200)
+    assertEquals((await stored()).networkSharesSince !== on.networkSharesSince, true)
+    assertEquals((await auditRows()).length, 3)
+  })
+})
+
 test('DELETE /servers/:id succeeds after enable → disable → reconcile lifecycle', async () => {
   await withServerDeleteFixtures(
     async ({ db, secrets, userId, organizationId, serverId, registry }) => {
@@ -4414,6 +4459,57 @@ test('GET /servers/:id/update returns idle status for a disconnected server', as
     assertEquals(body.serverId, serverId)
     assertEquals(body.colocatedWithInstance, false)
     assertEquals(typeof body.status, 'string')
+  })
+})
+
+test('the three server update status routes judge the daemon by its stored hello features', async () => {
+  await withServerDeleteFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    await attachDaemonStateToServer(db, serverId, {
+      publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+      fingerprint: `fp-test-${crypto.randomUUID()}`,
+    })
+    const store = async (features: readonly string[]) => {
+      await db
+        .update(server)
+        .set({
+          daemon: {
+            projection: {
+              daemonBuild: { commit: 'aaa', buildId: 'b1', version: MIN_SUPPORTED_DAEMON_VERSION },
+              features: [...features],
+            },
+          },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(server.id, serverId))
+    }
+    type Support = { status: string; code?: string; missingFeatures?: string[] }
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+    const supports = async (): Promise<Support[]> => {
+      const list = await app.request('/servers/updates', { headers })
+      const one = await app.request(`/servers/${serverId}/update`, { headers })
+      const reset = await app.request(`/servers/${serverId}/update/reset`, {
+        method: 'POST',
+        headers,
+      })
+      assertEquals(list.status, 200)
+      assertEquals(one.status, 200)
+      assertEquals(reset.status, 200)
+      const listBody = (await list.json()) as { servers: Array<{ daemonSupport: Support }> }
+      const oneBody = (await one.json()) as { daemonSupport: Support }
+      const resetBody = (await reset.json()) as { daemonSupport: Support }
+      return [listBody.servers[0]!.daemonSupport, oneBody.daemonSupport, resetBody.daemonSupport]
+    }
+
+    await store(DAEMON_WIRE_FEATURES.filter((name) => name !== 'build-limits-v1'))
+    for (const support of await supports()) {
+      assertEquals(support.status, 'unsupported')
+      assertEquals(support.code, 'daemon_update_required')
+      assertEquals(support.missingFeatures, ['build-limits-v1'])
+    }
+
+    await store(DAEMON_WIRE_FEATURES)
+    for (const support of await supports()) assertEquals(support.status, 'supported')
   })
 })
 

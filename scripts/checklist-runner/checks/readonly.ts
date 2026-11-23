@@ -6,7 +6,7 @@ import { excerpt, fail, listOf, pass, sequential, skip, str, type Rec } from './
 
 const V1 = '/client/v1'
 
-/** Studio is never a subject, not even of a read. */
+/** A forbidden host is never a subject, not even of a read. */
 function fleet(servers: Rec[]): Rec[] {
   return servers.filter((s) => !FORBIDDEN_HOSTS.includes(shortHost(str(s, 'hostname'))))
 }
@@ -111,7 +111,8 @@ export const opsContainerLogs: Check = {
       ...pickAcrossServers(byRole('service'), 3),
       ...pickAcrossServers(byRole('ingress'), 1),
     ]
-    if (sample.length === 0) return skip('no running containers outside studio to read logs from')
+    if (sample.length === 0)
+      return skip('no running containers outside forbidden hosts to read logs from')
     const results = await sequential(sample, async (c) => {
       const logs = await ctx.api.get(`${V1}/containers/${str(c, 'id')}/logs?tail=20`)
       const ok = logs.status === 200 && typeof ((logs.body ?? {}) as Rec).logs === 'string'

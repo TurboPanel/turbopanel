@@ -29,8 +29,7 @@ function entry(
 
 function compile(
   data: Record<string, unknown>,
-  entries: DeployVariableEntry[],
-  enabled = true
+  entries: DeployVariableEntry[]
 ): ApplyVariablesResult | ApplyVariablesError {
   const doc = emptyComposeDocument()
   doc.data = data
@@ -39,7 +38,6 @@ function compile(
     perServiceEntries: new Map(),
     projectId: 'p1',
     environmentId: 'e1',
-    configFilesEnabled: enabled,
   })
 }
 
@@ -278,24 +276,6 @@ test('an unused content config is removed', () => {
   assertEquals(Object.keys(configs), ['a_c'])
 })
 
-test('without the daemon feature a real reference is refused, text without one is left as authored', () => {
-  assertEquals(failure(compile(PGADMIN, DB, false)).kind, 'config_files_need_daemon_update')
-  const secretOnly = {
-    services: { a: { image: 'x', configs: ['c'] } },
-    configs: { c: { content: '{$DB_PASSWORD}' } },
-  }
-  assertEquals(failure(compile(secretOnly, DB, false)).kind, 'config_files_need_daemon_update')
-  const plain = {
-    services: { a: { image: 'x', configs: ['c'] } },
-    configs: { c: { content: 'stray {$ and $$x text' } },
-  }
-  const result = ok(compile(plain, DB, false))
-  assertEquals(result.configFiles, [])
-  assertEquals((result.document.data.configs as Record<string, unknown>).c, {
-    content: 'stray {$ and $$x text',
-  })
-})
-
 test('size limits are enforced', () => {
   const big = 'x'.repeat(65_537)
   const data = {
@@ -357,7 +337,6 @@ test('a config file reads a database reference from the binding rows, secrets as
       ]),
       projectId: 'p1',
       environmentId: 'e1',
-      configFilesEnabled: true,
     })
   )
   const file = result.configFiles.find((f) => f.source === 'app_pgpass')

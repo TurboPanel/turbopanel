@@ -49,7 +49,9 @@ it('assertDispatchInfrastructure returns 503 when registry is missing', async ()
   assertEquals(response instanceof Response, true)
   if (response instanceof Response) {
     assertEquals(response.status, 503)
-    assertEquals(await response.json(), { error: 'Daemon cell registry unavailable' })
+    assertEquals(await response.json(), {
+      error: 'Daemon cell registry unavailable',
+    })
   }
 })
 
@@ -176,7 +178,7 @@ it('enqueueCommandOrCompensate marks the command failed when enqueue throws', as
 
   const updated = await getCommandRecord(db, record.id)
   assertEquals(updated?.status, 'failed')
-  assertEquals(updated?.error, 'Command queue unavailable')
+  assertEquals(updated?.errorMessage, 'Command queue unavailable')
 
   await db.delete(command).where(eq(command.serverId, serverId))
   await db.delete(server).where(eq(server.id, serverId))

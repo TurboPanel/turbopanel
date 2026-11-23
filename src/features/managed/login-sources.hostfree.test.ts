@@ -102,62 +102,39 @@ test('maxConnections: whole numbers in range, null clears', () => {
   }
 })
 
-test('wire limits resolve servers, keep prefixes, and fail closed on an old daemon', () => {
+test('wire limits resolve servers and keep prefixes', () => {
   const metadata = {
     allowedSources: ['internal', `server:${SERVER}`, 'address:203.0.113.%'],
     maxConnections: 3,
   }
   const addresses = new Map([[SERVER, ['198.51.100.7', '2001:db8::7']]])
-  assertEquals(
-    loginWireLimits(metadata, { daemonSupportsLimits: true, serverAddresses: addresses }),
-    {
-      omit: false,
-      fields: {
-        allowedSources: ['198.51.100.7', '2001:db8::7', '203.0.113.%'],
-        allowLocalSources: true,
-        maxConnections: 3,
-      },
-    }
-  )
-  assertEquals(
-    loginWireLimits(metadata, { daemonSupportsLimits: false, serverAddresses: addresses }),
-    {
-      omit: true,
-    }
-  )
+  assertEquals(loginWireLimits(metadata, { serverAddresses: addresses }), {
+    allowedSources: ['198.51.100.7', '2001:db8::7', '203.0.113.%'],
+    allowLocalSources: true,
+    maxConnections: 3,
+  })
   // Naming the server the payload is for lets its own programs in (they arrive as the gateway).
   assertEquals(
     loginWireLimits(
       { allowedSources: [`server:${SERVER}`], maxConnections: undefined },
-      { daemonSupportsLimits: true, serverAddresses: new Map(), serverId: SERVER }
+      { serverAddresses: new Map(), serverId: SERVER }
     ),
-    { omit: false, fields: { allowedSources: [], allowLocalSources: true } }
-  )
-  // No source limit: nothing sent to an old daemon, so version skew changes nothing.
-  assertEquals(
-    loginWireLimits(
-      { allowedSources: undefined, maxConnections: 3 },
-      { daemonSupportsLimits: false, serverAddresses: addresses }
-    ),
-    { omit: false, fields: {} }
+    { allowedSources: [], allowLocalSources: true }
   )
   assertEquals(
     loginWireLimits(
       { allowedSources: undefined, maxConnections: undefined },
-      { daemonSupportsLimits: true, serverAddresses: addresses }
+      { serverAddresses: addresses }
     ),
-    {
-      omit: false,
-      fields: {},
-    }
+    {}
   )
   // A server with no known address still limits the login (nothing but local passes).
   assertEquals(
     loginWireLimits(
       { allowedSources: [`server:${SERVER}`], maxConnections: undefined },
-      { daemonSupportsLimits: true, serverAddresses: new Map() }
+      { serverAddresses: new Map() }
     ),
-    { omit: false, fields: { allowedSources: [] } }
+    { allowedSources: [] }
   )
 })
 

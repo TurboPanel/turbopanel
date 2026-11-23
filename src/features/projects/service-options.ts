@@ -1,5 +1,6 @@
 /** Validated `service.options` shape for per-service settings. */
 
+import { parseBuildLimitSettings } from '../deploy/build-limits.ts'
 import { readSiteLifecycleOptions } from './site-lifecycle-options.ts'
 
 export type HealthCheckPolicy = 'disabled' | 'warn' | 'required'
@@ -38,6 +39,12 @@ export type ServiceOptions = {
   instances?: number
   build?: {
     disableCache?: boolean
+    /** The most CPU cores one build of this service may use (1 to 999, fractions allowed). */
+    cores?: number
+    /** The most memory one build of this service may use, in bytes (1 GiB to 1 TiB). */
+    memoryBytes?: number
+    /** Whether a build of this service may use swap; absent follows the server, then the organization (off). */
+    swap?: boolean
   }
   operations?: {
     stopGracePeriodSeconds?: number
@@ -51,6 +58,28 @@ export type ServiceOptions = {
     memoryBytes?: number
     memoryReservationBytes?: number
   }
+}
+
+/** Every key a service options document may carry; anything else is refused on write. */
+export const SERVICE_OPTION_KEYS = [
+  'preDeployCommand',
+  'postDeployCommand',
+  'postDeployCommands',
+  'postDeployTimeoutSeconds',
+  'postDeployTiming',
+  'workers',
+  'instances',
+  'build',
+  'operations',
+  'healthCheck',
+  'resources',
+] as const satisfies readonly (keyof ServiceOptions)[]
+
+/** The first key of a raw options document that is not a service option, or null. */
+export function findUnknownServiceOptionKey(value: unknown): string | null {
+  if (!isRecord(value)) return null
+  const known: readonly string[] = SERVICE_OPTION_KEYS
+  return Object.keys(value).find((key) => !known.includes(key)) ?? null
 }
 
 const DEFAULT_STOP_GRACE_SECONDS = 30
@@ -87,8 +116,10 @@ function readOptionalNonNegativeNumber(value: unknown): number | undefined {
 
 function parseBuild(value: Record<string, unknown>): ServiceOptions['build'] | undefined {
   if (!isRecord(value.build)) return undefined
-  if (value.build.disableCache !== true) return undefined
-  return { disableCache: true }
+  const build: NonNullable<ServiceOptions['build']> = {}
+  if (value.build.disableCache === true) build.disableCache = true
+  Object.assign(build, parseBuildLimitSettings(value.build))
+  return Object.keys(build).length > 0 ? build : undefined
 }
 
 function parseOperations(value: Record<string, unknown>): ServiceOptions['operations'] | undefined {

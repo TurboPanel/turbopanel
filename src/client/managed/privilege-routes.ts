@@ -105,16 +105,6 @@ export function registerManagedPrivilegeRoutes(router: Hono<AppEnv>) {
       timeoutMs: MANAGED_PERMISSIONS_PROBE_TIMEOUT_MS,
     })
 
-    if (outcome.status === 'unsupported') {
-      return c.json(
-        {
-          error: 'daemon_update_required',
-          message:
-            'This server needs a newer TurboPanel version before it can show permissions. Update the server and try again.',
-        },
-        409
-      )
-    }
     if (outcome.status === 'unavailable') {
       if (outcome.reason === 'offline') return c.json({ error: 'server_offline' }, 409)
       return c.json(

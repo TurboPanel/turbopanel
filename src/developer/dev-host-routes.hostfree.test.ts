@@ -16,7 +16,6 @@ import type {
 import { dispatchDaemonInboundMessage } from '../daemon/deno-ws.ts'
 import type { Db } from '../db/connection.ts'
 import { deriveSecretsConfig, parseSecretsEnv } from '../lib/secrets/secrets.ts'
-import { DEV_HOST_FEATURE } from '../lib/version-wire.ts'
 import { withDevelopmentAdminRoutes } from '../platform/deno/development-admin-routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import {
@@ -121,7 +120,6 @@ function hooksWith(overrides: DevHostRoutesHooks = {}): DevHostRoutesHooks {
     store,
     pushJobActive: () => false,
     isConnected: () => Promise.resolve(true),
-    daemonFeatures: () => Promise.resolve([DEV_HOST_FEATURE]),
     readMigratePending: () => Promise.resolve({ pending: 0, applied: 25, total: 25 }),
     runningCommit: () => Promise.resolve(HEAD),
     ...overrides,
@@ -241,11 +239,10 @@ test('a running Build and Push job answers 409 without asking', async () => {
   assertEquals(sent.length, 0)
 })
 
-test('503 daemon_unavailable when the daemon is missing, offline or lacks dev-host-v1', async () => {
+test('503 daemon_unavailable when the daemon is missing or offline', async () => {
   const cases: DevHostRoutesHooks[] = [
     hooksWith({ store: createDevHostStatusStore() }),
     hooksWith({ isConnected: () => Promise.resolve(false) }),
-    hooksWith({ daemonFeatures: () => Promise.resolve(['managed-health-v1']) }),
   ]
   for (const hooks of cases) {
     const { registry, sent } = fakeRegistry(accepted)
@@ -283,6 +280,91 @@ test('503 daemon_unavailable when the daemon times out, refuses or the cell thro
   }
 })
 
+test('Build and Push started while the daemon decides is refused with 409', async () => {
+  resetDevelopmentPushJobForTests()
+  const store = createDevHostStatusStore()
+  store.put(SERVER, STATUS, AT)
+  let answer: ((record: PendingRequestRecord) => void) | undefined
+  const registry = {
+    getCell: (serverId: string) => ({
+      createRequestAndWait: (envelope: DaemonOutboundEnvelope) =>
+        new Promise<PendingRequestRecord>((resolve) => {
+          answer = (record) => resolve({ ...record, serverId, requestId: envelope.requestId })
+        }),
+    }),
+  } as unknown as DaemonCellRegistry
+  const { db } = auditingDb()
+  const app = new Hono<AppEnv>()
+  app.use('*', async (c, next) => {
+    const vars = c as unknown as Context<AppEnv>
+    vars.set('db', db)
+    vars.set('daemonCellRegistry', registry)
+    await next()
+  })
+  let rebuilt = 0
+  withDevelopmentAdminRoutes(
+    () => {},
+    true,
+    (admin, deps) => {
+      registerDevelopmentUpdatesAdminRoutes(admin, deps, {
+        readState: () =>
+          Promise.resolve({ built: null, sourceFingerprint: 'x', sourceChanged: true }),
+        rebuild: () => {
+          rebuilt += 1
+          return Promise.resolve()
+        },
+        listRemoteServers: () => Promise.resolve([]),
+        readHost: () => Promise.resolve(null),
+        hostJobRunning: () => store.isJobRunning(),
+      })
+      registerDevHostAdminRoutes(admin, deps, {
+        store,
+        isConnected: () => Promise.resolve(true),
+        runningCommit: () => Promise.resolve(HEAD),
+      })
+    }
+  )(app, { rootOnly: passRootOnly })
+  const push = () =>
+    app.request('/instance/updates/development/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+
+  const pending = press(app, 'update')
+  for (let i = 0; i < 500 && answer === undefined; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  assert(answer !== undefined, 'the host action never reached the daemon request')
+  // The daemon has not answered yet: the host job is already claimed.
+  assertEquals((await push()).status, 409)
+  assertEquals(rebuilt, 0)
+  answer({ status: 'done', result: { ok: true, jobId: 'job-8' } } as PendingRequestRecord)
+  assertEquals((await pending).status, 202)
+  assertEquals((await push()).status, 409)
+})
+
+test('a refused, timed out or failed host action releases its claim', async () => {
+  const outcomes: Answer[] = [
+    { status: 'done', result: { ok: false, error: 'job_running' } },
+    { status: 'expired' },
+    new Error('cell down'),
+  ]
+  for (const answer of outcomes) {
+    const hooks = hooksWith()
+    const { registry } = fakeRegistry(answer)
+    const { db } = auditingDb()
+    const app = adminApp(registry, db, hooks)
+    await press(app, 'update')
+    assertEquals(hooks.store!.isJobRunning(), false)
+  }
+  const offline = hooksWith({ isConnected: () => Promise.resolve(false) })
+  const { registry } = fakeRegistry(accepted)
+  const app = adminApp(registry, auditingDb().db, offline)
+  assertEquals((await press(app, 'update')).status, 503)
+  assertEquals(offline.store!.isJobRunning(), false)
+})
+
 test('Build and Push and the host actions refuse each other', async () => {
   resetDevelopmentPushJobForTests()
   devHostStatusStore.clear()
@@ -304,7 +386,6 @@ test('Build and Push and the host actions refuse each other', async () => {
     })
     const hostHooks: DevHostRoutesHooks = {
       isConnected: () => Promise.resolve(true),
-      daemonFeatures: () => Promise.resolve([DEV_HOST_FEATURE]),
       runningCommit: () => Promise.resolve(HEAD),
     }
     withDevelopmentAdminRoutes(

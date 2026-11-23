@@ -3,6 +3,7 @@ import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals, assertRejects } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
+import { DAEMON_WIRE_FEATURES, MIN_SUPPORTED_DAEMON_VERSION } from '../../lib/version-wire.ts'
 import { eq, inArray, sql } from 'drizzle-orm'
 import { loadDeployRunCapMs } from './deploy-wait-settings.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -140,7 +141,8 @@ const TEST_COMMAND_ACTOR = {
 
 async function attachConnectedDaemonStatus(
   db: ReturnType<typeof createDenoDb>,
-  serverId: string
+  serverId: string,
+  options: { currentDaemon?: boolean } = {}
 ): Promise<void> {
   // First registered key wins: a server that already holds a key keeps it,
   // so a second call only refreshes the status columns below.
@@ -164,6 +166,21 @@ async function attachConnectedDaemonStatus(
       updatedAt: now,
     })
     .where(eq(server.id, serverId))
+  // The control plane only dispatches to a daemon that reports a usable
+  // version and lists every wire feature; give the fixture daemon both.
+  if (options.currentDaemon ?? true) {
+    await projectServerDaemon(db, serverId, {
+      kind: 'daemon-build',
+      daemonBuild: {
+        commit: 'abc1234',
+        buildId: 'b-current',
+        version: MIN_SUPPORTED_DAEMON_VERSION,
+      },
+    })
+    await touchServerMetadata(db, serverId, {
+      features: [...DAEMON_WIRE_FEATURES],
+    })
+  }
 }
 
 function createDispatchMockRegistry(
@@ -340,7 +357,7 @@ test('processCommandEnvelope fails fast when daemon is offline', async () => {
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.error, 'Daemon not connected')
+    assertEquals(updated?.errorMessage, 'Daemon not connected')
     assertEquals(updated?.attempts, 1)
     assertEquals(registry.enqueueCalled, false)
     assertEquals(registry.waitForRequestCalled, false)
@@ -379,12 +396,75 @@ test('processCommandEnvelope does not persist timezone option when daemon is off
   })
 })
 
-test('processCommandEnvelope refuses a connected daemon below the supported floor, and passes one that reports no version', async () => {
+test('processCommandEnvelope refuses a connected daemon that is not current, naming daemon_update_required', async () => {
   await withConsumerFixtures(async ({ db, serverId }) => {
     await attachConnectedDaemonStatus(db, serverId)
+    const refuse = async (): Promise<{
+      errorCode?: string | null
+      error?: string | null
+    }> => {
+      const record = await createCommandRecord(db, {
+        serverId,
+        ...TEST_COMMAND_ACTOR,
+        type: 'daemon.ping',
+        payload: {},
+      })
+      const registry = createDispatchMockRegistry(serverId, {
+        waitForRequestResult: null,
+      })
+      // No hello is on its way: the refusal stands at once.
+      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
+        helloGraceMs: 0,
+      })
+      const updated = await getCommandRecord(db, record.id)
+      assertEquals(updated?.status, 'failed')
+      // Never reached the cell: the update envelope is the only thing such a
+      // daemon should get, and that is not a command.
+      assertEquals(registry.enqueueCalled, false)
+      return { errorCode: updated?.errorCode, error: updated?.errorMessage }
+    }
+
+    // Below the version floor.
     await projectServerDaemon(db, serverId, {
       kind: 'daemon-build',
       daemonBuild: { commit: 'abc1234', buildId: 'b-old', version: '0.0.9' },
+    })
+    const old = await refuse()
+    assertEquals(old.errorCode, 'daemon_update_required')
+    assertEquals(
+      old.error,
+      'daemon_update_required: daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
+    )
+
+    // No version at all fails closed.
+    await projectServerDaemon(db, serverId, {
+      kind: 'daemon-build',
+      daemonBuild: { commit: 'abc1234', buildId: 'b-unversioned' },
+    })
+    const unversioned = await refuse()
+    assertEquals(unversioned.errorCode, 'daemon_update_required')
+    assertEquals(unversioned.error?.includes('reports no usable version'), true)
+
+    // A current version that lacks one feature names it.
+    await projectServerDaemon(db, serverId, {
+      kind: 'daemon-build',
+      daemonBuild: {
+        commit: 'abc1234',
+        buildId: 'b-new',
+        version: MIN_SUPPORTED_DAEMON_VERSION,
+      },
+    })
+    await touchServerMetadata(db, serverId, {
+      features: DAEMON_WIRE_FEATURES.filter((name) => name !== 'build-limits-v1'),
+    })
+    const lacking = await refuse()
+    assertEquals(lacking.errorCode, 'daemon_update_required')
+    assertEquals(lacking.error?.includes('build-limits-v1'), true)
+
+    // Listing every feature opens the door again.
+    await touchServerMetadata(db, serverId, {
+      features: [...DAEMON_WIRE_FEATURES],
     })
     const record = await createCommandRecord(db, {
       serverId,
@@ -395,37 +475,93 @@ test('processCommandEnvelope refuses a connected daemon below the supported floo
     const registry = createDispatchMockRegistry(serverId, {
       waitForRequestResult: null,
     })
-
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+    assertEquals(registry.enqueueCalled, true)
+  })
+})
 
-    const updated = await getCommandRecord(db, record.id)
-    assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.errorCode, 'daemon_unsupported')
-    assertEquals(
-      updated?.error,
-      'Daemon version 0.0.9 is below the supported minimum 0.1.18 — update the daemon'
-    )
-    // Never reached the cell: the update envelope is the only thing such a
-    // daemon should get, and that is not a command.
-    assertEquals(registry.enqueueCalled, false)
-
-    // A build that reports no version (every build before 0.1.0) still gets
-    // its commands — unknown is a flag, not a refusal.
-    await projectServerDaemon(db, serverId, {
-      kind: 'daemon-build',
-      daemonBuild: { commit: 'abc1234', buildId: 'b-unversioned' },
-    })
-    const second = await createCommandRecord(db, {
+test('a command that arrives between a reconnect and its hello being stored waits for the hello instead of failing', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    // The daemon just reconnected after an update: the stored hello is still
+    // the previous build's (no usable version, no features).
+    await attachConnectedDaemonStatus(db, serverId, { currentDaemon: false })
+    const record = await createCommandRecord(db, {
       serverId,
       ...TEST_COMMAND_ACTOR,
       type: 'daemon.ping',
       payload: {},
     })
-    const registry2 = createDispatchMockRegistry(serverId, {
+    const registry = createDispatchMockRegistry(serverId, {
       waitForRequestResult: null,
     })
-    await processCommandEnvelope(db, registry2, buildEnvelope(second, serverId))
-    assertEquals(registry2.enqueueCalled, true)
+
+    // The poll wait is held by the test: it knows when the consumer is
+    // waiting, and decides when the next look happens.
+    let release = () => {}
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let reachWait = () => {}
+    const waiting = new Promise<void>((resolve) => (reachWait = resolve))
+    const running = processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      helloGraceMs: 10_000,
+      helloPollMs: 20,
+      helloSleep: () => {
+        reachWait()
+        return held
+      },
+    })
+    // Still waiting: neither failed nor sent.
+    await waiting
+    assertEquals((await getCommandRecord(db, record.id))?.status === 'failed', false)
+    assertEquals(registry.enqueueCalled, false)
+
+    // The hello is stored; the same command goes out.
+    await projectServerDaemon(db, serverId, {
+      kind: 'daemon-build',
+      daemonBuild: {
+        commit: 'abc1234',
+        buildId: 'b-new',
+        version: MIN_SUPPORTED_DAEMON_VERSION,
+      },
+    })
+    await touchServerMetadata(db, serverId, {
+      features: [...DAEMON_WIRE_FEATURES],
+    })
+    release()
+    await running
+    assertEquals(registry.enqueueCalled, true)
+  })
+})
+
+test('a refusal stands once the hello grace has passed without a hello being stored', async () => {
+  await withConsumerFixtures(async ({ db, serverId }) => {
+    await attachConnectedDaemonStatus(db, serverId, { currentDaemon: false })
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'daemon.ping',
+      payload: {},
+    })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    })
+
+    // A fake clock: every wait moves it forward by the poll interval.
+    let clock = Date.now()
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      helloGraceMs: 200,
+      helloPollMs: 20,
+      now: () => clock,
+      helloSleep: async (ms) => {
+        clock += ms
+      },
+    })
+
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'failed')
+    assertEquals(updated?.errorCode, 'daemon_update_required')
+    assertEquals(registry.enqueueCalled, false)
   })
 })
 
@@ -512,7 +648,7 @@ test('processCommandEnvelope dispatches the stored payload and retains it after 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.error, 'hostnamectl failed')
+    assertEquals(updated?.errorMessage, 'hostnamectl failed')
 
     // Failure keeps the payload for ~24h instead of deleting it.
     assertEquals(await getCommandDispatchPayload(db, record.id), {
@@ -552,7 +688,7 @@ test('processCommandEnvelope fails cleanly when the dispatch payload is gone', a
     assertEquals(registry.enqueueCalled, false)
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.error, 'Command dispatch payload unavailable')
+    assertEquals(updated?.errorMessage, 'Command dispatch payload unavailable')
     assertEquals(updated?.errorCode, 'dispatch_payload_missing')
   })
 })
@@ -732,7 +868,7 @@ test('processCommandEnvelope maps failed and timed out pending requests', async 
     await processCommandEnvelope(db, failedRegistry, buildEnvelope(failedRecord, serverId))
     const failedUpdated = await getCommandRecord(db, failedRecord.id)
     assertEquals(failedUpdated?.status, 'failed')
-    assertEquals(failedUpdated?.error, 'daemon rejected command')
+    assertEquals(failedUpdated?.errorMessage, 'daemon rejected command')
 
     const timeoutRecord = await createCommandRecord(db, {
       serverId,
@@ -1008,7 +1144,9 @@ test('processCommandEnvelope releases an applying managed row when the daemon is
         checksum: 'c'.repeat(64),
       },
     })
-    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    })
 
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
 
@@ -1016,7 +1154,7 @@ test('processCommandEnvelope releases an applying managed row when the daemon is
     assertEquals(row?.status, 'failed')
     assertEquals(registry.enqueueCalled, false)
     const updated = await getCommandRecord(db, record.id)
-    assertEquals(updated?.error, 'Daemon not connected')
+    assertEquals(updated?.errorMessage, 'Daemon not connected')
   })
 })
 
@@ -2733,7 +2871,11 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
       // service-scoped volume of a service that has no container on this server.
       const [otherService] = await db
         .insert(service)
-        .values({ environmentId, name: 'elsewhere', composeServiceName: 'elsewhere' })
+        .values({
+          environmentId,
+          name: 'elsewhere',
+          composeServiceName: 'elsewhere',
+        })
         .returning({ id: service.id })
       const extraStorage = await db
         .insert(storage)
@@ -2811,7 +2953,10 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
       }
 
       const [row] = await db
-        .select({ containerId: container.containerId, status: container.status })
+        .select({
+          containerId: container.containerId,
+          status: container.status,
+        })
         .from(container)
         .where(eq(container.serviceId, webServiceId))
         .limit(1)
@@ -2959,7 +3104,7 @@ test('processCommandEnvelope records a rolled back and a needs attention sequent
       await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
       const updated = await getCommandRecord(db, record.id)
       assertEquals(updated?.status, 'failed')
-      assertEquals(updated?.error, daemonError)
+      assertEquals(updated?.errorMessage, daemonError)
       assertEquals(updated?.errorCode ?? null, expected === null ? null : `deploy_${expected}`)
       const [row] = await db
         .select({
@@ -3026,7 +3171,7 @@ test('processCommandEnvelope records a deploy the host stopped on request as can
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'cancelled')
-    assertEquals(updated?.error, daemonError)
+    assertEquals(updated?.errorMessage, daemonError)
     assertEquals(updated?.errorCode, 'deploy_cancelled')
     const [row] = await db
       .select({
@@ -3048,8 +3193,17 @@ test('processCommandEnvelope records a deploy the host stopped on request as can
 /** Two servers of one deploy, generation 5: `serverId` is batch 0 (applying), a second is batch 1 (held). */
 async function holdSecondServerOfRollout(
   db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],
-  ctx: { organizationId: string; serverId: string; environmentId: string; projectId: string }
-): Promise<{ firstCommandId: string; heldServerId: string; heldCommandId: string }> {
+  ctx: {
+    organizationId: string
+    serverId: string
+    environmentId: string
+    projectId: string
+  }
+): Promise<{
+  firstCommandId: string
+  heldServerId: string
+  heldCommandId: string
+}> {
   const now = new Date().toISOString()
   const [held] = await db
     .insert(server)
@@ -3106,7 +3260,11 @@ async function holdSecondServerOfRollout(
       options: { rollout: { batch: 1, batches: 2 } },
     },
   ])
-  return { firstCommandId: first.id, heldServerId: held!.id, heldCommandId: second.id }
+  return {
+    firstCommandId: first.id,
+    heldServerId: held!.id,
+    heldCommandId: second.id,
+  }
 }
 
 async function removeHeldServer(
@@ -3159,7 +3317,10 @@ test('processCommandEnvelope delivers the next rolling batch when a deploy succe
       await finishFirstOfRollout(
         db,
         { serverId, firstCommandId: held.firstCommandId },
-        { status: 'done', result: { projectName: 'tp-deploy-test', summary: 'deployed' } },
+        {
+          status: 'done',
+          result: { projectName: 'tp-deploy-test', summary: 'deployed' },
+        },
         sent
       )
       assertEquals(
@@ -3192,7 +3353,10 @@ test('processCommandEnvelope stops a rolling deploy when a server fails and flag
       await finishFirstOfRollout(
         db,
         { serverId, firstCommandId: held.firstCommandId },
-        { status: 'failed', error: 'rolled_back: web failed its healthcheck' },
+        {
+          status: 'failed',
+          error: 'rolled_back: web failed its healthcheck',
+        },
         sent
       )
       assertEquals(sent.length, 0)
@@ -3240,7 +3404,9 @@ test('processCommandEnvelope: a deploy command that expired before dispatch stop
         buildEnvelope(record!, serverId),
         {
           firewallApplyGate: DENY_FIREWALL_APPLY,
-          commandQueue: { enqueue: (envelope) => Promise.resolve(void sent.push(envelope)) },
+          commandQueue: {
+            enqueue: (envelope) => Promise.resolve(void sent.push(envelope)),
+          },
         }
       )
       assertEquals((await getCommandRecord(db, held.firstCommandId))?.status, 'timed_out')
@@ -3272,7 +3438,12 @@ type RolloutDb = Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db']
  */
 async function rolloutStuckOnOfflineServer(
   db: RolloutDb,
-  ctx: { organizationId: string; serverId: string; environmentId: string; projectId: string }
+  ctx: {
+    organizationId: string
+    serverId: string
+    environmentId: string
+    projectId: string
+  }
 ): Promise<{ serverIds: string[]; commandIds: string[] }> {
   const now = new Date().toISOString()
   const extra = await db
@@ -3310,7 +3481,11 @@ async function rolloutStuckOnOfflineServer(
         ...TEST_COMMAND_ACTOR,
         type: 'environment.deploy',
         payload,
-        context: { environmentId: ctx.environmentId, serverId: id, generation: 5 },
+        context: {
+          environmentId: ctx.environmentId,
+          serverId: id,
+          generation: 5,
+        },
       })
     )
   )
@@ -3375,12 +3550,14 @@ test('processCommandEnvelope: a rollout server whose daemon is offline fails and
     try {
       const offlineServerId = rollout.serverIds[1]!
       const record = await getCommandRecord(db, rollout.commandIds[1]!)
-      const registry = createDispatchMockRegistry(offlineServerId, { waitForRequestResult: null })
+      const registry = createDispatchMockRegistry(offlineServerId, {
+        waitForRequestResult: null,
+      })
       await processCommandEnvelope(db, registry, buildEnvelope(record!, offlineServerId))
       assertEquals(registry.enqueueCalled, false)
       const failed = await getCommandRecord(db, rollout.commandIds[1]!)
       assertEquals(failed?.status, 'failed')
-      assertEquals(failed?.error, 'Daemon not connected')
+      assertEquals(failed?.errorMessage, 'Daemon not connected')
       await assertRolloutHaltedAtSecondServer(db, rollout)
     } finally {
       await removeRolloutServers(db, rollout.serverIds)
@@ -3401,7 +3578,9 @@ test('processCommandEnvelope: a rollout server whose dispatch payload is gone fa
       const targetServerId = rollout.serverIds[1]!
       await deleteCommandDispatch(db, rollout.commandIds[1]!)
       const record = await getCommandRecord(db, rollout.commandIds[1]!)
-      const registry = createDispatchMockRegistry(targetServerId, { waitForRequestResult: null })
+      const registry = createDispatchMockRegistry(targetServerId, {
+        waitForRequestResult: null,
+      })
       await processCommandEnvelope(db, registry, buildEnvelope(record!, targetServerId))
       assertEquals(
         (await getCommandRecord(db, rollout.commandIds[1]!))?.errorCode,
@@ -3426,7 +3605,12 @@ async function runSucceededCommand(
   payload: unknown,
   result: unknown
 ): Promise<void> {
-  const record = await createCommandRecord(db, { serverId, ...TEST_COMMAND_ACTOR, type, payload })
+  const record = await createCommandRecord(db, {
+    serverId,
+    ...TEST_COMMAND_ACTOR,
+    type,
+    payload,
+  })
   const registry = createDispatchMockRegistry(serverId, {
     waitForRequestResult: {
       serverId,
@@ -3466,7 +3650,11 @@ async function withOwnerFolders(
     const login = `fo_${crypto.randomUUID().slice(0, 8).replaceAll('-', '')}`
     const [row] = await ctx.db
       .insert(principal)
-      .values({ organizationId: ctx.organizationId, username: login, appliedUsername: login })
+      .values({
+        organizationId: ctx.organizationId,
+        username: login,
+        appliedUsername: login,
+      })
       .returning({ id: principal.id })
     return { id: row!.id, login }
   }
@@ -3558,7 +3746,11 @@ test('processCommandEnvelope clears the removing folder rows an environment.stop
           }
         )
         const rows = await ctx.db
-          .select({ slug: folder.slug, state: folder.state, principalId: folder.principalId })
+          .select({
+            slug: folder.slug,
+            state: folder.state,
+            principalId: folder.principalId,
+          })
           .from(folder)
           .where(eq(folder.serverId, ctx.serverId))
         assertEquals(
@@ -3590,7 +3782,11 @@ test('processCommandEnvelope clears a removed volume and lifts the environment l
             folders: [
               {
                 kind: 'volume',
-                folder: { owner: one.login, scope: 'production', slug: 'uploads' },
+                folder: {
+                  owner: one.login,
+                  scope: 'production',
+                  slug: 'uploads',
+                },
               },
             ],
           },
@@ -3629,7 +3825,11 @@ test('processCommandEnvelope leaves a volume row removing when the host says the
             folders: [
               {
                 kind: 'volume',
-                folder: { owner: one.login, scope: 'production', slug: 'uploads' },
+                folder: {
+                  owner: one.login,
+                  scope: 'production',
+                  slug: 'uploads',
+                },
               },
             ],
           },
@@ -3647,7 +3847,9 @@ test('processCommandEnvelope leaves a volume row removing when the host says the
             ],
           }
         )
-        assertEquals(await folderStates(ctx.db, ctx.serverId), { 'volume:uploads': 'removing' })
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'volume:uploads': 'removing',
+        })
         assertEquals(await environmentHasFolders(ctx.db, ctx.environmentId), true)
       }
     )
@@ -3690,9 +3892,19 @@ test('processCommandEnvelope marks the folders a deploy kept as orphans', async 
             projectName: 'tp-deploy-test',
             summary: 'deployed',
             keptFolders: [
-              { owner: one.login, scope: 'production', kind: 'service', slug: 'old' },
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'service',
+                slug: 'old',
+              },
               // An explicit delete finishes its own way; a kept report does not undo it.
-              { owner: one.login, scope: 'production', kind: 'service', slug: 'deleted' },
+              {
+                owner: one.login,
+                scope: 'production',
+                kind: 'service',
+                slug: 'deleted',
+              },
             ],
           }
         )
@@ -3835,7 +4047,12 @@ test('processCommandEnvelope compares a reconcile listing with the folder rows a
             sshdReloaded: false,
             sftpChroot: false,
             principals: [
-              { principalId: one.id, uid: 15001, gid: 15001, home: `/srv/users/${one.login}` },
+              {
+                principalId: one.id,
+                uid: 15001,
+                gid: 15001,
+                home: `/srv/users/${one.login}`,
+              },
             ],
             folders: [
               listed('service', 'here'),
@@ -3993,7 +4210,10 @@ test('processCommandEnvelope clears pins on environment.stop success', async () 
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
 
     const [row] = await db
-      .select({ containerId: container.containerId, status: container.status })
+      .select({
+        containerId: container.containerId,
+        status: container.status,
+      })
       .from(container)
       .where(eq(container.serviceId, webServiceId))
       .limit(1)
@@ -4063,7 +4283,10 @@ test('processCommandEnvelope projects managed.apply onto managed row and reconci
     assertEquals((managedRow?.metadata as { host?: string; port?: number }).port, 5432)
 
     const [containerRow] = await db
-      .select({ containerId: container.containerId, status: container.status })
+      .select({
+        containerId: container.containerId,
+        status: container.status,
+      })
       .from(container)
       .where(eq(container.serviceId, serviceId))
       .limit(1)
@@ -4269,7 +4492,11 @@ test('processCommandEnvelope appends managed.backup metadata on create success',
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
 
     const rows = await db
-      .select({ id: backup.backupId, managedId: backup.managedId, serverId: backup.serverId })
+      .select({
+        id: backup.backupId,
+        managedId: backup.managedId,
+        serverId: backup.serverId,
+      })
       .from(backup)
       .where(eq(backup.managedId, managedId))
     assertEquals(rows.length, 1)
@@ -4602,7 +4829,7 @@ test('processCommandEnvelope fails on unexpected pending request status', async 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'failed')
-    assertEquals(updated?.error, 'Unexpected pending request status: acked')
+    assertEquals(updated?.errorMessage, 'Unexpected pending request status: acked')
   })
 })
 
@@ -4715,11 +4942,19 @@ async function withLifecycleRig(
     })
     const [systemEnvironment] = await db
       .insert(environment)
-      .values({ projectId: environmentRow!.projectId, serverId, name: 'managed-ingress' })
+      .values({
+        projectId: environmentRow!.projectId,
+        serverId,
+        name: 'managed-ingress',
+      })
       .returning({ id: environment.id })
     const [engineService] = await db
       .insert(service)
-      .values({ environmentId: managedRow!.environmentId, name: 'db', composeServiceName: 'db' })
+      .values({
+        environmentId: managedRow!.environmentId,
+        name: 'db',
+        composeServiceName: 'db',
+      })
       .returning({ id: service.id })
     const [ingressService] = await db
       .insert(service)
@@ -4777,7 +5012,11 @@ async function runMemberStop(
     serverId: rig.serverId,
     ...TEST_COMMAND_ACTOR,
     type: 'managed.lifecycle',
-    payload: { managedId: rig.managedId, action: 'stop', memberId: rig.memberId },
+    payload: {
+      managedId: rig.managedId,
+      action: 'stop',
+      memberId: rig.memberId,
+    },
   })
   const registry = createDispatchMockRegistry(rig.serverId, {
     waitForRequestResult: {
@@ -5138,7 +5377,13 @@ async function insertPromotePair(
     .returning({ id: replica.id })
   const [replicaMember] = await db
     .insert(replica)
-    .values({ managedId, serverId: standbyServerId, role: 'replica', ordinal: 2, status: 'ready' })
+    .values({
+      managedId,
+      serverId: standbyServerId,
+      role: 'replica',
+      ordinal: 2,
+      status: 'ready',
+    })
     .returning({ id: replica.id })
   return {
     standbyServerId,
@@ -5262,7 +5507,10 @@ test('a failover recover result moves the primary role and the epoch goes up by 
       assertEquals(await loadPrimaryEpoch(db, managedId), 0)
       await processCommandEnvelope(
         db,
-        promoteRegistry(record, standbyServerId, { summary: 'recovered', phase: 'recover' }),
+        promoteRegistry(record, standbyServerId, {
+          summary: 'recovered',
+          phase: 'recover',
+        }),
         buildEnvelope(record, standbyServerId)
       )
       const [promoted] = await db
@@ -5790,7 +6038,13 @@ async function runSwitchoverStop(
   const { db, serverId, managedId } = f
   const [primaryMember] = await db
     .insert(replica)
-    .values({ managedId, serverId, role: 'primary', ordinal: 1, status: 'ready' })
+    .values({
+      managedId,
+      serverId,
+      role: 'primary',
+      ordinal: 1,
+      status: 'ready',
+    })
     .returning({ id: replica.id })
   const created = await insertRecovery(db, {
     managedId,
@@ -5798,7 +6052,11 @@ async function runSwitchoverStop(
     sourcePrimaryMemberId: primaryMember!.id,
     targetMemberId: null,
     state: 'fencing',
-    metadata: { fenceCommandIds: [], drainApplied: true, primaryEpochAtStart: 0 },
+    metadata: {
+      fenceCommandIds: [],
+      drainApplied: true,
+      primaryEpochAtStart: 0,
+    },
   })
   const record = await createCommandRecord(db, {
     serverId,
@@ -5816,7 +6074,13 @@ async function runSwitchoverStop(
   })
   await db
     .update(recoveryTable)
-    .set({ metadata: { fenceCommandIds: [record.id], drainApplied: true, primaryEpochAtStart: 0 } })
+    .set({
+      metadata: {
+        fenceCommandIds: [record.id],
+        drainApplied: true,
+        primaryEpochAtStart: 0,
+      },
+    })
     .where(eq(recoveryTable.id, created.id))
   await processCommandEnvelope(
     db,
@@ -5833,7 +6097,10 @@ async function runSwitchoverStop(
       },
     }),
     buildEnvelope(record, serverId),
-    { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: createRecordingCommandQueue() }
+    {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      commandQueue: createRecordingCommandQueue(),
+    }
   )
   return (await findRecoveryById(db, created.id))!.metadata
 }
@@ -5937,7 +6204,11 @@ test('a stop result from a daemon that reports no position, or a malformed one, 
   for (const result of [
     { status: 'stopped' },
     { status: 'stopped', oldPrimaryFinalLsn: '0/7258050' },
-    { status: 'stopped', oldPrimaryFinalLsn: 'nonsense', oldPrimaryFinalTimeline: 1 },
+    {
+      status: 'stopped',
+      oldPrimaryFinalLsn: 'nonsense',
+      oldPrimaryFinalTimeline: 1,
+    },
   ]) {
     await withManagedDestroyFixtures(async (f) => {
       try {
@@ -6279,6 +6550,7 @@ async function withPromoteConsumerFixtures(
           name: 'Promote Fan-out DC',
           createdAt: now,
           updatedAt: now,
+          isTrusted: true,
         })
         .returning({ id: datacenter.id })
       const [netRow] = await db
@@ -6648,7 +6920,9 @@ test('processCommandEnvelope leaves a folder row alone when it changed after the
           },
         })
         await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId))
-        assertEquals(await folderStates(ctx.db, ctx.serverId), { 'volume:busy': 'present' })
+        assertEquals(await folderStates(ctx.db, ctx.serverId), {
+          'volume:busy': 'present',
+        })
         assertEquals(one.login.length > 0, true)
       }
     )
@@ -6660,9 +6934,14 @@ function registryWithRequest(
   serverId: string,
   request: (requestId: string) => PendingRequestRecord | null
 ) {
-  const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+  const registry = createDispatchMockRegistry(serverId, {
+    waitForRequestResult: null,
+  })
   const base = registry.getCell(serverId)
-  const cell = { ...base, getRequest: (id: string) => Promise.resolve(request(id)) }
+  const cell = {
+    ...base,
+    getRequest: (id: string) => Promise.resolve(request(id)),
+  }
   return Object.assign(registry, { getCell: () => cell as DaemonCell })
 }
 
@@ -6698,7 +6977,13 @@ async function sentDeploy(
     await db
       .update(command)
       .set({
-        progress: { version: 1, steps: [], current: null, updatedAt: sentAt, runningSince },
+        progress: {
+          version: 1,
+          steps: [],
+          current: null,
+          updatedAt: sentAt,
+          runningSince,
+        },
       })
       .where(eq(command.id, record.id))
   }
@@ -6770,7 +7055,7 @@ test('a deploy that has been running longer than the run cap times out, counted 
     await attachConnectedDaemonStatus(db, serverId)
     const record = await sentDeploy(db, serverId, {
       sentAgoMs: 3 * 60 * 60_000,
-      runningSinceAgoMs: 11 * 60_000,
+      runningSinceAgoMs: 31 * 60_000,
     })
     const registry = registryWithRequest(serverId, (id) => ACKED_REQUEST(serverId, id))
 
@@ -6780,7 +7065,7 @@ test('a deploy that has been running longer than the run cap times out, counted 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'timed_out')
-    assertEquals(updated?.error?.includes('10 minutes'), true)
+    assertEquals(updated?.errorMessage?.includes('30 minutes'), true)
   })
 })
 
@@ -6796,7 +7081,11 @@ test('a deploy started a minute ago is not timed out even though it was sent hou
       looks += 1
       return looks < 2
         ? ACKED_REQUEST(serverId, id)
-        : { ...ACKED_REQUEST(serverId, id), status: 'done', result: { containers: [] } }
+        : {
+            ...ACKED_REQUEST(serverId, id),
+            status: 'done',
+            result: { containers: [] },
+          }
     })
 
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
@@ -6842,7 +7131,7 @@ test('a deploy sent to a server that stays offline fails with plain words after 
 
     const updated = await getCommandRecord(db, record.id)
     assertEquals(updated?.status, 'timed_out')
-    assertEquals(updated?.error?.includes('offline'), true)
+    assertEquals(updated?.errorMessage?.includes('offline'), true)
   })
 })
 
@@ -6858,8 +7147,16 @@ test('the start is when the control plane first hears the server is running, and
     })
     const before = Date.now()
     const started = '2026-10-21T10:00:00.000Z'
-    await recordCommandProgress(db, { serverId, commandId: record.id, progress: frame(started) })
-    await recordCommandProgress(db, { serverId, commandId: record.id, progress: frame(null) })
+    await recordCommandProgress(db, {
+      serverId,
+      commandId: record.id,
+      progress: frame(started),
+    })
+    await recordCommandProgress(db, {
+      serverId,
+      commandId: record.id,
+      progress: frame(null),
+    })
     await recordCommandProgress(db, {
       serverId,
       commandId: record.id,
@@ -6883,7 +7180,10 @@ test('a deploy is sent with a request lifetime longer than the queue limit, othe
       payload: { notAnEnvironmentId: true },
     })
     const registry = createDispatchMockRegistry(serverId, {
-      waitForRequestResult: { ...ACKED_REQUEST(serverId, deploy.id), status: 'done' },
+      waitForRequestResult: {
+        ...ACKED_REQUEST(serverId, deploy.id),
+        status: 'done',
+      },
     })
     await processCommandEnvelope(db, registry, buildEnvelope(deploy, serverId), {
       firewallApplyGate: DENY_FIREWALL_APPLY,
@@ -6897,7 +7197,11 @@ test('a deploy is sent with a request lifetime longer than the queue limit, othe
 const MIN = 60_000
 
 type QuietDeployOptions = {
-  ctx: { db: ReturnType<typeof createDenoDb>; organizationId: string; serverId: string }
+  ctx: {
+    db: ReturnType<typeof createDenoDb>
+    organizationId: string
+    serverId: string
+  }
   environmentId: string
   projectId: string
   /** How long ago the deploy started running. */
@@ -7076,7 +7380,7 @@ test('a failure the server reports after it was quiet settles the deploy as fail
 
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'failed')
-    assertEquals(stored?.error?.includes('daemon restarted'), true)
+    assertEquals(stored?.errorMessage?.includes('daemon restarted'), true)
   })
 })
 
@@ -7107,9 +7411,9 @@ test('a deploy the server never reports on is failed only after the whole reconc
 
     const given = await quietFor(6 * 60 * MIN + MIN)
     assertEquals(given?.status, 'timed_out')
-    assertEquals(given?.error?.includes('Lost contact with the server'), true)
-    assertEquals(given?.error?.includes('Last known step: Build running'), true)
-    assertEquals(given?.error?.includes('still running after 10 minutes'), false)
+    assertEquals(given?.errorMessage?.includes('Lost contact with the server'), true)
+    assertEquals(given?.errorMessage?.includes('Last known step: Build running'), true)
+    assertEquals(given?.errorMessage?.includes('still running after 10 minutes'), false)
   })
 })
 
@@ -7137,7 +7441,7 @@ test('the deploy time limit of 30 minutes holds only while the server reports', 
     // Reporting all along and past 30 minutes: stopped, with the real reason.
     const over = await run(45 * MIN)
     assertEquals(over?.status, 'timed_out')
-    assertEquals(over?.error?.includes('30 minutes'), true)
+    assertEquals(over?.errorMessage?.includes('30 minutes'), true)
 
     // Reporting and past the old ten minute cap, inside the limit: still running.
     const allowed = await run(25 * MIN)
@@ -7179,29 +7483,6 @@ test("the deploy time limit is the one the server's organization set", async () 
     })
     // Past 30 minutes but inside the organization's 90: still running, not stopped.
     assertEquals((await getCommandRecord(ctx.db, record.id))?.status, 'sent')
-  })
-})
-
-test('a server without sign-of-life reports keeps the fixed cap, worded as no result rather than a stop', async () => {
-  await withDeployFixtures(async (ctx) => {
-    const record = await quietDeploy({
-      ctx,
-      environmentId: ctx.environmentId,
-      projectId: ctx.projectId,
-      ranMs: 11 * MIN,
-      silentMs: 11 * MIN,
-      recovery: false,
-    })
-    const registry = registryWithRequest(ctx.serverId, (id) => ACKED_REQUEST(ctx.serverId, id))
-
-    await processCommandEnvelope(ctx.db, registry, buildEnvelope(record, ctx.serverId), {
-      firewallApplyGate: DENY_FIREWALL_APPLY,
-    })
-
-    const stored = await getCommandRecord(ctx.db, record.id)
-    assertEquals(stored?.status, 'timed_out')
-    assertEquals(stored?.error?.includes('No result came back'), true)
-    assertEquals(stored?.error?.includes('may still have finished'), true)
   })
 })
 
@@ -7270,7 +7551,7 @@ test('a result that arrives after the deploy was given up on corrects it to succ
 
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'succeeded')
-    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.errorMessage ?? null, null)
     assertEquals(
       stored?.progress?.steps.every((step) => step.state === 'done'),
       true
@@ -7284,7 +7565,10 @@ test('a result that arrives after the deploy was given up on corrects it to succ
       LATE_OUTCOME_NOTE
     )
     const [row] = await ctx.db
-      .select({ status: deployment.status, applied: deployment.appliedGeneration })
+      .select({
+        status: deployment.status,
+        applied: deployment.appliedGeneration,
+      })
       .from(deployment)
       .where(eq(deployment.serverId, ctx.serverId))
     assertEquals(row?.status, 'applied')
@@ -7364,7 +7648,7 @@ test('a late success with characters Postgres refuses stores the cleaned report'
     assertEquals(ack?.id, record.id)
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'succeeded')
-    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.errorMessage ?? null, null)
     assertEquals(stored?.result, {
       projectName: 'tp-deploy-test',
       warnings: ['build printed ', 'half \uFFFD pair'],
@@ -7407,7 +7691,7 @@ test('a late success whose report the database refuses is still confirmed, with 
 
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'succeeded')
-    assertEquals(stored?.error ?? null, null)
+    assertEquals(stored?.errorMessage ?? null, null)
     assertEquals(stored?.result ?? null, null)
     const [meta] = await ctx.db
       .select({ metadata: command.metadata })
@@ -7500,7 +7784,10 @@ test('an outcome is confirmed to the daemon only when it is stored and the daemo
       type: 'environment.deploy',
       payload: { notAnEnvironmentId: true },
     })
-    await transitionCommand(db, record.id, { status: 'sent', sentAt: new Date().toISOString() })
+    await transitionCommand(db, record.id, {
+      status: 'sent',
+      sentAt: new Date().toISOString(),
+    })
     const envelope = {
       kind: 'command-outcome' as const,
       requestId: record.id,
@@ -7509,12 +7796,20 @@ test('an outcome is confirmed to the daemon only when it is stored and the daemo
     }
     const stored = ACKED_REQUEST(serverId, record.id)
 
-    // An older daemon is never sent a message it does not know.
+    // A daemon that lacks the feature is never sent a message it does not know
+    // (the fixture daemon lists every feature, so drop them for this step).
+    await touchServerMetadata(db, serverId, { features: [] })
     assertEquals(await ackForReportedOutcome(db, { serverId, envelope, record: stored }), null)
 
-    await touchServerMetadata(db, serverId, { features: ['command-recovery-v1'] })
+    await touchServerMetadata(db, serverId, {
+      features: ['command-recovery-v1'],
+    })
     // The cell holds the result for the consumer: confirmed.
-    const ack = await ackForReportedOutcome(db, { serverId, envelope, record: stored })
+    const ack = await ackForReportedOutcome(db, {
+      serverId,
+      envelope,
+      record: stored,
+    })
     assertEquals(ack?.type, 'command-outcome-ack')
     assertEquals(ack?.id, record.id)
     // Nothing holds it yet: not confirmed, so the daemon sends it again. Why
@@ -7552,7 +7847,10 @@ test('a deploy that sends a sign of life is counted as heard from, and the quiet
     })
     assertEquals(typeof (await readProgress(ctx.db, record.id))?.contactLostAt, 'string')
 
-    await noteReportedCommands(ctx.db, ctx.serverId, { running: [record.id], unacked: [] })
+    await noteReportedCommands(ctx.db, ctx.serverId, {
+      running: [record.id],
+      unacked: [],
+    })
 
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.progress?.contactLostAt ?? null, null)
@@ -7582,7 +7880,10 @@ test('the next step plan from a quiet server clears the checking mark and gives 
     )
     // Marking again changes nothing, and does not reset the silence clock.
     assertEquals(
-      await markCommandContactLost(ctx.db, { commandId: record.id, lastHeardAt: 'later' }),
+      await markCommandContactLost(ctx.db, {
+        commandId: record.id,
+        lastHeardAt: 'later',
+      }),
       false
     )
 
@@ -7609,7 +7910,9 @@ test('the next step plan from a quiet server clears the checking mark and gives 
 function survivingCellRequests(serverId: string) {
   const requests = new Map<string, PendingRequestRecord>()
   const process = () => {
-    const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: null,
+    })
     const base = registry.getCell(serverId)
     const cell: DaemonCell = {
       ...base,
@@ -7662,7 +7965,7 @@ test('a control plane restart mid-run keeps waiting for the deploy without sendi
     assertEquals(sent.length, 1)
     const waiting = await getCommandRecord(ctx.db, record.id)
     assertEquals(waiting?.status, 'sent')
-    assertEquals(waiting?.error ?? null, null)
+    assertEquals(waiting?.errorMessage ?? null, null)
     assertEquals(typeof waiting?.progress?.contactLostAt, 'string')
   })
 })
@@ -7731,7 +8034,10 @@ test('an outcome the server sends again after a reconnect is confirmed and settl
     assertEquals(stored?.status, 'succeeded')
     assertEquals(stored?.progress?.contactLostAt ?? null, null)
     const [row] = await ctx.db
-      .select({ status: deployment.status, applied: deployment.appliedGeneration })
+      .select({
+        status: deployment.status,
+        applied: deployment.appliedGeneration,
+      })
       .from(deployment)
       .where(eq(deployment.serverId, ctx.serverId))
     assertEquals(row?.status, 'applied')
@@ -7790,7 +8096,10 @@ test('an outcome whose result is over the cap is confirmed and fails the deploy'
     assertEquals(cells.requests.get(record.id)?.result, undefined)
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'failed')
-    assertEquals(stored?.error, "The server's report was too large to store (71 KB; limit 64 KB).")
+    assertEquals(
+      stored?.errorMessage,
+      "The server's report was too large to store (71 KB; limit 64 KB)."
+    )
   })
 })
 
@@ -7830,7 +8139,9 @@ test('an outcome from a daemon that does not know the confirmation is stored but
 function expiringCellRequests(serverId: string, stepMs: number) {
   const requests = new Map<string, PendingRequestRecord>()
   let offsetMs = 0
-  const registry = createDispatchMockRegistry(serverId, { waitForRequestResult: null })
+  const registry = createDispatchMockRegistry(serverId, {
+    waitForRequestResult: null,
+  })
   const base = registry.getCell(serverId)
   const cell: DaemonCell = {
     ...base,
@@ -7845,7 +8156,10 @@ function expiringCellRequests(serverId: string, stepMs: number) {
       return Promise.resolve(null)
     },
   }
-  return { requests, registry: Object.assign(registry, { getCell: () => cell }) }
+  return {
+    requests,
+    registry: Object.assign(registry, { getCell: () => cell }),
+  }
 }
 
 test('a resumed deploy whose request has expired is given up on, never sent again', async () => {
@@ -7876,8 +8190,8 @@ test('a resumed deploy whose request has expired is given up on, never sent agai
     assertEquals(sent.length, 0)
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'timed_out')
-    assertEquals(stored?.error?.includes('Lost contact with the server'), true)
-    assertEquals(stored?.error?.includes('Last known step: Build running'), true)
+    assertEquals(stored?.errorMessage?.includes('Lost contact with the server'), true)
+    assertEquals(stored?.errorMessage?.includes('Last known step: Build running'), true)
     const [row] = await ctx.db
       .select({ status: deployment.status })
       .from(deployment)
@@ -7913,7 +8227,7 @@ test('a deploy whose request expires during the wait ends with the lost-contact 
     assertEquals(sent.length, 0)
     const stored = await getCommandRecord(ctx.db, record.id)
     assertEquals(stored?.status, 'timed_out')
-    assertEquals(stored?.error?.includes('Lost contact with the server'), true)
+    assertEquals(stored?.errorMessage?.includes('Lost contact with the server'), true)
   })
 })
 

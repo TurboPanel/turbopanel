@@ -8,11 +8,9 @@ import { instanceHostname, instanceUploadedCertificate, setting } from '../../db
 import {
   certificateSourceForInstallOrigin,
   deriveInstanceHostnameStatus,
-  getInstanceHostnamesLegacyShim,
   INSTANCE_ACME_HTTP01_ISSUER_UNREACHABLE,
   instanceAcmeHttp01PreflightFailure,
   listInstanceHostnames,
-  migrateLegacyPublicUrls,
   recordInstanceAcmeIssuance,
   replaceInstanceHostnames,
   replacePublicUrlList,
@@ -20,7 +18,7 @@ import {
   validateHostnameSource,
 } from './instance-hostnames.ts'
 import { SELF_HOSTED_PUBLIC_PORT_ERROR, setSelfHostedAddress } from './ingress-modes.ts'
-import { getPublicUrls, PUBLIC_URLS_SETTING_KEY, setPublicUrls } from './public-urls.ts'
+import { getPublicUrls, setPublicUrls } from './public-urls.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -167,32 +165,15 @@ test('deriveInstanceHostnameStatus prefers failure, then expiry, then pending', 
   )
 })
 
-test('migrateLegacyPublicUrls backfills once and get/set still round-trip', async () => {
+test('get and set public URLs round-trip through the hostname table', async () => {
   const { db, hostnames, settings } = createMemoryDb()
-  settings.push({
-    key: PUBLIC_URLS_SETTING_KEY,
-    value: ' panel.example.com , https://other.example.com/ ',
-  })
-
-  assertEquals(await getPublicUrls(db), ['panel.example.com', 'https://other.example.com:8443'])
-  assertEquals(hostnames.length, 2)
-  assertEquals(
-    hostnames.every((row) => row.source === 'platform-ca'),
-    true
-  )
-
-  await migrateLegacyPublicUrls(db)
-  assertEquals(hostnames.length, 2)
-  assertEquals(await getInstanceHostnamesLegacyShim(db), [
-    'panel.example.com',
-    'https://other.example.com:8443',
-  ])
+  assertEquals(await getPublicUrls(db), [])
 
   await setPublicUrls(db, ['https://panel.example.com:9443'])
   assertEquals(await getPublicUrls(db), ['https://panel.example.com:8443'])
   assertEquals(hostnames.length, 1)
-  const projected = settings.find((row) => row.key === PUBLIC_URLS_SETTING_KEY)
-  assertEquals(projected?.value, ['https://panel.example.com:8443'])
+  // The hostname table is the only store: no settings row is written.
+  assertEquals(settings.length, 0)
 })
 
 test("replaceInstanceHostnames keeps Let's Encrypt state when a portless row is saved again", async () => {

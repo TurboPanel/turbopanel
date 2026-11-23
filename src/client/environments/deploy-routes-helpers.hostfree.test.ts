@@ -424,8 +424,6 @@ test('hosting option readers filter invalid values', () => {
   assertEquals(readWwwMode({ www: 'both' }), 'both')
   assertEquals(readWwwMode({ www: 'root-to-www' }), 'root-to-www')
   assertEquals(readWwwMode({ www: 'yes' }), 'off')
-  assertEquals(readWwwMode({ wwwRedirect: true, hostnames: ['example.com'] }), 'www-to-root')
-  assertEquals(readWwwMode({ wwwRedirect: 'true' }), 'off')
   assertEquals(readWwwMode(null), 'off')
   assertEquals(readTargetPort({ targetPort: 8080 }), 8080)
   assertEquals(readTargetPort({ targetPort: Number.NaN }), undefined)
@@ -1019,14 +1017,6 @@ test('config file prepare errors map to 422 and the daemon gate to 409 naming se
     'config_interpolation'
   )
   assertEquals(mapPrepareErrorResponse({ kind: 'config_file_shared', message: 'x' }).status, 422)
-  const gate = mapPrepareErrorResponse({
-    kind: 'config_files_need_daemon_update',
-    message: 'update the daemon',
-    servers: [{ serverId: 'srv-1', name: 'old-box' }],
-  })
-  assertEquals(gate.status, 409)
-  assertEquals(gate.body.error, 'config_files_need_daemon_update')
-  assertEquals(gate.body.servers, [{ serverId: 'srv-1', name: 'old-box' }])
 })
 
 test('the preview shows secret slots by name and never a value or a size', () => {
@@ -1052,4 +1042,35 @@ test('the preview shows secret slots by name and never a value or a size', () =>
   assertEquals(rows[1]?.hasSecretValues, false)
   assertEquals(Object.keys(rows[0] ?? {}).includes('bytes'), false)
   assertEquals(previewConfigFiles({} as PreparedDeployCompose), [])
+})
+
+test('mapPrepareErrorResponse names what is missing for a refused network share', () => {
+  const server = { id: projectId, name: 'server-a.example.lan' }
+  const permission = mapPrepareErrorResponse({
+    kind: 'compose_network_shares_refused',
+    reason: 'permission',
+    volumes: ['media'],
+  })
+  assertEquals(permission.status, 403)
+  assertEquals(permission.body.reason, 'permission')
+  assertEquals(String(permission.body.message).includes('environments.deploy_network_shares'), true)
+
+  const approval = mapPrepareErrorResponse({
+    kind: 'compose_network_shares_refused',
+    reason: 'approval',
+    volumes: ['media'],
+  })
+  assertEquals(approval.status, 403)
+  assertEquals(String(approval.body.message).includes('automated deploy'), true)
+
+  const setting = mapPrepareErrorResponse({
+    kind: 'compose_network_shares_refused',
+    reason: 'server_setting',
+    volumes: ['media'],
+    servers: [server],
+  })
+  assertEquals(setting.status, 403)
+  assertEquals(setting.body.servers, [server])
+  assertEquals(String(setting.body.message).includes('server-a.example.lan'), true)
+  assertEquals(String(setting.body.message).includes('"Allow Network Shares"'), true)
 })

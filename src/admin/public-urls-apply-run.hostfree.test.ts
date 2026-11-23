@@ -29,36 +29,33 @@ function fakeDb(rows: { key: string; value: unknown }[]): Db {
 test('an apply that carried no edge set records only the body hash', async () => {
   const rows: { key: string; value: unknown }[] = []
   const db = fakeDb(rows)
-  await recordPublicUrlsApplied(db, { urls: [] })
+  await recordPublicUrlsApplied(db, { hostnames: [] })
   const state = await loadEdgeTrustState(db)
   assertEquals(state.appliedHash, undefined)
-  assertEquals(state.appliedPayloadHash, await publicUrlsPayloadFingerprint({ urls: [] }))
+  assertEquals(state.appliedPayloadHash, await publicUrlsPayloadFingerprint({ hostnames: [] }))
 })
 
 test('an apply that carried an edge set records its hash', async () => {
   const rows: { key: string; value: unknown }[] = []
   const db = fakeDb(rows)
   await recordPublicUrlsApplied(db, {
-    urls: [],
+    hostnames: [],
     edgeTrust: { cidrs: [], hash: 'abc', cloudflare: [], bunny: [] },
   })
   assertEquals((await loadEdgeTrustState(db)).appliedHash, 'abc')
 })
 
 const HOST = 'panel.example.test'
-const URLS = [`https://${HOST}:8443`]
 const EDGE = { cidrs: [], hash: 'edge', cloudflare: [], bunny: [] }
 
 /** The body sent before the public port existed, or while the name was direct. */
 const OLD_BODY: PublicUrlsApplyPayload = {
-  urls: URLS,
   hostnames: [{ host: HOST, source: 'platform-ca' }],
   edgeTrust: EDGE,
 }
 
 /** The same name in tunnel mode, for a daemon that advertises the public port. */
 const NEW_BODY: PublicUrlsApplyPayload = {
-  urls: URLS,
   hostnames: [{ host: HOST, source: 'platform-ca', publicPort: 8443 }],
   edgeTrust: EDGE,
 }
@@ -101,7 +98,7 @@ test('a daemon without the public port feature gets one body without it, then no
   const rows: { key: string; value: unknown }[] = []
   const db = fakeDb(rows)
   const sent: PublicUrlsApplyPayload[] = []
-  const legacy: PublicUrlsApplyPayload = { urls: URLS, hostnames: OLD_BODY.hostnames }
+  const legacy: PublicUrlsApplyPayload = { hostnames: OLD_BODY.hostnames }
   for (let pass = 0; pass < 3; pass += 1) {
     await applyPublicUrlsIfChanged(db, legacy, recordingSend(sent))
   }
@@ -123,7 +120,6 @@ test('a failed send records nothing, so the next pass tries again', async () => 
 
 test('the fingerprint ignores key material and follows what the daemon renders', async () => {
   const sealed = (envelope: string): PublicUrlsApplyPayload => ({
-    urls: URLS,
     hostnames: [
       {
         host: HOST,

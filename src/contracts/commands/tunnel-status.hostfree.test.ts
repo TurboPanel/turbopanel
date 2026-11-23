@@ -49,6 +49,7 @@ test('server.tunnel.status refuses a malformed result', () => {
   const one = (patch: Record<string, unknown>) =>
     bad({ connectors: [{ ...(GOOD.connectors as Record<string, unknown>[])[0], ...patch }] })
   one({ tunnelId: '../x' })
+  one({ tunnelId: 'default' })
   one({ tunnelId: ID.toUpperCase() })
   one({ status: 'paused' })
   one({ version: 'v1' })
@@ -77,4 +78,34 @@ test('server.tunnel.status keeps the connector facts and refuses bad ones', () =
   bad({ hostnames: [''] })
   bad({ hostnames: ['x'.repeat(254)] })
   bad({ hostnames: Array.from({ length: 101 }, (_, i) => `n${i}.example.com`) })
+})
+
+test('server.tunnel.status carries what the peer hop does about client certificates', () => {
+  const down = { ...GOOD, peerClientAuth: 'verify', peerClientAuthDowngraded: true }
+  assertEquals(parseTunnelStatusResult(down) as unknown, down)
+  const ok = { ...GOOD, peerClientAuth: 'require' }
+  assertEquals(parseTunnelStatusResult(ok) as unknown, ok)
+  assertThrows(() => parseTunnelStatusResult({ ...GOOD, peerClientAuth: 'x' }))
+  assertThrows(() => parseTunnelStatusResult({ ...GOOD, peerClientAuthDowngraded: false }))
+})
+
+test('server.tunnel.status carries the lock on the status ports, and its absence stays absent', () => {
+  assertEquals('statusPortsLocked' in parseTunnelStatusResult(GOOD), false)
+  const locked = {
+    ...GOOD,
+    statusPortsLocked: true,
+    statusPortsLockCheckedAt: '2026-11-19T10:00:00Z',
+  }
+  assertEquals(parseTunnelStatusResult(locked) as unknown, locked)
+  const failed = { ...GOOD, statusPortsLocked: false, statusPortsLockReason: 'nft could not load' }
+  assertEquals(parseTunnelStatusResult(failed) as unknown, failed)
+  const bad = (patch: Record<string, unknown>) =>
+    assertThrows(() => parseTunnelStatusResult({ ...GOOD, ...patch }))
+  bad({ statusPortsLocked: 'yes' })
+  bad({ statusPortsLockReason: 'orphan' })
+  bad({ statusPortsLockCheckedAt: '2026-11-19T10:00:00Z' })
+  bad({ statusPortsLocked: true, statusPortsLockReason: 'locked, with a reason' })
+  bad({ statusPortsLocked: false, statusPortsLockReason: 'two\nlines' })
+  bad({ statusPortsLocked: false, statusPortsLockReason: 'x'.repeat(201) })
+  bad({ statusPortsLocked: true, statusPortsLockCheckedAt: 'yesterday' })
 })

@@ -10,9 +10,7 @@ import {
   parseManagedSlotRetention,
 } from '../../contracts/commands/schemas.ts'
 import { updateManagedMemberObservedReplication } from '../../features/managed/members.ts'
-import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { cellTrace } from '../../lib/logger.ts'
-import { MANAGED_HEALTH_FEATURE } from '../../lib/version-wire.ts'
 import type { FreshStandbyProbe } from '../../features/managed/ha-fresh-standby.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 
@@ -46,9 +44,6 @@ export type ManagedHealthProbeParams = {
 export type ManagedHealthProbeOutcome =
   | { status: 'observed'; replication: ManagedReplicationHealth }
   | {
-      status: 'unsupported'
-    }
-  | {
       status: 'unavailable'
       reason:
         | 'no_registry'
@@ -64,7 +59,6 @@ export type ManagedHealthProbeOutcome =
 /** Seams for hostfree tests; production wires the defaults. */
 export type ManagedHealthProbeDeps = {
   isServerConnected?: (serverId: string) => Promise<boolean>
-  daemonFeatures?: (serverId: string) => Promise<readonly string[]>
   persist?: (memberId: string, replication: ManagedReplicationHealth) => Promise<void>
 }
 
@@ -162,7 +156,6 @@ function withoutLastStreaming(health: ManagedReplicationHealth): ManagedReplicat
 
 /**
  * Ask one member's daemon for a fresh replication reading and store it.
- * Sends nothing to a daemon that does not advertise `managed-health-v1`.
  */
 export async function probeManagedMemberHealth(
   db: Db,
@@ -172,12 +165,6 @@ export async function probeManagedMemberHealth(
 ): Promise<ManagedHealthProbeOutcome> {
   if (!registry) return { status: 'unavailable', reason: 'no_registry' }
 
-  const daemonFeatures =
-    deps.daemonFeatures ??
-    (async (serverId: string) => {
-      const state = await getServerDaemonStateByServerId(db, serverId)
-      return state?.projection?.features ?? []
-    })
   const isServerConnected =
     deps.isServerConnected ??
     (async (serverId: string) => {
@@ -191,10 +178,6 @@ export async function probeManagedMemberHealth(
 
   const requestId = generateRequestId()
   try {
-    const features = await daemonFeatures(params.serverId)
-    if (!features.includes(MANAGED_HEALTH_FEATURE)) {
-      return { status: 'unsupported' }
-    }
     if (!(await isServerConnected(params.serverId))) {
       return { status: 'unavailable', reason: 'offline' }
     }

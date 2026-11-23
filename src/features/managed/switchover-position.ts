@@ -11,8 +11,6 @@
 
 import type { Db } from '../../db/connection.ts'
 import { parseWalPosition } from '../../contracts/commands/schemas.ts'
-import { MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE } from '../../lib/version-wire.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import { updateRecoveryLocked } from './recovery-records.ts'
 import type { RecoveryMetadata, RecoveryRecord } from './recovery.ts'
 
@@ -62,49 +60,17 @@ export function recordNewPrimaryReplayPosition(
   }))
 }
 
-type DaemonStateLookup = (db: Db, serverId: string) => Promise<DaemonFeatures | null>
-type DaemonFeatures = { projection?: { features?: readonly string[] } }
-
-/** Does the server's daemon list `managed-switchover-final-position-v1`? */
-export async function daemonReportsFinalPosition(
-  db: Db,
-  serverId: string,
-  lookup: DaemonStateLookup = getServerDaemonStateByServerId
-): Promise<boolean> {
-  const state = await lookup(db, serverId)
-  return (state?.projection?.features ?? []).includes(MANAGED_SWITCHOVER_FINAL_POSITION_FEATURE)
-}
-
-/** True only when the daemon of EVERY listed server lists it. */
-export async function daemonsAllReportFinalPosition(
-  db: Db,
-  serverIds: readonly string[],
-  lookup: DaemonStateLookup = getServerDaemonStateByServerId
-): Promise<boolean> {
-  const answers = await Promise.all(
-    serverIds.map((id) => daemonReportsFinalPosition(db, id, lookup))
-  )
-  return answers.every(Boolean)
-}
-
 /**
- * Postgres planned switchover, daemon that can report it: ask the fence stop
- * for the old primary's final write position, stamped with this recovery and
- * the primary epoch the switchover began at. Anything else sends nothing, so
- * an older daemon and every other recovery see the stop exactly as before.
+ * Postgres planned switchover: ask the fence stop for the old primary's final
+ * write position, stamped with this recovery and the primary epoch the
+ * switchover began at. Any other recovery sends nothing.
  */
-export async function finalPositionStopFields(
-  db: Db,
-  params: { recovery: RecoveryRecord; engine: string; sourceServerId: string },
-  lookup: DaemonStateLookup = getServerDaemonStateByServerId
-): Promise<{ switchoverRecoveryId: string; primaryEpoch: number } | Record<string, never>> {
+export function finalPositionStopFields(params: {
+  recovery: RecoveryRecord
+  engine: string
+}): { switchoverRecoveryId: string; primaryEpoch: number } | Record<string, never> {
   const epoch = params.recovery.metadata.primaryEpochAtStart
   if (params.recovery.kind !== 'switchover' || params.engine !== 'postgres') return {}
-  if (
-    epoch === undefined ||
-    !(await daemonReportsFinalPosition(db, params.sourceServerId, lookup))
-  ) {
-    return {}
-  }
+  if (epoch === undefined) return {}
   return { switchoverRecoveryId: params.recovery.id, primaryEpoch: epoch }
 }

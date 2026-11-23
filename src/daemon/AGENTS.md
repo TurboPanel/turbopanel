@@ -121,6 +121,29 @@ plane). Their shapes and validators are in `src/contracts/cell-protocol.ts`.
   rate-limit answer should keep the words `rateLimited`, so the panel waits an
   hour); answer every `acme-proof-forward` with `-ready` or `-failed`.
 
+### The DNS proof (`acme-issue-dns-v1`)
+
+A daemon that also lists `acme-issue-dns-v1` can be asked for an order over the
+DNS proof: `acme-issue-request` carries `challenge: 'dns-01'` (absent means the
+HTTP proof) and its names may be wildcards. The panel never sends `dns-01` to a
+daemon without the feature, because an older daemon drops the field and would run
+the HTTP proof. The daemon publishes its challenge records through the panel,
+which holds the DNS token:
+
+- `acme-dns-publish` (daemon to control plane): `requestId` and up to
+  `MAX_ACME_DNS_RECORDS` records of `{name, value}`; a name is
+  `_acme-challenge.` plus a name of the order, a value is the digest text.
+- `acme-dns-published` (control plane to daemon, a direct wire reply): `ok`, or
+  `ok: false` with a plain `error` sentence (no token, no provider detail). It is
+  sent only once the TXT record reads back.
+- `acme-dns-remove` (daemon to control plane): remove what was published, by id.
+  The cleanup tick is the net under this one ask.
+
+Publish and remove are in `DAEMON_INBOUND_ALLOWED`, handled on both runtimes by
+`src/features/tls/http-issuance/dns-relay.ts`, and only the issuing server of an
+open request may use them. On Workers the read-back waits a short bounded time
+and uses the provider's own read.
+
 ## Advised heartbeat
 
 The attach `version` frame carries an optional `heartbeatSeconds` (the idle-ping
@@ -173,6 +196,20 @@ unsigned report on a signed session. The cost: a server that once ran a
 signing daemon cannot go back to an older daemon on a signed session unless
 it is re-enrolled.
 
+**Workers takes only signed sessions (owner decision 2026-11-18, no floor bump).**
+On the Workers runtime (hosted and High Availability control planes, which have no
+co-located daemon) the trust-level ratchet is replaced by a fixed rule, whatever
+`server.trust_level` says: a v1 enroll or sign-in proof is refused with 403
+`Signed proof required`, the WebSocket upgrade needs the daemon request
+signature, the first frame must be a `hello-nonce` (anything else closes 4403
+`signed-mode-required` with nothing sent), an attach without its proof closes
+1008, and every report must be signed. Pinned daemons (v0.1.18 and later) send
+exactly these forms. The Deno runtime keeps the ratchet: the daemon on a
+self-hosted control plane's own host has no panel key pin and sends the older
+forms. `requireSigned` on `registerDaemonApiRoutes` sets the rule for the
+REST routes (default: true on Workers); the cell test seam
+`setDaemonCellUnsignedSessionsAllowedForTests` lets cell tests use plain frames.
+
 **Signed HA events (`signed-ha-events-v1`, owner decision 2026-11-10, no floor bump).** On a signed session a daemon that sees the feature on the attach frame also signs every `managed-ha-event` (dead-primary and boot-hold reports) with the same envelope. These frames are in `SIGNATURE_REQUIRED_TYPES` (`authn/report-signature.ts`): the control plane acts on one only when its signature verifies, on every session and whatever the ratchet says. The intake never drops one; it hands it on marked `verified`, `unsigned` or `invalid`, and a frame on a session that is not signed is `session-unsigned` (`haEventSignature` in `features/managed/ha-event.ts`). Both runtimes pass that to `handleManagedHaEvent`, which refuses anything but `verified` before any other check (`recordRefusedHaEvent`): a report from a server that hosts a member of the cluster in its organization becomes one terminal `blocked` row that says why and the exact fix (`HA_EVENT_REFUSED_MESSAGES`, `BOOT_HOLD_REFUSED_MESSAGES`, fixes in `HA_EVENT_REFUSAL_FIXES`; `metadata.reportRefused`; no target, so no cooldown; repeats fold into it), anything else is logged only. A refused boot-hold report leaves its held primary stopped. Owner decision 2026-11-10: strict, with no exception for the co-located daemon. A server must be pinned (hold the panel identity pin) to have a signed session; a server installed before panel keys is pinned by its next daemon update to a new release when that update can fetch and check the identity document (learn-on-upgrade in `run.sh`; a failure leaves it unpinned), no other unpinned server can be pinned from the control plane today, and the server a self-hosted control plane runs on is never pinned (`run.sh` writes no panel pin for a control-plane install or a co-located refresh), so its databases do not fail over automatically. A refused report is filed only when it passes every check a signed one would before any action (detector, reporter and current-primary gate, the Orchestrator instance binding; a boot-hold report must name a member on the reporting server), so a late report about a replaced primary is only logged; repeats from one server fold into its own row per cluster and member, whatever the reason, even when other rows were written since (`findRefusedReportRow`). The Durable Object writes a refusal for one cluster at most every 10 minutes per socket (`haRefusalsAt` on the attachment, stamped after a successful write) before it opens a database client. A signed `managed-ha-event` is refused when signed more than 30 s ahead of the control plane's clock or more than 60 s ago, so a held-back copy cannot be replayed. Readers that decide from the newest recovery (the boot-hold hold, the re-seed guard, the abort-restart guard) use `findLatestActedRecovery` (refused rows filtered out in SQL, so no number of them can hide the row that matters), and the fence-deadline run skips refused rows, so a refused report never hides a failed failover that needs an operator. The cost, accepted by the owner: a server whose daemon has not updated, or whose connection is not a signed session (trust level 0, no panel identity pin), no longer fails over automatically, and its held primaries are not released after an unclean boot. A verified event also sets the reports ratchet, like any verified report. A signed event can still be delayed by whoever ends TLS, within that 60 s window.
 
 ## Sealed secrets (`daemon-sealed-secrets-v1`)
@@ -180,13 +217,11 @@ it is re-enrolled.
 A daemon with this feature generates an X25519 sealing key and registers it with
 `POST /api/daemon/v1/servers/self/sealing-key` `{kid, pub, sig}`; `sig` is its
 Ed25519 signature over `"tp-sealing-key\n" + pub`, checked against the key on file
-(`sealing-key-registration.ts`). `POST /secrets/decrypt` then answers `{ sealed:
-[envelope | null, ...] }` (same order as the request, `aad` = server id) and
-omits `plaintexts` whenever a sealing key is on file, whatever the hello
-`features` list says (that list is unsigned, so keying on it let a token holder
-ask for plaintext); a server with no registered key still gets `plaintexts`, and `server.plaintext_secrets_at` is stamped (at most
-hourly) so the edge go-live gate can read that nothing is still answered in
-plaintext. The answer is never both fields. Only the key id may be logged. The
+(`sealing-key-registration.ts`). `POST /secrets/decrypt` answers only
+`{ sealed: [envelope | null, ...] }` (same order as the request, `aad` = server id),
+keyed on the registered key and never on the unsigned hello `features` list. A server
+with no registered key gets 409 `sealing_key_required` and no plaintext; the daemon
+registers its key and asks once more. Only the key id may be logged. The
 Hosting Account password hash rides as `passwordHashEnvelope` (a `tpdaemon`
 envelope) to such a daemon on environment deploys and on
 `server.principals.reconcile`; every reconcile caller passes the secrets config
@@ -202,11 +237,20 @@ The key stays on file until the server's identity key is replaced (enrollment
 attach) or removed (`clearServerDaemonState`), which clear
 `sealing_key_kid`, `sealing_key_pub` and `sealing_key_reported_at` with it; the
 new daemon registers its own key when it connects with the new key id, and the
-server is treated as one with no key until that lands. Recovery for a
-host rolled back (break glass) to a build without the feature is a superadmin's
-Clear Sealing Key (`DELETE /api/admin/v1/instance/identity/sealed-secrets/:serverId/key`,
-see `src/admin/AGENTS.md`); nothing on the daemon wire can clear the key. A
-plaintext decrypt answer is how a daemon learns the key is gone, and a daemon
-that has opened a sealed answer still refuses plaintext. The superadmin read `GET
-/api/admin/v1/instance/identity/sealed-secrets` reports, per server, the
-feature, the key id and `plaintext_secrets_at`, for the edge go-live gate. The `MIN_SUPPORTED_*` floors are untouched.
+server is treated as one with no key until that lands. There is no
+superadmin action to clear the key, and nothing on the daemon wire can clear it.
+The `server.plaintext_secrets_at` column is no longer written or read. The `MIN_SUPPORTED_*` floors are untouched.
+
+## Per-name certificates (`hosting-name-tls-v1`)
+
+`EnvironmentDeployHosting.nameTls` is a list of `{ hostname, tlsId?, tlsMode? }`
+that overrides the row's `tlsId`/`tlsMode` for that name and its `www`
+redirect. The panel sends it only when the row's names resolve to different
+values, and only to a server whose stored hello lists `hosting-name-tls-v1`;
+otherwise the server is refused with `name_certificates_need_update` and never
+silently given one certificate. Entries may name only the row's served names.
+Every `tlsId` in `nameTls` is added to `resolvedTlsIds` so its material ships.
+A row whose names all share a value is byte for byte today's payload.
+The feature is also in `DAEMON_WIRE_FEATURES`, so a daemon whose hello lacks it
+is reported as needing an update. `check:contract-drift` stays red until the
+daemon release that defines the feature is on its trunk (daemon merges first).

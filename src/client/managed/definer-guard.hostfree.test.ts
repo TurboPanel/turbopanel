@@ -61,9 +61,8 @@ test('a login with no objects, or another login in the answer, goes ahead', asyn
   )
 })
 
-test('an offline or older host goes ahead with a plain note', async () => {
+test('an offline host goes ahead with a plain note', async () => {
   for (const outcome of [
-    { status: 'unsupported' },
     { status: 'unavailable', reason: 'offline' },
     { status: 'unavailable', reason: 'no_registry' },
   ] as ManagedPermissionsProbeOutcome[]) {

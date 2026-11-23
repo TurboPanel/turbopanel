@@ -1,5 +1,5 @@
 /**
- * Asks each server that carries a tunnel what its connectors are doing and
+ * Asks each server that carries a tunnel, or receives its peer traffic, what its connectors are doing and
  * which version they run (`server.tunnel.status`), and writes the answer onto
  * the server's portal rows (`status.ts`).
  *
@@ -8,18 +8,17 @@
  * is recorded once, and a new question is sent when the last one is old enough.
  * Only a connected server whose daemon advertises `tunnel-status-v1` is asked.
  */
-import { and, eq, gt, isNull, sql } from 'drizzle-orm'
+import { and, eq, gt, isNull, or, sql, type SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, portal, server } from '../../db/schema.ts'
+import { command, ip, portal, server, tunnel } from '../../db/schema.ts'
 import { parseTunnelStatusResult } from '../../contracts/commands/tunnel-status.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { gapStillRunning } from '../../lib/slot-gap.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import type { CommandQueue } from '../commands/queue.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
-import { daemonCanReportTunnelStatus } from './daemon-gate.ts'
 import { recordTunnelStatus } from './status.ts'
 
 /** The least time between two questions to one server. */
@@ -128,7 +127,32 @@ async function hasUnheardPortal(db: Db, serverId: string, nowMs: number): Promis
       )
     )
     .limit(1)
-  return row !== undefined
+  return row !== undefined || (await hasUnheardAllTunnel(db, serverId, nowMs))
+}
+
+/**
+ * Does an all-servers tunnel that this server carries, made or moved to all
+ * servers recently, have no report kept for it yet? "Recently" reads
+ * `createdAt` or `metadata.placementChangedAt`, never `updatedAt`, which every
+ * write to the tunnel moves. The same window as a new portal, so a connector
+ * that never reports costs a few extra questions, not one every tick forever.
+ */
+async function hasUnheardAllTunnel(db: Db, serverId: string, nowMs: number): Promise<boolean> {
+  const since = new Date(nowMs - TUNNEL_STATUS_NEW_PORTAL_WINDOW_MS).toISOString()
+  const rows = await db
+    .select({ id: server.id })
+    .from(server)
+    .where(
+      and(
+        eq(server.id, serverId),
+        carriesAnAllServersTunnel(
+          sql`greatest(${tunnel.createdAt}, coalesce((${tunnel.metadata} ->> 'placementChangedAt')::timestamptz, ${tunnel.createdAt})) > ${since}
+            and not jsonb_exists(coalesce(${server.metadata} -> 'tunnelConnectorReports', '{}'::jsonb), ${tunnel.externalId})`
+        )
+      )
+    )
+    .limit(1)
+  return rows.length > 0
 }
 
 /** Record what the last question learned, then ask again when it is time. */
@@ -137,9 +161,7 @@ export async function pollServerTunnelStatus(
   commandQueue: CommandQueue,
   row: { id: string; metadata: unknown },
   nowMs: number = Date.now()
-): Promise<'asked' | 'recorded' | 'waiting' | 'skipped'> {
-  const state = await getServerDaemonStateByServerId(db, row.id)
-  if (!daemonCanReportTunnelStatus(state?.projection?.features)) return 'skipped'
+): Promise<'asked' | 'recorded' | 'waiting'> {
   let asked = readAskedState(row.metadata)
   let recorded = false
   if (asked && !asked.recordedAt) {
@@ -152,9 +174,11 @@ export async function pollServerTunnelStatus(
     // An answered question waits out the gap (short while a new connector is unheard);
     // an unanswered one waits out its own life.
     const quick =
-      answered && age < TUNNEL_STATUS_POLL_GAP_MS && age >= TUNNEL_STATUS_NEW_PORTAL_GAP_MS
+      answered &&
+      gapStillRunning(age, TUNNEL_STATUS_POLL_GAP_MS) &&
+      age >= TUNNEL_STATUS_NEW_PORTAL_GAP_MS
     const unheard = quick && (await hasUnheardPortal(db, row.id, nowMs))
-    if (age < statusGapMs(answered, unheard)) {
+    if (gapStillRunning(age, statusGapMs(answered, unheard))) {
       return recorded ? 'recorded' : 'waiting'
     }
   }
@@ -162,13 +186,49 @@ export async function pollServerTunnelStatus(
   return 'asked'
 }
 
-/** Servers that carry a tunnel (they have a portal row) and are connected now. */
+/**
+ * The server carries an all-servers tunnel of its organization: it is in the
+ * tunnel's datacenter, has no `skip` portal for it, and is not marked as never
+ * carrying tunnels (the rule of `carryingServers`). `also` adds conditions on
+ * that same tunnel row. Such a server has no portal row, so without this it
+ * would be asked only when it happened to hold a forwarding table.
+ */
+function carriesAnAllServersTunnel(also?: SQL) {
+  const extra = also ? sql`and ${also}` : sql``
+  return sql`exists (
+    select 1 from ${tunnel}
+    join ${ip} on ${ip.datacenterId} = ${tunnel.datacenterId}
+      and ${ip.scope} = 'datacenter' and ${ip.serverId} = ${server.id}
+    where ${tunnel.organizationId} = ${server.organizationId}
+      and ${tunnel.placement} = 'all' and ${tunnel.status} <> 'removing'
+      and not exists (
+        select 1 from ${portal}
+        where ${portal.tunnelId} = ${tunnel.id} and ${portal.serverId} = ${server.id}
+          and ${portal.wanted} = 'skip')
+      and coalesce(${server.options} #>> '{tunnels,carry}', '') <> 'false'
+      ${extra})`
+}
+
+/**
+ * Connected servers that carry a tunnel (they have a portal row) or were sent a
+ * forwarding table (a server that only runs a site behind a tunnel receives
+ * peer traffic and has a peer-hop mode to report too). The same gap applies to
+ * both, so the cost is one question per server per ten minutes.
+ */
 async function serversToPoll(db: Db) {
   return await db
-    .selectDistinct({ id: server.id, metadata: server.metadata })
-    .from(portal)
-    .innerJoin(server, eq(portal.serverId, server.id))
-    .where(eq(server.isConnected, true))
+    .select({ id: server.id, metadata: server.metadata })
+    .from(server)
+    .where(
+      and(
+        eq(server.isConnected, true),
+        or(
+          sql`exists (select 1 from ${portal} where ${portal.serverId} = ${server.id})`,
+          sql`${server.metadata} -> 'tunnelRoutes' is not null`,
+          carriesAnAllServersTunnel()
+        )
+      )
+    )
 }
 
 /** The sweep: ask every connected server that carries a tunnel. */

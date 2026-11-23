@@ -7,7 +7,7 @@ The wire side is in `src/daemon/AGENTS.md`.
 
 - `state.ts`: the private request state in `tls.metadata.httpCert` (no table, no
   migration), `canAcceptCapture`, `afterCapture`. The public row never copies it.
-- `choose.ts`: who takes part. Only a server that is online, lists the feature and
+- `choose.ts`: who takes part over the HTTP proof (for the DNS proof see `chooseDnsIssuer` below). Only a server that is online, lists the feature and
   is in the name's DNS (the A and AAAA answers against the server's public
   addresses). Others are skipped and get the certificate later. With no known
   public address anywhere, every online server with the feature counts.
@@ -71,7 +71,7 @@ orders begin per tick so a first run after a rollout is gradual. The cheap
 answers (nothing due, a wait or cap in force, no contact address) come before any
 DNS or per-server lookup.
 
-Which names an order asks for, and who may take it (`names.ts`). The order asks for the row's names plus every www name the pinning sites' www mode adds (a pinned pair serves that name too); a wildcard is never ordered here. A daemon that lists `acme-issue-one-cert-v1` places the order with its own client and gets one certificate for all the names; an older daemon (only `acme-issue-v1`) would get one certificate per name, which a row cannot hold, so it takes only a single-name order (`takesOrderFor`). A row with several names whose serving daemons are all older is still selected by the sweep but answers `not_eligible` before any DNS lookup or write, and stays with each server's own web server. A single-name row whose site adds a www name now needs the new feature too: before, it was ordered for the typed name alone and the www name was served with a pair that did not cover it. The names an order asks for are fixed in the request state when it starts (`orderNames`), so a site edited mid-request does not change them between the forwards and the order; a request an older release started has none and uses the row's current names. Names are folded (`foldHostname`). A pair that covers every stored name (the same names, or more, such as a renewal that now also covers the www name) replaces the stored pair when it expires later (`replaces` in `src/client/tls/issued-certificate.ts`); before, a wider pair was kept only as a note, the request closed on the old pair's renewal time, and the sweep ordered again every minute.
+Which names an order asks for, and who may take it (`names.ts`). The order asks for the row's names plus every www name the pinning sites' www mode adds (a pinned pair serves that name too); a wildcard is never ordered here. The serving daemon places the order with its own client and gets one certificate for all the names. A row with no serving server answers `not_eligible` before any DNS lookup or write. The names an order asks for are fixed in the request state when it starts (`orderNames`), so a site edited mid-request does not change them between the forwards and the order; a request an older release started has none and uses the row's current names. Names are folded (`foldHostname`). A pair that covers every stored name (the same names, or more, such as a renewal that now also covers the www name) replaces the stored pair when it expires later (`replaces` in `src/client/tls/issued-certificate.ts`); before, a wider pair was kept only as a note, the request closed on the old pair's renewal time, and the sweep ordered again every minute.
 
 One order at a time per issuing server: the daemon runs one issuer window at a time, so
 a second order would wait behind the first and could pass the panel's silence limit.
@@ -88,3 +88,28 @@ message is not switched off either, so an `issued` or `failed` event can still e
 request (an `issued` event closes it when the pair is already stored for every name). A row's own web server is unaffected. When the switch goes back on,
 the close rule runs before the start-by check: a request with a stored pair for every
 name closes as issued, and the rest fail and back off.
+
+## The DNS proof (`acme-issue-dns-v1`)
+
+A name list with a wildcard is proved over DNS, and so may any other order
+(`acme.challengeType: 'dns-01'`; the request state records `challenge`). The
+panel publishes the TXT records for the daemon.
+
+- `choose.ts` `chooseDnsIssuer`: any online serving server whose daemon lists
+  `acme-issue-dns-v1`, with no address or port-80 check and no helpers. With
+  none able, the request waits. An older daemon would drop `challenge` and run
+  the HTTP proof for names meant for DNS, so `orchestrator.ts` `sendAll` never
+  sends `challenge: 'dns-01'` to a server that does not list the feature now
+  (pinned in `dns-orders.hostfree.test.ts`).
+- `progress.ts`: a DNS request fails after the daemon's 10 minute order
+  deadline plus a minute of grace, and lives 15 minutes in all.
+- `dns-relay.ts`: handles `acme-dns-publish` (replied to with
+  `acme-dns-published` once the record reads back) and `acme-dns-remove`, on
+  both runtimes. The record is written to `metadata.dnsCert.records` as soon as
+  it exists and removed only by id. See `../dns-certificates/AGENTS.md`.
+- `caps.ts`: at most 10 new certificates per organization per day, and a pause
+  for every new start while an authority rate limit is in force. New starts are
+  kept in `organization.options.acmeNewStarts` (ISO times, pruned to a day), so
+  deleting a row does not free the cap. A retry is subject to the pause only.
+- The sweep starts at most 2 renewals per tick.
+- A name still waiting for its pair goes to the daemon as an internal name.

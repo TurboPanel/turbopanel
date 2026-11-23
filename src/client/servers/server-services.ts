@@ -68,6 +68,8 @@ export type ServerServicesApp = {
   phpVersion?: string
   /** The service runs an older PHP than is installed and is waiting for a restart. */
   phpRestartPending?: true
+  /** The service's PHP runs in the shared pool, not a per-site runtime; absent when unknown or an older daemon. */
+  phpShared?: true
   serviceId: string
   name: string
   project: string
@@ -473,7 +475,7 @@ export function phpFieldsForApp(
   phpSites: readonly ServerPhpPatchSite[],
   environmentId: string,
   composeServiceName: string
-): Pick<ServerServicesApp, 'phpVersion' | 'phpRestartPending'> {
+): Pick<ServerServicesApp, 'phpVersion' | 'phpRestartPending' | 'phpShared'> {
   const site = phpSites.find(
     (entry) =>
       entry.environmentId === environmentId && entry.composeServiceName === composeServiceName
@@ -481,6 +483,7 @@ export function phpFieldsForApp(
   return {
     ...(site?.version ? { phpVersion: site.version } : {}),
     ...(site?.outdated ? { phpRestartPending: true as const } : {}),
+    ...(site?.shared ? { phpShared: true as const } : {}),
   }
 }
 

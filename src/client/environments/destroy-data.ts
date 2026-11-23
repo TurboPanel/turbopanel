@@ -10,9 +10,6 @@
  * - the volumes to remove come from {@link listEnvironmentDataVolumes}, never
  *   from the request; `volumeIds` is the list the person was shown, and a
  *   list that changed since answers 409 `data_volumes_changed` with the new one;
- * - every server the stop goes to must list
- *   `environment-stop-remove-volumes-v1` (409 `delete_volumes_needs_daemon_update`):
- *   an older daemon ignores `removeVolumes` and would keep the data silently.
  *
  * The right needed is the one every Destroy already checks (manage on the
  * environment, which is the right an environment delete needs), plus the
@@ -29,8 +26,6 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDb } from '../../db/connection.ts'
 import { environment, server } from '../../db/schema.ts'
-import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
-import { STOP_REMOVE_VOLUMES_FEATURE } from '../../lib/version-wire.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -42,7 +37,6 @@ import {
 import { assertCanReadOr403, getOrgId } from '../shared.ts'
 import { type KeptDataVolume, listEnvironmentDataVolumes } from './data-volumes.ts'
 
-export const DELETE_VOLUMES_NEEDS_DAEMON_UPDATE_ERROR = 'delete_volumes_needs_daemon_update'
 export const DATA_VOLUMES_CHANGED_ERROR = 'data_volumes_changed'
 
 /** What the stop body asks for. */
@@ -87,16 +81,8 @@ export type PlannedDataVolume = {
 export type DestroyDataPlan = {
   volumes: PlannedDataVolume[]
   kept: KeptDataVolume[]
-  /** Servers whose daemon must be updated before data can be deleted. */
+  /** Always empty: every attached daemon deletes volumes. The dialog still reads the key. */
   outdatedServers: NamedServer[]
-}
-
-/** Wire features a server's daemon lists; the stored projection by default. */
-export type DaemonFeatureLookup = (db: Db, serverId: string) => Promise<readonly string[]>
-
-export async function storedDaemonFeatures(db: Db, serverId: string): Promise<readonly string[]> {
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return state?.projection?.features ?? []
 }
 
 async function serverNames(db: Db, ids: readonly string[]): Promise<Map<string, string>> {
@@ -106,27 +92,6 @@ async function serverNames(db: Db, ids: readonly string[]): Promise<Map<string, 
     .from(server)
     .where(inArray(server.id, [...ids]))
   return new Map(rows.map((row) => [row.id, row.name?.trim() || row.hostname || row.id]))
-}
-
-/** The servers, among `serverIds`, whose daemon does not list the feature. */
-export async function serversWithoutVolumeRemoval(
-  db: Db,
-  serverIds: readonly string[],
-  lookup: DaemonFeatureLookup = storedDaemonFeatures
-): Promise<NamedServer[]> {
-  const answers = await Promise.all(
-    serverIds.map(async (id) => [id, await lookup(db, id)] as const)
-  )
-  const outdated = answers
-    .filter(([, features]) => !features.includes(STOP_REMOVE_VOLUMES_FEATURE))
-    .map(([id]) => id)
-  const names = await serverNames(db, outdated)
-  return outdated.map((serverId) => ({ serverId, name: names.get(serverId) ?? serverId }))
-}
-
-export function outdatedServersMessage(servers: readonly NamedServer[]): string {
-  const names = servers.map((entry) => entry.name).join(', ')
-  return `Update the daemon on ${names} before deleting data volumes. Nothing was destroyed.`
 }
 
 /** True when `shown` names exactly the volumes in `volumes` (order and repeats do not count). */
@@ -143,8 +108,7 @@ export function sameVolumeList(
 export async function buildDestroyDataPlan(
   db: Db,
   environmentId: string,
-  serverIds: readonly string[],
-  lookup?: DaemonFeatureLookup
+  serverIds: readonly string[]
 ): Promise<DestroyDataPlan> {
   const listed = await listEnvironmentDataVolumes(db, environmentId)
   const targets = new Set(serverIds)
@@ -159,9 +123,7 @@ export async function buildDestroyDataPlan(
       .filter((id) => !targets.has(id))
       .map((serverId) => ({ serverId, name: names.get(serverId) ?? serverId })),
   }))
-  const outdatedServers =
-    volumes.length === 0 ? [] : await serversWithoutVolumeRemoval(db, serverIds, lookup)
-  return { volumes, kept: listed.kept, outdatedServers }
+  return { volumes, kept: listed.kept, outdatedServers: [] }
 }
 
 /**
@@ -175,7 +137,6 @@ export async function planDestroyData(
     environmentId: string
     serverIds: readonly string[]
     request: DestroyRequest
-    lookup?: DaemonFeatureLookup
   }
 ): Promise<DestroyDataPlan | Response> {
   const [named] = await db
@@ -194,7 +155,7 @@ export async function planDestroyData(
     )
   }
 
-  const plan = await buildDestroyDataPlan(db, params.environmentId, params.serverIds, params.lookup)
+  const plan = await buildDestroyDataPlan(db, params.environmentId, params.serverIds)
   if (!sameVolumeList(params.request.volumeIds, plan.volumes)) {
     return c.json(
       {
@@ -206,23 +167,13 @@ export async function planDestroyData(
       409
     )
   }
-  if (plan.outdatedServers.length > 0) {
-    return c.json(
-      {
-        error: DELETE_VOLUMES_NEEDS_DAEMON_UPDATE_ERROR,
-        message: outdatedServersMessage(plan.outdatedServers),
-        servers: plan.outdatedServers,
-      },
-      409
-    )
-  }
   return plan
 }
 
 /**
  * Register `GET /environments/:id/data-volumes`: what "Also Delete the Data
- * Volumes" would remove, what it keeps and why, where a copy stays, and which
- * servers need a daemon update first. Needs read on the environment.
+ * Volumes" would remove, what it keeps and why, and where a copy stays. Needs
+ * read on the environment.
  */
 export function registerEnvironmentDataVolumeRoutes(
   router: Hono<AppEnv>,

@@ -1,6 +1,6 @@
 /**
- * The self-hosted ingress tick, once a minute from `server.ts` with a fresh
- * database client: DNS-01 orders and renewals, tunnel health of applied edge
+ * The self-hosted ingress tick, on the self-hosted job tick (`ingressTick`, every
+ * minute, `job-tick.ts`) with a fresh database client: DNS-01 orders and renewals, tunnel health of applied edge
  * names, and the daily recheck of provider tokens. Each part fails alone.
  */
 import type { Db } from '../../../db/connection.ts'
@@ -96,32 +96,4 @@ export function createIngressTick(deps: IngressTickDeps): (db: Db) => Promise<vo
       )
     }
   }
-}
-
-/** Every minute: the same cadence as the other Deno certificate sweeps. */
-export const INGRESS_TICK_MS = 60_000
-
-/**
- * Start the tick. A fresh database client per run, always closed, and no
- * overlap: a slow run makes the next one skip, never pile up.
- */
-export function startIngressTimer(
-  deps: IngressTickDeps,
-  db: { open: () => Db; close: (db: Db) => Promise<void> }
-): ReturnType<typeof setInterval> {
-  const tick = createIngressTick(deps)
-  let running = false
-  return setInterval(() => {
-    if (running) return
-    running = true
-    void (async () => {
-      const tickDb = db.open()
-      try {
-        await tick(tickDb)
-      } finally {
-        await db.close(tickDb).catch(() => {})
-        running = false
-      }
-    })()
-  }, INGRESS_TICK_MS)
 }

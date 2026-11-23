@@ -5,8 +5,11 @@ import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import { listServerPlacements, recordPendingPlacements } from '../principals/placement-records.ts'
 import {
+  carrier,
   container,
+  doorway,
   environment,
+  hostname,
   hosting,
   organization,
   principal,
@@ -14,9 +17,11 @@ import {
   server,
   service,
   tenancy,
+  tunnel,
   workspace,
 } from '../../db/schema.ts'
 import {
+  deleteEnvironmentCascade,
   deleteProjectCascade,
   isActiveContainerStatus,
   PROJECT_HAS_RUNNING_SERVICES_ERROR,
@@ -541,5 +546,133 @@ test('deleteProjectCascade refuses and keeps every row when the host stop did no
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+const RELEASED_NAME = 'released.example.net'
+
+/** One project with a production and a staging environment, each holding a name. */
+async function seedHeldName(db: ReturnType<typeof createDenoDb>) {
+  const [org] = await db
+    .insert(organization)
+    .values({ name: 'Release Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: 'Release Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({ name: 'Release Project', workspaceId: ws!.id, organizationId })
+    .returning({ id: project.id })
+  const [prod] = await db
+    .insert(environment)
+    .values({ name: 'production', projectId: proj!.id })
+    .returning({ id: environment.id })
+  const [stage] = await db
+    .insert(environment)
+    .values({ name: 'staging', projectId: proj!.id })
+    .returning({ id: environment.id })
+  const [svc] = await db
+    .insert(service)
+    .values({ name: 'web', environmentId: stage!.id, composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const [hst] = await db
+    .insert(hosting)
+    .values({ serviceId: svc!.id, name: 'web', options: { hostnames: [RELEASED_NAME] } })
+    .returning({ id: hosting.id })
+  await db.insert(hostname).values({
+    hostingId: hst!.id,
+    routingOrganizationId: organizationId,
+    hostname: RELEASED_NAME,
+  })
+  const [car] = await db
+    .insert(carrier)
+    .values({ organizationId, provider: 'cloudflare', name: 'c' })
+    .returning({ id: carrier.id })
+  const [tun] = await db
+    .insert(tunnel)
+    .values({
+      organizationId,
+      routingOrganizationId: organizationId,
+      carrierId: car!.id,
+      provider: 'cloudflare',
+      name: 't',
+    })
+    .returning({ id: tunnel.id })
+  const [door] = await db
+    .insert(doorway)
+    .values({
+      routingOrganizationId: organizationId,
+      tunnelId: tun!.id,
+      hostname: RELEASED_NAME,
+      hostingId: hst!.id,
+    })
+    .returning({ id: doorway.id })
+  return {
+    organizationId,
+    workspaceId: ws!.id,
+    projectId: proj!.id,
+    productionId: prod!.id,
+    stagingId: stage!.id,
+    doorwayId: door!.id,
+    tunnelId: tun!.id,
+    carrierId: car!.id,
+  }
+}
+
+async function assertNameReleased(
+  db: ReturnType<typeof createDenoDb>,
+  s: Awaited<ReturnType<typeof seedHeldName>>
+) {
+  const held = await db
+    .select({ id: hostname.id })
+    .from(hostname)
+    .where(eq(hostname.routingOrganizationId, s.organizationId))
+  assertEquals(held.length, 0)
+  const [door] = await db
+    .select({ hostingId: doorway.hostingId })
+    .from(doorway)
+    .where(eq(doorway.id, s.doorwayId))
+  assertEquals(door?.hostingId, null)
+}
+
+async function dropSeed(
+  db: ReturnType<typeof createDenoDb>,
+  s: Awaited<ReturnType<typeof seedHeldName>>
+) {
+  await db.delete(doorway).where(eq(doorway.id, s.doorwayId))
+  await db.delete(tunnel).where(eq(tunnel.id, s.tunnelId))
+  await db.delete(carrier).where(eq(carrier.id, s.carrierId))
+  await db.delete(environment).where(eq(environment.projectId, s.projectId))
+  await db.delete(project).where(eq(project.id, s.projectId))
+  await db.delete(workspace).where(eq(workspace.id, s.workspaceId))
+  await db.delete(organization).where(eq(organization.id, s.organizationId))
+}
+
+test('deleting a project releases its hostnames and doorway links', async () => {
+  if (!dbUrl) return skipWithoutDatabase('project cascade tests')
+  const db = createDenoDb()
+  const s = await seedHeldName(db)
+  try {
+    const result = await deleteProjectCascade(db, s.projectId)
+    assertEquals(result.ok, true)
+    await assertNameReleased(db, s)
+  } finally {
+    await dropSeed(db, s)
+  }
+})
+
+test('deleting an environment releases its hostnames and doorway links', async () => {
+  if (!dbUrl) return skipWithoutDatabase('project cascade tests')
+  const db = createDenoDb()
+  const s = await seedHeldName(db)
+  try {
+    const result = await deleteEnvironmentCascade(db, s.stagingId)
+    assertEquals(result.ok, true)
+    await assertNameReleased(db, s)
+  } finally {
+    await dropSeed(db, s)
   }
 })

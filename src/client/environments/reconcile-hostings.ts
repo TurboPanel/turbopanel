@@ -64,6 +64,7 @@ import {
   withHostingComposeOwner,
   withoutHostingComposeOwner,
 } from '../../features/hostings/hosting-compose-owner.ts'
+import { pinHostingNames } from '../../features/hostings/name-certificates.ts'
 import { PanelHostnameClaimError } from '../../features/hostings/panel-hostname-guard.ts'
 import { lockEnvironmentRow } from '../../features/folders/records.ts'
 import {
@@ -259,6 +260,21 @@ function collectDeclaredRoutes(merged: ComposeDocument): DeclaredRoute[] {
     }
   }
   return routes
+}
+
+/**
+ * Does the merged document still declare this route on this compose service?
+ * The same key the reconcile matches a row by (`service` + `route`), so a check
+ * made outside a deploy agrees with what the next deploy would keep.
+ */
+export function composeDeclaresRoute(
+  merged: ComposeDocument,
+  composeServiceName: string,
+  route: string
+): boolean {
+  return collectDeclaredRoutes(merged).some(
+    (declared) => declared.composeServiceName === composeServiceName && declared.route === route
+  )
 }
 
 /** Refs, deduped, in the order the document names them. */
@@ -667,6 +683,11 @@ async function persistExistingDeclaredRoute(input: {
     input
   try {
     await db.transaction(async (tx) => {
+      const [before] = await tx
+        .select({ tlsId: hosting.tlsId })
+        .from(hosting)
+        .where(eq(hosting.id, existingId))
+        .limit(1)
       await tx
         .update(hosting)
         .set({
@@ -680,6 +701,9 @@ async function persistExistingDeclaredRoute(input: {
         })
         .where(eq(hosting.id, existingId))
       await replaceHostingHostnames(tx, existingId, ctx.organizationId, [route.entry.hostname])
+      // Compose owns the whole-site pin: a changed pin goes to every name. An
+      // unchanged one leaves the names as they are.
+      if (before?.tlsId !== pins.tlsId) await pinHostingNames(tx, existingId, pins.tlsId)
     })
   } catch (err) {
     if (err instanceof PanelHostnameClaimError) {
@@ -738,6 +762,7 @@ async function insertDeclaredRoute(
         })
         .returning({ id: hosting.id })
       await replaceHostingHostnames(tx, inserted.id, ctx.organizationId, [route.entry.hostname])
+      await pinHostingNames(tx, inserted.id, pins.tlsId)
       return inserted.id
     })
   } catch (err) {

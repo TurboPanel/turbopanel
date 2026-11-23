@@ -103,7 +103,7 @@ const CONFIG_NAME = validateConfigName(
   process.env.TURBOPANEL_TESTING_HYPERDRIVE_CACHED_NAME ?? 'testing-cached'
 )
 const PRIMARY_ID = validateHyperdriveId(
-  process.env.TURBOPANEL_TESTING_HYPERDRIVE_PRIMARY_ID ?? '3fcb0ba1b38143508e8fe60c3b45b3e6',
+  process.env.TURBOPANEL_TESTING_HYPERDRIVE_PRIMARY_ID ?? '66b1fafaa8e04850b36917078ed96b0e',
   'primary'
 )
 

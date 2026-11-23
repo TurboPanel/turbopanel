@@ -150,6 +150,10 @@ export async function handleAcmeIssuanceEvent(
     if (row.status !== 'automatic') return
     if (!isResidualMetadata(row.metadata)) return
     if (!coversHostname(row.metadata.dnsNames, hostname)) return
+    // A DNS-proof order proves the name with a TXT record, so it needs no address
+    // record and a failed HTTPS check of the site says nothing about it. The order's
+    // own state owns this row's error and stage.
+    if (!input.ok && row.metadata.acme?.challengeType === 'dns-01') return
 
     const nextAcme = applyIssuanceOutcome(row.metadata.acme, input)
     if (!input.ok && row.metadata.acme?.lastError === undefined) newlyFailing = true

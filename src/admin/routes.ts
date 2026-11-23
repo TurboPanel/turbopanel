@@ -19,6 +19,7 @@ import {
 } from '../features/alerts/alert-webhook-settings.ts'
 import { registerNotificationAdminRoutes } from './notification-routes.ts'
 import { registerMailDeadLetterAdminRoutes } from './mail-dead-letter-routes.ts'
+import { registerOrganizationAdminRoutes } from './organization-routes.ts'
 import type { MailDeadLetterStore } from '../features/email/smtp/dead-letter-replay.ts'
 import { type EmailDeliveryStatus, emailDeliveryState } from '../features/email/delivery-status.ts'
 import { isNoopEmailQueue } from '../features/email/noop-queue.ts'
@@ -64,6 +65,7 @@ import {
 import {
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
+  invalidEmailSettingUpdate,
   resolveEmailSettings,
   updateEmailSettings,
 } from '../features/settings/email-settings.ts'
@@ -131,16 +133,12 @@ async function buildPublicUrlsApplyPayload(
   c: Context<AppEnv>,
   opts: { getEnv?: () => Record<string, string | undefined> },
   db: NonNullable<ReturnType<typeof getDb>>,
-  serverId: string,
-  urls: string[],
-  daemonVersion: string | undefined
+  serverId: string
 ): Promise<PublicUrlsApplyPayloadOutcome> {
   try {
     const payload = await buildPublicUrlsPayload({
       db,
       serverId,
-      urls,
-      daemonVersion,
       secretsConfig: c.get('secretsConfig'),
       dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
       env: resolvePlatformEnv(c, opts),
@@ -247,6 +245,7 @@ export function registerAdminRoutes(
   opts.registerTiers?.(admin)
   registerNotificationAdminRoutes(admin)
   registerMailDeadLetterAdminRoutes(admin, { store: opts.mailDeadLetters })
+  registerOrganizationAdminRoutes(admin)
 
   admin.get('/daemon/connections', async (c) => {
     const registry = getDaemonCellRegistry(c)
@@ -505,6 +504,9 @@ export function registerAdminRoutes(
       return c.json({ error: 'expected a JSON object of setting keys' }, 400)
     }
 
+    const invalidUpdate = invalidEmailSettingUpdate(updates)
+    if (invalidUpdate) return c.json({ error: invalidUpdate }, 400)
+
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     // DB-backed secret writes must be sealed at rest — require an encryption key,
     // mirroring TLS and variable secret writes.
@@ -752,14 +754,7 @@ export function registerAdminRoutes(
     }
 
     await opts.refreshEdgeRanges?.(db).catch(() => undefined)
-    const applied = await buildPublicUrlsApplyPayload(
-      c,
-      opts,
-      db,
-      serverId,
-      urlsResult.urls,
-      snapshot.daemonBuild?.version
-    )
+    const applied = await buildPublicUrlsApplyPayload(c, opts, db, serverId)
     if (!applied.ok) {
       return c.json(applied.body, applied.status)
     }

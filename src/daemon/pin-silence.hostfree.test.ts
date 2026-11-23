@@ -137,7 +137,7 @@ const offlineSince = iso(NOW - EIGHT_HOURS)
 
 const silent = (over: Partial<ServerRow> = {}): ServerRow => ({
   id: 's1',
-  name: 'kappa',
+  name: 'server-c',
   hostname: null,
   organizationId: 'o1',
   isConnected: false,
@@ -190,10 +190,10 @@ test('half an hour of continued healthy readings raises pin_silent once, with au
 test('the alarm names a server that has only a hostname', async () => {
   const aliveAt = iso(NOW - PIN_SILENT_MIN_MS)
   const r = recorder()
-  const row = silent({ name: null, hostname: 'manvm', since: offlineSince, aliveAt })
+  const row = silent({ name: null, hostname: 'server-d', since: offlineSince, aliveAt })
   const { db } = fakeDb(fleet(row), healthyPeer)
   assertEquals(await sweepPinSilence(db, undefined, r.deps), 1)
-  assertEquals(r.emits[0]?.context.serverName, 'manvm')
+  assertEquals(r.emits[0]?.context.serverName, 'server-d')
 })
 
 test('six hours of healthy readings after the warning raises pin_missing', async () => {

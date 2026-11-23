@@ -1,8 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
-  GITHUB_INSTALL_STATE_PURPOSE,
-  GITHUB_INSTALL_STATE_TTL_MS,
   GITHUB_MANIFEST_STATE_PURPOSE,
   INSTALL_STATE_PURPOSES,
   INSTALL_STATE_TTL_MS,
@@ -44,14 +42,8 @@ test('provider install state is not interchangeable across HKDF purposes', async
   const github = await signProviderInstallState(secrets, 'github', CLAIMS, NOW_MS)
   const gitlab = await signProviderInstallState(secrets, 'gitlab', CLAIMS, NOW_MS)
 
-  assertEquals(
-    await verifyProviderInstallState(secrets, 'gitlab', github, NOW_MS),
-    null,
-  )
-  assertEquals(
-    await verifyProviderInstallState(secrets, 'github', gitlab, NOW_MS),
-    null,
-  )
+  assertEquals(await verifyProviderInstallState(secrets, 'gitlab', github, NOW_MS), null)
+  assertEquals(await verifyProviderInstallState(secrets, 'github', gitlab, NOW_MS), null)
 })
 
 test('verifyProviderInstallState rejects expired, malformed, and unsigned state', async () => {
@@ -59,42 +51,24 @@ test('verifyProviderInstallState rejects expired, malformed, and unsigned state'
   const state = await signProviderInstallState(secrets, 'github', CLAIMS, NOW_MS)
 
   assertEquals(
-    await verifyProviderInstallState(
-      secrets,
-      'github',
-      state,
-      NOW_MS + INSTALL_STATE_TTL_MS + 1,
-    ),
-    null,
+    await verifyProviderInstallState(secrets, 'github', state, NOW_MS + INSTALL_STATE_TTL_MS + 1),
+    null
   )
+  assertEquals(await verifyProviderInstallState(secrets, 'github', 'not-an-envelope', NOW_MS), null)
   assertEquals(
-    await verifyProviderInstallState(secrets, 'github', 'not-an-envelope', NOW_MS),
-    null,
-  )
-  assertEquals(
-    await verifyProviderInstallState(
-      secrets,
-      'github',
-      'tpinstall.v1.not-base64.also-not',
-      NOW_MS,
-    ),
-    null,
+    await verifyProviderInstallState(secrets, 'github', 'tpinstall.v1.not-base64.also-not', NOW_MS),
+    null
   )
 
   const parts = state.split('.')
   parts[3] = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-  assertEquals(
-    await verifyProviderInstallState(secrets, 'github', parts.join('.'), NOW_MS),
-    null,
-  )
+  assertEquals(await verifyProviderInstallState(secrets, 'github', parts.join('.'), NOW_MS), null)
 })
 
 test('install-state purposes stay distinct and share the ten-minute TTL', () => {
   assertEquals(INSTALL_STATE_PURPOSES.github, 'github-app-install-state')
   assertEquals(INSTALL_STATE_PURPOSES.gitlab, 'gitlab-oauth-connect-state')
-  assertEquals(GITHUB_INSTALL_STATE_PURPOSE, INSTALL_STATE_PURPOSES.github)
   assertEquals(GITHUB_MANIFEST_STATE_PURPOSE, 'github-app-manifest-state')
-  assertEquals(GITHUB_INSTALL_STATE_TTL_MS, INSTALL_STATE_TTL_MS)
 })
 
 test('sign/verify round-trips a GitHub manifest state including optional fields', async () => {
@@ -126,7 +100,7 @@ test('manifest state treats a null organization as the instance-wide admin flow'
       baseUrl: 'https://github.com',
       name: 'Instance',
     },
-    NOW_MS,
+    NOW_MS
   )
   assertEquals(await verifyGithubManifestState(secrets, state, NOW_MS), {
     organizationId: null,
@@ -147,17 +121,17 @@ test('verifyGithubManifestState rejects expired, malformed, and unsigned state',
   const state = await signGithubManifestState(
     secrets,
     { organizationId: ORG_ID, webhookRef: 'r', baseUrl: 'https://github.com', name: 'App' },
-    NOW_MS,
+    NOW_MS
   )
 
   assertEquals(
     await verifyGithubManifestState(secrets, state, NOW_MS + INSTALL_STATE_TTL_MS + 1),
-    null,
+    null
   )
   assertEquals(await verifyGithubManifestState(secrets, 'not-an-envelope', NOW_MS), null)
   assertEquals(
     await verifyGithubManifestState(secrets, 'tpinstall.v1.not-base64.also-not', NOW_MS),
-    null,
+    null
   )
 
   const parts = state.split('.')
@@ -170,14 +144,14 @@ test('verifyGithubManifestState rejects empty required fields', async () => {
   const emptyName = await signGithubManifestState(
     secrets,
     { organizationId: ORG_ID, webhookRef: 'r', baseUrl: 'https://github.com', name: '' },
-    NOW_MS,
+    NOW_MS
   )
   assertEquals(await verifyGithubManifestState(secrets, emptyName, NOW_MS), null)
 
   const emptyRef = await signGithubManifestState(
     secrets,
     { organizationId: ORG_ID, webhookRef: '', baseUrl: 'https://github.com', name: 'App' },
-    NOW_MS,
+    NOW_MS
   )
   assertEquals(await verifyGithubManifestState(secrets, emptyRef, NOW_MS), null)
 })

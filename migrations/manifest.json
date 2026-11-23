@@ -8,6 +8,30 @@
       "tag": "0000_init",
       "when": 1794507698078,
       "sha256": "3596e6656d0ba7f4360474d113ecd3d33ae80a2b94a84f9700f400db9b44e393"
+    },
+    {
+      "idx": 1,
+      "tag": "0001_delete_orphan_public_urls_setting",
+      "when": 1795028797979,
+      "sha256": "c3fb0f9c9a7d28f811e5a498aa633585339ac1b9366a9ddf73a5e88445498b49"
+    },
+    {
+      "idx": 2,
+      "tag": "0002_origin_behind_cdn_proxy",
+      "when": 1795033537931,
+      "sha256": "b1df98979f5dde56aef09eede917d1a87a9ebabc8334cc859afd49548b91bed7"
+    },
+    {
+      "idx": 3,
+      "tag": "0003_datacenter_untrusted_by_default",
+      "when": 1795101169925,
+      "sha256": "80ddf67020677282759dfe57e21115b3431254dd82b4d77b1499b478b10ee6ed"
+    },
+    {
+      "idx": 4,
+      "tag": "0004_hostname_certificate_choice",
+      "when": 1795105891479,
+      "sha256": "881ea4e38fb9ed2b5e6b2e72aa83ffffc5bf56a8e6d36c7d1bd10c926b7c80cb"
     }
   ]
 }

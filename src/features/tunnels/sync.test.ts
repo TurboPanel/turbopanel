@@ -28,7 +28,10 @@ import {
   tunnel,
   workspace,
 } from '../../db/schema.ts'
-import { parseTunnelRoutesPayload } from '../../contracts/commands/tunnel-routes.ts'
+import {
+  parseTunnelRoutesPayload,
+  TUNNEL_PEER_PORT,
+} from '../../contracts/commands/tunnel-routes.ts'
 import { applyPendingTlsLeafSideEffect } from '../commands/consumer.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -49,11 +52,15 @@ const test = Deno.test.bind(Deno)
 const dbUrl = getDatabaseUrl()
 
 /** Make the last send look old enough to be repeated. */
-async function ageLastSend(db: ReturnType<typeof createDenoDb>, serverId: string): Promise<void> {
+async function ageLastSend(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string,
+  ageMs = 3_600_000
+): Promise<void> {
   await db
     .update(server)
     .set({
-      metadata: sql`jsonb_set(${server.metadata}, '{tunnelRoutes,sentAt}', to_jsonb(${new Date(Date.now() - 3_600_000).toISOString()}::text))`,
+      metadata: sql`jsonb_set(${server.metadata}, '{tunnelRoutes,sentAt}', to_jsonb(${new Date(Date.now() - ageMs).toISOString()}::text))`,
     })
     .where(eq(server.id, serverId))
 }
@@ -121,15 +128,10 @@ async function withServer(
   }
 }
 
-test('an offline server and an old daemon are skipped', async () => {
+test('an offline server is skipped', async () => {
   await withServer({ connected: false, features: [TUNNEL_FORWARDING_FEATURE] }, async (c) => {
     const outcome = await syncServerTunnelRoutes(c.db, c.deps, c)
     assertEquals(outcome, { status: 'skipped', reason: 'server offline' })
-  })
-  await withServer({ connected: true, features: [] }, async (c) => {
-    const outcome = await syncServerTunnelRoutes(c.db, c.deps, c)
-    assertEquals(outcome, { status: 'skipped', reason: 'daemon too old' })
-    assertEquals(c.queued.length, 0)
   })
 })
 
@@ -163,6 +165,23 @@ test('a server that once held a table is told to drop it, and a send that failed
     await ageLastSend(c.db, c.serverId)
     assertEquals((await syncServerTunnelRoutes(c.db, c.deps, c)).status, 'sent')
     assertEquals(c.queued.length, 2)
+    // A table the daemon refused as older than its own (and that the generation bump
+    // limit left unraised) is sent again after the bump gap, not after the long gap.
+    await c.db
+      .update(command)
+      .set({
+        status: 'succeeded',
+        resultSummary: {
+          applied: false,
+          routeCount: 0,
+          warnings: ['ignored: a newer forwarding table is already in place'],
+        },
+      })
+      .where(eq(command.serverId, c.serverId))
+    await ageLastSend(c.db, c.serverId, 30_000)
+    assertEquals(await syncServerTunnelRoutes(c.db, c.deps, c), { status: 'unchanged' })
+    await ageLastSend(c.db, c.serverId, 90_000)
+    assertEquals((await syncServerTunnelRoutes(c.db, c.deps, c)).status, 'sent')
     // The sweep reaches the same server through its remembered table.
     await c.db.update(command).set({ status: 'failed' }).where(eq(command.serverId, c.serverId))
     await ageLastSend(c.db, c.serverId)
@@ -193,6 +212,7 @@ test('a carrying server and a site server are sent real tables with a peer certi
     secretsConfig,
     dataEncryptionSecrets,
   }
+  const routeSends = () => queued.filter((e) => e.type === 'server.tunnel.routes')
   const [org] = await db.insert(organization).values({ name: 'Tunnel Sync Real Org' }).returning()
   const organizationId = org!.id
   try {
@@ -294,6 +314,8 @@ test('a carrying server and a site server are sent real tables with a peer certi
       [['shop.example.com', false]]
     )
     assertEquals(carrierPayload.routes[0]!.upstreams[0]!.addresses, ['10.94.0.11'])
+    // The carrier dials from its own address on the shared network, the one the site server admits.
+    assertEquals(carrierPayload.routes[0]!.upstreams[0]!.localAddress, '10.94.0.10')
     // A server that only carries tunnels has no inbound peers.
     assertEquals(carrierPayload.peerAddresses, [])
     assert(carrierPayload.peerMaterial !== undefined)
@@ -310,7 +332,7 @@ test('a carrying server and a site server are sent real tables with a peer certi
     // The firewall opens the hosting HTTPS port to exactly the peers the table names,
     // and a server that only carries tunnels gets no such rule.
     const sitePeers = await loadTunnelPeerExposures(db, organizationId, siteId)
-    assertEquals(sitePeers, tunnelPeerExposures(sitePayload.peerAddresses))
+    assertEquals(sitePeers, tunnelPeerExposures(sitePayload.peerAddresses, TUNNEL_PEER_PORT))
     assertEquals(sitePeers[0]?.sources, ['10.94.0.10'])
     assertEquals(await loadTunnelPeerExposures(db, organizationId, carrierId), [])
     const facts = await loadFirewallFacts(db, siteId)
@@ -332,6 +354,30 @@ test('a carrying server and a site server are sent real tables with a peer certi
       tracked.map((r) => [r.kind, r.serverId]),
       [['peer', carrierId]]
     )
+
+    // The carrier's address moves (a repin): both tables change, each goes out
+    // once, and a second pass sends nothing, however often the change is announced.
+    await db.update(ip).set({ address: '10.94.0.20' }).where(eq(ip.serverId, carrierId))
+    const sentBefore = routeSends().length
+    const syncOrganization = async () => {
+      for (const serverId of [carrierId, siteId]) {
+        await syncServerTunnelRoutes(db, deps, { organizationId, serverId })
+      }
+    }
+    await syncOrganization()
+    const resent = routeSends().slice(sentBefore)
+    assertEquals(resent.map((e) => e.serverId).toSorted(), [carrierId, siteId].toSorted())
+    for (const envelope of resent) {
+      const next = parseTunnelRoutesPayload(await getCommandDispatchPayload(db, envelope.commandId))
+      if (envelope.serverId === carrierId) {
+        assertEquals(next.routes[0]!.upstreams[0]!.localAddress, '10.94.0.20')
+      } else {
+        assertEquals(next.peerAddresses, ['10.94.0.20'])
+      }
+    }
+    await syncOrganization()
+    await syncOrganization()
+    assertEquals(routeSends().length, sentBefore + 2)
   } finally {
     await db.delete(command).where(
       inArray(

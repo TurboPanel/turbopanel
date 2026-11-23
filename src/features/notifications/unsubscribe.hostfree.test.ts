@@ -142,7 +142,10 @@ test('a sealed token opens to its claims until it expires', async () => {
 test('an altered token, another sealed value or garbage opens to nothing', async () => {
   const secrets = await keys()
   const token = await sealUnsubscribeToken(secrets, CLAIMS, NOW)
-  const flipped = token.slice(0, -2) + (token.endsWith('A') ? 'BB' : 'AA')
+  // Change a character well inside the ciphertext: the last one carries
+  // base64 padding bits that some decoders ignore.
+  const at = token.length - 8
+  const flipped = token.slice(0, at) + (token[at] === 'A' ? 'B' : 'A') + token.slice(at + 1)
   assertEquals(await openUnsubscribeToken(secrets, flipped, NOW), null)
   // A value sealed with the same key but without the domain tag is not a token.
   const other = await encryptSecret(secrets, JSON.stringify({ u: CLAIMS.userId, exp: NOW + 1 }))

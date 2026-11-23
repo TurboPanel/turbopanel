@@ -2,7 +2,7 @@
  * Load fleet + compose, interpret Swarm `deploy:`, and plan slots.
  */
 
-import { eq, sql } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { isComposeChainError, resolveComposeLayerChain } from '../compose/layer-chain.ts'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -24,8 +24,10 @@ import {
   type ComposeDeployValidationError,
   type ComposeDocument,
   hostAccessFingerprint,
+  findNetworkShareVolumes,
   hostAccessIssues,
   mergeComposeLayers,
+  networkSharesFingerprint,
   validateComposeForDeploy,
 } from '../compose/index.ts'
 import {
@@ -33,12 +35,18 @@ import {
   resolveComposeGatedFieldsEnabled,
   resolveComposeRemoteBuildSourcesEnabled,
 } from '../organizations/organization-options.ts'
+import { parseServerOptions } from '../servers/server-metadata.ts'
 import { parseServiceOptions, resolveServiceInstances } from '../projects/service-options.ts'
 import { environmentComposeFilename } from '../deploy/deploy-layers.ts'
 import { interpretServiceSchedule } from './interpret.ts'
 import { reconcileServicesFromCompose } from '../deploy/reconcile-services.ts'
 import { registerComposeVolumes } from '../deploy/register-compose-volumes.ts'
 import { registerComposeMounts } from '../deploy/register-compose-mounts.ts'
+import type {
+  ComposeBaseRecord,
+  DeployProjectOptions,
+  TrackedBaseError,
+} from '../projects/project-options.ts'
 import { loadPairRules } from '../fabric/pair-rules.ts'
 import { readOverlayDeclaredNetworkKeys } from '../fabric/spanning.ts'
 import {
@@ -162,6 +170,262 @@ async function authorizeHostAccess(
   return { hostLevelApproved: true }
 }
 
+/** Where an approved network-share fingerprint lives on `environment.metadata`. */
+export const NETWORK_SHARES_APPROVAL_METADATA_KEY = 'composeNetworkSharesApproval'
+
+/**
+ * The permission to deploy a network share. A catalog permission on the
+ * organization: the owner and manager (and a platform admin) hold it without a
+ * grant row, and it can be granted to any other role like any other permission.
+ */
+export const NETWORK_SHARES_PERMISSION = 'environments.deploy_network_shares'
+
+/**
+ * Who is deploying, for the network-share gate. Decided by the caller from the
+ * permission above, so this module never reads a role. `automated` is a push or
+ * a run the control plane starts: no person, judged on a recorded approval.
+ */
+export type NetworkSharesActor =
+  | { kind: 'permitted'; userId: string; email?: string | null }
+  | { kind: 'denied' }
+  | { kind: 'automated' }
+
+export type NetworkSharesApproval = {
+  /** Hash of the authored share volumes (unresolved text). */
+  fingerprint: string
+  /**
+   * Hashes of what the shares resolved to (addresses, options, which secret
+   * fills which field) in the deploys a permitted person ran. A variable that
+   * changes the mount changes the hash, so an automated deploy cannot run on it.
+   */
+  resolved: string[]
+  approvedBy: string
+  approvedAt: string
+}
+
+/** Resolved-share hashes kept on one approval; the oldest drop first. */
+const MAX_APPROVED_RESOLVED = 32
+
+function readNetworkSharesApproval(metadata: unknown): NetworkSharesApproval | null {
+  if (!isPlainObject(metadata)) return null
+  const raw = metadata[NETWORK_SHARES_APPROVAL_METADATA_KEY]
+  if (!isPlainObject(raw) || typeof raw.fingerprint !== 'string') return null
+  return {
+    fingerprint: raw.fingerprint,
+    resolved: Array.isArray(raw.resolved)
+      ? raw.resolved.filter((hash): hash is string => typeof hash === 'string')
+      : [],
+    approvedBy: typeof raw.approvedBy === 'string' ? raw.approvedBy : '',
+    approvedAt: typeof raw.approvedAt === 'string' ? raw.approvedAt : '',
+  }
+}
+
+/** What the planner decided about the document's network shares. */
+export type NetworkSharesPlan = {
+  volumes: string[]
+  fingerprint: string
+  actor: NetworkSharesActor
+  /** The approval stored on the environment when planning started. */
+  approval: NetworkSharesApproval | null
+  /** The newest "Allow Network Shares turned on" time among the plan's servers. */
+  newestEnabledAt: string | null
+}
+
+/**
+ * The actor half of the network-share gate: the deploying user's permission.
+ * (The server half runs once the plan knows its servers; see
+ * {@link checkNetworkShareServers}.) Both halves must pass. This step writes
+ * nothing; a permitted person's approval is recorded by
+ * {@link settleNetworkShares} once the deploy has been prepared, because what
+ * the shares resolve to is only known then.
+ *
+ * - a person without the permission is refused (`permission`);
+ * - an automated deploy runs only on an approval a permitted person recorded
+ *   for this exact set of shares (`approval`), the same rule as host-level
+ *   Compose.
+ */
+async function authorizeNetworkShares(
+  envRow: { metadata: unknown },
+  merged: ComposeDocument,
+  actor: NetworkSharesActor
+): Promise<{ error: ComposeDeployValidationError } | { shares: NetworkSharesPlan | null }> {
+  const volumes = findNetworkShareVolumes(merged.data)
+  if (volumes.length === 0) return { shares: null }
+  if (actor.kind === 'denied') {
+    return { error: { kind: 'compose_network_shares_refused', reason: 'permission', volumes } }
+  }
+  const fingerprint = (await networkSharesFingerprint(merged.data)) ?? ''
+  const approval = readNetworkSharesApproval(envRow.metadata)
+  if (actor.kind === 'automated' && approval?.fingerprint !== fingerprint) {
+    return { error: { kind: 'compose_network_shares_refused', reason: 'approval', volumes } }
+  }
+  return { shares: { volumes, fingerprint, actor, approval, newestEnabledAt: null } }
+}
+
+function isNewerThan(later: string | null | undefined, than: string): boolean {
+  if (!later) return false
+  const a = Date.parse(later)
+  const b = Date.parse(than)
+  return Number.isNaN(b) ? true : !Number.isNaN(a) && a > b
+}
+
+/**
+ * The server half of the network-share gate, over the servers the plan will
+ * dispatch to. The setting is `server.options.networkShares`; absent or
+ * anything but `true` reads as off. An automated deploy also needs its approval
+ * to be newer than the moment the setting was last turned on, so switching it
+ * off and on again voids earlier approvals until a permitted person deploys.
+ */
+async function checkNetworkShareServers(
+  db: Db,
+  serverIds: readonly string[],
+  shares: NetworkSharesPlan
+): Promise<ComposeDeployValidationError | { newestEnabledAt: string | null }> {
+  if (serverIds.length === 0) return { newestEnabledAt: null }
+  const rows = await db
+    .select({
+      id: server.id,
+      name: server.name,
+      hostname: server.hostname,
+      options: server.options,
+    })
+    .from(server)
+    .where(inArray(server.id, [...serverIds]))
+  const parsed = rows.map((row) => ({ row, options: parseServerOptions(row.options) }))
+  const off = parsed
+    .filter(({ options }) => options?.networkShares !== true)
+    .map(({ row }) => ({ id: row.id, name: row.name ?? row.hostname ?? row.id }))
+  if (off.length > 0) {
+    return {
+      kind: 'compose_network_shares_refused',
+      reason: 'server_setting',
+      volumes: shares.volumes,
+      servers: off,
+    }
+  }
+  let newestEnabledAt: string | null = null
+  const reenabled: Array<{ id: string; name: string }> = []
+  for (const { row, options } of parsed) {
+    const since = options?.networkSharesSince
+    if (since === undefined) continue
+    if (newestEnabledAt === null || isNewerThan(since, newestEnabledAt)) newestEnabledAt = since
+    if (
+      shares.actor.kind === 'automated' &&
+      isNewerThan(since, shares.approval?.approvedAt ?? '')
+    ) {
+      reenabled.push({ id: row.id, name: row.name ?? row.hostname ?? row.id })
+    }
+  }
+  if (reenabled.length > 0) {
+    return {
+      kind: 'compose_network_shares_refused',
+      reason: 'approval',
+      volumes: shares.volumes,
+      servers: reenabled,
+    }
+  }
+  return { newestEnabledAt }
+}
+
+/** A matched approval an automated deploy ran under; the route writes it as `compose.network_shares.use`. */
+export type NetworkSharesUseEvent = {
+  fingerprint: string
+  volumes: string[]
+  resolved: string[]
+  approvedBy: string
+  approvedAt: string
+}
+
+/**
+ * The second half of the actor gate, once the deploy is prepared and what the
+ * shares resolve to is known (`resolved`: one hash per server's answer).
+ *
+ * - an automated deploy needs every hash on its approval, else `approval`:
+ *   a variable that changed the address or the options is not what a permitted
+ *   person approved;
+ * - a permitted person's real deploy (`record`) writes the approval (and an
+ *   audit row) when the shares, what they resolve to, or the server setting
+ *   moved since the last one. The approval is merged into the environment's
+ *   jsonb, so a concurrent metadata edit is kept.
+ */
+export async function settleNetworkShares(
+  db: Db,
+  input: {
+    shares: NetworkSharesPlan
+    organizationId: string
+    environmentId: string
+    projectId: string
+    resolved: readonly string[]
+    /** False for a preview or a hostings-only run, which approve nothing. */
+    record: boolean
+  },
+  recordAuditRow: typeof recordAudit = recordAudit
+): Promise<{ error: ComposeDeployValidationError } | { use?: NetworkSharesUseEvent }> {
+  const { shares } = input
+  const hashes = [...new Set(input.resolved)]
+  const known = new Set(shares.approval?.resolved ?? [])
+  if (shares.actor.kind === 'automated') {
+    if (shares.approval === null || hashes.some((hash) => !known.has(hash))) {
+      return {
+        error: {
+          kind: 'compose_network_shares_refused',
+          reason: 'approval',
+          volumes: shares.volumes,
+        },
+      }
+    }
+    return {
+      use: {
+        fingerprint: shares.fingerprint,
+        volumes: shares.volumes,
+        resolved: hashes,
+        approvedBy: shares.approval.approvedBy,
+        approvedAt: shares.approval.approvedAt,
+      },
+    }
+  }
+  if (shares.actor.kind !== 'permitted' || !input.record) return {}
+  const { approval } = shares
+  const voided =
+    approval !== null &&
+    shares.newestEnabledAt !== null &&
+    isNewerThan(shares.newestEnabledAt, approval.approvedAt)
+  const sameShares = approval !== null && approval.fingerprint === shares.fingerprint && !voided
+  if (sameShares && hashes.every((hash) => known.has(hash))) return {}
+  const next: NetworkSharesApproval = {
+    fingerprint: shares.fingerprint,
+    resolved: [...(sameShares ? approval.resolved : []), ...hashes]
+      .filter((hash, index, all) => all.indexOf(hash) === index)
+      .slice(-MAX_APPROVED_RESOLVED),
+    approvedBy: shares.actor.userId,
+    approvedAt: new Date().toISOString(),
+  }
+  await db
+    .update(environment)
+    .set({
+      metadata: sql`coalesce(${environment.metadata}, '{}'::jsonb) || jsonb_build_object(${NETWORK_SHARES_APPROVAL_METADATA_KEY}::text, ${JSON.stringify(next)}::jsonb)`,
+    })
+    .where(eq(environment.id, input.environmentId))
+  await recordAuditRow(db, {
+    organizationId: input.organizationId,
+    actorUserId: shares.actor.userId,
+    actorEmail: shares.actor.email ?? null,
+    action: 'compose.network_shares.approve',
+    targetType: 'environment',
+    targetId: input.environmentId,
+    context: {
+      environmentId: input.environmentId,
+      projectId: input.projectId,
+      fingerprint: next.fingerprint,
+      volumes: shares.volumes,
+      resolved: hashes,
+      approvedBy: next.approvedBy,
+      approvedAt: next.approvedAt,
+    },
+  })
+  return {}
+}
+
 export type PlannedDeploy = {
   plan: SchedulePlan
   /**
@@ -198,6 +462,19 @@ export type PlannedDeploy = {
    * repeats the same verdict instead of refusing what the control plane let by.
    */
   remoteBuildSourcesApproved: boolean
+  /**
+   * The document mounts a network share and both halves of the gate passed (the
+   * actor may deploy shares and every server the plan uses allows them). Rides
+   * every `environment.deploy` command as `allowNetworkShares`; false when the
+   * document has no share or the plan failed.
+   */
+  allowNetworkShares: boolean
+  /**
+   * The share half of the actor gate, still to be settled once the deploy is
+   * prepared ({@link settleNetworkShares}). Absent when the document has no
+   * network share.
+   */
+  networkShares?: NetworkSharesPlan
   pinServerId: string | null
   defaultServerId: string | null
   fabricEnabled: boolean
@@ -205,12 +482,31 @@ export type PlannedDeploy = {
   merged: ComposeDocument
   serviceRows: Array<{ id: string; composeServiceName: string; options: unknown }>
   projectId: string
+  /** The project options the plan merged: the tracked Base is already swapped in. */
   projectOptions: unknown
+  /** The Base this deploy used when the project follows a repository file; else `null`. */
+  composeBase: ComposeBaseRecord | null
+  /** Commit the tracked read resolved from a branch head, to pin the matching builds to. */
+  composeBasePin?: { sourceId: string; ref: string; commitSha: string }
+  /** Set by a preview that fell back to the stored Base because the file could not be read. */
+  composeBaseUnreadable?: TrackedBaseError
+  /** A fresh read of the tracked file, to store once the deploy is accepted. */
+  composeBaseRead?: { document: unknown; record: ComposeBaseRecord }
 }
+
+/** Swaps in the tracked Base for a project that follows its repository's compose file. */
+export type ResolveProjectOptions = (row: {
+  id: string
+  options: unknown
+  environmentId: string
+  environmentOptions: unknown
+}) => Promise<DeployProjectOptions>
 
 export type PlanDeployError =
   | { kind: 'not_found' }
   | { kind: 'invalid_compose' }
+  /** The project follows its repository's compose file and that file could not be used. */
+  | { kind: 'tracked_base_failed'; error: TrackedBaseError }
   /**
    * The merged document is a document TurboPanel will refuse to deploy.
    *
@@ -349,6 +645,118 @@ async function loadStoragePins(db: Db, environmentId: string): Promise<Map<strin
   return computeStoragePinsFromMountRows(rows)
 }
 
+type PlanContext = {
+  envRow: {
+    id: string
+    projectId: string
+    serverId: string | null
+    options: unknown
+    metadata: unknown
+    name: string
+  }
+  projectRow: { id: string; options: unknown; defaultServerId: string | null }
+  resolvedOptions: Extract<DeployProjectOptions, { ok: true }>
+  merged: ComposeDocument
+}
+
+/**
+ * Read the environment and project rows, swap in the tracked Base when the
+ * project follows its repository, and merge the compose layers.
+ */
+async function loadPlanContext(
+  db: Db,
+  params: {
+    environmentId: string
+    resolveProjectOptions?: ResolveProjectOptions
+  }
+): Promise<PlanContext | PlanDeployError> {
+  const [envRow] = await db
+    .select({
+      id: environment.id,
+      projectId: environment.projectId,
+      serverId: environment.serverId,
+      options: environment.options,
+      metadata: environment.metadata,
+      name: environment.name,
+    })
+    .from(environment)
+    .where(eq(environment.id, params.environmentId))
+    .limit(1)
+  if (!envRow) return { kind: 'not_found' }
+
+  const [projectRow] = await db
+    .select({
+      id: project.id,
+      options: project.options,
+      defaultServerId: project.defaultServerId,
+    })
+    .from(project)
+    .where(eq(project.id, envRow.projectId))
+    .limit(1)
+  if (!projectRow) return { kind: 'not_found' }
+
+  const filename = environmentComposeFilename({ id: envRow.id, name: envRow.name })
+  const resolvedOptions: DeployProjectOptions = params.resolveProjectOptions
+    ? await params.resolveProjectOptions({
+        id: projectRow.id,
+        options: projectRow.options,
+        environmentId: envRow.id,
+        environmentOptions: envRow.options,
+      })
+    : { ok: true, options: projectRow.options, base: null }
+  if (!resolvedOptions.ok) return { kind: 'tracked_base_failed', error: resolvedOptions.error }
+  const merged = resolveMergedCompose(resolvedOptions.options, envRow.options, filename)
+  if ('kind' in merged) return merged
+  return { envRow, projectRow, resolvedOptions, merged }
+}
+
+/** The schedule spec of each service row, read from the merged document. */
+function plannedServicesFromRows(
+  serviceRows: ReadonlyArray<{
+    id: string
+    composeServiceName: string
+    options: unknown
+  }>,
+  merged: ComposeDocument
+): PlannedService[] {
+  const mapping = servicesMapping(merged)
+  return serviceRows.map((row) => {
+    const raw = mapping[row.composeServiceName]
+    const body = isPlainObject(raw) ? raw : {}
+    const fallback = resolveServiceInstances(parseServiceOptions(row.options) ?? {})
+    return {
+      serviceId: row.id,
+      spec: interpretServiceSchedule(row.composeServiceName, body, fallback),
+    }
+  })
+}
+
+/** Pair rules for the planner, read only when more than one server and an overlay network could span. */
+async function loadPairRulesIfSpanning(
+  db: Db,
+  organizationId: string,
+  fleet: ReadonlyArray<{ id: string }>,
+  merged: ComposeDocument
+): Promise<Awaited<ReturnType<typeof loadPairRules>> | null> {
+  if (fleet.length <= 1 || readOverlayDeclaredNetworkKeys(merged).size === 0) return null
+  return await loadPairRules(db, { organizationId, serverIds: fleet.map((row) => row.id) })
+}
+
+/**
+ * The server half of the network share gate, over exactly the servers the plan
+ * dispatches to. Nothing to check without shares or without a plan.
+ */
+async function checkSharesOnPlannedServers(
+  db: Db,
+  plan: ReturnType<typeof planEnvironmentSchedule>,
+  shares: NetworkSharesPlan | null
+): Promise<{ shares: NetworkSharesPlan | null } | PlanDeployError> {
+  if (shares === null || !plan.ok) return { shares }
+  const checked = await checkNetworkShareServers(db, plan.serverIds, shares)
+  if ('kind' in checked) return { kind: 'compose_rejected', error: checked }
+  return { shares: { ...shares, newestEnabledAt: checked.newestEnabledAt } }
+}
+
 /**
  * Plan slots for an environment deploy. Callers map `SchedulePlan` errors to
  * HTTP (`turbofabric_required` → 422, no eligible server → 409). The merged
@@ -375,6 +783,16 @@ export async function planEnvironmentDeploy(
     organizationId: string
     /** Required: there is no default actor, so a new caller cannot skip the gate. */
     hostAccess: HostAccessActor
+    /**
+     * Who is deploying, for network shares. Omitted reads as `denied`, so a
+     * caller that does not resolve it cannot deploy a share.
+     */
+    networkShares?: NetworkSharesActor
+    /**
+     * Swaps in the repository's compose file as the Base when the project
+     * follows one. Omitted by callers that do not read repositories.
+     */
+    resolveProjectOptions?: ResolveProjectOptions
   },
   deps: PlanEnvironmentDeployDeps = {}
 ): Promise<PlannedDeploy | PlanDeployError> {
@@ -384,37 +802,9 @@ export async function planEnvironmentDeploy(
   const listTasks = deps.listEnvironmentSlots ?? listEnvironmentSlots
   const listLabels = deps.listServerLabelsForServers ?? listServerLabelsForServers
 
-  const [envRow] = await db
-    .select({
-      id: environment.id,
-      projectId: environment.projectId,
-      serverId: environment.serverId,
-      options: environment.options,
-      metadata: environment.metadata,
-      name: environment.name,
-    })
-    .from(environment)
-    .where(eq(environment.id, params.environmentId))
-    .limit(1)
-  if (!envRow) return { kind: 'not_found' }
-
-  const [projectRow] = await db
-    .select({
-      id: project.id,
-      options: project.options,
-      defaultServerId: project.defaultServerId,
-    })
-    .from(project)
-    .where(eq(project.id, envRow.projectId))
-    .limit(1)
-  if (!projectRow) return { kind: 'not_found' }
-
-  const filename = environmentComposeFilename({
-    id: envRow.id,
-    name: envRow.name,
-  })
-  const merged = resolveMergedCompose(projectRow.options, envRow.options, filename)
-  if ('kind' in merged) return merged
+  const loaded = await loadPlanContext(db, params)
+  if ('kind' in loaded) return loaded
+  const { envRow, projectRow, resolvedOptions, merged } = loaded
 
   const [orgRow] = await db
     .select({ options: organization.options })
@@ -445,6 +835,13 @@ export async function planEnvironmentDeploy(
     deps.recordAudit ?? recordAudit
   )
   if ('error' in access) return { kind: 'compose_rejected', error: access.error }
+  const shareGate = await authorizeNetworkShares(
+    envRow,
+    merged,
+    params.networkShares ?? { kind: 'denied' }
+  )
+  if ('error' in shareGate) return { kind: 'compose_rejected', error: shareGate.error }
+  let shares = shareGate.shares
 
   await reconcile(db, params.environmentId, merged)
 
@@ -457,17 +854,7 @@ export async function planEnvironmentDeploy(
     .from(service)
     .where(eq(service.environmentId, params.environmentId))
 
-  const mapping = servicesMapping(merged)
-  const planned: PlannedService[] = []
-  for (const row of serviceRows) {
-    const raw = mapping[row.composeServiceName]
-    const body = isPlainObject(raw) ? raw : {}
-    const fallback = resolveServiceInstances(parseServiceOptions(row.options) ?? {})
-    planned.push({
-      serviceId: row.id,
-      spec: interpretServiceSchedule(row.composeServiceName, body, fallback),
-    })
-  }
+  const planned = plannedServicesFromRows(serviceRows, merged)
 
   const [fabricRow] = await db
     .select({ id: fabric.id, isEnabled: fabric.isEnabled })
@@ -495,13 +882,7 @@ export async function planEnvironmentDeploy(
   const storagePins = await loadStoragePins(db, params.environmentId)
   // Pure pair rules for the planner: a network whose servers all share a
   // trusted LAN needs no TurboFabric. Read only when something could span.
-  const pairRules =
-    fleet.length > 1 && readOverlayDeclaredNetworkKeys(merged).size > 0
-      ? await loadPairRules(db, {
-          organizationId: params.organizationId,
-          serverIds: fleet.map((row) => row.id),
-        })
-      : null
+  const pairRules = await loadPairRulesIfSpanning(db, params.organizationId, fleet, merged)
 
   const plan = planEnvironmentSchedule({
     pinServerId,
@@ -521,12 +902,19 @@ export async function planEnvironmentDeploy(
     ...pairRules,
   })
 
+  // The server half, over exactly the servers this plan dispatches to.
+  const serverHalf = await checkSharesOnPlannedServers(db, plan, shares)
+  if ('kind' in serverHalf) return serverHalf
+  shares = serverHalf.shares
+
   return {
     plan,
     composeValidated: true,
     hostLevelApproved: access.hostLevelApproved,
     ...(access.hostAccessUse ? { hostAccessUse: access.hostAccessUse } : {}),
     remoteBuildSourcesApproved: composeRemoteBuildSourcesEnabled,
+    allowNetworkShares: shares !== null && plan.ok,
+    ...(shares === null ? {} : { networkShares: shares }),
     pinServerId,
     defaultServerId,
     fabricEnabled: fabricRow !== undefined && fabricRow.isEnabled !== false,
@@ -534,6 +922,10 @@ export async function planEnvironmentDeploy(
     merged,
     serviceRows,
     projectId: projectRow.id,
-    projectOptions: projectRow.options,
+    projectOptions: resolvedOptions.options,
+    composeBase: resolvedOptions.base,
+    ...(resolvedOptions.pin ? { composeBasePin: resolvedOptions.pin } : {}),
+    ...(resolvedOptions.unreadable ? { composeBaseUnreadable: resolvedOptions.unreadable } : {}),
+    ...(resolvedOptions.read ? { composeBaseRead: resolvedOptions.read } : {}),
   }
 }

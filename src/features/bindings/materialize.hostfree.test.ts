@@ -3,6 +3,8 @@
  */
 
 import { assertEquals } from '@std/assert'
+import { PgDialect } from 'drizzle-orm/pg-core'
+import type { SQL } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
@@ -10,6 +12,7 @@ import type { ResolvedVariableMap } from '../variables/resolve-inherited.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { postgresEngineSpec } from '../managed/postgres.ts'
 import {
+  hasUnprovisionedBoundManaged,
   listBindingEmittedKeys,
   loadBindingOwnedKeysForService,
   materializeBinding,
@@ -451,4 +454,75 @@ test('reapplyBindingOwnedVariables and loadBindingOwnedKeysForService', async ()
 
   const keys = await loadBindingOwnedKeysForService(db, 'svc')
   assertEquals(keys.has('DATABASE_URL'), true)
+})
+
+interface BoundManagedFixture {
+  serviceId: string
+  status: string
+  metadata: unknown
+}
+
+/**
+ * A db holding one row per (binding, login, managed) chain. The query's `where`
+ * is rendered to SQL and its parameters read back, so only the chains of the
+ * service ids the code asked about come out: a query that drops the filter
+ * returns the other services' rows and the tests fail.
+ */
+function boundManagedDb(chains: BoundManagedFixture[]): Db {
+  const dialect = new PgDialect()
+  const chain: {
+    innerJoin: () => typeof chain
+    where: (clause: SQL) => Promise<unknown[]>
+  } = {
+    innerJoin: () => chain,
+    where: (clause) => {
+      const query = dialect.sqlToQuery(clause)
+      // The ids must be bound to the binding's service column, not any column.
+      assertEquals(query.sql.includes('"binding"."service_id" in ('), true)
+      const asked = new Set(query.params)
+      return Promise.resolve(chains.filter((row) => asked.has(row.serviceId)))
+    },
+  }
+  return { select: () => ({ from: () => chain }) } as unknown as Db
+}
+
+test('hasUnprovisionedBoundManaged flags a failed or provisioning cluster that never reported a host', async () => {
+  assertEquals(
+    await hasUnprovisionedBoundManaged(
+      boundManagedDb([{ serviceId: 'svc', status: 'failed', metadata: {} }]),
+      ['svc']
+    ),
+    true
+  )
+  assertEquals(
+    await hasUnprovisionedBoundManaged(
+      boundManagedDb([{ serviceId: 'svc', status: 'provisioning', metadata: { error: 'x' } }]),
+      ['svc']
+    ),
+    true
+  )
+})
+
+test('hasUnprovisionedBoundManaged lets a ready cluster, or a failed one that once had a host, through', async () => {
+  assertEquals(
+    await hasUnprovisionedBoundManaged(
+      boundManagedDb([
+        { serviceId: 'svc', status: 'ready', metadata: { host: 'db.example.net', port: 5432 } },
+        { serviceId: 'svc', status: 'failed', metadata: { host: 'db.example.net', port: 5432 } },
+        { serviceId: 'svc', status: 'applying', metadata: {} },
+      ]),
+      ['svc']
+    ),
+    false
+  )
+  assertEquals(await hasUnprovisionedBoundManaged(boundManagedDb([]), []), false)
+})
+
+test('hasUnprovisionedBoundManaged only looks at the services it is asked about', async () => {
+  const db = boundManagedDb([
+    { serviceId: 'other', status: 'failed', metadata: {} },
+    { serviceId: 'svc', status: 'ready', metadata: { host: 'db.example.net', port: 5432 } },
+  ])
+  assertEquals(await hasUnprovisionedBoundManaged(db, ['svc']), false)
+  assertEquals(await hasUnprovisionedBoundManaged(db, ['other']), true)
 })

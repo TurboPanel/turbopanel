@@ -231,6 +231,10 @@ function applyNetworkAlias(service: Record<string, unknown>, alias: string): voi
   service.networks = attachAliasToNetworkMapping(mapping, alias)
 }
 
+function hasNetworkMode(service: Record<string, unknown>): boolean {
+  return isNonEmptyString(service.network_mode)
+}
+
 function applyParsedOptionsToService(
   service: Record<string, unknown>,
   parsed: ServiceOptions,
@@ -242,7 +246,9 @@ function applyParsedOptionsToService(
     // name back as a network alias so it stays reachable.
     const friendlyName = friendlyContainerName(service, composeServiceName)
     service.container_name = containerName
-    if (friendlyName !== containerName) {
+    // A service that sets `network_mode` has no network of its own to hold an
+    // alias, and Compose refuses `networks` beside it.
+    if (friendlyName !== containerName && !hasNetworkMode(service)) {
       applyNetworkAlias(service, friendlyName)
     }
   }

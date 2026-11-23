@@ -5,7 +5,8 @@
  * errors already scrubbed of tokens.
  */
 import type { Context, Hono } from 'hono'
-import { and, eq } from 'drizzle-orm'
+import { issueNameOriginCertificates } from '../hostings/name-origin-certificates.ts'
+import { and, eq, inArray } from 'drizzle-orm'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -31,18 +32,14 @@ import {
   updatePlacement,
   type TunnelRow,
 } from '../../features/tunnels/lifecycle.ts'
+import { setDoorwayLocalOnly } from '../../features/tunnels/doorway-reach.ts'
+import { toApiPeerHop, toApiStatusPorts } from '../../features/tunnels/status.ts'
 import {
-  serversWithDeployOnlyLock,
-  serversWithLockAdd,
-  serversWithoutLockAdd,
-  serversWithoutTunnelSupport,
-} from '../../features/tunnels/daemon-gate.ts'
-import { lockAddSkippedServers, siteServersOfTunnel } from '../../features/tunnels/route-facts.ts'
-import {
-  hostnameLockSkippedWarning,
-  hostnameLockWarning,
-  parsePlacementBody,
-} from '../../features/tunnels/placement.ts'
+  loadUnroutedReasons,
+  lockAddSkippedServers,
+  siteServersOfTunnel,
+} from '../../features/tunnels/route-facts.ts'
+import { hostnameLockSkippedWarning, parsePlacementBody } from '../../features/tunnels/placement.ts'
 import { rotationBlock, startRunTokenRotation } from '../../features/tunnels/run-token-rotation.ts'
 import { findCarrier } from '../../features/tunnels/records.ts'
 import {
@@ -103,39 +100,14 @@ async function loadTunnelParam(c: Context<AppEnv>, scope: Scope): Promise<Tunnel
 }
 
 /**
- * The tunnel as the API shows it, with a warning for servers whose daemon is
- * too old to carry it, and one for servers that run its sites but apply the
- * name lock only when a site is deployed again.
+ * The tunnel as the API shows it, with a warning for servers that run its
+ * sites on a certificate setup the name lock skips.
  */
 async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   const shown = await toApiTunnel(scope.db, row)
-  const old = await serversWithoutTunnelSupport(scope.db, shown.carryingServerIds)
   const siteServers = await siteServersOfTunnel(scope.db, scope.organizationId, row.id)
-  const deployOnly = await serversWithDeployOnlyLock(scope.db, siteServers)
-  const noLockAdd = await serversWithoutLockAdd(scope.db, siteServers)
   const warnings = [...shown.warnings]
-  if (old.length > 0) {
-    const names = old.length === 1 ? '1 server runs' : `${old.length} servers run`
-    warnings.push(
-      `${names} a daemon too old to carry Tunnels. Update it, or the Tunnel will not work there.`
-    )
-  }
-  if (deployOnly.length > 0) {
-    const one = deployOnly.length === 1
-    const who = one
-      ? '1 server that runs this Tunnel’s sites applies'
-      : `${deployOnly.length} servers that run this Tunnel’s sites apply`
-    const fix = one ? 'Update its daemon' : 'Update their daemons'
-    warnings.push(
-      `${who} a change of where the Tunnel runs only when the site is deployed again. ${fix}, or redeploy those sites after the change.`
-    )
-  }
-  const addWarning = hostnameLockWarning(noLockAdd.length)
-  if (addWarning) warnings.push(addWarning)
-  const skipped = await serversWithLockAdd(
-    scope.db,
-    await lockAddSkippedServers(scope.db, scope.organizationId, row.id)
-  )
+  const skipped = await lockAddSkippedServers(scope.db, scope.organizationId, row.id)
   const skippedWarning = hostnameLockSkippedWarning(skipped.length)
   if (skippedWarning) warnings.push(skippedWarning)
   // Why Rotate Run Token would be refused now, so the screen can say so before it is pressed.
@@ -143,7 +115,46 @@ async function tunnelWithSupportWarning(scope: Scope, row: TunnelRow) {
   const runTokenRotationBlock = blocked
     ? { code: blocked.code, message: blocked.message, ...blocked.details }
     : null
-  return { ...shown, warnings, runTokenRotationBlock }
+  const peerHop = await peerHopOf(scope.db, scope.organizationId, [
+    ...new Set([...shown.carryingServerIds, ...siteServers]),
+  ])
+  const statusPorts = await statusPortsOf(scope.db, scope.organizationId, shown.carryingServerIds)
+  return { ...shown, warnings, runTokenRotationBlock, peerHop, statusPorts }
+}
+
+/**
+ * Whether the connector status ports are locked on each server that carries the
+ * tunnel, as the daemon last reported it, sorted by server. `locked: null` means
+ * the daemon has not said (an older one), never that the ports are open or locked.
+ */
+async function statusPortsOf(
+  db: Scope['db'],
+  organizationId: string,
+  serverIds: readonly string[]
+) {
+  if (serverIds.length === 0) return []
+  const rows = await db
+    .select({ id: server.id, metadata: server.metadata })
+    .from(server)
+    .where(and(eq(server.organizationId, organizationId), inArray(server.id, [...serverIds])))
+  return rows
+    .toSorted((a, b) => (a.id < b.id ? -1 : 1))
+    .map((r) => ({ serverId: r.id, ...toApiStatusPorts(r.metadata) }))
+}
+
+/**
+ * What each server that carries the tunnel or runs one of its sites last
+ * reported about the client-certificate check on the peer hop, sorted by server.
+ */
+async function peerHopOf(db: Scope['db'], organizationId: string, serverIds: readonly string[]) {
+  if (serverIds.length === 0) return []
+  const rows = await db
+    .select({ id: server.id, metadata: server.metadata })
+    .from(server)
+    .where(and(eq(server.organizationId, organizationId), inArray(server.id, [...serverIds])))
+  return rows
+    .toSorted((a, b) => (a.id < b.id ? -1 : 1))
+    .map((r) => ({ serverId: r.id, ...toApiPeerHop(r.metadata) }))
 }
 
 /** `{ dnsReplaced }` from a hostname row's metadata when records were replaced, else nothing. */
@@ -318,7 +329,13 @@ function deleteResponse(registry: TunnelAdapterRegistry) {
 async function listDoorwaysResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
   const row = await loadTunnelParam(c, scope)
   if (row instanceof Response) return row
-  return c.json({ hostnames: (await listDoorways(scope.db, row.id)).map(toApiDoorway) })
+  const notes = await loadUnroutedReasons(scope.db, scope.organizationId, row)
+  const doorways = await listDoorways(scope.db, row.id)
+  return c.json({
+    hostnames: doorways.map((d) =>
+      toApiDoorway(d, d.status === 'removing' ? null : (notes.get(d.hostname) ?? null))
+    ),
+  })
 }
 
 function addDoorwayResponse(registry: TunnelAdapterRegistry) {
@@ -350,6 +367,16 @@ function addDoorwayResponse(registry: TunnelAdapterRegistry) {
         // What the replaced records were: once replaced, this is the only record of them.
         ...replacedOf(created.metadata),
       })
+      // A name set to the origin certificate that now rides this tunnel gets it.
+      const session = c.get('session')
+      if (created.hostingId && session) {
+        await issueNameOriginCertificates(c, scope.db, {
+          hostingId: created.hostingId,
+          organizationId: scope.organizationId,
+          actor: { userId: session.userId, email: session.email ?? null },
+          registry,
+        })
+      }
       nudgeServers(c, scope)
       return c.json({ hostname: toApiDoorway(created) }, 201)
     } catch (err) {
@@ -396,6 +423,49 @@ function removeDoorwayResponse(registry: TunnelAdapterRegistry) {
     })
     nudgeServers(c, scope)
     return c.json({ ok: true })
+  }
+}
+
+/**
+ * Open or close a tunnel name for direct visitors (`isLocalOnly`). Opening is
+ * refused unless the site is on a datacenter network. The servers pick the
+ * change up with the site's next deploy (`needsDeploy`).
+ */
+async function updateDoorwayResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
+  const row = await loadTunnelParam(c, scope)
+  if (row instanceof Response) return row
+  const doorwayId = c.req.param('doorwayId') as string
+  const current = (await listDoorways(scope.db, row.id)).find((d) => d.id === doorwayId)
+  if (!current) return c.json({ error: 'Not found' }, 404)
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
+  if (typeof body.isLocalOnly !== 'boolean') {
+    return invalid(c, 'doorway_invalid', 'isLocalOnly', 'Must be true or false')
+  }
+  try {
+    const done = await setDoorwayLocalOnly(
+      scope.db,
+      scope.organizationId,
+      current,
+      body.isLocalOnly
+    )
+    const changed = done.doorway.isLocalOnly !== current.isLocalOnly
+    if (changed) {
+      await audit(c, scope, 'doorway.update', current.id, {
+        tunnelId: row.id,
+        hostname: current.hostname,
+        isLocalOnly: done.doorway.isLocalOnly,
+        certificateChangedNames: done.certificateChangedNames,
+      })
+      nudgeServers(c, scope)
+    }
+    return c.json({
+      hostname: toApiDoorway(done.doorway),
+      certificateChangedNames: done.certificateChangedNames,
+      needsDeploy: changed && done.doorway.hostingId !== null,
+    })
+  } catch (err) {
+    return refused(c, err)
   }
 }
 
@@ -462,6 +532,10 @@ export function registerOrganizationTunnelRoutes(
   router.delete(
     '/organizations/:id/tunnels/:tunnelId/hostnames/:doorwayId',
     guarded(removeDoorwayResponse(registry))
+  )
+  router.patch(
+    '/organizations/:id/tunnels/:tunnelId/hostnames/:doorwayId',
+    guarded(updateDoorwayResponse)
   )
   router.put('/organizations/:id/servers/:serverId/tunnel-carrying', guarded(carryingResponse))
 }

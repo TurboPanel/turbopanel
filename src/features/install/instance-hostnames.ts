@@ -2,9 +2,8 @@
  * Control-plane public hostnames.
  *
  * Each row is one entry operators publish for this instance, with a
- * certificate source and any Let's Encrypt attempt state. The legacy
- * `TURBOPANEL_PUBLIC_URLS` setting remains a flat projection of the `origin`
- * table, so existing readers keep calling `getPublicUrls` / `setPublicUrls`.
+ * certificate source and any Let's Encrypt attempt state. The table is the
+ * only store; `getPublicUrls` / `setPublicUrls` read and write it.
  *
  * Instance ACME is independent of every organization. This module must not
  * import the organization options module, must not read or write an
@@ -17,7 +16,6 @@ import {
   hostname as siteHostname,
   instanceHostname,
   instanceUploadedCertificate,
-  setting,
 } from '../../db/schema.ts'
 import { normalizeHostForCompare } from '../../lib/hostname-compare.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
@@ -36,7 +34,6 @@ import { isLoopbackOrPrivateHostname } from './install-tls.ts'
 import {
   hostFromPublicUrlEntry,
   parsePublicUrlEntries,
-  PUBLIC_URLS_SETTING_KEY,
   publicUrlEntryToInstallOrigin,
 } from './public-urls.ts'
 
@@ -72,6 +69,7 @@ export type InstanceHostnameRecord = {
   publicPort: number
   isPrimary: boolean
   isDaemonDial: boolean
+  behindCdnProxy: boolean
   ingressId: string | null
 }
 
@@ -97,6 +95,7 @@ type IngressFields = {
   publicPort: number
   isPrimary: boolean
   isDaemonDial: boolean
+  behindCdnProxy: boolean
   ingressId: string | null
   ingressState: unknown
 }
@@ -106,6 +105,7 @@ const DEFAULT_INGRESS_FIELDS: IngressFields = {
   publicPort: DEFAULT_PUBLIC_PORT,
   isPrimary: false,
   isDaemonDial: true,
+  behindCdnProxy: false,
   ingressId: null,
   ingressState: null,
 }
@@ -172,6 +172,7 @@ function mapStored(row: HostnameRow): StoredHostname {
     publicPort: fixedPublicPort() ?? row.publicPort,
     isPrimary: row.isPrimary,
     isDaemonDial: row.isDaemonDial,
+    behindCdnProxy: row.behindCdnProxy,
     ingressId: row.ingressId,
     ingressState: row.ingressState,
     createdAt: row.createdAt,
@@ -239,6 +240,7 @@ function toRecord(row: StoredHostname): InstanceHostnameRecord {
     publicPort: row.publicPort,
     isPrimary: row.isPrimary,
     isDaemonDial: row.isDaemonDial,
+    behindCdnProxy: row.behindCdnProxy,
     ingressId: row.ingressId,
   }
 }
@@ -306,55 +308,9 @@ export function uploadedCertificateCoversHost(dnsNames: string[], host: string):
   return coversHostname(dnsNames, hostname)
 }
 
-function coercePublicUrlValue(raw: unknown): string[] {
-  if (raw == null) return []
-  if (Array.isArray(raw)) {
-    return raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
-  }
-  if (typeof raw !== 'string') return []
-  return raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .filter((entry) => entry !== '')
-}
-
-function legacyUrlsToStore(raw: string[]): string[] {
-  const parsed = parsePublicUrlEntries(raw)
-  if (parsed.ok) return parsed.urls
-  const kept: string[] = []
-  for (const entry of raw) {
-    const one = parsePublicUrlEntries([entry])
-    if (one.ok && one.urls[0]) kept.push(one.urls[0])
-  }
-  return kept
-}
-
 async function loadHostnameRows(db: Db): Promise<StoredHostname[]> {
   const rows = await db.select().from(instanceHostname).where(isNotNull(instanceHostname.id))
   return rows.map((row) => mapStored(row as HostnameRow)).sort(byCreated)
-}
-
-async function readLegacyPublicUrls(db: Db): Promise<string[]> {
-  const rows = await db.select().from(setting).where(eq(setting.key, PUBLIC_URLS_SETTING_KEY))
-  const row = rows.find((item) => item.key === PUBLIC_URLS_SETTING_KEY)
-  if (!row) return []
-  return coercePublicUrlValue(row.value)
-}
-
-async function writeLegacyPublicUrls(db: Db, urls: string[]): Promise<void> {
-  await db
-    .insert(setting)
-    .values({
-      key: PUBLIC_URLS_SETTING_KEY,
-      value: urls,
-    })
-    .onConflictDoUpdate({
-      target: setting.key,
-      set: {
-        value: urls,
-        updatedAt: new Date().toISOString(),
-      },
-    })
 }
 
 function newPlatformCaRow(host: string, index: number): StoredHostname {
@@ -384,10 +340,6 @@ async function persistHostnameRows(db: Db, rows: StoredHostname[]): Promise<void
   await db.transaction(async (tx) => {
     await tx.delete(instanceHostname).where(isNotNull(instanceHostname.id))
     await insertHostnameRows(tx, ordered)
-    await writeLegacyPublicUrls(
-      tx,
-      ordered.map((row) => row.host)
-    )
   })
 }
 
@@ -444,25 +396,7 @@ function certForHost(
   return { ok: true, cert }
 }
 
-/**
- * Copy `TURBOPANEL_PUBLIC_URLS` into `hostname` once, when the table is empty.
- * Idempotent: a later call sees the rows and does nothing. Safe on every read.
- */
-export async function migrateLegacyPublicUrls(db: Db): Promise<void> {
-  const existing = await loadHostnameRows(db)
-  if (existing.length > 0) return
-  const legacy = await readLegacyPublicUrls(db)
-  if (legacy.length === 0) return
-  const urls = legacyUrlsToStore(legacy)
-  if (urls.length === 0) return
-  await insertHostnameRows(
-    db,
-    urls.map((host, index) => newPlatformCaRow(host, index))
-  )
-}
-
 export async function listInstanceHostnames(db: Db): Promise<InstanceHostnameRecord[]> {
-  await migrateLegacyPublicUrls(db)
   const rows = await loadHostnameRows(db)
   return rows.map(toRecord)
 }
@@ -512,7 +446,6 @@ export async function publicUrlsSiteConflict(
   db: Db,
   urls: readonly string[]
 ): Promise<InstanceHostnameFailure | null> {
-  await migrateLegacyPublicUrls(db)
   const current = await loadHostnameRows(db)
   const used = await panelHostsUsedBySites(
     db,
@@ -710,7 +643,6 @@ export async function replacePublicUrlList(db: Db, urls: string[]): Promise<void
     seen.add(key)
     return true
   })
-  await migrateLegacyPublicUrls(db)
   const current = await loadHostnameRows(db)
   await persistHostnameRows(
     db,
@@ -783,6 +715,7 @@ function carryIngress(
     publicPort: entry.publicPort ?? previous.publicPort,
     isPrimary: entry.isPrimary ?? previous.isPrimary,
     isDaemonDial: previous.isDaemonDial,
+    behindCdnProxy: previous.behindCdnProxy,
     ingressId: previous.ingressId,
     ingressState: previous.ingressState,
   }
@@ -1007,7 +940,6 @@ export async function replaceInstanceHostnames(
   db: Db,
   entries: InstanceHostnameEntry[]
 ): Promise<{ ok: true; hostnames: InstanceHostnameRecord[] } | InstanceHostnameFailure> {
-  await migrateLegacyPublicUrls(db)
   const current = await loadHostnameRows(db)
   const built = await buildReplacementRows(db, entries, current)
   if (!built.ok) return built
@@ -1075,7 +1007,6 @@ export async function upsertInstanceHostname(
 }
 
 export async function removeInstanceHostname(db: Db, host: string): Promise<void> {
-  await migrateLegacyPublicUrls(db)
   const rows = await loadHostnameRows(db)
   const key = canonicalHostKey(host)
   await persistHostnameRows(
@@ -1203,7 +1134,6 @@ export async function applyUploadedCertificateHosts(
   cert: UploadedCertHit,
   hosts: string[]
 ): Promise<{ ok: true; hostnames: string[] } | InstanceHostnameFailure> {
-  await migrateLegacyPublicUrls(db)
   const current = await loadHostnameRows(db)
   const resolved = desiredUploadedCertificateHosts(cert, hosts)
   if (!resolved.ok) return resolved

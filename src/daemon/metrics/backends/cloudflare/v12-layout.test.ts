@@ -110,11 +110,10 @@ function sampleFor(c: FixtureCase): MetricsSampleInput {
   const nulls = (keys: string[]) => Object.fromEntries(keys.map((k) => [k, null]))
   return {
     metadata: {
-      version: 6,
+      version: 8,
       sampledAt: '2026-01-01T00:00:00.000Z',
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: {

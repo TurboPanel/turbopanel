@@ -40,12 +40,20 @@ export const SIGNED_REPORT_TYPES: ReadonlySet<string> = new Set([
 /**
  * Frames this control plane acts on only when signed, on every session and
  * whatever the server's ratchet says (`signed-ha-events-v1`): a dead-primary
- * report fences and promotes database members, and a boot-hold report can
- * start a stopped primary. An unsigned one, one with a bad signature, and any
+ * report fences and promotes database members, a boot-hold report can
+ * start a stopped primary, and a terminal report (`shell-opened`,
+ * `shell-closed`, `shell-error`) ends a session and writes the audit trail. An unsigned one, one with a bad signature, and any
  * one on a session that is not signed are handed on marked as such, so the
  * receiver can refuse it and say why (`features/managed/ha-event.ts`).
  */
-export const SIGNATURE_REQUIRED_TYPES: ReadonlySet<string> = new Set(['managed-ha-event'])
+export const SIGNATURE_REQUIRED_TYPES: ReadonlySet<string> = new Set([
+  'managed-ha-event',
+  // The terminal reports: they end sessions and write the audit trail, so an
+  // unsigned or invalidly signed one is handed on marked and never acted on.
+  'shell-opened',
+  'shell-closed',
+  'shell-error',
+])
 
 /** What the signature check found for one frame. `none`: not a signed or signature-required type. */
 export type ReportSignature = 'verified' | 'unsigned' | 'invalid' | 'none'

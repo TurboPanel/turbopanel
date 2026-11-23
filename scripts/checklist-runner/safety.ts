@@ -17,17 +17,27 @@ export const ALLOWED_ENVIRONMENTS: readonly string[] = ['testing', 'canary']
 /** Named explicitly so the refusal message is clear; any unknown value is refused too. */
 export const REFUSED_ENVIRONMENTS: readonly string[] = ['live', 'staging', 'production']
 
-/** Hosts the runner never touches over SSH or as a placement target. */
-export const FORBIDDEN_HOSTS: readonly string[] = ['studio.lan', 'studio']
-
 /**
- * Hosts that carry the shared managed Postgres. Managed clusters are never
- * placed there and host-affecting checks never target them.
+ * Host guard lists. Both ship empty (no host is forbidden or shared until an
+ * operator adds one), and an empty list never widens or narrows anything: it
+ * only means no name matches. The guards take the lists as a parameter so a
+ * test can inject its own.
  */
-export const SHARED_DATABASE_HOSTS: readonly string[] = ['adrastea', 'kore']
+export interface HostLists {
+  /** Hosts the runner never touches over SSH or as a placement target. */
+  forbidden: readonly string[]
+  /** Hosts that carry a shared managed Postgres; never a placement or `--host`. */
+  sharedDatabase: readonly string[]
+}
 
-/** Where host-affecting managed-database checks may create their clusters. */
-export const MANAGED_PLACEMENT_HOSTS: readonly string[] = ['themisto', 'megaclite']
+export const FORBIDDEN_HOSTS: readonly string[] = []
+
+export const SHARED_DATABASE_HOSTS: readonly string[] = []
+
+export const DEFAULT_HOST_LISTS: HostLists = {
+  forbidden: FORBIDDEN_HOSTS,
+  sharedDatabase: SHARED_DATABASE_HOSTS,
+}
 
 export class SafetyError extends Error {
   override name = 'SafetyError'
@@ -75,15 +85,19 @@ export function assertHealthEnvironment(status: number, body: Json, hostname = '
   return env
 }
 
-/** First DNS label, lowercased: `themisto.privatehosting.xyz` -> `themisto`. */
+/** First DNS label, lowercased: `server-a.example.lan` -> `server-a`. */
 export function shortHost(host: string): string {
   return host.trim().toLowerCase().split('.')[0] ?? ''
 }
 
-/** Refuse SSH to studio and to anything the operator did not name explicitly. */
-export function assertSshHost(host: string, allowed: readonly string[]): void {
+/** Refuse SSH to a forbidden host and to anything the operator did not name explicitly. */
+export function assertSshHost(
+  host: string,
+  allowed: readonly string[],
+  lists: HostLists = DEFAULT_HOST_LISTS
+): void {
   const short = shortHost(host)
-  if (FORBIDDEN_HOSTS.includes(host.toLowerCase()) || FORBIDDEN_HOSTS.includes(short)) {
+  if (lists.forbidden.includes(host.toLowerCase()) || lists.forbidden.includes(short)) {
     throw new SafetyError(`ssh to ${host} is never allowed`)
   }
   if (!allowed.includes(host)) {
@@ -91,24 +105,25 @@ export function assertSshHost(host: string, allowed: readonly string[]): void {
   }
 }
 
-/** Refuse a managed-cluster placement anywhere but the allowlisted hosts. */
-export function assertManagedPlacement(serverName: string): void {
-  const short = shortHost(serverName)
-  if (SHARED_DATABASE_HOSTS.includes(short)) {
+/** Refuse a managed-cluster placement on a host that carries a shared managed Postgres. */
+export function assertManagedPlacement(
+  serverName: string,
+  lists: HostLists = DEFAULT_HOST_LISTS
+): void {
+  if (lists.sharedDatabase.includes(shortHost(serverName))) {
     throw new SafetyError(`${serverName} carries the shared managed Postgres; refusing placement`)
-  }
-  if (!MANAGED_PLACEMENT_HOSTS.includes(short)) {
-    throw new SafetyError(
-      `managed placement on ${serverName} refused (allowed: ${MANAGED_PLACEMENT_HOSTS.join(', ')})`
-    )
   }
 }
 
 /** Refuse a host-affecting target that is forbidden or not passed with `--host`. */
-export function assertAffectedHost(serverName: string, hosts: readonly string[]): void {
+export function assertAffectedHost(
+  serverName: string,
+  hosts: readonly string[],
+  lists: HostLists = DEFAULT_HOST_LISTS
+): void {
   const short = shortHost(serverName)
-  if (FORBIDDEN_HOSTS.includes(short)) throw new SafetyError(`${serverName} is never touched`)
-  if (SHARED_DATABASE_HOSTS.includes(short)) {
+  if (lists.forbidden.includes(short)) throw new SafetyError(`${serverName} is never touched`)
+  if (lists.sharedDatabase.includes(short)) {
     throw new SafetyError(`${serverName} carries the shared managed Postgres; refusing`)
   }
   if (!hosts.map(shortHost).includes(short)) {

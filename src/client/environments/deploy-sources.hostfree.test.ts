@@ -326,7 +326,7 @@ test('preview resolves a generic-git binding from the source default branch', as
         buildCommand: 'pnpm build',
         startCommand: 'pnpm start',
         outputDirectory: 'dist',
-        buildKind: 'railpack',
+        buildKind: 'image',
       }),
       releaseIds,
     })
@@ -342,7 +342,7 @@ test('preview resolves a generic-git binding from the source default branch', as
   assertEquals(result[0]?.commitSha, 'main')
   assertEquals(result[0]?.subdirectory, 'apps/web')
   assertEquals(result[0]?.build, {
-    kind: 'railpack',
+    kind: 'image',
     installCommand: 'pnpm install --frozen-lockfile',
     buildCommand: 'pnpm build',
     startCommand: 'pnpm start',
@@ -353,7 +353,7 @@ test('preview resolves a generic-git binding from the source default branch', as
   assertEquals(result[0]?.principal, undefined)
 })
 
-test('preview keeps sending the old build kind on the wire for the new image value', async () => {
+test('preview sends the image build kind on the wire', async () => {
   const result = await resolveDeploySourceMaterial(
     mockContext(),
     fakeDb([[sourceRow({ subdirectory: 'apps/web' })], []]),
@@ -365,7 +365,7 @@ test('preview keeps sending the old build kind on the wire for the new image val
   if (!Array.isArray(result)) {
     throw new TypeError('expected preview source material')
   }
-  assertEquals(result[0]?.build, { kind: 'railpack', buildCommand: 'pnpm build' })
+  assertEquals(result[0]?.build, { kind: 'image', buildCommand: 'pnpm build' })
 })
 
 test('preview prefers the compose branch and binding subdirectory', async () => {
@@ -938,7 +938,7 @@ test('withBuildEnv leaves a rollback, a static build and a service with nothing 
 
 test('withBuildEnv covers the image build too', () => {
   const [web] = builds(
-    [source({ build: { kind: 'railpack' } })],
+    [source({ build: { kind: 'image' } })],
     new Map([['web', [{ name: 'A', value: '1' }]]])
   )
   assertEquals(web!.build.env, { A: '1' })

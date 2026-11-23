@@ -1372,3 +1372,215 @@ describe('apply-variables database references', () => {
     assertEquals((result as { ref?: string }).ref, '{$db.MISSING.host}')
   })
 })
+
+describe('network share volume variables', () => {
+  const entry = (key: string, value: string, isSecret = false) => ({
+    key,
+    value,
+    isSecret,
+    isLiteral: false,
+    forBuild: false,
+    forRuntime: true,
+  })
+
+  function shareDoc(opts: Record<string, unknown>) {
+    const doc = emptyComposeDocument()
+    doc.data.services = { web: { image: 'nginx:latest' } }
+    doc.data.volumes = { media: { driver_opts: { type: 'cifs', ...opts } } }
+    return doc
+  }
+
+  function volumeOpts(result: ApplyVariablesResult) {
+    const volumes = result.document.data.volumes as Record<string, { driver_opts: object }>
+    return volumes.media.driver_opts as Record<string, string>
+  }
+
+  function refused(
+    opts: Record<string, unknown>,
+    entries = [entry('NAS_HOST', 'nas.example.net'), entry('SMB_PASS', 'not-a-real-password', true)]
+  ) {
+    const result = applyVariablesToComposeDocument(shareDoc(opts), {
+      globalEntries: entries,
+      perServiceEntries: new Map(),
+    })
+    assertEquals(isApplyVariablesError(result), true)
+    return result as { kind: string; message: string }
+  }
+
+  it('fills {$KEY} in device and o from non-secret variables', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(
+        shareDoc({ device: '//{$NAS_HOST}/media', o: 'username={$SMB_USER},vers=3.0' }),
+        {
+          globalEntries: [entry('NAS_HOST', 'nas.example.net'), entry('SMB_USER', 'fake$value')],
+          perServiceEntries: new Map(),
+        }
+      )
+    )
+    const opts = volumeOpts(result)
+    assertEquals(opts.device, '//nas.example.net/media')
+    assertEquals(opts.o, 'username=fake$$value,vers=3.0')
+    assertEquals(result.networkShareCredentials, [])
+  })
+
+  it('moves a secret password out of o into a credentials entry with sealed material', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(
+        shareDoc({ device: '//h.example.net/m', o: 'username=u,password={$SMB_PASS},vers=3.0' }),
+        {
+          globalEntries: [entry('SMB_PASS', 'sealed-envelope', true)],
+          perServiceEntries: new Map(),
+        }
+      )
+    )
+    // The plain user name moves into the credentials entry with the password.
+    assertEquals(volumeOpts(result).o, 'vers=3.0')
+    assertEquals(JSON.stringify(result.document.data).includes('sealed-envelope'), false)
+    assertEquals(result.networkShareCredentials, [
+      { volume: 'media', composeServiceName: 'web', passwordKey: 'SMB_PASS', username: 'u' },
+    ])
+    assertEquals(
+      result.secretMaterial.filter((row) => row.key === 'SMB_PASS').map((row) => row.valueEnvelope),
+      ['sealed-envelope']
+    )
+    assertEquals(result.configSecretRefs, [{ composeServiceName: 'web', key: 'SMB_PASS' }])
+    assertEquals(result.secretPlan, [])
+  })
+
+  it('sends a secret user name as a key and a plain domain as text', () => {
+    const result = mustApply(
+      applyVariablesToComposeDocument(
+        shareDoc({ device: '//h/m', o: 'user={$U},domain=WORK,pass={$P}' }),
+        {
+          globalEntries: [entry('U', 'e1', true), entry('P', 'e3', true)],
+          perServiceEntries: new Map(),
+        }
+      )
+    )
+    assertEquals(volumeOpts(result).o, undefined)
+    assertEquals(result.networkShareCredentials, [
+      {
+        volume: 'media',
+        composeServiceName: 'web',
+        passwordKey: 'P',
+        usernameKey: 'U',
+        domain: 'WORK',
+      },
+    ])
+  })
+
+  it('refuses a secret domain, and a secret user name without a secret password', () => {
+    assertEquals(
+      refused({ device: '//h/m', o: 'domain={$D},pass={$P}' }, [
+        entry('D', 'e', true),
+        entry('P', 'e', true),
+      ]).kind,
+      'variable_secret_interpolation'
+    )
+    assertEquals(
+      refused({ device: '//h/m', o: 'user={$U}' }, [entry('U', 'e', true)]).kind,
+      'variable_ref_invalid'
+    )
+  })
+
+  it('refuses an option whose resolved value is empty', () => {
+    assertEquals(
+      refused({ device: '//h/m', o: 'domain={$EMPTY}' }, [entry('EMPTY', '')]).kind,
+      'variable_ref_invalid'
+    )
+  })
+
+  it('refuses a literal password and a non-secret password variable', () => {
+    assertEquals(
+      refused({ device: '//h/m', o: 'password=not-a-real-password' }).kind,
+      'variable_secret_interpolation'
+    )
+    assertEquals(
+      refused({ device: '//h/m', o: 'pass={$PLAIN}' }, [entry('PLAIN', 'x')]).kind,
+      'variable_secret_interpolation'
+    )
+    assertEquals(
+      refused({ device: '//h/m', o: 'pwd=not-a-real-password' }).kind,
+      'variable_secret_interpolation'
+    )
+    assertEquals(
+      refused({ device: '//h/m', o: 'pwd={$PLAIN}' }, [entry('PLAIN', 'x')]).kind,
+      'variable_secret_interpolation'
+    )
+  })
+
+  it('refuses a secret anywhere but the username, password or domain option', () => {
+    assertEquals(refused({ device: '//{$SMB_PASS}/m' }).kind, 'variable_secret_interpolation')
+    assertEquals(
+      refused({ device: '//h/m', o: 'vers={$SMB_PASS}' }).kind,
+      'variable_secret_interpolation'
+    )
+  })
+
+  it('refuses a variable that turns the mount into a host bind (the gate bypass)', () => {
+    const entries = [entry('O', 'bind'), entry('F', 'rbind'), entry('D', '/etc')]
+    assertEquals(refused({ device: '//h/m', o: '{$O}' }, entries).kind, 'variable_ref_invalid')
+    assertEquals(refused({ device: '//h/m', o: 'ro,{$F}' }, entries).kind, 'variable_ref_invalid')
+    assertEquals(refused({ device: '{$D}' }, entries).kind, 'variable_ref_invalid')
+    assertEquals(refused({ device: '//h/m', o: 'remount' }).kind, 'variable_ref_invalid')
+    assertEquals(
+      refused({ device: '//h/m', o: 'credentials=/etc/shadow' }).kind,
+      'variable_ref_invalid'
+    )
+  })
+
+  it('refuses a resolved device that is not //host/share', () => {
+    const entries = [entry('H', '//a/b,bind'), entry('P', 'host:/export')]
+    assertEquals(refused({ device: '{$H}' }, entries).kind, 'variable_ref_invalid')
+    assertEquals(refused({ device: '{$P}' }, entries).kind, 'variable_ref_invalid')
+  })
+
+  it('refuses a comma in a resolved option value', () => {
+    const result = refused({ device: '//h/m', o: 'vers={$V}' }, [entry('V', '3.0,bind')])
+    assertEquals(result.kind, 'variable_ref_invalid')
+    assertEquals(result.message.includes('comma'), true)
+  })
+
+  it('refuses Compose ${...} and a bare $ in device and o', () => {
+    assertEquals(refused({ device: '//h/m', o: 'vers=${V}' }).kind, 'variable_ref_invalid')
+    assertEquals(refused({ device: '//${H}/m' }).kind, 'variable_ref_invalid')
+    assertEquals(refused({ device: '//h/m', o: 'username=a$$b' }).kind, 'variable_ref_invalid')
+  })
+
+  it('refuses an unresolved reference naming the volume and field', () => {
+    const result = refused({ device: '//{$MISSING}/m' })
+    assertEquals(result.kind, 'variable_unresolved')
+    assertEquals(result.message.includes('volumes.media.driver_opts.device'), true)
+  })
+
+  it('reports what the shares resolved to without a secret value', () => {
+    const resolved = (host: string) =>
+      mustApply(
+        applyVariablesToComposeDocument(
+          shareDoc({ device: '//{$NAS_HOST}/m', o: 'password={$SMB_PASS}' }),
+          {
+            globalEntries: [entry('NAS_HOST', host), entry('SMB_PASS', 'env-a', true)],
+            perServiceEntries: new Map(),
+          }
+        )
+      ).networkSharesResolved
+    const one = resolved('a.example.net')
+    assertEquals(one === resolved('a.example.net'), true)
+    assertEquals(one === resolved('b.example.net'), false)
+    assertEquals(one?.includes('env-a'), false)
+  })
+
+  it('leaves a non-share volume untouched', () => {
+    const doc = emptyComposeDocument()
+    doc.data.services = { web: { image: 'nginx:latest' } }
+    doc.data.volumes = { data: { driver_opts: { type: 'nfs', device: ':/x/{$NOPE}' } } }
+    const result = mustApply(
+      applyVariablesToComposeDocument(doc, { globalEntries: [], perServiceEntries: new Map() })
+    )
+    assertEquals(
+      (result.document.data.volumes as Record<string, { driver_opts: { device: string } }>).data
+        .driver_opts.device,
+      ':/x/{$NOPE}'
+    )
+  })
+})

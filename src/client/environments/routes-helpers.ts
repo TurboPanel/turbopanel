@@ -24,11 +24,14 @@ import { parseDescription, parseName, stripPromotedMetadataKeys } from '../share
  * public environment create/patch. `composeHostAccessApproval` is written only
  * by the deploy planner when an organization manager or owner deploys
  * host-level Compose content (`HOST_ACCESS_APPROVAL_METADATA_KEY`); accepting
- * it from a client would let an approval be claimed rather than earned. */
+ * it from a client would let an approval be claimed rather than earned.
+ * `composeNetworkSharesApproval` is the same for network-share volumes
+ * (`NETWORK_SHARES_APPROVAL_METADATA_KEY`). */
 export const ENVIRONMENT_PROMOTED_METADATA_KEYS = [
   'serverId',
   'component',
   'composeHostAccessApproval',
+  'composeNetworkSharesApproval',
 ] as const
 
 export type EnvironmentRouteValidationError = {

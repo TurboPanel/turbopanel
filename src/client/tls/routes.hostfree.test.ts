@@ -80,6 +80,7 @@ function thenableWhere(rows: unknown[]) {
     catch: promise.catch.bind(promise),
     finally: promise.finally.bind(promise),
     limit: () => Promise.resolve(rows),
+    for: () => Promise.resolve(rows),
     orderBy: () => afterOrderBy,
   }
   return {
@@ -362,7 +363,7 @@ test('overlayRotationResults prefers live command status', () => {
         error: 'binding_ca_unavailable',
       },
     ],
-    [{ id: COMMAND_ID, status: 'succeeded', error: null }]
+    [{ id: COMMAND_ID, status: 'succeeded', errorMessage: null }]
   )
   assertEquals(overlaid[0]?.status, 'succeeded')
   assertEquals(overlaid[1]?.status, 'failed')
@@ -653,11 +654,15 @@ test('POST /tls rejects invalid source, name, and missing encryption', async () 
     headers: authHeaders(cookie, json),
     body: JSON.stringify({
       source: 'lets_encrypt',
-      hostnames: ['app.example.com'],
+      hostnames: ['*.*.example.com'],
       challengeType: 'dns-01',
     }),
   })
-  await expectJson(dns01, 400, { error: 'dns_01_unsupported' })
+  // dns-01 is accepted now; a name that is not valid is still refused.
+  await expectJson(dns01, 400, {
+    error: 'Invalid request',
+    detail: '*.*.example.com may have only one * at the start',
+  })
 
   const noKey = await buildTlsApp({ encryption: false })
   const missing = await noKey.app.request('/tls', {
@@ -1035,7 +1040,10 @@ test('POST /tls/ca/retire sends the active-only bundle to every Orchestrator hos
 
     // No command queue in this context: the retire still completes, the
     // reconcile is skipped (and logged).
-    const withoutQueue = await buildTlsApp({ rotationServers: [], rotationRows: rows() })
+    const withoutQueue = await buildTlsApp({
+      rotationServers: [],
+      rotationRows: rows(),
+    })
     const skipped = await withoutQueue.app.request('/tls/ca/retire', {
       method: 'POST',
       headers: authHeaders(withoutQueue.cookie),

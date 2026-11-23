@@ -219,9 +219,9 @@ export function collectProxySqlListenerSans(params: {
  *   dial ProxySQL by name over the managed Docker network).
  * - external access **on**: every IPv4 address of the server (`0.0.0.0`), and
  *   every IPv6 address (`::`) too when the daemon reports a live IPv6 address
- *   (`hostHasIpv6`) and advertises `managed-ingress-ipv6-v1`. On a kernel with
- *   no IPv6 stack a `[::]` publish fails and takes the listener down; a
- *   reported IPv6 address is the proof the stack is there, so both must hold.
+ *   (`hostHasIpv6`). On a kernel with no IPv6 stack a `[::]` publish fails and
+ *   takes the listener down; a reported IPv6 address is the proof the stack is
+ *   there.
  *
  * Never empty here: a server with no cluster to front never reaches this
  * decision (the reconcile is `not_needed` or a teardown). **The publish is the
@@ -231,10 +231,10 @@ export function collectProxySqlListenerSans(params: {
  */
 export function decideIngressBindAddresses(
   externalAccess: boolean,
-  ipv6: Readonly<{ serverHasIpv6: boolean; daemonPublishesIpv6: boolean }>
+  ipv6: Readonly<{ serverHasIpv6: boolean }>
 ): string[] {
   if (!externalAccess) return [LOOPBACK_BIND]
-  return ipv6.serverHasIpv6 && ipv6.daemonPublishesIpv6
+  return ipv6.serverHasIpv6
     ? [ALL_INTERFACES_BIND, ALL_INTERFACES_IPV6_BIND]
     : [ALL_INTERFACES_BIND]
 }

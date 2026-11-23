@@ -8,11 +8,10 @@ import {
   EXTENDED_HOST_FIELD_NAMES,
   EXTENDED_INGRESS_FIELD_NAMES,
   EXTENDED_SIZE_FIELD_NAMES,
-  isMetricsWireVersion,
   MAX_METRIC_EVENTS_PER_SAMPLE,
   MAX_METRICS_TEXT_LENGTH,
   METRICS_TEXT_FIELD_NAMES,
-  METRICS_WIRE_VERSIONS,
+  METRICS_SCHEMA_VERSION,
   type MetricsExtended,
   type MetricsSampleMetadata,
   type MetricsSample,
@@ -304,19 +303,9 @@ const ALLOWED_METADATA_FIELDS: ReadonlySet<string> = new Set([
   'sampledAt',
   'intervalSeconds',
   'sequence',
-  'topologyGeneration',
   'bootGeneration',
   'durable',
 ])
-
-/**
- * Optional: only older daemons send it, and nothing reads it any more. A value
- * that is sent must still be a valid generation number.
- */
-function parseOptionalTopologyGeneration(value: unknown): ValidateResult<number | undefined> {
-  if (value === undefined) return { ok: true, value: undefined }
-  return parseGeneration(value, 'metadata.topologyGeneration')
-}
 
 function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampleMetadata> {
   if (!isRecord(raw)) return fail('metadata must be an object')
@@ -325,8 +314,8 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
       return fail(`metadata.${key} is not a recognized metadata field`)
     }
   }
-  if (!isMetricsWireVersion(raw.version)) {
-    return fail(`metadata.version must be one of ${METRICS_WIRE_VERSIONS.join(', ')}`)
+  if (raw.version !== METRICS_SCHEMA_VERSION) {
+    return fail(`metadata.version must be ${METRICS_SCHEMA_VERSION}`)
   }
   if (raw.durable !== undefined && typeof raw.durable !== 'boolean') {
     return fail('metadata.durable must be a boolean')
@@ -343,9 +332,6 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
   const sequence = parseSafeNonNegativeInteger(raw.sequence, 'metadata.sequence')
   if (!sequence.ok) return sequence
 
-  const topologyGeneration = parseOptionalTopologyGeneration(raw.topologyGeneration)
-  if (!topologyGeneration.ok) return topologyGeneration
-
   const bootGeneration = parseGeneration(raw.bootGeneration, 'metadata.bootGeneration')
   if (!bootGeneration.ok) return bootGeneration
 
@@ -357,9 +343,6 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
       sampledAt: sampledAt.value,
       intervalSeconds: intervalSeconds.value,
       sequence: sequence.value,
-      ...(topologyGeneration.value === undefined
-        ? {}
-        : { topologyGeneration: topologyGeneration.value }),
       bootGeneration: bootGeneration.value,
     },
   }

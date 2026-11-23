@@ -679,6 +679,21 @@ export const serverSchemas = {
         description:
           'Which configured layer supplied sendViaHeader (null when the default, off, is used).',
       },
+      networkShares: {
+        type: 'boolean',
+        description:
+          'Allow Network Shares: whether Compose projects on this server may mount SMB (cifs / smb3) volumes. server.options.networkShares; off unless set, with no organization setting. Deploying one also needs the environments.deploy_network_shares capability (owners and managers).',
+      },
+      buildLimits: {
+        type: 'object',
+        description:
+          'The most CPU cores and memory one build on this server may use (server.options.buildLimits); null parts are not set. The smallest of the organization, server and service limits applies.',
+        properties: {
+          cores: { type: ['number', 'null'] },
+          memoryBytes: { type: ['integer', 'null'] },
+          swap: { type: ['boolean', 'null'] },
+        },
+      },
       colocatedWithInstance: {
         type: 'boolean',
         description:
@@ -895,12 +910,13 @@ export const serverSchemas = {
       options: {
         type: 'object',
         description:
-          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames and sendViaHeader (boolean or null to inherit the organization setting) are server options too.',
+          'Merged into server.options. sshPort (1–65535 or null to inherit) and ntp (object or null to inherit) participate in the host-defaults cascade; hideWebServerNames and sendViaHeader (boolean or null to inherit the organization setting) are server options too. networkShares (boolean; null turns it off) is the per-server Allow Network Shares switch.',
         properties: {
           sshPort: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
           ntp: { type: ['object', 'null'] },
           hideWebServerNames: { type: ['boolean', 'null'] },
           sendViaHeader: { type: ['boolean', 'null'] },
+          networkShares: { type: ['boolean', 'null'] },
           hosting: {
             type: 'object',
             properties: { enabled: { type: 'boolean' } },
@@ -1044,12 +1060,26 @@ export const serverSchemas = {
     properties: {
       status: {
         type: 'string',
-        enum: ['supported', 'unsupported', 'unknown'],
+        enum: ['supported', 'unsupported'],
         description:
-          "The daemon's reported version held against this control plane's supported minimum. An unsupported daemon stays connected but receives no commands until it is updated; unknown is a build that reports no version.",
+          "The daemon's reported version and hello features held against what this control plane requires: a version at or above the supported minimum and every required wire feature. Fails closed: no version, an unparsable one, or no stored feature list is unsupported. An unsupported daemon stays connected and can still be updated, but receives no commands until it is.",
       },
       version: { type: ['string', 'null'] },
       minVersion: { type: 'string' },
+      code: {
+        type: 'string',
+        const: 'daemon_update_required',
+        description: 'Present when status is unsupported. Commands fail with this error code.',
+      },
+      missingFeatures: {
+        type: 'array',
+        items: { type: 'string' },
+        description: "Required wire features the daemon's hello does not list.",
+      },
+      reason: {
+        type: 'string',
+        description: 'Present when status is unsupported: why, and the fix.',
+      },
     },
   },
   ServerUpdateTarget: {
@@ -1554,6 +1584,11 @@ export const serverSchemas = {
             type: 'boolean',
             description:
               'True when the service runs an older PHP than is installed and is waiting for a restart.',
+          },
+          phpShared: {
+            type: 'boolean',
+            description:
+              "True when the service's PHP runs in the shared pool, so a PHP patch update restarts its workers with the pool. Absent when the daemon did not say (an older daemon).",
           },
           containers: cappedListSchema({
             type: 'object',

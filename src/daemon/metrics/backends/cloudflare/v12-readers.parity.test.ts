@@ -73,11 +73,10 @@ function drive(deviceId: string, readOps: number | null, writeOps: number | null
 function input(atMs: number, withExtended: boolean): MetricsSampleInput {
   return {
     metadata: {
-      version: withExtended ? 8 : 6,
+      version: 8,
       sampledAt: new Date(atMs).toISOString(),
       intervalSeconds: INTERVAL_SECONDS,
       sequence: 1,
-      topologyGeneration: 1,
       bootGeneration: 1,
     },
     host: {

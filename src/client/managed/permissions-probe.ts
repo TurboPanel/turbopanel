@@ -9,9 +9,7 @@ import {
   type ManagedPermissionsObserved,
   parseManagedPermissionsObserved,
 } from '../../features/managed/privileges/observed.ts'
-import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { cellTrace } from '../../lib/logger.ts'
-import { MANAGED_PERMISSIONS_READ_FEATURE } from '../../lib/version-wire.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 
 /**
@@ -37,7 +35,6 @@ export type ManagedPermissionsProbeParams = {
 
 export type ManagedPermissionsProbeOutcome =
   | { status: 'observed'; permissions: ManagedPermissionsObserved }
-  | { status: 'unsupported' }
   | {
       status: 'unavailable'
       reason: 'no_registry' | 'offline' | 'timeout' | 'daemon_error' | 'invalid_result' | 'error'
@@ -47,7 +44,6 @@ export type ManagedPermissionsProbeOutcome =
 /** Seams for hostfree tests; production wires the defaults. */
 export type ManagedPermissionsProbeDeps = {
   isServerConnected?: (serverId: string) => Promise<boolean>
-  daemonFeatures?: (serverId: string) => Promise<readonly string[]>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,12 +58,6 @@ export async function probeManagedPermissions(
 ): Promise<ManagedPermissionsProbeOutcome> {
   if (!registry) return { status: 'unavailable', reason: 'no_registry' }
 
-  const daemonFeatures =
-    deps.daemonFeatures ??
-    (async (serverId: string) => {
-      const state = await getServerDaemonStateByServerId(db, serverId)
-      return state?.projection?.features ?? []
-    })
   const isServerConnected =
     deps.isServerConnected ??
     (async (serverId: string) => {
@@ -77,8 +67,6 @@ export async function probeManagedPermissions(
 
   const requestId = generateRequestId()
   try {
-    const features = await daemonFeatures(params.serverId)
-    if (!features.includes(MANAGED_PERMISSIONS_READ_FEATURE)) return { status: 'unsupported' }
     if (!(await isServerConnected(params.serverId))) {
       return { status: 'unavailable', reason: 'offline' }
     }

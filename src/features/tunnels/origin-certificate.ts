@@ -34,8 +34,13 @@ import { encryptSecret, isSealedEnvelope } from '../../lib/secrets/data-encrypti
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { mintCertificateRequest, parseCertificatePem } from '../../lib/tls/index.ts'
 import { coversHostname } from '../../lib/tls/match.ts'
+import { hostingsPinningName, repinNames } from '../hostings/name-certificates.ts'
 import { metadataFromParsed, splitTlsMetadata } from '../../lib/tls/metadata.ts'
-import type { ProviderOriginCertificate, TunnelAdapter } from './adapter.ts'
+import type {
+  OriginCertificateIssued,
+  ProviderOriginCertificate,
+  TunnelAdapter,
+} from './adapter.ts'
 import type { TunnelProvider } from './vocabulary.ts'
 import { TunnelProviderError } from './errors.ts'
 import { compareText } from './order.ts'
@@ -224,10 +229,11 @@ export async function countOriginCertificatesFrom(
   return rows.length
 }
 
-/** Ids of hostings that pin a certificate. */
+/** Ids of hostings that pin a certificate for the whole site or for any one of their names. */
 export async function hostingsPinning(db: Db, tlsId: string): Promise<string[]> {
   const rows = await db.select({ id: hosting.id }).from(hosting).where(eq(hosting.tlsId, tlsId))
-  return rows.map((row) => row.id)
+  const named = await hostingsPinningName(db, tlsId)
+  return [...new Set([...rows.map((row) => row.id), ...named])]
 }
 
 /** A badge that can issue for the zone: it must have been proved to read the zone's certificates. */
@@ -238,6 +244,27 @@ export function badgeCoversZone(
   const zones = toApiBadge(row).capabilities.certificates
   const wanted = zoneName.trim().toLowerCase()
   return zones.find((z) => z.name.toLowerCase() === wanted) ?? null
+}
+
+/**
+ * Runs `fn` while holding the organization's origin certificate lock, with the
+ * database handle of the transaction that holds it. Only database work goes
+ * inside: the provider is never called under the lock.
+ */
+export type OriginLock = <R>(fn: (db: Db) => Promise<R>) => Promise<R>
+
+/**
+ * The lock that serialises deciding which origin certificate a set of names
+ * gets and recording it (the same key for the manual route and the per-name
+ * issue), so two callers asking for the same names end up with one certificate.
+ */
+export function organizationOriginLock(db: Db, organizationId: string): OriginLock {
+  const lockKey = 'origin-certificate-issue:' + organizationId
+  return (fn) =>
+    db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`)
+      return await fn(tx as unknown as Db)
+    })
 }
 
 type IssueParams = {
@@ -251,6 +278,13 @@ type IssueParams = {
   /** Exact hostnames inside the zone; ignored for a wildcard, which always lists the zone and `*.` the zone. */
   names?: readonly string[]
   scope?: OriginCertificateScope
+  /**
+   * With a lock, a certificate another caller stored while this one was being
+   * issued is used instead and the extra one is revoked at the provider.
+   */
+  lock?: OriginLock
+  /** The certificate that already covers what is wanted; looked up under the lock. */
+  existing?: (db: Db) => Promise<TlsRow | null>
 }
 
 /**
@@ -311,13 +345,17 @@ async function revokeAtProvider(
   }
 }
 
-/**
- * Ask the provider for a certificate and store it. The private key is made
- * here and never leaves this function except sealed into the row. If storing
- * fails after the provider issued the certificate, it is revoked again so
- * nothing is left behind.
- */
-export async function issueOriginCertificate(params: IssueParams): Promise<TlsRow> {
+type ProviderRequest = {
+  zone: { id: string; name: string }
+  scope: OriginCertificateScope
+  names: string[]
+  token: string
+  privateKeyPem: string
+  issued: OriginCertificateIssued
+}
+
+/** Check what may be asked, then ask the provider. Nothing is stored here. */
+async function requestFromProvider(params: IssueParams): Promise<ProviderRequest> {
   const { db, secrets, adapter, organizationId } = params
   if (!adapter.issueOriginCertificate || !adapter.revokeOriginCertificate) {
     throw new OriginCertificateRefusal(
@@ -350,31 +388,39 @@ export async function issueOriginCertificate(params: IssueParams): Promise<TlsRo
     csrPem: request.csrPem,
     validityDays: ORIGIN_CERTIFICATE_VALID_DAYS,
   })
-  try {
-    const parsed = await parseCertificatePem(issued.certificatePem)
-    const sealedKey = await encryptSecret(secrets, request.privateKeyPem)
-    if (!isSealedEnvelope(sealedKey) || sealedKey.includes('BEGIN')) {
-      throw new TypeError('the certificate key must be sealed before it is stored')
-    }
-    const { columns, residual } = splitTlsMetadata(metadataFromParsed(parsed, 'ready'))
-    const link: ProviderOriginLink = {
-      provider: params.carrier.provider,
-      carrierId: params.carrier.id,
-      badgeId: params.badge.id,
-      zoneId: zone.id,
-      zoneName: zone.name.toLowerCase(),
-      externalId: issued.externalId,
-      hostnames: names,
-      scope,
-      retiredAt: null,
-    }
+  return { zone, scope, names, token, privateKeyPem: request.privateKeyPem, issued }
+}
+
+/** Store the issued pair; under the lock, a certificate that already covers the names wins. */
+async function storeCertificate(
+  params: IssueParams,
+  made: ProviderRequest
+): Promise<{ row: TlsRow; duplicate: boolean }> {
+  const parsed = await parseCertificatePem(made.issued.certificatePem)
+  const sealedKey = await encryptSecret(params.secrets, made.privateKeyPem)
+  if (!isSealedEnvelope(sealedKey) || sealedKey.includes('BEGIN')) {
+    throw new TypeError('the certificate key must be sealed before it is stored')
+  }
+  const { columns, residual } = splitTlsMetadata(metadataFromParsed(parsed, 'ready'))
+  const link: ProviderOriginLink = {
+    provider: params.carrier.provider,
+    carrierId: params.carrier.id,
+    badgeId: params.badge.id,
+    zoneId: made.zone.id,
+    zoneName: made.zone.name.toLowerCase(),
+    externalId: made.issued.externalId,
+    hostnames: made.names,
+    scope: made.scope,
+    retiredAt: null,
+  }
+  const insert = async (db: Db): Promise<TlsRow> => {
     const [row] = await db
       .insert(tls)
       .values({
-        organizationId,
-        name: libraryName(names),
+        organizationId: params.organizationId,
+        name: libraryName(made.names),
         source: 'provider_origin',
-        certificatePem: issued.certificatePem,
+        certificatePem: made.issued.certificatePem,
         privateKeyPem: sealedKey,
         status: columns.status,
         notAfter: columns.notAfter,
@@ -384,11 +430,44 @@ export async function issueOriginCertificate(params: IssueParams): Promise<TlsRo
       })
       .returning()
     return row!
+  }
+  const { lock, existing } = params
+  if (!lock || !existing) return { row: await insert(params.db), duplicate: false }
+  return await lock(async (db) => {
+    const other = await existing(db)
+    return other ? { row: other, duplicate: true } : { row: await insert(db), duplicate: false }
+  })
+}
+
+async function issueStored(params: IssueParams): Promise<{ row: TlsRow; duplicate: boolean }> {
+  const made = await requestFromProvider(params)
+  const revoke = () =>
+    revokeAtProvider(params.adapter, made.token, made.issued.externalId).catch((err) =>
+      logWarn(
+        'tls',
+        `could not revoke an extra origin certificate at the provider: ${err instanceof Error ? err.message : String(err)}`
+      )
+    )
+  let stored: { row: TlsRow; duplicate: boolean }
+  try {
+    stored = await storeCertificate(params, made)
   } catch (err) {
     // Best effort: do not leave a certificate at the provider that nothing in the panel knows about.
-    await revokeAtProvider(adapter, token, issued.externalId).catch(() => undefined)
+    await revoke()
     throw err
   }
+  if (stored.duplicate) await revoke()
+  return stored
+}
+
+/**
+ * Ask the provider for a certificate and store it. The private key is made
+ * here and never leaves this function except sealed into the row. If storing
+ * fails after the provider issued the certificate, it is revoked again so
+ * nothing is left behind.
+ */
+export async function issueOriginCertificate(params: IssueParams): Promise<TlsRow> {
+  return (await issueStored(params)).row
 }
 
 /** The library allows letters, digits, space, dot, underscore and hyphen in a certificate name. */
@@ -444,7 +523,18 @@ export async function ensureOriginCertificate(
   if (covering && (scope === 'names' || isWildcardRow(covering))) {
     return { row: covering, reused: true, retiredIds: [] }
   }
-  const row = await issueOriginCertificate(params)
+  const stored = await issueStored({
+    ...params,
+    lock: params.lock ?? organizationOriginLock(params.db, params.organizationId),
+    existing: async (db) => {
+      const again = await listOriginCertificates(db, params.organizationId, params.carrier.id)
+      const same = again.filter((row) => readProviderOrigin(row.metadata)?.zoneName === zone)
+      const found = findCoveringCertificate(same, params.carrier.id, wanted, now)
+      return found && (scope === 'names' || isWildcardRow(found)) ? found : null
+    },
+  })
+  if (stored.duplicate) return { row: stored.row, reused: true, retiredIds: [] }
+  const row = stored.row
   const link = readProviderOrigin(row.metadata)!
   const redundant = sameZone.filter((old) => isRedundantExact(old, link))
   const retired = await Promise.all(
@@ -466,7 +556,7 @@ function isRedundantExact(old: TlsRow, replacement: ProviderOriginLink): boolean
 /**
  * Mark the certificates nobody needs any more as retired: none of the
  * hostnames still in use falls under them. `usedHostnames` is every hostname
- * of this organization that asks for a verified connection. Returns the ids.
+ * of this organization that a tunnel carries. Returns the ids.
  */
 export async function retireUnusedOriginCertificates(
   db: Db,
@@ -614,8 +704,15 @@ export async function renewOriginCertificate(
     .set({ tlsId: replacement.id })
     .where(eq(hosting.tlsId, params.row.id))
     .returning({ id: hosting.id })
+  // The names pinned to the old row move with it; a name pinned on its own
+  // (the site pin was another certificate) puts its site in the list too.
+  const namedHostings = await hostingsPinningName(params.db, params.row.id)
+  await repinNames(params.db, params.row.id, replacement.id)
   await retireRow(params.db, params.row, params.now ?? new Date())
-  return { replacement, repinnedHostingIds: moved.map((h) => h.id) }
+  return {
+    replacement,
+    repinnedHostingIds: [...new Set([...moved.map((h) => h.id), ...namedHostings])],
+  }
 }
 
 export type OriginSweepResult = {
@@ -634,7 +731,7 @@ type SweepParams = {
   secrets: DerivedSecretsConfig
   registry: (provider: TunnelProvider) => TunnelAdapter
   organizationId: string
-  /** Hostnames still asking for a verified connection; when given, certificates nothing needs are retired first. */
+  /** Hostnames a tunnel still carries; when given, certificates nothing needs are retired first. */
   usedHostnames?: readonly string[]
   /** Most rows handled in this pass; the rest wait for the next one. Defaults to ORIGIN_SWEEP_BATCH. */
   limit?: number

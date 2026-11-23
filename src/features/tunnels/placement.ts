@@ -48,22 +48,7 @@ export function placementWarnings(carrying: readonly string[]): string[] {
 }
 
 /**
- * For servers that run this Tunnel's sites on a daemon that cannot add a lock
- * to a site deployed before the hostname joined the Tunnel: that name is not
- * locked until the site is deployed again. Null when there are none.
- */
-export function hostnameLockWarning(serverCount: number): string | null {
-  if (serverCount === 0) return null
-  const who =
-    serverCount === 1
-      ? '1 server that runs this Tunnel’s sites cannot lock'
-      : `${serverCount} servers that run this Tunnel’s sites cannot lock`
-  const fix = serverCount === 1 ? 'Update its daemon' : 'Update their daemons'
-  return `${who} a hostname added to the Tunnel until the site is deployed again, so a site deployed before the hostname was added answers visitors directly. ${fix}, or redeploy those sites after adding the hostname.`
-}
-
-/**
- * For servers whose daemon can add a lock but skips a site with an automatic
+ * For servers that run a site the lock add skips with an automatic
  * certificate or with `forceHttps` off: a local-only hostname added to such a
  * site stays open until the site is deployed again. Null when there are none.
  */

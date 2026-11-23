@@ -260,22 +260,65 @@ const PROGRESS = {
   updatedAt: '2026-10-04T12:09:00.000Z',
 }
 
-test('activityStepsOf counts done steps plus the running one, never the ready ones', () => {
-  assertEquals(activityStepsOf(PROGRESS), { step: 3, totalSteps: 4, stepLabel: 'Build' })
-  // Between steps nothing runs: no +1 and no label.
+test('activityStepsOf counts every listed step and numbers the running one by its place', () => {
+  // Install Docker is ready (already there) but still listed: Build is 4th of 5.
+  assertEquals(activityStepsOf(PROGRESS), { step: 4, totalSteps: 5, stepLabel: 'Build' })
+  // Between steps nothing runs: no position and no label (the web interface's "Getting Ready").
   const between = {
     ...PROGRESS,
     steps: PROGRESS.steps.map((step) => (step.id === 'build' ? { ...step, state: 'done' } : step)),
     current: null,
   }
-  assertEquals(activityStepsOf(between), { step: 3, totalSteps: 4, stepLabel: null })
+  assertEquals(activityStepsOf(between), { step: 0, totalSteps: 5, stepLabel: null })
+  // Not started, with a ready step first: still 0, never "Step 1".
+  const waiting = {
+    ...PROGRESS,
+    steps: PROGRESS.steps.map((step) =>
+      step.state === 'ready' ? step : { ...step, state: 'pending' }
+    ),
+    current: null,
+  }
+  assertEquals(activityStepsOf(waiting), { step: 0, totalSteps: 5, stepLabel: null })
+  // Cancelled: the steps before the first skipped one, even with a ready step after it.
+  const stopped = {
+    ...PROGRESS,
+    steps: [
+      { id: 'a', label: 'A', state: 'done' },
+      { id: 'b', label: 'B', state: 'skipped' },
+      { id: 'c', label: 'C', state: 'ready' },
+    ],
+    current: null,
+  }
+  assertEquals(activityStepsOf(stopped), { step: 1, totalSteps: 3, stepLabel: null })
+  // Finished: every step done or ready reads M of M.
+  const finished = {
+    ...PROGRESS,
+    steps: PROGRESS.steps.map((step) =>
+      step.state === 'ready' ? step : { ...step, state: 'done' }
+    ),
+    current: null,
+  }
+  assertEquals(activityStepsOf(finished), { step: 5, totalSteps: 5, stepLabel: null })
+  // Failed: the place of the step that failed.
+  const failed = {
+    ...PROGRESS,
+    steps: PROGRESS.steps.map((step) =>
+      step.id === 'build'
+        ? { ...step, state: 'failed' }
+        : step.id === 'start'
+          ? { ...step, state: 'skipped' }
+          : step
+    ),
+    current: null,
+  }
+  assertEquals(activityStepsOf(failed), { step: 4, totalSteps: 5, stepLabel: null })
   assertEquals(activityStepsOf(null), { step: null, totalSteps: null, stepLabel: null })
   assertEquals(activityStepsOf({ version: 1 }), { step: null, totalSteps: null, stepLabel: null })
 })
 
 test('shapeActivityItem: carries the step plan of a deploying command', () => {
   const item = shapeActivityItem({ ...BASE, progress: PROGRESS }, NAMES, NOW)
-  assertEquals([item.step, item.totalSteps, item.stepLabel], [3, 4, 'Build'])
+  assertEquals([item.step, item.totalSteps, item.stepLabel], [4, 5, 'Build'])
 })
 
 test('shapeActivityItem: an environment outside the organization resolves to null names', () => {

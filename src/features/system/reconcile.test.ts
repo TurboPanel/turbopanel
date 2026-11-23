@@ -1,7 +1,8 @@
 import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
+import { ensureServiceIngressContainerAllocation } from '../environments/allocate-containers.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -34,6 +35,7 @@ import {
   resolveHostingIngressDesired,
   runSystemReconcileSweep,
   SYSTEM_RECONCILE_MIN_INTERVAL_MS,
+  systemReconcileRepairableExists,
 } from './reconcile.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -759,5 +761,87 @@ test('runSystemReconcileSweep skips a steady-state consumer-only ProxySQL', asyn
     const result = await runSystemReconcileSweep(db, queue)
     assertEquals(result.enqueued, 0)
     assertEquals(queue.envelopes.length, 0)
+  })
+})
+
+/** The cron gate's "can the sweep repair a container on this server" test, for one server. */
+async function repairableOn(db: ReturnType<typeof createDenoDb>, serverId: string) {
+  const rows = await db.execute<{ repairable: boolean }>(sql`
+    SELECT ${systemReconcileRepairableExists(sql`srv.id`, sql`srv.organization_id`)} AS repairable
+    FROM server srv
+    WHERE srv.id = ${serverId}
+  `)
+  return rows[0]?.repairable
+}
+
+test('the repairable test stays closed for hosting ingress left pending with no demand', async () => {
+  await withReconcileFixtures({}, async ({ db, serverId, queue }) => {
+    assertEquals(await repairableOn(db, serverId), false)
+    assertEquals((await runSystemReconcileSweep(db, queue)).enqueued, 0)
+  })
+})
+
+test('the repairable test stays closed for a per-service ingress row created pending', async () => {
+  await withReconcileFixtures({}, async ({ db, organizationId, serverId, queue }) => {
+    const [ws] = await db
+      .insert(workspace)
+      .values({ organizationId, name: 'Tenant Workspace' })
+      .returning({ id: workspace.id })
+    const [proj] = await db
+      .insert(project)
+      .values({ workspaceId: ws!.id, organizationId, name: 'Tenant Project', kind: 'compose' })
+      .returning({ id: project.id })
+    const [env] = await db
+      .insert(environment)
+      .values({ projectId: proj!.id, serverId, name: 'production' })
+      .returning({ id: environment.id })
+    const [svc] = await db
+      .insert(service)
+      .values({ environmentId: env!.id, name: 'web', composeServiceName: 'web' })
+      .returning({ id: service.id })
+    await ensureServiceIngressContainerAllocation(db, {
+      serviceId: svc!.id,
+      serverId,
+      composeServiceName: 'web',
+    })
+    const rows = await db.select().from(container).where(eq(container.serviceId, svc!.id))
+    assertEquals(
+      rows.map((row) => [row.role, row.status, row.containerId]),
+      [['ingress', 'pending', null]]
+    )
+    assertEquals(await repairableOn(db, serverId), false)
+    assertEquals((await runSystemReconcileSweep(db, queue)).enqueued, 0)
+  })
+})
+
+test('the repairable test stays closed for a ProxySQL row that teardown left exited', async () => {
+  await withReconcileFixtures({}, async ({ db, organizationId, serverId, queue }) => {
+    const ids = await ensureManagedIngressHierarchy(db, { organizationId, serverId })
+    for (const [status, containerId] of [
+      ['exited', null],
+      ['exited', 'abc123'],
+    ] as const) {
+      await db
+        .update(container)
+        .set({ status, containerId })
+        .where(eq(container.serviceId, ids.serviceId))
+      assertEquals(await repairableOn(db, serverId), false, `${status} ${containerId}`)
+      assertEquals((await runSystemReconcileSweep(db, queue)).enqueued, 0)
+    }
+  })
+})
+
+test('the repairable test opens for a container the sweep can repair', async () => {
+  await withReconcileFixtures({ httpIngressDemand: true }, async ({ db, serverId }) => {
+    // Hosting ingress with demand, still pending: the sweep starts it.
+    assertEquals(await repairableOn(db, serverId), true)
+  })
+  await withReconcileFixtures({ selfHost: true }, async ({ db, serverId }) => {
+    // A self-host service that is not running.
+    assertEquals(await repairableOn(db, serverId), true)
+  })
+  await withConsumerOnlyManagedFixtures(async ({ db, serverId }) => {
+    // ProxySQL wanted by a bound consumer, not up yet.
+    assertEquals(await repairableOn(db, serverId), true)
   })
 })

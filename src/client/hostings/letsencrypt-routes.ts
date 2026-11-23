@@ -134,7 +134,7 @@ function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
         rows.map((row) => ({ ...row, pendingAt: pendingById.get(row.id) ?? null })),
         at
       ),
-      loadHostingTunnelPaths(db, orgResult, rows, at),
+      loadHostingTunnelPaths(db, orgResult, rows),
     ])
     const withCertificate = (row: HostingReadRow) => ({
       ...row,
@@ -345,8 +345,8 @@ export function registerHostingLetsEncryptRoutes(
     const refused = await refuseHostingWrite(c, db, organizationId, id)
     if (refused) return refused
 
-    // The body is accepted for older clients but carries nothing: the www
-    // setting lives on the hosting itself (`options.www`).
+    // The body is read only to refuse malformed JSON; it carries nothing: the
+    // www setting lives on the hosting itself (`options.www`).
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 

@@ -2,14 +2,12 @@
 
 Host-metrics ingestion (`POST /api/daemon/v1/metrics`, never wakes the DO),
 backend storage, and the query/caching API — **v12 stored schema**
-(`metrics-contract.ts`, `METRICS_SCHEMA_VERSION = 8`; v6-stamped samples are still
-accepted on the wire and written as v12 rows, see "Metrics v12" below). Metrics are grouped by **entity**
+(`metrics-contract.ts`, `METRICS_SCHEMA_VERSION = 8`; see "Metrics v12" below). Metrics are grouped by **entity**
 (host, network device, filesystem, block device, GPU, hardware signal, ingress
 source, database proxy) with a stable logical id per entity, every leaf value is
 `number | null` (missing is always `null`, never coerced to `0`), and no value's
 presence is inferred from bitmask/part membership. Ingest accepts
-`metadata.version` 6 or 8 (`METRICS_WIRE_VERSIONS`) during the daemon transition
-and rejects anything else; every stored hosted row carries blob3 `"12"` (`AE_STORAGE_VERSION` = `METRICS_LAYOUT_VERSION`, the storage layout number, which is not the wire version).
+only `metadata.version` 8 and rejects anything else; every stored hosted row carries blob3 `"12"` (`AE_STORAGE_VERSION` = `METRICS_LAYOUT_VERSION`, the storage layout number, which is not the wire version).
 
 ## Metrics v12 (authoritative for new rows)
 
@@ -25,7 +23,7 @@ v6 rows; where they disagree with `V12-LAYOUT.md`, v12 wins.
 - **Dataset** `turbopanel_server_metrics_v${METRICS_LAYOUT_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept only blob3 = `AE_STORAGE_VERSION` (`AE_SUPPORTED_SCHEMA_VERSIONS` = [12]): rows stamped with another number are skipped, never read with the new slot meanings. Bump `METRICS_LAYOUT_VERSION` (`field-registry.ts`) whenever a slot changes meaning.
 - **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.io`, and `host.network` blob6 names it), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
 - **Envelope**: blob1 kind, blob2 family, blob3 `"12"` (the storage layout number, never the wire version), blob4 reserved (written empty), blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
-- **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. Hard cut: the control plane accepts wire versions 6 and 8 only (`METRICS_WIRE_VERSIONS`), advertises no `metrics-v7`, and a version-7 sample is refused with the usual version error; an older daemon falls back to the plain version-6 sample until it updates. `metrics-v8-sizes` is advertised only because this release stores the sizes and divides each bucket by the size its own sample carried. wire version 8 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v12 rows with sentinels and empty text for the absent data.
+- **Wire negotiation**: wire feature `metrics-v8` (`DAEMON_WIRE_FEATURES`, both repos). Hard cut: the control plane accepts wire version 8 only and refuses any other version with the usual version error. `metrics-v8-sizes` is advertised only because this release stores the sizes and divides each bucket by the size its own sample carried. Wire version 8 data rides the optional `extended` section and `metadata.durable`.
 - **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
 - **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. Hosted rows live only in the `_v12` dataset and are read as stamp 12 only; earlier rows are dropped, with no dual read. Descriptors for the data points neither edition stores (`NOT_STORED_FIELDS` in `field-registry.ts`) stay and read as empty on both. Descriptors for the new wire version 8 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work. Analytics Engine creates a dataset on its first write, so a read before any write fails with a missing-table error; `isMissingDatasetError` turns exactly that error (for one of our own `turbopanel_server_metrics_v<N>` datasets) into "no data" and every other error still throws. The testing deploy should check the first `_v12` read.
 
@@ -240,8 +238,8 @@ per extra filesystem; `extended.gpuSizes` per GPU memory), and both stores keep
 them beside the readings (`ext_*` columns and per-entity `total_bytes` /
 `total_inodes` / `memory_total_bytes` columns on DuckDB; slots on the hosted
 rows, see `V12-LAYOUT.md`). A resize or a balloon therefore changes the size on
-the next sample and nothing else: no new topology generation, no history to
-restate. Topology generations now track only the entity set (a NIC, filesystem,
+the next sample and nothing else: no new topology, no history to
+restate. A topology change is only a change of the entity set (a NIC, filesystem,
 drive or GPU added or removed, a slot override); see
 `features/servers/server-topology-records.ts` for the limits that bound them.
 
@@ -318,7 +316,7 @@ fake engine in `testing/fake-analytics-engine.ts` now mirrors them as `422`):
 | `blob4`        | reserved, always empty in v6 — v5 stamped the sample's collection mode (`"baseline"` / `"live"`) here; cadence is now carried by `intervalSeconds` (double20) alone                                                                                                                                                                                                                                                                                |
 | `blob5`        | sample/event timestamp; empty on `"status"` rows (AE stamps its own ingestion timestamp there)                                                                                                                                                                                                                                                                                                                                                     |
 | `blob6`        | sample sequence (stringified integer); empty on `"status"` rows                                                                                                                                                                                                                                                                                                                                                                                    |
-| `blob7`        | `metadata.topologyGeneration` (stringified integer); empty on `"status"` rows — v5's replacement for v3's `hardwareProfileGeneration`                                                                                                                                                                                                                                                                                                              |
+| `blob7`        | reserved, written empty on `"event"` rows (it held the topology generation)                                                                                                                                                                                                                                                                                                                                                                        |
 | `blob8`        | reserved for a future capability-plan-generation hash (always `""` today)                                                                                                                                                                                                                                                                                                                                                                          |
 | `blob9`        | page index within a paged per-entity family (`"0"` for unpaged rows) — **backend-private**, never referenced outside `backends/cloudflare/`                                                                                                                                                                                                                                                                                                        |
 | `blob10`       | family-conditional: `sourceId` (`managed.*`), comma-joined per-page entity ids (`gpu`/`network`/`filesystem`/`block`/`hardware.physical`), `event.source` (`"event"` rows), empty on `host.system`/`host.io` — **backend-private**                                                                                                                                                                                                                 |
@@ -358,20 +356,14 @@ sample order). No matching topology yet (first sample, resync pending) degrades
 gracefully to pre-topology positional packing — never a dropped sample.
 
 **Matching a sample to its topology** (`features/servers/topology-identity.ts`):
-`metadata.topologyGeneration` is deprecated and optional. While an older daemon
-sends it and the stored `server.hardware` value carries a `generation`, the
-numbers must be equal, as before. Otherwise the sample matches when every
+Neither metrics samples nor topology reports carry a topology generation (the
+field is gone from the wire contract, which has the one version 8). A sample matches when every
 network device, filesystem, block device and GPU it names is in the stored
 snapshot (hardware signals are left out: an unknown one only moves to the end
-of its page). A daemon stops sending the number, the `topology-report`
-`generation`/`bootGeneration` and the `topology_generation_changed` event once
-the control plane lists the `topology-generation-optional-v1` wire feature.
-`recordTopologyGeneration` tells a new topology from a resend the same way:
-the generation numbers when both sides carry one, else `topologyIdentityKey`
-(entity ids plus the attributes `computeSlotMapping` reads), so the hourly and
-daily change limits count topology changes, not size or label changes. The
-event kind stays in the catalog and the stored keys stay readable until no
-supported daemon sends them.
+of its page). `recordTopologyReport` tells a new topology from a resend by
+`topologyIdentityKey` (entity ids plus the attributes `computeSlotMapping`
+reads), so the hourly and daily change limits count topology changes, not size
+or label changes.
 
 **Missing metrics:** same `-1e308` sentinel idiom as v3
 (`AE_MISSING_METRIC_SENTINEL`), never coerced to `0`; all host metrics are ≥ 0
@@ -385,7 +377,7 @@ A closed catalog of discrete state-change/fault signals distinct from the
 continuous numeric families — `METRIC_EVENT_KINDS` in `contract.ts` (OOM kills,
 hung tasks, conntrack exhaustion, filesystem state changes, SMART/NVMe/RAID
 faults, NIC link state, TurboFabric mesh state, fan/thermal/ PSU/voltage/ECC
-faults, GPU faults, clock-sync state, topology/boot generation bumps).
+faults, GPU faults, clock-sync state, boot generation bumps).
 `isHardwareHealthEventKind` classifies each kind as a physical-hardware-health
 signal or not (`HARDWARE_HEALTH_EVENT_KIND`, a `Record` so an unclassified new
 kind fails to compile rather than silently defaulting);
@@ -509,7 +501,7 @@ tokens (`doubleN`/`blobN` literals, the `-1e308` sentinel) stay confined to
 `backends/cloudflare/`; (2) backend-private page-identifier symbols
 (`AE_BLOB_PAGE_INDEX`, `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`,
 `entityIdInPageIdentityPredicate`) never leak outside `backends/cloudflare/`.
-Ingest accepts wire versions 6 and 8 (wire version 8 adds the optional `extended`
+Ingest accepts wire version 8 only (it carries the optional `extended`
 section); any other version is rejected outright.
 
 #### Server metrics — query API & caching
@@ -590,7 +582,7 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 5. The page-identifier symbols (`AE_BLOB_PAGE_INDEX`,
    `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`, `entityIdInPageIdentityPredicate`) never
    appear outside `backends/cloudflare/`.
-6. Ingest accepts wire versions 6 and 8 only and rejects any other version
+6. Ingest accepts wire version 8 only and rejects any other version
    outright. There is no migration of existing metrics data — enforced by
    `validateMetricsSample`.
 7. `DuckDbParquetServerMetricsStore` is the single Deno store instance — never

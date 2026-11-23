@@ -1214,6 +1214,66 @@ test('POST create returns alreadyProvisioned for a finished row', async () => {
   assertEquals(body.alreadyProvisioned, true)
 })
 
+test('POST create keeps a failed row that once reported an address as already provisioned', async () => {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      managedRows: [
+        managedRow({
+          status: 'failed',
+          metadata: { rootLoginId: LOGIN_ID, host: 'db.example.net', port: 5432 },
+        }),
+      ],
+    }),
+  })
+  const res = await app.request(envPath(), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assertEquals(res.status, 200)
+  assertEquals((await jsonOf(res)).alreadyProvisioned, true)
+})
+
+test('POST create retries a failed first apply in place: never deletes the row or its bindings', async () => {
+  const deleted: unknown[] = []
+  const updated: unknown[] = []
+  const base = fakeDb({
+    managedRows: [
+      managedRow({
+        status: 'failed',
+        serverId: null,
+        metadata: { rootLoginId: LOGIN_ID, error: 'managed.apply compose up failed' },
+      }),
+    ],
+    loginRows: [loginRow({ role: 'root' })],
+    envRows: [envRow({ serverId: null })],
+  })
+  const db = {
+    ...base,
+    delete: (table: unknown) => {
+      deleted.push(table)
+      return base.delete(table as never)
+    },
+    update: (table: unknown) => {
+      updated.push(table)
+      return base.update(table as never)
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db })
+  // No placement to retry on: refused before anything is touched.
+  await expectJson(
+    await app.request(envPath(), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+    409,
+    { error: 'server_placement_required' }
+  )
+  assertEquals(deleted, [])
+  assertEquals(updated.includes(managed), false)
+})
+
 test('POST create clears a provisioning row then requires placement', async () => {
   const { app, cookie } = await buildApp({
     db: fakeDb({
@@ -4228,15 +4288,6 @@ test('POST promote fails closed when the daemon cannot read health', async () =>
   await expectJson(response, 409, LIVE_CHECK_FAILED)
 })
 
-test('POST promote sends no probe to a daemon without managed-health-v1', async () => {
-  const { response, sent } = await promoteVia({
-    features: ['update-progress-v1'],
-    reply: { status: 'done', result: streamingHealth() },
-  })
-  await expectJson(response, 409, LIVE_CHECK_FAILED)
-  assertEquals(sent.length, 0)
-})
-
 test('POST promote probes even when the stored observation is recent', async () => {
   const { response, sent } = await promoteVia({
     features: [HEALTH_FEATURE],
@@ -4403,27 +4454,7 @@ test('GET status?refresh=1 does not probe a primary that has no replicas', async
   assertEquals(sent.length, 0)
 })
 
-test('GET status?refresh=1 falls back quietly when the daemon lacks the feature or times out', async () => {
-  const unsupported = healthRegistry({
-    status: 'done',
-    result: streamingHealth(),
-  })
-  const a = await buildApp({
-    db: fakeDb({
-      managedRows: [managedRow()],
-      serverRows: [serverAdvertising([])],
-      memberRows: [memberRow()],
-    }),
-    registry: unsupported.registry,
-  })
-  const noFeature = await jsonOf(
-    await a.app.request(envPath('/status?refresh=1'), {
-      headers: authHeaders(a.cookie),
-    })
-  )
-  assertEquals(unsupported.sent.length, 0)
-  assertEquals(noFeature.healthRefresh, { observed: 0, unavailable: 1 })
-
+test('GET status?refresh=1 falls back quietly when the daemon times out', async () => {
   const timedOut = healthRegistry({ status: 'expired' })
   const b = await buildApp({
     db: fakeDb({
@@ -4542,15 +4573,6 @@ test('POST backup-login refuses an invalid or reserved name', async () => {
   assertEquals((await jsonOf(reserved.res)).error, 'reserved_username')
   const wrongType = await postBackupLogin({ allowedSources: ['internal'], username: 7 })
   assertEquals(wrongType.res.status, 400)
-})
-
-test('POST backup-login refuses a server whose daemon cannot give the login its rights', async () => {
-  const { res, inserted } = await postBackupLogin({ allowedSources: ['internal'] }, [
-    'managed-login-limits-v1',
-  ])
-  assertEquals(res.status, 409)
-  assertEquals((await jsonOf(res)).error, 'managed_backup_login_needs_daemon_update')
-  assertEquals(inserted, [])
 })
 
 test('POST backup-login refuses a second backup login on the cluster', async () => {

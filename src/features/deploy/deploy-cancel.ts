@@ -40,14 +40,12 @@ import {
 import type { Db } from '../../db/connection.ts'
 import { command } from '../../db/schema.ts'
 import { cellTrace } from '../../lib/logger.ts'
-import { DEPLOY_CANCEL_FEATURE } from '../../lib/version-wire.ts'
 import {
   cancelQueuedCommand,
   claimCommandMetadataFlag,
   getCommandRecord,
 } from '../commands/command-records.ts'
 import { TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
-import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
 import { CANCELLED_ERROR_PREFIX, DEPLOY_CANCELLED_ERROR_CODE } from './deploy-outcome.ts'
 import { markDeploymentFailed } from './deployment-records.ts'
 import { haltRollout, readDeployContext } from './rollout.ts'
@@ -72,17 +70,10 @@ export type CancelDeployResult =
   | {
       ok: false
       status: 404 | 409 | 503
-      error:
-        | 'Not found'
-        | 'deploy_not_cancellable'
-        | 'deploy_too_late'
-        | 'cancel_unsupported'
-        | 'daemon_unavailable'
+      error: 'Not found' | 'deploy_not_cancellable' | 'deploy_too_late' | 'daemon_unavailable'
     }
 
 export type CancelDeployDeps = {
-  /** Advertised daemon features for a server; defaults to the stored projection. */
-  daemonFeatures?: (serverId: string) => Promise<readonly string[]>
   /**
    * Send `deploy-cancel` and wait for the answer. `no_answer` means the daemon
    * did not reply in time (offline, or slow): the request stays queued for it.
@@ -159,22 +150,6 @@ function readCancelOutcome(status: string, result: unknown): DeployCancelOutcome
   return (DEPLOY_CANCEL_OUTCOMES as readonly unknown[]).includes(outcome)
     ? (outcome as DeployCancelOutcome)
     : 'no_answer'
-}
-
-async function storedDaemonFeatures(db: Db, serverId: string): Promise<readonly string[]> {
-  const state = await getServerDaemonStateByServerId(db, serverId)
-  return state?.projection?.features ?? []
-}
-
-/** The first server whose daemon cannot cancel, or `null` when all can. */
-async function firstUnsupportedServer(
-  serverIds: readonly string[],
-  daemonFeatures: NonNullable<CancelDeployDeps['daemonFeatures']>
-): Promise<string | null> {
-  for (const serverId of serverIds) {
-    if (!(await daemonFeatures(serverId)).includes(DEPLOY_CANCEL_FEATURE)) return serverId
-  }
-  return null
 }
 
 type Tally = { cancelledDirect: string[]; signalled: string[]; tooLate: string[] }
@@ -258,13 +233,6 @@ export async function cancelEnvironmentDeploy(
   if (inFlight.length > 0 && requestCancel === noDaemon) {
     return { ok: false, status: 503, error: 'daemon_unavailable' }
   }
-  const daemonFeatures = deps.daemonFeatures ?? ((serverId) => storedDaemonFeatures(db, serverId))
-  const unsupported = await firstUnsupportedServer(
-    inFlight.map((row) => row.serverId),
-    daemonFeatures
-  )
-  if (unsupported !== null) return { ok: false, status: 409, error: 'cancel_unsupported' }
-
   // Nothing waiting in a later rollout batch may start behind a cancelled deploy.
   await haltRollout(db, {
     environmentId: deploy.environmentId,
@@ -287,18 +255,12 @@ export async function cancelEnvironmentDeploy(
 
 /**
  * Tell the server to stop a deploy the control plane has given up on (its run
- * cap or queue limit ran out). Best effort and not waited for: a server that
- * cannot cancel, or is offline, is left alone, and one that already switched
+ * cap or queue limit ran out). Best effort and not waited for: an offline
+ * server is left alone, and one that already switched
  * over answers "too late" and finishes. The command is already failed here.
  */
-export async function cancelDeployOnServer(
-  db: Db,
-  cell: DaemonCell,
-  serverId: string,
-  commandId: string
-): Promise<void> {
+export async function cancelDeployOnServer(cell: DaemonCell, commandId: string): Promise<void> {
   try {
-    if (!(await storedDaemonFeatures(db, serverId)).includes(DEPLOY_CANCEL_FEATURE)) return
     await cell.enqueue({
       kind: 'deploy-cancel',
       deliveryId: generateDeliveryId(),

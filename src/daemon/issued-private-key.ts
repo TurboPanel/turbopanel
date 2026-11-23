@@ -7,24 +7,21 @@ export type IssuedPrivateKey =
   { ok: true; privateKeyPem: string } | { ok: false; status: 400 | 503; error: string }
 
 /**
- * The private key of a certificate a daemon reports: plain PEM (older
- * daemons) or an envelope sealed to the panel's sealing key, with the panel's
- * identity key id as the aad. Exactly one of the two. The key and the
- * envelope are never put into an error.
+ * The private key of a certificate a daemon reports: an envelope sealed to the
+ * panel's sealing key, with the panel's identity key id as the aad. A plain
+ * `privateKeyPem` is refused. The key and the envelope are never put into an
+ * error.
  */
 export async function resolveIssuedPrivateKey(
   body: IssuedKeyBody,
   identity: PanelIdentity | null
 ): Promise<IssuedPrivateKey> {
   const { privateKeyPem, privateKeyEnvelope } = body
-  if (privateKeyPem !== undefined && privateKeyEnvelope !== undefined) {
-    return { ok: false, status: 400, error: 'send privateKeyPem or privateKeyEnvelope, not both' }
+  if (privateKeyPem !== undefined) {
+    return { ok: false, status: 400, error: 'privateKeyPem is refused; send privateKeyEnvelope' }
   }
   if (privateKeyEnvelope === undefined) {
-    if (typeof privateKeyPem !== 'string') {
-      return { ok: false, status: 400, error: 'privateKeyPem or privateKeyEnvelope is required' }
-    }
-    return { ok: true, privateKeyPem }
+    return { ok: false, status: 400, error: 'privateKeyEnvelope is required' }
   }
   if (!isHpkeEnvelope(privateKeyEnvelope)) {
     return { ok: false, status: 400, error: 'privateKeyEnvelope is not valid' }

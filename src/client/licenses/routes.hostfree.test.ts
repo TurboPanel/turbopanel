@@ -129,7 +129,11 @@ type Fixture = {
     tierId?: string | null
     expiresAt?: string | null
   }[]
-  servers?: { id: string; name: string | null; assignedTierId?: string | null }[]
+  servers?: {
+    id: string
+    name: string | null
+    assignedTierId?: string | null
+  }[]
   config?: BillingConfig | null
   role?: 'superadmin' | 'user'
   allowed?: boolean
@@ -425,7 +429,6 @@ const SERVER = '55555555-5555-4555-8555-555555555551'
 type Refusal = {
   error: string
   purchased: number
-  releasing: number
   held: number
   available: number
 }
@@ -447,11 +450,16 @@ type RefusalBody = Refusal & {
 function countsOf(body: unknown): Refusal & { ending: number } {
   const refusal = body as RefusalBody
   assertEquals(typeof refusal.message, 'string')
-  // Every held license is either in use (bound or provisioning) or an unused key.
-  assertEquals(refusal.inUse + refusal.unusedKeys, refusal.held)
   assertEquals(Array.isArray(refusal.tiers), true)
-  const { error, purchased, releasing, held, available, ending } = refusal
-  return { error, purchased, releasing, held, available, ending }
+  const { error, purchased, available, ending } = refusal
+  // Every held license is either in use (bound or provisioning) or an unused key.
+  return {
+    error,
+    purchased,
+    held: refusal.inUse + refusal.unusedKeys,
+    available,
+    ending,
+  }
 }
 
 test('T9 · every purchased license held is 409 no_license_available with the counts; the lease was taken and is released', async () => {
@@ -471,7 +479,6 @@ test('T9 · every purchased license held is 409 no_license_available with the co
   assertEquals(countsOf(full), {
     error: 'no_license_available',
     purchased: 1,
-    releasing: 0,
     held: 1,
     available: 0,
     ending: 0,
@@ -488,7 +495,6 @@ test('T9 · every purchased license held is 409 no_license_available with the co
   assertEquals(countsOf(empty), {
     error: 'no_license_available',
     purchased: 0,
-    releasing: 0,
     held: 0,
     available: 0,
     ending: 0,
@@ -508,7 +514,6 @@ test('T9 · a bound license holds a purchased license the same as an unbound one
   assertEquals(countsOf(body), {
     error: 'no_license_available',
     purchased: 2,
-    releasing: 0,
     held: 2,
     available: 0,
     ending: 0,
@@ -554,7 +559,6 @@ test('T9 · a purchase with room mints a key with no tier, once, and the lease i
   assertEquals(countsOf(await again.json()), {
     error: 'no_license_available',
     purchased: 2,
-    releasing: 0,
     held: 2,
     available: 0,
     ending: 0,
@@ -617,7 +621,9 @@ test('Add Server · a chosen tier whose seats are on servers or held by keys is 
 })
 
 test('Add Server · a minted key expires LICENSE_KEY_UNUSED_TTL_DAYS days after mint', async () => {
-  const { app, headers, db } = await buildApp({ seats: [{ tierId: S3, quantity: 2 }] })
+  const { app, headers, db } = await buildApp({
+    seats: [{ tierId: S3, quantity: 2 }],
+  })
   const before = Date.now()
   const res = await mint(app, headers, { tierId: S3 })
   assertEquals(res.status, 200)
@@ -640,7 +646,12 @@ test('Add Server · an expired unused key holds no license and no seat at its ti
 test('GET /licenses shows the tier an unused key holds and when it expires', async () => {
   const { app, headers } = await buildApp({
     licenses: [
-      { id: L_ACTIVE, name: 'edge-2', tierId: S3, expiresAt: '2999-01-01T00:00:00.000Z' },
+      {
+        id: L_ACTIVE,
+        name: 'edge-2',
+        tierId: S3,
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      },
       { id: L_EXPIRED, name: 'old', expiresAt: '2026-01-01T00:00:00.000Z' },
     ],
   })
@@ -671,8 +682,12 @@ test('Add Server · a revoked key holds no seat at its tier', async () => {
 })
 
 test('Add Server · an unknown tier is 400 tier_not_found and a malformed one is 400', async () => {
-  const { app, headers, db } = await buildApp({ seats: [{ tierId: S3, quantity: 2 }] })
-  const unknown = await mint(app, headers, { tierId: '99999999-9999-4999-8999-999999999999' })
+  const { app, headers, db } = await buildApp({
+    seats: [{ tierId: S3, quantity: 2 }],
+  })
+  const unknown = await mint(app, headers, {
+    tierId: '99999999-9999-4999-8999-999999999999',
+  })
   assertEquals(unknown.status, 400)
   assertEquals(((await unknown.json()) as { code: string }).code, 'tier_not_found')
   const malformed = await mint(app, headers, { tierId: 'S3' })
@@ -707,7 +722,6 @@ test('T9 · an outstanding release-seat intent counts against availability until
   assertEquals(countsOf(refusal), {
     error: 'no_license_available',
     purchased: 2,
-    releasing: 1,
     held: 1,
     available: 0,
     ending: 1,
@@ -749,7 +763,6 @@ test('T9 · an outstanding release-seat intent counts against availability until
   assertEquals(countsOf(moving), {
     error: 'no_license_available',
     purchased: 1,
-    releasing: 1,
     held: 0,
     available: 0,
     ending: 0,
@@ -797,27 +810,44 @@ test('POST /licenses/:id/ticket burns an unbound key and issues a one-hour ticke
     servers: [{ id: SERVER, name: 'edge-1' }],
     licenses: [{ id: L_ACTIVE }, { id: L_BOUND, serverId: SERVER }],
   })
-  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, {
+    method: 'POST',
+    headers,
+  })
   assertEquals(res.status, 200)
-  const body = (await res.json()) as { joinId: string; licenseToken: string; licenseArg: string }
+  const body = (await res.json()) as {
+    joinId: string
+    licenseToken: string
+    installCommand: string
+  }
   assertExists(body.licenseToken)
-  assertExists(body.licenseArg)
+  assertExists(body.installCommand)
+  assertEquals('licenseArg' in body, false)
   assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token ?? null, null)
   const issued = db.rows(ticket).find((row) => row.id === body.joinId)
   assertEquals(issued?.licenseId, L_ACTIVE)
   assertEquals(issued?.serverId ?? null, null)
 
-  const bound = await app.request(`/licenses/${L_BOUND}/ticket`, { method: 'POST', headers })
+  const bound = await app.request(`/licenses/${L_BOUND}/ticket`, {
+    method: 'POST',
+    headers,
+  })
   assertEquals(bound.status, 404)
   assertEquals(db.rows(license).find((row) => row.id === L_BOUND)?.token, 'hashed')
 })
 
 test('POST /licenses/:id/ticket returns an install command carrying the new key', async () => {
   const { app, headers } = await buildApp({ licenses: [{ id: L_ACTIVE }] })
-  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, {
+    method: 'POST',
+    headers,
+  })
   assertEquals(res.status, 200)
-  const body = (await res.json()) as { licenseArg: string; installCommand: string }
-  assertEquals(body.installCommand.includes(`TURBOPANEL_LICENSE=${body.licenseArg}`), true)
+  const body = (await res.json()) as {
+    licenseToken: string
+    installCommand: string
+  }
+  assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE='), true)
   assertEquals(body.installCommand.includes('https://panel.example.com'), true)
 })
 
@@ -827,8 +857,14 @@ test('POST /licenses/:id/ticket with a refused install origin keeps the old key 
     baseUrl: 'https://10.0.0.5',
     licenses: [{ id: L_ACTIVE }],
   })
-  const live = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
-  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  const live = await mintTicket(db, {
+    organizationId: ORG,
+    licenseId: L_ACTIVE,
+  })
+  const res = await app.request(`/licenses/${L_ACTIVE}/ticket`, {
+    method: 'POST',
+    headers,
+  })
   assertEquals(res.status, 400)
   assertEquals(((await res.json()) as { error: string }).error, INSTALL_CA_PIN_UNAVAILABLE)
   assertEquals(db.rows(license).find((row) => row.id === L_ACTIVE)?.token, 'hashed')
@@ -850,7 +886,10 @@ test('issuing a re-enroll ticket and burning a key need step-up when the organiz
   const reBody = (await reenroll.json()) as { code: string; action: string }
   assertEquals([reBody.code, reBody.action], ['reauth_required', 'server.reenroll_ticket.issue'])
 
-  const burn = await app.request(`/licenses/${L_ACTIVE}/ticket`, { method: 'POST', headers })
+  const burn = await app.request(`/licenses/${L_ACTIVE}/ticket`, {
+    method: 'POST',
+    headers,
+  })
   assertEquals(burn.status, 403)
   assertEquals(((await burn.json()) as { action: string }).action, 'license.key.burn')
 
@@ -864,7 +903,10 @@ test('issuing a re-enroll ticket needs step-up even when the organization switch
     oldSession: true,
     servers: [{ id: SERVER, name: 'edge-1' }],
   })
-  const res = await app.request(`/servers/${SERVER}/reenroll-ticket`, { method: 'POST', headers })
+  const res = await app.request(`/servers/${SERVER}/reenroll-ticket`, {
+    method: 'POST',
+    headers,
+  })
   assertEquals(res.status, 403)
   const body = (await res.json()) as { code: string; action: string }
   assertEquals([body.code, body.action], ['reauth_required', 'server.reenroll_ticket.issue'])
@@ -909,15 +951,27 @@ test('burning a key and revoking a license need step-up even when the organizati
 })
 
 test('a burn cancels the join tickets issued before it', async () => {
-  const { app, headers, db } = await buildApp({ seats: [{ tierId: S3, quantity: 2 }] })
+  const { app, headers, db } = await buildApp({
+    seats: [{ tierId: S3, quantity: 2 }],
+  })
   const minted = await mint(app, headers, { name: 'edge-1' })
   assertEquals(minted.status, 200)
-  const first = (await minted.json()) as { licenseId: string; joinId: string; licenseToken: string }
+  const first = (await minted.json()) as {
+    licenseId: string
+    joinId: string
+    licenseToken: string
+  }
   assertEquals((await checkTicket(db, first.joinId, first.licenseToken)).ok, true)
 
-  const burn = await app.request(`/licenses/${first.licenseId}/ticket`, { method: 'POST', headers })
+  const burn = await app.request(`/licenses/${first.licenseId}/ticket`, {
+    method: 'POST',
+    headers,
+  })
   assertEquals(burn.status, 200)
-  const second = (await burn.json()) as { joinId: string; licenseToken: string }
+  const second = (await burn.json()) as {
+    joinId: string
+    licenseToken: string
+  }
 
   assertEquals(await checkTicket(db, first.joinId, first.licenseToken), {
     ok: false,
@@ -931,7 +985,10 @@ test('a burn or revoke that lands while a ticket is being spent keeps it spent w
   const read = (id: string) => db.rows(ticket).find((row) => row.id === id)?.usedAt ?? null
 
   // Join ticket: consumed, then the real burn-time cancel, then the failed enrolment's release.
-  const join = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const join = await mintTicket(db, {
+    organizationId: ORG,
+    licenseId: L_ACTIVE,
+  })
   const joinSpent = await consumeTicket(db, join.id)
   assertExists(joinSpent)
   await cancelLicenseTickets(db, L_ACTIVE)
@@ -940,7 +997,10 @@ test('a burn or revoke that lands while a ticket is being spent keeps it spent w
   assertEquals((await checkTicket(db, join.id, join.plaintext)).ok, false)
 
   // Re-enroll ticket: the same sequence with the real revoke.
-  const reenroll = await mintTicket(db, { organizationId: ORG, serverId: SERVER })
+  const reenroll = await mintTicket(db, {
+    organizationId: ORG,
+    serverId: SERVER,
+  })
   const reenrollSpent = await consumeTicket(db, reenroll.id)
   assertExists(reenrollSpent)
   await revokeServerTickets(db, SERVER)
@@ -948,14 +1008,20 @@ test('a burn or revoke that lands while a ticket is being spent keeps it spent w
   assertEquals((await checkTicket(db, reenroll.id, reenroll.plaintext)).ok, false)
 
   // With nothing in between, the release still puts a spent ticket back.
-  const plain = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const plain = await mintTicket(db, {
+    organizationId: ORG,
+    licenseId: L_ACTIVE,
+  })
   const plainSpent = await consumeTicket(db, plain.id)
   assertExists(plainSpent)
   await releaseTicket(db, plain.id, plainSpent)
   assertEquals(read(plain.id), null)
 
   // A ticket that produced a server is finished: a cancel leaves it alone.
-  const bound = await mintTicket(db, { organizationId: ORG, licenseId: L_ACTIVE })
+  const bound = await mintTicket(db, {
+    organizationId: ORG,
+    licenseId: L_ACTIVE,
+  })
   const boundSpent = await consumeTicket(db, bound.id)
   await recordTicketServer(db, bound.id, SERVER)
   await cancelLicenseTickets(db, L_ACTIVE)
@@ -963,17 +1029,18 @@ test('a burn or revoke that lands while a ticket is being spent keeps it spent w
 })
 
 test('re-enroll tickets: an owner issues one per server, a new one retires the old, DELETE revokes', async () => {
-  const { app, headers, db } = await buildApp({ servers: [{ id: SERVER, name: 'edge-1' }] })
+  const { app, headers, db } = await buildApp({
+    servers: [{ id: SERVER, name: 'edge-1' }],
+  })
   const url = `/servers/${SERVER}/reenroll-ticket`
   const first = await app.request(url, { method: 'POST', headers })
   assertEquals(first.status, 200)
   const one = (await first.json()) as {
     ticketId: string
-    licenseArg: string
     installCommand: string
   }
-  assertExists(one.licenseArg)
-  assertEquals(one.installCommand.includes(`TURBOPANEL_LICENSE=${one.licenseArg}`), true)
+  assertEquals('licenseArg' in one, false)
+  assertEquals(one.installCommand.includes('TURBOPANEL_LICENSE='), true)
   assertEquals(db.rows(ticket).find((row) => row.id === one.ticketId)?.serverId, SERVER)
 
   const second = await app.request(url, { method: 'POST', headers })
@@ -1097,7 +1164,7 @@ test('T9 · a key whose server is being provisioned is in use: never listed as u
     servers: [{ id: SERVER, name: 'edge-1' }],
     licenses: [{ id: L_ACTIVE }, { id: L_BOUND, serverId: SERVER }],
   })
-  await recordLicenseEnrollAttempt(db as unknown as Db, L_ACTIVE, 'adrastea', Date.parse(NOW))
+  await recordLicenseEnrollAttempt(db as unknown as Db, L_ACTIVE, 'host-a', Date.parse(NOW))
 
   const refused = await mint(app, headers)
   assertEquals(refused.status, 409)
@@ -1111,10 +1178,13 @@ test('T9 · a key whose server is being provisioned is in use: never listed as u
 
   const listed = await listLicenses(app, headers)
   const body = (await listed.json()) as {
-    licenses: Array<{ id: string; provisioning: { since: string; hostname: string | null } | null }>
+    licenses: Array<{
+      id: string
+      provisioning: { since: string; hostname: string | null } | null
+    }>
   }
   const byId = new Map(body.licenses.map((entry) => [entry.id, entry.provisioning]))
-  assertEquals(byId.get(L_ACTIVE), { since: NOW, hostname: 'adrastea' })
+  assertEquals(byId.get(L_ACTIVE), { since: NOW, hostname: 'host-a' })
   assertEquals(byId.get(L_BOUND), null)
 })
 
@@ -1135,7 +1205,11 @@ test('GET /licenses lists unbound keys as revocable with no bound server', async
       id: string
       name: string | null
       revocable: boolean
-      boundServer: { id: string; name: string | null; connected: boolean } | null
+      boundServer: {
+        id: string
+        name: string | null
+        connected: boolean
+      } | null
     }>
   }
   assertEquals(body.licenses.length, 1)
@@ -1155,7 +1229,11 @@ test('GET /licenses includes the bound server when a key is attached', async () 
   const body = (await res.json()) as {
     licenses: Array<{
       id: string
-      boundServer: { id: string; name: string | null; connected: boolean } | null
+      boundServer: {
+        id: string
+        name: string | null
+        connected: boolean
+      } | null
     }>
   }
   assertEquals(body.licenses[0]?.id, L_BOUND)
@@ -1248,8 +1326,15 @@ test('POST /licenses uses a valid https installBaseUrl in the install command', 
 })
 
 test('a self-hosted insecure-TLS install command is refused when no CA fingerprint can be read', async () => {
-  const { app, headers } = await buildApp({ config: null, seats: null, runtime: 'deno' })
-  const res = await mint(app, headers, { name: 'lan', installBaseUrl: 'https://10.0.0.5' })
+  const { app, headers } = await buildApp({
+    config: null,
+    seats: null,
+    runtime: 'deno',
+  })
+  const res = await mint(app, headers, {
+    name: 'lan',
+    installBaseUrl: 'https://10.0.0.5',
+  })
   assertEquals(res.status, 400)
   assertEquals(((await res.json()) as { error: string }).error, INSTALL_CA_PIN_UNAVAILABLE)
 })
@@ -1270,7 +1355,11 @@ test('DELETE /licenses/:id still succeeds when a cell registry is present', asyn
 test('a self-hosted panel puts the Platform CA fingerprint in the install command', async () => {
   const ca = await mintOrganizationCa({ organizationId: 'licenses-ca-pin' })
   const [expected] = await certificateFingerprints(ca.certificatePem)
-  const { db, headers, secrets } = await buildApp({ config: null, seats: null, runtime: 'deno' })
+  const { db, headers, secrets } = await buildApp({
+    config: null,
+    seats: null,
+    runtime: 'deno',
+  })
   // Through createApp, so the reader wiring (app.ts → client routes) is covered.
   const app = createApp({
     db,
@@ -1305,7 +1394,11 @@ async function fixtureIdentity(): Promise<PanelIdentity> {
 
 test('POST /licenses hands out the signed TOKEN command when the control plane has an identity key', async () => {
   const panelIdentity = await fixtureIdentity()
-  const { app, headers } = await buildApp({ config: null, seats: null, panelIdentity })
+  const { app, headers } = await buildApp({
+    config: null,
+    seats: null,
+    panelIdentity,
+  })
   const res = await mint(app, headers, { name: 'edge-token' })
   assertEquals(res.status, 200)
   const body = (await res.json()) as {
@@ -1323,7 +1416,10 @@ test('POST /licenses keeps the older command when the control plane has no ident
   const { app, headers } = await buildApp({ config: null, seats: null })
   const res = await mint(app, headers, { name: 'edge-legacy' })
   assertEquals(res.status, 200)
-  const body = (await res.json()) as { installCommand: string; panelFingerprint?: string }
+  const body = (await res.json()) as {
+    installCommand: string
+    panelFingerprint?: string
+  }
   assertEquals(body.installCommand.includes('TURBOPANEL_LICENSE='), true)
   assertEquals(body.installCommand.includes(' TOKEN='), false)
   assertEquals(body.panelFingerprint, undefined)

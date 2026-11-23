@@ -4,7 +4,6 @@ import type { Db } from '../../db/connection.ts'
 import { fabric, ip, relay, server } from '../../db/schema.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
 import { relayCarriesTraffic, relayServerSwitchedOn } from '../fabric/relay-filters.ts'
-import { loadLanRouteServerIds } from '../fabric/lan-pairs.ts'
 import { pairTunnelHealth } from '../fabric/peer-health.ts'
 import type { RelayMetadata } from '../fabric/fabric-records.ts'
 import {
@@ -303,7 +302,7 @@ function policyFor(
  * each ordered by `(priority asc, datacenterId asc)`. The id tiebreak keeps
  * the order deterministic when two datacenters carry the same priority.
  * Absent policy entries fall back to the documented defaults
- * (`priority` 100, `trusted` true, `addressPreference` ipv6).
+ * (`priority` 100, `trusted` false, `addressPreference` ipv6).
  *
  * Shared with TurboFabric path planning (`planRelayPath`) so the managed
  * ladder and WireGuard endpoint selection can never disagree on which LAN
@@ -335,22 +334,20 @@ export function partitionSharedDatacenters(
   return { trusted, untrusted }
 }
 
-/** What the pair rule reads: datacenter pins, their policies and the daemons that can route over a LAN. */
+/** What the pair rule reads: datacenter pins, their policies and nothing else. */
 export type LanPairInputs = {
   membershipsByServer: ReadonlyMap<string, readonly DatacenterMembershipRow[]>
   policiesByDatacenter: ReadonlyMap<string, DatacenterPolicyRow>
-  /** Servers whose daemon lists `fabric-lan-routes-v1`. */
-  lanRouteServerIds: ReadonlySet<string>
 }
 
 /** Why two servers are not a trusted LAN pair, or null when they are. */
-export type TrustedLanBlocker = 'same_server' | 'daemon_too_old' | 'no_trusted_network' | 'no_ipv4'
+export type TrustedLanBlocker = 'same_server' | 'no_trusted_network' | 'no_ipv4'
 
 /**
- * What stops two servers from being a trusted LAN pair: both daemons must
- * route container ranges over a LAN, they must share a trusted datacenter
- * network, and that network must give both an IPv4 address (container
- * forwarding and the daemon's LAN routes are IPv4). Null when nothing does.
+ * What stops two servers from being a trusted LAN pair: they must share a
+ * trusted datacenter network, and that network must give both an IPv4 address
+ * (container forwarding and the daemon's LAN routes are IPv4). Null when
+ * nothing does.
  */
 export function trustedLanBlocker(
   fromServerId: string,
@@ -358,8 +355,6 @@ export function trustedLanBlocker(
   inputs: LanPairInputs
 ): TrustedLanBlocker | null {
   if (fromServerId === toServerId) return 'same_server'
-  if (!inputs.lanRouteServerIds.has(fromServerId)) return 'daemon_too_old'
-  if (!inputs.lanRouteServerIds.has(toServerId)) return 'daemon_too_old'
   const { trusted } = partitionSharedDatacenters(
     inputs.membershipsByServer.get(fromServerId) ?? [],
     inputs.membershipsByServer.get(toServerId) ?? [],
@@ -375,11 +370,10 @@ export function trustedLanBlocker(
 
 /**
  * The one pair rule: two different servers share a trusted datacenter network
- * (whatever its link state) that gives both an IPv4 address, and both daemons
- * can route container ranges over it. Such a pair has no tunnel between them;
- * all their traffic, container networks included, rides the LAN. A pair where
- * either daemon is older, or whose shared trusted network is IPv6-only, keeps
- * the tunnel (over the LAN) so it keeps working. Symmetric on purpose: both
+ * (whatever its link state) that gives both an IPv4 address. Such a pair has
+ * no tunnel between them; all their traffic, container networks included,
+ * rides the LAN. A pair whose shared trusted network is IPv6-only keeps the
+ * tunnel (over the LAN) so it keeps working. Symmetric on purpose: both
  * servers must agree there is no tunnel.
  */
 export function serversShareTrustedLan(
@@ -667,8 +661,6 @@ export function resolveOneFromCaches(params: {
   relays: RelayJoinRow[]
   policiesByDatacenter: ReadonlyMap<string, DatacenterPolicyRow>
   publicAddressesByServer: Map<string, string>
-  /** Servers whose daemon lists `fabric-lan-routes-v1`; absent means none. */
-  lanRouteServerIds?: ReadonlySet<string>
   /** Servers whose daemon is connected; absent skips the check. */
   connectedServerIds?: ReadonlySet<string>
   /** Clock for tunnel health; defaults to now. */
@@ -718,7 +710,6 @@ export function resolveOneFromCaches(params: {
   const lanPair = serversShareTrustedLan(params.fromServerId, params.toServerId, {
     membershipsByServer: params.membershipsByServer,
     policiesByDatacenter: params.policiesByDatacenter,
-    lanRouteServerIds: params.lanRouteServerIds ?? new Set(),
   })
   const fabricPath = lanPair ? null : resolveFabricFromCaches(params)
   if (fabricPath) return fabricPath
@@ -769,7 +760,6 @@ export type PrivateEndpointCaches = {
   relays: RelayJoinRow[]
   policiesByDatacenter: Map<string, DatacenterPolicyRow>
   publicAddressesByServer: Map<string, string>
-  lanRouteServerIds?: Set<string>
   connectedServerIds?: Set<string>
 }
 
@@ -782,19 +772,17 @@ async function loadConnectedServerIds(db: Db, serverIds: string[]): Promise<Set<
   return new Set(rows.filter((row) => row.connected).map((row) => row.id))
 }
 
-/** Membership, relay, public-address, daemon-feature and connection reads, then one policy read. */
+/** Membership, relay, public-address and connection reads, then one policy read. */
 export async function loadPrivateEndpointCaches(
   db: Db,
   serverIds: string[]
 ): Promise<PrivateEndpointCaches> {
-  const [membershipsByServer, relays, publicAddressesByServer, lanRouteServerIds, connected] =
-    await Promise.all([
-      loadDatacenterMembershipsForServers(db, serverIds),
-      loadFabricRelayRows(db, serverIds),
-      loadPublicAddressesForServers(db, serverIds),
-      loadLanRouteServerIds(db, serverIds),
-      loadConnectedServerIds(db, serverIds),
-    ])
+  const [membershipsByServer, relays, publicAddressesByServer, connected] = await Promise.all([
+    loadDatacenterMembershipsForServers(db, serverIds),
+    loadFabricRelayRows(db, serverIds),
+    loadPublicAddressesForServers(db, serverIds),
+    loadConnectedServerIds(db, serverIds),
+  ])
   const datacenterIds = new Set<string>()
   for (const pins of membershipsByServer.values()) {
     for (const pin of pins) datacenterIds.add(pin.datacenterId)
@@ -805,7 +793,6 @@ export async function loadPrivateEndpointCaches(
     relays,
     policiesByDatacenter,
     publicAddressesByServer,
-    lanRouteServerIds,
     connectedServerIds: connected,
   }
 }

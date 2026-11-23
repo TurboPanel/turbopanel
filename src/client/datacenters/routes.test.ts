@@ -23,6 +23,7 @@ import {
   fabric,
   grant,
   ip,
+  clientAddress,
   managed,
   managedDatabase,
   network,
@@ -42,6 +43,7 @@ import { createManagedLogin } from '../../features/managed/logins.ts'
 import { ensureManagedContainerAllocation } from '../../features/managed/allocate-managed-container.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerDatacenterRoutes } from './routes.ts'
+import { registerIpRoutes } from '../ips/routes.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -86,6 +88,7 @@ async function createDatacenterRoutesTestApp(db: ReturnType<typeof createDenoDb>
     return next()
   })
   registerDatacenterRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
+  registerIpRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
   return { app, secrets }
 }
 
@@ -504,7 +507,7 @@ test('DELETE /datacenters/:id returns 409 when members remain', async () => {
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'DC Net',
       createdAt: now,
       updatedAt: now,
@@ -524,7 +527,7 @@ test('DELETE /datacenters/:id returns 409 when members remain', async () => {
     datacenterId: dc!.id,
     networkId: net!.id,
     serverId: srv!.id,
-    address: '10.10.0.10',
+    address: '10.50.0.10',
     allocation: 'dedicated',
     scope: 'datacenter',
   })
@@ -574,7 +577,7 @@ test('GET /datacenters lists datacenters with privateCidrs', async () => {
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'Site LAN',
       createdAt: now,
       updatedAt: now,
@@ -592,7 +595,7 @@ test('GET /datacenters lists datacenters with privateCidrs', async () => {
     assertEquals(body.datacenters.length, 1)
     assertEquals(body.datacenters[0]?.id, dc!.id)
     assertEquals(body.datacenters[0]?.name, 'Listed DC')
-    assertEquals(body.datacenters[0]?.privateCidrs, ['10.10.0.0/24'])
+    assertEquals(body.datacenters[0]?.privateCidrs, ['10.50.0.0/24'])
   })
 })
 
@@ -604,6 +607,7 @@ test('GET /datacenters includes effective priority and trusted', async () => {
       .values({
         organizationId,
         name: 'Defaults DC',
+        isTrusted: true,
         createdAt: now,
         updatedAt: now,
       })
@@ -717,6 +721,7 @@ test('GET /datacenters/:id includes effective priority and trusted', async () =>
         name: 'Policy DC',
         addressPreference: 'ipv4',
         priority: 25,
+        isTrusted: true,
         createdAt: now,
         updatedAt: now,
       })
@@ -745,7 +750,7 @@ test('GET /datacenters/:id includes effective priority and trusted', async () =>
   })
 })
 
-test('POST /datacenters creates site network and membership pins', async () => {
+test('POST /datacenters creates an untrusted site network with membership pins when trusted is omitted', async () => {
   await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [srv] = await db
@@ -785,11 +790,13 @@ test('POST /datacenters creates site network and membership pins', async () => {
     assertEquals(body.ok, true)
 
     const [dcRow] = await db
-      .select({ name: datacenter.name })
+      .select({ name: datacenter.name, isTrusted: datacenter.isTrusted })
       .from(datacenter)
       .where(eq(datacenter.id, body.id))
       .limit(1)
     assertEquals(dcRow?.name, 'Frankfurt DE - Hetzner AS24940')
+    // No `trusted` in the request: the new network starts untrusted.
+    assertEquals(dcRow?.isTrusted, false)
 
     const [siteNet] = await db
       .select({ cidr: network.cidr, kind: network.kind })
@@ -909,7 +916,7 @@ test('DELETE /datacenters/:id removes an empty datacenter including its site net
       organizationId,
       datacenterId: dc!.id,
       kind: 'datacenter',
-      cidr: '10.10.0.0/24',
+      cidr: '10.50.0.0/24',
       name: 'Site LAN',
       createdAt: now,
       updatedAt: now,
@@ -1645,7 +1652,7 @@ test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad 
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    assertEquals(afterInvalid, { priority: 100, isTrusted: true, addressPreference: 'ipv6' })
+    assertEquals(afterInvalid, { priority: 100, isTrusted: false, addressPreference: 'ipv6' })
 
     const list = await app.request('/datacenters', {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
@@ -1655,7 +1662,7 @@ test('PATCH /datacenters/:id persists valid priority and trusted, refuses a bad 
     }
     const row = listBody.datacenters.find((item) => item.id === dc!.id)
     assertEquals(row?.priority, 100)
-    assertEquals(row?.trusted, true)
+    assertEquals(row?.trusted, false)
   })
 })
 
@@ -1696,7 +1703,7 @@ test('PATCH /datacenters/:id with options null clears the stored blob', async ()
       .from(datacenter)
       .where(eq(datacenter.id, dc!.id))
       .limit(1)
-    assertEquals(row, { options: null, priority: 100, isTrusted: true })
+    assertEquals(row, { options: null, priority: 100, isTrusted: false })
 
     const detail = await app.request(`/datacenters/${dc!.id}`, {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
@@ -1707,11 +1714,11 @@ test('PATCH /datacenters/:id with options null clears the stored blob', async ()
     }
     assertEquals(body.datacenter.options, {
       priority: 100,
-      trusted: true,
+      trusted: false,
       addressPreference: 'ipv6',
     })
     assertEquals(body.datacenter.priority, 100)
-    assertEquals(body.datacenter.trusted, true)
+    assertEquals(body.datacenter.trusted, false)
   })
 })
 
@@ -1862,7 +1869,7 @@ test('POST /datacenters/:id/subnets reports each collision code from the authori
         organizationId,
         datacenterId: dc!.id,
         kind: 'datacenter',
-        cidr: '10.10.0.0/24',
+        cidr: '10.50.0.0/24',
         name: 'lan',
         createdAt: now,
         updatedAt: now,
@@ -1927,11 +1934,11 @@ test('POST /datacenters/:id/subnets reports each collision code from the authori
         },
       ],
       [
-        '10.10.0.128/25',
+        '10.50.0.128/25',
         {
           error: 'subnet_overlaps',
-          cidr: '10.10.0.128/25',
-          conflictingCidr: '10.10.0.0/24',
+          cidr: '10.50.0.128/25',
+          conflictingCidr: '10.50.0.0/24',
           networkId: ownSite!.id,
           datacenterId: dc!.id,
         },
@@ -2071,7 +2078,7 @@ async function withManagedPolicyFixtures(
   ): Promise<string> => {
     const [row] = await db
       .insert(datacenter)
-      .values({ organizationId, name, options, createdAt: now, updatedAt: now })
+      .values({ organizationId, name, options, isTrusted: true, createdAt: now, updatedAt: now })
       .returning({ id: datacenter.id })
     const [net] = await db
       .insert(network)
@@ -2351,6 +2358,7 @@ test('PATCH /datacenters/:id policy change without a command queue still saves',
       .values({
         organizationId,
         name: 'Queueless Policy DC',
+        isTrusted: true,
         createdAt: now,
         updatedAt: now,
       })
@@ -2388,7 +2396,12 @@ async function seedLanOnlyNetwork(
   const daemon = { projection: { features: ['fabric-lan-routes-v1'] } }
   const [dc] = await db
     .insert(datacenter)
-    .values({ organizationId, name: 'LAN Guard DC', addressPreference: 'ipv4' })
+    .values({
+      organizationId,
+      name: 'LAN Guard DC',
+      addressPreference: 'ipv4',
+      isTrusted: true,
+    })
     .returning({ id: datacenter.id })
   const [lan] = await db
     .insert(network)
@@ -2522,6 +2535,231 @@ test('marking a datacenter untrusted and removing a member are allowed while Tur
         { method: 'DELETE', headers }
       )
       assertEquals(leave.status, 200)
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+test('deleting or moving a member pin through /ips is refused like removing the member while a LAN-only network needs it', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, false)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      }
+      const [pin] = await db
+        .select({ id: ip.id })
+        .from(ip)
+        .where(and(eq(ip.datacenterId, seeded.datacenterId), eq(ip.serverId, seeded.serverIds[1]!)))
+      const del = await app.request(`/ips/${pin!.id}`, { method: 'DELETE', headers })
+      assertEquals(del.status, 409)
+      const delBody = (await del.json()) as { error: string; message: string }
+      assertEquals(delBody.error, 'lan_pair_in_use')
+      assertEquals(delBody.message.includes('lan-one and lan-two'), true)
+
+      const [third] = await db
+        .insert(server)
+        .values({
+          organizationId,
+          name: 'lan-three',
+          daemon: { projection: { features: ['fabric-lan-routes-v1'] } },
+          containerPrefix: '10.194.0.0/16',
+        })
+        .returning({ id: server.id })
+      const move = await app.request(`/ips/${pin!.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ serverId: third!.id }),
+      })
+      assertEquals(move.status, 409)
+      assertEquals(((await move.json()) as { error: string }).error, 'lan_pair_in_use')
+
+      const kept = await app.request(`/ips/${pin!.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ description: 'still a member' }),
+      })
+      assertEquals(kept.status, 200)
+      const pins = await db
+        .select({ id: ip.id })
+        .from(ip)
+        .where(eq(ip.datacenterId, seeded.datacenterId))
+      assertEquals(pins.length, 2)
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+test('deleting a member pin through /ips is allowed while TurboFabric runs', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, true)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = { cookie, [ORG_ID_HEADER]: organizationId }
+      const [pin] = await db
+        .select({ id: ip.id })
+        .from(ip)
+        .where(and(eq(ip.datacenterId, seeded.datacenterId), eq(ip.serverId, seeded.serverIds[1]!)))
+      const del = await app.request(`/ips/${pin!.id}`, { method: 'DELETE', headers })
+      assertEquals(del.status, 200)
+      const pins = await db
+        .select({ id: ip.id })
+        .from(ip)
+        .where(eq(ip.datacenterId, seeded.datacenterId))
+      assertEquals(pins.length, 1)
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+async function memberPinFixture(
+  db: ReturnType<typeof createDenoDb>,
+  seeded: { datacenterId: string; serverIds: string[] }
+) {
+  const [pin] = await db
+    .select({ id: ip.id, networkId: ip.networkId })
+    .from(ip)
+    .where(and(eq(ip.datacenterId, seeded.datacenterId), eq(ip.serverId, seeded.serverIds[1]!)))
+  return pin!
+}
+
+test('deleting one of two pins a server holds in a datacenter is allowed; deleting the last is refused', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, false)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = { cookie, [ORG_ID_HEADER]: organizationId }
+      const first = await memberPinFixture(db, seeded)
+      const [second] = await db
+        .insert(ip)
+        .values({
+          organizationId,
+          datacenterId: seeded.datacenterId,
+          networkId: first.networkId,
+          serverId: seeded.serverIds[1]!,
+          address: '10.0.0.9',
+          allocation: 'dedicated',
+          scope: 'datacenter',
+        })
+        .returning({ id: ip.id })
+
+      const dropFirst = await app.request(`/ips/${first.id}`, { method: 'DELETE', headers })
+      assertEquals(dropFirst.status, 200)
+      const remaining = await db
+        .select({ id: ip.id })
+        .from(ip)
+        .where(and(eq(ip.datacenterId, seeded.datacenterId), eq(ip.serverId, seeded.serverIds[1]!)))
+      assertEquals(
+        remaining.map((row) => row.id),
+        [second!.id]
+      )
+
+      const dropLast = await app.request(`/ips/${second!.id}`, { method: 'DELETE', headers })
+      assertEquals(dropLast.status, 409)
+      assertEquals(((await dropLast.json()) as { error: string }).error, 'lan_pair_in_use')
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+test('moving a member pin to another server is allowed while TurboFabric runs and prunes the old server addresses', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, true)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      }
+      const pin = await memberPinFixture(db, seeded)
+      const [third] = await db
+        .insert(server)
+        .values({ organizationId, name: 'lan-three', containerPrefix: '10.194.0.0/16' })
+        .returning({ id: server.id })
+      await db.insert(clientAddress).values({
+        organizationId,
+        serverId: seeded.serverIds[1]!,
+        datacenterId: seeded.datacenterId,
+        scope: 'datacenter',
+        hostname: 'old-member.example.net',
+      })
+
+      const move = await app.request(`/ips/${pin.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ serverId: third!.id }),
+      })
+      assertEquals(move.status, 200)
+      const [moved] = await db.select({ serverId: ip.serverId }).from(ip).where(eq(ip.id, pin.id))
+      assertEquals(moved?.serverId, third!.id)
+      const addresses = await db
+        .select({ id: clientAddress.id })
+        .from(clientAddress)
+        .where(eq(clientAddress.serverId, seeded.serverIds[1]!))
+      assertEquals(addresses.length, 0)
+    } finally {
+      await dropLanOnlyNetwork(db, seeded)
+    }
+  })
+})
+
+test('moving a member pin to another datacenter is allowed while TurboFabric runs', async () => {
+  await withDatacenterFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const seeded = await seedLanOnlyNetwork(db, organizationId, true)
+    try {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'content-type': 'application/json',
+      }
+      const pin = await memberPinFixture(db, seeded)
+      const [otherDc] = await db
+        .insert(datacenter)
+        .values({ organizationId, name: 'Second DC', addressPreference: 'ipv4', isTrusted: true })
+        .returning({ id: datacenter.id })
+      const [otherNet] = await db
+        .insert(network)
+        .values({
+          organizationId,
+          datacenterId: otherDc!.id,
+          kind: 'datacenter',
+          cidr: '10.0.0.0/16',
+          name: 'Second DC LAN',
+        })
+        .returning({ id: network.id })
+      await db.insert(clientAddress).values({
+        organizationId,
+        serverId: seeded.serverIds[1]!,
+        datacenterId: seeded.datacenterId,
+        scope: 'datacenter',
+        hostname: 'old-dc.example.net',
+      })
+
+      const move = await app.request(`/ips/${pin.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ datacenterId: otherDc!.id, networkId: otherNet!.id }),
+      })
+      assertEquals(move.status, 200)
+      const [moved] = await db
+        .select({ datacenterId: ip.datacenterId, networkId: ip.networkId })
+        .from(ip)
+        .where(eq(ip.id, pin.id))
+      assertEquals(moved, { datacenterId: otherDc!.id, networkId: otherNet!.id })
+      const addresses = await db
+        .select({ id: clientAddress.id })
+        .from(clientAddress)
+        .where(eq(clientAddress.serverId, seeded.serverIds[1]!))
+      assertEquals(addresses.length, 0)
     } finally {
       await dropLanOnlyNetwork(db, seeded)
     }

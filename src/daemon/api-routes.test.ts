@@ -3,6 +3,10 @@ import { assert, assertEquals, assertExists } from '@std/assert'
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url'
 import { and, eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
+import { base64urlEncode } from '../lib/encoding/base64url.ts'
+import { openFromSender, type HpkeEnvelope } from '../lib/panel-identity/hpke.ts'
+import { HPKE_TEST_RECIPIENT_SEED, hpkeTestRecipient } from '../test-fixtures/hpke-vector.ts'
+import { setDaemonSealingKey } from '../features/servers/daemon-sealing-key.ts'
 import type { AppEnv } from '../app/app.ts'
 import { deriveSecretsConfig } from '../lib/secrets/secrets.ts'
 import { deriveDaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
@@ -62,7 +66,7 @@ import type {
   ServerMetricsStore,
   SlotMapping,
 } from './metrics/types.ts'
-import { recordTopologyGeneration } from '../features/servers/server-topology-records.ts'
+import { recordTopologyReport } from '../features/servers/server-topology-records.ts'
 import {
   consumeChallenge,
   createStatelessChallengeStore,
@@ -490,7 +494,8 @@ async function readDaemonState(
 async function createTestApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: 'workers' | 'deno' = 'workers',
-  panelIdentity?: PanelIdentity
+  panelIdentity?: PanelIdentity,
+  requireSigned = false
 ): Promise<Hono<AppEnv>> {
   setRevokeBoundDaemonKey(revokeDaemonKey)
   const app = new Hono<AppEnv>()
@@ -506,6 +511,7 @@ async function createTestApp(
     challengeSigningSecrets,
     secretsConfig,
     runtime,
+    requireSigned,
     ...(panelIdentity ? { panelIdentity: () => Promise.resolve(panelIdentity) } : {}),
   })
   return app
@@ -596,6 +602,7 @@ async function createTestAppWithRegistry(
     challengeSigningSecrets,
     secretsConfig,
     runtime,
+    requireSigned: false,
   })
   return app
 }
@@ -848,6 +855,7 @@ test('GET /jwks.json returns public OKP keys only', async () => {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets: keyring,
     challengeSigningSecrets,
     secretsConfig,
@@ -1177,6 +1185,7 @@ test('POST /enroll charges the per-license bucket before checking the license to
         return next()
       })
       registerDaemonApiRoutes(app, {
+        requireSigned: false,
         secrets: await createTestSecrets(),
         challengeSigningSecrets: await createTestChallengeSecrets(),
         secretsConfig: createTestSecretsConfig(),
@@ -2274,6 +2283,7 @@ test('POST /auth/challenge returns 429 when restLimiter denies', async () => {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2301,6 +2311,7 @@ test('POST /auth/challenge enrollment path returns 429 when restLimiter denies',
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2337,6 +2348,7 @@ async function createRestLimitTestApp(restLimiter: {
 }) {
   const app = new Hono<AppEnv>()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets: await createTestSecrets(),
     challengeSigningSecrets: await createTestChallengeSecrets(),
     secretsConfig: createTestSecretsConfig(),
@@ -2399,6 +2411,7 @@ test('POST /commands/lease returns 429 when restLimiter denies with valid JWT', 
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2427,6 +2440,7 @@ test('POST /commands/lease proceeds when restLimiter allows', async () => {
   const secretsConfig = createTestSecretsConfig()
   let seenKey: string | undefined
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2485,8 +2499,36 @@ test('POST /secrets/decrypt returns 400 on malformed body', async () => {
   })
 })
 
+const DECRYPT_SERVER_AAD = (serverId: string) => serverId
+
+/** Register the HPKE test recipient as the server's sealing key, as the daemon does on connect. */
+async function registerTestSealingKey(db: EnrollFixture['db'], serverId: string): Promise<void> {
+  const recipient = await hpkeTestRecipient()
+  await setDaemonSealingKey(db, serverId, {
+    kid: recipient.kid,
+    pub: base64urlEncode(recipient.pub),
+    reportedAt: new Date().toISOString(),
+  })
+}
+
+/** Open a sealed `/secrets/decrypt` answer with the test recipient's key; `null` stays `null`. */
+async function openSealedAnswer(serverId: string, response: Response): Promise<(string | null)[]> {
+  const body = (await response.json()) as { sealed: (HpkeEnvelope | null)[]; plaintexts?: unknown }
+  assertEquals(body.plaintexts, undefined)
+  return await Promise.all(
+    body.sealed.map(async (envelope) =>
+      envelope === null
+        ? null
+        : new TextDecoder().decode(
+            await openFromSender(HPKE_TEST_RECIPIENT_SEED, DECRYPT_SERVER_AAD(serverId), envelope)
+          )
+    )
+  )
+}
+
 test('POST /secrets/decrypt round-trips batch with mixed valid/invalid', async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const secretsConfig = createTestSecretsConfig()
     const sealed = await encryptSecretForDaemon(
       secretsConfig,
@@ -2506,16 +2548,67 @@ test('POST /secrets/decrypt round-trips batch with mixed valid/invalid', async (
       }),
     })
     assertEquals(response.status, 200)
-    const body = (await response.json()) as { plaintexts: (string | null)[] }
-    assertEquals(body.plaintexts.length, 3)
-    assertEquals(body.plaintexts[0], 'daemon-secret-value')
-    assertEquals(body.plaintexts[1], null)
-    assertEquals(body.plaintexts[2], 'daemon-secret-value')
+    const plaintexts = await openSealedAnswer(serverId, response)
+    assertEquals(plaintexts, ['daemon-secret-value', null, 'daemon-secret-value'])
   })
 })
 
+test('POST /secrets/decrypt answers 409 sealing_key_required, with no plaintext, until a key is registered', async () => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    const secretsConfig = createTestSecretsConfig()
+    const sealed = await encryptSecretForDaemon(secretsConfig, { serverId, keyId }, 'never-sent')
+    const daemonToken = await issueDaemonToken(serverId, keyId)
+    const ask = () =>
+      app.request('/api/daemon/v1/secrets/decrypt', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${daemonToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ ciphertexts: [sealed] }),
+      })
+    const refused = await ask()
+    assertEquals(refused.status, 409)
+    const text = await refused.text()
+    assertEquals((JSON.parse(text) as { error?: string }).error, 'sealing_key_required')
+    assertEquals(text.includes('never-sent'), false)
+
+    await registerTestSealingKey(db, serverId)
+    const answered = await ask()
+    assertEquals(answered.status, 200)
+    assertEquals(await openSealedAnswer(serverId, answered), ['never-sent'])
+  })
+})
+
+test('POST /secrets/decrypt answers 503 storage unavailable when no database is bound', async () => {
+  const serverId = crypto.randomUUID()
+  const keyId = crypto.randomUUID()
+  const secretsConfig = createTestSecretsConfig()
+  const sealed = await encryptSecretForDaemon(secretsConfig, { serverId, keyId }, 'never-sent')
+  const app = new Hono<AppEnv>()
+  registerDaemonApiRoutes(app, {
+    secrets: await createTestSecrets(),
+    challengeSigningSecrets: await createTestChallengeSecrets(),
+    secretsConfig,
+    runtime: 'workers',
+  })
+  const response = await app.request('/api/daemon/v1/secrets/decrypt', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${await issueDaemonToken(serverId, keyId)}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ciphertexts: [sealed] }),
+  })
+  assertEquals(response.status, 503)
+  const text = await response.text()
+  assertEquals((JSON.parse(text) as { error?: string }).error, 'storage unavailable')
+  assertEquals(text.includes('never-sent'), false)
+})
+
 test('POST /secrets/decrypt rejects envelopes sealed for another daemon', async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const secretsConfig = createTestSecretsConfig()
     const sealed = await encryptSecretForDaemon(
       secretsConfig,
@@ -2533,13 +2626,13 @@ test('POST /secrets/decrypt rejects envelopes sealed for another daemon', async 
       body: JSON.stringify({ ciphertexts: [sealed] }),
     })
     assertEquals(response.status, 200)
-    const body = (await response.json()) as { plaintexts: (string | null)[] }
-    assertEquals(body.plaintexts, [null])
+    assertEquals(await openSealedAnswer(serverId, response), [null])
   })
 })
 
 test('POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped only)', async () => {
-  await withEnrollFixture(async ({ app, serverId, keyId }) => {
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const daemonToken = await issueDaemonToken(serverId, keyId)
     const response = await app.request('/api/daemon/v1/secrets/decrypt', {
       method: 'POST',
@@ -2550,8 +2643,7 @@ test('POST /secrets/decrypt rejects global tpsecret envelopes (daemon-scoped onl
       body: JSON.stringify({ ciphertexts: ['tpsecret.v1.x'] }),
     })
     assertEquals(response.status, 200)
-    const body = (await response.json()) as { plaintexts: (string | null)[] }
-    assertEquals(body.plaintexts, [null])
+    assertEquals(await openSealedAnswer(serverId, response), [null])
   })
 })
 
@@ -2561,6 +2653,7 @@ async function createDecryptTestApp(): Promise<Hono<AppEnv>> {
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2622,36 +2715,27 @@ test('POST /secrets/decrypt rejects a batch larger than the limit', async () => 
 })
 
 test('POST /secrets/decrypt decrypts a normal TLS-sized daemon envelope', async () => {
-  const app = await createDecryptTestApp()
-  const serverId = '00000000-0000-4000-8000-0000000000aa'
-  const keyId = 'key-tls-sized'
-  const secretsConfig = createTestSecretsConfig()
-  // Simulate a TLS private-key PEM (~1.8 KiB) sealed as a daemon envelope.
-  const pemBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj'.repeat(45)
-  const privateKeyPem = `-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----\n`
-  const sealed = await encryptSecretForDaemon(
-    secretsConfig,
-    {
-      serverId,
-      keyId,
-    },
-    privateKeyPem
-  )
-  assert(sealed.length <= MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS)
-  const daemonToken = await issueDaemonToken(serverId, keyId)
+  await withEnrollFixture(async ({ app, db, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
+    const secretsConfig = createTestSecretsConfig()
+    // Simulate a TLS private-key PEM (~1.8 KiB) sealed as a daemon envelope.
+    const pemBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSj'.repeat(45)
+    const privateKeyPem = `-----BEGIN PRIVATE KEY-----\n${pemBody}\n-----END PRIVATE KEY-----\n`
+    const sealed = await encryptSecretForDaemon(secretsConfig, { serverId, keyId }, privateKeyPem)
+    assert(sealed.length <= MAX_SECRETS_DECRYPT_CIPHERTEXT_CHARS)
+    const daemonToken = await issueDaemonToken(serverId, keyId)
 
-  const response = await app.request('/api/daemon/v1/secrets/decrypt', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${daemonToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ ciphertexts: [sealed] }),
+    const response = await app.request('/api/daemon/v1/secrets/decrypt', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${daemonToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ ciphertexts: [sealed] }),
+    })
+    assertEquals(response.status, 200)
+    assertEquals(await openSealedAnswer(serverId, response), [privateKeyPem])
   })
-  assertEquals(response.status, 200)
-  const body = (await response.json()) as { plaintexts: (string | null)[] }
-  assertEquals(body.plaintexts.length, 1)
-  assertEquals(body.plaintexts[0], privateKeyPem)
 })
 
 test('Enrolled daemon can auto-refresh JWT', async () => {
@@ -2729,7 +2813,6 @@ function buildValidMetricsFrame(
       sampledAt: new Date().toISOString(),
       intervalSeconds: 60,
       sequence: 1,
-      topologyGeneration: 0,
       bootGeneration: 0,
       ...metadataOverrides,
     },
@@ -2788,6 +2871,7 @@ async function createMetricsTestApp(
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2829,6 +2913,7 @@ async function createMetricsTestAppWithRealCloudflareStore(): Promise<{
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -2883,6 +2968,7 @@ async function createMetricsTestAppWithDb(
   const challengeSigningSecrets = await createTestChallengeSecrets()
   const secretsConfig = createTestSecretsConfig()
   registerDaemonApiRoutes(app, {
+    requireSigned: false,
     secrets,
     challengeSigningSecrets,
     secretsConfig,
@@ -3372,6 +3458,7 @@ test('POST /metrics does not await the store write before responding', async () 
     secrets: await createTestSecrets(),
     challengeSigningSecrets: await createTestChallengeSecrets(),
     secretsConfig: createTestSecretsConfig(),
+    requireSigned: false,
   })
 
   const response = await app.request('/api/daemon/v1/metrics', {
@@ -3452,9 +3539,7 @@ test('POST /metrics: a sample sent too soon after the last gets 429 with Retry-A
 
 test('POST /metrics accepts a known topology generation without requesting a resync', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [] },
       appliedAt: new Date().toISOString(),
     })
@@ -3467,8 +3552,7 @@ test('POST /metrics accepts a known topology generation without requesting a res
         Authorization: `Bearer ${daemonToken}`,
         'Content-Type': 'application/json',
       },
-      // Default frame reports metadata.topologyGeneration: 0 — matches the
-      // generation just recorded above.
+      // The default frame names the devices of the topology just recorded above.
       body: JSON.stringify(buildValidMetricsFrame()),
     })
     assertEquals(response.status, 202)
@@ -3484,9 +3568,7 @@ test('POST /metrics accepts a known topology generation without requesting a res
 
 test('POST /metrics resolves a SlotMapping from a full recorded topology snapshot', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: {
         networks: [
           { deviceId: 'eth0', kind: 'uplink', name: 'eth0', identity: {} },
@@ -3533,10 +3615,9 @@ test('POST /metrics resolves a SlotMapping from a full recorded topology snapsho
   })
 })
 
-test('POST /metrics accepts an unknown topology generation and requests a resync', async () => {
+test('POST /metrics accepts a sample with no recorded topology and requests a resync', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    // No topology generation ever recorded for this server — the daemon's
-    // reported generation is unknown.
+    // No topology ever recorded for this server.
     const { app, writes } = await createMetricsTestAppWithDb(db)
     const daemonToken = await issueDaemonToken(serverId, keyId)
     const response = await app.request('/api/daemon/v1/metrics', {
@@ -3545,11 +3626,7 @@ test('POST /metrics accepts an unknown topology generation and requests a resync
         Authorization: `Bearer ${daemonToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(
-        buildValidMetricsFrame({
-          metadata: { topologyGeneration: 7 },
-        })
-      ),
+      body: JSON.stringify(buildValidMetricsFrame()),
     })
     assertEquals(response.status, 202)
     assertEquals(writes.length, 1)
@@ -3558,11 +3635,11 @@ test('POST /metrics accepts an unknown topology generation and requests a resync
       const metadata = await readServerMetadata(db, serverId)
       return typeof metadata.topologyResyncRequestedAt === 'string'
     })
-    assert(requested, 'expected an unknown topology generation to stamp topologyResyncRequestedAt')
+    assert(requested, 'expected an unknown topology to stamp topologyResyncRequestedAt')
   })
 })
 
-/** A metrics frame as a daemon sends it once it no longer stamps a topology generation. */
+/** A metrics frame naming the given network devices. */
 function numberlessMetricsFrame(nicIds: string[]): Record<string, unknown> {
   const frame = buildValidMetricsFrame({
     networks: nicIds.map((deviceId) => ({
@@ -3575,15 +3652,14 @@ function numberlessMetricsFrame(nicIds: string[]): Record<string, unknown> {
       transmitDropsPerSecond: null,
     })),
   })
-  delete (frame.metadata as Record<string, unknown>).topologyGeneration
   return frame
 }
 
 async function recordNumberlessTopology(
-  db: Parameters<typeof recordTopologyGeneration>[0],
+  db: Parameters<typeof recordTopologyReport>[0],
   serverId: string
 ): Promise<void> {
-  await recordTopologyGeneration(db, serverId, {
+  await recordTopologyReport(db, serverId, {
     snapshot: {
       networks: [{ deviceId: 'eth0', kind: 'uplink', name: 'eth0', identity: {} }],
       filesystems: [],
@@ -3645,9 +3721,7 @@ test('POST /metrics without a topology generation naming an unknown device reque
 
 test('POST /metrics retains hardwareSignals for a server classified physical from its topology', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       // Non-empty hardwareSignals is what infers the server physical while
       // `server.machine_class` is NULL — see `resolveServerMachineClass`.
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
@@ -3677,7 +3751,7 @@ test('POST /metrics retains hardwareSignals for a server classified physical fro
 
 /** The `machine_class` write-back is fire-and-forget; poll briefly for it. */
 async function readMachineClassSettled(
-  db: Parameters<typeof recordTopologyGeneration>[0],
+  db: Parameters<typeof recordTopologyReport>[0],
   serverId: string,
   expected: string | null
 ): Promise<string | null> {
@@ -3697,9 +3771,7 @@ async function readMachineClassSettled(
 
 test('POST /metrics writes machine_class=physical back once topology proves it, only while undeclared', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -3736,9 +3808,7 @@ test('POST /metrics writes machine_class=physical back once topology proves it, 
 
 test('POST /metrics never writes machine_class=virtual back — absence of sensors is not proof', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [] },
       appliedAt: new Date().toISOString(),
     })
@@ -3767,9 +3837,7 @@ test('POST /metrics never writes machine_class=virtual back — absence of senso
 
 test('POST /metrics: a declared machine_class=virtual beats a topology that carries sensors', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'bogus-thermal-zone' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -3797,9 +3865,7 @@ test('POST /metrics: a declared machine_class=virtual beats a topology that carr
 
 test('POST /metrics never overwrites a machine class an operator pinned', async () => {
   await withEnrollFixture(async ({ db, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -3957,9 +4023,7 @@ test('POST /metrics keeps the sample and flags the server while its highest RAM 
 
 test('POST /metrics does not cut hardwareSignals when the org overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -3992,9 +4056,7 @@ test('POST /metrics does not cut hardwareSignals when the org overrides physical
 
 test('POST /metrics does not cut hardwareSignals when a server overrides physicalHardwareSignalSlots to 0', async () => {
   await withEnrollFixture(async ({ db, organizationId, serverId, keyId }) => {
-    await recordTopologyGeneration(db, serverId, {
-      generation: 0,
-      bootGeneration: 0,
+    await recordTopologyReport(db, serverId, {
       snapshot: { hardwareSignals: [{ signalId: 'board-fan' }] },
       appliedAt: new Date().toISOString(),
     })
@@ -4350,6 +4412,7 @@ test('POST /metrics rejects JWT after license invalidation', async () => {
 
 test('POST /secrets/decrypt rejects JWT after license invalidation', async () => {
   await withEnrollFixture(async ({ app, db, organizationId, licenseId, serverId, keyId }) => {
+    await registerTestSealingKey(db, serverId)
     const secretsConfig = createTestSecretsConfig()
     const sealed = await encryptSecretForDaemon(
       secretsConfig,
@@ -4624,6 +4687,29 @@ test('POST /auth/session refuses a v1 proof once the server has used a signed se
     )
     assertEquals(refused.status, 403)
     assertEquals(((await refused.json()) as { error: string }).error, 'Signed proof required')
+  })
+})
+
+test('on the Workers runtime a v1 proof is refused at trust level 0, at enroll and sign-in', async () => {
+  await withEnrollFixture(async (fixture) => {
+    const strict = await createTestApp(fixture.db, 'workers', await fixtureIdentity(), true)
+    const session = await postSessionBody(strict, await signedSessionBody(strict, fixture))
+    assertEquals(session.status, 403)
+    assertEquals(((await session.json()) as { error: string }).error, 'Signed proof required')
+    const reenroll = await mintTicket(fixture.db, {
+      organizationId: fixture.organizationId,
+      serverId: fixture.serverId,
+    })
+    const enroll = await postEnroll(strict, {
+      licenseId: reenroll.id,
+      licenseToken: reenroll.plaintext,
+      serverId: fixture.serverId,
+      machineKey: fixture.machineKey,
+      hostname: fixture.hostname,
+      key: await generateKeyMaterial(),
+    })
+    assertEquals(enroll.status, 403)
+    assertEquals(((await enroll.json()) as { error: string }).error, 'Signed proof required')
   })
 })
 

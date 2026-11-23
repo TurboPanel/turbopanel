@@ -28,7 +28,10 @@ import { registerStripeWebhookRoutes } from './webhook/billing/stripe.ts'
 import { registerBillingRoutes } from './client/billing/routes.ts'
 import { getWorkersClientOpenApiSpec } from './client/openapi/workers.ts'
 import { resolveBillingConfig } from './features/billing/config.ts'
-import { registerWorkersDaemonWebSocket } from './daemon/workers-ws.ts'
+import {
+  registerWorkersDaemonWebSocket,
+  registerWorkersShellWebSocket,
+} from './daemon/workers-ws.ts'
 import { resolveWorkersEmailQueue } from './features/email/mailgun/workers-queue.ts'
 import type { EmailJob, EmailQueue } from './features/email/types.ts'
 import { isNoopEmailQueue } from './features/email/noop-queue.ts'
@@ -38,10 +41,7 @@ import {
   settleEmailMessage,
 } from './features/email/workers-mail-queue.ts'
 import { normalizeSignupEnvOverride } from './client/authn/install-state.ts'
-import {
-  assertPasswordHasherAvailable,
-  configureArgon2idWorkFactor,
-} from './lib/secrets/password.ts'
+import { configureArgon2idWorkFactor } from './lib/secrets/password.ts'
 import { createWorkersCommandQueue } from './features/commands/workers-queue.ts'
 import { createNoopCommandQueue } from './features/commands/noop-command-queue.ts'
 import type { CommandQueue } from './features/commands/queue.ts'
@@ -99,11 +99,24 @@ import {
 import { fetchWithConnectionRetry } from './platform/workers/connection-retry.ts'
 import { type createWorkersDb, type Db, endDbConnection } from './db/connection.ts'
 import { compatLogError, compatLogInfo, compatLogWarn } from './lib/log-compat.ts'
+import { assertPasswordHasherLoadable } from './lib/secrets/password-smoke.ts'
+import {
+  type EdgeCacheLike,
+  isEdgeCacheableStatusResponse,
+  statusEdgeCacheKey,
+  toEdgeCacheEntry,
+} from './platform/workers/status-edge-cache.ts'
+import {
+  formatServerTiming,
+  isServerTimingRoute,
+  SERVER_TIMING_HEADER,
+} from './platform/server-timing.ts'
 import { dbUsageLine, shouldLogDbUsage } from './query-cache/db-usage.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 import { WEBAUTHN_CHALLENGE_PURPOSE } from './client/authn/passkeys.ts'
+import { SHELL_TICKET_PURPOSE } from './features/terminal/ticket.ts'
 import {
   BACKUP_CODE_VERIFIER_PURPOSE,
   TWO_FACTOR_CHALLENGE_PURPOSE,
@@ -119,6 +132,7 @@ let cachedOtpVerifierSecrets: DerivedSecretsConfig | null = null
 let cachedTwoFactorChallengeSecrets: DerivedSecretsConfig | null = null
 let cachedBackupCodeVerifierSecrets: DerivedSecretsConfig | null = null
 let cachedWebauthnChallengeSecrets: DerivedSecretsConfig | null = null
+let cachedShellTicketSecrets: DerivedSecretsConfig | null = null
 let cachedDaemonJwtKeyring: DaemonJwtKeyring | null = null
 let cachedChallengeSigningSecrets: DerivedSecretsConfig | null = null
 let cachedDataEncryptionSecrets: DerivedSecretsConfig | null = null
@@ -145,6 +159,7 @@ export function resetWorkerAppCachesForTests(): void {
   cachedTwoFactorChallengeSecrets = null
   cachedBackupCodeVerifierSecrets = null
   cachedWebauthnChallengeSecrets = null
+  cachedShellTicketSecrets = null
   cachedDaemonJwtKeyring = null
   cachedChallengeSigningSecrets = null
   cachedDataEncryptionSecrets = null
@@ -217,6 +232,11 @@ function createLazyWorkersEmailQueue(
   }
 }
 
+/** Per-colo Workers Cache API (not on the type of the shared `caches` global). */
+function edgeCache(): EdgeCacheLike {
+  return (globalThis.caches as unknown as { default: EdgeCacheLike }).default
+}
+
 async function initWorkerApp(env: CloudflareBindings) {
   setTcpProbe(createWorkersTcpProbe(connectSocket))
   setRevokeBoundDaemonKey(revokeDaemonKey)
@@ -241,31 +261,41 @@ async function initWorkerApp(env: CloudflareBindings) {
     memoryKib: env.TURBOPANEL_ARGON2ID_MEMORY_KIB,
     timeCost: env.TURBOPANEL_ARGON2ID_TIME_COST,
   })
-  await assertPasswordHasherAvailable()
+  // Full hash + verify at the real work factor costs seconds of pure-JS CPU on
+  // the first request of every new isolate; the Deno boot path still runs it.
+  // Here a minimal-parameter round trip proves the library loads.
+  await assertPasswordHasherLoadable()
   cachedSecretsConfig = secretsConfig
-  cachedSessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  cachedOtpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
-  cachedTwoFactorChallengeSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    TWO_FACTOR_CHALLENGE_PURPOSE
-  )
-  cachedBackupCodeVerifierSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    BACKUP_CODE_VERIFIER_PURPOSE
-  )
-  cachedWebauthnChallengeSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    WEBAUTHN_CHALLENGE_PURPOSE
-  )
-  cachedDaemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
-  cachedChallengeSigningSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    'daemon-challenge-signing'
-  )
-  cachedDataEncryptionSecrets = await deriveEncryptionSecretsConfig(
-    secretsConfig,
-    'data-encryption'
-  )
+  const [
+    sessionSecrets,
+    otpVerifierSecrets,
+    twoFactorChallengeSecrets,
+    backupCodeVerifierSecrets,
+    webauthnChallengeSecrets,
+    shellTicketSecrets,
+    daemonJwtKeyring,
+    challengeSigningSecrets,
+    dataEncryptionSecrets,
+  ] = await Promise.all([
+    deriveSecretsConfig(secretsConfig, 'session-signing'),
+    deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE),
+    deriveSecretsConfig(secretsConfig, TWO_FACTOR_CHALLENGE_PURPOSE),
+    deriveSecretsConfig(secretsConfig, BACKUP_CODE_VERIFIER_PURPOSE),
+    deriveSecretsConfig(secretsConfig, WEBAUTHN_CHALLENGE_PURPOSE),
+    deriveSecretsConfig(secretsConfig, SHELL_TICKET_PURPOSE),
+    deriveDaemonJwtKeyring(secretsConfig),
+    deriveSecretsConfig(secretsConfig, 'daemon-challenge-signing'),
+    deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption'),
+  ])
+  cachedSessionSecrets = sessionSecrets
+  cachedOtpVerifierSecrets = otpVerifierSecrets
+  cachedTwoFactorChallengeSecrets = twoFactorChallengeSecrets
+  cachedBackupCodeVerifierSecrets = backupCodeVerifierSecrets
+  cachedWebauthnChallengeSecrets = webauthnChallengeSecrets
+  cachedShellTicketSecrets = shellTicketSecrets
+  cachedDaemonJwtKeyring = daemonJwtKeyring
+  cachedChallengeSigningSecrets = challengeSigningSecrets
+  cachedDataEncryptionSecrets = dataEncryptionSecrets
   // Missing binding = feature off (the panel runs); a malformed one fails init.
   cachedPanelIdentity = await resolvePanelIdentityFromBinding(env.TURBOPANEL_IDENTITY_KEYS)
   cachedCommandQueue = env.TURBOPANEL_COMMAND_QUEUE
@@ -306,6 +336,7 @@ async function initWorkerApp(env: CloudflareBindings) {
     twoFactorChallengeSecrets: cachedTwoFactorChallengeSecrets ?? undefined,
     backupCodeVerifierSecrets: cachedBackupCodeVerifierSecrets ?? undefined,
     webauthnChallengeSecrets: cachedWebauthnChallengeSecrets ?? undefined,
+    shellTicketSecrets: cachedShellTicketSecrets ?? undefined,
     runtime: 'workers',
     corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
     signupEnvOverride: env.TURBOPANEL_IS_SIGNUP_ENABLED,
@@ -344,6 +375,10 @@ async function initWorkerApp(env: CloudflareBindings) {
     secrets: cachedDaemonJwtKeyring ?? undefined,
     connectLimiter: rateLimiters.connect,
     panelIdentity: () => Promise.resolve(cachedPanelIdentity),
+  })
+  registerWorkersShellWebSocket(daemonRoutes, {
+    ticketSecrets: cachedShellTicketSecrets ?? undefined,
+    corsOrigins: env.TURBOPANEL_UI_CORS_ORIGINS,
   })
   // Unversioned, session-free surface: mounted on the top-level app rather than
   // under CLIENT_API_PREFIX, and authenticating itself (see
@@ -459,8 +494,22 @@ function applyDeliveryOutcome(msg: Message<unknown>, outcome: DeliveryOutcome): 
 
 export default {
   async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
-    initPromise ??= initWorkerApp(env)
-    await initPromise
+    // Public /status is answered from the colo's cache before the app (and a
+    // cold isolate's init) runs; see platform/workers/status-edge-cache.ts.
+    const statusKey = statusEdgeCacheKey(request)
+    if (statusKey) {
+      const cached = await edgeCache().match(statusKey)
+      if (cached) return cached
+    }
+    const requestStartedAt = performance.now()
+    let initMs: number | undefined
+    if (initPromise === null) {
+      initPromise = initWorkerApp(env)
+      await initPromise
+      initMs = performance.now() - requestStartedAt
+    } else {
+      await initPromise
+    }
 
     const postgresConnectionString =
       env.HYPERDRIVE?.connectionString ?? env.TURBOPANEL_DATABASE_URL?.trim() ?? undefined
@@ -529,6 +578,17 @@ export default {
         try {
           await next()
         } finally {
+          // Allowlisted routes only (see platform/server-timing.ts): never on auth routes.
+          if (isServerTimingRoute(c.req.method, c.req.path) && c.res.status !== 101) {
+            c.header(
+              SERVER_TIMING_HEADER,
+              formatServerTiming({
+                initMs,
+                dbStatements: dbHandles.usage.primary + dbHandles.usage.cached,
+                appMs: performance.now() - requestStartedAt - (initMs ?? 0),
+              })
+            )
+          }
           // One line per request that touched the database (see query-cache/db-usage.ts).
           const line = dbUsageLine(c.req.routePath, dbHandles.usage)
           if (line && shouldLogDbUsage(dbHandles.usage)) {
@@ -540,7 +600,7 @@ export default {
 
       // A GET/HEAD that failed on a dropped database connection is replayed
       // once on a fresh one (`platform/workers/connection-retry.ts`).
-      return await fetchWithConnectionRetry(requestApp, request, env, ctx, {
+      const response = await fetchWithConnectionRetry(requestApp, request, env, ctx, {
         onRetry: (method, path) =>
           compatLogWarn(
             'db',
@@ -554,6 +614,14 @@ export default {
           queryCache = dbHandles.queryCache
         },
       })
+      if (statusKey && isEdgeCacheableStatusResponse(response)) {
+        ctx.waitUntil(
+          edgeCache()
+            .put(statusKey, toEdgeCacheEntry(response))
+            .catch(() => {})
+        )
+      }
+      return response
     } finally {
       ctx.waitUntil(closeWorkersRequestDb(dbHandles).catch(() => {}))
     }

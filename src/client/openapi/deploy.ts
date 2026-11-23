@@ -414,6 +414,38 @@ export const deploySchemas = {
           },
         },
       },
+      serviceVariables: {
+        type: 'array',
+        description:
+          'For each service with variables: the variables by the names a person set (`NODE_OPTIONS`, not the service-prefixed key the compose file reads from the generated `.env`), with whether each is used while building (`forBuild`), while running (`forRuntime`), or both. Secret values are never shown (`value` is null). A variable whose name the host refuses in a source build (`PATH`, `LD_*`, a name no shell can carry) is listed with `droppedFromBuild: true`. With several servers, a service shows the list of the last server that reports it (server-scoped variables can differ per server). Optional: absent on an older control plane, and when no service has any variable.',
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'variables'],
+          properties: {
+            composeServiceName: { type: 'string' },
+            variables: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['name', 'source', 'isSecret', 'value', 'forBuild', 'forRuntime'],
+                properties: {
+                  name: { type: 'string' },
+                  source: {
+                    type: 'string',
+                    description:
+                      'Where the value was set: a variable scope, `binding` (a managed database) or `unknown`.',
+                  },
+                  isSecret: { type: 'boolean' },
+                  value: { type: 'string', nullable: true },
+                  forBuild: { type: 'boolean' },
+                  forRuntime: { type: 'boolean' },
+                  droppedFromBuild: { type: 'boolean', enum: [true] },
+                },
+              },
+            },
+          },
+        },
+      },
       nativeAppNodeVersions: {
         type: 'array',
         description:
@@ -454,7 +486,7 @@ export const deploySchemas = {
       nativeAppDenoVersions: {
         type: 'array',
         description:
-          'For each Deno app (a native service with `x-turbopanel.runtime: deno`) in the deploy, once: the Deno series it runs. Deno ships one major version (2) and the server runs its newest release, so `2.9` and `2.9.7` both mean series `2`. `compose` means `x-turbopanel.denoVersion` pinned it; `default` means the platform default. A server whose TurboPanel daemon is too old to run Deno apps refuses the deploy with `deno_feature_missing` (422).',
+          'For each Deno app (a native service with `x-turbopanel.runtime: deno`) in the deploy, once: the Deno series it runs. Deno ships one major version (2) and the server runs its newest release, so `2.9` and `2.9.7` both mean series `2`. `compose` means `x-turbopanel.denoVersion` pinned it; `default` means the platform default.',
         items: {
           type: 'object',
           required: ['composeServiceName', 'denoVersion', 'source'],
@@ -489,6 +521,11 @@ export const deploySchemas = {
         type: 'string',
         description:
           'Alias of `id`; pass to `/servers/{id}/commands/{commandId}/log` for the transcript.',
+      },
+      composeBase: {
+        type: ['object', 'null'],
+        description:
+          'The compose file a project that follows its repository used as the Base: `{sourceId, ref, path, commitSha, digest}` (digest is the SHA-256 of the file). Null when the project does not follow a file.',
       },
       generation: {
         type: ['integer', 'null'],
@@ -548,6 +585,44 @@ export const deploySchemas = {
       strategyOutcomeReason: {
         type: ['string', 'null'],
         description: 'Why the deploy rolled back or needs attention.',
+      },
+      postDeployFailure: {
+        description:
+          "Set when the post-deploy commands of a site failed after the new release was already live (`errorCode` `deploy_post_deploy_failed_after_switch`). The program's own output is in the deploy log. Null otherwise, and for a daemon that does not send the code.",
+        oneOf: [
+          { type: 'null' },
+          {
+            type: 'object',
+            required: [
+              'program',
+              'how',
+              'failedReleaseId',
+              'previousReleaseId',
+              'message',
+              'rollBackAvailable',
+            ],
+            properties: {
+              program: {
+                type: ['string', 'null'],
+                description:
+                  'The failed program (a path, never an argument); null when the daemon could not tell.',
+              },
+              how: {
+                type: ['string', 'null'],
+                description:
+                  'How it ended, for example `exited with exit status 1` or `timed out`.',
+              },
+              failedReleaseId: { type: ['string', 'null'] },
+              previousReleaseId: { type: ['string', 'null'] },
+              message: { type: 'string', description: 'A plain sentence naming the program.' },
+              rollBackAvailable: {
+                type: 'boolean',
+                description:
+                  'True when the daemon named a previous release to roll back to, so Roll Back is offered.',
+              },
+            },
+          },
+        ],
       },
       cancelRequestedAt: {
         type: ['string', 'null'],
@@ -613,6 +688,10 @@ export const deploySchemas = {
     properties: {
       id: { type: 'string' },
       environmentId: { type: 'string' },
+      composeBase: {
+        type: ['object', 'null'],
+        description: 'See DeploymentHistoryEntry.composeBase.',
+      },
       generation: { type: ['integer', 'null'] },
       desiredHash: { type: ['string', 'null'] },
       replicaCounts: {
@@ -709,6 +788,8 @@ export const deployPaths = {
     post: {
       tags: ['Environments'],
       summary: 'Deploy environment compose to its pinned server',
+      description:
+        "When the project follows its repository's compose file, the deploy reads that file at the commit it deploys and uses it as the Base. A missing or unusable file stops the deploy: **422** `compose_file_missing` or `compose_file_unparseable`, **502** `compose_source_unavailable`, each with `message`, `sourceId`, `ref`, `path` and `commitSha`. Nothing falls back to an older copy. The file is read at the commit the environment deploys: a push's commit, else the head of the branch the environment builds for that repository (else the project's `composeSource.ref`). The stored Base is updated only once the deploy is accepted, and only from a read of the project's own branch (another environment's branch is built from but never stored).",
       parameters: [
         {
           name: 'id',
@@ -861,7 +942,7 @@ export const deployPaths = {
         404: { description: 'No such deploy attempt for this environment' },
         409: {
           description:
-            "`deploy_not_cancellable` (already finished), `deploy_too_late` (the host is already switching over and will finish), or `cancel_unsupported` (the server's daemon is too old to cancel)",
+            '`deploy_not_cancellable` (already finished) or `deploy_too_late` (the host is already switching over and will finish)',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -928,7 +1009,7 @@ export const deployPaths = {
         404: { description: 'No such environment' },
         409: {
           description:
-            '`data_volumes_changed`: the volume list changed since it was shown (the body carries the new list), or `delete_volumes_needs_daemon_update`: a server the stop goes to runs a daemon that cannot delete data volumes yet (`servers` names them). Nothing was stopped.',
+            '`data_volumes_changed`: the volume list changed since it was shown (the body carries the new list). Nothing was stopped.',
         },
         503: {
           description: 'The control plane has no link to the command queue or database',
@@ -941,7 +1022,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'List the data volumes a Destroy could delete',
       description:
-        'What "Also Delete the Data Volumes" on a Destroy would remove: the Docker volumes registered for this environment or its services that the control plane created and nothing else uses (`volumes`), the ones it keeps and why (`kept`: `common`, `shared`, `external` or `renamed`), where a copy stays because the stop does not go to its server (`staysOn`), and the servers whose daemon must be updated first (`outdatedServers`). `name` is the name people know the volume by (its compose key or the name it was given). Needs read on the environment.',
+        'What "Also Delete the Data Volumes" on a Destroy would remove: the Docker volumes registered for this environment or its services that the control plane created and nothing else uses (`volumes`), the ones it keeps and why (`kept`: `common`, `shared`, `external` or `renamed`), where a copy stays because the stop does not go to its server (`staysOn`). `outdatedServers` is always empty and is kept only for the web app. `name` is the name people know the volume by (its compose key or the name it was given). Needs read on the environment.',
       parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         200: {
@@ -1055,7 +1136,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Preview the exact compose document that deploy would send',
       description:
-        'Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeFiles` is the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.',
+        "When the project follows its repository's compose file, the preview reads the branch head and returns `composeBase`; if that read fails it uses the Base from the last deploy and adds a `compose_base_unreadable` warning. Runs the same prepareDeployCompose path as deploy (including idempotent container allocation and volume registration) but skips daemon sealing. Secret-backed variable values are redacted. `composeFiles` is the compiled runtime snapshot for the first participating server; `servers[]` lists every host. Prepare gates surface as warnings so the preview always renders.",
       parameters: [
         {
           name: 'id',
