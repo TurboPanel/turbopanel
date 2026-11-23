@@ -461,7 +461,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       provider_customer_id:
         'Provider-side customer id (the Stripe v2 Account id, `acct_...`); unique together with `provider` and the conflict target of the webhook upsert.',
       tax_id:
-        'Value of the first tax id the provider reports on the customer (`customer.tax_ids`), copied by the webhook for display; presence only, never validated here.',
+        'Value of the first tax id the provider reports on the customer account (`GET /v1/tax_ids`), copied by the webhook for display; presence only, never validated here.',
     },
   },
   seat: {

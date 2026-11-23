@@ -260,7 +260,7 @@ function orgDb(seed: OrgSeed = {}): MemoryDb {
           {
             id: 'payer-1',
             provider: 'stripe',
-            providerCustomerId: 'cus_1',
+            providerCustomerId: 'acct_1',
             organizationId: ORG,
             userId: null,
             taxId: null,
@@ -324,9 +324,10 @@ function orgDb(seed: OrgSeed = {}): MemoryDb {
 type StripeItem = { id: string; tierId: string; quantity: number }
 
 /**
- * The subscription as the projection refetches it: customer expanded with
- * the organization in its metadata, each item carrying its price and the
- * price's product — the projection maps items to tiers by product.
+ * The subscription as the projection refetches it: it names its v2 Account in
+ * `customer_account` (the account answers from {@link payerRead}), each item
+ * carrying its price and the price's product — the projection maps items to
+ * tiers by product.
  */
 function stripeSubscription(items: StripeItem[], opts: { pendingUpdate?: boolean } = {}) {
   return {
@@ -336,12 +337,7 @@ function stripeSubscription(items: StripeItem[], opts: { pendingUpdate?: boolean
     schedule: null,
     current_period_end: PERIOD_END,
     ...(opts.pendingUpdate ? { pending_update: { expires_at: NOW_MS / 1000 + 3600 } } : {}),
-    customer: {
-      id: 'cus_1',
-      object: 'customer',
-      metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ORG },
-      tax_ids: { object: 'list', data: [], has_more: false },
-    },
+    customer_account: 'acct_1',
     items: {
       object: 'list',
       has_more: false,
@@ -353,6 +349,22 @@ function stripeSubscription(items: StripeItem[], opts: { pendingUpdate?: boolean
       })),
     },
   }
+}
+
+/**
+ * The projection's payer reads: the v2 Account (organization in its metadata)
+ * and its tax ids. Null for any other path.
+ */
+function payerRead(path: string): unknown {
+  if (path === '/v2/core/accounts/acct_1') {
+    return {
+      id: 'acct_1',
+      object: 'v2.core.account',
+      metadata: { [STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY]: ORG },
+    }
+  }
+  if (path === '/v1/tax_ids') return { object: 'list', data: [], has_more: false }
+  return null
 }
 
 function depsFor(db: MemoryDb, client: StripeClient, gateway?: BillingGateway) {
@@ -429,6 +441,8 @@ function stripeDouble(
   let committedQuantity = 2
   const client: StripeClient = {
     get: (path) => {
+      const payer = payerRead(path)
+      if (payer) return Promise.resolve(payer as never)
       trace.push(`GET ${path}`)
       if (path.startsWith('/v1/products/')) {
         const product = PRODUCTS[path.slice('/v1/products/'.length)]
@@ -700,6 +714,10 @@ function routedClient(routes: Partial<Record<Route, (call: StripeCall) => unknow
   return createStripeClientDouble((call) => {
     const handler = routes[`${call.method} ${call.path}` as Route]
     if (handler) return handler(call)
+    if (call.method === 'GET') {
+      const payer = payerRead(call.path)
+      if (payer) return payer
+    }
     if (call.method === 'GET' && call.path.startsWith('/v1/products/')) {
       const product = PRODUCTS[call.path.slice('/v1/products/'.length)]
       if (product) return product
@@ -708,8 +726,9 @@ function routedClient(routes: Partial<Record<Route, (call: StripeCall) => unknow
   })
 }
 
+/** Call lines, without the projection's payer reads (account, tax ids). */
 function callsOf(client: ReturnType<typeof routedClient>): string[] {
-  return client.calls.map((c) => `${c.method} ${c.path}`)
+  return client.calls.filter((c) => payerRead(c.path) === null).map((c) => `${c.method} ${c.path}`)
 }
 
 /** Every `phases[n][items][m][<field>]` key of a schedule write. */
