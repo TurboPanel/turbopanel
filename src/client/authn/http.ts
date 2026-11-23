@@ -240,9 +240,8 @@ export type AuthBodyValidation<T> = { ok: true; value: T } | { ok: false; error:
  * The order matters: a malformed or oversized body must still charge a
  * rate-limit bucket before the handler returns, so the shape-validation path
  * cannot be used as a free probe. Since there is no parsed identity yet on
- * that path, it charges the purpose's **anonymous** identity bucket (plus the
- * caller's IP bucket, as always) — `enforceAuthRateLimit` with `identity:
- * null`. A request that parses and validates is charged exactly once, by its
+ * that path, it charges the caller's IP bucket only (`enforceAuthRateLimit`
+ * with `identity: null` never touches an identity bucket). A request that parses and validates is charged exactly once, by its
  * real identity, after this returns.
  *
  * Also the point where {@link resolveEmailSettings} / other expensive,
@@ -257,7 +256,7 @@ export async function readGatedAuthJsonBody<T>(
     maxBytes: number
     parse: (body: unknown) => AuthBodyValidation<T>
     /** Identity to charge the real rate-limit bucket against once validated. */
-    identity: (value: T) => string
+    identity: (value: T) => string | null
   }
 ): Promise<{ ok: true; value: T } | { ok: false; response: Response }> {
   const read = await readBoundedJson(c, opts.maxBytes)

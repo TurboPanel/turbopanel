@@ -6,6 +6,9 @@
  * Each attempt is counted in **two independent buckets** (identity and IP) for
  * the route purpose. Both checks must pass — rotating IP cannot bypass the
  * account-level cap, and rotating identity cannot bypass the IP-level cap.
+ * A caller with no real identity (null, undefined or blank) is counted in the
+ * IP bucket only: there is never a constant identity bucket shared by every
+ * caller, which would let one address lock the purpose out for everyone.
  *
  * The interface is async so callers can back it with a **durable, globally
  * shared** counter (Cloudflare `RateLimit` binding on Workers, Redis on Deno).
@@ -56,6 +59,8 @@ export type AuthRateLimiterOptions = {
   policies?: Partial<Record<AuthRateLimitPurpose, AuthRateLimitPolicy>>
   now?: () => number
 }
+
+const ALLOWED: AuthRateLimitResult = { allowed: true, retryAfterSeconds: 0 }
 
 const DEFAULT_POLICY: AuthRateLimitPolicy = { limit: 10, windowMs: 60_000 }
 
@@ -159,9 +164,9 @@ export interface AuthRateLimiter {
 
 type WindowEntry = { windowStartMs: number; count: number }
 
-function normalizeIdentity(identity: string | null | undefined): string {
+function normalizeIdentity(identity: string | null | undefined): string | null {
   const trimmed = (identity ?? '').trim().toLowerCase()
-  if (!trimmed) return 'anonymous'
+  if (!trimmed) return null
   if (trimmed.length > AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS) {
     return trimmed.slice(0, AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS)
   }
@@ -194,21 +199,24 @@ async function digestKeyMaterial(kind: 'id' | 'ip', value: string): Promise<stri
 }
 
 /**
- * Build the two independent bucket keys (identity + IP) for a purpose. Shared
- * by the in-memory and durable backends so they key identically. Keys embed
+ * Build the independent bucket keys (identity + IP) for a purpose. Shared by
+ * the in-memory and durable backends so they key identically. Keys embed
  * SHA-256 digests of the normalized identity/IP — never the raw values.
+ * `identityKey` is `null` when the caller has no real identity; the IP bucket
+ * alone then applies.
  */
 export async function authRateLimitKeys(
   purpose: AuthRateLimitPurpose,
   identity: string | null | undefined,
   ip: string | null | undefined
-): Promise<{ identityKey: string; ipKey: string }> {
+): Promise<{ identityKey: string | null; ipKey: string }> {
+  const normalizedIdentity = normalizeIdentity(identity)
   const [identityDigest, ipDigest] = await Promise.all([
-    digestKeyMaterial('id', normalizeIdentity(identity)),
+    normalizedIdentity === null ? null : digestKeyMaterial('id', normalizedIdentity),
     digestKeyMaterial('ip', normalizeIp(ip)),
   ])
   return {
-    identityKey: `${purpose}:id:${identityDigest}`,
+    identityKey: identityDigest === null ? null : `${purpose}:id:${identityDigest}`,
     ipKey: `${purpose}:ip:${ipDigest}`,
   }
 }
@@ -253,7 +261,7 @@ export function createAuthRateLimiter(options: AuthRateLimiterOptions = {}): Aut
       const policy = policyFor(purpose)
       const { identityKey, ipKey } = await authRateLimitKeys(purpose, identity, ip)
       // Independent buckets — both must pass.
-      const identityResult = record(identityKey, policy)
+      const identityResult = identityKey === null ? ALLOWED : record(identityKey, policy)
       const ipResult = record(ipKey, policy)
       if (identityResult.allowed && ipResult.allowed) {
         return { allowed: true, retryAfterSeconds: 0 }
@@ -314,10 +322,10 @@ export function createDurableAuthRateLimiter(
       // Independent buckets — both must pass. Prefix keeps auth counters from
       // colliding with daemon rate-limit keys in a shared backend namespace.
       const [identityOutcome, ipOutcome] = await Promise.all([
-        limiter.limit({ key: `auth:${identityKey}` }),
+        identityKey === null ? null : limiter.limit({ key: `auth:${identityKey}` }),
         limiter.limit({ key: `auth:${ipKey}` }),
       ])
-      const allowed = identityOutcome.success && ipOutcome.success
+      const allowed = (identityOutcome?.success ?? true) && ipOutcome.success
       return {
         allowed,
         retryAfterSeconds: allowed ? 0 : retryAfterSeconds,

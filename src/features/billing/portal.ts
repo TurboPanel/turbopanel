@@ -93,7 +93,7 @@ export async function createPortalSession(
 ): Promise<{ url: string }> {
   const configuration = await ensurePortalConfiguration(client)
   const session = await client.post<StripeObject>('/v1/billing_portal/sessions', {
-    customer: input.providerCustomerId,
+    customer_account: input.providerCustomerId,
     configuration,
     return_url: input.returnUrl,
   })

@@ -558,7 +558,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
 
     const sessionData = await readActiveSession(c, opts)
     if (!sessionData) {
-      // Unauthenticated callers still spend the anonymous + IP bucket, so
+      // Unauthenticated callers still spend the IP bucket, so
       // hammering this route without a session is throttled like sign-in.
       const anonLimited = await enforceAuthRateLimit(c, 'verify-email-otp', null, opts.runtime)
       if (anonLimited) return anonLimited

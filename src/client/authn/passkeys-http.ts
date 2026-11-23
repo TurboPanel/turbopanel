@@ -278,7 +278,7 @@ export function registerPasskeyRoutes(auth: Hono<AppEnv>, opts: AuthRouteOpts) {
       purpose: 'passkey-login',
       maxBytes: AUTH_PASSKEY_LOGIN_OPTIONS_MAX_BODY_BYTES,
       parse: parseEmptyObject,
-      identity: () => 'passkey-login',
+      identity: () => null,
     })
     if (!gated.ok) return gated.response
 

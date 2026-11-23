@@ -21,17 +21,11 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.
  */
 async function buildApp(
   limiter: AuthRateLimiter | undefined,
-  runtime: 'deno' | 'workers' = 'workers',
+  runtime: 'deno' | 'workers' = 'workers'
 ): Promise<Hono<AppEnv>> {
-  const secretsConfig = parseSecretsEnv(
-    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    runtime,
-  )
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  const otpVerifierSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    'email-otp-verifier',
-  )
+  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
   const app = new Hono<AppEnv>()
   const client = new Hono<AppEnv>()
   if (limiter) {
@@ -110,7 +104,7 @@ it('sign-in returns 429 with Retry-After once the limiter blocks', async () => {
   // limit 1 per window: first attempt allowed, second blocked.
   const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
-    'workers',
+    'workers'
   )
 
   const makeRequest = () =>
@@ -132,14 +126,14 @@ it('sign-in returns 429 with Retry-After once the limiter blocks', async () => {
   assertEquals(second.headers.get('Retry-After') !== null, true)
 })
 
-it('a malformed sign-in body still charges the rate-limit bucket (anonymous + IP)', async () => {
+it('a malformed sign-in body still charges the rate-limit bucket (IP bucket)', async () => {
   // Comment 2: shape-validation failures must not be a free probe. Even
-  // though the identity here is "anonymous" (no email was ever parsed), the
+  // though there is no identity here (no email was ever parsed), the
   // IP bucket is spent — so a follow-up request from the same IP is blocked
   // regardless of whether its body is valid.
   const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
-    'workers',
+    'workers'
   )
 
   const malformed = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in`, {
@@ -161,7 +155,7 @@ it('a malformed sign-in body still charges the rate-limit bucket (anonymous + IP
 it('an oversized sign-in body (no Content-Length) still charges the rate-limit bucket', async () => {
   const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
-    'workers',
+    'workers'
   )
 
   // AUTH_SIGN_IN_MAX_BODY_BYTES is 4 KiB — well over that, streamed with no
@@ -185,7 +179,7 @@ it('an oversized sign-in body (no Content-Length) still charges the rate-limit b
 it('spoofed X-Real-IP / X-Forwarded-For cannot bypass Workers rate limits', async () => {
   const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
-    'workers',
+    'workers'
   )
 
   const makeRequest = (headers: Record<string, string>) =>
@@ -195,10 +189,7 @@ it('spoofed X-Real-IP / X-Forwarded-For cannot bypass Workers rate limits', asyn
       body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
     })
 
-  assertEquals(
-    (await makeRequest({ 'CF-Connecting-IP': '203.0.113.20' })).status,
-    401,
-  )
+  assertEquals((await makeRequest({ 'CF-Connecting-IP': '203.0.113.20' })).status, 401)
   // Rotating spoofed forwarding headers while keeping the trusted CF IP must
   // still hit the shared identity (and IP) buckets.
   assertEquals(
@@ -209,7 +200,7 @@ it('spoofed X-Real-IP / X-Forwarded-For cannot bypass Workers rate limits', asyn
         'X-Forwarded-For': '198.51.100.2',
       })
     ).status,
-    429,
+    429
   )
 })
 
@@ -233,7 +224,7 @@ it('Workers auth fails closed when no durable limiter is injected', async () => 
 it('same-account attempts from different IPs cannot bypass the account cap', async () => {
   const app = await buildApp(
     createAuthRateLimiter({ defaultPolicy: { limit: 1, windowMs: 60_000 } }),
-    'workers',
+    'workers'
   )
 
   const makeRequest = (ip: string) =>
@@ -255,13 +246,9 @@ it('Deno createApp injects authRateLimiter before client routes (deny-all → 42
   // Regression: Deno previously set authRateLimiter *after* registerClientRoutes,
   // so client auth fell through to getSharedAuthRateLimiter(). A deny-all limiter
   // passed to createApp must be the one auth routes use.
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno')
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  const otpVerifierSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    'email-otp-verifier',
-  )
+  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
   const app = createApp({
     secrets,
     otpVerifierSecrets,
@@ -296,16 +283,12 @@ it('Deno auth stays throttled when Redis-backed limiter fails closed', async () 
       limit: 10,
       periodSeconds: 60,
       onError: 'closed',
-    }),
+    })
   )
 
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno')
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  const otpVerifierSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    'email-otp-verifier',
-  )
+  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
   const app = createApp({
     secrets,
     otpVerifierSecrets,
@@ -325,4 +308,36 @@ it('Deno auth stays throttled when Redis-backed limiter fails closed', async () 
   })
   assertEquals(res.status, 429)
   assertEquals(res.headers.get('Retry-After') !== null, true)
+})
+
+describe('callers with no real identity are limited per IP only', () => {
+  const cases: { name: string; method: string; path: string; body?: string }[] = [
+    {
+      name: 'passkey login options',
+      method: 'POST',
+      path: '/auth/passkeys/login/options',
+      body: '{}',
+    },
+    { name: 'oauth start', method: 'GET', path: '/auth/oauth/github/start' },
+    { name: 'oauth callback', method: 'GET', path: '/auth/oauth/github/callback' },
+  ]
+  for (const tc of cases) {
+    it(`${tc.name}: one IP filling the limit does not block another IP`, async () => {
+      const app = await buildApp(
+        createAuthRateLimiter({ defaultPolicy: { limit: 2, windowMs: 60_000 } }),
+        'workers'
+      )
+      const attempt = (ip: string) =>
+        app.request(`${CLIENT_API_PREFIX}${tc.path}`, {
+          method: tc.method,
+          headers: { 'content-type': 'application/json', 'CF-Connecting-IP': ip },
+          body: tc.body,
+        })
+      assertEquals((await attempt('203.0.113.81')).status !== 429, true)
+      assertEquals((await attempt('203.0.113.81')).status !== 429, true)
+      assertEquals((await attempt('203.0.113.81')).status, 429)
+      assertEquals((await attempt('203.0.113.82')).status !== 429, true)
+      assertEquals((await attempt('203.0.113.81')).status, 429)
+    })
+  }
 })

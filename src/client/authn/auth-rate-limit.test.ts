@@ -12,17 +12,13 @@ import {
 
 describe('authRateLimitKeys', () => {
   it('uses fixed-size digests and never embeds the raw email or IP', async () => {
-    const keys = await authRateLimitKeys(
-      'sign-in',
-      'user@example.com',
-      '203.0.113.1',
-    )
-    assertEquals(keys.identityKey.startsWith('sign-in:id:'), true)
+    const keys = await authRateLimitKeys('sign-in', 'user@example.com', '203.0.113.1')
+    assertEquals(keys.identityKey?.startsWith('sign-in:id:'), true)
     assertEquals(keys.ipKey.startsWith('sign-in:ip:'), true)
-    assertEquals(keys.identityKey.includes('user@example.com'), false)
+    assertEquals(keys.identityKey?.includes('user@example.com'), false)
     assertEquals(keys.ipKey.includes('203.0.113.1'), false)
     // SHA-256 hex = 64 chars after the purpose:id: / purpose:ip: prefix.
-    assertEquals(keys.identityKey.slice('sign-in:id:'.length).length, 64)
+    assertEquals(keys.identityKey?.slice('sign-in:id:'.length).length, 64)
     assertEquals(keys.ipKey.slice('sign-in:ip:'.length).length, 64)
   })
 
@@ -33,8 +29,34 @@ describe('authRateLimitKeys', () => {
 
     const huge = 'a'.repeat(10_000) + '@example.com'
     const capped = await authRateLimitKeys('sign-in', huge, '203.0.113.9')
-    assertEquals(capped.identityKey.includes('@example.com'), false)
-    assertEquals(capped.identityKey.slice('sign-in:id:'.length).length, 64)
+    assertEquals(capped.identityKey?.includes('@example.com'), false)
+    assertEquals(capped.identityKey?.slice('sign-in:id:'.length).length, 64)
+  })
+})
+
+describe('callers without an identity', () => {
+  it('get no identity bucket key at all', async () => {
+    for (const identity of [null, undefined, '', '   ']) {
+      const keys = await authRateLimitKeys('passkey-login', identity, '203.0.113.1')
+      assertEquals(keys.identityKey, null)
+    }
+  })
+
+  it('in-memory: one IP filling the limit does not block another IP', async () => {
+    const limiter = createAuthRateLimiter({ defaultPolicy: { limit: 2, windowMs: 60_000 } })
+    assertEquals((await limiter.check('passkey-login', null, '203.0.113.1')).allowed, true)
+    assertEquals((await limiter.check('passkey-login', null, '203.0.113.1')).allowed, true)
+    assertEquals((await limiter.check('passkey-login', null, '203.0.113.1')).allowed, false)
+    assertEquals((await limiter.check('passkey-login', null, '203.0.113.2')).allowed, true)
+    assertEquals((await limiter.check('passkey-login', null, '203.0.113.1')).allowed, false)
+  })
+
+  it('durable: one IP filling the limit does not block another IP', async () => {
+    const limiter = createDurableAuthRateLimiter(createFakeDurableRateLimiter(2))
+    assertEquals((await limiter.check('oauth-start', null, '203.0.113.1')).allowed, true)
+    assertEquals((await limiter.check('oauth-start', null, '203.0.113.1')).allowed, true)
+    assertEquals((await limiter.check('oauth-start', null, '203.0.113.1')).allowed, false)
+    assertEquals((await limiter.check('oauth-start', null, '203.0.113.2')).allowed, true)
   })
 })
 
@@ -104,16 +126,16 @@ describe('createAuthRateLimiter', () => {
 
     assertEquals(
       (await limiter.check('sign-in', 'victim@example.com', '203.0.113.10')).allowed,
-      true,
+      true
     )
     assertEquals(
       (await limiter.check('sign-in', 'victim@example.com', '203.0.113.11')).allowed,
-      true,
+      true
     )
     // Third attempt from yet another IP — identity bucket exhausted.
     assertEquals(
       (await limiter.check('sign-in', 'victim@example.com', '203.0.113.12')).allowed,
-      false,
+      false
     )
   })
 
@@ -124,15 +146,9 @@ describe('createAuthRateLimiter', () => {
       now: () => now,
     })
 
-    assertEquals(
-      (await limiter.check('sign-in', '  User@Example.com  ', null)).allowed,
-      true,
-    )
+    assertEquals((await limiter.check('sign-in', '  User@Example.com  ', null)).allowed, true)
     // Normalizes to the same identity key -> blocked.
-    assertEquals(
-      (await limiter.check('sign-in', 'user@example.com', undefined)).allowed,
-      false,
-    )
+    assertEquals((await limiter.check('sign-in', 'user@example.com', undefined)).allowed, false)
   })
 
   it('reset clears all counters', async () => {
@@ -171,7 +187,7 @@ describe('createDurableAuthRateLimiter', () => {
 
     assertEquals(
       (await limiter.check('sign-in', 'victim@example.com', '203.0.113.10')).allowed,
-      true,
+      true
     )
     // Different IP, same identity -> identity bucket in the durable backend is spent.
     const blocked = await limiter.check('sign-in', 'victim@example.com', '203.0.113.11')
@@ -182,15 +198,9 @@ describe('createDurableAuthRateLimiter', () => {
   it('blocks the IP bucket even when the identity rotates', async () => {
     const limiter = createDurableAuthRateLimiter(createFakeDurableRateLimiter(1))
 
-    assertEquals(
-      (await limiter.check('sign-in', 'a@example.com', '203.0.113.20')).allowed,
-      true,
-    )
+    assertEquals((await limiter.check('sign-in', 'a@example.com', '203.0.113.20')).allowed, true)
     // Same IP, different identity -> IP bucket in the durable backend is spent.
-    assertEquals(
-      (await limiter.check('sign-in', 'b@example.com', '203.0.113.20')).allowed,
-      false,
-    )
+    assertEquals((await limiter.check('sign-in', 'b@example.com', '203.0.113.20')).allowed, false)
   })
 
   it('keeps purposes independent in the shared backend', async () => {
@@ -198,16 +208,10 @@ describe('createDurableAuthRateLimiter', () => {
     const purposes: AuthRateLimitPurpose[] = ['sign-in', 'send-otp']
 
     for (const purpose of purposes) {
-      assertEquals(
-        (await limiter.check(purpose, 'a@example.com', '203.0.113.30')).allowed,
-        true,
-      )
+      assertEquals((await limiter.check(purpose, 'a@example.com', '203.0.113.30')).allowed, true)
     }
     // Re-hitting the first purpose is now blocked (its buckets are spent).
-    assertEquals(
-      (await limiter.check('sign-in', 'a@example.com', '203.0.113.30')).allowed,
-      false,
-    )
+    assertEquals((await limiter.check('sign-in', 'a@example.com', '203.0.113.30')).allowed, false)
   })
 })
 
@@ -224,12 +228,12 @@ describe('createDurableAuthRateLimiter tiering', () => {
     for (let i = 0; i < 5; i++) {
       assertEquals(
         (await limiter.check('sign-up', 'victim@example.com', '203.0.113.50')).allowed,
-        true,
+        true
       )
     }
     assertEquals(
       (await limiter.check('sign-up', 'victim@example.com', '203.0.113.50')).allowed,
-      false,
+      false
     )
 
     // 'sign-in' is default (limit 10) — still allowed at attempt 6, same
@@ -238,14 +242,15 @@ describe('createDurableAuthRateLimiter tiering', () => {
     for (let i = 0; i < 6; i++) {
       assertEquals(
         (await limiter.check('sign-in', 'victim@example.com', '203.0.113.50')).allowed,
-        true,
+        true
       )
     }
   })
 
   it('every strict-tier purpose in AUTH_RATE_LIMIT_PURPOSE_TIERS blocks at 5 against a limit-5 backend', async () => {
-    const strictPurposes = (Object.keys(AUTH_RATE_LIMIT_PURPOSE_TIERS) as AuthRateLimitPurpose[])
-      .filter((p) => AUTH_RATE_LIMIT_PURPOSE_TIERS[p] === 'strict')
+    const strictPurposes = (
+      Object.keys(AUTH_RATE_LIMIT_PURPOSE_TIERS) as AuthRateLimitPurpose[]
+    ).filter((p) => AUTH_RATE_LIMIT_PURPOSE_TIERS[p] === 'strict')
     // Sanity: the purposes this comment names are actually tagged strict.
     assertEquals(strictPurposes.includes('sign-up'), true)
     assertEquals(strictPurposes.includes('send-otp'), true)
@@ -260,13 +265,13 @@ describe('createDurableAuthRateLimiter tiering', () => {
         assertEquals(
           (await limiter.check(purpose, 'a@example.com', '203.0.113.51')).allowed,
           true,
-          `${purpose} attempt ${i + 1} should be allowed`,
+          `${purpose} attempt ${i + 1} should be allowed`
         )
       }
       assertEquals(
         (await limiter.check(purpose, 'a@example.com', '203.0.113.51')).allowed,
         false,
-        `${purpose} attempt 6 should be blocked`,
+        `${purpose} attempt 6 should be blocked`
       )
     }
   })
@@ -278,24 +283,18 @@ describe('createDurableAuthRateLimiter tiering', () => {
     // 'sign-up' is strict, but only the default backend was supplied.
     assertEquals(
       (await onlyDefault.check('sign-up', 'a@example.com', '203.0.113.52')).allowed,
-      true,
+      true
     )
     assertEquals(
       (await onlyDefault.check('sign-up', 'a@example.com', '203.0.113.52')).allowed,
-      false,
+      false
     )
   })
 
   it('a single RateLimiter (no tiering) still works for every purpose — back-compat', async () => {
     const limiter = createDurableAuthRateLimiter(createFakeDurableRateLimiter(1))
-    assertEquals(
-      (await limiter.check('sign-up', 'a@example.com', '203.0.113.53')).allowed,
-      true,
-    )
-    assertEquals(
-      (await limiter.check('sign-in', 'b@example.com', '203.0.113.54')).allowed,
-      true,
-    )
+    assertEquals((await limiter.check('sign-up', 'a@example.com', '203.0.113.53')).allowed, true)
+    assertEquals((await limiter.check('sign-in', 'b@example.com', '203.0.113.54')).allowed, true)
   })
 
   it('rejects when neither tier backend is supplied', async () => {
