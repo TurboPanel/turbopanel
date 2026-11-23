@@ -106,8 +106,8 @@ src/
   `globalThis.Deno?.`; type-only `Deno.Type` is fine) and no Workers binding
   (`cloudflare:` imports in any form, `DurableObject*`, `KVNamespace`,
   `R2Bucket`, `D1Database`, `Hyperdrive`, `Fetcher`, `Queue`) in a non-test file
-  outside `src/platform/`, `src/cli/`, `src/test-fixtures/`, `src/app/deno/`,
-  `src/app/workers/`, `src/features/<name>/deno|workers/` and the entry files
+  outside `src/platform/`, `src/cli/`, `src/test-fixtures/`, the `deno` and
+  `workers` subfolders of `src/app` and of each feature, and the entry files
   (`src/deno.ts`, `src/deno-dev.ts`, `src/workers.ts`, `src/workers-vitest.ts`).
   Comments and string contents are ignored.
 - `size`: at most 1,500 lines per non-test source file.
