@@ -1141,13 +1141,73 @@ describe('apply-variables', () => {
         )
         // `worker` is a container: a service-scoped secret still needs a reference.
         assertEquals(result.runtimeAssignments.get('worker'), [])
-        assertEquals(result.unreferencedSecrets.get('worker'), [])
+        assertEquals(result.unreferencedSecrets.get('worker'), [
+          { key: 'API_KEY', source: 'service' },
+        ])
         // The build-only secret is neither delivered nor listed on the native app.
         assertEquals(
           result.runtimeAssignments.get('web')?.map((a) => a.name),
           ['API_KEY']
         )
         assertEquals(result.unreferencedSecrets.get('web'), [])
+      })
+    })
+
+    describe('unreferenced secrets of a container service', () => {
+      const docFor = (environment?: Record<string, string>, configs?: boolean) => {
+        const doc = emptyComposeDocument()
+        doc.data.services = {
+          web: {
+            image: 'x',
+            ...(environment ? { environment } : {}),
+            ...(configs ? { configs: [{ source: 'app', target: '/etc/app.conf' }] } : {}),
+          },
+        }
+        if (configs) doc.data.configs = { app: { content: 'pass={$API_KEY}' } }
+        return doc
+      }
+      const secret = entry({ key: 'API_KEY', isSecret: true, value: 'sealed', source: 'service' })
+
+      it('lists a runtime secret nothing references', () => {
+        const result = mustApply(
+          applyVariablesToComposeDocument(docFor(), {
+            globalEntries: [secret],
+            perServiceEntries: new Map(),
+          })
+        )
+        assertEquals(result.unreferencedSecrets.get('web'), [{ key: 'API_KEY', source: 'service' }])
+        assertEquals(result.secretMaterial, [])
+      })
+
+      it('does not list it once an environment entry references it', () => {
+        const result = mustApply(
+          applyVariablesToComposeDocument(docFor({ PASS: '{$API_KEY}' }), {
+            globalEntries: [secret],
+            perServiceEntries: new Map(),
+          })
+        )
+        assertEquals(result.unreferencedSecrets.get('web'), [])
+      })
+
+      it('does not list it when a generated config file reads it', () => {
+        const result = mustApply(
+          applyVariablesToComposeDocument(docFor(undefined, true), {
+            globalEntries: [secret],
+            perServiceEntries: new Map(),
+          })
+        )
+        assertEquals(result.unreferencedSecrets.get('web'), [])
+      })
+
+      it('does not list a binding secret, which attaches on its own', () => {
+        const result = mustApply(
+          applyVariablesToComposeDocument(docFor(), {
+            globalEntries: [{ ...secret, bindingId: 'binding-1' }],
+            perServiceEntries: new Map(),
+          })
+        )
+        assertEquals(result.unreferencedSecrets.get('web'), [])
+        assertEquals(result.secretMaterial.length, 1)
       })
     })
 

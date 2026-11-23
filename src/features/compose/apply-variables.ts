@@ -133,10 +133,10 @@ export type ApplyVariablesResult = {
    */
   buildAssignments: Map<string, BuildEnvAssignment[]>
   /**
-   * Runtime secrets a native app was **not** given because nothing references
-   * them, per compose service — so the list the app's owner reads can say so
-   * instead of leaving them out. Only filled for the services named in
-   * `params.nativeServiceNames`.
+   * Runtime secrets a service was **not** given because nothing references
+   * them, per compose service. A native app's list lets its owner read what was
+   * left out; for a container it feeds the `secret_variable_not_injected`
+   * warning (a secret a generated config file reads is not listed).
    */
   unreferencedSecrets: Map<string, UnreferencedSecret[]>
   /**
@@ -650,7 +650,7 @@ function attachUnreferencedSecret(
     if (entry.forRuntime) recordSecretAssignment(state, entry.key, entry)
     return
   }
-  if (state.nativeApp && entry.forRuntime && !state.plannedKeys.has(entry.key)) {
+  if (entry.forRuntime && !state.plannedKeys.has(entry.key)) {
     state.unreferencedSecrets.push({
       key: entry.key,
       ...(entry.source === undefined ? {} : { source: entry.source }),
@@ -932,6 +932,14 @@ export function applyVariablesToComposeDocument(
       (ref) => lookupVariable(ref, state.inherited, state.scopes, state.dbLookup)
     )
     if (configError) return configError
+    if (!state.nativeApp) {
+      state.unreferencedSecrets = state.unreferencedSecrets.filter(
+        (secret) =>
+          !configCtx.secretRefs.some(
+            (ref) => ref.composeServiceName === composeServiceName && ref.key === secret.key
+          )
+      )
+    }
     services[composeServiceName] = state.service
     runtimeAssignments.set(composeServiceName, state.runtimeAssignments)
     buildAssignments.set(composeServiceName, state.buildAssignments)

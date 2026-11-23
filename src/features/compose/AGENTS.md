@@ -955,6 +955,7 @@ mount to fall back on. A secret set higher up (organization, workspace, project,
 environment, server) is **not** passed until referenced, so a credential set for
 the whole organization never lands in an app that did not ask for it; it is
 listed with `reason: 'not_referenced'` (`unreferencedSecrets`, never the value).
+For a container the same list feeds the `secret_variable_not_injected` deploy and preview warning (not for a secret a generated config file reads).
 Other differences worth knowing: the value is passed as typed
 (trimmed, not Compose-escaped, and a non-literal value's `${…}` is **not**
 expanded); the platform's own names (`HOST`, `HOSTNAME`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,
