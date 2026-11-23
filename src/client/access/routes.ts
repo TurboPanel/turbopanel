@@ -283,11 +283,11 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     const entity = await resolveEntityById(db, validated.resourceId)
-    if (!entity) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    if (!isAccessGrantEntityType(entity.entityType)) {
+    if (
+      !entity ||
+      !isAccessGrantEntityType(entity.entityType) ||
+      !(await callerCanSeeEntity(db, session.userId, entity))
+    ) {
       return c.json({ error: 'Not found' }, 404)
     }
 
@@ -324,11 +324,11 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const { subjectKind, subjectId, resourceId, permissionKey } = parsed
 
     const entity = await resolveEntityById(db, resourceId)
-    if (!entity) {
-      return c.json({ error: 'Entity not found' }, 404)
-    }
-
-    if (!isAccessGrantEntityType(entity.entityType)) {
+    if (
+      !entity ||
+      !isAccessGrantEntityType(entity.entityType) ||
+      !(await callerCanSeeEntity(db, session.userId, entity))
+    ) {
       return c.json({ error: 'Entity not found' }, 404)
     }
 
@@ -397,7 +397,12 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       .limit(1)
 
     const accessRow = accessRows[0]
-    if (!accessRow) {
+    const accessEntity = accessRow ? await resolveEntityById(db, accessRow.entityId) : null
+    if (
+      !accessRow ||
+      !accessEntity ||
+      !(await callerCanSeeEntity(db, session.userId, accessEntity))
+    ) {
       return c.json({ error: 'Not found' }, 404)
     }
 

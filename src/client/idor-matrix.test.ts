@@ -1011,6 +1011,78 @@ test('GET /access/check answers another organization like an unknown id', async 
   })
 })
 
+test('GET and POST /access answer a foreign org or team like an unknown id', async () => {
+  await withFixture(async (fixture) => {
+    const headers = {
+      cookie: fixture.cookieA,
+      [ORG_ID_HEADER]: fixture.orgA,
+      'content-type': 'application/json',
+    }
+    const list = async (resourceId: string) => {
+      const response = await fixture.app.request(`/api/client/v1/access?resourceId=${resourceId}`, {
+        headers,
+      })
+      return { status: response.status, body: await response.text() }
+    }
+    const create = async (resourceId: string) => {
+      const response = await fixture.app.request('/api/client/v1/access', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          subjectKind: 'user',
+          subjectId: fixture.aOwn.userId,
+          resourceId,
+          effect: 'allow',
+          permissionKey: 'organization:manage',
+        }),
+      })
+      return { status: response.status, body: await response.text() }
+    }
+    const unknownId = crypto.randomUUID()
+    for (const call of [list, create]) {
+      const unknown = await call(unknownId)
+      assertEquals(unknown.status, 404)
+      for (const resourceId of [fixture.orgB, fixture.b.teamId!]) {
+        assertEquals(await call(resourceId), unknown)
+      }
+    }
+    const own = await list(fixture.orgA)
+    assertEquals(own.status, 200, own.body)
+  })
+})
+
+test('DELETE /access/:id answers a foreign grant like an unknown id', async () => {
+  await withFixture(async (fixture) => {
+    const remove = async (grantId: string) => {
+      const response = await fixture.app.request(`/api/client/v1/access/${grantId}`, {
+        method: 'DELETE',
+        headers: { cookie: fixture.cookieA, [ORG_ID_HEADER]: fixture.orgA },
+      })
+      return { status: response.status, body: await response.text() }
+    }
+    const [foreignGrant] = await fixture.db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(eq(grant.entityId, fixture.orgB))
+      .limit(1)
+    const unknown = await remove(crypto.randomUUID())
+    assertEquals(unknown.status, 404)
+    assertEquals(await remove(foreignGrant!.id), unknown)
+    const [ownGrant] = await fixture.db
+      .insert(grant)
+      .values({
+        entityType: 'organization',
+        entityId: fixture.orgA,
+        actorType: 'user',
+        actorId: fixture.aOwn.userId,
+        permission: 'organization:manage',
+      })
+      .returning({ id: grant.id })
+    const own = await remove(ownGrant!.id)
+    assertEquals(own.status, 200, own.body)
+  })
+})
+
 for (const [name, entry] of Object.entries(BODY_ID_CASES)) {
   test(`body ids: ${name} refuses B's id and accepts A's own`, async () => {
     await withFixture(async (fixture) => {
