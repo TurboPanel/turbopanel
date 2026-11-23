@@ -161,6 +161,15 @@ export const firewallSchemas = {
         },
       },
       notes: { type: 'array', items: { type: 'string' } },
+      skipped: {
+        type: 'array',
+        description:
+          'Stored addresses the check did not dial, each with one generic reason. A refusal never says why an address was refused.',
+        items: {
+          type: 'object',
+          properties: { address: { type: 'string' }, reason: { type: 'string' } },
+        },
+      },
     },
   },
   FirewallModeUpdate: {

@@ -18,7 +18,13 @@ become a way to scan the operator's network.
   co-located one (`plan.coLocated`).
 - Every address left out is returned in `probe.skipped` (`address`, `reason`)
   and in `notes`; nothing is dropped silently. The same `skipReason` predicate
-  picks the targets and re-checks each one just before dialling.
+  picks the targets and re-checks each one just before dialling. All refusals
+  share one reason text (`SKIP_REASON_REFUSED`) on purpose: `POST /ips` takes any
+  address, so a distinct reason for a control plane host address would let a
+  tenant enumerate that host's interfaces. Never add a distinguishing reason to
+  the response or `notes`; log it server-side if it is ever needed. Only the
+  per-server cap has its own text. The host's interface addresses are read once
+  per round.
 - Residual: a compromised daemon can report addresses it does not own. Closing
   that needs an owner-confirmed network list per datacenter, not more checks here.
 - Enforcement gating (`FIREWALL_APPLY_ENABLED`) is untouched by this module.

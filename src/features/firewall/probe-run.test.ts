@@ -13,6 +13,7 @@ import {
   type ProbePlan,
   probeGiveUpAt,
   probeOfLastResult,
+  SKIP_REASON_REFUSED,
 } from './probe-run.ts'
 
 const test = Deno.test.bind(Deno)
@@ -141,7 +142,7 @@ test('a manual private address the daemon never reported is skipped with a reaso
     round.skipped.map((s) => s.address),
     ['10.0.0.5', 'fd00::5']
   )
-  assertEquals(round.skipped[0]!.reason.includes('not reported'), true)
+  assertEquals(round.skipped[0]!.reason, SKIP_REASON_REFUSED)
 })
 
 test('a reported address matches by canonical form, not by spelling', async () => {
@@ -175,6 +176,26 @@ test('an address of the control plane host is skipped unless the server is the c
     plan(['93.184.216.34', '192.168.1.7'], [22], { reportedAddresses: own, coLocated: true })
   )
   assertEquals(same.calls.targets.length, 2)
+})
+
+test('a control plane host address is refused exactly like any other refusal, public or private', async () => {
+  const own = ['93.184.216.34', '192.168.1.7']
+  const { probe } = fakeProbe(() => OPEN, { canReachPrivate: true, localAddresses: own })
+  const round = await observeOutside(
+    probe,
+    plan(['93.184.216.34', '192.168.1.7', '10.0.0.5', '127.0.0.1'], [22], {
+      reportedAddresses: own,
+    })
+  )
+  assertEquals(
+    round.skipped.map((s) => s.reason),
+    Array.from({ length: 4 }, () => SKIP_REASON_REFUSED)
+  )
+  const lines = round.notes.filter((note) => note.includes('not checked'))
+  assertEquals(
+    lines.map((line) => line.replace(/^\S+ /, '')),
+    Array.from({ length: 4 }, () => lines[0]!.replace(/^\S+ /, ''))
+  )
 })
 
 test('addresses beyond the per-server cap are listed as skipped', async () => {

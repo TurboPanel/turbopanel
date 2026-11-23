@@ -19,7 +19,9 @@
  *   control plane dial the operator's network.
  * - NEVER an interface address of the control plane's own host, unless this
  *   server is the co-located one.
- * - Every address left out is returned in `skipped` with the reason.
+ * - Every address left out is returned in `skipped` with one generic reason
+ *   ({@link SKIP_REASON_REFUSED}); the tenant cannot tell a control plane host
+ *   address from an unreported private one.
  * - Bounded: {@link PROBE_CONCURRENCY} connections at once, one handshake each
  *   of at most {@link PROBE_TIMEOUT_MS}, {@link MAX_PROBE_TARGETS} in a round.
  *   Nothing is written to or read from a connection, and only
@@ -124,6 +126,7 @@ function isReported(plan: ProbePlan, address: string): boolean {
   return canonical !== null && plan.reportedAddresses.includes(canonical)
 }
 
+/** Canonical interface addresses of the control plane host, read once per round. */
 function controlPlaneAddresses(probe: TcpProbe): Set<string> {
   const own = new Set<string>()
   for (const address of probe.localAddresses?.() ?? []) {
@@ -133,26 +136,38 @@ function controlPlaneAddresses(probe: TcpProbe): Set<string> {
   return own
 }
 
+/**
+ * The one reason every refused address carries. It is shown to the tenant, so
+ * it must not tell a control plane host address apart from any other refusal.
+ */
+export const SKIP_REASON_REFUSED = 'not an address this control plane will check for this server'
+
 /** Why `address` must not be dialled for this plan, or null when it may be. */
-function skipReason(plan: ProbePlan, address: string, probe: TcpProbe): string | null {
-  if (!mayProbeAddress(address, probe.canReachPrivate)) {
-    return 'private or not dialable from this control plane'
+function skipReason(
+  plan: ProbePlan,
+  address: string,
+  probe: TcpProbe,
+  own: ReadonlySet<string>
+): string | null {
+  if (!mayProbeAddress(address, probe.canReachPrivate)) return SKIP_REASON_REFUSED
+  if (classifyProbeAddress(address) === 'private' && !isReported(plan, address)) {
+    return SKIP_REASON_REFUSED
   }
   const canonical = canonicalIpAddress(address)
-  if (!plan.coLocated && canonical !== null && controlPlaneAddresses(probe).has(canonical)) {
-    return 'an address of the control plane host itself'
-  }
-  if (classifyProbeAddress(address) === 'private' && !isReported(plan, address)) {
-    return 'a private address this server’s daemon has not reported'
-  }
+  if (!plan.coLocated && canonical !== null && own.has(canonical)) return SKIP_REASON_REFUSED
   return null
 }
 
-function buildTargets(plan: ProbePlan, probe: TcpProbe, notes: string[]): Targets {
+function buildTargets(
+  plan: ProbePlan,
+  probe: TcpProbe,
+  own: ReadonlySet<string>,
+  notes: string[]
+): Targets {
   const usable: string[] = []
   const skipped: SkippedAddress[] = []
   for (const address of plan.addresses) {
-    const checked = skipReason(plan, address, probe)
+    const checked = skipReason(plan, address, probe, own)
     const reason =
       checked === null && usable.length >= MAX_PROBE_ADDRESSES
         ? `more than ${MAX_PROBE_ADDRESSES} addresses on this server`
@@ -172,11 +187,16 @@ function buildTargets(plan: ProbePlan, probe: TcpProbe, notes: string[]): Target
 }
 
 /** The last line of defence: a target must be one of the plan's own addresses and ports, and still pass every address rule. */
-function isPlannedTarget(plan: ProbePlan, target: Target, probe: TcpProbe): boolean {
+function isPlannedTarget(
+  plan: ProbePlan,
+  target: Target,
+  probe: TcpProbe,
+  own: ReadonlySet<string>
+): boolean {
   return (
     plan.addresses.includes(target.address) &&
     plan.ports.some((port) => port.port === target.port) &&
-    skipReason(plan, target.address, probe) === null
+    skipReason(plan, target.address, probe, own) === null
   )
 }
 
@@ -215,8 +235,9 @@ export async function observeOutside(
   timeoutMs: number = PROBE_TIMEOUT_MS
 ): Promise<OutsideRound> {
   const notes = [...plan.notes]
-  const built = buildTargets(plan, probe, notes)
-  const targets = built.targets.filter((target) => isPlannedTarget(plan, target, probe))
+  const own = controlPlaneAddresses(probe)
+  const built = buildTargets(plan, probe, own, notes)
+  const targets = built.targets.filter((target) => isPlannedTarget(plan, target, probe, own))
   const observations = await runBounded(targets, PROBE_CONCURRENCY, async (target) => {
     const result = await probe.connect(target, timeoutMs)
     return { address: target.address, port: target.port, state: result.state, ms: result.ms }
