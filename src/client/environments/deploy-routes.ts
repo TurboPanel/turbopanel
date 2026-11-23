@@ -3039,7 +3039,12 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     if (loaded instanceof Response) return loaded
     // Every refusal of a Destroy that deletes data comes before anything stops.
     const dataPlan = request.deleteVolumes
-      ? await planDestroyData(c, db, { environmentId, serverIds: loaded.serverIds, request })
+      ? await planDestroyData(c, db, {
+          organizationId: auth.organizationId,
+          environmentId,
+          serverIds: loaded.serverIds,
+          request,
+        })
       : null
     if (dataPlan instanceof Response) return dataPlan
     const removeVolumes = dataPlan?.volumes.map(({ storageId }) => ({ storageId })) ?? []

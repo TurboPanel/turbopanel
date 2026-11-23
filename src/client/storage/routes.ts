@@ -586,6 +586,18 @@ async function validateCreateChildren(
   return null
 }
 
+/** A parent of another organization answers like an unknown one. */
+async function refuseForeignParent(
+  c: Context<AppEnv>,
+  db: StorageDb,
+  orgId: string,
+  parent: StorageParentRef
+): Promise<Response | null> {
+  if (parent.id === null) return null
+  const parentOrgId = await resolveEntityOrganizationId(db, parent.entityKind, parent.id)
+  return parentOrgId === orgId ? null : apiError(c, 404, 'not_found', 'Not found')
+}
+
 async function createStorageRecord(
   c: Context<AppEnv>,
   db: StorageDb,
@@ -595,11 +607,8 @@ async function createStorageRecord(
   const parent = parseStorageParent(c, body)
   if (parent instanceof Response) return parent
 
-  // A parent of another organization answers like an unknown one.
-  if (parent.id !== null) {
-    const parentOrgId = await resolveEntityOrganizationId(db, parent.entityKind, parent.id)
-    if (parentOrgId !== orgId) return apiError(c, 404, 'not_found', 'Not found')
-  }
+  const foreignParent = await refuseForeignParent(c, db, orgId, parent)
+  if (foreignParent) return foreignParent
 
   const parentId = parent.id ?? orgId
   const denied = await assertCanCreateOr403(c, parent.entityKind, parentId)

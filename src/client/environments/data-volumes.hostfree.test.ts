@@ -133,7 +133,7 @@ test('listEnvironmentDataVolumes marks volumes another environment uses', async 
     [{ storageId: B }],
     [{ storageId: C }],
   ])
-  const result = await listEnvironmentDataVolumes(db, 'env-1')
+  const result = await listEnvironmentDataVolumes(db, 'org-1', 'env-1')
   assertEquals(result.volumes, [{ storageId: A, name: 'db', copyServerIds: [] }])
   assertEquals(
     result.kept.map(({ name, reason }) => [name, reason]),
@@ -145,6 +145,6 @@ test('listEnvironmentDataVolumes marks volumes another environment uses', async 
 })
 
 test('listEnvironmentDataVolumes returns nothing for an environment without Docker volumes', async () => {
-  const result = await listEnvironmentDataVolumes(fakeDb([[], []]), 'env-1')
+  const result = await listEnvironmentDataVolumes(fakeDb([[], []]), 'org-1', 'env-1')
   assertEquals(result, { volumes: [], kept: [] })
 })

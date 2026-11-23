@@ -171,6 +171,7 @@ async function usedByOtherEnvironments(
 /** The registered Docker volumes of an environment, split into removable and kept. */
 export async function listEnvironmentDataVolumes(
   db: Pick<Db, 'select'>,
+  organizationId: string,
   environmentId: string
 ): Promise<EnvironmentDataVolumes> {
   const serviceRows = await db
@@ -191,6 +192,7 @@ export async function listEnvironmentDataVolumes(
     .innerJoin(storageCopy, eq(storageCopy.storageId, storage.id))
     .where(
       and(
+        eq(storage.organizationId, organizationId),
         eq(storage.kind, 'volume'),
         eq(storageCopy.provider, 'docker'),
         or(

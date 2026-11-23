@@ -26,6 +26,9 @@ import { assert, assertEquals } from '@std/assert'
 import { and, eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
+import { loadStoragePins } from '../features/schedule/plan-deploy.ts'
+import { listEnvironmentDataVolumes } from './environments/data-volumes.ts'
+import { loadStorageMaterial } from './environments/deploy-prepare.ts'
 import { createDenoDb } from '../db/connection.ts'
 import { getDatabaseUrl } from '../db/url.ts'
 import {
@@ -76,7 +79,6 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './authn/crypto.ts'
 import { createSession } from './authn/session-store.ts'
 import { ORG_ID_HEADER } from './org-context.ts'
 import { registerClientRoutes } from './routes.ts'
-import { loadStoragePins } from '../features/schedule/plan-deploy.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -1138,32 +1140,82 @@ for (const { field, own } of STORAGE_PARENT_CASES) {
   })
 }
 
+/** A's volume attached to B's environment, as the foreign-parent create bug left it. */
+async function seedStrayVolumeOnB(fixture: Fixture): Promise<string> {
+  const { db, orgA, nonce } = fixture
+  const stray = await insertId(
+    db
+      .insert(storage)
+      .values({
+        organizationId: orgA,
+        environmentId: fixture.b.environmentId!,
+        kind: 'volume',
+        name: `idor-a-${nonce}-stray`,
+      })
+      .returning({ id: storage.id })
+  )
+  await db
+    .insert(storageCopy)
+    .values({ storageId: stray, serverId: fixture.aOwn.serverId, provider: 'docker' })
+  await db
+    .insert(mount)
+    .values({ storageId: stray, serviceId: fixture.b.serviceId!, destinationPath: '/stray' })
+  return stray
+}
+
 test('deploy planning ignores storage of another organization attached to this environment', async () => {
   await withFixture(async (fixture) => {
-    const { db, orgA, orgB, nonce } = fixture
-    const stray = await insertId(
-      db
-        .insert(storage)
-        .values({
-          organizationId: orgA,
-          environmentId: fixture.b.environmentId!,
-          kind: 'volume',
-          name: `idor-a-${nonce}-stray`,
-        })
-        .returning({ id: storage.id })
-    )
-    await db
-      .insert(storageCopy)
-      .values({ storageId: stray, serverId: fixture.aOwn.serverId, provider: 'docker' })
-    await db
-      .insert(mount)
-      .values({ storageId: stray, serviceId: fixture.b.serviceId!, destinationPath: '/stray' })
+    const { db, orgA, orgB } = fixture
+    // Only the stray row pins the service, so the result does not depend on row order.
+    await db.delete(mount).where(eq(mount.serviceId, fixture.b.serviceId!))
+    await seedStrayVolumeOnB(fixture)
 
     const asB = await loadStoragePins(db, orgB, fixture.b.environmentId!)
-    // Only B's own storage pins the service; A's stray row does not.
-    assertEquals(asB.get(fixture.b.serviceId!), fixture.b.serverId)
-    // Control: the same rows are picked up when the organization matches.
+    assertEquals(asB.get(fixture.b.serviceId!), undefined)
+    // Control: the same row is picked up when the organization matches.
     const asA = await loadStoragePins(db, orgA, fixture.b.environmentId!)
     assertEquals(asA.get(fixture.b.serviceId!), fixture.aOwn.serverId)
+  })
+})
+
+test('deploy storage material ignores storage of another organization attached to this environment', async () => {
+  await withFixture(async (fixture) => {
+    const { db, orgA, orgB } = fixture
+    const stray = await seedStrayVolumeOnB(fixture)
+    const load = (organizationId: string) =>
+      loadStorageMaterial(db, {
+        environmentId: fixture.b.environmentId!,
+        projectId: fixture.b.projectId!,
+        organizationId,
+        serverId: fixture.aOwn.serverId,
+        serviceIds: [fixture.b.serviceId!],
+        cloneNamesByServiceId: new Map(),
+        registeredVolumes: [],
+      })
+
+    const asB = await load(orgB)
+    assertEquals(
+      asB.some((entry) => entry.storageId === stray),
+      false
+    )
+    const asA = await load(orgA)
+    assertEquals(
+      asA.some((entry) => entry.storageId === stray),
+      true
+    )
+  })
+})
+
+test('environment data volumes ignore storage of another organization attached to this environment', async () => {
+  await withFixture(async (fixture) => {
+    const { db, orgA, orgB } = fixture
+    const stray = await seedStrayVolumeOnB(fixture)
+    const listed = async (organizationId: string) => {
+      const result = await listEnvironmentDataVolumes(db, organizationId, fixture.b.environmentId!)
+      return [...result.volumes, ...result.kept].map((volume) => volume.storageId)
+    }
+
+    assertEquals((await listed(orgB)).includes(stray), false)
+    assertEquals((await listed(orgA)).includes(stray), true)
   })
 })

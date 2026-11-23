@@ -107,10 +107,11 @@ export function sameVolumeList(
 /** The list for an environment whose stop goes to `serverIds`. */
 export async function buildDestroyDataPlan(
   db: Db,
+  organizationId: string,
   environmentId: string,
   serverIds: readonly string[]
 ): Promise<DestroyDataPlan> {
-  const listed = await listEnvironmentDataVolumes(db, environmentId)
+  const listed = await listEnvironmentDataVolumes(db, organizationId, environmentId)
   const targets = new Set(serverIds)
   const elsewhereIds = [
     ...new Set(listed.volumes.flatMap((v) => v.copyServerIds.filter((id) => !targets.has(id)))),
@@ -134,6 +135,7 @@ export async function planDestroyData(
   c: Context<AppEnv>,
   db: Db,
   params: {
+    organizationId: string
     environmentId: string
     serverIds: readonly string[]
     request: DestroyRequest
@@ -155,7 +157,12 @@ export async function planDestroyData(
     )
   }
 
-  const plan = await buildDestroyDataPlan(db, params.environmentId, params.serverIds)
+  const plan = await buildDestroyDataPlan(
+    db,
+    params.organizationId,
+    params.environmentId,
+    params.serverIds
+  )
   if (!sameVolumeList(params.request.volumeIds, plan.volumes)) {
     return c.json(
       {
@@ -200,6 +207,6 @@ export function registerEnvironmentDataVolumeRoutes(
     if (denied) return denied
 
     const serverIds = await loadServerIds(db, environmentId)
-    return c.json(await buildDestroyDataPlan(db, environmentId, serverIds))
+    return c.json(await buildDestroyDataPlan(db, orgResult, environmentId, serverIds))
   })
 }
