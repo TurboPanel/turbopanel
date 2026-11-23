@@ -452,7 +452,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     // `pg_reload_conf()` would reload stale (or orphaned-unreadable) content.
     // The sibling mountpoint (`/etc/postgresql/conf`) also avoids nesting
     // `./tls` under a read-only `./config` parent (OCI mkdirat fail).
-    volumes: [`${volumeName}:${DATA_VOLUME_TARGET}`, `./config:/etc/postgresql/conf:ro`],
+    volumes: [`${volumeName}:${DATA_VOLUME_TARGET}:rw`, `./config:/etc/postgresql/conf:ro`],
     healthcheck: {
       test: healthcheck.test,
       interval: healthcheck.interval,

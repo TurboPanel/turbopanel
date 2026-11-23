@@ -81,6 +81,7 @@ test('volume name is hyphen-free and targets /var/lib/mysql', () => {
   assertEquals(spec.volumes[0]?.target, '/var/lib/mysql')
   assertEquals(spec.volumes[0]?.name, 'managed_aaaaaaaa_bbbb_cccc_dddd_eeeeeeeeeeee_data')
   assertEquals(spec.volumes[0]?.name.includes('-'), false)
+  assertEquals((spec.service.volumes as string[])[0], `${spec.volumes[0]?.name}:/var/lib/mysql:rw`)
 })
 
 test('MYSQL_ROOT_PASSWORD is placeholder and never plaintext', () => {
