@@ -1151,6 +1151,81 @@ describe('apply-variables', () => {
       })
     })
 
+    describe('secrets that reach no container of the stack', () => {
+      const stack = (
+        envs: Record<string, Record<string, string> | undefined>,
+        extra: Record<string, unknown> = {}
+      ) => {
+        const doc = emptyComposeDocument()
+        doc.data.services = Object.fromEntries(
+          Object.entries(envs).map(([name, environment]) => [
+            name,
+            { image: 'x', ...(environment ? { environment } : {}), ...(extra[name] as object) },
+          ])
+        )
+        return doc
+      }
+      const secret = entry({ key: 'API_KEY', isSecret: true, value: 'sealed', source: 'project' })
+      const run = (doc: ReturnType<typeof stack>, entries = [secret], native?: string[]) =>
+        mustApply(
+          applyVariablesToComposeDocument(doc, {
+            globalEntries: entries,
+            perServiceEntries: new Map(),
+            ...(native ? { nativeServiceNames: new Set(native) } : {}),
+          })
+        )
+
+      it('reports a secret no container references, once, with every service it was in scope for', () => {
+        const result = run(stack({ app: undefined, db: undefined }))
+        assertEquals(result.secretsNotInjected, [
+          { key: 'API_KEY', source: 'project', composeServiceNames: ['app', 'db'] },
+        ])
+        assertEquals(result.secretMaterial, [])
+      })
+
+      it('says nothing when only one of two containers references it', () => {
+        const result = run(stack({ app: { PASS: '{$API_KEY}' }, cache: undefined }))
+        assertEquals(result.secretsNotInjected, [])
+      })
+
+      it('says nothing when a generated config file reads it', () => {
+        const doc = stack(
+          { web: undefined, other: undefined },
+          { web: { configs: [{ source: 'app', target: '/etc/app.conf' }] } }
+        )
+        doc.data.configs = { app: { content: 'pass={$API_KEY}' } }
+        assertEquals(run(doc).secretsNotInjected, [])
+      })
+
+      it('says nothing for a binding secret', () => {
+        const result = run(stack({ web: undefined }), [{ ...secret, bindingId: 'binding-1' }])
+        assertEquals(result.secretsNotInjected, [])
+      })
+
+      it('says nothing for a secret only a network share password uses', () => {
+        const doc = stack({ web: undefined })
+        doc.data.volumes = {
+          media: {
+            driver_opts: {
+              type: 'cifs',
+              device: '//h.example.net/m',
+              o: 'username=u,password={$API_KEY},vers=3.0',
+            },
+          },
+        }
+        assertEquals(run(doc).secretsNotInjected, [])
+      })
+
+      it('does not report native apps', () => {
+        assertEquals(run(stack({ web: undefined }), [secret], ['web']).secretsNotInjected, [])
+      })
+
+      it('does not report a secret that is not for runtime', () => {
+        const buildOnly = { ...secret, forBuild: true, forRuntime: false }
+        assertEquals(run(stack({ web: undefined }), [buildOnly]).secretsNotInjected, [])
+      })
+    })
+
     it('records binding-owned secrets, which attach without a reference', () => {
       const doc = emptyComposeDocument()
       doc.data.services = { web: { image: 'x' } }

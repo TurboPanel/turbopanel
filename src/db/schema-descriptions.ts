@@ -1173,7 +1173,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       value:
         'Plaintext for non-secrets; for secrets a sealed `tpsecret` envelope (data-encryption key) the API never returns and deploy delivers as a file.',
       is_secret:
-        'True marks the value sealed and write-only: read back as null, never interpolated into YAML or `.env`, compiled to a Compose secret file at deploy.',
+        'Sealed, read back as null, never in YAML or .env; a container gets it only as a file (NAME becomes NAME_FILE), and only when referenced.',
       is_literal:
         'True escapes `$` so Docker Compose does not interpolate the value; false leaves a `$OTHER` reference for Compose to expand (API field `isLiteral`).',
       is_for_build:

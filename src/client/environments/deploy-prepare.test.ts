@@ -38,6 +38,7 @@ import {
   listContainerComposeNames,
   loadPrincipalMaterial,
   detachMountsOfRemovedServices,
+  secretNotInjectedWarnings,
   loadStorageMaterial,
   localManagedNetworkServiceNames,
   managedNetworkNamesForDeploy,
@@ -2750,5 +2751,23 @@ describe('detachMountsOfRemovedServices', () => {
     )
     assertEquals(material.length, 1)
     assertEquals(material[0]!.mounts, [])
+  })
+})
+
+describe('secretNotInjectedWarnings', () => {
+  it('gives one warning per secret that reached no container', () => {
+    const out = secretNotInjectedWarnings([
+      { key: 'API_KEY', composeServiceNames: ['web', 'worker'] },
+    ])
+    assertEquals(out.length, 1)
+    assertEquals(out[0]!.code, 'secret_variable_not_injected')
+    assertEquals(out[0]!.details, { variable: 'API_KEY', composeServiceNames: ['web', 'worker'] })
+    assertEquals(out[0]!.message.includes('NAME: "{$API_KEY}"'), true)
+    assertEquals(out[0]!.message.includes('NAME_FILE'), true)
+    assertEquals(out[0]!.message.includes('configs:'), true)
+  })
+
+  it('says nothing when every secret reached a container', () => {
+    assertEquals(secretNotInjectedWarnings([]), [])
   })
 })
