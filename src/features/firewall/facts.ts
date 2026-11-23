@@ -54,6 +54,7 @@ import { parseOrganizationOptions } from '../organizations/organization-options.
 import { resolveEffectiveSshPort } from '../servers/host-defaults.ts'
 import { parseServerOptions } from '../servers/server-metadata.ts'
 import { SYSTEM_SELF_HOST_COMPONENT } from '../system/hierarchy.ts'
+import { ipAddressScope } from '../../lib/ip-address.ts'
 import { publishedPortsOfCompose } from './compose-ports.ts'
 import type {
   DerivedExposure,
@@ -431,6 +432,17 @@ async function loadDeployedEnvironments(db: Db, serverId: string): Promise<Envir
   }))
 }
 
+/**
+ * A port published on a private or link-local host address is reachable from
+ * this datacenter network only; one on every address, or on a public address,
+ * is reachable by anyone.
+ */
+function reachOfHostIp(hostIp: string | undefined): ExposureReach {
+  if (hostIp === undefined) return 'public'
+  const scope = ipAddressScope(hostIp)
+  return scope === 'private' || scope === 'link-local' ? 'datacenter' : 'public'
+}
+
 function exposureFromPublishedPort(port: {
   proto: 'tcp' | 'udp'
   ports: string
@@ -442,7 +454,7 @@ function exposureFromPublishedPort(port: {
     scope: 'published',
     proto: port.proto,
     ports: port.ports,
-    reach: 'public',
+    reach: reachOfHostIp(port.hostIp),
     comment: `App ${port.service}`,
     ...(port.hostIp === undefined ? {} : { destination: port.hostIp }),
   }
