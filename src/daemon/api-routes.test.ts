@@ -3105,7 +3105,12 @@ test('POST /metrics returns 429 when metricsLimiter denies with valid JWT', asyn
     body: JSON.stringify(buildValidMetricsFrame()),
   })
   assertEquals(response.status, 429)
-  assertEquals(await response.json(), { ok: false, error: 'rate_limited' })
+  assertEquals(await response.json(), {
+    ok: false,
+    error: 'rate_limited',
+    code: 'rate_limited',
+    message: 'Too many requests',
+  })
   assertEquals(writes.length, 0)
 })
 

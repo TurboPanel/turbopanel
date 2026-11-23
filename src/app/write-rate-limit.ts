@@ -38,8 +38,9 @@ import {
   DEVELOPER_API_PREFIX,
   INSTALL_API_PREFIX,
 } from './surfaces.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
-export const WRITE_RATE_LIMITED_CODE = 'rate_limited'
+export const WRITE_RATE_LIMITED_CODE = 'rate_limited' as const
 
 /** Matches the Wrangler binding / Redis bucket period. */
 export const DEFAULT_WRITE_RATE_PERIOD_SECONDS = 60
@@ -135,7 +136,7 @@ export function createWriteRateLimitMiddleware(options: {
     if (!isLimitedPath(pathname)) return next()
     const key = await writeRateLimitKey(c, options.runtime, options.secrets)
     if (key === null || (await isWithinBudget(limiter, key))) return next()
-    return c.json({ ok: false, error: 'Too many requests', code: WRITE_RATE_LIMITED_CODE }, 429, {
+    return apiError(c, 429, WRITE_RATE_LIMITED_CODE, 'Too many requests', undefined, {
       'Retry-After': retryAfter,
     })
   }

@@ -1,10 +1,6 @@
 /**
  * The fleet-wide and single-server "ask the daemon what addresses it sees
- * itself as" round trip, shared verbatim between the admin console
- * (`src/admin/routes.ts`) and the developer console (`src/developer/routes-core.ts`).
- * Both surfaces expose the same two GET routes for the same reason (a manual
- * "what does this daemon think its own IPs are" check) and used to carry two
- * independently hand-written copies of this handler.
+ * itself as" round trip, used by the admin console (`src/admin/routes.ts`).
  */
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'

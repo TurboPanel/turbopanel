@@ -33,6 +33,7 @@ import {
   startGithubManifestHandler,
   syncForgeHandler,
 } from './handlers.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 
 const FORGE_PATHS = [
   '/forges',
@@ -62,7 +63,7 @@ export function registerForgeRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts): 
    */
   const resolve = async (c: Parameters<typeof getOrgId>[0]) => {
     const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    if (!db) return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     const session = c.get('session')
     if (!session) return c.json({ error: 'Unauthorized' }, 401)
     const organizationId = await getOrgId(c, session.userId)

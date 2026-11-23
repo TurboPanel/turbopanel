@@ -21,19 +21,20 @@ import {
 } from '../client/authn/auth-body-limits.ts'
 import { parseCompleteInstallBodyRaw, parseInstallHostCredentialsBody } from './parse-body.ts'
 import { INSTALL_API_PREFIX } from '../app/surfaces.ts'
+import { apiError } from '../lib/http/api-error.ts'
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   if (opts.runtime !== 'deno') {
-    return c.json({ ok: false, error: 'Not available' }, 404)
+    return apiError(c, 404, 'not_available', 'Not available')
   }
 
   if (!opts.secrets) {
-    return c.json({ ok: false, error: 'Not configured' }, 503)
+    return apiError(c, 503, 'not_configured', 'Not configured')
   }
 
   const db = getDb(c)
   if (db === undefined) {
-    return c.json({ ok: false, error: 'Database unavailable' }, 503)
+    return apiError(c, 503, 'database_unavailable', 'Database unavailable')
   }
 
   if (await isInstanceInstalled(db)) {
@@ -119,12 +120,12 @@ export function registerInstallRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
 
   install.post('/bootstrap', async (c) => {
     if (opts.runtime !== 'deno') {
-      return c.json({ ok: false, error: 'Not available' }, 404)
+      return apiError(c, 404, 'not_available', 'Not available')
     }
 
     const db = getDb(c)
     if (db === undefined) {
-      return c.json({ ok: false, error: 'Database unavailable' }, 503)
+      return apiError(c, 503, 'database_unavailable', 'Database unavailable')
     }
 
     if (await isInstanceInstalled(db)) {
@@ -150,7 +151,6 @@ export function registerInstallRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   install.post('/', (c) => completeInstallHandler(c, opts))
-  app.post(`${INSTALL_API_PREFIX}/`, (c) => completeInstallHandler(c, opts))
 
   app.route(INSTALL_API_PREFIX, install)
   return app

@@ -11,6 +11,7 @@ import {
   type SecretsConfig,
 } from './lib/secrets/secrets.ts'
 import { type AppEnv, createApp } from './app/app.ts'
+import { registerApiNotFound } from './app/invalid-id-error.ts'
 import { createDurableObjectDaemonCellRegistry } from './daemon/cell/do-registry.ts'
 import { runOfflineSweep } from './daemon/cell/offline-sweep.ts'
 import { registerAdminRoutes } from './admin/routes.ts'
@@ -597,6 +598,7 @@ export default {
           }
         }
       })
+      registerApiNotFound(requestApp)
       requestApp.route('/', cachedApp!)
 
       // A GET/HEAD that failed on a dropped database connection is replayed

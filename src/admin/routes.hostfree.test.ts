@@ -1398,13 +1398,6 @@ test('instance updates: workers refuses the control plane, GET still reports its
     assertEquals(automatic.pausedBy, null)
     assertEquals(automatic.daemonsBehind, false)
     assertEquals(automatic.updateWaiting, false)
-
-    const upgrade = await workers.app.request(`${ADMIN_API_PREFIX}/instance/updates/instance`, {
-      method: 'POST',
-      headers: { Cookie: workers.cookie },
-    })
-    assertEquals(upgrade.status, 410)
-    assertEquals((await jsonBody<{ error: string }>(upgrade)).error, 'updates_automatic')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -1474,7 +1467,7 @@ test('instance updates: on Workers the UI is deployed, never offered as an insta
   }
 })
 
-test('every route that started, retried or cancelled an update by hand answers 410 updates_automatic', async () => {
+test('the retired manual-update and next-key routes are gone: they answer 404, never 410', async () => {
   for (const runtime of ['deno', 'workers'] as const) {
     const { app, cookie } = await buildApp({
       runtime,
@@ -1492,12 +1485,13 @@ test('every route that started, retried or cancelled an update by hand answers 4
         method: 'POST',
         headers: { Cookie: cookie },
       })
-      assertEquals(res.status, 410, `${runtime} ${path}`)
-      const body = await jsonBody<{ ok: boolean; error: string; message: string }>(res)
-      assertEquals(body.ok, false)
-      assertEquals(body.error, 'updates_automatic')
-      assertEquals(body.message.includes('Pause All Updates'), true)
+      assertEquals(res.status, 404, `${runtime} ${path}`)
     }
+    const next = await app.request(`${ADMIN_API_PREFIX}/instance/identity/next`, {
+      method: 'PUT',
+      headers: { Cookie: cookie },
+    })
+    assertEquals(next.status, 404, `${runtime} identity/next`)
   }
 })
 

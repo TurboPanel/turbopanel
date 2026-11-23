@@ -118,7 +118,12 @@ test('POST /bootstrap returns 404 on Workers runtime', async () => {
     body: JSON.stringify({ username: 'root', password: 'x' }),
   })
   assertEquals(res.status, 404)
-  assertEquals(await res.json(), { ok: false, error: 'Not available' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Not available',
+    code: 'not_available',
+    message: 'Not available',
+  })
 })
 
 test('POST /bootstrap returns 503 without a database', async () => {
@@ -129,7 +134,12 @@ test('POST /bootstrap returns 503 without a database', async () => {
     body: JSON.stringify({ username: 'root', password: 'x' }),
   })
   assertEquals(res.status, 503)
-  assertEquals(await res.json(), { ok: false, error: 'Database unavailable' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Database unavailable',
+    code: 'database_unavailable',
+    message: 'Database unavailable',
+  })
 })
 
 test('POST /bootstrap returns 409 when the instance is already configured', async () => {
@@ -182,7 +192,7 @@ test('POST /bootstrap returns 401 for invalid host credentials without PAM', asy
 
 test('POST / returns 404 on Workers runtime', async () => {
   const app = await buildApp({ runtime: 'workers' })
-  const res = await app.request(`${INSTALL_API_PREFIX}/`, {
+  const res = await app.request(INSTALL_API_PREFIX, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -193,12 +203,17 @@ test('POST / returns 404 on Workers runtime', async () => {
     }),
   })
   assertEquals(res.status, 404)
-  assertEquals(await res.json(), { ok: false, error: 'Not available' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Not available',
+    code: 'not_available',
+    message: 'Not available',
+  })
 })
 
 test('POST / returns 503 without session secrets', async () => {
   const app = await buildApp({ withSecrets: false })
-  const res = await app.request(`${INSTALL_API_PREFIX}/`, {
+  const res = await app.request(INSTALL_API_PREFIX, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -209,12 +224,17 @@ test('POST / returns 503 without session secrets', async () => {
     }),
   })
   assertEquals(res.status, 503)
-  assertEquals(await res.json(), { ok: false, error: 'Not configured' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Not configured',
+    code: 'not_configured',
+    message: 'Not configured',
+  })
 })
 
 test('POST / returns 503 without a database', async () => {
   const app = await buildApp({ withDb: false })
-  const res = await app.request(`${INSTALL_API_PREFIX}/`, {
+  const res = await app.request(INSTALL_API_PREFIX, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -225,12 +245,17 @@ test('POST / returns 503 without a database', async () => {
     }),
   })
   assertEquals(res.status, 503)
-  assertEquals(await res.json(), { ok: false, error: 'Database unavailable' })
+  assertEquals(await res.json(), {
+    ok: false,
+    error: 'Database unavailable',
+    code: 'database_unavailable',
+    message: 'Database unavailable',
+  })
 })
 
 test('POST / returns 409 when the instance is already configured', async () => {
   const app = await buildApp({ installed: true })
-  const res = await app.request(`${INSTALL_API_PREFIX}/`, {
+  const res = await app.request(INSTALL_API_PREFIX, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -249,7 +274,7 @@ test('POST / returns 409 when the instance is already configured', async () => {
 
 test('POST / returns 400 for incomplete install bodies and invalid JSON', async () => {
   const app = await buildApp()
-  const res = await app.request(`${INSTALL_API_PREFIX}/`, {
+  const res = await app.request(INSTALL_API_PREFIX, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -261,7 +286,7 @@ test('POST / returns 400 for incomplete install bodies and invalid JSON', async 
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { ok: false, error: 'Invalid request' })
 
-  const badJson = await app.request(`${INSTALL_API_PREFIX}/`, {
+  const badJson = await app.request(INSTALL_API_PREFIX, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: '{',
@@ -272,7 +297,7 @@ test('POST / returns 400 for incomplete install bodies and invalid JSON', async 
 
 test('POST / returns 401 for invalid host credentials without PAM', async () => {
   const app = await buildApp()
-  const res = await app.request(`${INSTALL_API_PREFIX}/`, {
+  const res = await app.request(INSTALL_API_PREFIX, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -301,7 +326,7 @@ test('POST /bootstrap and POST / return 429 when the limiter blocks', async () =
   })
   assertEquals(bootstrap.status, 429)
 
-  const complete = await app.request(`${INSTALL_API_PREFIX}/`, {
+  const complete = await app.request(INSTALL_API_PREFIX, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: completeInstallBody(),
@@ -326,7 +351,7 @@ test('POST / surfaces completeInstanceInstall validation errors after host auth'
   await withDevHostAuth(async () => {
     const app = await buildApp()
 
-    const badEmail = await app.request(`${INSTALL_API_PREFIX}/`, {
+    const badEmail = await app.request(INSTALL_API_PREFIX, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: completeInstallBody({ superadminEmail: 'not-an-email' }),
@@ -337,7 +362,7 @@ test('POST / surfaces completeInstanceInstall validation errors after host auth'
       error: 'Enter a valid email address',
     })
 
-    const badPassword = await app.request(`${INSTALL_API_PREFIX}/`, {
+    const badPassword = await app.request(INSTALL_API_PREFIX, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: completeInstallBody({ superadminPassword: 'short1!' }),
@@ -348,7 +373,7 @@ test('POST / surfaces completeInstanceInstall validation errors after host auth'
       error: 'Password must be at least 8 characters',
     })
 
-    const mockDbCannotInstall = await app.request(`${INSTALL_API_PREFIX}/`, {
+    const mockDbCannotInstall = await app.request(INSTALL_API_PREFIX, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: completeInstallBody(),
