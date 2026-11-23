@@ -14,8 +14,10 @@
  * every job it runs is one of these rows.
  *
  * A row on one runtime only carries `oneSided`, the written reason. The test
- * `table.hostfree.test.ts` fails when a row is missing from a runtime it names
- * or present on one it does not, and when a one-sided row has no reason.
+ * `table.hostfree.test.ts` fails when a Deno handler is missing for a row, when a
+ * runtime wires a row that does not name it, and when a one-sided row has no
+ * reason. That every Workers row is really asked about is checked by running
+ * cron ticks (`offline-sweep.test.ts`), not by reading the source.
  *
  * Pure: types only from the gates module, no Workers types, no database.
  */
@@ -241,7 +243,7 @@ export const JOBS = [
     id: 'managed-external-access-pending-sweep',
     cadence: null,
     runtimes: BOTH,
-    due: (input) => input.secrets && connected(input),
+    due: (input) => input.queue && input.secrets && input.gates.externalAccessPending,
   },
   {
     id: 'datacenter-repin-fanout-sweep',

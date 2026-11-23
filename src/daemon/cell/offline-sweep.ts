@@ -1390,6 +1390,13 @@ export function newSkippedPhases(cadences: CronCadenceTable = CRON_CADENCES): Sk
 /** Whether a job of the shared table (`jobs/table.ts`) runs on this tick. */
 type JobDueNow = (id: JobIdOn<'workers'>) => boolean
 
+let jobAskObserverForTests: ((id: JobIdOn<'workers'>) => void) | undefined
+
+/** Test seam: sees every job id the cron asks the shared rule about (`null` removes it). */
+export function observeJobAsksForTests(observer: ((id: JobIdOn<'workers'>) => void) | null): void {
+  jobAskObserverForTests = observer ?? undefined
+}
+
 /** The shared rule for one tick: the Workers adapter's input to `jobDue`. */
 function jobDueNowFor(tick: {
   gates: CronGates
@@ -1404,7 +1411,10 @@ function jobDueNowFor(tick: {
     queue: tick.queue,
     secrets: tick.secrets,
   }
-  return (id) => jobDue(id, input)
+  return (id) => {
+    jobAskObserverForTests?.(id)
+    return jobDue(id, input)
+  }
 }
 
 /** The 'upgrade-history' phase runs for the history prune, the upgrade tick, or both. */

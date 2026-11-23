@@ -51,8 +51,9 @@ gates (`loadCronGates`, one statement; every flag open when it cannot be read).
 `server.ts` keeps only the handler for each row (`DenoJobHandlers`, typed so a
 missing one fails the check); the Workers cron asks the same `jobDue` before
 each phase. A job on one runtime only carries its reason in the table, and
-`src/jobs/table.hostfree.test.ts` fails when a row is missing from a runtime it
-names. To add a job, add its row and a handler on each runtime.
+`src/jobs/table.hostfree.test.ts` fails when a Deno handler is missing, and
+`offline-sweep.test.ts` runs cron ticks and fails when a Workers row is never
+asked about. To add a job, add its row and a handler on each runtime.
 
 - **Two kinds of job.** `local` jobs are the ones that must run on every
   instance, lease or not: the cell `maintain()` (its in-memory presence work,

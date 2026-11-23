@@ -23,7 +23,9 @@ const WIRED: Record<JobRuntime, ReadonlySet<string>> = {
   deno: new Set(
     [...source('../platform/deno/server.ts').matchAll(/^ {4}'([a-z-]+)': \{/gm)].map((m) => m[1])
   ),
-  // Workers: every job the cron runs asks the shared rule by id.
+  // Workers: the ids the cron source mentions. Text only, so it proves a job is NOT
+  // wired where the table says it is absent; that a Workers row is really asked about
+  // is checked by running ticks (`offline-sweep.test.ts`, "asked about by the cron tick").
   workers: new Set(
     [
       ...source('../daemon/cell/offline-sweep.ts').matchAll(
@@ -35,10 +37,12 @@ const WIRED: Record<JobRuntime, ReadonlySet<string>> = {
 
 const RUNTIMES: readonly JobRuntime[] = ['workers', 'deno']
 
-test('every row is wired on each runtime it names and on no other', () => {
+test('every row has a Deno handler, and no runtime wires a row that names the other only', () => {
   for (const job of JOBS) {
     for (const runtime of RUNTIMES) {
       const named = (job.runtimes as readonly JobRuntime[]).includes(runtime)
+      // The Workers direction "missing" is the tick test's job, not a text scan's.
+      if (runtime === 'workers' && named) continue
       assertEquals(
         WIRED[runtime].has(job.id),
         named,
@@ -164,11 +168,18 @@ test('the reconnect-repair family needs a connected server', () => {
     'folder-reconcile-sweep',
     'firewall-preview-sweep',
     'managed-ingress-orphan-sweep',
-    'managed-external-access-pending-sweep',
   ] as const) {
     assertEquals(due(id, slot), false, id)
     assertEquals(due(id, { ...slot, gates: { connectedServer: true } }), true, id)
   }
+})
+
+test('the external-access re-push needs a pending change on a connected server', () => {
+  const id = 'managed-external-access-pending-sweep'
+  assertEquals(due(id, { gates: { connectedServer: true } }), false)
+  assertEquals(due(id, { gates: { externalAccessPending: true } }), true)
+  assertEquals(due(id, { gates: { externalAccessPending: true }, secrets: false }), false)
+  assertEquals(due(id, { gates: { externalAccessPending: true }, queue: false }), false)
 })
 
 test('an urgent reconnect runs the reconcile pair off their slot, and the rest wait for it', () => {

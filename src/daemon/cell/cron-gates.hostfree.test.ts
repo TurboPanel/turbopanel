@@ -127,6 +127,7 @@ const IDLE_ROW = {
   notificationHeld: false,
   connectedServer: false,
   reconcileUrgent: false,
+  externalAccessPending: false,
   hostingPending: false,
   repinPending: false,
   principalRemoval: false,
