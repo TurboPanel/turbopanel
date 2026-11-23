@@ -151,7 +151,6 @@ export function registerInstallRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   install.post('/', (c) => completeInstallHandler(c, opts))
-  app.post(`${INSTALL_API_PREFIX}/`, (c) => completeInstallHandler(c, opts))
 
   app.route(INSTALL_API_PREFIX, install)
   return app

@@ -1,16 +1,11 @@
 import type { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
-import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import { getDb, type Db } from '../db/connection.ts'
 import { server } from '../db/schema.ts'
 import type { PanelIdentity } from '../lib/panel-identity/identity.ts'
 import { resolvePinnedBy, resolvePinReport } from '../lib/panel-identity/pinned-by.ts'
 import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { registerKeyRotationRoutes } from './key-rotation-routes.ts'
-
-export const NEXT_KEY_RETIRED_ERROR = 'next_key_retired'
-export const NEXT_KEY_RETIRED_MESSAGE =
-  'The next key is retired. Approve key changes with rotation passkeys on Control Plane Identity.'
 
 /** Public values only: fingerprints, never key material. */
 async function readIdentity(
@@ -58,8 +53,7 @@ async function readIdentity(
 
 /**
  * `GET /instance/identity`: the control plane's current and next fingerprints
- * and each server's pinned-by state. `PUT /instance/identity/next` answers 410:
- * the next key is retired, rotation passkeys approve key changes
+ * and each server's pinned-by state. Rotation passkeys approve key changes
  * (`key-rotation-routes.ts`).
  */
 export function registerInstanceIdentityAdminRoutes(
@@ -79,12 +73,6 @@ export function registerInstanceIdentityAdminRoutes(
     const identity = opts.panelIdentity ? await opts.panelIdentity() : null
     return c.json(await readIdentity(getDb(c), identity, opts.identityUrls))
   })
-
-  // The offline next key is retired: key changes are approved with rotation
-  // passkeys (`key-rotation-routes.ts`).
-  admin.put('/instance/identity/next', createRootOnlyMiddleware(opts.secrets), (c) =>
-    c.json({ ok: false, error: NEXT_KEY_RETIRED_ERROR, message: NEXT_KEY_RETIRED_MESSAGE }, 410)
-  )
 
   registerKeyRotationRoutes(admin, {
     secrets: opts.secrets,

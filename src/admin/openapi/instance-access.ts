@@ -28,19 +28,6 @@ export const INSTANCE_ACCESS_PATHS = {
       },
     },
   },
-  [`${ADMIN_API_PREFIX}/instance/identity/next`]: {
-    put: {
-      tags: ['Instance'],
-      summary: 'Retired: the next key',
-      description:
-        'Always answers 410 `next_key_retired`. Key changes are approved with rotation ' +
-        'passkeys (`/instance/identity/statements`).',
-      security: [...cookieSecurity],
-      responses: {
-        '410': { description: '`{ ok: false, error: "next_key_retired" }`' },
-      },
-    },
-  },
   [`${ADMIN_API_PREFIX}/instance/identity/rotation`]: {
     get: {
       tags: ['Instance'],

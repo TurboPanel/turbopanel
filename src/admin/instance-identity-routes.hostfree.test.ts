@@ -204,17 +204,11 @@ test('the read needs an administrator session', async () => {
   assertEquals((await app.request(IDENTITY_URL, { headers: { Cookie: cookie } })).status, 403)
 })
 
-test('setting the next key is refused for a non-superadmin', async () => {
-  const { app, cookie } = await buildApp({ role: 'admin' })
-  assertEquals((await put(app, cookie, { fingerprint: FIXTURE_NEXT_FINGERPRINT })).status, 403)
-})
-
-test('the next key is retired: both runtimes answer 410', async () => {
+test('the retired next-key route is gone: both runtimes answer 404', async () => {
   for (const runtime of ['deno', 'workers'] as const) {
     const { app, cookie } = await buildApp({ runtime })
     const res = await put(app, cookie, { fingerprint: FIXTURE_NEXT_FINGERPRINT })
-    assertEquals(res.status, 410)
-    assertEquals((await res.json()).error, 'next_key_retired')
+    assertEquals(res.status, 404)
   }
 })
 

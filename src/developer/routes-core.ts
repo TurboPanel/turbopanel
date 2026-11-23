@@ -5,43 +5,22 @@ import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import type { Db } from '../db/connection.ts'
 import { getDb, getDaemonCellRegistry } from '../db/connection.ts'
 import {
-  fleetPresenceToConnection,
-  resolveOnlineFleetPresence,
-  isServerConnected,
-} from '../daemon/cell/fleet-presence.ts'
-import {
-  broadcastEchoToFleet,
   collectFleetCellDiagnostics,
-  collectFleetCommands,
-  enqueueEchoToServer,
   listFleetServerIds,
 } from '../daemon/cell/fleet-diagnostics.ts'
 import {
   fetchDaemonCellDiagnostics,
   fetchDaemonServerCell,
 } from '../daemon/cell/server-diagnostics.ts'
-import {
-  fetchFleetAddressesRoute,
-  fetchServerAddressesRoute,
-} from '../daemon/cell/daemon-addresses-routes.ts'
 import { isDaemonDebugEnabled } from '../lib/logger.ts'
 import { organization, server } from '../db/schema.ts'
 import { redactServerOptions } from '../features/servers/server-metadata.ts'
-import {
-  collectServerIps,
-  readDefaultRouteInterfaces,
-} from '../platform/deno/server-addresses-deno.ts'
 import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
-import {
-  parseDisplayNameInput,
-  parseOrganizationIdInput,
-  parsePayloadBody,
-  resolvePerServerLimit,
-} from './routes-core-helpers.ts'
+import { parseDisplayNameInput, parseOrganizationIdInput } from './routes-core-helpers.ts'
 
 /**
- * Developer console routes safe for the Workers bundle (no Deno-only imports).
+ * Developer console routes shared by the Deno and Workers entries (no Deno-only imports).
  * Deno-only routes (Drizzle Studio) live in developer/routes.ts.
  */
 
@@ -59,61 +38,6 @@ export function buildDeveloperRouter(opts: {
   if (opts.authRequired !== false) {
     developer.use('*', createDeveloperAccessMiddleware(opts.secrets))
   }
-
-  developer.get('/daemon/connections', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ connections: [] })
-    const connections = (await resolveOnlineFleetPresence(db, registry)).map(
-      fleetPresenceToConnection
-    )
-    return c.json({ connections })
-  })
-
-  developer.get('/daemon/events', (c) => {
-    return c.json({ events: [] })
-  })
-
-  developer.post('/daemon/broadcast', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const body = await c.req.json().catch(() => null)
-    const parsedPayload = parsePayloadBody(body)
-    if (!parsedPayload.ok) {
-      return c.json({ error: parsedPayload.error }, 400)
-    }
-    const ids = await registry.listOnlineServerIds()
-    const sent = await broadcastEchoToFleet(registry, ids, parsedPayload.payload)
-    return c.json({ ok: true, sent })
-  })
-
-  developer.post('/daemon/:id/send', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const id = c.req.param('id')
-    const body = await c.req.json().catch(() => null)
-    const parsedPayload = parsePayloadBody(body)
-    if (!parsedPayload.ok) {
-      return c.json({ error: parsedPayload.error }, 400)
-    }
-    if (!(await isServerConnected(db, registry, id))) {
-      return c.json({ error: 'daemon not connected' }, 404)
-    }
-    await enqueueEchoToServer(registry, id, parsedPayload.payload)
-    return c.json({ ok: true, id })
-  })
-
-  developer.get('/daemon/commands', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    if (!registry) return c.json({ commands: [] })
-    const db = getDb(c)
-    if (!db) return c.json({ commands: [] })
-    const perServerLimit = resolvePerServerLimit(c.req.query('limit'))
-    const serverIds = await listFleetServerIds(db)
-    const commands = await collectFleetCommands(registry, serverIds, perServerLimit)
-    return c.json({ commands })
-  })
 
   developer.get('/daemon/:id/cell', async (c) => {
     const registry = getDaemonCellRegistry(c)
@@ -157,15 +81,6 @@ export function buildDeveloperRouter(opts: {
     const diagnostics = await collectFleetCellDiagnostics(registry, serverIds, { debugEnabled })
     return c.json({ ok: true, diagnostics })
   })
-
-  developer.get('/instance/addresses', (c) => {
-    const ips = collectServerIps(readDefaultRouteInterfaces())
-    return c.json({ ok: true, source: 'instance', ips })
-  })
-
-  developer.get('/daemon/addresses', fetchFleetAddressesRoute)
-
-  developer.get('/daemon/:id/addresses', fetchServerAddressesRoute)
 
   developer.get('/organizations', async (c) => {
     const db = getDb(c)
@@ -277,11 +192,4 @@ export function buildDeveloperRouter(opts: {
 export function mountDeveloperRouter<E extends Env>(app: Hono<E>, developer: Hono): Hono {
   app.route(DEVELOPER_API_PREFIX, developer)
   return developer
-}
-
-export function registerDeveloperRoutesCore<E extends Env>(
-  app: Hono<E>,
-  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean }
-) {
-  return mountDeveloperRouter(app, buildDeveloperRouter(opts))
 }

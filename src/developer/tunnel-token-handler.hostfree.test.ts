@@ -3,12 +3,11 @@ import { Hono, type Context } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../contracts/cell.ts'
 import type { Db } from '../db/connection.ts'
-import { parseTestSecretsConfig, TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from '../lib/secrets/secrets.ts'
-import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
+import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { TUNNEL_TOKEN_COLOCATED_ONLY } from '../client/servers/colocated.ts'
 import { SEALED_INSTANCE_SECRETS_FEATURE } from '../lib/version-wire.ts'
-import { parseTunnelTokenBody, registerTunnelRoutes } from './tunnel-routes.ts'
+import { handleTunnelTokenRequest } from './tunnel-token-handler.ts'
+import { parseTunnelTokenBody } from './tunnel-token.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -134,10 +133,6 @@ async function createApp(
     registry?: DaemonCellRegistry | null
   } = {}
 ) {
-  const secrets = await deriveSecretsConfig(
-    parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
-    'session-signing'
-  )
   const app = new Hono()
   app.use('*', async (c, next) => {
     const vars = c as unknown as Context<AppEnv>
@@ -148,7 +143,7 @@ async function createApp(
     }
     await next()
   })
-  registerTunnelRoutes(app, { secrets, authRequired: false })
+  app.post('/instance/tunnel-token', (c) => handleTunnelTokenRequest(c as Context))
   return app
 }
 
@@ -161,7 +156,7 @@ test('parseTunnelTokenBody requires a string token', () => {
 
 test('POST /instance/tunnel-token validates body and required context', async () => {
   const app = await createApp()
-  const bad = await app.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const bad = await app.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: '{}',
@@ -169,7 +164,7 @@ test('POST /instance/tunnel-token validates body and required context', async ()
   assertEquals(bad.status, 400)
 
   const noDb = await createApp({ db: null })
-  const missingDb = await noDb.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const missingDb = await noDb.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
@@ -183,16 +178,17 @@ test('POST /instance/tunnel-token validates body and required context', async ()
   })
 
   const noRegistry = await createApp({ registry: null })
-  const missingRegistry = await noRegistry.request(
-    `${DEVELOPER_API_PREFIX}/instance/tunnel-token`,
-    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ token: 'tok' }) }
-  )
+  const missingRegistry = await noRegistry.request('/instance/tunnel-token', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ token: 'tok' }),
+  })
   assertEquals(missingRegistry.status, 503)
 })
 
 test('POST /instance/tunnel-token maps colocated and request outcomes', async () => {
   const missingColocated = await createApp({ db: createDb([]) })
-  const none = await missingColocated.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const none = await missingColocated.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
@@ -202,7 +198,7 @@ test('POST /instance/tunnel-token maps colocated and request outcomes', async ()
   const disconnected = await createApp({
     registry: createRegistry({ connected: false }),
   })
-  const offline = await disconnected.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const offline = await disconnected.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
@@ -210,7 +206,7 @@ test('POST /instance/tunnel-token maps colocated and request outcomes', async ()
   assertEquals(offline.status, 503)
 
   const okApp = await createApp()
-  const ok = await okApp.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const ok = await okApp.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
@@ -220,7 +216,7 @@ test('POST /instance/tunnel-token maps colocated and request outcomes', async ()
   const failedApp = await createApp({
     registry: createRegistry({ requestStatus: 'failed', requestError: 'nope' }),
   })
-  const failed = await failedApp.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const failed = await failedApp.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
@@ -230,7 +226,7 @@ test('POST /instance/tunnel-token maps colocated and request outcomes', async ()
   const expiredApp = await createApp({
     registry: createRegistry({ requestStatus: 'expired' }),
   })
-  const expired = await expiredApp.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const expired = await expiredApp.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
@@ -240,7 +236,7 @@ test('POST /instance/tunnel-token maps colocated and request outcomes', async ()
   const throwApp = await createApp({
     registry: createRegistry({ throwMessage: 'cell down' }),
   })
-  const thrown = await throwApp.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const thrown = await throwApp.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
@@ -261,7 +257,7 @@ test('POST /instance/tunnel-token refuses a server that is not on the control pl
   // A lone unassigned server that attached over the network: the resolver
   // names it, but it is not the control plane host.
   const app = await createApp({ db: createDb([fleetRow('203.0.113.7')]), registry })
-  const res = await app.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const res = await app.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
@@ -277,7 +273,7 @@ test('POST /instance/tunnel-token accepts the server pinned to the self-host env
   const app = await createApp({
     db: createDb([fleetRow('203.0.113.7')], [SERVER_ID]),
   })
-  const res = await app.request(`${DEVELOPER_API_PREFIX}/instance/tunnel-token`, {
+  const res = await app.request('/instance/tunnel-token', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ token: 'tok' }),
