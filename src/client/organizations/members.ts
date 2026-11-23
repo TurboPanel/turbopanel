@@ -24,9 +24,9 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
-  can,
   canManageOrganization,
   canOwnOrganization,
+  holdsOrganizationOwnership,
   lockOrganizationOwnerGrants,
   organizationWouldLoseAllOwners,
 } from '../authz/index.ts'
@@ -75,9 +75,10 @@ async function loadFootprint(
       })
       .from(grant)
       .where(and(eq(grant.actorType, 'user'), eq(grant.actorId, userId))),
-    // The real permission check: ownership held through a team or the
-    // organization itself counts, not only grants held by the user directly.
-    can(db, userId, 'organization:own', 'organization', organizationId),
+    // Ownership held through a team or the organization itself counts, not only
+    // grants held by the user directly. No platform-admin bypass: an
+    // administrator who is merely a member is not an owner of this organization.
+    holdsOrganizationOwnership(db, organizationId, userId),
   ])
   const owners = await Promise.all(
     userGrants.map((g) => resolveEntityOrganizationId(db, g.entityType, g.entityId))

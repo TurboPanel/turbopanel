@@ -34,6 +34,7 @@ export {
 } from './service.ts'
 export {
   assertNotLastOrgOwner,
+  holdsOrganizationOwnership,
   listOrganizationOwnerIds,
   lockOrganizationOwnerGrants,
   organizationWouldLoseAllOwners,

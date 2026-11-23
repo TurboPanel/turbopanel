@@ -23,3 +23,8 @@
   holds a row but is nobody. Run the guard in the same transaction as the change,
   after `lockOrganizationOwnerGrants`. `assertNotLastTeamOwner` still counts
   rows (team ownership is direct grants only).
+  Deciding whether the TARGET of a removal is an owner uses
+  `holdsOrganizationOwnership` (same reading as `can()`, no platform-admin
+  bypass, disabled accounts still count): a platform administrator who is only a
+  member is not an owner and a manager may remove them. Only the acting caller's
+  check (`canOwnOrganization`) keeps the administrator bypass.

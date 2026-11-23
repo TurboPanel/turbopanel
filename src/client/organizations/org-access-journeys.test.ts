@@ -880,3 +880,67 @@ test('an owner can be removed or revoked when another person still owns, even be
     assertEquals(removed.status, 200, await removed.clone().text())
   })
 })
+
+test('a disabled co-owner does not count: the active owner cannot leave until another active owner exists', async () => {
+  await withFixture(async (fx) => {
+    const coOwner = await fx.addPerson('owner')
+    await fx.db.update(user).set({ isDisabled: true }).where(eq(user.id, coOwner.userId))
+
+    const left = await fx.call(fx.owner, 'DELETE', membersPath(fx.organizationId, fx.owner.userId))
+    assertEquals(left.status, 409)
+    assertEquals(await readsOrganization(fx, fx.owner), 200)
+
+    await fx.db.update(user).set({ isDisabled: false }).where(eq(user.id, coOwner.userId))
+    const leftAgain = await fx.call(
+      fx.owner,
+      'DELETE',
+      membersPath(fx.organizationId, fx.owner.userId)
+    )
+    assertEquals(leftAgain.status, 200, await leftAgain.clone().text())
+  })
+})
+
+test('an organization-wide own grant makes its teammates owners for the removal refusal and the last-owner count', async () => {
+  await withFixture(async (fx) => {
+    await fx.db.insert(grant).values({
+      entityType: 'organization',
+      entityId: fx.organizationId,
+      actorType: 'organization',
+      actorId: fx.organizationId,
+      permission: 'organization:own',
+    })
+    const viaOrganization = await fx.addPerson('member')
+    // A manager outside every team of the organization: not an owner through the organization grant.
+    const manager = await fx.addPerson('outsider')
+    await fx.db.insert(grant).values({
+      entityType: 'organization',
+      entityId: fx.organizationId,
+      actorType: 'user',
+      actorId: manager.userId,
+      permission: 'organization:manage',
+    })
+
+    const refused = await fx.call(
+      manager,
+      'DELETE',
+      membersPath(fx.organizationId, viaOrganization.userId)
+    )
+    assertEquals(refused.status, 403)
+
+    // The direct owner may leave: the teammate still owns through the organization grant.
+    const left = await fx.call(fx.owner, 'DELETE', membersPath(fx.organizationId, fx.owner.userId))
+    assertEquals(left.status, 200, await left.clone().text())
+    assertEquals(await readsOrganization(fx, viaOrganization), 200)
+  })
+})
+
+test('a manager may remove a platform administrator who is only a member', async () => {
+  await withFixture(async (fx) => {
+    const admin = await fx.addPerson('member')
+    await fx.db.update(user).set({ role: 'admin' }).where(eq(user.id, admin.userId))
+    const manager = await fx.addPerson('manager')
+
+    const res = await fx.call(manager, 'DELETE', membersPath(fx.organizationId, admin.userId))
+    assertEquals(res.status, 200, await res.clone().text())
+  })
+})

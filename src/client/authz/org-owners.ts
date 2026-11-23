@@ -25,11 +25,37 @@ export async function listOrganizationOwnerIds(
   organizationId: string,
   exceptGrantId?: string
 ): Promise<string[]> {
-  const skipGrant = exceptGrantId ? sql`AND g.id <> ${exceptGrantId}::uuid` : sql``
+  return await queryOwnerIds(db, organizationId, { exceptGrantId, activeOnly: true })
+}
+
+/**
+ * Whether one user holds `organization:own` on the organization: directly, through
+ * a team, or through the organization itself. A platform administrator does NOT
+ * count (no bypass), and a disabled account still does: it is the question "does
+ * this person hold the organization", used to protect an owner from a manager.
+ */
+export async function holdsOrganizationOwnership(
+  db: Db,
+  organizationId: string,
+  userId: string
+): Promise<boolean> {
+  return (await queryOwnerIds(db, organizationId, { userId, activeOnly: false })).length > 0
+}
+
+async function queryOwnerIds(
+  db: Db,
+  organizationId: string,
+  opts: { exceptGrantId?: string; userId?: string; activeOnly: boolean }
+): Promise<string[]> {
+  const skipGrant = opts.exceptGrantId ? sql`AND g.id <> ${opts.exceptGrantId}::uuid` : sql``
+  const onlyUser = opts.userId ? sql`AND u.id = ${opts.userId}::uuid` : sql``
+  const activeOnly = opts.activeOnly ? sql`AND u.is_disabled = false` : sql``
   const rows = (await db.execute(sql`
     SELECT u.id AS id
     FROM ${user} u
-    WHERE u.is_disabled = false
+    WHERE true
+      ${activeOnly}
+      ${onlyUser}
       AND EXISTS (
         SELECT 1
         FROM ${grant} g
