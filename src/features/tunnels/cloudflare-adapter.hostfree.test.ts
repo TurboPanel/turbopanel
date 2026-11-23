@@ -155,7 +155,10 @@ test('routes end with a catch-all and point every name at the local web server',
   const rules = buildIngress(['A.example.com', 'a.example.com', 'b.example.com'])
   assertEquals(rules.length, 3)
   assertEquals(rules[0]!.hostname, 'a.example.com')
-  assertEquals(rules[0]!.service, 'https://localhost')
+  assertEquals(rules[0]!.service, 'https://127.0.0.1')
+  // Never the name "localhost": it can resolve to ::1, which a site bound to one
+  // address does not listen on.
+  assertEquals(rules[0]!.service.includes('localhost'), false)
   assertEquals(rules[2], { service: 'http_status:404' })
 
   const { impl, calls } = fakeFetch({

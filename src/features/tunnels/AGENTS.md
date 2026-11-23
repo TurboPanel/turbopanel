@@ -289,7 +289,9 @@ typed client over an injected `fetch`; tests never call the real service).
   accounts and zones lists may be refused to a narrow token; that is treated
   as empty, not as a bad token, and zones the person named are probed one by
   one instead.
-- Routes always point at `https://localhost`; the last ingress rule is a
+- Routes always point at `https://127.0.0.1`, never `localhost`: that name can
+  resolve to `::1` first, where a site bound to one address does not listen, and
+  the connector would reach the catch-all server. The last ingress rule is a
   catch-all with no hostname.
 - The client never stores the platform `fetch` and calls it as a method of
   itself: on Workers that receiver is refused ("Illegal invocation") while Deno
