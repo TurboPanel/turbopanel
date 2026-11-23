@@ -7,11 +7,7 @@ import {
   collectHealthCheckWarnings,
 } from '../../features/compose/apply-service-options.ts'
 import { assertComposeDocument, type SiteSpec } from '../../features/compose/index.ts'
-import {
-  dockerVolumeNameFromStorageId,
-  principalHomeDir,
-  resolveDockerVolumeName,
-} from '../../lib/naming.ts'
+import { dockerVolumeNameFromStorageId, principalHomeDir } from '../../lib/naming.ts'
 import { DEFAULT_PRINCIPAL_SHELL } from '../../features/principals/principal-options.ts'
 import { sumServiceResourceUsage } from '../../features/organizations/resource-limits.ts'
 import type { ResolvedResources, ResolvedService } from '../../features/compose/ir.ts'
@@ -997,13 +993,13 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
     assertEquals(material.length, 0)
   })
 
-  it('keeps docker volumes without mounts and resolves pinned names', async () => {
+  it('keeps docker volumes without mounts and names them by the storage id', async () => {
     const db = createStorageMaterialDb({
       locations: [
         volumeLocation({
           storageId: volumeStorageId,
           locationId: volumeLocationId,
-          metadata: { dockerVolumeName: 'custom_vol' },
+          metadata: { dockerVolumeName: volumeStorageId },
         }),
       ],
     })
@@ -1012,13 +1008,24 @@ describe('loadStorageMaterial filters, volumes, and fan-out', () => {
     assertEquals(material[0]?.kind, 'volume')
     assertEquals(material[0]?.provider, 'docker')
     assertEquals(material[0]?.mounts, [])
-    assertEquals(
-      material[0]?.volumeName,
-      resolveDockerVolumeName({
-        storageId: volumeStorageId,
-        pinnedName: 'custom_vol',
+    assertEquals(material[0]?.volumeName, volumeStorageId)
+  })
+
+  it('never sends a docker volume name other than the storage id', async () => {
+    for (const kind of ['volume', 'directory', 'file'] as const) {
+      const db = createStorageMaterialDb({
+        locations: [
+          volumeLocation({
+            kind,
+            storageId: volumeStorageId,
+            locationId: volumeLocationId,
+            metadata: { dockerVolumeName: 'custom_vol' },
+          }),
+        ],
       })
-    )
+      const material = await loadStorageMaterial(db, baseParams)
+      assertEquals(material.length, 0, kind)
+    }
   })
 
   it('falls back to storage id when docker volume metadata has no pin', async () => {

@@ -105,7 +105,7 @@ import {
   pruneUnreferencedComposeNetworks,
 } from '../../features/compose/docker-external-networks.ts'
 import { sharedVolumeIds } from '../../features/folders/shares.ts'
-import { principalHomeDir, resolveDockerVolumeName } from '../../lib/naming.ts'
+import { dockerVolumeNameFromStorageId, principalHomeDir } from '../../lib/naming.ts'
 import { accessGroupsFor } from '../../features/principals/principal-access.ts'
 import { resolvePrincipalIds } from '../../features/principals/principal-ids.ts'
 import { SHA512_CRYPT_HASH_RE } from '../../lib/sha512-crypt.ts'
@@ -1256,10 +1256,10 @@ function toStorageMaterialEntry(
   if (row.principalId) entry.principalId = row.principalId
   if (row.contentEnvelope) entry.contentEnvelope = row.contentEnvelope
   if (row.provider === 'docker') {
-    entry.volumeName = resolveDockerVolumeName({
-      storageId: row.storageId,
-      pinnedName: readPinnedDockerVolumeName(row.metadata),
-    })
+    // The daemon treats `volumeName` as owned, so it is only ever the storage id.
+    const pinned = readPinnedDockerVolumeName(row.metadata)
+    if (pinned !== null && pinned !== row.storageId) return null
+    entry.volumeName = dockerVolumeNameFromStorageId(row.storageId)
   }
   if (flags.managed !== undefined) entry.managed = flags.managed
   return entry

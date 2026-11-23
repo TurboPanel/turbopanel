@@ -259,6 +259,28 @@ test('parseCreateStorageFields validates required create body fields', async () 
   assertEquals(ok.mount?.destinationPath, '/data')
 })
 
+test('parseCreateStorageFields refuses an author Docker volume name unless a volume', async () => {
+  const c = mockContext()
+  for (const kind of ['directory', 'file']) {
+    await expectErrorResponse(
+      parseCreateStorageFields(c, {
+        kind,
+        name: 'data',
+        metadata: { dockerVolumeName: 'other_vol' },
+        storageCopy: { provider: 'docker', serverId: 'srv-1' },
+      }),
+      400,
+      { error: 'Only a volume can name a Docker volume' }
+    )
+  }
+  const volume = parseCreateStorageFields(c, {
+    kind: 'volume',
+    name: 'data',
+    metadata: { dockerVolumeName: 'other_vol' },
+  })
+  if (volume instanceof Response) throw new TypeError('expected parsed create fields')
+})
+
 test('parseCreateStorageFields rejects mounting a scratch copy', async () => {
   const c = mockContext()
   await expectErrorResponse(

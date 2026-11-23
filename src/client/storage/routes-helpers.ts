@@ -352,6 +352,10 @@ export function parseCreateStorageFields(
   if (metadata instanceof Response) return metadata
   const options = parseJsonbObject(c, body, 'options')
   if (options instanceof Response) return options
+  // Only a volume has a Docker volume, and create pins its name to the storage id.
+  if (kind !== 'volume' && metadata && 'dockerVolumeName' in metadata) {
+    return c.json({ error: 'Only a volume can name a Docker volume' }, 400)
+  }
 
   const copy = parseCreateCopyFields(c, body)
   if (copy instanceof Response) return copy
