@@ -996,6 +996,11 @@ export function applyVariablesToComposeDocument(
  * The secrets no container of the stack received. Run after every injection
  * step (references, bindings, generated config files, network shares): a key
  * any container was given, or a config file or share reads, is delivered.
+ * A secret set on a service or its hostname (source `service` or `hosting`) is
+ * that service's own value, so it is delivered only when that same service got
+ * it; a same-named secret reaching another container does not count. A secret
+ * from a wider scope is one secret for every service, delivered once any
+ * container got it.
  */
 function findSecretsNotInjected(
   candidates: ReadonlyMap<string, readonly UnreferencedSecret[]>,
@@ -1003,21 +1008,68 @@ function findSecretsNotInjected(
   configSecretRefs: readonly DeployConfigSecretRef[],
   nativeServiceNames: ReadonlySet<string> | undefined
 ): SecretNotInjected[] {
-  const delivered = new Set<string>(configSecretRefs.map((ref) => ref.key))
-  for (const material of secretMaterial) {
-    const service = material.composeServiceName
-    if (service === null || !nativeServiceNames?.has(service)) delivered.add(material.key)
-  }
+  const delivery = collectSecretDelivery(secretMaterial, configSecretRefs, nativeServiceNames)
   const byKey = new Map<string, SecretNotInjected>()
   for (const [composeServiceName, secrets] of candidates) {
     for (const secret of secrets) {
-      if (delivered.has(secret.key)) continue
+      if (isSecretDelivered(delivery, composeServiceName, secret)) continue
       const known = byKey.get(secret.key)
       if (known) known.composeServiceNames.push(composeServiceName)
       else byKey.set(secret.key, { ...secret, composeServiceNames: [composeServiceName] })
     }
   }
   return [...byKey.values()]
+}
+
+interface SecretDelivery {
+  /** Keys any container, config file or share got. */
+  readonly anywhere: ReadonlySet<string>
+  /** `service\u0000key` pairs: what each service itself got. */
+  readonly perService: ReadonlySet<string>
+}
+
+function deliveryKey(service: string, key: string): string {
+  return `${service}\u0000${key}`
+}
+
+function collectSecretDelivery(
+  secretMaterial: readonly DeployVariableMaterial[],
+  configSecretRefs: readonly DeployConfigSecretRef[],
+  nativeServiceNames: ReadonlySet<string> | undefined
+): SecretDelivery {
+  const anywhere = new Set<string>()
+  const perService = new Set<string>()
+  for (const ref of configSecretRefs) {
+    anywhere.add(ref.key)
+    perService.add(deliveryKey(ref.composeServiceName, ref.key))
+  }
+  for (const material of secretMaterial) {
+    const service = material.composeServiceName
+    if (service !== null && nativeServiceNames?.has(service)) continue
+    anywhere.add(material.key)
+    if (service !== null) perService.add(deliveryKey(service, material.key))
+  }
+  return { anywhere, perService }
+}
+
+/**
+ * A secret set on the service itself (or its hostnames) is that service's own
+ * value: the same key reaching another container is a different secret, so
+ * only this service counts. A wider scope is one secret for every service,
+ * delivered as soon as any container got it.
+ */
+function isSecretDelivered(
+  delivery: SecretDelivery,
+  composeServiceName: string,
+  secret: UnreferencedSecret
+): boolean {
+  return isServiceOwnedSource(secret.source)
+    ? delivery.perService.has(deliveryKey(composeServiceName, secret.key))
+    : delivery.anywhere.has(secret.key)
+}
+
+function isServiceOwnedSource(source: string | undefined): boolean {
+  return source === 'service' || source === 'hosting'
 }
 
 /** Masked placeholder for secret-backed values in deploy-preview YAML. */

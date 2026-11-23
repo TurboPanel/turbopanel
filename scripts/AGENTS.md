@@ -39,6 +39,7 @@ imports):
 | `generate-test-lists.mjs`     | Rebuild suffix-glob inventories (`test-coverage.sh` + `vitest.config.ts`)                                                                                                                                                                                |
 | `set-identity-key.mjs`        | `pnpm identity:set --env <env>`: generate the panel identity key in memory, pipe it to `wrangler secret put`, wait for the signed identity route, print the fingerprint (reuses `generate-identity-key.mjs`; tests inject wrangler, fetch and the clock) |
 | `check-import-boundaries.mjs` | Kernel / feature / platform import graph (`pnpm check:import-boundaries`)                                                                                                                                                                                |
+| `check-source-layout.mjs`     | Runtime code placement, file size, barrels and test names against `source-layout-baseline.json` (`pnpm check:source-layout`)                                                                                                                             |
 
 - Analysis runs in GitHub Actions (`.github/workflows/build.yml` **SonarQube**
   job — SonarCloud wizard layout) with `SONAR_TOKEN` and
