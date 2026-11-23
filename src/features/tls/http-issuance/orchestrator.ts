@@ -152,7 +152,7 @@ async function lockRow(tx: Db, tlsId: string): Promise<RowFacts | null> {
     organizationId: row.organizationId,
     names: namesOf(row.metadata),
     orderNames: await orderNamesOf(tx, row.id, row.metadata),
-    hasPair: row.hasKey === true,
+    hasPair: row.hasKey === true && readHttpIssuanceState(row.metadata)?.centralPair === true,
     metadata: (row.metadata ?? {}) as Record<string, unknown>,
   }
 }
@@ -739,7 +739,8 @@ export async function startHttpIssuance(
   // The cheap answers first: nothing to do, a wait or a cap in force, no contact
   // address. None of them looks at DNS or at the servers.
   const meta = (peek.metadata ?? {}) as Record<string, unknown>
-  if (!due({ hasPair: peek.hasKey === true, metadata: meta })) return 'not_due'
+  if (!due({ hasPair: peek.hasKey === true && previous?.centralPair === true, metadata: meta }))
+    return 'not_due'
   const attempts = {
     attemptTimes: previous?.attemptTimes ?? [],
     nextAttemptAt: previous?.nextAttemptAt ?? null,
@@ -751,7 +752,7 @@ export async function startHttpIssuance(
   }
   // Organization limits: a day's worth of new certificates, and a pause for everyone
   // once the authority said it is rate limiting. A renewal is not a new certificate.
-  if (peek.hasKey !== true) {
+  if (!(peek.hasKey === true && previous?.centralPair === true)) {
     const facts = await loadOrgOrderFacts(deps.db, peek.organizationId, now)
     // A row trying again was counted when it first started; only the pause applies to it.
     const applied = previous === null ? facts : { ...facts, newStarts: [] }

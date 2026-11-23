@@ -411,6 +411,10 @@ async function noteCaptureOnly(
     .where(eq(tls.id, row.id))
 }
 
+function hasWildcardName(names: string[]): boolean {
+  return names.some((name) => name.startsWith('*.'))
+}
+
 async function writePair(
   tx: Db,
   params: {
@@ -441,7 +445,13 @@ async function writePair(
     (row) =>
       row.status === 'automatic' &&
       isManagedRowMetadata(row.metadata) &&
-      // A row covers the hostname, or (for an open request) the hostname is one the
+      // A row with a wildcard name is ordered by the panel over DNS: a server's own web
+      // server cannot issue it, so a leaf that does not cover every one of the row's names
+      // (its own single-name certificate) never lands on it. Other rows take a pair per
+      // name, as Caddy issues them.
+      (!hasWildcardName(row.metadata.dnsNames) ||
+        row.metadata.dnsNames.every((name) => coversHostname(parsed.dnsNames, name))) &&
+      // The row covers the hostname, or (for an open request) the hostname is one the
       // order asked for beyond the row's own names: a www name its site adds. Then the
       // leaf must also cover every one of the row's own names, so nothing narrower
       // than the row ever lands on it.

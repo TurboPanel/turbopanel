@@ -91,11 +91,12 @@ async function sweepWorld() {
       state?: Partial<HttpIssuanceState> | null
       names?: string[]
       pinned?: boolean
+      dns?: boolean
     }
   ): Promise<string> => {
     const metadata: Record<string, unknown> = {
       dnsNames: options.names ?? [`${label}.example.com`],
-      acme: { managedBy: 'caddy' },
+      acme: options.dns ? { managedBy: 'caddy', challengeType: 'dns-01' } : { managedBy: 'caddy' },
     }
     const withState =
       options.state === null || options.state === undefined
@@ -216,6 +217,41 @@ test('the sweep picks up exactly the rows with work to do', async () => {
           renewAt: iso(-5),
         },
       }),
+      // A pair a server exported must not block the retry of a failed DNS order.
+      dnsForeignPair: await make('dnsforeign', {
+        key: true,
+        dns: true,
+        names: ['*.dnsforeign.example.com', 'dnsforeign.example.com'],
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(-1),
+          centralPair: false,
+        },
+      }),
+      dnsForeignPairWaiting: await make('dnsforeignwait', {
+        key: true,
+        dns: true,
+        names: ['*.dnsforeignwait.example.com', 'dnsforeignwait.example.com'],
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(600_000),
+          centralPair: false,
+        },
+      }),
+      httpForeignPair: await make('httpforeign', {
+        key: true,
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(-1),
+          centralPair: false,
+        },
+      }),
       endsPending: await make('endspending', {
         state: {
           phase: 'failed',
@@ -246,6 +282,7 @@ test('the sweep picks up exactly the rows with work to do', async () => {
         ids.renewMissing,
         ids.retryDue,
         ids.failedWithPairDue,
+        ids.dnsForeignPair,
         ids.endsPending,
         // Several names are picked; who may take the order is decided per daemon.
         ids.twoNames,

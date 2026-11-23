@@ -103,6 +103,9 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
   const at = now.toISOString()
   const h = sql`${tls.metadata} -> 'httpCert'`
   const central = sql`${h} ->> 'centralPair' = 'true'`
+  // A DNS order whose row holds a pair the panel did not order (one a server's own web
+  // server exported) is still owed its certificate, so a failed attempt is retried.
+  const foreignPairDns = sql`(coalesce(${tls.metadata} #>> '{acme,challengeType}', '') = 'dns-01' and not ${central})`
   const renewDue = sql`(${central} and coalesce(${h} ->> 'renewAt', '') <= ${at})`
   // Work already begun comes first, so an open request is advanced and a finished pair
   // delivered every minute however many rows are waiting. The rest rotate by a hash that
@@ -127,7 +130,8 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
       id: tls.id,
       metadata: tls.metadata,
       organizationId: tls.organizationId,
-      hasPair: sql<boolean>`${tls.privateKeyPem} is not null`,
+      // Only a pair the panel ordered counts: a pair a server exported is not renewed here.
+      hasPair: sql<boolean>`(${tls.privateKeyPem} is not null and ${central})`,
       pinned: sql<boolean>`${pinnedBySite}`,
     })
     .from(tls)
@@ -148,7 +152,7 @@ export function selectHttpIssuanceCandidates(db: Db, now: Date, limit: number) {
           or (${h} is not null and ${h} ->> 'endedAt' is null)
           or (${h} ->> 'phase' = 'issued' and (${h} ->> 'deliveredAt' is null or ${renewDue}))
           or (${h} ->> 'phase' = 'failed' and (${h} ->> 'nextAttemptAt' is null or ${h} ->> 'nextAttemptAt' <= ${at})
-              and (${tls.privateKeyPem} is null or ${renewDue}))
+              and (${tls.privateKeyPem} is null or ${renewDue} or ${foreignPairDns}))
           or (${h} ->> 'endedAt' is not null and ${h} ->> 'endsSentAt' is null
               and jsonb_array_length(coalesce(${h} -> 'forwards', '[]'::jsonb)) > 0)
         )`
