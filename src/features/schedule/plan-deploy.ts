@@ -2,7 +2,7 @@
  * Load fleet + compose, interpret Swarm `deploy:`, and plan slots.
  */
 
-import { eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { isComposeChainError, resolveComposeLayerChain } from '../compose/layer-chain.ts'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -629,7 +629,11 @@ async function loadFleet(
   })
 }
 
-async function loadStoragePins(db: Db, environmentId: string): Promise<Map<string, string>> {
+export async function loadStoragePins(
+  db: Db,
+  organizationId: string,
+  environmentId: string
+): Promise<Map<string, string>> {
   const rows = await db
     .select({
       serviceId: mount.serviceId,
@@ -640,7 +644,9 @@ async function loadStoragePins(db: Db, environmentId: string): Promise<Map<strin
     .from(mount)
     .innerJoin(storage, eq(mount.storageId, storage.id))
     .innerJoin(storageCopy, eq(storageCopy.storageId, storage.id))
-    .where(eq(storage.environmentId, environmentId))
+    .where(
+      and(eq(storage.organizationId, organizationId), eq(storage.environmentId, environmentId))
+    )
 
   return computeStoragePinsFromMountRows(rows)
 }
@@ -879,7 +885,7 @@ export async function planEnvironmentDeploy(
       environmentId: params.environmentId,
     })
   }
-  const storagePins = await loadStoragePins(db, params.environmentId)
+  const storagePins = await loadStoragePins(db, params.organizationId, params.environmentId)
   // Pure pair rules for the planner: a network whose servers all share a
   // trusted LAN needs no TurboFabric. Read only when something could span.
   const pairRules = await loadPairRulesIfSpanning(db, params.organizationId, fleet, merged)

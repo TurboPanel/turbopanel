@@ -1419,7 +1419,7 @@ export async function loadStorageMaterial(
     .from(storage)
     .innerJoin(storageCopy, eq(storageCopy.storageId, storage.id))
     .leftJoin(principal, eq(storage.principalId, principal.id))
-    .where(or(...scopeConditions))
+    .where(and(eq(storage.organizationId, params.organizationId), or(...scopeConditions)))
 
   const usable = locationRows.filter(
     (row) => row.role !== 'scratch' && locationUsableOnServer(row.locationServerId, params.serverId)

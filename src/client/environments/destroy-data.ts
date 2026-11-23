@@ -35,6 +35,7 @@ import {
   confirmNameMatches,
 } from '../confirm-name.ts'
 import { assertCanReadOr403, getOrgId } from '../shared.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 import { type KeptDataVolume, listEnvironmentDataVolumes } from './data-volumes.ts'
 
 export const DATA_VOLUMES_CHANGED_ERROR = 'data_volumes_changed'
@@ -107,10 +108,11 @@ export function sameVolumeList(
 /** The list for an environment whose stop goes to `serverIds`. */
 export async function buildDestroyDataPlan(
   db: Db,
+  organizationId: string,
   environmentId: string,
   serverIds: readonly string[]
 ): Promise<DestroyDataPlan> {
-  const listed = await listEnvironmentDataVolumes(db, environmentId)
+  const listed = await listEnvironmentDataVolumes(db, organizationId, environmentId)
   const targets = new Set(serverIds)
   const elsewhereIds = [
     ...new Set(listed.volumes.flatMap((v) => v.copyServerIds.filter((id) => !targets.has(id)))),
@@ -155,7 +157,15 @@ export async function planDestroyData(
     )
   }
 
-  const plan = await buildDestroyDataPlan(db, params.environmentId, params.serverIds)
+  // The caller passed the manage check on this environment: scope the list to its organization.
+  const organizationId = await resolveEntityOrganizationId(db, 'environment', params.environmentId)
+  if (!organizationId) return apiError(c, 404, 'not_found', 'Not found')
+  const plan = await buildDestroyDataPlan(
+    db,
+    organizationId,
+    params.environmentId,
+    params.serverIds
+  )
   if (!sameVolumeList(params.request.volumeIds, plan.volumes)) {
     return c.json(
       {
@@ -200,6 +210,6 @@ export function registerEnvironmentDataVolumeRoutes(
     if (denied) return denied
 
     const serverIds = await loadServerIds(db, environmentId)
-    return c.json(await buildDestroyDataPlan(db, environmentId, serverIds))
+    return c.json(await buildDestroyDataPlan(db, orgResult, environmentId, serverIds))
   })
 }
