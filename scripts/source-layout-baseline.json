@@ -23,6 +23,7 @@
     "src/developer/dev-sync.ts",
     "src/developer/dev-update-overlay.ts",
     "src/developer/drizzle-kit-config.ts",
+    "src/developer/drizzle-studio-helpers.ts",
     "src/developer/drizzle-studio-probe.ts",
     "src/developer/drizzle-studio.ts",
     "src/developer/local-console-auth.ts",

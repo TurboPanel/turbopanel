@@ -4,7 +4,7 @@
  *
  * Rules, all over `src/**`:
  *   - `runtime`: no use of the `Deno` global (calls, `typeof Deno`,
- *     `globalThis.Deno?.`; type-only `Deno.Type` is fine) and no Workers
+ *     `globalThis.Deno?.`, type positions too) and no Workers
  *     binding (`cloudflare:` imports in any form, `DurableObject*`,
  *     `KVNamespace`, `R2Bucket`, `D1Database`, `Hyperdrive`, `Fetcher`,
  *     `Queue`) in a non-test source file outside the runtime folders
@@ -69,7 +69,8 @@ const CLOUDFLARE_IMPORT = /\b(?:from|import)\s*\(?\s*['"]cloudflare:/
 const BINDING_PATTERN =
   /(?<![.\w])(?:DurableObject\w*|KVNamespace|R2Bucket|D1Database|Hyperdrive|Fetcher|Queue)\b(?=\s*[<,;)>=|\s])/g
 const DECLARATION_BEFORE = /\b(?:class|interface|type|function|const|let|var|enum)\s+$/
-const TYPE_POSITION_BEFORE = /(?:[:<|&]|\b(?:as|extends|implements))\s*$/
+// A `/` starts a regex literal after these (or after `return`/`typeof`).
+const REGEX_PRECEDER = /(?:^|[(,=:[!&|?{};]|\b(?:return|typeof))\s*$/
 
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out
@@ -82,6 +83,25 @@ function walk(dir, out = []) {
     }
   }
   return out
+}
+
+/** Index just past the regex literal starting at `start`, or -1 if none. */
+function regexEnd(text, start) {
+  let j = start + 1
+  let inClass = false
+  while (j < text.length && text[j] !== '\n') {
+    const c = text[j]
+    if (c === '\\') j++
+    else if (c === '[') inClass = true
+    else if (c === ']') inClass = false
+    else if (c === '/' && !inClass) {
+      j++
+      while (/[a-z]/i.test(text[j] ?? '')) j++
+      return j
+    }
+    j++
+  }
+  return -1
 }
 
 /**
@@ -108,6 +128,15 @@ export function scan(text) {
     } else if (ch === '/' && next === '*') {
       const end = text.indexOf('*/', i + 2)
       i = end === -1 ? text.length : end + 2
+    } else if (ch === '/' && REGEX_PRECEDER.test(bare.slice(Math.max(0, bare.length - 12)))) {
+      const end = regexEnd(text, i)
+      if (end === -1) {
+        emit(ch, ch)
+        i++
+      } else {
+        emit(text.slice(i, end), '/r/')
+        i = end
+      }
     } else if (ch === "'" || ch === '"') {
       let j = i + 1
       while (j < text.length && text[j] !== ch && text[j] !== '\n') j += text[j] === '\\' ? 2 : 1
@@ -141,14 +170,7 @@ export function scan(text) {
 }
 
 function usesDeno(bare) {
-  for (const m of bare.matchAll(/\bDeno\b/g)) {
-    const before = bare.slice(0, m.index)
-    const after = bare.slice(m.index + 4)
-    // Type-only use: `x: Deno.Type`, `<Deno.Type>`, `as Deno.Type`.
-    if (/^\.[A-Z]/.test(after) && TYPE_POSITION_BEFORE.test(before)) continue
-    return true
-  }
-  return false
+  return /\bDeno\b/.test(bare)
 }
 
 function usesWorkersBinding({ code, bare }) {

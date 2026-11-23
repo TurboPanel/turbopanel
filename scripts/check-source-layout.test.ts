@@ -87,6 +87,9 @@ test('every Deno and cloudflare form is detected outside the runtime folders', a
     'src/lib/bare.ts': "import 'cloudflare:test'\n",
     'src/lib/reexport.ts': "export { env } from 'cloudflare:workers'\n",
     'src/lib/template.ts': 'export const d = `${Deno.cwd()}`\n',
+    'src/lib/typed.ts': 'export function f(x: Deno.FsFile, y: Map<string, Deno.FsFile>) {}\n',
+    'src/lib/value.ts': 'export const v = { cmd: Deno.Command }\n',
+    'src/lib/ternary.ts': 'export const t = a ? b : Deno.Command\n',
     'src/developer/surface.ts': 'export const e = Deno.cwd()\n',
   }
   const result = await runInTree(forms)
@@ -96,15 +99,32 @@ test('every Deno and cloudflare form is detected outside the runtime folders', a
   }
 })
 
-test('runtime folders and type-only Deno use are not violations', async () => {
+test('runtime folders are not violations', async () => {
   const result = await runInTree({
     'src/app/deno/a.ts': 'export const a = Deno.cwd()\n',
     'src/app/workers/a.ts': "import 'cloudflare:workers'\n",
     'src/features/f/deno/a.ts': 'export const a = Deno.cwd()\n',
     'src/features/f/workers/a.ts': "import 'cloudflare:workers'\n",
-    'src/lib/types.ts': 'export function f(x: Deno.FsFile, y?: Array<Deno.Command>): void {}\n',
   })
   assertEquals(result.code, 0, result.text)
+})
+
+test('regex literals do not hide a later Deno use', async () => {
+  const bodies: Record<string, string> = {
+    'src/lib/r1.ts': 'const a = /[;|&$\\`()<>\\\\"\'!*?{}]/\nexport const b = Deno.cwd()\n',
+    'src/lib/r2.ts': 'const a = /^\\/*x/\nexport const b = Deno.cwd()\n',
+    'src/lib/r3.ts': 'export const a = x.replace(/`/g, "")\nexport const b = Deno.cwd()\n',
+    'src/lib/r4.ts': 'export const a = /[/]`/.test(s) && Deno.cwd()\n',
+  }
+  const result = await runInTree(bodies)
+  assertEquals(result.code, 1)
+  for (const file of Object.keys(bodies)) {
+    assertStringIncludes(result.text, `runtime: ${file} is a new violation`)
+  }
+  const clean = await runInTree({
+    'src/lib/c.ts': 'export const a = /Deno\\.cwd/\nexport const d = 6 / 2 / 1\n',
+  })
+  assertEquals(clean.code, 0, clean.text)
 })
 
 test('strings, comments and local declarations do not trigger the runtime rule', async () => {

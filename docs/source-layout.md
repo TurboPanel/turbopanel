@@ -103,7 +103,7 @@ src/
 `pnpm test:hook`, `pnpm verify:ci` and CI) enforces four rules over `src/`:
 
 - `runtime`: no use of the `Deno` global (calls, `typeof Deno`,
-  `globalThis.Deno?.`; type-only `Deno.Type` is fine) and no Workers binding
+  `globalThis.Deno?.`, type positions too) and no Workers binding
   (`cloudflare:` imports in any form, `DurableObject*`, `KVNamespace`,
   `R2Bucket`, `D1Database`, `Hyperdrive`, `Fetcher`, `Queue`) in a non-test file
   outside `src/platform/`, `src/cli/`, `src/test-fixtures/`, the `deno` and
