@@ -3,8 +3,8 @@ import {
   EMAIL_AMQP_DEAD_QUEUE,
   EMAIL_AMQP_EXCHANGE,
   EMAIL_AMQP_ROUTING_KEY,
-} from '../../../features/email/smtp/amqp-topology.ts'
-import { MailQueueUnavailableError } from '../../../features/email/smtp/dead-letter-replay.ts'
+} from '../smtp/amqp-topology.ts'
+import { MailQueueUnavailableError } from '../smtp/dead-letter-replay.ts'
 import { createAmqpMailDeadLetterStore, type DeadLetterChannel } from './deno-mail-dead-letters.ts'
 
 const test = Deno.test.bind(Deno)
