@@ -1,24 +1,15 @@
 import nodemailer from 'nodemailer'
-import { resolveEmailTemplate } from '../../../features/email/templates.ts'
-import {
-  resolveEmailSettings,
-  type ResolvedEmailSettings,
-} from '../../../features/settings/email-settings.ts'
-import type { DerivedSecretsConfig } from '../../secrets/secrets.ts'
-import type { EmailJob } from '../../../features/email/types.ts'
-import type { MailerSendResult } from '../../../features/email/sender-types.ts'
-import {
-  PermanentSendError,
-  validateEmailAddress,
-} from '../../../features/email/validate-address.ts'
+import { resolveEmailTemplate } from '../templates.ts'
+import { resolveEmailSettings, type ResolvedEmailSettings } from '../../settings/email-settings.ts'
+import type { DerivedSecretsConfig } from '../../../lib/secrets/secrets.ts'
+import type { EmailJob } from '../types.ts'
+import type { MailerSendResult } from '../sender-types.ts'
+import { PermanentSendError, validateEmailAddress } from '../validate-address.ts'
 import type { Db } from '../../../db/connection.ts'
-import { logError } from '../../logger.ts'
-import {
-  DEFAULT_MAILPIT_SMTP_PORT,
-  normalizeMailpitSmtpEnv,
-} from '../../../features/email/mailpit/env.ts'
-import type { SmtpConfig } from '../../../features/email/smtp/smtp-resolve.ts'
-import { smtpTransportSecurityOptions } from '../../../features/email/smtp/smtp-security.ts'
+import { logError } from '../../../lib/logger.ts'
+import { DEFAULT_MAILPIT_SMTP_PORT, normalizeMailpitSmtpEnv } from '../mailpit/env.ts'
+import type { SmtpConfig } from '../smtp/smtp-resolve.ts'
+import { smtpTransportSecurityOptions } from '../smtp/smtp-security.ts'
 
 type Transporter = ReturnType<typeof nodemailer.createTransport>
 
