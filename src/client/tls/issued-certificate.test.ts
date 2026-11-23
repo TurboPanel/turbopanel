@@ -266,7 +266,7 @@ test('the same pair again changes nothing; a renewal replaces the pair', async (
       stored: false,
       tlsIds: [],
     })
-    const renewed = await issuedPair([HOST], 120)
+    const renewed = await issuedPair([HOST], 95)
     assertEquals(await send(renewed), {
       ok: true,
       stored: true,
@@ -325,6 +325,46 @@ test('refuses a key that does not match, a certificate for another name, an expi
       status: 400,
     })
     assertEquals((await readRow(f)).privateKeyPem, null)
+  } finally {
+    await f.cleanup()
+  }
+})
+
+test('refuses a private-CA leaf ending in year 9999 and a ten-year leaf; stores a 90-day renewal and a staging leaf', async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup()
+  try {
+    const send = (pair: { certificatePem: string; privateKeyPem: string }) =>
+      storeIssuedCertificate(f.db, { serverId: f.serverId, hostname: HOST, ...pair }, { ...f.deps })
+    const refusal = (error: 'implausible_validity' | 'private_ca_certificate') => ({
+      ok: false as const,
+      error,
+      message: REFUSAL_MESSAGE[error],
+      status: 400 as const,
+    })
+    // A leaf from a private CA with an expiry thousands of years out.
+    const farFuture = await issuedPair([HOST], 2_900_000)
+    assert(farFuture.parsed.notAfter.getUTCFullYear() > 9000)
+    assertEquals(await send(farFuture), refusal('implausible_validity'))
+    assertEquals(await send(await issuedPair([HOST], 3650)), refusal('implausible_validity'))
+    // The web server's own internal CA is refused by name, whatever the validity.
+    assertEquals(
+      await send(
+        await makeCaddyPair('ec-p256', [HOST], 1, 'Caddy Local Authority - ECC Intermediate')
+      ),
+      refusal('private_ca_certificate')
+    )
+    assertEquals((await readRow(f)).privateKeyPem, null)
+    // A normal 90-day pair is stored and a later 90-day renewal replaces it.
+    const first = await makeCaddyPair('ec-p256', [HOST], 60)
+    assertEquals((await send(first)).ok, true)
+    const renewal = await makeCaddyPair('ec-p256', [HOST], 90)
+    assertEquals((await send(renewal)).ok, true)
+    assertEquals((await readRow(f)).certificatePem, renewal.certificatePem)
+    // Staging leaves are not told apart by issuer: one with an ordinary 90-day
+    // window is accepted exactly like a production one (the same lifetime rules).
+    const staging = await makeCaddyPair('ec-p256', [HOST], 91, '(STAGING) Artificial Apricot R3')
+    assertEquals((await send(staging)).ok, true)
   } finally {
     await f.cleanup()
   }
@@ -549,6 +589,23 @@ test('replaces(): equal expiry is rejected, later accepted, earlier rejected', a
   assertEquals(replaces(stored(new Date(at - 1000)), true, pair.parsed, now), true)
   assertEquals(replaces(stored(new Date(at + 1000)), true, pair.parsed, now), false)
   assertEquals(replaces(stored(new Date(at + 1000)), false, pair.parsed, now), true)
+})
+
+test('replaces(): an implausible pair never wins; a stored pair ending implausibly far ahead is replaced', async () => {
+  const now = new Date()
+  const odd = await issuedPair([HOST], 3650)
+  const far = (days: number) => ({
+    names: [HOST],
+    notAfter: new Date(now.getTime() + days * 86_400_000).toISOString(),
+  })
+  // Nothing stored, or a stored pair that ends sooner: still no.
+  assertEquals(replaces({ names: undefined, notAfter: null }, false, odd.parsed, now), false)
+  assertEquals(replaces(far(10), true, odd.parsed, now), false)
+  // A real renewal replaces a stored pair that ends in the far future.
+  const real = await issuedPair([HOST], 90)
+  assertEquals(replaces(far(36_500), true, real.parsed, now), true)
+  assertEquals(replaces(far(99), true, real.parsed, now), false)
+  assertEquals(replaces(far(30), true, real.parsed, now), true)
 })
 
 test('replaces(): a later pair that covers more names than the stored one renews it', async () => {

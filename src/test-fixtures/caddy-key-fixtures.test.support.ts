@@ -66,11 +66,15 @@ async function writeKey(kind: CaddyKeyKind, path: string): Promise<void> {
   }
 }
 
-/** A leaf for `hostnames` signed by a throwaway CA, with its key in the form `kind` names. */
+/**
+ * A leaf for `hostnames` signed by a throwaway CA (named `issuerCommonName`),
+ * with its key in the form `kind` names.
+ */
 export async function makeCaddyPair(
   kind: CaddyKeyKind,
   hostnames: string[],
-  days = 90
+  days = 90,
+  issuerCommonName = 'Test Issuing CA'
 ): Promise<CaddyPair> {
   const dir = await Deno.makeTempDir({ prefix: 'caddy-fixture-' })
   try {
@@ -91,7 +95,7 @@ export async function makeCaddyPair(
       '-days',
       '365',
       '-subj',
-      '/CN=Test Issuing CA',
+      `/CN=${issuerCommonName}`,
     ])
     const key = join(dir, 'leaf.key')
     await writeKey(kind, key)
