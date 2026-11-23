@@ -282,7 +282,7 @@ test('verify-email/otp requires an active session cookie', async () => {
   assertEquals(res.status, 401)
 })
 
-test('verify-email/otp without a session still charges the anonymous + IP bucket', async () => {
+test('verify-email/otp without a session still charges the IP bucket', async () => {
   const db = createMockAuthDb(createEmptyMockAuthState())
   const { app } = await buildOtpAuthApp(db, { limit: 2 })
   const attempt = () =>
@@ -296,6 +296,22 @@ test('verify-email/otp without a session still charges the anonymous + IP bucket
   const blocked = await attempt()
   assertEquals(blocked.status, 429)
   assertEquals(blocked.headers.get('Retry-After') !== null, true)
+})
+
+test('verify-email/otp without a session is limited per IP, not for everyone', async () => {
+  const db = createMockAuthDb(createEmptyMockAuthState())
+  const { app } = await buildOtpAuthApp(db, { limit: 2 })
+  const attempt = (ip: string) =>
+    app.request(`${CLIENT_API_PREFIX}/auth/verify-email/otp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Real-IP': ip },
+      body: JSON.stringify({ email: 'otp@example.com', otp: '123456' }),
+    })
+  assertEquals((await attempt('203.0.113.91')).status, 401)
+  assertEquals((await attempt('203.0.113.91')).status, 401)
+  assertEquals((await attempt('203.0.113.91')).status, 429)
+  assertEquals((await attempt('203.0.113.92')).status, 401)
+  assertEquals((await attempt('203.0.113.91')).status, 429)
 })
 
 test('reset-password/request-otp returns 503 without verifier secrets', async () => {
