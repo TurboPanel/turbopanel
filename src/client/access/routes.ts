@@ -203,22 +203,15 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     }
 
     const entity = await resolveEntityById(db, validated.resourceId)
-    if (!entity) {
-      return c.json({ error: 'Not found' }, 404)
-    }
+    const allowed = entity
+      ? await can(db, session.userId, validated.permissionKey, entity.entityType, entity.entityId)
+      : false
 
-    const allowed = await can(
-      db,
-      session.userId,
-      validated.permissionKey,
-      entity.entityType,
-      entity.entityId
-    )
-
-    // A caller who cannot see the entity (no access to its organization and no
-    // grant on it) gets the same 404 as an unknown id, so the check cannot
+    // An unknown id, and an entity the caller cannot see (no grant for the
+    // asked permission, no access to its organization, no grant of their own
+    // or their team's on it), answer with the same 404, so the check cannot
     // probe which ids exist elsewhere.
-    if (!allowed && !(await callerCanSeeEntity(db, session.userId, entity))) {
+    if (!entity || (!allowed && !(await callerCanSeeEntity(db, session.userId, entity)))) {
       return c.json({ error: 'Not found' }, 404)
     }
 
