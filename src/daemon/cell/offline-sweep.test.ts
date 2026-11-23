@@ -32,9 +32,6 @@ import {
   runIsolatedSweep,
   runOfflineSweep,
   SELF_HEAL_SWEEP_BUDGET,
-  shouldSweepExecutionLogs,
-  shouldSweepTierNotices,
-  shouldSweepUpgradeHistory,
   sweepExpiredCommandDispatchSafely,
   sweepExpiredExecutionLogsSafely,
   sweepErrorMessage,
@@ -669,22 +666,16 @@ function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
   } as unknown as Db
 }
 
-it('shouldSweepExecutionLogs is true on every 15th UTC minute', () => {
-  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:00:00.000Z')), true)
-  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:15:00.000Z')), true)
-  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:01:00.000Z')), false)
-})
-
-it('shouldSweepUpgradeHistory is true on every 15th UTC minute', () => {
-  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:00:00.000Z')), true)
-  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:15:00.000Z')), true)
-  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:01:00.000Z')), false)
-})
-
-it('shouldSweepTierNotices is true on every UTC hour', () => {
-  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T00:00:00.000Z')), true)
-  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T01:00:00.000Z')), true)
-  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T00:15:00.000Z')), false)
+it('the phases follow the table: retention on its slot, the upgrade phase every quarter hour', () => {
+  const at = (iso: string) => optionalPhaseNames(Date.parse(iso))
+  assertEquals(at('2026-01-01T00:00:00.000Z').includes('execution-logs'), true)
+  assertEquals(at('2026-01-01T00:15:00.000Z').includes('execution-logs'), true)
+  assertEquals(at('2026-01-01T00:01:00.000Z').includes('execution-logs'), false)
+  assertEquals(at('2026-01-01T00:15:00.000Z').includes('upgrade-history'), true)
+  assertEquals(at('2026-01-01T00:01:00.000Z').includes('upgrade-history'), false)
+  assertEquals(at('2026-01-01T00:00:00.000Z').includes('tier-notices'), true)
+  assertEquals(at('2026-01-01T01:00:00.000Z').includes('tier-notices'), true)
+  assertEquals(at('2026-01-01T00:15:00.000Z').includes('tier-notices'), false)
 })
 
 it('second tick skips while the offline-sweep lease is held', async () => {
@@ -2125,14 +2116,12 @@ it('a bad TURBOPANEL_JOB_CADENCES logs one line per tick and the tick still runs
 
 it('a cadence override moves execution-log and tier-notice retention', () => {
   const table = resolveJobCadences('{"executionLogs":60,"tierNotices":1440}').table
-  const quarter = Date.parse('2026-01-01T00:15:00.000Z')
-  const hour = Date.parse('2026-01-01T01:00:00.000Z')
-  const midnight = Date.parse('2026-01-02T00:00:00.000Z')
-  assertEquals(shouldSweepExecutionLogs(quarter, table), false)
-  assertEquals(shouldSweepExecutionLogs(hour, table), true)
-  assertEquals(shouldSweepTierNotices(hour, table), false)
-  assertEquals(shouldSweepTierNotices(midnight, table), true)
-  assertEquals(shouldSweepUpgradeHistory(quarter, table), true)
+  const phases = (iso: string) => optionalPhaseNames(Date.parse(iso), table)
+  assertEquals(phases('2026-01-01T00:15:00.000Z').includes('execution-logs'), false)
+  assertEquals(phases('2026-01-01T01:00:00.000Z').includes('execution-logs'), true)
+  assertEquals(phases('2026-01-01T01:00:00.000Z').includes('tier-notices'), false)
+  assertEquals(phases('2026-01-02T00:00:00.000Z').includes('tier-notices'), true)
+  assertEquals(phases('2026-01-01T00:15:00.000Z').includes('upgrade-history'), true)
 })
 
 it('the peak history prune deletes through the table and never throws', async () => {
