@@ -18,7 +18,7 @@ import type { PreferenceScopeKey } from './fanout-records.ts'
 import { type EventScope, type PreferenceRow, resolveLevel } from './resolve.ts'
 import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { notificationMailHeaders } from '../email/templates.ts'
-import { parseEmailJob } from '../../lib/email/mailer/parse-email-job.ts'
+import { parseEmailJob } from '../email/mailer/parse-email-job.ts'
 
 const test = Deno.test.bind(Deno)
 
