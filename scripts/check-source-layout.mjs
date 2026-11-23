@@ -69,8 +69,9 @@ const CLOUDFLARE_IMPORT = /\b(?:from|import)\s*\(?\s*['"]cloudflare:/
 const BINDING_PATTERN =
   /(?<![.\w])(?:DurableObject\w*|KVNamespace|R2Bucket|D1Database|Hyperdrive|Fetcher|Queue)\b(?=\s*[<,;)>=|\s])/g
 const DECLARATION_BEFORE = /\b(?:class|interface|type|function|const|let|var|enum)\s+$/
-// A `/` starts a regex literal after these (or after `return`/`typeof`).
-const REGEX_PRECEDER = /(?:^|[(,=:[!&|?{};]|\b(?:return|typeof))\s*$/
+// A `/` starts a regex literal after these (or after a keyword such as `return`, `typeof`, `case`, `in`, `of`, `throw`, `await`, `yield`).
+const REGEX_PRECEDER =
+  /(?:^|[(,=:[!&|?{};+\-*%<>~^]|\b(?:return|typeof|case|in|of|throw|await|yield))\s*$/
 
 function walk(dir, out = []) {
   if (!fs.existsSync(dir)) return out

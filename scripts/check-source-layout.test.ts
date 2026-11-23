@@ -114,6 +114,9 @@ test('regex literals do not hide a later Deno use', async () => {
     'src/lib/r1.ts': 'const a = /[;|&$\\`()<>\\\\"\'!*?{}]/\nexport const b = Deno.cwd()\n',
     'src/lib/r2.ts': 'const a = /^\\/*x/\nexport const b = Deno.cwd()\n',
     'src/lib/r3.ts': 'export const a = x.replace(/`/g, "")\nexport const b = Deno.cwd()\n',
+    'src/lib/r5.ts': 'export const f = (s: string) => /`/.test(s)\nexport const b = Deno.cwd()\n',
+    'src/lib/r6.ts':
+      'export const f = (s: string) => 1 + /`/.test(s) ? await /`/ : 0\nexport const b = Deno.cwd()\n',
     'src/lib/r4.ts': 'export const a = /[/]`/.test(s) && Deno.cwd()\n',
   }
   const result = await runInTree(bodies)
