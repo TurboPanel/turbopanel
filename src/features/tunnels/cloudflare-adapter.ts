@@ -29,8 +29,13 @@ export const CLOUDFLARE_PERMISSIONS = {
   certificates: 'Zone · SSL and Certificates · Edit',
 } as const
 
-/** What a connector is told to reach: the web server on the same machine. */
-const LOCAL_ORIGIN = 'https://localhost'
+/**
+ * What a connector is told to reach: the web server on the same machine. The
+ * IPv4 loopback is named on purpose: "localhost" can resolve to ::1 first, and
+ * a site bound to one address listens on 127.0.0.1 only, so the connector
+ * would land on the catch-all server instead of the site.
+ */
+const LOCAL_ORIGIN = 'https://127.0.0.1'
 
 function requireAccount(accountId: string | null): string {
   if (!accountId) throw new TypeError('A Cloudflare account id is required')
