@@ -1,3 +1,4 @@
+import type { TaskRecord } from '../../features/schedule/task-records.ts'
 import { assertEquals, assertNotEquals, assertRejects } from '@std/assert'
 import type { EnvironmentDeploySite } from '../../contracts/commands/schemas.ts'
 import { describe, it } from '@std/testing/bdd'
@@ -1307,6 +1308,73 @@ describe('attachPrincipalsToSites', () => {
         throw new TypeError('expected pinned sites')
       }
       assertEquals(result[0]?.principal?.principalId, principalId)
+    })
+  })
+
+  describe('task rows as site cron', () => {
+    const task: TaskRecord = {
+      id: '00000000-0000-4000-8000-000000000001',
+      serviceId,
+      name: 'Nightly backup',
+      schedule: '30 2 * * *',
+      command: '/usr/bin/php artisan schedule:run',
+      timezone: null,
+      isEnabled: true,
+      concurrencyPolicy: 'forbid',
+      timeoutSeconds: null,
+      metadata: null,
+      options: null,
+      createdAt: '2026-09-18T00:00:00.000Z',
+      updatedAt: '2026-09-18T00:00:00.000Z',
+    }
+    const material = {
+      principalId,
+      username: 'appuser',
+      home: principalHomeDir('appuser'),
+      shell: '/bin/bash',
+      uid: 15001,
+      gid: 15001,
+    }
+
+    it('puts the task of a site with a principal into site.cron', async () => {
+      const db = createSelectWhereDb([{ principalId, serviceId }])
+      const result = await attachPrincipalsToSites(
+        db,
+        'env-1',
+        [{ id: serviceId, composeServiceName: 'site' }],
+        [material],
+        [site],
+        NO_COMPOSE_PRINCIPALS,
+        new Map([['site', [task]]])
+      )
+      if ('kind' in result) throw new TypeError('expected pinned sites')
+      assertEquals(result[0]?.cron, [
+        {
+          name: 'nightly-backup',
+          schedule: '*-*-* 2:30:00',
+          command: ['/usr/bin/php', 'artisan', 'schedule:run'],
+          concurrencyPolicy: 'forbid',
+        },
+      ])
+      assertEquals(result[0]?.principal?.principalId, principalId)
+    })
+
+    it('refuses a site with a task and no resolvable principal as site_cron_unowned', async () => {
+      // The compose declares an account alias that resolves to nobody.
+      const db = createSelectWhereDb([])
+      const result = await attachPrincipalsToSites(
+        db,
+        'env-1',
+        [{ id: serviceId, composeServiceName: 'site' }],
+        [],
+        [site],
+        {
+          principalIdByAlias: new Map<string, string>(),
+          aliasByComposeServiceName: new Map([['site', 'app']]),
+        },
+        new Map([['site', [task]]])
+      )
+      assertEquals(result, { kind: 'site_cron_unowned', composeServiceName: 'site' })
     })
   })
 

@@ -6,8 +6,10 @@
  * the parent `service`, which the evaluator and `resolveEntityOrganizationId`
  * already handle.
  *
- * A task row is configuration only: nothing is enqueued, no `command` is
- * created, and no daemon sees it yet.
+ * A task row is configuration only: nothing is enqueued and no `command` is
+ * created when it is saved. At deploy, the rows of a PHP site are folded into
+ * `site.cron` by `attachPrincipalsToSites` (`environments/deploy-prepare.ts`)
+ * and sent to the daemon with the site.
  */
 
 import { and, eq, inArray } from 'drizzle-orm'
@@ -18,10 +20,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
-import {
-  TASK_NAME_IN_USE_ERROR,
-  isTaskDisplayNameTaken,
-} from '../display-name-uniqueness.ts'
+import { TASK_NAME_IN_USE_ERROR, isTaskDisplayNameTaken } from '../display-name-uniqueness.ts'
 import { service } from '../../db/schema.ts'
 import {
   countTasksForService,
@@ -58,7 +57,7 @@ type TaskRequestContext = {
 }
 
 async function requireTaskRequestContext(
-  c: Context<AppEnv>,
+  c: Context<AppEnv>
 ): Promise<TaskRequestContext | Response> {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -75,7 +74,7 @@ async function resolveListedServiceIds(
   c: Context<AppEnv>,
   db: Db,
   visibleIds: string[],
-  filters: TaskListFilters,
+  filters: TaskListFilters
 ): Promise<string[] | Response> {
   if (filters.serviceId) {
     if (!visibleIds.includes(filters.serviceId)) {
@@ -88,12 +87,7 @@ async function resolveListedServiceIds(
   const rows = await db
     .select({ id: service.id })
     .from(service)
-    .where(
-      and(
-        inArray(service.id, visibleIds),
-        eq(service.environmentId, filters.environmentId),
-      ),
-    )
+    .where(and(inArray(service.id, visibleIds), eq(service.environmentId, filters.environmentId)))
   return rows.map((row) => row.id)
 }
 
@@ -101,7 +95,7 @@ async function loadTaskInOrganization(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  id: string,
+  id: string
 ): Promise<TaskRecord | Response> {
   const invalidId = invalidTaskIdResponse(c, id, 'path')
   if (invalidId) return invalidId
@@ -119,7 +113,7 @@ async function assertTaskServiceCreatable(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  serviceId: string,
+  serviceId: string
 ): Promise<Response | null> {
   const serviceOrgId = await resolveEntityOrganizationId(db, 'service', serviceId)
   if (serviceOrgId !== organizationId) {
@@ -132,7 +126,7 @@ async function assertTaskServiceCreatable(
 
 async function assertTaskServiceWritable(
   c: Context<AppEnv>,
-  serviceId: string,
+  serviceId: string
 ): Promise<Response | null> {
   const denied = await assertCanOr403(c, 'organization:manage', 'service', serviceId)
   if (denied) return denied
@@ -143,7 +137,7 @@ async function assertTaskCreateCapacity(
   c: Context<AppEnv>,
   db: Db,
   serviceId: string,
-  name: string,
+  name: string
 ): Promise<Response | null> {
   const existing = await countTasksForService(db, serviceId)
   if (existing >= MAX_CRON_JOBS_PER_SERVICE) {
@@ -165,7 +159,7 @@ async function assertTaskRenameAvailable(
   db: Db,
   serviceId: string,
   name: string | undefined,
-  taskId: string,
+  taskId: string
 ): Promise<Response | null> {
   if (name === undefined) return null
   if (await isTaskDisplayNameTaken(db, serviceId, name, taskId)) {
@@ -221,12 +215,7 @@ export function registerTaskRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const ctx = await requireTaskRequestContext(c)
     if (ctx instanceof Response) return ctx
 
-    const row = await loadTaskInOrganization(
-      c,
-      ctx.db,
-      ctx.organizationId,
-      c.req.param('id'),
-    )
+    const row = await loadTaskInOrganization(c, ctx.db, ctx.organizationId, c.req.param('id'))
     if (row instanceof Response) return row
 
     const denied = await assertCanReadOr403(c, 'service', row.serviceId)
@@ -287,7 +276,7 @@ export function registerTaskRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       db,
       row.serviceId,
       updateFields.name,
-      row.id,
+      row.id
     )
     if (renameConflict) return renameConflict
 
@@ -303,12 +292,7 @@ export function registerTaskRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     const ctx = await requireTaskRequestContext(c)
     if (ctx instanceof Response) return ctx
 
-    const row = await loadTaskInOrganization(
-      c,
-      ctx.db,
-      ctx.organizationId,
-      c.req.param('id'),
-    )
+    const row = await loadTaskInOrganization(c, ctx.db, ctx.organizationId, c.req.param('id'))
     if (row instanceof Response) return row
 
     const denied = await assertTaskServiceWritable(c, row.serviceId)

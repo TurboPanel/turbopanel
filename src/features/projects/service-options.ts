@@ -60,6 +60,28 @@ export type ServiceOptions = {
   }
 }
 
+/** Every key a service options document may carry; anything else is refused on write. */
+export const SERVICE_OPTION_KEYS = [
+  'preDeployCommand',
+  'postDeployCommand',
+  'postDeployCommands',
+  'postDeployTimeoutSeconds',
+  'postDeployTiming',
+  'workers',
+  'instances',
+  'build',
+  'operations',
+  'healthCheck',
+  'resources',
+] as const satisfies readonly (keyof ServiceOptions)[]
+
+/** The first key of a raw options document that is not a service option, or null. */
+export function findUnknownServiceOptionKey(value: unknown): string | null {
+  if (!isRecord(value)) return null
+  const known: readonly string[] = SERVICE_OPTION_KEYS
+  return Object.keys(value).find((key) => !known.includes(key)) ?? null
+}
+
 const DEFAULT_STOP_GRACE_SECONDS = 30
 const DEFAULT_MAX_RESTART_ATTEMPTS = 10
 const DEFAULT_HEALTH_POLICY: HealthCheckPolicy = 'disabled'

@@ -142,6 +142,17 @@ test('parseServiceCreateFields accepts display metadata and options', () => {
   assertEquals(parsed.options?.instances, 2)
 })
 
+test('service options with an unknown key are refused by name on patch and create', () => {
+  const patch = parseServicePatchFields({ options: { instances: 2, cron: '* * * * *' } })
+  if (patch.ok) throw new TypeError('expected refusal')
+  assertEquals(patch.status, 400)
+  assertEquals(patch.error.includes('"cron"'), true)
+  const create = parseServiceCreateFields({ options: { cron: [] } })
+  if (create.ok) throw new TypeError('expected refusal')
+  assertEquals(create.status, 400)
+  assertEquals(create.error.includes('"cron"'), true)
+})
+
 test('parseServicePatchFields rejects compose name and invalid options', () => {
   const composeRejected = parseServicePatchFields({
     composeServiceName: 'web',
