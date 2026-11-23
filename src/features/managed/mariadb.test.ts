@@ -76,6 +76,7 @@ test('MARIADB_ROOT_PASSWORD placeholder and my.cnf MariaDB GTID vocabulary', () 
   })
   assertEquals(spec.env.MARIADB_ROOT_PASSWORD, ManagedSecretPlaceholder)
   assertEquals(spec.env.MARIADB_DATABASE, 'defaultdb')
+  assertEquals((spec.service.volumes as string[])[0], `${spec.volumes[0]?.name}:/var/lib/mysql:rw`)
   const conf = spec.configFiles.find((f) => f.path === 'my.cnf')?.contents ?? ''
   assertEquals(conf.includes('gtid_strict_mode=ON'), true)
   assertEquals(conf.includes('log_slave_updates=ON'), true)
