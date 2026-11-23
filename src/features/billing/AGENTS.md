@@ -72,10 +72,9 @@ Both `TURBOPANEL_STRIPE_SECRET_KEY` and
 `TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET` are **secrets**
 (`wrangler secret put`), never `vars` in `wrangler.jsonc`; `keep_vars: true`
 protects dashboard-set values across deploys. `TURBOPANEL_STRIPE_API_VERSION` is
-an optional override of the pin below, and `TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION`
-an optional override of it for `/v2` (Accounts) calls only.
-`TURBOPANEL_STRIPE_IS_COUPON_ALLOWED`
-(`1` on, anything else off) is a plain var: when on, Checkout sends
+an optional override of the pin below. `TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION`
+is an optional override of it for `/v2` (Accounts) calls only.
+`TURBOPANEL_STRIPE_IS_COUPON_ALLOWED` (`1` on, anything else off) is a plain var: when on, Checkout sends
 `allow_promotion_codes=true` so the customer can type a promotion code. Live
 commits `"0"`; an unfinished Checkout session already handed out keeps the
 setting it was created with.
@@ -161,7 +160,10 @@ dual path:
 application/json` and a required `Stripe-Version`. That is the v1 pin unless
   `TURBOPANEL_STRIPE_ACCOUNTS_API_VERSION` names a different one (a platform
   outside Connect needs a `.preview` version while Accounts v2 is in preview).
-  v1 calls are unchanged: form bodies, the v1 pin.
+  v1 calls are unchanged: form bodies, the v1 pin. Stripe's own example for a
+  subscription with `customer_account` also sends a `.preview` version, so a
+  platform outside Connect may need `TURBOPANEL_STRIPE_API_VERSION` on a
+  preview version too; not yet exercised against a sandbox.
 - The account is created with `configuration.customer` and the
   `automatic_indirect_tax` capability requested (Checkout and subscriptions send
   `automatic_tax`), and **no `identity`**: Stripe rejects identity fields on a
@@ -375,7 +377,7 @@ subscription.
 flexible billing mode, `billing_cycle_anchor_config` at day 1 / 00:00:00 UTC,
 and no `proration_behavior` on create so the default prorates the first month.
 Checkout passes the same block under `subscription_data` (verified accepted on
-`2025-08-27.basil`, not yet re-verified on the pinned `2026-09-30.endive`).
+`2025-08-27.basil`, not yet re-verified on the pinned `2026-11-18.endive`).
 
 ## First Checkout keeps no local record
 

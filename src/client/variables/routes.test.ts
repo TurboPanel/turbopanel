@@ -379,12 +379,10 @@ test('POST and PATCH /variables refuse a build variable the build would drop', a
         })
       const patched = await patch({ forBuild: true })
       assertEquals(patched.status, 400)
-      assertEquals(
-        ((await patched.json()) as { error: string }).error.startsWith(
-          'PATH cannot be set for a build:'
-        ),
-        true
-      )
+      const patchedBody = (await patched.json()) as { error: string; message: string; code: string }
+      assertEquals(patchedBody.error.startsWith('PATH cannot be set for a build:'), true)
+      assertEquals(patchedBody.message, patchedBody.error)
+      assertEquals(patchedBody.code, 'build_variable_name_refused')
       const rows = await db
         .select({ isForBuild: variable.isForBuild })
         .from(variable)

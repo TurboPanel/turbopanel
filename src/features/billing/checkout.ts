@@ -10,7 +10,7 @@
  * The session carries the same anchor and billing-mode invariant as a
  * direct `POST /v1/subscriptions` (`SUBSCRIPTION_ANCHOR_PARAMS`, verified
  * accepted under `subscription_data` on `2025-08-27.basil`, not yet
- * re-verified on the pinned `2026-09-30.endive`). Tax: automatic tax on,
+ * re-verified on the pinned `2026-11-18.endive`). Tax: automatic tax on,
  * tax-id collection on, and `customer_update[address|name]=auto` so Checkout
  * may write what it collects onto the existing customer. Stripe documents
  * `customer_update` as "can only be provided when `customer` is provided" and

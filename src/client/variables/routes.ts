@@ -9,6 +9,7 @@ import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { variable } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 import { buildEnvSaveProblem } from '../../features/compose/build-env.ts'
 import {
   assertCanCreateOr403,
@@ -266,7 +267,7 @@ async function buildVariablePatchFields(
       updateFields.key ?? existing.key,
       updateFields.isForBuild ?? existing.isForBuild
     )
-    if (buildProblem) return c.json({ error: buildProblem }, 400)
+    if (buildProblem) return apiError(c, 400, 'build_variable_name_refused', buildProblem)
   }
 
   const valueError = await applyValueAndSecretPatch(

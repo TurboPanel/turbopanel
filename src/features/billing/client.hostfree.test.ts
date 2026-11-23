@@ -4,7 +4,7 @@
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
-import type { BillingConfig } from './config.ts'
+import { DEFAULT_STRIPE_API_VERSION, type BillingConfig } from './config.ts'
 import { createStripeClient, STRIPE_LIST_PAGE_SIZE, type StripeFetch } from './client.ts'
 import { StripeApiError } from './errors.ts'
 import { createCustomerForOrganization } from './subscriptions.ts'
@@ -20,7 +20,7 @@ const test = Deno.test.bind(Deno)
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_abc',
   webhookSigningSecret: 'whsec_abc',
-  apiVersion: '2026-09-30.endive',
+  apiVersion: DEFAULT_STRIPE_API_VERSION,
 }
 
 type Call = { url: string; method: string; headers: Record<string, string>; body: string | null }
@@ -67,7 +67,7 @@ test('every call carries Authorization, Stripe-Version and the form content type
   await client.del('/v1/customers/cus_1')
   for (const call of double.calls) {
     assertEquals(call.headers['authorization'], 'Bearer sk_test_abc')
-    assertEquals(call.headers['stripe-version'], '2026-09-30.endive')
+    assertEquals(call.headers['stripe-version'], DEFAULT_STRIPE_API_VERSION)
     assertEquals(call.headers['content-type'], 'application/x-www-form-urlencoded')
   }
   assertEquals(
@@ -260,7 +260,7 @@ test('/v2 paths send a JSON body, the JSON content type and the accounts version
   )
   assertEquals(retrieve?.body, null)
   assertEquals(retrieve?.headers['stripe-version'], '2026-11-18.preview')
-  assertEquals(v1?.headers['stripe-version'], '2026-09-30.endive')
+  assertEquals(v1?.headers['stripe-version'], DEFAULT_STRIPE_API_VERSION)
   assertEquals(v1?.headers['content-type'], 'application/x-www-form-urlencoded')
   assertEquals(v1?.body, 'customer_account=acct_1')
 })
@@ -268,7 +268,7 @@ test('/v2 paths send a JSON body, the JSON content type and the accounts version
 test('/v2 calls use the v1 pin when no accounts version is configured', async () => {
   const double = fetchDouble(() => jsonResponse(200, {}))
   await createStripeClient(CONFIG, { fetch: double.fetch }).get('/v2/core/accounts/acct_1')
-  assertEquals(double.calls[0]?.headers['stripe-version'], '2026-09-30.endive')
+  assertEquals(double.calls[0]?.headers['stripe-version'], DEFAULT_STRIPE_API_VERSION)
 })
 
 test('createCustomerForOrganization over the real client posts a v2 Account with the customer configuration and the organization metadata', async () => {

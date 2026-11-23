@@ -23,7 +23,7 @@ import {
 } from '../client/authn/authn-hostfree-doubles.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../client/authn/crypto.ts'
 import { deriveSecretsConfig } from '../lib/secrets/secrets.ts'
-import type { BillingConfig } from '../features/billing/config.ts'
+import { DEFAULT_STRIPE_API_VERSION, type BillingConfig } from '../features/billing/config.ts'
 import { StripeApiError } from '../features/billing/errors.ts'
 import { server, subscriptionItem, tier } from '../db/schema.ts'
 import type { TierRow } from '../features/tiers/tier-records.ts'
@@ -52,7 +52,7 @@ const NOW = '2026-09-08T00:00:00.000Z'
 const BILLING: BillingConfig = {
   secretKey: 'sk_test_x',
   webhookSigningSecret: 'whsec_x',
-  apiVersion: '2026-09-30.endive',
+  apiVersion: DEFAULT_STRIPE_API_VERSION,
 }
 
 function tierRow(overrides: Partial<TierRow> = {}): TierRow {

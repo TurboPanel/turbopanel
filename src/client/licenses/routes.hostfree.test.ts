@@ -20,7 +20,7 @@ import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
-import type { BillingConfig } from '../../features/billing/config.ts'
+import { DEFAULT_STRIPE_API_VERSION, type BillingConfig } from '../../features/billing/config.ts'
 import {
   certificateFingerprints,
   INSTALL_CA_PIN_UNAVAILABLE,
@@ -101,7 +101,7 @@ const NOW = '2026-09-07T12:00:00.000Z'
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_x',
   webhookSigningSecret: 'whsec_x',
-  apiVersion: '2026-09-30.endive',
+  apiVersion: DEFAULT_STRIPE_API_VERSION,
 }
 
 const tierRow = (id: string, label: string, rank: number) => ({
