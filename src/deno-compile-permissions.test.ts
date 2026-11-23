@@ -364,7 +364,7 @@ it('compile tasks emit the plain binary name and skip type-checking', async () =
   // The instance binary is `turbopanel` (the unit runs it, the installer
   // pins it at /opt/turbopanel/bin/turbopanel, the CLI verbs are
   // `turbopanel migrate` and friends). There is no separate mailer binary:
-  // the email consumer runs in-process (src/lib/email/mailer/
+  // the email consumer runs in-process (src/features/email/mailer/
   // deno-mailer-consumer.ts, wired from src/platform/deno/server.ts).
   //
   // `--no-check`: type-checking is Build's job (and an explicit `deno check`

@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import type { EmailJob } from '../../../features/email/types.ts'
+import type { EmailJob } from '../types.ts'
 import { createMailerMailgunSender, MailerMailgunSender } from './mailgun-sender.ts'
 
 /**
@@ -32,15 +32,14 @@ const MAILGUN_ENV = {
   TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
 }
 
-function mailgunSender(
-  env: Record<string, string | undefined> = MAILGUN_ENV,
-): MailerMailgunSender {
+function mailgunSender(env: Record<string, string | undefined> = MAILGUN_ENV): MailerMailgunSender {
   return createMailerMailgunSender({ db: undefined, env })
 }
 
-function assertFailure(
-  result: { success: boolean; error?: string; permanent?: boolean },
-): { error: string; permanent: boolean } {
+function assertFailure(result: { success: boolean; error?: string; permanent?: boolean }): {
+  error: string
+  permanent: boolean
+} {
   if (result.success) throw new TypeError('expected a failed send')
   if (typeof result.error !== 'string') throw new TypeError('expected an error string')
   if (typeof result.permanent !== 'boolean') {
@@ -50,7 +49,7 @@ function assertFailure(
 }
 
 function withFetch(
-  impl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>,
+  impl: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 ): () => void {
   const original = globalThis.fetch
   globalThis.fetch = impl as typeof fetch
@@ -104,9 +103,7 @@ test('sendJob forwards Mailgun permanent and transient outcomes', async () => {
   ] as const
 
   for (const { status, permanent } of cases) {
-    const restore = withFetch(() =>
-      Promise.resolve(new Response(`status ${status}`, { status })),
-    )
+    const restore = withFetch(() => Promise.resolve(new Response(`status ${status}`, { status })))
     try {
       const result = await mailgunSender().sendJob(OTP_JOB)
       const failure = assertFailure(result)

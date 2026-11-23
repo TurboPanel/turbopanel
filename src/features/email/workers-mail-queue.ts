@@ -13,7 +13,7 @@
  * sending directly from the request (`mailgun/workers-queue.ts`), so an
  * environment whose queues do not exist yet keeps working.
  */
-import { parseEmailJob } from '../../lib/email/mailer/parse-email-job.ts'
+import { parseEmailJob } from './mailer/parse-email-job.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
 import { deliverEmailJob, type EmailDeliverySender } from './deliver-email-job.ts'
 import type { MailerSender } from './sender-types.ts'
