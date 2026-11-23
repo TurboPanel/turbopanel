@@ -20,6 +20,7 @@ import { command, server, tunnel } from '../../db/schema.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { gapStillRunning } from '../../lib/slot-gap.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import type { CommandQueue } from '../commands/queue.ts'
@@ -201,6 +202,15 @@ export function resendGapAfter(
   return refused ? TUNNEL_GENERATION_BUMP_GAP_MS : TUNNEL_ROUTES_RESEND_GAP_MS
 }
 
+/** Is a table that did not finish still inside its resend gap (with the slot slack)? */
+export function resendIsWaiting(
+  row: { status: string; resultSummary: unknown } | undefined,
+  sentAtMs: number,
+  nowMs: number
+): boolean {
+  return gapStillRunning(nowMs - sentAtMs, resendGapAfter(row))
+}
+
 /**
  * Is the table already where it should be? A table that finished is left alone.
  * One that did not finish waits out the gap before it is sent again, so a table
@@ -220,7 +230,7 @@ async function isAlreadyCurrent(
   if (sent.stateHash !== stateHash) return false
   const last = await loadLastSend(db, sent)
   if (lastSendIsSettled(last, sent, Date.now())) return true
-  if (Date.now() - Date.parse(sent.sentAt) < resendGapAfter(last)) return true
+  if (resendIsWaiting(last, Date.parse(sent.sentAt), Date.now())) return true
   compatLogWarn(
     'tunnel-sync',
     `server ${serverId}: the last forwarding table was not applied (${describeUnsettled(last)}); sending it again`
