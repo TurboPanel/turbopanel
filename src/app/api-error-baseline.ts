@@ -16,7 +16,7 @@ export const HAND_BUILT_ERROR_BASELINE: Record<string, number> = {
   'src/admin/tier-routes.ts': 17,
   'src/app/invalid-id-error.ts': 1,
   'src/client/access/invitation-http.ts': 28,
-  'src/client/access/routes.ts': 34,
+  'src/client/access/routes.ts': 32,
   'src/client/authn/breached-password.ts': 1,
   'src/client/authn/change-password-http.ts': 5,
   'src/client/authn/http.ts': 24,
