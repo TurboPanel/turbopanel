@@ -1398,30 +1398,50 @@ function shouldRunScheduledPhase(
  * (`TURBOPANEL_JOB_CADENCES`) so the skipped-phase list agrees with what the
  * tick would really have scheduled.
  */
-export type SkippedPhases = string[] & { readonly cadences: CronCadenceTable }
+export type SkippedPhases = string[] & {
+  readonly cadences: CronCadenceTable
+  /** Set once the tick's gates are read: an active upgrade run makes the upgrade phase due. */
+  upgradeRunActive: boolean
+}
 
 export function newSkippedPhases(cadences: CronCadenceTable = CRON_CADENCES): SkippedPhases {
-  return Object.assign([] as string[], { cadences })
+  return Object.assign([] as string[], { cadences, upgradeRunActive: false })
 }
 
 /** The 'upgrade-history' phase runs for the history prune, the upgrade tick, or both. */
-function upgradePhaseDue(scheduledTimeMs: number, cadences: CronCadenceTable): boolean {
+function upgradePhaseDue(
+  scheduledTimeMs: number,
+  cadences: CronCadenceTable,
+  upgradeRunActive: boolean
+): boolean {
   return (
     shouldSweepUpgradeHistory(scheduledTimeMs, cadences) ||
-    isDue('upgradeTick', scheduledTimeMs, cadences)
+    upgradeTickDue(scheduledTimeMs, cadences, upgradeRunActive)
   )
+}
+
+/** The upgrade tick runs on its cadence and every minute while a run is active (as on Deno). */
+function upgradeTickDue(
+  scheduledTimeMs: number,
+  cadences: CronCadenceTable,
+  upgradeRunActive: boolean
+): boolean {
+  return upgradeRunActive || isDue('upgradeTick', scheduledTimeMs, cadences)
 }
 
 /** The phases this tick schedules after liveness, in run order. */
 export function optionalPhaseNames(
   scheduledTime: number | undefined,
-  cadences: CronCadenceTable = CRON_CADENCES
+  cadences: CronCadenceTable = CRON_CADENCES,
+  upgradeRunActive = false
 ): string[] {
   const names = ['command-dispatch', 'webhook-deliveries', 'daemon-trust']
   if (shouldRunScheduledPhase(scheduledTime, (ms) => shouldSweepExecutionLogs(ms, cadences))) {
     names.push('execution-logs')
   }
-  if (shouldRunScheduledPhase(scheduledTime, (ms) => upgradePhaseDue(ms, cadences))) {
+  if (
+    shouldRunScheduledPhase(scheduledTime, (ms) => upgradePhaseDue(ms, cadences, upgradeRunActive))
+  ) {
     names.push('upgrade-history')
   }
   if (shouldRunScheduledPhase(scheduledTime, (ms) => shouldSweepTierNotices(ms, cadences))) {
@@ -1440,7 +1460,11 @@ function markSkippedFrom(
   phase: string,
   scheduledTime: number | undefined
 ): void {
-  const rest = optionalPhaseNames(scheduledTime, phasesSkipped.cadences)
+  const rest = optionalPhaseNames(
+    scheduledTime,
+    phasesSkipped.cadences,
+    phasesSkipped.upgradeRunActive
+  )
   const index = rest.indexOf(phase)
   phasesSkipped.push(...(index === -1 ? rest : rest.slice(index)))
 }
@@ -1520,7 +1544,8 @@ async function upgradePhaseWork(
   env: CloudflareBindings,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  cadences: CronCadenceTable
+  cadences: CronCadenceTable,
+  upgradeRunActive: boolean
 ): Promise<void> {
   const scheduledTime = opts.scheduledTime
   if (scheduledTime === undefined) return
@@ -1541,7 +1566,7 @@ async function upgradePhaseWork(
     await runWithDbTimeout(db, sweepAuditHistorySafely, capDbTimeout(deadlineMs))
     await runWithDbTimeout(db, sweepPeakHistorySafely, capDbTimeout(deadlineMs))
   }
-  if (isDue('upgradeTick', scheduledTime, cadences)) {
+  if (upgradeTickDue(scheduledTime, cadences, upgradeRunActive)) {
     await runUpgradeMaintenanceSafely(db, env)
   }
 }
@@ -1825,6 +1850,7 @@ async function runOptionalCronPhases(
   const cadences = phasesSkipped.cadences
   // One statement answers "can any gated family have work?" for the whole tick.
   const gates = await loadGatesForTick(db, deadlineMs)
+  phasesSkipped.upgradeRunActive = gates.upgradeRunActive
 
   if (
     !(await runMaintenanceCronPhases(env, db, tlsRenewal, opts, deadlineMs, phasesSkipped, gates))
@@ -1873,8 +1899,8 @@ async function runOptionalCronPhases(
       'upgrade-history',
       opts.scheduledTime,
       phasesSkipped,
-      (scheduledTimeMs) => upgradePhaseDue(scheduledTimeMs, cadences),
-      () => upgradePhaseWork(db, env, opts, deadlineMs, cadences)
+      (scheduledTimeMs) => upgradePhaseDue(scheduledTimeMs, cadences, gates.upgradeRunActive),
+      () => upgradePhaseWork(db, env, opts, deadlineMs, cadences, gates.upgradeRunActive)
     ))
   ) {
     return
