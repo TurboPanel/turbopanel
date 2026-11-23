@@ -342,6 +342,10 @@ import {
   describeReservedHostPorts,
   reservedHostPortFindings,
 } from '../../features/compose/reserved-host-ports.ts'
+import {
+  bridgeUdpReplyFindings,
+  hostNetworkServices,
+} from '../../features/compose/bridge-udp-reply.ts'
 import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -388,6 +392,8 @@ export type DeployPrepareWarningCode =
   | 'node_version_unresolved'
   | 'storage_service_removed'
   | 'reserved_host_port'
+  | 'bridge_udp_reply_port'
+  | 'host_network_unchecked'
   | 'config_file_ownership_ignored'
   | 'cache_other_account'
   | 'cache_other_server'
@@ -1291,6 +1297,33 @@ export function reservedHostPortWarnings(
     code: 'reserved_host_port',
     message: `Service "${service}" publishes host port ${port}, which the platform reserves for its own services (reserved host ports: ${describeReservedHostPorts()}). The deploy will be refused; publish a different host port.`,
     details: { composeServiceName: service, port },
+  }))
+}
+
+/**
+ * Warn about a published UDP port whose protocol answers from a new port (TFTP):
+ * the bridge NAT has no mapping for that reply, so the transfer times out.
+ */
+export function bridgeUdpReplyWarnings(
+  services: Record<string, unknown>,
+  networks: Record<string, unknown> = {}
+): DeployPrepareWarning[] {
+  return bridgeUdpReplyFindings(services, networks).map(({ service, protocol, port }) => ({
+    code: 'bridge_udp_reply_port',
+    message: `Service "${service}" publishes UDP port ${port} (${protocol}) on a bridge network. ${protocol} answers from a new port, which the bridge NAT does not map, so clients time out. Use network_mode: host, or attach the service to a macvlan or ipvlan network on the LAN.`,
+    details: { composeServiceName: service, protocol, port },
+  }))
+}
+
+/**
+ * Warn about host networking: the service listens straight on the host, so the
+ * published-port, reserved-port and bind-address checks do not see its ports.
+ */
+export function hostNetworkWarnings(services: Record<string, unknown>): DeployPrepareWarning[] {
+  return hostNetworkServices(services).map((service) => ({
+    code: 'host_network_unchecked',
+    message: `Service "${service}" uses network_mode: host, so it listens directly on the server's addresses. Its ports are not checked against the reserved host ports (${describeReservedHostPorts()}) or the bind-address rules, and any ports: entries are ignored. Make sure it does not listen on a reserved port.`,
+    details: { composeServiceName: service },
   }))
 }
 
@@ -4225,6 +4258,13 @@ export async function prepareDeployCompose(
   // project/environment/platform layers.
   const effective = split.containerDocument
   warnings.push(...reservedHostPortWarnings(composeServicesRecord(effective)))
+  warnings.push(
+    ...bridgeUdpReplyWarnings(
+      composeServicesRecord(effective),
+      isPlainObject(effective.data.networks) ? effective.data.networks : {}
+    ),
+    ...hostNetworkWarnings(composeServicesRecord(effective))
+  )
   const compiled = compileRuntimeCompose(effective, {
     ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
     placementServerId: params.serverId,
