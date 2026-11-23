@@ -154,6 +154,16 @@ export type WebhookGate<THolder> = {
    * the body may parse `raw` itself — the same escape hatch {@link verify} uses.
    */
   eventName(ctx: GateContext, raw: Uint8Array): string | null
+  /**
+   * True when the delivery id and event name are headers the signature does not
+   * cover (GitHub's HMAC and GitLab's shared token authenticate the sender or
+   * the body, never `X-GitHub-Delivery` / `X-GitHub-Event` or the GitLab
+   * equivalents). The gate then also claims a digest of the body, so a captured
+   * body replayed under a fresh delivery id or a relabelled event is still
+   * recognised and processed once. Leave unset when the id is inside the signed
+   * body (Stripe).
+   */
+  claimBodyDigest?: boolean
   /** Step 6. */
   dispatch(
     ctx: GateContext,
@@ -236,20 +246,42 @@ async function readRawBody(c: Context<AppEnv>, maxBodyBytes: number): Promise<Ui
   return read.bytes
 }
 
+/**
+ * Ledger key for the body itself. Deliberately excludes the event header: an
+ * unsigned label must not let an already-processed body run a second time
+ * under a different handler.
+ */
+async function bodyDigestKey(raw: Uint8Array): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw as BufferSource))
+  let hex = ''
+  for (const byte of digest) hex += byte.toString(16).padStart(2, '0')
+  return `body-sha256:${hex}`
+}
+
+/** Every ledger key this delivery holds: its id and, when guarded, its body digest. */
+type Claims = readonly string[]
+
+async function releaseClaims<THolder>(
+  gate: WebhookGate<THolder>,
+  db: Db,
+  claims: Claims
+): Promise<void> {
+  for (const externalDeliveryId of claims) {
+    await releaseWebhookDelivery(db, { provider: gate.kind, externalDeliveryId })
+  }
+}
+
 async function releaseClaimBestEffort<THolder>(
   gate: WebhookGate<THolder>,
   db: Db,
-  deliveryId: string
+  claims: Claims
 ): Promise<void> {
   try {
-    await releaseWebhookDelivery(db, {
-      provider: gate.kind,
-      externalDeliveryId: deliveryId,
-    })
+    await releaseClaims(gate, db, claims)
   } catch (err) {
     logWarn(
       gate.logScope,
-      `failed to release delivery ${deliveryId}: ${err instanceof Error ? err.message : String(err)}`
+      `failed to release delivery claims ${claims.join(',')}: ${err instanceof Error ? err.message : String(err)}`
     )
   }
 }
@@ -265,6 +297,7 @@ async function dispatchClaimedDelivery<THolder>(
   ctx: GateContext,
   holder: THolder,
   deliveryId: string,
+  claims: Claims,
   event: string,
   raw: Uint8Array
 ): Promise<Response> {
@@ -274,10 +307,7 @@ async function dispatchClaimedDelivery<THolder>(
 
     const outcome = await gate.dispatch(ctx, holder, event, payload)
     if (outcome.retry) {
-      await releaseWebhookDelivery(ctx.db, {
-        provider: gate.kind,
-        externalDeliveryId: deliveryId,
-      })
+      await releaseClaims(gate, ctx.db, claims)
       logWarn(
         gate.logScope,
         `delivery ${deliveryId} (${event}) could not be acted on; asking for a retry`,
@@ -292,7 +322,7 @@ async function dispatchClaimedDelivery<THolder>(
     )
     return c.json({ ok: true as const })
   } catch (err) {
-    await releaseClaimBestEffort(gate, ctx.db, deliveryId)
+    await releaseClaimBestEffort(gate, ctx.db, claims)
     logWarn(
       gate.logScope,
       `delivery ${deliveryId} (${event}) threw after claim; asking for a retry: ${
@@ -375,19 +405,27 @@ export function registerWebhookGate<THolder>(
 
     // 5. Claim the delivery. A redelivery of work already done answers 204
     //    without re-running it.
-    const claimed = await claimWebhookDelivery(db, {
-      provider: gate.kind,
-      externalDeliveryId: deliveryId,
-      event,
-    })
-    if (!claimed) {
-      logInfo(gate.logScope, `duplicate delivery ${deliveryId} (${event}) ignored`)
-      return c.body(null, 204)
+    //    Signed-body providers also claim the body digest first, so the same
+    //    bytes are processed once whatever the unsigned headers say.
+    const claims: string[] = []
+    const keys = gate.claimBodyDigest ? [await bodyDigestKey(raw), deliveryId] : [deliveryId]
+    for (const key of keys) {
+      const claimed = await claimWebhookDelivery(db, {
+        provider: gate.kind,
+        externalDeliveryId: key,
+        event,
+      })
+      if (!claimed) {
+        await releaseClaimBestEffort(gate, db, claims)
+        logInfo(gate.logScope, `duplicate delivery ${deliveryId} (${event}) ignored`)
+        return c.body(null, 204)
+      }
+      claims.push(key)
     }
 
     // 6. Parse and act. Unexpected throws after the claim must release so
     //    the provider's retry is not answered 204.
-    return await dispatchClaimedDelivery(c, gate, ctx, holder, deliveryId, event, raw)
+    return await dispatchClaimedDelivery(c, gate, ctx, holder, deliveryId, claims, event, raw)
   }
 
   for (const path of paths) app.post(path, handler)

@@ -16,7 +16,7 @@ import { internalHostReason } from '../../lib/internal-host.ts'
 import { stripTrailingSlashes } from './origin.ts'
 
 /** `git@host:owner/repo.git` — the scp-like form git accepts. */
-const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+$/
+const SCP_LIKE_SSH_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]*@[A-Za-z0-9.][A-Za-z0-9.-]*:[^\s]+$/
 
 /**
  * Is this clone URL an SSH transport?
@@ -54,7 +54,8 @@ const HOST_START_RE = /^[A-Za-z0-9[]/
  * `ssh://git@x%40127.0.0.1/r` would pass a check on the parsed host and dial
  * 127.0.0.1. The daemon allows only the same shape.
  */
-const AUTHORITY_RE = /^(?:[A-Za-z0-9._-]+@)?(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/
+const AUTHORITY_RE =
+  /^(?:[A-Za-z0-9._][A-Za-z0-9._-]*@)?(?:[A-Za-z0-9.][A-Za-z0-9.-]*|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/
 
 function hasPlainAuthority(cloneUrl: string, scheme: 'https' | 'ssh'): boolean {
   const rest = cloneUrl.slice(`${scheme}://`.length)
@@ -157,7 +158,7 @@ export function canonicalizeRepositoryUrl(raw: string): string {
   }
 
   // scp-syntax: `user@host:path`.
-  const scp = /^([A-Za-z0-9._-]+)@([A-Za-z0-9.-]+):(\S+)$/.exec(url)
+  const scp = /^([A-Za-z0-9._][A-Za-z0-9._-]*)@([A-Za-z0-9.][A-Za-z0-9.-]*):(\S+)$/.exec(url)
   if (!scp) return url
   const [, user, host, rawPath] = scp
   const path = ensureGitSuffix(stripTrailingSlashes(rawPath))
@@ -201,7 +202,7 @@ export function parseRepositoryOwnerRepo(
   if (segments.length < 2) return null
   const owner = segments.at(-2)!
   const repo = segments.at(-1)!.replace(/\.git$/, '')
-  if (owner.length === 0 || repo.length === 0) return null
+  if (!isForgePathSegment(owner) || !isForgePathSegment(repo)) return null
   return { owner, repo }
 }
 
@@ -216,8 +217,20 @@ export function repositoryPathFromCloneUrl(repositoryUrl: string): string | null
   const segments = repositoryPathSegments(repositoryUrl)
   if (segments.length < 2) return null
   const last = segments.at(-1)!.replace(/\.git$/, '')
-  if (last.length === 0) return null
-  return [...segments.slice(0, -1), last].join('/')
+  const path = [...segments.slice(0, -1), last]
+  if (!path.every(isForgePathSegment)) return null
+  return path.join('/')
+}
+
+/**
+ * One owner, group or repository name as GitHub and GitLab allow it: letters,
+ * digits, `.`, `_` and `-` (GitLab subgroups and dotted names included). `.`
+ * and `..` are dot segments that URL normalisation would resolve away from the
+ * path they were placed in, and anything else (`%`, `:`, `@`, `?`, `#`) could
+ * reshape a forge API URL built from the segment.
+ */
+function isForgePathSegment(segment: string): boolean {
+  return segment !== '.' && segment !== '..' && /^[A-Za-z0-9._-]+$/.test(segment)
 }
 
 function repositoryPathSegments(repositoryUrl: string): string[] {
