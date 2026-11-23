@@ -293,6 +293,14 @@ async function releaseClaimBestEffort<THolder>(
   }
 }
 
+/** The delivery being dispatched after its claims were taken. */
+interface ClaimedDelivery {
+  deliveryId: string
+  claims: Claims
+  event: string
+  raw: Uint8Array
+}
+
 /**
  * Step 6 after a successful claim. Malformed JSON stays claimed (400).
  * Retryable outcomes and unexpected throws release, then answer 5xx with
@@ -303,11 +311,9 @@ async function dispatchClaimedDelivery<THolder>(
   gate: WebhookGate<THolder>,
   ctx: GateContext,
   holder: THolder,
-  deliveryId: string,
-  claims: Claims,
-  event: string,
-  raw: Uint8Array
+  delivery: ClaimedDelivery
 ): Promise<Response> {
+  const { deliveryId, claims, event, raw } = delivery
   try {
     const payload = parsePayload(raw)
     if (!payload) return apiError(c, 400, 'invalid_request', 'Invalid request')
@@ -434,7 +440,7 @@ export function registerWebhookGate<THolder>(
 
     // 6. Parse and act. Unexpected throws after the claim must release so
     //    the provider's retry is not answered 204.
-    return await dispatchClaimedDelivery(c, gate, ctx, holder, deliveryId, claims, event, raw)
+    return await dispatchClaimedDelivery(c, gate, ctx, holder, { deliveryId, claims, event, raw })
   }
 
   for (const path of paths) app.post(path, handler)
