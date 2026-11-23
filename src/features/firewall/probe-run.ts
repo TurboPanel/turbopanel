@@ -13,6 +13,13 @@
  * - NEVER an address {@link mayProbeAddress} forbids (loopback, link-local and
  *   cloud-metadata, multicast, reserved ...), and private networks only when
  *   the platform says it can sit on them.
+ * - A private address only when the server's own daemon reported it on one of
+ *   its interfaces (`server.metadata.resources.ips`). `ip` rows are operator
+ *   input with no provenance, so a hand-made `10.0.0.5` row never makes the
+ *   control plane dial the operator's network.
+ * - NEVER an interface address of the control plane's own host, unless this
+ *   server is the co-located one.
+ * - Every address left out is returned in `skipped` with the reason.
  * - Bounded: {@link PROBE_CONCURRENCY} connections at once, one handshake each
  *   of at most {@link PROBE_TIMEOUT_MS}, {@link MAX_PROBE_TARGETS} in a round.
  *   Nothing is written to or read from a connection, and only
@@ -24,13 +31,15 @@
  * owner/manager "check now" route.
  */
 
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { bulwark } from '../../db/schema.ts'
+import { bulwark, server } from '../../db/schema.ts'
+import { reportedIpsFromServerMetadata } from '../../contracts/server-addresses.ts'
+import { canonicalIpAddress } from '../../lib/ip-address.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { TcpProbe } from '../../platform/ports/tcp-probe.ts'
 import { loadFirewallFacts } from './facts.ts'
-import { mayProbeAddress } from './probe-address.ts'
+import { classifyProbeAddress, mayProbeAddress } from './probe-address.ts'
 import {
   type ConfirmationDecision,
   decideConfirmation,
@@ -55,9 +64,16 @@ export type ProbePlan = {
   serverId: string
   organizationId: string
   addresses: string[]
+  /** Addresses the server's own daemon reported on its interfaces (canonical form). */
+  reportedAddresses: string[]
+  /** This server hosts the control plane itself. */
+  coLocated: boolean
   ports: ProbePort[]
   notes: string[]
 }
+
+/** An address left out of a round, and why. */
+export type SkippedAddress = { address: string; reason: string }
 
 export type OutsideProbeRecord = {
   at: string
@@ -65,6 +81,7 @@ export type OutsideProbeRecord = {
   status: 'running' | 'done'
   ports: PortReach[]
   notes: string[]
+  skipped?: SkippedAddress[]
   decision?: ConfirmationDecision
 }
 
@@ -79,10 +96,20 @@ export async function loadProbePlan(db: Db, serverId: string): Promise<ProbePlan
     ORDER BY (scope = 'public') DESC, address
   `)
   const plan = planProbePorts(facts.input)
+  const [meta] = await db
+    .select({ metadata: server.metadata })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  const reported = (reportedIpsFromServerMetadata(meta?.metadata) ?? [])
+    .map((row) => canonicalIpAddress(row.address))
+    .filter((address): address is string => address !== null)
   return {
     serverId,
     organizationId: facts.organizationId,
     addresses: [...rows].map((row) => row.address),
+    reportedAddresses: reported,
+    coLocated: facts.input.coLocated,
     ports: plan.ports,
     notes: plan.notes,
   }
@@ -90,25 +117,66 @@ export async function loadProbePlan(db: Db, serverId: string): Promise<ProbePlan
 
 type Target = { address: string; port: number }
 
-function buildTargets(plan: ProbePlan, canReachPrivate: boolean, notes: string[]): Target[] {
-  const usable: string[] = []
-  for (const address of plan.addresses) {
-    if (usable.length >= MAX_PROBE_ADDRESSES) break
-    if (mayProbeAddress(address, canReachPrivate)) usable.push(address)
-    else notes.push(`${address} is not checked from this control plane (private or not dialable)`)
-  }
-  if (usable.length === 0) notes.push('This server has no address the control plane can check')
-  return usable
-    .flatMap((address) => plan.ports.map((port) => ({ address, port: port.port })))
-    .slice(0, MAX_PROBE_TARGETS)
+type Targets = { targets: Target[]; skipped: SkippedAddress[] }
+
+function isReported(plan: ProbePlan, address: string): boolean {
+  const canonical = canonicalIpAddress(address)
+  return canonical !== null && plan.reportedAddresses.includes(canonical)
 }
 
-/** The last line of defence: a target must be one of the plan's own addresses and ports. */
-function isPlannedTarget(plan: ProbePlan, target: Target, canReachPrivate: boolean): boolean {
+function controlPlaneAddresses(probe: TcpProbe): Set<string> {
+  const own = new Set<string>()
+  for (const address of probe.localAddresses?.() ?? []) {
+    const canonical = canonicalIpAddress(address)
+    if (canonical !== null) own.add(canonical)
+  }
+  return own
+}
+
+/** Why `address` must not be dialled for this plan, or null when it may be. */
+function skipReason(plan: ProbePlan, address: string, probe: TcpProbe): string | null {
+  if (!mayProbeAddress(address, probe.canReachPrivate)) {
+    return 'private or not dialable from this control plane'
+  }
+  const canonical = canonicalIpAddress(address)
+  if (!plan.coLocated && canonical !== null && controlPlaneAddresses(probe).has(canonical)) {
+    return 'an address of the control plane host itself'
+  }
+  if (classifyProbeAddress(address) === 'private' && !isReported(plan, address)) {
+    return 'a private address this server’s daemon has not reported'
+  }
+  return null
+}
+
+function buildTargets(plan: ProbePlan, probe: TcpProbe, notes: string[]): Targets {
+  const usable: string[] = []
+  const skipped: SkippedAddress[] = []
+  for (const address of plan.addresses) {
+    const checked = skipReason(plan, address, probe)
+    const reason =
+      checked === null && usable.length >= MAX_PROBE_ADDRESSES
+        ? `more than ${MAX_PROBE_ADDRESSES} addresses on this server`
+        : checked
+    if (reason === null) {
+      usable.push(address)
+      continue
+    }
+    skipped.push({ address, reason })
+    notes.push(`${address} is not checked from this control plane (${reason})`)
+  }
+  if (usable.length === 0) notes.push('This server has no address the control plane can check')
+  const targets = usable
+    .flatMap((address) => plan.ports.map((port) => ({ address, port: port.port })))
+    .slice(0, MAX_PROBE_TARGETS)
+  return { targets, skipped }
+}
+
+/** The last line of defence: a target must be one of the plan's own addresses and ports, and still pass every address rule. */
+function isPlannedTarget(plan: ProbePlan, target: Target, probe: TcpProbe): boolean {
   return (
     plan.addresses.includes(target.address) &&
     plan.ports.some((port) => port.port === target.port) &&
-    mayProbeAddress(target.address, canReachPrivate)
+    skipReason(plan, target.address, probe) === null
   )
 }
 
@@ -137,6 +205,7 @@ export type OutsideRound = {
   observations: ProbeObservation[]
   reach: PortReach[]
   notes: string[]
+  skipped: SkippedAddress[]
 }
 
 /** One round of attempts over the plan's targets, bounded as described above. */
@@ -146,14 +215,18 @@ export async function observeOutside(
   timeoutMs: number = PROBE_TIMEOUT_MS
 ): Promise<OutsideRound> {
   const notes = [...plan.notes]
-  const targets = buildTargets(plan, probe.canReachPrivate, notes).filter((target) =>
-    isPlannedTarget(plan, target, probe.canReachPrivate)
-  )
+  const built = buildTargets(plan, probe, notes)
+  const targets = built.targets.filter((target) => isPlannedTarget(plan, target, probe))
   const observations = await runBounded(targets, PROBE_CONCURRENCY, async (target) => {
     const result = await probe.connect(target, timeoutMs)
     return { address: target.address, port: target.port, state: result.state, ms: result.ms }
   })
-  return { observations, reach: reachFromObservations(plan.ports, observations), notes }
+  return {
+    observations,
+    reach: reachFromObservations(plan.ports, observations),
+    notes,
+    skipped: built.skipped,
+  }
 }
 
 type AfterApplyDeps = {

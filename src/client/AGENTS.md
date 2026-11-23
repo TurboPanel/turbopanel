@@ -648,6 +648,10 @@ sourceServerId? }`
   `environment.deploy`**, and no new columns — `stale` on `GET /ips[/:id]` and
   on `GET /datacenters/:id` `members[]` is read from `ip.metadata` via
   `parseIpPinMetadata`.
+- **`ip` rows are unverified input:** `POST /ips` accepts any address for the
+  caller's own server, so no code may treat a row as proof the host owns it. The
+  firewall outside check dials a private row only when the daemon reported the
+  same address (`src/features/firewall/AGENTS.md`).
 - **CIDR collision authority (`src/features/net/cidr-collisions.ts`):** every CIDR
   write — `POST`/`PATCH /networks`, `POST /datacenters`,
   `POST /datacenters/:id/subnets`, the auto-derive path of

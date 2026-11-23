@@ -20,11 +20,17 @@ const test = Deno.test.bind(Deno)
 const OPEN: TcpProbeResult = { state: 'open', ms: 7 }
 const SILENT: TcpProbeResult = { state: 'timeout', ms: null }
 
-function plan(addresses: string[], ports: number[] = [22, 8443]): ProbePlan {
+function plan(
+  addresses: string[],
+  ports: number[] = [22, 8443],
+  extra: { reportedAddresses?: string[]; coLocated?: boolean } = {}
+): ProbePlan {
   return {
     serverId: 's1',
     organizationId: 'o1',
     addresses,
+    reportedAddresses: extra.reportedAddresses ?? [],
+    coLocated: extra.coLocated ?? false,
     ports: ports.map((port, index) => ({
       port,
       role: index === 0 ? ('invariant' as const) : ('public' as const),
@@ -38,12 +44,13 @@ type Calls = { targets: TcpProbeTarget[]; timeouts: number[]; maxInFlight: numbe
 
 function fakeProbe(
   answer: (target: TcpProbeTarget) => TcpProbeResult,
-  options: { canReachPrivate?: boolean; delayMs?: number } = {}
+  options: { canReachPrivate?: boolean; delayMs?: number; localAddresses?: string[] } = {}
 ): { probe: TcpProbe; calls: Calls } {
   const calls: Calls = { targets: [], timeouts: [], maxInFlight: 0 }
   let inFlight = 0
   const probe: TcpProbe = {
     canReachPrivate: options.canReachPrivate ?? false,
+    localAddresses: () => options.localAddresses ?? [],
     connect: async (target, timeoutMs) => {
       calls.targets.push(target)
       calls.timeouts.push(timeoutMs)
@@ -106,10 +113,79 @@ test('private addresses are dialled only when the platform can reach private net
   )
 
   const selfHosted = fakeProbe(() => OPEN, { canReachPrivate: true })
-  await observeOutside(selfHosted.probe, plan(['10.0.0.5', '192.168.1.7']))
+  await observeOutside(
+    selfHosted.probe,
+    plan(['10.0.0.5', '192.168.1.7'], [22, 8443], {
+      reportedAddresses: ['10.0.0.5', '192.168.1.7'],
+    })
+  )
   assertEquals(
     new Set(selfHosted.calls.targets.map((t) => t.address)),
     new Set(['10.0.0.5', '192.168.1.7'])
+  )
+})
+
+test('a manual private address the daemon never reported is skipped with a reason, not dialled', async () => {
+  const { probe, calls } = fakeProbe(() => OPEN, { canReachPrivate: true })
+  const round = await observeOutside(
+    probe,
+    plan(['93.184.216.34', '10.0.0.5', '192.168.1.7', 'fd00::5'], [22], {
+      reportedAddresses: ['192.168.1.7'],
+    })
+  )
+  assertEquals(
+    new Set(calls.targets.map((t) => t.address)),
+    new Set(['93.184.216.34', '192.168.1.7'])
+  )
+  assertEquals(
+    round.skipped.map((s) => s.address),
+    ['10.0.0.5', 'fd00::5']
+  )
+  assertEquals(round.skipped[0]!.reason.includes('not reported'), true)
+})
+
+test('a reported address matches by canonical form, not by spelling', async () => {
+  const { probe, calls } = fakeProbe(() => OPEN, { canReachPrivate: true })
+  await observeOutside(
+    probe,
+    plan(['fd00:0:0:0:0:0:0:5'], [22], { reportedAddresses: ['fd00::5'] })
+  )
+  assertEquals(calls.targets.length, 1)
+})
+
+test('an address of the control plane host is skipped unless the server is the co-located one', async () => {
+  const own = ['93.184.216.34', '192.168.1.7']
+  const apart = fakeProbe(() => OPEN, { canReachPrivate: true, localAddresses: own })
+  const round = await observeOutside(
+    apart.probe,
+    plan(['93.184.216.34', '192.168.1.7', '1.1.1.1'], [22], { reportedAddresses: own })
+  )
+  assertEquals(
+    apart.calls.targets.map((t) => t.address),
+    ['1.1.1.1']
+  )
+  assertEquals(
+    round.skipped.map((s) => s.address),
+    ['93.184.216.34', '192.168.1.7']
+  )
+
+  const same = fakeProbe(() => OPEN, { canReachPrivate: true, localAddresses: own })
+  await observeOutside(
+    same.probe,
+    plan(['93.184.216.34', '192.168.1.7'], [22], { reportedAddresses: own, coLocated: true })
+  )
+  assertEquals(same.calls.targets.length, 2)
+})
+
+test('addresses beyond the per-server cap are listed as skipped', async () => {
+  const { probe } = fakeProbe(() => OPEN)
+  const round = await observeOutside(
+    probe,
+    plan(['1.1.1.1', '8.8.8.8', '9.9.9.9', '93.184.216.34', '4.4.4.4'], [22])
+  )
+  assertEquals(
+    round.skipped.map((s) => s.address),
+    ['4.4.4.4']
   )
 })
 
