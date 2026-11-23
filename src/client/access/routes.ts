@@ -172,8 +172,13 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
       return c.json({ error: validated.error }, validated.status)
     }
 
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+
+    // An entity in another organization answers exactly like an unknown id, so
+    // the check cannot probe which ids exist elsewhere.
     const entity = await resolveEntityById(db, validated.resourceId)
-    if (!entity) {
+    if (entity?.organizationId !== orgResult) {
       return c.json({ error: 'Not found' }, 404)
     }
 

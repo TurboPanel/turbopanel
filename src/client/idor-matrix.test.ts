@@ -54,6 +54,7 @@ import {
   organization,
   principal,
   project,
+  replica,
   repository,
   retention,
   secret,
@@ -69,6 +70,8 @@ import {
   variable,
   workspace,
 } from '../db/schema.ts'
+import { postgresEngineSpec } from '../features/managed/postgres.ts'
+import { encryptSecret } from '../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secrets/secrets.ts'
 import { forEachSequential } from '../lib/sequential.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
@@ -121,6 +124,26 @@ type Fixture = {
 async function insertId(promise: Promise<{ id: string }[]>): Promise<string> {
   const rows = await promise
   return rows[0]!.id
+}
+
+async function insertUserLogin(
+  db: Db,
+  managedId: string,
+  principalId: string,
+  username: string
+): Promise<void> {
+  await db.insert(login).values({
+    recipe: 'app',
+    managedId,
+    principalId,
+    password: await encryptSecret(
+      await deriveEncryptionSecretsConfig(parseTestSecretsConfig('deno'), 'data-encryption'),
+      'idor-login-secret'
+    ),
+    role: 'user',
+    username,
+    appliedUsername: username,
+  })
 }
 
 async function seedOrganizationB(
@@ -294,7 +317,11 @@ async function seedOrganizationB(
   ids.managedId = await insertId(
     db
       .insert(managed)
-      .values({ environmentId: ids.environmentId, engine: 'postgres' })
+      .values({
+        environmentId: ids.environmentId,
+        engine: 'postgres',
+        options: { settings: postgresEngineSpec.defaultSettings },
+      })
       .returning({ id: managed.id })
   )
   ids.policyId = await insertId(
@@ -335,15 +362,29 @@ async function seedOrganizationB(
       })
       .returning({ id: principal.id })
   )
+  ids.databaseName = n('db').replaceAll('-', '_').replace(/^\d/, 'x')
   const databaseId = await insertId(
     db
       .insert(managedDatabase)
-      .values({
-        managedId: ids.managedId,
-        name: n('db').replaceAll('-', '_').replace(/^\d/, 'x'),
-      })
+      .values({ managedId: ids.managedId, name: ids.databaseName })
       .returning({ id: managedDatabase.id })
   )
+  // A site owner's account with one user login on the cluster, for bindings
+  // that name the login by its principal.
+  ids.loginPrincipalId = await insertId(
+    db
+      .insert(principal)
+      .values({ organizationId: orgB, username: n('lp'), appliedUsername: n('lp') })
+      .returning({ id: principal.id })
+  )
+  await insertUserLogin(db, ids.managedId, ids.loginPrincipalId, n('lp'))
+  await db.insert(replica).values({
+    managedId: ids.managedId,
+    serverId: ids.serverId,
+    role: 'primary',
+    isReadEligible: false,
+    ordinal: 1,
+  })
   const loginId = await insertId(
     db
       .insert(login)
@@ -701,6 +742,20 @@ async function withFixtureOn(db: Db, fn: (fixture: Fixture) => Promise<void>): P
   Object.assign(aOwn, await seedBodyTargetsA(db, orgA, nonce))
   const b = await seedOrganizationB(db, orgB, ownerB, nonce)
   const aFull = await seedOrganizationB(db, orgA, ownerA, `a2-${nonce}`)
+  // B's site owner has a user login on two B clusters, so a lookup by principal alone is ambiguous.
+  const secondEnvironmentId = await insertId(
+    db
+      .insert(environment)
+      .values({ projectId: b.projectId!, name: `idor-${nonce}-env2`, serverId: b.serverId! })
+      .returning({ id: environment.id })
+  )
+  const secondManagedId = await insertId(
+    db
+      .insert(managed)
+      .values({ environmentId: secondEnvironmentId, engine: 'postgres' })
+      .returning({ id: managed.id })
+  )
+  await insertUserLogin(db, secondManagedId, b.loginPrincipalId!, `idor-${nonce}-lp2`)
   // The body-id positive controls take A's ids from aOwn: give it the full set too.
   for (const [key, value] of Object.entries(aFull)) aOwn[key] ??= value
   aOwn.fullStorageId = aFull.storageId!
@@ -886,6 +941,17 @@ const BODY_ID_CASES: Record<string, BodyCase> = {
       secretId: ref.secretId,
     }),
   },
+  'POST /bindings login.principalId': {
+    method: 'POST',
+    path: () => '/api/client/v1/bindings',
+    body: (own, ref) => ({
+      principalId: ref.loginPrincipalId,
+      serviceId: own.serviceId,
+      databaseName: own.databaseName,
+      keyPrefix: 'IDORPRINCIPAL',
+      preset: null,
+    }),
+  },
 }
 
 async function sendJson(
@@ -906,6 +972,44 @@ async function sendJson(
   })
   return { status: response.status, text: await response.text() }
 }
+
+test('body ids: a foreign principal on /bindings leaks none of its ids', async () => {
+  await withFixture(async (fixture) => {
+    const foreign = await sendJson(fixture, 'POST', '/api/client/v1/bindings', {
+      principalId: fixture.b.loginPrincipalId,
+      serviceId: fixture.aOwn.serviceId,
+      databaseName: fixture.aOwn.databaseName,
+    })
+    const unknown = await sendJson(fixture, 'POST', '/api/client/v1/bindings', {
+      principalId: crypto.randomUUID(),
+      serviceId: fixture.aOwn.serviceId,
+      databaseName: fixture.aOwn.databaseName,
+    })
+    assertEquals(foreign.status, 404, foreign.text)
+    assertEquals(foreign, unknown)
+    assert(!foreign.text.includes(fixture.b.managedId!), foreign.text)
+    assert(!foreign.text.includes('binding_login_ambiguous'), foreign.text)
+  })
+})
+
+test('GET /access/check answers another organization like an unknown id', async () => {
+  await withFixture(async (fixture) => {
+    const check = async (resourceId: string) => {
+      const response = await fixture.app.request(
+        `/api/client/v1/access/check?resourceId=${resourceId}&permissionKey=organization:own`,
+        { headers: { cookie: fixture.cookieA, [ORG_ID_HEADER]: fixture.orgA } }
+      )
+      return { status: response.status, body: await response.text() }
+    }
+    const unknown = await check(crypto.randomUUID())
+    assertEquals(unknown.status, 404)
+    for (const resourceId of [fixture.b.projectId!, fixture.b.serviceId!, fixture.orgB]) {
+      assertEquals(await check(resourceId), unknown)
+    }
+    const own = await check(fixture.aOwn.projectId)
+    assertEquals(own.status, 200, own.body)
+  })
+})
 
 for (const [name, entry] of Object.entries(BODY_ID_CASES)) {
   test(`body ids: ${name} refuses B's id and accepts A's own`, async () => {

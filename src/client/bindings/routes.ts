@@ -279,6 +279,7 @@ function toBindableLogin(row: ManagedLoginRow): BindableLogin | null {
 async function loadBindableLogin(
   c: Context<AppEnv>,
   db: Db,
+  organizationId: string,
   ref: CreateBindingInput['login']
 ): Promise<BindableLogin | Response> {
   if ('loginId' in ref) {
@@ -297,7 +298,13 @@ async function loadBindableLogin(
     .select({ id: login.id, managedId: login.managedId, role: login.role })
     .from(login)
     .where(eq(login.principalId, ref.principalId))
-  const candidates = rows.filter((row) => row.role === 'user')
+  // Only logins on clusters in the caller's organization count: a principal
+  // from another organization answers exactly like an unknown one.
+  const userRows = rows.filter((row) => row.role === 'user')
+  const clusterOrgIds = await Promise.all(
+    userRows.map((row) => resolveEntityOrganizationId(db, 'managed', row.managedId))
+  )
+  const candidates = userRows.filter((_row, index) => clusterOrgIds[index] === organizationId)
   if (candidates.length === 0) return c.json({ error: 'Not found' }, 404)
   if (candidates.length > 1) {
     return c.json(
@@ -578,7 +585,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serviceDenied = await assertServiceCreatable(c, db, organizationId, input.serviceId)
     if (serviceDenied) return serviceDenied
 
-    const loginResult = await loadBindableLogin(c, db, input.login)
+    const loginResult = await loadBindableLogin(c, db, organizationId, input.login)
     if (loginResult instanceof Response) return loginResult
 
     const managedResult = await loadManagedForBindingOrg(
