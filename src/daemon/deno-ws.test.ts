@@ -94,6 +94,7 @@ import { reportSigningInput } from './authn/report-signature.ts'
 import { testDaemonKey } from '../test-fixtures/daemon-signing-key.test.support.ts'
 import { attachSigningInput } from './authn/attach-proof.ts'
 import { base64urlDecode } from '../lib/encoding/base64url.ts'
+import { hostname, hosting } from '../db/schema.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -2903,14 +2904,26 @@ test('live WS records an acme-issuance-event on the reporting organization lets_
       // The per-frame key check joins from the same table, so keep the base
       // chain's joins and only answer a plain `from(...).where(...)`.
       const baseFrom = (baseChain as { from: (...a: unknown[]) => object }).from()
+      // Server scope, then the org's rows. The two pin lookups (a hosting on the
+      // reporting server pins the row; no hostname pin) join from `hosting` and
+      // `hostname`; every other joined read keeps the base chain's behaviour.
+      const answer = () =>
+        acmeWheres++ === 0
+          ? { limit: () => Promise.resolve([{ organizationId: 'org-1' }]) }
+          : Promise.resolve([managedRow])
+      const pinChain = (rows: unknown[]) => {
+        const chain: Record<string, unknown> = {
+          innerJoin: () => chain,
+          where: () => Promise.resolve(rows),
+        }
+        return chain
+      }
       return {
-        from: () => ({
-          ...baseFrom,
-          where: () =>
-            acmeWheres++ === 0
-              ? { limit: () => Promise.resolve([{ organizationId: 'org-1' }]) }
-              : Promise.resolve([managedRow]),
-        }),
+        from: (table: unknown) => {
+          if (table === hosting) return pinChain([{ tlsId: managedRow.id }])
+          if (table === hostname) return pinChain([])
+          return { ...baseFrom, where: answer }
+        },
       }
     },
     update: (...args: unknown[]) => {
