@@ -764,11 +764,11 @@ export function parseManagedLoginGrantFields(
   }
 }
 
-/** FNV-1a over the UTF-16 code units, 32 bits: a stable, dependency-free digest. */
+/** FNV-1a over the Unicode code points, 32 bits: a stable, dependency-free digest. */
 function fnv1a32(text: string): number {
   let hash = 0x811c9dc5
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i)
+  for (const ch of text) {
+    hash ^= ch.codePointAt(0) ?? 0
     hash = Math.imul(hash, 0x01000193) >>> 0
   }
   return hash
