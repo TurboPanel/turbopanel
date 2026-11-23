@@ -131,6 +131,19 @@ test("a merged document naming an unsupported field is refused as policy, not as
   );
 });
 
+test("a merged author external volume is refused at deploy, not registered", () => {
+  const merged = merge(
+    { services: { web: { image: "nginx:alpine" } }, volumes: { data: {} } },
+    { volumes: { data: { external: true } } },
+  );
+  const error = validateComposeForDeploy(merged);
+  assertEquals(error?.kind, "compose_field_unsupported");
+  assertEquals(
+    error?.issues.map((issue) => issue.path),
+    ["volumes.data.external"],
+  );
+});
+
 test("structure is answered before policy", () => {
   // Both faults are present. The one that says "this is not a document we can
   // run" has to win, because the policy verdict on a document that is not a

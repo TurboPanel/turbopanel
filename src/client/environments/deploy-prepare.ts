@@ -1149,17 +1149,11 @@ function readPinnedDockerVolumeName(metadata: unknown): string | null {
   return metadata.dockerVolumeName.length > 0 ? metadata.dockerVolumeName : null
 }
 
-function readLocationFlags(options: unknown): {
-  managed?: boolean
-  externalName?: string
-} {
+function readLocationFlags(options: unknown): { managed?: boolean } {
   if (!isPlainObject(options)) return {}
-  const flags: { managed?: boolean; externalName?: string } = {}
+  const flags: { managed?: boolean } = {}
   if (options.managed === true || options.managed === false) {
     flags.managed = options.managed
-  }
-  if (typeof options.externalName === 'string' && options.externalName.length > 0) {
-    flags.externalName = options.externalName
   }
   return flags
 }
@@ -1244,6 +1238,10 @@ function toStorageMaterialEntry(
     return null
   }
   const flags = readLocationFlags(row.locationOptions)
+  // A docker volume the platform does not manage is a name an author chose
+  // (an old `external` registration). It is never sent: the host would be
+  // asked to attach a volume the platform neither created nor owns.
+  if (row.provider === 'docker' && row.kind === 'volume' && flags.managed === false) return null
   const entry: EnvironmentDeployStorageMaterial = {
     storageId: row.storageId,
     locationId: row.locationId,
@@ -1264,7 +1262,6 @@ function toStorageMaterialEntry(
     })
   }
   if (flags.managed !== undefined) entry.managed = flags.managed
-  if (flags.externalName) entry.externalName = flags.externalName
   return entry
 }
 
@@ -1276,6 +1273,9 @@ function appendUnseenRegisteredVolumes(
 ): void {
   for (const registered of registeredVolumes) {
     if (seenStorageIds.has(registered.storageId)) continue
+    // `volumeName` is always the storage UUID the platform pinned; a volume
+    // the platform does not manage has no such name and is never sent.
+    if (!registered.managed) continue
     material.push({
       storageId: registered.storageId,
       locationId: registered.locationId,

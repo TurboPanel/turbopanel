@@ -56,7 +56,7 @@ test("registerComposeVolumes returns empty for blank volumes", async () => {
   );
 });
 
-test("registerComposeVolumes registers unmanaged external volumes", async () => {
+test("registerComposeVolumes does not register author external volumes", async () => {
   const storageId = "00000000-0000-4000-8000-0000000000ee";
   const db = {
     select: () => ({
@@ -96,9 +96,7 @@ test("registerComposeVolumes registers unmanaged external volumes", async () => 
     environmentId: "env",
     serverId: "srv",
   });
-  assertEquals(result[0]?.storageId, storageId);
-  assertEquals(result[0]?.managed, false);
-  assertEquals(result[0]?.composeKey, "data");
+  assertEquals(result, []);
 });
 
 test("registerComposeVolumes reuses existing composeVolumeKey rows", async () => {

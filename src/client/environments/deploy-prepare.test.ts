@@ -561,6 +561,31 @@ describe('loadStorageMaterial principal path locations', () => {
     assertEquals(material[0]?.provider, 'path')
   })
 
+  it('never sends an author-chosen external volume name as the volume name', async () => {
+    const db = createStorageMaterialDb({
+      locations: [
+        volumeLocation({
+          storageId,
+          locationId,
+          locationOptions: { managed: false, externalName: 'someone-elses-data' },
+        }),
+      ],
+    })
+    const material = await loadStorageMaterial(db, {
+      ...baseParams,
+      registeredVolumes: [
+        {
+          storageId: '01936b3e-dddd-eeee-ffff-123456789abd',
+          locationId: '01936b3e-dddd-eeee-ffff-0000000000ab',
+          composeKey: 'ext',
+          volumeName: 'someone-elses-data',
+          managed: false,
+        },
+      ],
+    })
+    assertEquals(material, [])
+  })
+
   it('keeps an explicit location path override', async () => {
     const db = createStorageMaterialDb({
       locations: [
