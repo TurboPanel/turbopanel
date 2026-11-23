@@ -137,7 +137,7 @@ export const HAND_BUILT_ERROR_BASELINE: Record<string, number> = {
   'src/client/tls/leaf-routes.ts': 6,
   'src/client/tls/routes.ts': 29,
   'src/client/variables/routes-helpers.ts': 9,
-  'src/client/variables/routes.ts': 37,
+  'src/client/variables/routes.ts': 36,
   'src/client/workspaces/routes.ts': 17,
   'src/daemon/api-routes.ts': 86,
   'src/daemon/cell/daemon-addresses-routes.ts': 6,
