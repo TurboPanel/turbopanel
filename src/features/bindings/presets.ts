@@ -99,8 +99,13 @@ const PRESET_DEFINITIONS: Readonly<Record<BindingPreset, PresetDefinition>> = {
     engines: ALL_ENGINES,
     entries: [
       {
+        // MariaDB uses Laravel's `mysql` connection too: it speaks the same
+        // protocol, every Laravel version has that connection, and an app's
+        // own `mysql` block can read DB_STRICT. Laravel 11+ merges its stock
+        // `mariadb` connection (strict mode hard-coded, no env switch) into
+        // every app, and an app older than 11 has no `mariadb` connection.
         name: 'DB_CONNECTION',
-        template: { postgres: 'pgsql', mysql: 'mysql', mariadb: 'mariadb' },
+        template: { postgres: 'pgsql', mysql: 'mysql', mariadb: 'mysql' },
       },
       { name: 'DB_HOST', template: '{host}' },
       { name: 'DB_PORT', template: '{port}' },
