@@ -48,6 +48,11 @@ describe('check-guide-references', () => {
     )
   })
 
+  it('reports a missing ../ path that is not a known sibling checkout', () => {
+    assertEquals(status('code', '../lib/gone.ts', 'src/x/AGENTS.md'), 'missing')
+    assertEquals(status('link', '../lib/gone.ts', 'src/x/AGENTS.md'), 'missing')
+  })
+
   it('lets an allowlisted pointer through', () => {
     const allowlist = [{ file: 'docs/setup.md', target: './console', reason: 'command' }]
     assertEquals(status('code', './console', 'docs/setup.md', allowlist), 'allowlisted')

@@ -817,7 +817,7 @@ inside deploy-prepare and turns each declared alias into a `principal` row plus
 the `tenancy` edge that says which `service` runs as it. The alias →
 `principal.id` map it returns is carried through the compiler as
 **`ResolvedApplication.principals[]`** (`{ logicalAlias, principalId }`) — see
-the four-model IR in `../compose/AGENTS.md` and `../compose/ir.ts`. That mapping
+the four-model IR in `../features/compose/AGENTS.md` and `../features/compose/ir.ts`. That mapping
 is the _only_ bridge between the document's aliases and these rows: nothing
 downstream re-derives an account from a compose key, and a service whose alias
 never became a row is refused (`principal_alias_unknown`) rather than run as

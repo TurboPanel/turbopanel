@@ -67,7 +67,7 @@ test('the Deno composition root may import the ingress directory', async () => {
 
 const KERNEL_BASELINE = 'scripts/import-boundaries-baseline.json'
 
-test('a nested lib folder importing a feature, a surface or the db connection fails', async () => {
+test('a nested lib folder importing a feature or the db connection fails', async () => {
   const result = await runInTree({
     'src/features/f/x.ts': 'export const x = 1\n',
     'src/lib/email/m.ts': "import { x } from '../../features/f/x.ts'\nexport const m = x\n",

@@ -96,6 +96,8 @@ export function stripFences(text) {
     .join('\n')
 }
 
+/** Checkouts that sit beside this repo; a pointer into one is skipped when it is absent (CI). */
+const SIBLING_REPOS = new Set(['turbopaneld', 'ui', 'dev', 'website', '.github'])
 const ROOT_FOLDERS = ['src/', 'scripts/', 'docs/', '.github/']
 
 export function looksLikeBacktickedPath(token) {
@@ -143,7 +145,7 @@ export function resolveReference({ kind, target, file, repoRoot, exists, allowli
   const siblingAbsent = candidates.some((c) => {
     const rel = path.relative(repoRoot, c).split(path.sep)
     return (
-      rel[0] === '..' && rel[1] && rel[1] !== '..' && !exists(path.resolve(repoRoot, '..', rel[1]))
+      rel[0] === '..' && SIBLING_REPOS.has(rel[1]) && !exists(path.resolve(repoRoot, '..', rel[1]))
     )
   })
   return { status: siblingAbsent ? 'skipped-sibling' : 'missing' }
