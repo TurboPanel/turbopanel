@@ -4,6 +4,10 @@ import { resolveSessionCookieNameFromUrl } from '../../client/authn/crypto.ts'
 import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
 import { INSTANCE_ACCESS_PATHS, INSTANCE_TUNNEL_TOKEN_PATH } from './instance-access.ts'
 import { INSTANCE_UPDATES_PATHS } from './instance-updates.ts'
+import {
+  ADMIN_NOTIFICATION_SETTINGS_PATHS,
+  adminNotificationSettingsSchemas,
+} from './notifications-and-settings.ts'
 import { MAIL_DEAD_LETTER_PATHS } from './mail-dead-letters.ts'
 import { ORGANIZATION_PATHS } from './organizations.ts'
 import { INSTANCE_HOSTNAME_PATHS } from './instance-hostnames.ts'
@@ -43,6 +47,7 @@ export function getAdminOpenApiSpec(
       },
       schemas: {
         ErrorResponse: apiErrorSchema,
+        ...adminNotificationSettingsSchemas,
         PublicUrlsResponse: {
           type: 'object',
           required: ['ok', 'urls'],
@@ -461,6 +466,7 @@ export function getAdminOpenApiSpec(
       ...(opts?.runtime === 'workers' ? {} : INSTANCE_TUNNEL_TOKEN_PATH),
       ...INSTANCE_UPDATES_PATHS,
       ...MAIL_DEAD_LETTER_PATHS,
+      ...ADMIN_NOTIFICATION_SETTINGS_PATHS,
       ...ORGANIZATION_PATHS,
       [`${ADMIN_API_PREFIX}/instance/public-urls`]: {
         get: {

@@ -325,7 +325,7 @@ turbofabric_required`); `features/fabric/lan-pair-guard.ts`. A daemon gaining
   "use or delete the key", "restore one" or "buy one") when every purchased
   license is bound, provisioning, held by an unused key, or ending at the
   boundary (net of outstanding seat releases); `DELETE /licenses/:id` runs the
-  detach-first refusal, then the billing gate (`authn/license-lifecycle.ts`),
+  detach-first refusal, then the billing gate (`licenses/routes.ts`, `isCustomerBillingOperational`),
   which records a deferred `release-seat` intent under the org's quantity lease
   so the seat drops at the period boundary (**409**
   `billing_mutation_in_progress` while held).
@@ -867,9 +867,9 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   Everything downstream — `buildHostingsForService`, the daemon's ingress and
   TLS lanes — reads **rows**, never the compose block, so the projection is
   one-way and the row is the only thing a route is served from. Declaration
-  shape and messages: `../lib/compose/hosting-extension.ts`; the compiler stage
+  shape and messages: `../features/compose/hosting-extension.ts`; the compiler stage
   that carries the declarations is `Application.services[].hosting` in
-  `../lib/compose/ir.ts`.
+  `../features/compose/ir.ts`.
 - **`docker run` importer (client surface):** `POST /docker-run/import` —
   session-gated, create-gated when a `projectId` is supplied. **Pure compute: it
   writes nothing.** It parses a pasted `docker container run` command into a
@@ -879,8 +879,8 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   ordinary compose PATCH routes, where the write-boundary validation already
   lives — a second way into `options.compose` would mean two sets of rules.
   Nothing is emitted under `x-turbopanel`: the importer speaks plain Compose,
-  per rule 1 of the frozen contract in `../lib/compose/AGENTS.md`. Parser and
-  option registry: `../lib/docker-run/AGENTS.md`.
+  per rule 1 of the frozen contract in `../features/compose/AGENTS.md`. Parser and
+  option registry: `../features/docker-run/AGENTS.md`.
 - **Webhook origins (client surface):** `GET /forges/webhook-origins`
   (`organization:manage`, like the rest of `/forges`) answers
   `{ origins, platformManaged }` — the set the manifest flow accepts as
@@ -890,7 +890,7 @@ id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   Reachability.
 - **Forge addresses and the GitHub install callback (client surface):** a
   forge's `baseUrl` / `apiUrl` / `webhookOrigin` is validated on every write
-  (`POST`/`PATCH /forges`, the manifest wizard) by `../lib/git/forge-url.ts` —
+  (`POST`/`PATCH /forges`, the manifest wizard) by `../features/git/forge-url.ts` —
   https only, no embedded credentials, no reserved names (`localhost`, `.local`,
   `.internal`, `.arpa`, single-label), no loopback / link-local / private /
   CGNAT literal, and the name is resolved (Deno's resolver, or DNS-over-HTTPS
