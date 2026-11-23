@@ -739,8 +739,9 @@ export async function startHttpIssuance(
   // The cheap answers first: nothing to do, a wait or a cap in force, no contact
   // address. None of them looks at DNS or at the servers.
   const meta = (peek.metadata ?? {}) as Record<string, unknown>
-  if (!due({ hasPair: peek.hasKey === true && previous?.centralPair === true, metadata: meta }))
-    return 'not_due'
+  // Only a pair the panel ordered is a renewal; one a server exported is not.
+  const ownPair = peek.hasKey === true && previous?.centralPair === true
+  if (!due({ hasPair: ownPair, metadata: meta })) return 'not_due'
   const attempts = {
     attemptTimes: previous?.attemptTimes ?? [],
     nextAttemptAt: previous?.nextAttemptAt ?? null,
@@ -752,7 +753,7 @@ export async function startHttpIssuance(
   }
   // Organization limits: a day's worth of new certificates, and a pause for everyone
   // once the authority said it is rate limiting. A renewal is not a new certificate.
-  if (!(peek.hasKey === true && previous?.centralPair === true)) {
+  if (!ownPair) {
     const facts = await loadOrgOrderFacts(deps.db, peek.organizationId, now)
     // A row trying again was counted when it first started; only the pause applies to it.
     const applied = previous === null ? facts : { ...facts, newStarts: [] }
