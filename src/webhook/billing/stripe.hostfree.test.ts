@@ -13,7 +13,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { STRIPE_WEBHOOK_PATH } from '../../app/surfaces.ts'
-import type { BillingConfig } from '../../features/billing/config.ts'
+import { DEFAULT_STRIPE_API_VERSION, type BillingConfig } from '../../features/billing/config.ts'
 import { createStripeClient, type StripeFetch } from '../../features/billing/client.ts'
 import { computeStripeSignature } from '../../features/billing/webhook-signature.ts'
 import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from '../../features/billing/customer-subject.ts'
@@ -72,7 +72,7 @@ const TIER_ID = '11111111-1111-4111-8111-111111111111'
 const CONFIG: BillingConfig = {
   secretKey: 'sk_test_x',
   webhookSigningSecret: SIGNING_SECRET,
-  apiVersion: '2026-09-30.endive',
+  apiVersion: DEFAULT_STRIPE_API_VERSION,
 }
 
 type Trace = string[]
