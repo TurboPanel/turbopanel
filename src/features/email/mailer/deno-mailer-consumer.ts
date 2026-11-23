@@ -1,35 +1,29 @@
 import amqplib from 'amqplib'
 import type { Db } from '../../../db/connection.ts'
-import type { DerivedSecretsConfig } from '../../secrets/secrets.ts'
-import { createClosablePause } from '../../closable-pause.ts'
-import { logError, logInfo, logWarn } from '../../logger.ts'
+import type { DerivedSecretsConfig } from '../../../lib/secrets/secrets.ts'
+import { createClosablePause } from '../../../lib/closable-pause.ts'
+import { logError, logInfo, logWarn } from '../../../lib/logger.ts'
 import {
   type EmailProvider,
   type ResolvedEmailSettings,
   resolveEmailSettings,
-} from '../../../features/settings/email-settings.ts'
-import type { MailerSender, MailerSendResult } from '../../../features/email/sender-types.ts'
-import { suppressAddress } from '../../../features/notifications/fanout-records.ts'
+} from '../../settings/email-settings.ts'
+import type { MailerSender, MailerSendResult } from '../sender-types.ts'
+import { suppressAddress } from '../../notifications/fanout-records.ts'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_DEAD_QUEUE,
   EMAIL_AMQP_QUEUE,
   emailRetryQueueName,
-} from '../../../features/email/smtp/amqp-topology.ts'
-import {
-  EMAIL_DEAD_AT_HEADER,
-  EMAIL_DEAD_REASON_HEADER,
-} from '../../../features/email/smtp/dead-letter-replay.ts'
+} from '../smtp/amqp-topology.ts'
+import { EMAIL_DEAD_AT_HEADER, EMAIL_DEAD_REASON_HEADER } from '../smtp/dead-letter-replay.ts'
 import {
   decideEmailFailure,
   deliverEmailJob,
   type EmailDeliveryOutcome,
-} from '../../../features/email/deliver-email-job.ts'
-import {
-  EMAIL_ATTEMPT_HEADER,
-  failedAttemptsFromHeaders,
-} from '../../../features/email/smtp/retry-policy.ts'
-import type { EmailJob } from '../../../features/email/types.ts'
+} from '../deliver-email-job.ts'
+import { EMAIL_ATTEMPT_HEADER, failedAttemptsFromHeaders } from '../smtp/retry-policy.ts'
+import type { EmailJob } from '../types.ts'
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
 import { parseEmailJob } from './parse-email-job.ts'

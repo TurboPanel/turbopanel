@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import { parseEmailJob } from '../../lib/email/mailer/parse-email-job.ts'
+import { parseEmailJob } from './mailer/parse-email-job.ts'
 import { createChannelVerificationEmail, resolveEmailTemplate } from './templates.ts'
 import type { EmailJob } from './types.ts'
 
