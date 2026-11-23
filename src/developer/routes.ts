@@ -7,7 +7,7 @@ import { registerMetricsDuckDbUiRoutes } from './metrics-duckdb-ui-routes.ts'
 
 /**
  * Full developer console for Deno (includes Drizzle Studio spawn routes and
- * the embedded DuckDB UI action).
+ * the embedded DuckDB UI action). Workers mounts no developer routes.
  */
 export function registerDeveloperRoutes<E extends Env>(
   app: Hono<E>,

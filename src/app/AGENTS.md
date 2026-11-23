@@ -167,7 +167,7 @@ bounded readers and limiters).
    anonymous and keyed by IP.
 
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
-  `src/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
+  `src/install/routes.ts` (registered from `src/platform/deno/server.ts`, so Deno only); Deno-only routes
   `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`,
   and the version route are registered in
   `src/deno-dev.ts`. `src/admin/routes.ts` is mounted on both Deno and Workers
@@ -177,11 +177,12 @@ bounded readers and limiters).
   `src/platform/deno/server.ts` only; `check:import-boundaries` refuses any other
   importer, and `src/admin/platform-admin-routes.hostfree.test.ts` plus
   `src/workers.entry.test.ts` prove the Workers router has none of them.
-  Developer REST core lives in
-  `src/developer/routes-core.ts`; the full Deno developer surface (core plus
-  Drizzle Studio and DuckDB UI) in `src/developer/routes.ts`. Daemon tooling
-  (`/daemon/connections`, `/daemon/broadcast`, addresses, ...) and the tunnel
-  token are Admin routes only. Client bindings (`src/client/bindings/`) expose
+  The developer surface is Deno development only: `src/developer/routes.ts`
+  (`registerDeveloperRoutes`, called from `src/deno-dev.ts`) builds the router
+  from `src/developer/routes-core.ts` and adds the Drizzle Studio and DuckDB UI
+  routes. Workers mounts no developer routes. Daemon tooling (`/daemon/connections`,
+  `/daemon/broadcast`, addresses, ...) and the tunnel token are Admin routes
+  only. Client bindings (`src/client/bindings/`) expose
   `GET|POST|PATCH|DELETE /api/client/v1/bindings` — managed DB principal →
   compose service materialization of binding-owned `variable` rows (no new
   command type). List filters are mutually exclusive: `serviceId`, consumer

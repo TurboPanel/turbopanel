@@ -1,3 +1,7 @@
+import {
+  type MailgunConfig,
+  mailgunConfigFromSettings,
+} from '../../../features/email/mailgun/config.ts'
 import { sendMailgunJob } from '../../../features/email/mailgun/send.ts'
 import { resolveEmailSettings } from '../../../features/settings/email-settings.ts'
 import type { DerivedSecretsConfig } from '../../secrets/secrets.ts'
@@ -12,26 +16,17 @@ import { logError } from '../../logger.ts'
 
 class MailgunConfigError extends Error {}
 
-function validateMailgunSettings(resolved: Awaited<ReturnType<typeof resolveEmailSettings>>): {
-  apiKey: string
-  domain: string
-  from: string
-  apiBase: string
-} {
+function validateMailgunSettings(
+  resolved: Awaited<ReturnType<typeof resolveEmailSettings>>
+): MailgunConfig {
   if (resolved.provider !== 'mailgun') {
     throw new MailgunConfigError(`email provider is ${resolved.provider}, not mailgun`)
   }
-  const apiKey = resolved.mailgunApiKey?.trim() ?? ''
-  const domain = resolved.mailgunDomain?.trim() ?? ''
-  if (apiKey === '' || domain === '') {
+  const config = mailgunConfigFromSettings(resolved)
+  if (config === undefined) {
     throw new MailgunConfigError('Mailgun API key and domain are required')
   }
-  return {
-    apiKey,
-    domain,
-    from: resolved.from,
-    apiBase: resolved.mailgunApiBase,
-  }
+  return config
 }
 
 function isPermanentError(error: unknown): boolean {

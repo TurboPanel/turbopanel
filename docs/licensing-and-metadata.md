@@ -12,6 +12,6 @@
   `createApp()` injects `platformEnv` / `getPlatformEnv` **before** the health
   route; the Deno entry point passes `getPlatformEnv: () => Deno.env.toObject()`
   so systemd `TURBOPANEL_REVISION` is never observed as `unknown`. Published
-  story: `../website` `/open-source` and `docs/getting-started/licensing.mdx`.
+  story: `../website` `/open-source` and `../website/docs/getting-started/licensing.mdx`.
   Contributions require the
   [CLA](https://github.com/TurboPanel/.github/blob/trunk/CLA.md).

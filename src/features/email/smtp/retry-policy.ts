@@ -35,15 +35,15 @@ const SIGN_IN_JOB_TYPES: ReadonlySet<EmailJob['type']> = new Set([
 const SIGN_IN_SCHEDULE = [0, 1, 2, 3, 3] as const
 const OTHER_SCHEDULE = [1, 3, 4, 5] as const
 
-export type RetryDecision =
+export type EmailRetryDecision =
   { action: 'retry'; tier: number; delayMs: number } | { action: 'dead_letter' }
 
 /** `failedAttempts` is how many sends of this job have already failed, this one included. */
-export function decideRetry(
+export function decideEmailRetry(
   type: EmailJob['type'],
   failedAttempts: number,
   random: () => number = Math.random
-): RetryDecision {
+): EmailRetryDecision {
   const schedule = SIGN_IN_JOB_TYPES.has(type) ? SIGN_IN_SCHEDULE : OTHER_SCHEDULE
   const tier = schedule[failedAttempts - 1]
   if (tier === undefined) return { action: 'dead_letter' }

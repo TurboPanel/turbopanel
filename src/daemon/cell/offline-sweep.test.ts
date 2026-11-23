@@ -1757,6 +1757,26 @@ it('gates: an open command or recovery runs the stale-command pass on any minute
   }
 })
 
+it('gates: an active upgrade run advances the upgrade tick on every minute, an idle one waits for its cadence', async () => {
+  const upgradeTicks = async (upgradeRunActive: boolean, minute: number): Promise<number> => {
+    const { db } = countingIdleDb({ upgradeRunActive })
+    const traces = await runTickCapturingTrace(
+      commandQueueEnv(),
+      db,
+      null,
+      MINUTE_ZERO + minute * 60_000
+    )
+    return traces.filter((line) => line.includes('event=upgrade-tick')).length
+  }
+  for (const minute of [1, 2, 7, 14]) {
+    assertEquals((await upgradeTicks(true, minute)) > 0, true, `active run, minute ${minute}`)
+    assertEquals(await upgradeTicks(false, minute), 0, `idle, minute ${minute}`)
+  }
+  assertEquals((await upgradeTicks(false, 15)) > 0, true, 'idle, due minute')
+  assertEquals(optionalPhaseNames(MID_HOUR).includes('upgrade-history'), false)
+  assertEquals(optionalPhaseNames(MID_HOUR, undefined, true).includes('upgrade-history'), true)
+})
+
 it('gates: notification work wakes the retry and digest sweeps, otherwise they send nothing', async () => {
   const closed = countingIdleDb()
   await runTickCapturingTrace(commandQueueEnv(), closed.db, null, MID_HOUR)
@@ -2052,7 +2072,9 @@ async function upgradeTickTraces(
   env: CloudflareBindings,
   scheduledTime: number
 ): Promise<string[]> {
-  const traces = await sweepTraces(env, scheduledTime)
+  // Idle gates read cleanly: an unreadable gate opens every family, the upgrade tick included.
+  const { db } = countingIdleDb()
+  const traces = await runTickCapturingTrace(env, db, null, scheduledTime)
   return traces.filter((line) => line.includes('event=upgrade-tick'))
 }
 

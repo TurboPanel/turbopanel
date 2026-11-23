@@ -256,7 +256,7 @@ this check, and a file inside the service's directory is one a container could
 have written. A bind of the service's directory itself (`.:/app`, `./:/app`)
 is host-level too — a container that can write there can rewrite the deployed
 files and plant symlinks. This check is lexical; the daemon resolves every bind on the host
-before `compose up` (turbopaneld `src/deploy/compose-host-paths.ts`), which is
+before `compose up` (`../turbopaneld/src/deploy/compose-host-paths.ts`), which is
 what catches a symlink planted inside `./data`.
 `lint.ts` emits each finding with the same `field_requires_org_opt_in` code
 as a gated key, so every rule below applies to both. The platform itself never
@@ -355,7 +355,7 @@ runs one layer up, in `validateComposeForDeploy`'s two callers
 (`lib/schedule/plan-deploy.ts`'s `planEnvironmentDeploy`,
 `client/environments/deploy-prepare.ts`'s `loadDeployComposeContext`), which
 resolve `organization.options.composeGatedFieldsEnabled`
-(`resolveComposeGatedFieldsEnabled` in `../organization-options.ts`) and pass it
+(`resolveComposeGatedFieldsEnabled` in `../organizations/organization-options.ts`) and pass it
 to `validateComposeForDeploy(merged, { composeGatedFieldsEnabled })` — the same
 seam `hostingTlsWireFromResolved` uses for the ACME org gate. Default `false`:
 deny-by-default, since the DB this protects holds every organization's secrets
@@ -365,7 +365,7 @@ than the ACME toggle's `assertCanManageOr403`, matching the audit's own "gated
 behind an explicit, audited org-owner opt-in" language. The "audited" half is
 built as of 2026-09-18: flipping this gate writes an
 `organization.compose_privileged_fields.set` row through `recordAudit`
-(`../db/audit-records.ts`), readable by owners at
+(`../audit/audit-records.ts`), readable by owners at
 `GET /organizations/:id/audit`.
 
 ### Deploy hooks: an org-owner opt-in, confined to the service container
@@ -1073,7 +1073,7 @@ per participating server. Managed ingress `extra_hosts` are per bound consumer
 service (reserved ProxySQL address on a spanning network that service joins),
 never server-global — co-resident bindings still join the organization's managed
 network (bare-UUID name from the `network(kind='managed')` row, sent as
-`managedNetwork` — see `../db/AGENTS.md`), and a remote extra_hosts entry on one
+`managedNetwork` — see `../../db/AGENTS.md`), and a remote extra_hosts entry on one
 service must not drop that attachment for others. `renderRuntimeComposeFiles`
 wraps it as
 `[{ filename: 'compose.yaml', role: 'runtime', source: 'inline', content }]`.
@@ -1152,7 +1152,7 @@ ComposeLayer[]  ──mergeComposeLayers──▶  Application  ──reconcile/
    native apps, sources), _and_ the edge — `hostings[]`, their `tlsMaterial[]`,
    `hostingIngress` / `hostingIngressNetwork`, and the org's `listenerPorts`.
    Its fields are the daemon-facing `EnvironmentDeploy*` wire types from
-   `../commands/schemas.ts` **verbatim**; `PreparedDeployCompose`
+   `../../contracts/commands/schemas.ts` **verbatim**; `PreparedDeployCompose`
    (`../../client/environments/deploy-prepare.ts`) is this type plus
    control-plane bookkeeping that never reaches a daemon (hooks, container rows,
    the expansion map, soft warnings, the echoed source selection). **The edge
@@ -1177,7 +1177,7 @@ native-app unit limits, the org/server resource gate — read it back off
 the stage is the source of truth it claims to be instead of a partial projection
 two call sites can disagree with. `ResolvedApplication.principals` is the same
 alias → `principal.id` map `reconcilePrincipalsFromCompose` returns, which is
-what materializes `principal` / `tenancy` rows — see `../db/AGENTS.md`.
+what materializes `principal` / `tenancy` rows — see `../../db/AGENTS.md`.
 
 ### Spanning networks (TurboFabric)
 

@@ -21,7 +21,11 @@ import {
   EMAIL_DEAD_REASON_HEADER,
 } from '../../../features/email/smtp/dead-letter-replay.ts'
 import {
-  decideRetry,
+  decideEmailFailure,
+  deliverEmailJob,
+  type EmailDeliveryOutcome,
+} from '../../../features/email/deliver-email-job.ts'
+import {
   EMAIL_ATTEMPT_HEADER,
   failedAttemptsFromHeaders,
 } from '../../../features/email/smtp/retry-policy.ts'
@@ -375,56 +379,42 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
   }
 
   /**
-   * A send failed for a reason that may pass. Put the job in the delay queue
-   * its attempt count calls for (it returns to the tail of the send queue when
-   * the delay ends), or in the dead-letter queue once the attempts are used.
-   * Either way the original is acked, so one stubborn message never holds up
-   * the ones behind it. `nack_requeue` only when the broker refuses the
-   * republish, which keeps at-least-once.
+   * Map the delivery core's verdict on a failed send to the broker. A retry
+   * goes to the delay queue its tier names (it returns to the tail of the send
+   * queue when the delay ends), a dead job to the dead-letter queue. Either
+   * way the original is acked, so one stubborn message never holds up the ones
+   * behind it. `nack_requeue` only when the broker refuses the republish,
+   * which keeps at-least-once.
    */
-  function retryOrDeadLetter(
+  function settleFailure(
     owner: ConsumerSession,
     msg: NonNullable<AmqpMessage>,
     type: EmailJob['type'],
-    reason: string
+    outcome: Exclude<EmailDeliveryOutcome, { kind: 'sent' }>
   ): Disposition {
     const headers = (msg.properties?.headers ?? {}) as Record<string, unknown>
-    const failed = failedAttemptsFromHeaders(headers) + 1
-    const decision = decideRetry(type, failed)
     try {
-      if (decision.action === 'retry') {
-        owner.channel.sendToQueue(emailRetryQueueName(decision.tier), msg.content, {
+      if (outcome.kind === 'retry') {
+        owner.channel.sendToQueue(emailRetryQueueName(outcome.tier), msg.content, {
           persistent: true,
-          expiration: String(decision.delayMs),
-          headers: { ...headers, [EMAIL_ATTEMPT_HEADER]: failed },
+          expiration: String(outcome.delayMs),
+          headers: { ...headers, [EMAIL_ATTEMPT_HEADER]: failedAttemptsFromHeaders(headers) + 1 },
         })
         logWarn(
           'mailer',
-          `${type} failed (attempt ${failed}), retrying in ${decision.delayMs}ms: ${reason}`
+          `${type} failed (attempt ${failedAttemptsFromHeaders(headers) + 1}), retrying in ${outcome.delayMs}ms: ${outcome.reason}`
         )
       } else {
-        deadLetter(owner, msg, headers, `${type} gave up after ${failed} attempts: ${reason}`)
+        deadLetter(owner, msg, headers, outcome.reason)
       }
       return 'ack'
     } catch (error) {
+      if (outcome.kind === 'dead' && outcome.permanent) {
+        logWarn('mailer', `could not dead-letter: ${errorMessage(error)}`)
+        return 'nack_dead'
+      }
       logWarn('mailer', `could not schedule a retry: ${errorMessage(error)}`)
       return 'nack_requeue'
-    }
-  }
-
-  function deadLetterPermanent(
-    owner: ConsumerSession,
-    msg: NonNullable<AmqpMessage>,
-    type: EmailJob['type'],
-    reason: string
-  ): Disposition {
-    try {
-      const headers = (msg.properties?.headers ?? {}) as Record<string, unknown>
-      deadLetter(owner, msg, headers, `${type} refused: ${reason}`)
-      return 'ack'
-    } catch (error) {
-      logWarn('mailer', `could not dead-letter: ${errorMessage(error)}`)
-      return 'nack_dead'
     }
   }
 
@@ -487,6 +477,9 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
 
     let disposition: Disposition
     let jobType: EmailJob['type'] | undefined
+    const failedBefore = failedAttemptsFromHeaders(
+      (msg.properties?.headers ?? {}) as Record<string, unknown>
+    )
     try {
       let job: ReturnType<typeof parseEmailJob>
       try {
@@ -528,22 +521,33 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
         return
       }
 
-      const result = await sender.sendJob(job)
-      if (result.success) {
-        disposition = 'ack'
-      } else if (result.permanent) {
-        logError('mailer', `permanent error: ${result.error}`)
-        await suppressRejectedNotificationAddress(opts.db, job, result)
-        disposition = deadLetterPermanent(owner, msg, job.type, result.error)
-      } else {
-        disposition = retryOrDeadLetter(owner, msg, job.type, result.error)
-      }
+      const active = sender
+      const outcome = await deliverEmailJob(
+        job,
+        {
+          async sendJob(sending) {
+            const result = await active.sendJob(sending)
+            if (!result.success && result.permanent) {
+              logError('mailer', `permanent error: ${result.error}`)
+              await suppressRejectedNotificationAddress(opts.db, sending, result)
+            }
+            return result
+          },
+        },
+        failedBefore + 1
+      )
+      disposition = outcome.kind === 'sent' ? 'ack' : settleFailure(owner, msg, job.type, outcome)
     } catch (error) {
       logError('mailer', `handler error: ${errorMessage(error)}`)
       disposition =
         jobType === undefined
           ? 'nack_requeue'
-          : retryOrDeadLetter(owner, msg, jobType, errorMessage(error))
+          : settleFailure(
+              owner,
+              msg,
+              jobType,
+              decideEmailFailure({ type: jobType }, failedBefore + 1, errorMessage(error))
+            )
     }
     disposeSafely(owner, msg, disposition)
   }
