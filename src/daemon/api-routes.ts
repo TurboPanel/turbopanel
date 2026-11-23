@@ -1588,6 +1588,18 @@ export function credentialRefusalMiddleware(onRefusal: () => void): MiddlewareHa
   }
 }
 
+/**
+ * The one place the daemon REST `requireSigned` default is decided. It is a deliberate
+ * per-runtime difference, not drift: Workers serves hosted and high-availability control
+ * planes with no co-located daemon, so it takes only signed sign-ins and requests. Deno keeps
+ * the unpinned form, because the daemon on a self-hosted control plane's own host never holds
+ * a panel key pin (`run.sh` writes none for a control-plane install) and sends the older
+ * forms; requiring signatures there would lock that daemon out.
+ */
+export function defaultDaemonRestRequireSigned(runtime: 'workers' | 'deno'): boolean {
+  return runtime === 'workers'
+}
+
 export function registerDaemonApiRoutes<E extends Env>(
   app: Hono<E>,
   options: {
@@ -1668,10 +1680,7 @@ export function registerDaemonApiRoutes<E extends Env>(
   }
   const tlsPublic = options.tlsPublic ?? false
   const deployment = metricsDeploymentKindForRuntime(runtime)
-  // The Workers runtime serves hosted and high-availability control planes and has no co-located
-  // daemon, so it takes only signed sign-ins and requests. The Deno runtime keeps the unpinned
-  // form for the daemon on a self-hosted control plane's own host, which has no panel key pin.
-  const requireSigned = options.requireSigned ?? runtime === 'workers'
+  const requireSigned = options.requireSigned ?? defaultDaemonRestRequireSigned(runtime)
   const metricsChartCache = createMetricsChartCache(runtime)
   const restLimiter = options.restLimiter ?? createNoopRateLimiter()
   const metricsLimiter = options.metricsLimiter ?? createNoopRateLimiter()

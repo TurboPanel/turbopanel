@@ -387,6 +387,7 @@ export type DeployPrepareWarningCode =
   | 'site_db_ca_unavailable'
   | 'php_series_not_installed'
   | 'compose_variable_unresolved'
+  | 'secret_variable_not_injected'
   | 'variable_db_ref_unresolved'
   | 'php_mode_not_allowed'
   | 'node_version_unresolved'
@@ -3910,8 +3911,22 @@ async function applyDeployVariables(
   if (isApplyVariablesError(withVariables)) {
     return toApplyVariablesPrepareError(withVariables)
   }
-  warnings.push(...configFileWarnings(withVariables.configWarnings))
+  warnings.push(
+    ...configFileWarnings(withVariables.configWarnings),
+    ...secretNotInjectedWarnings(withVariables.secretsNotInjected)
+  )
   return withVariables
+}
+
+/** One warning per runtime secret that no container of the stack received. */
+export function secretNotInjectedWarnings(
+  secrets: readonly { key: string; composeServiceNames: readonly string[] }[]
+): DeployPrepareWarning[] {
+  return secrets.map(({ key, composeServiceNames }) => ({
+    code: 'secret_variable_not_injected',
+    message: `Secret ${key} is not passed to any container (in scope for ${composeServiceNames.join(', ')}), because nothing references it. A secret reaches a container only as a file: reference it in environment as NAME: "{$${key}}" to get NAME_FILE pointing at /run/secrets/NAME (NAME itself stays unset), or put it into a generated config file with configs: and {$${key}} in the content.`,
+    details: { variable: key, composeServiceNames: [...composeServiceNames] },
+  }))
 }
 
 /** Project caches and helper reach for this server; its warnings join the deploy's. */

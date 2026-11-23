@@ -118,6 +118,8 @@ export type ApplyVariablesError = {
   envKey?: string
 }
 
+export type SecretNotInjected = UnreferencedSecret & { composeServiceNames: string[] }
+
 export type ApplyVariablesResult = {
   document: ComposeDocument
   /** Secret values sealed for daemon delivery — never embed in compose YAML. */
@@ -139,6 +141,13 @@ export type ApplyVariablesResult = {
    * `params.nativeServiceNames`.
    */
   unreferencedSecrets: Map<string, UnreferencedSecret[]>
+  /**
+   * Runtime secrets in scope for container services that **no** container of
+   * the stack received: no `{$KEY}` reference, no binding, no generated config
+   * file and no network share reads it. One entry per secret, with the
+   * services it was in scope for; feeds `secret_variable_not_injected`.
+   */
+  secretsNotInjected: SecretNotInjected[]
   /**
    * Generated config files (`configs.<name>.content`) as parts. The secrets
    * they read ride in `secretMaterial` with no `secretPlan` entry, so they get
@@ -375,6 +384,8 @@ type ApplyServiceState = {
   /** The service is a native (`serviceKind: node`) app — see {@link shouldAutoAttachSecret}. */
   nativeApp: boolean
   unreferencedSecrets: UnreferencedSecret[]
+  /** Container service only: runtime secrets nothing in this service references. */
+  containerUnreferenced: UnreferencedSecret[]
   projectId: string
   environmentId: string
   runDir: string
@@ -650,11 +661,13 @@ function attachUnreferencedSecret(
     if (entry.forRuntime) recordSecretAssignment(state, entry.key, entry)
     return
   }
-  if (state.nativeApp && entry.forRuntime && !state.plannedKeys.has(entry.key)) {
-    state.unreferencedSecrets.push({
+  if (entry.forRuntime && !state.plannedKeys.has(entry.key)) {
+    const listed = {
       key: entry.key,
       ...(entry.source === undefined ? {} : { source: entry.source }),
-    })
+    }
+    if (state.nativeApp) state.unreferencedSecrets.push(listed)
+    else state.containerUnreferenced.push(listed)
   }
 }
 
@@ -884,6 +897,7 @@ export function applyVariablesToComposeDocument(
   const runtimeAssignments = new Map<string, RuntimeEnvAssignment[]>()
   const buildAssignments = new Map<string, BuildEnvAssignment[]>()
   const unreferencedSecrets = new Map<string, UnreferencedSecret[]>()
+  const containerUnreferenced = new Map<string, UnreferencedSecret[]>()
   const runDir = params.runDir ?? DEFAULT_DEPLOY_RUN_DIR
   const projectId = params.projectId ?? 'preview'
   const environmentId = params.environmentId ?? 'preview'
@@ -918,6 +932,7 @@ export function applyVariablesToComposeDocument(
       buildAssignments: [],
       nativeApp: params.nativeServiceNames?.has(composeServiceName) ?? false,
       unreferencedSecrets: [],
+      containerUnreferenced: [],
       projectId,
       environmentId,
       runDir,
@@ -936,6 +951,7 @@ export function applyVariablesToComposeDocument(
     runtimeAssignments.set(composeServiceName, state.runtimeAssignments)
     buildAssignments.set(composeServiceName, state.buildAssignments)
     unreferencedSecrets.set(composeServiceName, state.unreferencedSecrets)
+    containerUnreferenced.set(composeServiceName, state.containerUnreferenced)
   }
 
   data.services = services
@@ -948,6 +964,12 @@ export function applyVariablesToComposeDocument(
   if ('kind' in shares) return shares
   const finishError = finishConfigFiles(configCtx, data)
   if (finishError) return finishError
+  const secretsNotInjected = findSecretsNotInjected(
+    containerUnreferenced,
+    secretMaterial,
+    configCtx.secretRefs,
+    params.nativeServiceNames
+  )
 
   return {
     document: {
@@ -961,12 +983,41 @@ export function applyVariablesToComposeDocument(
     runtimeAssignments,
     buildAssignments,
     unreferencedSecrets,
+    secretsNotInjected,
     configFiles: configCtx.files,
     configSecretRefs: configCtx.secretRefs,
     configWarnings: configCtx.warnings,
     networkShareCredentials: shares.credentials,
     networkSharesResolved: shares.resolved,
   }
+}
+
+/**
+ * The secrets no container of the stack received. Run after every injection
+ * step (references, bindings, generated config files, network shares): a key
+ * any container was given, or a config file or share reads, is delivered.
+ */
+function findSecretsNotInjected(
+  candidates: ReadonlyMap<string, readonly UnreferencedSecret[]>,
+  secretMaterial: readonly DeployVariableMaterial[],
+  configSecretRefs: readonly DeployConfigSecretRef[],
+  nativeServiceNames: ReadonlySet<string> | undefined
+): SecretNotInjected[] {
+  const delivered = new Set<string>(configSecretRefs.map((ref) => ref.key))
+  for (const material of secretMaterial) {
+    const service = material.composeServiceName
+    if (service === null || !nativeServiceNames?.has(service)) delivered.add(material.key)
+  }
+  const byKey = new Map<string, SecretNotInjected>()
+  for (const [composeServiceName, secrets] of candidates) {
+    for (const secret of secrets) {
+      if (delivered.has(secret.key)) continue
+      const known = byKey.get(secret.key)
+      if (known) known.composeServiceNames.push(composeServiceName)
+      else byKey.set(secret.key, { ...secret, composeServiceNames: [composeServiceName] })
+    }
+  }
+  return [...byKey.values()]
 }
 
 /** Masked placeholder for secret-backed values in deploy-preview YAML. */
