@@ -217,9 +217,22 @@ const CLIENT_PATCHABLE_SERVER_OPTION_KEYS = [
   'buildLimits',
 ] as const satisfies readonly (keyof ServerOptions)[]
 
+function pickClientPatchableOptions(
+  parsed: ServerOptions
+): NonNullable<ServerPatchFields['options']> {
+  const options: NonNullable<ServerPatchFields['options']> = {}
+  for (const key of CLIENT_PATCHABLE_SERVER_OPTION_KEYS) {
+    if (parsed[key] !== undefined) Object.assign(options, { [key]: parsed[key] })
+  }
+  return options
+}
+
 /**
- * Overlay sshPort / ntp / hideWebServerNames / sendViaHeader onto parsed server
- * options. `null` clears inherit.
+ * Build the PATCH options from client input: only the keys in
+ * `CLIENT_PATCHABLE_SERVER_OPTION_KEYS` (timezone, hosting, sshPort, ntp,
+ * hideWebServerNames, sendViaHeader, networkShares, buildLimits) are kept, then
+ * sshPort / ntp / the two web server switches / networkShares / buildLimits are
+ * validated and overlaid. `null` clears inherit. Other keys are dropped.
  */
 function parseServerPatchOptions(
   raw: unknown
@@ -235,10 +248,7 @@ function parseServerPatchOptions(
   // `phpModes`). Anything not listed here is dropped, as unknown
   // keys always were. `options` is merged into the stored blob, so a dropped
   // key leaves the stored value as it was.
-  const options: NonNullable<ServerPatchFields['options']> = {}
-  for (const key of CLIENT_PATCHABLE_SERVER_OPTION_KEYS) {
-    if (parsed[key] !== undefined) Object.assign(options, { [key]: parsed[key] })
-  }
+  const options = pickClientPatchableOptions(parsed)
   if ('sshPort' in raw) {
     const sshPort = parseSshPortInput(raw.sshPort)
     if (!sshPort.ok) {
