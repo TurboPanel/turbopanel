@@ -3866,8 +3866,8 @@ async function applyDeployVariables(
   if (isApplyVariablesError(withVariables)) {
     return toApplyVariablesPrepareError(withVariables)
   }
-  warnings.push(...configFileWarnings(withVariables.configWarnings))
   warnings.push(
+    ...configFileWarnings(withVariables.configWarnings),
     ...secretNotInjectedWarnings(
       withVariables.unreferencedSecrets,
       nativeComposeServiceNames(pipeline.expandedDocument)
