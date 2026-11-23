@@ -23,7 +23,7 @@
 
 import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
-import { eq, sql } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { createDenoDb } from '../db/connection.ts'
@@ -76,6 +76,7 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './authn/crypto.ts'
 import { createSession } from './authn/session-store.ts'
 import { ORG_ID_HEADER } from './org-context.ts'
 import { registerClientRoutes } from './routes.ts'
+import { loadStoragePins } from '../features/schedule/plan-deploy.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -1085,5 +1086,84 @@ test('parameterised writes on A’s own objects never act on or reveal B through
     const reachedCount = reached.reduce((sum, [, count]) => sum + count, 0)
     assert(reachedCount > 0, `no write reached past validation: ${JSON.stringify([...statuses])}`)
     assertEquals(failures, [], failures.join('\n'))
+  })
+})
+
+const STORAGE_PARENT_CASES = [
+  { field: 'environmentId', own: (ids: Ids) => ids.environmentId! },
+  { field: 'serviceId', own: (ids: Ids) => ids.serviceId! },
+  { field: 'projectId', own: (ids: Ids) => ids.projectId! },
+  { field: 'workspaceId', own: (ids: Ids) => ids.workspaceId! },
+] as const
+
+for (const { field, own } of STORAGE_PARENT_CASES) {
+  test(`POST /storage ${field}: a user managing A and B cannot attach A's storage to B's parent`, async () => {
+    await withFixture(async (fixture) => {
+      const { db, orgA, orgB, nonce } = fixture
+      // The caller owns both organizations; only the active organization (A) may decide.
+      const [ownerGrant] = await db
+        .select({ actorId: grant.actorId })
+        .from(grant)
+        .where(and(eq(grant.entityId, orgA), eq(grant.permission, 'organization:own')))
+        .limit(1)
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: orgB,
+        actorType: 'user',
+        actorId: ownerGrant!.actorId,
+        permission: 'organization:own',
+      })
+
+      const foreignName = `idor-parent-${nonce}-${field}-foreign`
+      const foreign = await sendJson(fixture, 'POST', '/api/client/v1/storage', {
+        kind: 'volume',
+        name: foreignName,
+        [field]: fixture.b[field],
+      })
+      assertEquals(foreign.status, 404, `foreign parent: ${foreign.text}`)
+      const created = await db
+        .select({ id: storage.id })
+        .from(storage)
+        .where(eq(storage.name, foreignName))
+      assertEquals(created.length, 0)
+
+      const ownName = `idor-parent-${nonce}-${field}-own`
+      const positive = await sendJson(fixture, 'POST', '/api/client/v1/storage', {
+        kind: 'volume',
+        name: ownName,
+        [field]: own(fixture.aFull),
+      })
+      assertEquals(positive.status, 200, `own parent: ${positive.text}`)
+    })
+  })
+}
+
+test('deploy planning ignores storage of another organization attached to this environment', async () => {
+  await withFixture(async (fixture) => {
+    const { db, orgA, orgB, nonce } = fixture
+    const stray = await insertId(
+      db
+        .insert(storage)
+        .values({
+          organizationId: orgA,
+          environmentId: fixture.b.environmentId!,
+          kind: 'volume',
+          name: `idor-a-${nonce}-stray`,
+        })
+        .returning({ id: storage.id })
+    )
+    await db
+      .insert(storageCopy)
+      .values({ storageId: stray, serverId: fixture.aOwn.serverId, provider: 'docker' })
+    await db
+      .insert(mount)
+      .values({ storageId: stray, serviceId: fixture.b.serviceId!, destinationPath: '/stray' })
+
+    const asB = await loadStoragePins(db, orgB, fixture.b.environmentId!)
+    // Only B's own storage pins the service; A's stray row does not.
+    assertEquals(asB.get(fixture.b.serviceId!), fixture.b.serverId)
+    // Control: the same rows are picked up when the organization matches.
+    const asA = await loadStoragePins(db, orgA, fixture.b.environmentId!)
+    assertEquals(asA.get(fixture.b.serviceId!), fixture.aOwn.serverId)
   })
 })

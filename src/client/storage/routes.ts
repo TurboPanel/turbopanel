@@ -594,6 +594,12 @@ async function createStorageRecord(
   const parent = parseStorageParent(c, body)
   if (parent instanceof Response) return parent
 
+  // A parent of another organization answers like an unknown one.
+  if (parent.id !== null) {
+    const parentOrgId = await resolveEntityOrganizationId(db, parent.entityKind, parent.id)
+    if (parentOrgId !== orgId) return c.json({ error: 'Not found' }, 404)
+  }
+
   const parentId = parent.id ?? orgId
   const denied = await assertCanCreateOr403(c, parent.entityKind, parentId)
   if (denied) return denied
