@@ -472,6 +472,33 @@ test('a certificate for another name of a multi-name row does not overwrite a st
   }
 })
 
+test("a server's single-name pair is refused on a wildcard and apex row; a pair for both names is stored", async () => {
+  if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
+  const f = await setup({ rowNames: [`*.${HOST}`, HOST] })
+  try {
+    const send = (pair: { certificatePem: string; privateKeyPem: string }) =>
+      storeIssuedCertificate(
+        f.db,
+        {
+          serverId: f.serverId,
+          hostname: HOST,
+          certificatePem: pair.certificatePem,
+          privateKeyPem: pair.privateKeyPem,
+        },
+        f.deps
+      )
+    const single = await send(await issuedPair([HOST]))
+    assertEquals(single.ok, false)
+    if (!single.ok) assertEquals(single.error, 'no_matching_certificate')
+    assertEquals((await readRow(f)).privateKeyPem, null)
+    const full = await issuedPair([`*.${HOST}`, HOST])
+    assertEquals(await send(full), { ok: true, stored: true, tlsIds: [f.tlsId] })
+    assertEquals((await readRow(f)).certificatePem, full.certificatePem)
+  } finally {
+    await f.cleanup()
+  }
+})
+
 test('the sealed key is the same kind of envelope as an uploaded key', async () => {
   if (!dbUrl) return skipWithoutDatabase('issued certificate storage tests')
   const deps = await makeDeps()

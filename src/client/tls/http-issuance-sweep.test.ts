@@ -26,9 +26,12 @@ import {
   readHttpIssuanceState,
   withHttpIssuanceState,
 } from '../../features/tls/http-issuance/state.ts'
+import { startHttpIssuance } from '../../features/tls/http-issuance/orchestrator.ts'
+import { renewalDue } from '../../features/tls/http-issuance/progress.ts'
 import { removeUnusedSiteCertificates } from '../../features/tls/unused-letsencrypt.ts'
 import { ensureNameHttpOrders } from '../hostings/name-http-orders.ts'
 import {
+  buildHttpIssuanceDeps,
   httpIssuanceStaging,
   httpIssuanceEnabled,
   markUnpinnedLibraryOrders,
@@ -91,11 +94,12 @@ async function sweepWorld() {
       state?: Partial<HttpIssuanceState> | null
       names?: string[]
       pinned?: boolean
+      dns?: boolean
     }
   ): Promise<string> => {
     const metadata: Record<string, unknown> = {
       dnsNames: options.names ?? [`${label}.example.com`],
-      acme: { managedBy: 'caddy' },
+      acme: options.dns ? { managedBy: 'caddy', challengeType: 'dns-01' } : { managedBy: 'caddy' },
     }
     const withState =
       options.state === null || options.state === undefined
@@ -216,6 +220,41 @@ test('the sweep picks up exactly the rows with work to do', async () => {
           renewAt: iso(-5),
         },
       }),
+      // A pair a server exported must not block the retry of a failed DNS order.
+      dnsForeignPair: await make('dnsforeign', {
+        key: true,
+        dns: true,
+        names: ['*.dnsforeign.example.com', 'dnsforeign.example.com'],
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(-1),
+          centralPair: false,
+        },
+      }),
+      dnsForeignPairWaiting: await make('dnsforeignwait', {
+        key: true,
+        dns: true,
+        names: ['*.dnsforeignwait.example.com', 'dnsforeignwait.example.com'],
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(600_000),
+          centralPair: false,
+        },
+      }),
+      httpForeignPair: await make('httpforeign', {
+        key: true,
+        state: {
+          phase: 'failed',
+          endedAt: iso(-1000),
+          endsSentAt: iso(-900),
+          nextAttemptAt: iso(-1),
+          centralPair: false,
+        },
+      }),
       endsPending: await make('endspending', {
         state: {
           phase: 'failed',
@@ -246,11 +285,54 @@ test('the sweep picks up exactly the rows with work to do', async () => {
         ids.renewMissing,
         ids.retryDue,
         ids.failedWithPairDue,
+        ids.dnsForeignPair,
         ids.endsPending,
         // Several names are picked; who may take the order is decided per daemon.
         ids.twoNames,
       ].sort()
     )
+  } finally {
+    await w.cleanup()
+  }
+})
+
+test('a failed HTTP row with a server-captured pair and ends still pending is never started again; a DNS row is', async () => {
+  if (!dbUrl) return skipWithoutDatabase('http issuance sweep tests')
+  const w = await sweepWorld()
+  try {
+    const failed = {
+      phase: 'failed' as const,
+      endedAt: iso(-1000),
+      endsSentAt: null,
+      nextAttemptAt: iso(-1),
+      centralPair: false,
+      forwards: [{ serverId: 'b', outcome: 'ready' as const, reason: null, at: null }],
+    }
+    const http = await w.make('httpends', { key: true, state: failed })
+    const dns = await w.make('dnsends', {
+      key: true,
+      dns: true,
+      names: ['*.dnsends.example.com', 'dnsends.example.com'],
+      state: failed,
+    })
+    const rows = await selectHttpIssuanceCandidates(w.db, NOW, 100)
+    assertEquals(rows.find((r) => r.id === http)?.hasPair, true)
+    assertEquals(rows.find((r) => r.id === dns)?.hasPair, false)
+    const deps = buildHttpIssuanceDeps(w.db, {
+      registry: {} as never,
+      secrets: {} as never,
+      env: {},
+      now: () => NOW,
+      dnsLookup: async () => [],
+    })
+    const start = (id: string, state: HttpIssuanceState | null) =>
+      startHttpIssuance(deps, id, (facts) => (facts.hasPair ? renewalDue(state, NOW) : true))
+    const stateOf = async (id: string) => {
+      const [row] = await w.db.select().from(tls).where(eq(tls.id, id))
+      return readHttpIssuanceState(row!.metadata)
+    }
+    assertEquals(await start(http, await stateOf(http)), 'not_due')
+    assertEquals((await start(dns, await stateOf(dns))) === 'not_due', false)
   } finally {
     await w.cleanup()
   }
