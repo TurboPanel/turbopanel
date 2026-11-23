@@ -20,7 +20,7 @@ import { registerDatabaseRoutes } from './database-routes.ts'
 import { parseDisplayNameInput, parseOrganizationIdInput } from './routes-core-helpers.ts'
 
 /**
- * Developer console routes safe for the Workers bundle (no Deno-only imports).
+ * Developer console routes shared by the Deno and Workers entries (no Deno-only imports).
  * Deno-only routes (Drizzle Studio) live in developer/routes.ts.
  */
 

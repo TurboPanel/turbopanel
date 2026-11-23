@@ -13,7 +13,7 @@ import { registerDeveloperRoutes } from './routes.ts'
  */
 const test = Deno.test.bind(Deno)
 
-test('registerDeveloperRoutes mounts the Workers-safe core plus studio', async () => {
+test('registerDeveloperRoutes mounts the core routes plus studio', async () => {
   const secrets = await deriveSecretsConfig(
     parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno'),
     'session-signing'
