@@ -561,7 +561,7 @@ The per-server ProxySQL monitor password (`tp_monitor_<serverId prefix>`) used
 to live at `server.options.managedMonitor`; it now has its own **`monitor`**
 table (one row per server, `secret_envelope` sealed with the data-encryption
 key, `ON DELETE CASCADE` from `server`) — see
-`src/client/managed/monitor-credential.ts`. Two guards keep it that way:
+`src/features/managed/monitor-credential.ts`. Two guards keep it that way:
 `REDACTED_SERVER_OPTION_KEYS` / `redactServerOptions` in `server-metadata.ts`
 strip the legacy key at every read-model and response boundary, and
 `parseServerOptions` is an allowlist. A new server-scoped secret gets its own
@@ -754,15 +754,15 @@ ASCII `'` so iOS/macOS input matches uniqueness compares.
 **Identifiers vs labels.** Identifier charsets stay strict (interpolated into
 SQL / Docker / Traefik / shell). Do not relax these:
 
-| Guard                                                  | Where                                                                                             | Why it stays                                          |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `service.compose_service_name`                         | `isValidComposeServiceName` in `src/contracts/commands/schemas.ts`                                | Compose YAML key + `-p` project scoping               |
-| `principal_username_format_check`                      | schema + `src/features/principals/store.ts`                                                       | `useradd` / SQL `CREATE ROLE`                         |
-| `variable_key_format_check`                            | schema                                                                                            | Shell env-var name                                    |
-| `binding_key_prefix_format_check`                      | schema                                                                                            | SQL identifier / env prefix                           |
-| `label_key_format_check`                               | schema, `ui/src/lib/server-labels.ts`                                                             | Docker engine label key → `node.labels.*` constraints |
-| Hostnames                                              | `turbopaneld` `src/commands/hostname.ts`, `src/deploy/compose-labels.ts`, `src/deploy/ingress.ts` | Traefik router rules, DNS                             |
-| `DEPLOY_INGRESS_COMPOSE_NAME_RE` / `CONTAINER_NAME_RE` | `turbopaneld` `src/contracts/commands-contracts.ts`, `src/deploy/ingress-identity.ts`             | Docker CLI args, on-disk file ids                     |
+| Guard                                                  | Where                                                                                                                            | Why it stays                                          |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `service.compose_service_name`                         | `isValidComposeServiceName` in `src/contracts/commands/schemas.ts`                                                               | Compose YAML key + `-p` project scoping               |
+| `principal_username_format_check`                      | schema + `src/features/principals/store.ts`                                                                                      | `useradd` / SQL `CREATE ROLE`                         |
+| `variable_key_format_check`                            | schema                                                                                                                           | Shell env-var name                                    |
+| `binding_key_prefix_format_check`                      | schema                                                                                                                           | SQL identifier / env prefix                           |
+| `label_key_format_check`                               | schema, `ui/src/lib/server-labels.ts`                                                                                            | Docker engine label key → `node.labels.*` constraints |
+| Hostnames                                              | `../turbopaneld/src/commands/hostname.ts`, `../turbopaneld/src/deploy/compose-labels.ts`, `../turbopaneld/src/deploy/ingress.ts` | Traefik router rules, DNS                             |
+| `DEPLOY_INGRESS_COMPOSE_NAME_RE` / `CONTAINER_NAME_RE` | `../turbopaneld/src/contracts/commands-contracts.ts`, `../turbopaneld/src/deploy/ingress-identity.ts`                            | Docker CLI args, on-disk file ids                     |
 
 The daemon never receives display labels on a path that interpolates them.
 
@@ -817,7 +817,7 @@ inside deploy-prepare and turns each declared alias into a `principal` row plus
 the `tenancy` edge that says which `service` runs as it. The alias →
 `principal.id` map it returns is carried through the compiler as
 **`ResolvedApplication.principals[]`** (`{ logicalAlias, principalId }`) — see
-the four-model IR in `../compose/AGENTS.md` and `../compose/ir.ts`. That mapping
+the four-model IR in `../features/compose/AGENTS.md` and `../features/compose/ir.ts`. That mapping
 is the _only_ bridge between the document's aliases and these rows: nothing
 downstream re-derives an account from a compose key, and a service whose alias
 never became a row is refused (`principal_alias_unknown`) rather than run as
