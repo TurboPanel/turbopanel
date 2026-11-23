@@ -286,7 +286,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     restart: settings.dockerOptions?.restart ?? 'unless-stopped',
     environment: env,
     volumes: [
-      `${volumeName}:${DATA_VOLUME_TARGET}`,
+      `${volumeName}:${DATA_VOLUME_TARGET}:rw`,
       './config/my.cnf:/etc/mysql/conf.d/zz-turbopanel.cnf:ro',
       './config/initdb:/docker-entrypoint-initdb.d:ro',
     ],
