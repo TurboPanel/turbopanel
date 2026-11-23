@@ -9,6 +9,7 @@ import {
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { normalizeMailpitApiEnv, normalizeMailpitRuntimeEnv } from '../email/mailpit/env.ts'
 import { buildMailpitSmtpConfig } from '../email/mailpit/smtp-config.ts'
+import type { ApiErrorCode } from '../../lib/http/error-codes.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { parseExplicitSmtpConfig, type SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
@@ -628,8 +629,9 @@ export function invalidEmailSettingUpdate(
 }
 
 /** Stable `code`s of the refusals below, for the Admin UI. */
-export const EMAIL_PROVIDER_UNSUPPORTED_ON_WORKERS = 'email_provider_unsupported_on_workers'
-export const EMAIL_PROVIDER_UNKNOWN = 'email_provider_unknown'
+export const EMAIL_PROVIDER_UNSUPPORTED_ON_WORKERS =
+  'email_provider_unsupported_on_workers' as const
+export const EMAIL_PROVIDER_UNKNOWN = 'email_provider_unknown' as const
 
 /**
  * Workers has no SMTP path (no raw sockets), so an SMTP provider would resolve
@@ -639,7 +641,7 @@ export const EMAIL_PROVIDER_UNKNOWN = 'email_provider_unknown'
  */
 export function emailProviderUnsupportedOnWorkers(
   updates: Record<string, string | null>
-): { code: string; message: string } | undefined {
+): { code: ApiErrorCode; message: string } | undefined {
   for (const [key, value] of Object.entries(updates)) {
     if (typeof value !== 'string' || value.trim() === '') continue
     if (resolveShortKeyFromInput(key) !== 'PROVIDER') continue

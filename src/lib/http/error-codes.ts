@@ -25,6 +25,12 @@ export const API_ERROR_CODES = {
   not_configured: 'Not configured',
   /** The route is not available on this control plane. */
   not_available: 'Not available',
+  /** The email provider cannot be used on this runtime (hosted has no SMTP). */
+  email_provider_unsupported_on_workers: 'Email provider not supported on this control plane',
+  /** The email provider value is not one the control plane knows. */
+  email_provider_unknown: 'Unknown email provider',
+  /** A sign-up could not send its verification email; try again later. */
+  email_delivery_unavailable: 'Email delivery unavailable',
   /** A failure nothing handled. */
   internal_error: 'Internal Server Error',
   /** A response status with no more specific code (a thrown `HTTPException`). */

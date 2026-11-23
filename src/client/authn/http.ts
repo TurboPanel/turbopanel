@@ -1,3 +1,4 @@
+import { apiError } from '../../lib/http/api-error.ts'
 import { eq } from 'drizzle-orm'
 import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import { getCookie } from 'hono/cookie'
@@ -689,9 +690,12 @@ async function resolveSignupGate(
 
 /** The answer for a sign-up whose verification email could not be sent. */
 function signupMailUnavailable(c: Context): Response {
-  return c.json(
-    { ok: false, error: 'Could not send verification email. Please try again later.' },
+  return apiError(
+    c,
     503,
+    'email_delivery_unavailable',
+    'Could not send verification email. Please try again later.',
+    undefined,
     { 'Retry-After': String(SIGNUP_MAIL_RETRY_AFTER_SECONDS) }
   )
 }

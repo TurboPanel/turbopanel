@@ -516,7 +516,7 @@ export function registerAdminRoutes(
     if (emailRuntime(c) === 'workers') {
       const unsupported = emailProviderUnsupportedOnWorkers(updates)
       if (unsupported) {
-        return c.json({ error: unsupported.message, code: unsupported.code }, 422)
+        return apiError(c, 422, unsupported.code, unsupported.message)
       }
     }
 
