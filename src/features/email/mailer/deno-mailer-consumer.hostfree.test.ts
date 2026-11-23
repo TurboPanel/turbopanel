@@ -357,6 +357,9 @@ test('startMailerConsumer maps permanent, transient and thrown send failures', a
       broker.sentToQueue.map((sent) => sent.queue),
       ['turbopanel.email.dead', 'turbopanel.email.retry.30s', 'turbopanel.email.retry.30s']
     )
+    // The permanent refusal's dead letter says so, with the provider's words.
+    const deadHeaders = broker.sentToQueue[0]!.options.headers as Record<string, unknown>
+    assertEquals(deadHeaders['x-tp-dead-reason'], 'email-otp refused: bad address')
     await handle.close()
   } finally {
     connectStub.restore()
@@ -836,7 +839,10 @@ test('a failing sign-in code is retried later with a growing delay, then dead-le
     assertEquals(typeof dead.messageId, 'string')
     const deadHeaders = dead.headers as Record<string, unknown>
     assertEquals(Number.isNaN(Date.parse(String(deadHeaders['x-tp-dead-at']))), false)
-    assertEquals(String(deadHeaders['x-tp-dead-reason']).includes('gave up'), true)
+    assertEquals(
+      deadHeaders['x-tp-dead-reason'],
+      'email-otp gave up after 6 attempts: mailbox full'
+    )
     assertEquals(
       broker.dispositions.every((d) => d.method === 'ack'),
       true

@@ -63,6 +63,7 @@ import {
   syncForgeHandler,
 } from '../client/forges/handlers.ts'
 import {
+  emailProviderUnsupportedOnWorkers,
   emailSettingsToApiShape,
   emailUpdatesRequireEncryption,
   invalidEmailSettingUpdate,
@@ -464,17 +465,22 @@ export function registerAdminRoutes(
     return await deleteForgeHandler(c, db, instanceScope, c.req.param('id'))
   })
 
+  // One answer for the settings read, the validation and the write below.
+  const emailRuntime = (c: Context): 'deno' | 'workers' =>
+    opts.runtime === 'workers' || c.get('runtime') === 'workers' ? 'workers' : 'deno'
+
   admin.get('/settings/email', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+    const runtime = emailRuntime(c)
     const resolved = await resolveEmailSettings(
       db,
       resolvePlatformEnv(c, opts),
-      dataEncryptionSecrets
+      dataEncryptionSecrets,
+      runtime
     )
-    const runtime = c.get('runtime') === 'workers' ? 'workers' : 'deno'
     const state = emailDeliveryState({
       settings: resolved,
       runtime,
@@ -507,6 +513,12 @@ export function registerAdminRoutes(
 
     const invalidUpdate = invalidEmailSettingUpdate(updates)
     if (invalidUpdate) return c.json({ error: invalidUpdate }, 400)
+    if (emailRuntime(c) === 'workers') {
+      const unsupported = emailProviderUnsupportedOnWorkers(updates)
+      if (unsupported) {
+        return apiError(c, 422, unsupported.code, unsupported.message)
+      }
+    }
 
     const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     // DB-backed secret writes must be sealed at rest — require an encryption key,
@@ -516,7 +528,13 @@ export function registerAdminRoutes(
     }
 
     const env = resolvePlatformEnv(c, opts)
-    const resolved = await updateEmailSettings(db, env, updates, dataEncryptionSecrets)
+    const resolved = await updateEmailSettings(
+      db,
+      env,
+      updates,
+      dataEncryptionSecrets,
+      emailRuntime(c)
+    )
     // Workers resolves the email queue per request from current DB settings
     // (see workers.ts fetch middleware) — no isolate-level queue cache to
     // invalidate after this write.

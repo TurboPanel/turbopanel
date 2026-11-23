@@ -1,3 +1,4 @@
+import { apiError } from '../../lib/http/api-error.ts'
 import { eq } from 'drizzle-orm'
 import type { PanelIdentity } from '../../lib/panel-identity/identity.ts'
 import { getCookie } from 'hono/cookie'
@@ -32,10 +33,9 @@ import { compatLogError, compatLogInfo, compatLogWarn } from '../../lib/log-comp
 import { getDb } from '../../db/connection.ts'
 import type { Db } from '../../db/connection.ts'
 import { invitationEmailsMatch, isUuid } from '../access/routes-helpers.ts'
-import { account, invitation, user } from '../../db/schema.ts'
+import { account, invitation, user, verification } from '../../db/schema.ts'
 import { type EmailQueue, getEmailQueue } from '../../features/email/types.ts'
 import { isNoopEmailQueue } from '../../features/email/noop-queue.ts'
-import { emailQueueFromResolvedSettings } from '../../features/email/mailgun/workers-queue.ts'
 import {
   isEmailActiveForRuntime,
   resolveEmailSettings,
@@ -545,13 +545,18 @@ type SignupVerificationTarget = {
   invitationId?: string
 }
 
+/**
+ * Send the verification email for a new sign-up. Throws when the token cannot
+ * be made or the job cannot be queued; the caller then discards the account
+ * (`discardUnverifiedSignup`).
+ */
 async function enqueueSignupVerification(
   c: Context,
   opts: AuthRouteOpts,
   db: Db,
   queue: EmailQueue,
   target: SignupVerificationTarget
-): Promise<Response | null> {
+): Promise<void> {
   const { trimmedEmail, userId, emailFrom, invitationId } = target
   const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
   const baseOrigin = await resolveVerificationBaseUrlAsync(c, opts)
@@ -560,34 +565,44 @@ async function enqueueSignupVerification(
     verificationToken
   )}${invitationParam}`
 
+  await queue.enqueue({
+    type: 'signup-verification',
+    to: trimmedEmail,
+    from: emailFrom,
+    verificationUrl,
+  })
+  if (!invitationId) {
+    await provisionWorkersOrganization(db, opts, userId)
+  }
+  if (isVerificationDevLoggingEnabled(opts)) {
+    compatLogInfo('dev', 'verification email queued')
+  }
+}
+
+/** Seconds a sign-up refused for want of mail delivery asks the client to wait. */
+const SIGNUP_MAIL_RETRY_AFTER_SECONDS = 60
+
+/**
+ * The one rule, on both runtimes, for a sign-up whose verification email could
+ * not be sent: the new account is removed again. The user cannot sign in until
+ * the address is verified and there is no way to ask for another link, and a
+ * second sign-up with the same address would be answered as if it succeeded
+ * (anti-enumeration), so a kept account would be stuck for good. Removing it
+ * lets the person simply try again. Best effort: a failure here is logged.
+ */
+async function discardUnverifiedSignup(
+  db: Db,
+  target: Pick<SignupVerificationTarget, 'trimmedEmail' | 'userId'>
+): Promise<void> {
   try {
-    await queue.enqueue({
-      type: 'signup-verification',
-      to: trimmedEmail,
-      from: emailFrom,
-      verificationUrl,
+    // One transaction: a failure partway leaves the user as it was, never a
+    // half-removed one. The account row goes with the user (`account_user_id_user_id_fk`).
+    await db.transaction(async (tx) => {
+      await tx.delete(verification).where(eq(verification.identifier, target.trimmedEmail))
+      await tx.delete(user).where(eq(user.id, target.userId))
     })
-    if (!invitationId) {
-      await provisionWorkersOrganization(db, opts, userId)
-    }
-    if (isVerificationDevLoggingEnabled(opts)) {
-      compatLogInfo('dev', 'verification email queued')
-    }
-    return null
   } catch (err) {
-    compatLogWarn('email', `verification email enqueue failed: ${err}`)
-    if (opts.runtime === 'workers') {
-      await db.delete(account).where(eq(account.userId, userId))
-      await db.delete(user).where(eq(user.id, userId))
-      return c.json(
-        {
-          ok: false,
-          error: 'Could not send verification email. Please try again later.',
-        },
-        503
-      )
-    }
-    return null
+    compatLogError('auth', `could not remove the sign-up whose verification email failed: ${err}`)
   }
 }
 
@@ -661,18 +676,27 @@ async function resolveSignupGate(
     platformEnv ??
     (opts.runtime === 'deno' && typeof Deno !== 'undefined' ? Deno.env.toObject() : {})
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  const emailSettings = await resolveEmailSettings(db, env, dataEncryptionSecrets)
+  const emailSettings = await resolveEmailSettings(db, env, dataEncryptionSecrets, opts.runtime)
   const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, opts.runtime)
-  // Prefer an injected context queue (Deno AMQP / test doubles). On Workers,
-  // fall back to a queue derived from the *same* settings used for the
-  // verification gate so admin email config changes apply without a restart
-  // even if middleware omitted the queue.
-  const emailQueue =
-    getEmailQueue(c) ??
-    (opts.runtime === 'workers' ? emailQueueFromResolvedSettings(emailSettings) : undefined)
+  // The injected context queue: Deno AMQP, or on Workers the platform mail
+  // queue (retried and dead-lettered by its consumer). There is no direct-send
+  // fallback; without a queue the sign-up reports that no mail was sent.
+  const emailQueue = getEmailQueue(c)
   const emailFrom =
     emailSettings.from || c.get('emailFrom') || opts.emailFrom || 'noreply@turbopanel.local'
   return { ok: true, emailVerificationEnabled, emailQueue, emailFrom }
+}
+
+/** The answer for a sign-up whose verification email could not be sent. */
+function signupMailUnavailable(c: Context): Response {
+  return apiError(
+    c,
+    503,
+    'email_delivery_unavailable',
+    'Could not send verification email. Please try again later.',
+    undefined,
+    { 'Retry-After': String(SIGNUP_MAIL_RETRY_AFTER_SECONDS) }
+  )
 }
 
 async function deliverSignupVerification(
@@ -687,15 +711,17 @@ async function deliverSignupVerification(
       'email',
       `verification email not sent for ${target.trimmedEmail}: email queue unavailable`
     )
-    return null
+    await discardUnverifiedSignup(db, target)
+    return signupMailUnavailable(c)
   }
 
-  // Token generation must not roll back the already-committed user creation.
   try {
-    return await enqueueSignupVerification(c, opts, db, queue, target)
-  } catch (err) {
-    compatLogError('auth', `verification token generation failed: ${err}`)
+    await enqueueSignupVerification(c, opts, db, queue, target)
     return null
+  } catch (err) {
+    compatLogWarn('email', `verification email could not be sent: ${err}`)
+    await discardUnverifiedSignup(db, target)
+    return signupMailUnavailable(c)
   }
 }
 

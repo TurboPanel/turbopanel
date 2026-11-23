@@ -49,7 +49,6 @@
  * phases race remaining time, and `OFFLINE_SWEEP_LOCK.expiresAt` covers the
  * enforced live runtime so a still-running holder cannot be stolen.
  */
-import { platformControlPlaneOrigin } from '../../features/install/control-plane-origins.ts'
 import {
   type Db,
   DB_OP_TIMEOUT_MS,
@@ -77,7 +76,6 @@ import { peerLeafDelivery } from '../../features/tunnels/sync.ts'
 import { runTunnelSweeps } from '../../features/tunnels/sweeps.ts'
 import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
-import { cachedForEnv } from './notification-email-cache.ts'
 import {
   ALL_GATES_OPEN,
   CRON_CADENCES,
@@ -89,7 +87,7 @@ import {
 import { type JobDueInput, type JobIdOn, jobDue, RUNTIME_DIFFERENCES } from '../../jobs/table.ts'
 import { runManagedExternalAccessPendingSweep } from '../../features/managed/external-access.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
-import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { pruneNotificationHistory } from '../../features/notifications/cleanup.ts'
 import { alertNewOrphanFolders } from '../../features/notifications/folder-alerts.ts'
@@ -132,14 +130,12 @@ import {
   queryRecentlyActiveServerIds,
 } from '../metrics/backends/cloudflare/sql-api.ts'
 import { endOfflineSweep, tryBeginOfflineSweep } from './offline-sweep-lease.ts'
-import { resolveWorkersEmailQueue } from '../../features/email/mailgun/workers-queue.ts'
-import { resolveEmailSettings } from '../../features/settings/email-settings.ts'
-import { sweepTierNotices } from '../../features/tiers/tier-notice-sweep.ts'
 import { resolveBillingConfig } from '../../features/billing/config.ts'
 import { createStripeClient } from '../../features/billing/client.ts'
 import { runReconcile, shouldRunReconcile } from '../../features/billing/reconcile.ts'
 import { runPendingStripeProjections } from '../../webhook/billing/stripe-projection.ts'
 import { runIsolatedSweep, sweepErrorMessage, sweepTrace } from './offline-sweep-trace.ts'
+import { sweepTierNoticesPhase, workersNotificationEmail } from './offline-sweep-email.ts'
 import {
   runUpgradeMaintenanceSafely,
   sweepAuditHistorySafely,
@@ -1282,56 +1278,6 @@ async function sweepExecutionLogsPhase(
   )
 }
 
-/** The mail queue and from address a Workers tick hands the notifications pipeline. */
-function workersNotificationEmail(
-  env: CloudflareBindings,
-  db: Db,
-  tlsRenewal: CronTlsRenewal | null | undefined
-): Promise<EmitEmail | undefined> {
-  return cachedForEnv(env, () => resolveWorkersNotificationEmail(env, db, tlsRenewal))
-}
-
-async function resolveWorkersNotificationEmail(
-  env: CloudflareBindings,
-  db: Db,
-  tlsRenewal: CronTlsRenewal | null | undefined
-): Promise<EmitEmail | undefined> {
-  const platformEnv = env as unknown as Record<string, string | undefined>
-  try {
-    const queue = await resolveWorkersEmailQueue(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
-    const settings = await resolveEmailSettings(db, platformEnv, tlsRenewal?.dataEncryptionSecrets)
-    return {
-      queue,
-      from: settings.from,
-      consoleBaseUrl: platformControlPlaneOrigin(platformEnv),
-    }
-  } catch {
-    return undefined
-  }
-}
-
-async function sweepTierNoticesPhase(
-  env: CloudflareBindings,
-  db: Db,
-  tlsRenewal: CronTlsRenewal | null | undefined,
-  opts: RunOfflineSweepOpts
-): Promise<void> {
-  const platformEnv = env as unknown as Record<string, string | undefined>
-  const emailQueue = await resolveWorkersEmailQueue(
-    db,
-    platformEnv,
-    tlsRenewal?.dataEncryptionSecrets
-  )
-  await sweepTierNotices({
-    db,
-    emailQueue,
-    deployment: 'hosted',
-    ignoreElapsedGate: true,
-    nowMs: opts.nowMs,
-    consoleBaseUrl: platformControlPlaneOrigin(platformEnv) ?? undefined,
-  })
-}
-
 async function runBillingOptionalPhases(
   env: CloudflareBindings,
   db: Db,
@@ -1634,7 +1580,7 @@ async function runOptionalCronPhases(
       opts.scheduledTime,
       phasesSkipped,
       () => jobDueNow('tier-notice-sweep'),
-      () => sweepTierNoticesPhase(env, db, tlsRenewal, opts)
+      () => sweepTierNoticesPhase(env, db, opts)
     ))
   ) {
     return
