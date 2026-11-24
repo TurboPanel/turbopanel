@@ -249,9 +249,9 @@ async function readRawBody(c: Context<AppEnv>, maxBodyBytes: number): Promise<Ui
 }
 
 /**
- * Ledger key for the body itself, per verified holder. Deliberately excludes the event header: an
- * unsigned label must not let an already-processed body run a second time
- * under a different handler.
+ * Ledger key for the body itself, per verified holder. Deliberately excludes
+ * the event header: an unsigned label must not let an already-processed body
+ * run a second time under a different handler.
  */
 async function bodyDigestKey(scope: string, raw: Uint8Array): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', raw as BufferSource))

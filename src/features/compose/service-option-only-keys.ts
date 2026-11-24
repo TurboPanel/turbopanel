@@ -1,9 +1,9 @@
 /**
  * A site's background workers and post-deploy commands are service options, set
- * on the service (`PATCH /services/:id`, the Workers settings), never read from
- * Compose. Left in `x-turbopanel` they would be dropped without a word, so a
- * site would deploy with no queue worker; refuse them at save and say where
- * they go.
+ * on the service (`PATCH /services/:id`, the service's worker and post-deploy
+ * settings), never read from Compose. Left in `x-turbopanel` they would be
+ * dropped without a word, so a site would deploy with no queue worker; refuse
+ * them at save and say where they go.
  */
 import { TURBOPANEL_EXTENSION_KEY } from './placement.ts'
 
@@ -32,7 +32,7 @@ export function collectServiceOptionOnlyKeyIssues(
       if (!(key in extension)) continue
       issues.push({
         path: `services.${name}.${TURBOPANEL_EXTENSION_KEY}.${key}`,
-        message: `${key} is not read from Compose; set it in the service's Workers settings instead`,
+        message: `${key} is not read from Compose; set it in the service's worker and post-deploy settings instead`,
       })
     }
   }
