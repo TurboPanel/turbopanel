@@ -36,7 +36,7 @@ const input = (dns: DnsChallengeProvider) => ({ dns, zoneId: 'z', name: NAME, va
 test('asks the nameservers by address and confirms when they hold the value', async () => {
   const f = fixture({ '192.0.2.1': ['v1'], '2001:db8::1': ['v1'], '192.0.2.2': ['other', 'v1'] })
   assertEquals(await f.confirm(input(f.dns)), true)
-  assertEquals(f.asked.sort(), ['192.0.2.1', '192.0.2.2', '2001:db8::1'])
+  assertEquals(f.asked.toSorted(), ['192.0.2.1', '192.0.2.2', '2001:db8::1'])
 })
 
 test('waits while one nameserver lacks the value', async () => {

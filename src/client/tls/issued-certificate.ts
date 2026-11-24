@@ -286,10 +286,9 @@ async function checkPair(
  * (the same names, or more: a renewal that now also covers the www name a site
  * adds) is a renewal too. A pair whose validity window no public authority
  * issues never replaces anything, and a stored pair with such a window (by the
- * same check) is
- * replaced by any plausible one. A certificate for a different name of a multi-name
- * row (Caddy issues one per name) does not overwrite a still-valid pair for
- * another name.
+ * same check) is replaced by any plausible one. A certificate for a different
+ * name of a multi-name row (Caddy issues one per name) does not overwrite a
+ * still-valid pair for another name.
  */
 export function replaces(
   stored: { names: string[] | undefined; notAfter: string | null; notBefore?: string | null },

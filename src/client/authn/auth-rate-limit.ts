@@ -173,9 +173,12 @@ function normalizeIdentity(identity: string | null | undefined): string | null {
   return trimmed
 }
 
+/** The one IP bucket shared by every caller whose address is missing or blank. */
+const UNKNOWN_IP_BUCKET = 'unknown'
+
 function normalizeIp(ip: string | null | undefined): string {
   const trimmed = (ip ?? '').trim()
-  if (!trimmed) return 'unknown'
+  if (!trimmed) return UNKNOWN_IP_BUCKET
   if (trimmed.length > AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS) {
     return trimmed.slice(0, AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS)
   }

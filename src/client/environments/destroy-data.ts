@@ -26,6 +26,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDb } from '../../db/connection.ts'
 import { environment, server } from '../../db/schema.ts'
+import { apiError } from '../../lib/http/api-error.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -35,7 +36,6 @@ import {
   confirmNameMatches,
 } from '../confirm-name.ts'
 import { assertCanReadOr403, getOrgId } from '../shared.ts'
-import { apiError } from '../../lib/http/api-error.ts'
 import { type KeptDataVolume, listEnvironmentDataVolumes } from './data-volumes.ts'
 
 export const DATA_VOLUMES_CHANGED_ERROR = 'data_volumes_changed'
