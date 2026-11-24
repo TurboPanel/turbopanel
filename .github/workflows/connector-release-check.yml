@@ -2,7 +2,9 @@
 # newer than the version the daemon pins and file or update ONE issue here with
 # the new version and its checksums. It changes no pin and touches no server: a
 # new connector reaches servers only with a daemon release the owner cuts.
-# The script comes from the daemon repository's trunk (public, no token). Issues
+# The script comes from the daemon repository's trunk (public). It sends the
+# workflow token to the releases API so the lookup is not rate limited like an
+# anonymous caller. Issues
 # are enabled only on this repository, which is why the check runs here.
 name: Tunnel Connector Release Check
 
@@ -53,10 +55,12 @@ jobs:
       - name: Compare with the pinned connector
         id: compare
         working-directory: daemon
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           # The script prints "current" or "newer" (and then wrote the report).
           # Anything else is a crash or a changed script: fail, file nothing.
-          result="$(deno run --allow-net=api.github.com --allow-read --allow-write="$RUNNER_TEMP" scripts/check-connector-release.ts "$RUNNER_TEMP/report.md")" || {
+          result="$(deno run --allow-net=api.github.com --allow-env=GITHUB_TOKEN --allow-read --allow-write="$RUNNER_TEMP" scripts/check-connector-release.ts "$RUNNER_TEMP/report.md")" || {
             echo "::error::The connector release check script failed; no issue filed."
             exit 1
           }
