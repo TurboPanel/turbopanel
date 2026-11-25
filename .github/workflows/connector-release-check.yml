@@ -4,8 +4,8 @@
 # new connector reaches servers only with a daemon release the owner cuts.
 # The script comes from the daemon repository's trunk (public). It sends the
 # workflow token to the releases API so the lookup is not rate limited like an
-# anonymous caller. Issues
-# are enabled only on this repository, which is why the check runs here.
+# anonymous caller. Issues are enabled only on this repository, which is why
+# the check runs here.
 name: Tunnel Connector Release Check
 
 on:
